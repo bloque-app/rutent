@@ -36,6 +36,8 @@ pub trait Files {
     fn base(&self, path: &str) -> Option<String>;
     /// The file's text at the head, or `None` if it does not exist there.
     fn head(&self, path: &str) -> Option<String>;
+    /// Every file path at the base ref. An error means the base cannot be listed, and the guard then fails.
+    fn base_files(&self) -> Result<Vec<String>, String>;
 }
 
 /// One rule broken. `subject` is a contract's name, or `shared` for the files no contract owns.
@@ -256,6 +258,14 @@ pub fn check(
         }
     }
 
+    // A contract listed at the base that owns no file there is new; one that owns files but has no changelog is not.
+    let base_files = files.base_files()?;
+    let owned_at_base: BTreeSet<String> = base_files
+        .iter()
+        .filter_map(|path| owner(path, &base_contracts))
+        .map(|index| base_contracts[index].name.clone())
+        .collect();
+
     let mut bumped: BTreeSet<String> = BTreeSet::new();
     for name in &names {
         let head_contract = head_contracts.iter().find(|c| &c.name == name);
@@ -325,10 +335,13 @@ pub fn check(
             continue;
         }
         if base_text.is_none() {
-            violations.push(violation(
-                name,
-                format!("{name} is in the base CONTRACTS but has no changelog at the base"),
-            ));
+            if owned_at_base.contains(name) {
+                violations.push(violation(
+                    name,
+                    format!("{name} owns files at the base but has no changelog at the base"),
+                ));
+            }
+            // Listed at the base with no file there yet: its first version is new and needs no bump.
             continue;
         }
         match base_top.and_then(|s| semver(&s.version).map(|v| (s.version, v))) {

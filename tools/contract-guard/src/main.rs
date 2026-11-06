@@ -25,6 +25,14 @@ impl Files for Git {
     fn head(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.root.join(path)).ok()
     }
+
+    fn base_files(&self) -> Result<Vec<String>, String> {
+        git(
+            &self.root,
+            &["ls-tree", "-r", "-z", "--name-only", &self.merge_base],
+        )
+        .map(|text| split_nul_names(&text))
+    }
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {

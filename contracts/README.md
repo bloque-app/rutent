@@ -64,6 +64,8 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
 - Before `C1`, versions are `0.x.y`, starting at `0.1.0`. `T-006-01` sets every contract to `1.0.0`.
 - Every bullet names at least one `DEC-*`, and names the task that made it.
 - A change to anything a contract owns needs a new top heading, greater than the base's, with at least one bullet.
+  A contract that the base `CONTRACTS` lists but that owns no file at the base is new: its first version needs no
+  bump, only a bullet naming a `DEC-*`. A contract that owns base files still needs a base changelog.
 - Files under `contracts/` that belong to no contract (`Cargo.toml`, `src/lib.rs`, this README, `CONTRACTS`, and
   any file under `contracts/tests/` that names no contract) are shared. A change to them needs a bullet in
   `contracts/CHANGELOG.md` naming a `DEC-*`, or a version bump of some contract in the same change.

@@ -9,3 +9,5 @@ directory (see `README.md`).
   contract. (DEC-4, T-001-05)
 - Guard bypasses closed: quoted and non-ASCII paths, `CONTRACTS` re-mapping from the base as well as the head,
   decision lookalikes such as `NODEC-4`, and heading-only bumps. (DEC-4, T-001-05)
+- A contract listed in the base `CONTRACTS` with no files at the base is new, so its first version needs no bump;
+  one that owns base files still needs a base changelog. (DEC-4, T-001-05)

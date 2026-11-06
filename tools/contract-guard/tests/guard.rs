@@ -61,6 +61,10 @@ impl Fixture {
 }
 
 impl Files for Fixture {
+    fn base_files(&self) -> Result<Vec<String>, String> {
+        Ok(self.base.keys().cloned().collect())
+    }
+
     fn base(&self, path: &str) -> Option<String> {
         self.base.get(path).cloned()
     }
@@ -435,4 +439,82 @@ fn loose_decision_tokens_do_not_name_a_decision() {
             "{bullet} names no decision, got {violations:?}"
         );
     }
+}
+
+// verifies: DEC-4
+#[test]
+fn listed_contract_with_no_base_files_first_version_passes() {
+    // The base CONTRACTS lists module-interface, but no file of it exists at the base yet.
+    let fixture = Fixture::default()
+        .head_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 0.1.0\n- Interface schemas. (DEC-4, T-003-01)\n",
+        )
+        .changed_head("contracts/module-interface/schemas/call.schema.json", "{}");
+    let violations = run(
+        &[
+            "contracts/module-interface/CHANGELOG.md",
+            "contracts/module-interface/schemas/call.schema.json",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations.is_empty(),
+        "a contract with no base files starts new, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn listed_contract_with_no_base_files_needs_a_decision() {
+    let fixture = Fixture::default()
+        .head_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 0.1.0\n- Interface schemas. (T-003-01)\n",
+        )
+        .changed_head("contracts/module-interface/schemas/call.schema.json", "{}");
+    let violations = run(
+        &[
+            "contracts/module-interface/CHANGELOG.md",
+            "contracts/module-interface/schemas/call.schema.json",
+        ],
+        &fixture,
+    );
+    assert_eq!(
+        violations.len(),
+        1,
+        "the missing DEC is the only violation, got {violations:?}"
+    );
+    assert!(
+        violations[0].subject == "module-interface" && violations[0].message.contains("DEC"),
+        "got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn base_files_without_a_changelog_fail() {
+    let fixture = Fixture::default()
+        .base_only("contracts/provider-role/schemas/advert.schema.json", "{}")
+        .head_only(
+            "contracts/provider-role/CHANGELOG.md",
+            "# provider-role changelog\n\n## 0.1.0\n- Adverts. (DEC-4, T-002-01)\n",
+        )
+        .changed_head(
+            "contracts/provider-role/schemas/advert.schema.json",
+            "{\"v\": 2}",
+        );
+    let violations = run(
+        &[
+            "contracts/provider-role/CHANGELOG.md",
+            "contracts/provider-role/schemas/advert.schema.json",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("files")),
+        "a contract that owns base files must keep a base changelog, got {violations:?}"
+    );
 }

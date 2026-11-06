@@ -72,6 +72,7 @@ Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
 - The base is `origin/<base_ref>` for a pull request, `github.event.before` for a push, and `origin/main` for a new branch. A missing base ref is a usage error, not a pass.
 - A file directly under `contracts/tests/` whose stem is a contract name, with `-` or `_`, belongs to that contract (`provider_role.rs`, `host.rs`). Any other file there stays shared. This settles the point an earlier reading left open.
 - A path touches every contract that either the base or the head `CONTRACTS` assigns it to; the base file is read with `git show`. A contract absent from the base `CONTRACTS` is new. A contract that the base lists but whose base changelog is missing is an error, not a new contract.
+- A contract listed in the base `CONTRACTS` with no file at the base is new, and its first version needs no bump. `CONTRACTS` lists all five contracts from the start, so without this rule every first version failed the guard. Base files are listed with `git ls-tree -r -z`. A contract that owns base files but has no base changelog is still an error.
 - A new top heading alone is not a bump: its section must carry a bullet the base's top section lacks.
 - The guard runs on a push against `github.event.before`, and on a new branch (all-zero `before`) against `origin/main`. The value reaches the shell through `env:` only.
 - `parse_contracts` rejects two contracts whose artefact or module directories are equal. Nesting stays legal, because owners are found by longest prefix.
