@@ -1,0 +1,6 @@
+# name             artefacts                       rust module
+provider-role      contracts/provider-role         contracts/src/provider_role
+module-interface   contracts/module-interface      contracts/src/module_interface
+router-api         contracts/router-api            contracts/src/router_api
+state-machine      contracts/state-machine         contracts/src/state_machine
+host               contracts/state-machine/host    contracts/src/state_machine/host
