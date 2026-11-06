@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "contracts",
+    "conformance",
+    "components/router",
+    "components/stm",
+    "components/prov",
+    "components/core-orch",
+    "components/core-authz",
+    "components/core-audit",
+    "components/evidence",
+    "tools/boundary-check",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
