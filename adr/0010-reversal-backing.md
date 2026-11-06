@@ -39,9 +39,11 @@ routed to counsel before this is built for any roster beyond rutent's own. Ceili
 Pablo's ruling adds a scope note: while rutent's own operator is also every provider on the catalogue, the bond
 is not a third-party risk transfer in substance — it stands as a guarantee that idempotent reversals can be
 made, not as cover against an unrelated party vanishing. The third-party-custody and regulatory questions this
-ADR raises become load-bearing once a provider outside the operator's own roster joins the catalogue — which, per
-`OVERVIEW.md`, is open operation and deferred past v1 (`REQ-EXT-1`, `DEF-1`). Counsel's read is still needed
-before that point, not necessarily before v1 ships with an all-Bloque roster.
+ADR raises become load-bearing once a provider Bloque doesn't operate joins the catalogue. Pablo places that at
+"the future (open protocol, V1 and further)", and v0 is a first build ahead of SPEC's v1 (`v0-before-v1`). So
+counsel's read isn't needed for v0, and is due before v1, or before the first outside provider if one is admitted
+sooner. That is earlier than open operation, which stays deferred past v1 (`DEF-1`): a provider the operator grants
+entry to is closed operation, but no longer one the operator runs.
 
 ## Consequences
 

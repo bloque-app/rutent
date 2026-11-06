@@ -1,6 +1,6 @@
 ---
-status: Proposed
-decision_item: route-search-algorithm (pending)
+status: Accepted (Pablo, 2026-11-06, decision-form items `route-search-algorithm` and `v0-before-v1`, the latter answered in chat)
+decision_item: v0-before-v1 (supersedes route-search-algorithm)
 supersedes: adopts suggestions/ADR-005-route-search-quoting.md
 ---
 
@@ -44,6 +44,11 @@ only the shortlist gets fresh quotes, dry-runs and eligibility checks afterward 
 followed directly — non-shortlisted providers are never asked). Splitting starts with the simple
 threshold-and-fixed-parts rule above.
 
+**When splitting arrives.** Pablo asked to defer splitting, then ruled (`v0-before-v1`) that v0 is a first build
+ahead of SPEC's v1. So `R127`/`PS-157` stand: splitting ships in v1 (`REQ-QTE-16`), and v0 leaves it out. The
+router's contract and decision record carry splits from the start, so that v1 adds the splitting rule rather than
+reshaping the router: v0's router returns one route, recorded as a split of one part.
+
 ## Consequences
 
 - `CMP-ROUTER`'s public contract (`ARCHITECTURE.md` §3) is a pure function, satisfying `AC-2` by construction:
@@ -56,6 +61,8 @@ threshold-and-fixed-parts rule above.
 - No performance number exists for this algorithm under real load (`NFR-1` is itself unbound, with no agreed
   figure) — this ADR does not claim a throughput target; one should be set once real provider-network-wait
   behaviour is observed.
+- `AC-38` and `REQ-ORD-42`'s per-part endings aren't exercised by v0's orders, since none splits. They're tested
+  when v1 adds splitting, so v0's state machine should still treat a route as one part of an order.
 - The simple splitting rule may under-split compared to a flow-based approach in some cases; this is accepted as
   a starting point, not a final answer, and can be revisited once `AC-38` (split-order independence) testing
   surfaces a concrete gap.

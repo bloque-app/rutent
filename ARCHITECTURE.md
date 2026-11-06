@@ -1,6 +1,6 @@
 ---
 name: rutent architecture
-status: proposed. Digests SPEC.md v0.4.1 (accepted 2026-11-05). Produced under Narthex STEP-2 (REQ-CHN-8 to REQ-CHN-10, REQ-CHN-12); awaiting the owner's ruling on the ADRs it links to.
+status: proposed. Digests SPEC.md v0.4.1 (accepted 2026-11-05). Produced under Narthex STEP-2 (REQ-CHN-8 to REQ-CHN-10, REQ-CHN-12). Every ADR it links to is accepted (2026-11-06); the SAD itself awaits the owner's acceptance.
 date: 2026-11-06
 ---
 
@@ -58,7 +58,7 @@ contract (`REQ-MOD-3`). No component depends on a specific provider (`REQ-MOD-4`
 |---|---|---|
 | `CMP-ROUTER` | Reads the catalogue's advertised tuples, finds routes and splits for a customer's objective, under a hop limit, evaluated at the actual amount and direction (`REQ-QTE-11/12`) | Yes — pure function of (request, catalogue snapshot) |
 | `CMP-STM` | One current state per order and segment; changes only on a recorded input; replay-deterministic (`REQ-STM-1/3`) | Yes — host-agnostic transition library (ADR-0002) |
-| `CMP-PROV` | The provider catalogue, module admission/runtime/sandbox, the per-provider credential proxy (ADR-0004), and the holding-account modules at public nodes (`REQ-CAT-23`) | Yes |
+| `CMP-PROV` | The provider catalogue, module admission/runtime/sandbox, the credential proxy (ADR-0004: shared while every provider is the operator's own, per-provider before an outside one joins), and the holding-account modules at public nodes (`REQ-CAT-23`) | Yes |
 | `CMP-CORE-ORCH` | Binds the three: order/segment orchestration, decision-record capture (`REQ-AUD-4`), notice emission (`REQ-ORD-20`) | No — this is Core's binding logic |
 | `CMP-CORE-AUTHZ` | The policy and authorization engine: every value-moving/route-posting/catalogue-changing action passes it (`REQ-AUZ-1`); judgements are a policy input, never the decision (`REQ-CPL-3`) | No |
 | `CMP-CORE-AUDIT` | The authenticated log, checkpoints (ADR-0005), and the `REQ-AUD-15` holding-account balance check (reading `CMP-PROV`'s holding-account data) | No |
@@ -104,7 +104,7 @@ Primary records, each with its owning component:
 | Holding account | Balance, the sum held for orders at that node (`REQ-CAT-23`, `INV-1`, `AUD-15`) | `CMP-PROV` (public nodes: a registered module; private nodes: the publisher's record, reached through its outside part) |
 | Catalogue entry / grant | Provider identity, role(s), tuples, bands, declared evidence/retry behaviour, expiry (`REQ-CAT-2/11/13`) | `CMP-PROV` |
 | Module admission record | Admitted binary + platform build version, signature, capability declaration, version history (`REQ-MDL-1/2/3`) | `CMP-PROV` |
-| Credential-proxy declaration | Per-provider resolver binding, destination allow-list (ADR-0004) | `CMP-PROV` |
+| Credential-proxy declaration | Resolver binding and destination allow-list, keyed by provider even while one proxy serves them all (ADR-0004) | `CMP-PROV` |
 | Authenticated log entry | Who, what, when, outcome; party-stated vs. rutent-verified distinguished (`REQ-AUD-1/2`) | `CMP-CORE-AUDIT` |
 | Checkpoint | A signed, salted, size-hiding commitment to the log's root, on a fixed schedule (`REQ-AUD-14`, ADR-0005) | `CMP-CORE-AUDIT` |
 | Judgement | Maker, subject reference, class, time, validity (`REQ-CPL-1`) | `CMP-CORE-AUTHZ`, presented by the holder, consumed as a policy input |
@@ -157,7 +157,7 @@ left as a narrative mitigation:
 | `THR-85` (sandbox escape), `THR-18` (build tampering) | ADR-0003: process-per-provider boundary firm now; specific sandbox tech (Wasm/PVM/other) deferred to a milestone-1 experiment | **Still open** — this SAD fixes the boundary (process isolation catches what an in-process sandbox escape alone would not), but the sandbox technology's own escape class is unknown until the experiment runs. Re-check again once ADR-0003 is amended with the experiment's result. |
 | `THR-132`/`THR-130` (checkpoint integrity/traffic analysis) | ADR-0005: fixed-tick, salted, size-hiding commitment; no raw tree size published | **Narrowed**: `AC-37`'s indistinguishability bar is met by construction (salt + no size), not by policy. Residual: a checkpoint still only proves the log is self-consistent, never that recorded segments happened (`THR-131`, unchanged, accepted). |
 | `THR-10`/`THR-135`/`THR-136` (route-computation tampering, split-gaming) | ADR-0006: router is a pure, replayable function of (request, snapshot); decision record is self-contained | **Narrowed to detect-only**, as `SPEC.md` already stated; this design doesn't newly mitigate split-gaming, only makes it detectable via the decision record and `REQ-AUD-7`'s bulk measures. No new mitigation found — restate as accepted residual risk, not a gap this SAD closes. |
-| `THR-79`/`THR-80`/`THR-86` (module egress, credential over-scope, cross-module calls) | ADR-0004: per-provider credential proxy, deny-by-default destination allow-list, declared cross-module calls only when the route names them (`REQ-MDL-21`) | **Narrowed**: a shared-proxy credential-concentration risk (the open question in `suggestions/README.md`) is closed by construction — proxies are never shared. Residual: misuse at an allowed host, or data leaving in a request to one, is unchanged. |
+| `THR-79`/`THR-80`/`THR-86` (module egress, credential over-scope, cross-module calls) | ADR-0004: one OS process per provider with caller-scoped secret lookups, a shared credential proxy while every provider is the operator's own (per-provider before an outside one joins), deny-by-default destination allow-list, declared cross-module calls only when the route names them (`REQ-MDL-21`) | **Narrowed, with an accepted concentration risk**: a compromised module still can't reach another provider's secrets, but one exploit of the shared proxy reaches all of them (`THR-79`'s unbounded case). Accepted by the reserved item `credential-proxy-scope` (`REQ-CHN-7`) while the roster is the operator's own; Pablo's mitigation is vault buckets separated by process role at deployment. Residual either way: misuse at an allowed host, or data leaving in a request to one. |
 | `THR-2`/`THR-66`/`THR-67` (operator/role-overlap compromise) | None — `SPEC.md` already accepts these under `R119` | **Unchanged**, restated as residual risk, not re-litigated by this SAD. |
 
 No threat in this pass turned up a *new*, previously-unlisted threat; where a concrete choice narrows a `SPEC.md`
@@ -225,6 +225,16 @@ though nothing here currently builds any of them another way.
   (multiple languages, multiple sandbox technologies under evaluation) is exactly this case, and `AC-19/20/21`
   already describe the test shape such a suite should take.
 
+**v0 and v1.** `SPEC.md` defines v1. v0 is a first build ahead of it (Pablo, 2026-11-06, `v0-before-v1`, answered
+in chat). What this design already fixes about v0, for the plan to carry:
+
+- No order splitting in v0; it ships in v1 (`R127`, `REQ-QTE-16`). The router's contract and decision record carry
+  splits from v0 on, so v1 adds the rule without reshaping the router (ADR-0006).
+- Every provider in v0 is operated by Bloque. Before v1, or before the first outside provider if one comes sooner:
+  per-provider credential proxies (ADR-0004) and counsel's read on bond custody (ADR-0010).
+
+The rest of v0's scope, and how it splits into milestones, belongs in `PLAN.md`, not here.
+
 ## 10. ADR index
 
 | ADR | Decision | Status |
@@ -232,13 +242,13 @@ though nothing here currently builds any of them another way.
 | `adr/0001-core-decomposition.md` | Core's internal shape: `CMP-CORE-ORCH`/`CMP-CORE-AUTHZ`/`CMP-CORE-AUDIT` | **Accepted** (Pablo, 2026-11-06, `core-decomposition`) |
 | `adr/0002-runtime-host-seam.md` | State-machine host contract; VOS as a milestone-1 experiment | **Accepted** (Pablo, 2026-11-06, `runtime-host-seam`) |
 | `adr/0003-module-format-sandbox.md` | Process-per-provider boundary; format (Wasm/PVM) as experiment | **Accepted** (Pablo, 2026-11-06, `module-sandbox-boundary`) |
-| `adr/0004-outside-part-credential-proxy.md` | Per-provider credential proxy; resolver interface | **Proposed, not ruled** — Pablo's first answer picked the shared-proxy option over this ADR's recommendation; re-asked as `credential-proxy-scope` |
+| `adr/0004-outside-part-credential-proxy.md` | Shared credential proxy now, per-provider before outside providers; resolver interface | **Accepted** (Pablo, 2026-11-06, `credential-proxy-model` and `credential-proxy-scope`) |
 | `adr/0005-authenticated-log-checkpoints.md` | Merkle log + salted, size-hiding checkpoints | **Accepted** (Pablo, 2026-11-06, `log-checkpoints-mechanism`) |
-| `adr/0006-route-search-quoting.md` | Hop-limited search over a snapshot; simple threshold splitting | Proposed — Pablo's note asked to defer splitting past v1; conflicts with `REQ-QTE-16` (MUST) and `R127`/`PS-157`, re-asked as `route-search-algorithm` |
+| `adr/0006-route-search-quoting.md` | Hop-limited search over a snapshot; simple threshold splitting, in v1 and not v0 | **Accepted** (Pablo, 2026-11-06, `route-search-algorithm` and `v0-before-v1`) |
 | `adr/0007-transition-evidence-checker.md` | Four-grade evidence scale; `CMP-EVIDENCE` | **Accepted** (Pablo, 2026-11-06, `evidence-grading-checker`) |
 | `adr/0008-reversal-confirmation.md` | Origin reserve's own signed statement | **Accepted** (Pablo, 2026-11-06, `reversal-confirmation-source`) |
 | `adr/0009-report-difference-detection.md` | Detection-only comparison, no state/value power | **Accepted** (Pablo, 2026-11-06, `report-difference-detection-scope`) |
-| `adr/0010-reversal-backing.md` | Third-party-held bond sized to the per-provider ceiling | **Accepted** (Pablo, 2026-11-06, `reversal-bonding-model`), with a scope note: moot while every provider is Bloque's own |
+| `adr/0010-reversal-backing.md` | Third-party-held bond sized to the per-provider ceiling | **Accepted** (Pablo, 2026-11-06, `reversal-bonding-model`), with a scope note: a reversal guarantee while every provider is Bloque's own (v0); counsel before v1 |
 | `adr/0011-stuck-order-dual-approval.md` | Separate decide/move permissions | **Accepted** (Pablo, 2026-11-06, `stuck-order-dual-approval`) |
 | `adr/0012-judgements-verifiers.md` | Per-provider subject reference; signed judgement token | **Accepted** (Pablo, 2026-11-06, `judgements-verifier-model`) |
 | `adr/0013-balance-check-allowance.md` | Platform-kept allowance bucket (low priority, mostly moot post-`R96`) | **Accepted** (Pablo, 2026-11-06, `balance-check-allowance-priority`) |

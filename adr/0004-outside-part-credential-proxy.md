@@ -1,6 +1,6 @@
 ---
-status: Proposed
-decision_item: credential-proxy-model (pending)
+status: Accepted (Pablo, 2026-11-06, decision-form items `credential-proxy-model` and `credential-proxy-scope`)
+decision_item: credential-proxy-scope (follows credential-proxy-model)
 supersedes: adopts suggestions/ADR-003-outside-part.md
 ---
 
@@ -41,15 +41,28 @@ is a ready-made, genuinely open second resolver, not a hypothetical one.
 
 ## Decision
 
-**Still Proposed, not ruled.** Pablo's first answer on the decision form picked option 1 (shared proxy) over
-this ADR's recommendation. Per `REQ-CHN-7`, a threat a design introduces must be mitigated by a requirement or
-accepted by a reserved item — a shared proxy's residual risk (one process reachable from any provider's outside
-part, holding every provider's secrets) isn't yet named as an accepted risk anywhere, so this ADR stays open
-pending a sharper follow-up item (`credential-proxy-model-scope`) that states that risk plainly and asks again,
-rather than treating the first answer as final. This text otherwise still describes the recommended design,
-option 2, below.
+**Option 1 now, option 2 before any outside provider joins.** Pablo first picked a shared proxy over this ADR's
+original recommendation (`credential-proxy-model`), then, asked about the risk that adds, ruled
+(`credential-proxy-scope`): a shared proxy while every provider on the catalogue is the operator's own, and one
+credential-proxy process per provider before any provider outside that roster is admitted.
 
-One credential-proxy process per provider. Resolver interface: Vault and OpenBao both implemented
+Why this holds against `REQ-MDL-9`: that requirement bounds a compromised *module*. With one OS process per
+provider (ADR-0003, accepted), the shared proxy answers each lookup only for the calling process's own provider,
+so a compromised module still can't read another provider's secrets. What the shared proxy adds is a
+concentration threat: one exploit of the proxy itself, reachable from any provider's outside part, reaches every
+provider's secrets (`THR-79`'s "without a bound, at every provider" case). That risk is accepted by the reserved
+item `credential-proxy-scope`, which closes it under `REQ-CHN-7`, for as long as the roster is the operator's own.
+
+Pablo's mitigation, in his words: "separating access to different vaults (internal stuff vault buckets, external
+integrations' vault buckets) depending on the process role at the deployment level." This ADR records it as
+stated; its shape is a deployment matter (`ARCHITECTURE.md` §5), not designed further here.
+
+The switch to per-provider proxies is a precondition of admitting the first provider Bloque doesn't operate. Pablo
+puts every provider under Bloque "for now" and outside ones at "V1 and further", and v0 is a first build ahead of
+SPEC's v1 (`v0-before-v1`). So the shared proxy is v0's, and per-provider proxies are due before v1, or before
+the first outside provider if one is admitted sooner.
+
+Either way, the resolver interface is the same: Vault and OpenBao both implemented
 against the narrow resolve-by-name contract, so the interface is proven non-vendor-shaped against two real,
 API-compatible but differently-licensed implementations — and an operator who cannot accept Vault's BSL terms for
 their own deployment has a fully open drop-in alternative already in hand, not a hypothetical "second resolver."
@@ -62,11 +75,13 @@ counsel alongside the other licensing questions already deferred (ADR-0002).
 
 ## Consequences
 
-- `THR-79`/`THR-80` (module network egress, credential over-scope) are narrowed by construction: there is no
-  shared process whose compromise reaches every provider's secrets.
+- `THR-79` is narrowed by the process boundary and caller-scoped lookups, but not by construction while the proxy
+  is shared: a compromise of the proxy itself reaches every provider's secrets. Accepted by `credential-proxy-scope`
+  while the roster is the operator's own; per-provider proxies remove it.
+- `THR-80` (credential over-scope) is unchanged by this choice; `OBL-1` still bounds it.
 - Rotating a provider's credential needs no new module release (`REQ-MDL-6`'s "rotation needs no new release"
   satisfied directly by the resolve-by-name-at-call-time interface).
 - Misuse at an allowed destination, or secret data leaving in a request to one, remains out of scope for this
   ADR, as `suggestions/ADR-003` already stated.
-- `CMP-PROV`'s data model (`ARCHITECTURE.md` §4) carries one credential-proxy declaration per provider, not one
-  shared configuration.
+- `CMP-PROV`'s data model (`ARCHITECTURE.md` §4) keys every credential by provider even while the proxy is shared,
+  so splitting into per-provider proxies later moves configuration, not data.
