@@ -45,3 +45,17 @@ Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
 - The CI workflow `.github/workflows/records.yml` runs `cargo run --locked`, so it needs `Cargo.lock` committed; it uses only the runner's own Rust toolchain and `actions/checkout`, pinned to a full commit SHA (`v7.0.1`).
 - Finding about the real `PLAN.md`: none. With `PRODUCT.md` read, the plan check passes strictly (0 findings), and the tag check finds no untagged test or bad id in the workspace.
 - The three fixture tests that pass before the checks exist (a consistent plan, tags with attributes between, the real plan) pass vacuously against the stub; the eight negative tests were seen failing first because the stub reported nothing.
+## T-001-04
+
+Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
+
+- The record is `licences/RECORD`, whitespace-separated: `name version licence... decision reference`. The licence is the middle field and may hold spaces; the reference is one token with no spaces (`DEC-6,ADR-0004`). A line with fewer than five fields, or an unknown decision, is an error, not a pass.
+- A `not-adopted` version marks an entry for a dependency not yet in `Cargo.lock`. The check never fails on it, and `not-adopted` lines are not matched against the lockfile. VOS (`AGPL-3.0-or-later`) and Vault (`BUSL-1.1`) carry it.
+- VOS carries `DEC-6,ADR-0004`. Vault carries `DEC-9,ADR-0004`: `PLAN.md` ties Vault to `DEC-9`, and the coordinator corrected the brief's `DEC-6` for it.
+- Three declared licences used `/` (`Apache-2.0/MIT`, `MIT/Apache-2.0`), which is not SPDX. They are recorded as `Apache-2.0 OR MIT` and `MIT OR Apache-2.0`. Other expressions are copied from `cargo metadata` as declared; `r-efi` declares `LGPL-2.1-or-later` as one `OR` alternative and the record keeps it.
+- The reference `licence-permissive-standing` appears in no tracked plan document; it is used as the brief directs for every locked package.
+- The check does not flag a record line whose version Cargo.lock no longer holds. The brief names two failure modes only.
+- A locked package is external unless it has no `source` and its name is a workspace member. Members come from the root manifest's `members` array; each member's `[package]` name and version are read from its manifest, and an inherited version (`version.workspace = true`) is resolved from the root's `[workspace.package]`. A locked package matches a member only on both name and version, so `rutent-contracts 0.2.0` against a member at 0.1.0 is external. The array is read in plain form only; a glob, a commented member line or any other syntax is an error, so no member is silently missed and no external package is silently skipped.
+- A second record line for the same name and version is an error, not a first-match lookup. A permitted line placed above a pending one would otherwise pass.
+- The workspace member `rutent-licence-check` adds one source-less entry to `Cargo.lock`. Workspace members are not recorded.
+- CI pins `actions/checkout` to the SHA of its latest release tag, `v7.0.1`, resolved with `gh api`.

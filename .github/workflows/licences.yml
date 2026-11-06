@@ -1,0 +1,21 @@
+name: licences
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'm*'
+
+permissions:
+  contents: read
+
+jobs:
+  licence-record:
+    name: dependency licence record
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check every locked dependency has a decision
+        run: cargo run --locked -p rutent-licence-check
