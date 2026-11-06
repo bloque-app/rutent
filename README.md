@@ -6,7 +6,7 @@ rutent is a Bloque open-source project, succeeding one of Bloque's existing serv
 
 ## Status
 
-Requirements only. `SPEC.md` v0.4.1 was accepted by the project's owner on 2026-11-05, which ends the specification step. Nothing is built yet; design comes next, in the open.
+Construction starts. The project's owner accepted `SPEC.md` v0.4.1 on 2026-11-05, and `ARCHITECTURE.md` with its fourteen ADRs on 2026-11-06. `PLAN.md`, accepted the same day, opens construction: its first milestone freezes the contracts and runs two experiments. Nothing is built yet.
 
 ## Read in this order
 
@@ -15,7 +15,12 @@ Requirements only. `SPEC.md` v0.4.1 was accepted by the project's owner on 2026-
 3. [`INTEGRATORS.md`](INTEGRATORS.md): what a product built on rutent does around an order.
 4. [`PRODUCT.md`](PRODUCT.md): every requirement's source, in the owner's own words.
 
-Then, for how it could be built:
+Then, for how it's built:
+
+5. [`ARCHITECTURE.md`](ARCHITECTURE.md): the components, contracts and deployment, and every requirement's home. Its decisions are in [`adr/`](adr/).
+6. [`PLAN.md`](PLAN.md): the milestones, features and tasks, each traced to what it serves.
+
+Background:
 
 - [`suggestions/`](suggestions/): non-binding design records. They propose; `SPEC.md` decides.
 - [`research/`](research/): the reports behind the suggestions. Each says which of its claims were checked.
