@@ -11,3 +11,4 @@ directory (see `README.md`).
   decision lookalikes such as `NODEC-4`, and heading-only bumps. (DEC-4, T-001-05)
 - A contract listed in the base `CONTRACTS` with no files at the base is new, so its first version needs no bump;
   one that owns base files still needs a base changelog. (DEC-4, T-001-05)
+- Stream fixtures in JSON Lines (`.jsonl`) for shapes that travel as a stream. (DEC-4, T-005-02)

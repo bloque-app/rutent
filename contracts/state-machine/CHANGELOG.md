@@ -1,5 +1,9 @@
 # state-machine changelog
 
+## 0.3.0
+- Points to the host contract for exactly-once delivery, and declares its module. (DEC-3, T-005-02)
+- The pointer says what the host contract states: at most one record per record id. (DEC-4, T-005-02)
+
 ## 0.2.0
 - Rust types as strict as the schemas: non-empty ids, a checked timestamp, no unknown fields, and cross-field
   checks on deserialising. The order carries its last input's outcome and its retired segment ids; a new

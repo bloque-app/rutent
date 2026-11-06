@@ -107,3 +107,100 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   order keeps passing `Order::check`.
 - The null-id fixtures on the subject also break the subject's scope rule, since a `null` field is present in
   JSON; each is named for its null, and Rust's scope check alone would not have caught them.
+
+## T-005-02
+
+- The host is its own contract (`contracts/CONTRACTS`), at `0.1.0`, with `$id`s `urn:rutent:host:<shape>`. Its
+  schemas refer to the state machine's `recorded-input` and `order` by `$id`, never copying them. Declaring its
+  module and pointing to it from the state machine's docs changed state-machine text, so that contract is now
+  `0.3.0`.
+- Six guarantees, each with an id, the SPEC ids it serves and the check `T-005-03` runs: `durable`,
+  `exactly-once`, `per-order-sequence`, `no-effect-without-record`, `swap`, `replay`. Each of `T-005-03`'s four
+  plan tests maps to one, and a test keeps the Rust list, the README table and PLAN's row in step.
+- The fault model for `durable` is abrupt termination of the host at any point, then reopening its store. Machine
+  loss, disk loss and replication are outside this contract; a runtime may add them, but the suite doesn't score
+  them (`NFR-5`, `NFR-6`).
+- An *effect* is anything done because of a transition. The host releases a record (by `submit` returning it, or
+  by a read) only once it is durable, and effects are driven only from released records, so "a crash between
+  record and effect" is scored as: a crash before durability leaves no record and nothing released; a crash after
+  it leaves the record, and submitting again returns it (`INV-7`).
+- Exactly once is the host's: the state machine sees each record id at most once in the whole host, not per order
+  (`INV-8`). `Halted` and `RecordIdReused` are definite refusals; every other error leaves the outcome unknown,
+  and submitting the same input again is always safe. That is what makes a retry after a crash correct.
+- Inputs for one order are applied in submit order, gapless; the host never sorts them by `recorded_at`, since
+  equal times would make replay ambiguous. Reordered arrival is the state machine's to handle (`REQ-STM-4`); the
+  host only records the order it applied.
+- An input that opens no order and comes before any that does is still recorded, with no state (`REQ-STM-6`,
+  `REQ-AUD-1`). Once a record has a state, every later one does.
+- The swap is halt, export, import into another implementation, resume. A snapshot carries every journal whole, so
+  states, journals and the set of record ids seen all survive, and a repeat from before the swap is still
+  recognised. It names both contracts' versions, so an import can refuse what it can't read. Halting the host here
+  serves only `REQ-OPS-3`'s second clause, replacing the environment; halting publishing and upgrades in an
+  incident is not this contract's, and no test claims it.
+- Each record keeps the state it reached, not only its input, so `replay` can be checked state by state (`NFR-4`).
+- The fault seam is a trait, `FaultSeam`: `crash_at` a named point (after received, after computed, after
+  durable) and `into_store`, then `Host::open` on the store. A runtime in another process meets it by killing that
+  process at the point.
+- The traits take `&mut self` for submits and are single-threaded; a runtime used from several threads serialises
+  one order's submits itself, as `per-order-sequence` states.
+- `research/2026-11-02-vos.md` (§3, PS-21 and PS-12) is read as evidence of what a runtime can miss, and each gap
+  is stated as a guarantee without naming VOS: a compacted log (`replay`: never compacted); a log of results that
+  names inputs by reference (`replay`: inputs whole); a caller's signature dropped at ingress (`replay`: the input
+  whole, source included); the leader's clock as "when" (the host passes `recorded_at` unchanged and orders by
+  submit, not by any clock); a store in another layout refused at open with no upgrade path (`swap`: a
+  runtime-neutral snapshot).
+
+## T-005-02, after review
+
+- `exactly-once` is restated as at most one record per record id in the whole host, because the crash model
+  allows a retry after a stop before durability to call the state machine again. That is harmless, since
+  `transition` is pure; what can't happen is a second record. Two inputs are the same when their `RecordedInput`
+  values are equal, the same canonical JSON.
+- A record durable but unacknowledged at a stop is present after reopening; submitting the same input again
+  returns it as already recorded, which releases it. That case is scored under `no-effect-without-record`, PLAN's
+  "crash between record and effect".
+- Effects run at least once per released record, keyed by record id; a repeat reaches a provider only where it
+  declares `safe_retry` (`REQ-CAT-10`, `urn:rutent:provider-role:declarations`). The host can't make an effect
+  exactly-once; the provider's declaration bounds what a repeat may do (`INV-8`).
+- `halt` and `resume` return `Result` and are durable: a halted host reopens halted, so a halted and exported host
+  can't reopen and run an order twice.
+- Owner's ruling: `FaultSeam` is not in the frozen production contract. It lives in `host::testing`, in the
+  contract crate; an in-process candidate implements it, and an out-of-process runtime such as VOS is stopped
+  black-box by killing its process, with the named points best-effort. An import can't be crashed through
+  `&mut self`, since it constructs the host, so the seam offers `import_crashing_after`, which returns the store
+  as the stop leaves it.
+- Owner's ruling: `export` streams. The stream is JSON Lines of `snapshot-entry` values: a header with both
+  versions, every record and refusal, then an end with the counts, so a stream cut short is told apart. `import`
+  reads the same stream and checks it with `StreamCheck`, which holds only each order's last sequence number and
+  the record ids seen. Stream fixtures are `.jsonl`, a deviation from the README's plain JSON that a stream needs.
+  `orders` lists a running host's orders.
+- Owner's ruling: a `RecordIdReused` refusal is recorded whole in a host-wide refusal log, gapless from 1,
+  pointing to the record that holds the id (`REQ-AUD-1`). A stream check confirms the pointer by record id; it
+  doesn't hold inputs, so it doesn't re-check that the contents differ.
+- A crash during an import leaves a store `open` refuses with `ImportIncomplete`; the import is redone on a fresh
+  store, since the import marks itself complete only after the end entry.
+- Owner's ruling: a swap may halt the host. `NFR-6` sets no time to replace yet (PLAN §6.2: the owner sets it when
+  M4 is written); a later version may add a live swap.
+
+## T-005-02, after re-review
+
+- Effects are the effect driver's obligation, stated apart as `EFFECT_DRIVER` and in the README, not a host
+  guarantee: the host can't observe effects, so the host suite can't score them. It is at least one attempt per
+  record id, however often the record is released; without `safe_retry`, an unconfirmed attempt is never repeated
+  automatically, and the segment becomes outcome unknown (`REQ-ORD-1`) and waits for the operator. That is what
+  keeps `INV-8`. `REQ-CAT-10`'s own test scores it in a later milestone; no host guarantee claims `REQ-CAT-10`.
+- "The same input" is equal under RFC 8785 (JCS). The rule is named here ahead of the provider-role statement
+  envelope (`T-002-02`), which isn't on `m1` at the time of writing. A retry resends the input unchanged,
+  `recorded_at` included; an input stamped again with another time is a different input and is refused under its
+  used record id.
+- `testing::Harness` (fresh store, start, kill, reopen) is how `T-005-03` drives every candidate, in-process or
+  out of process; `FaultSeam` extends it with named stop points. A stopped submit returns `Unavailable`, the
+  unknown-outcome error a production host already has, so `HostError` keeps no test-only variant; the harness's
+  own failures are `HarnessError`.
+- The effect driver's attempts are bounded both ways: at least one per record id, a confirmed attempt never
+  repeated, and without `safe_retry` at most one, so re-releasing a record can't start a second attempt (`INV-8`).
+  Driving effects only from released records is the driver's duty too, so it moved out of the host's
+  `no-effect-without-record`, which now states only what the host does: release a record only once durable.
+- `Harness` drives imports (`import`, `import_crashing_after`), so a stop during an import is scored for an
+  out-of-process runtime as well, by a kill timed to the entry count, best-effort.
+- Superseded: earlier bullets above that split effect duties between host and driver, say effects run "at least once per released record", or place `import_crashing_after` on `FaultSeam` are replaced by the later bullets: effects are the driver's alone, at most one attempt per record id without `safe_retry`, and imports run through `Harness`.

@@ -24,8 +24,8 @@
 //!
 //! Repeats are kept from moving anything twice (`REQ-STM-4`, `INV-8`) by a split of duties:
 //!
-//! - **The host delivers each recorded input exactly once** to the state machine. That is the host contract's
-//!   guarantee (`T-005-02`, ADR-0002), not the state machine's.
+//! - **The host keeps at most one record per record id**, and applies each recorded input once. That is the host
+//!   contract's guarantee `exactly-once` ([`host`], `T-005-02`, ADR-0002), not the state machine's.
 //! - **One [`RecordId`] names exactly one content.** Recording a second, different input under a used id is a
 //!   refusal by the record store, never a silent no-op; it is the host contract's to report.
 //!
@@ -38,8 +38,10 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
+pub mod host;
+
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]

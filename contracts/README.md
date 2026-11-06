@@ -37,7 +37,8 @@ contracts/<contract>/
   "https://json-schema.org/draft/2020-12/schema"` and an `$id` of the form `urn:rutent:<contract>:<shape>`. A schema
   that uses another contract's shape refers to it by that `$id`; it never copies it.
 - **Fixtures** are plain JSON. Every invalid fixture breaks exactly one rule, named in its file name
-  (`exchange-spanning-two-nodes.json`).
+  (`exchange-spanning-two-nodes.json`). A shape that travels as a stream has stream fixtures in JSON Lines, one
+  value per line (`snapshot-stream-cut-short-before-its-end.jsonl`), checked entry by entry and as a whole.
 - **Rust types** mirror the schemas with `serde`. For the router and state-machine APIs (library APIs, `DEC-4`)
   the Rust types are the API, and their records serialise to the schemas.
 - **Tests** live in `contracts/tests/<contract>.rs`. They load the schemas and fixtures, assert that every valid

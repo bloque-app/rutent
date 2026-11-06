@@ -38,8 +38,8 @@ field by field in Rust is checked only when `check` is called; a `StateMachine` 
 
 Repeats are kept from moving anything twice (`REQ-STM-4`, `INV-8`) by a split of duties:
 
-- **The host delivers each recorded input exactly once** to the state machine. That is the host contract's
-  guarantee (`T-005-02`, ADR-0002).
+- **The host keeps at most one record per record id**, and applies each recorded input once. That is the host
+  contract's guarantee `exactly-once` (`host/README.md`, `T-005-02`, ADR-0002).
 - **One record id names exactly one content.** Recording a different input under a used id is a refusal by the
   record store, reported by the host contract, never a silent no-op.
 

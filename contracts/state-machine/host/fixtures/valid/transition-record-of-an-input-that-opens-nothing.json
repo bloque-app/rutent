@@ -1,0 +1,23 @@
+{
+  "order_id": "ord-9",
+  "seq": 1,
+  "input": {
+    "record_id": "rec-0090",
+    "recorded_at": "2026-11-06T10:00:00Z",
+    "time_source": "core-orch clock",
+    "source": {
+      "kind": "provider",
+      "id": "reserve-bank-co"
+    },
+    "standing": "stated",
+    "subject": {
+      "order": "ord-9",
+      "part": "p1",
+      "segment": "p1-s1"
+    },
+    "observed": {
+      "kind": "segment_settled",
+      "evidence": "ev-0090"
+    }
+  }
+}

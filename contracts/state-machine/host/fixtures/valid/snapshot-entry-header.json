@@ -1,0 +1,7 @@
+{
+  "entry": "header",
+  "body": {
+    "host_version": "0.1.0",
+    "state_machine_version": "0.3.0"
+  }
+}
