@@ -561,6 +561,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rutent-records"
+version = "0.0.0"
+
+[[package]]
 name = "rutent-router"
 version = "0.0.0"
 dependencies = [

@@ -11,6 +11,7 @@ members = [
     "components/core-audit",
     "components/evidence",
     "tools/boundary-check",
+    "tools/records",
 ]
 exclude = ["tools/boundary-check/tests/fixtures/undocumented"]
 
