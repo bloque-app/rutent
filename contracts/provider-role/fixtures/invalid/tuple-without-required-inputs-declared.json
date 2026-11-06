@@ -1,0 +1,128 @@
+{
+  "provider": "acme-co",
+  "publisher": "acme",
+  "version": "1.4.0",
+  "offers": {
+    "reserve": {
+      "tuples": [
+        {
+          "origin": {
+            "network": "co-bank-transfer"
+          },
+          "destination": "acme-ledger",
+          "asset": "COP",
+          "decimals": {
+            "origin": 2,
+            "destination": 2
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100000",
+                "max": "5000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": [
+              "payer.bank_account"
+            ]
+          }
+        },
+        {
+          "origin": "acme-ledger",
+          "destination": {
+            "network": "co-bank-transfer"
+          },
+          "asset": "COP",
+          "decimals": {
+            "origin": 2,
+            "destination": 2
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100000",
+                "max": "5000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": [
+              "beneficiary.bank_account",
+              "beneficiary.name"
+            ]
+          }
+        }
+      ],
+      "declaration": {
+        "can_require_user_initiated_withdrawal": true,
+        "starts_routes_on_automatic_deposits": false,
+        "maker": "acme",
+        "declared_in_version": "1.2.0"
+      }
+    },
+    "exchange": {
+      "tuples": [
+        {
+          "node": "acme-ledger",
+          "from": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "to": {
+            "id": "USDC",
+            "decimals": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100000",
+                "max": "2000000000"
+              }
+            ],
+            "increment": "100",
+            "reporting": "gross",
+            "required_inputs": []
+          }
+        }
+      ]
+    },
+    "ramp": {
+      "tuples": [
+        {
+          "origin": "acme-ledger",
+          "destination": "polygon",
+          "asset": "USDC",
+          "decimals": {
+            "origin": 6,
+            "destination": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1000000",
+                "max": "500000000000"
+              }
+            ],
+            "reporting": "net"
+          }
+        }
+      ]
+    }
+  },
+  "declarations": {
+    "tracking": [
+      "identifier",
+      "status_query"
+    ],
+    "evidence": {
+      "grade": 3,
+      "availability": {
+        "seconds": 7776000
+      }
+    },
+    "safe_retry": true
+  },
+  "private_nodes": [
+    "acme-ledger"
+  ]
+}

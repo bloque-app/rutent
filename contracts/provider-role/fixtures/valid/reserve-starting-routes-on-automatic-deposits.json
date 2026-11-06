@@ -1,0 +1,72 @@
+{
+  "provider": "polygon-wallet-reserve",
+  "publisher": "acme",
+  "version": "0.2.0",
+  "offers": {
+    "reserve": {
+      "tuples": [
+        {
+          "origin": {
+            "network": "polygon"
+          },
+          "destination": "polygon",
+          "asset": "USDC",
+          "decimals": {
+            "origin": 6,
+            "destination": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1",
+                "max": "1000000000000"
+              }
+            ],
+            "reporting": "gross",
+            "required_inputs": []
+          }
+        },
+        {
+          "origin": "polygon",
+          "destination": {
+            "network": "polygon"
+          },
+          "asset": "USDC",
+          "decimals": {
+            "origin": 6,
+            "destination": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1",
+                "max": "1000000000000"
+              }
+            ],
+            "reporting": "gross",
+            "required_inputs": [
+              "beneficiary.address"
+            ]
+          }
+        }
+      ],
+      "declaration": {
+        "can_require_user_initiated_withdrawal": false,
+        "starts_routes_on_automatic_deposits": true,
+        "maker": "acme",
+        "declared_in_version": "0.2.0"
+      }
+    }
+  },
+  "declarations": {
+    "tracking": [
+      "identifier"
+    ],
+    "evidence": {
+      "grade": 1,
+      "availability": "unbounded"
+    },
+    "safe_retry": false
+  },
+  "private_nodes": []
+}

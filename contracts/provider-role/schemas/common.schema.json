@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:common",
+  "title": "Shared atoms of the provider-role contract",
+  "description": "Referenced by the other provider-role schemas; validates nothing on its own.",
+  "$defs": {
+    "identifier": {
+      "description": "An identifier for a provider, publisher, party, node, network, asset or class.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "maxLength": 128
+    },
+    "version": {
+      "description": "A provider version, as its publisher names it.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$",
+      "maxLength": 64
+    },
+    "amount": {
+      "description": "A non-negative whole number of the tuple's unit, in decimal digits with no leading zeros.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 78
+    },
+    "positive_amount": {
+      "description": "An amount greater than zero.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 78
+    }
+  }
+}

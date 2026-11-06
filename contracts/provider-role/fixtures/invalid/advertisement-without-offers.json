@@ -1,0 +1,22 @@
+{
+  "provider": "acme-co",
+  "publisher": "acme",
+  "version": "1.4.0",
+  "offers": {},
+  "declarations": {
+    "tracking": [
+      "identifier",
+      "status_query"
+    ],
+    "evidence": {
+      "grade": 3,
+      "availability": {
+        "seconds": 7776000
+      }
+    },
+    "safe_retry": true
+  },
+  "private_nodes": [
+    "acme-ledger"
+  ]
+}

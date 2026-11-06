@@ -1,0 +1,65 @@
+{
+  "provider": "chain-bridge",
+  "publisher": "acme",
+  "version": "1.0.0",
+  "offers": {
+    "ramp": {
+      "tuples": [
+        {
+          "origin": "polygon",
+          "destination": "bsc",
+          "asset": "USDC",
+          "decimals": {
+            "origin": 6,
+            "destination": 18
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1000000",
+                "max": "100000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": [
+              "beneficiary.address"
+            ]
+          }
+        },
+        {
+          "origin": "bsc",
+          "destination": "polygon",
+          "asset": "USDC",
+          "decimals": {
+            "origin": 18,
+            "destination": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1000000000000000000",
+                "max": "100000000000000000000000"
+              }
+            ],
+            "increment": "1000000000000",
+            "reporting": "net",
+            "required_inputs": [
+              "beneficiary.address"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "declarations": {
+    "tracking": [
+      "identifier"
+    ],
+    "evidence": {
+      "grade": 1,
+      "availability": "unbounded"
+    },
+    "safe_retry": false
+  },
+  "private_nodes": []
+}

@@ -1,0 +1,47 @@
+{
+  "provider": "acme-internal-rail",
+  "publisher": "acme",
+  "version": "0.1.0",
+  "offers": {
+    "ramp": {
+      "tuples": [
+        {
+          "origin": "acme-ledger",
+          "destination": "acme-card-book",
+          "asset": "USDC",
+          "decimals": {
+            "origin": 6,
+            "destination": 2
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "1",
+                "max": "100000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": []
+          }
+        }
+      ]
+    }
+  },
+  "declarations": {
+    "tracking": [
+      "identifier",
+      "status_query"
+    ],
+    "evidence": {
+      "grade": 4,
+      "availability": {
+        "seconds": 31536000
+      }
+    },
+    "safe_retry": true
+  },
+  "private_nodes": [
+    "acme-ledger",
+    "acme-card-book"
+  ]
+}

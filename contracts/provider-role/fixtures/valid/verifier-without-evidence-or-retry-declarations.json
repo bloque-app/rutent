@@ -1,0 +1,19 @@
+{
+  "provider": "id-check",
+  "publisher": "acme",
+  "version": "0.1.0",
+  "offers": {
+    "verifier": {
+      "classes": [
+        "kyc.natural_person",
+        "aml.sanctions_screening"
+      ]
+    }
+  },
+  "declarations": {
+    "tracking": [
+      "identifier"
+    ]
+  },
+  "private_nodes": []
+}
