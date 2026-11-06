@@ -59,3 +59,20 @@ Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
 - A second record line for the same name and version is an error, not a first-match lookup. A permitted line placed above a pending one would otherwise pass.
 - The workspace member `rutent-licence-check` adds one source-less entry to `Cargo.lock`. Workspace members are not recorded.
 - CI pins `actions/checkout` to the SHA of its latest release tag, `v7.0.1`, resolved with `gh api`.
+## T-001-05
+
+Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
+
+- The guard is the `tools/contract-guard` crate (`rutent-contract-guard`), with no dependencies. Its core is a pure function over the changed paths, the `CONTRACTS` text and a base and head lookup; `main` reads git and runs it. Tests use in-memory fixtures and create no commits.
+- A path belongs to the contract whose artefact or module directory is its longest matching prefix, matched on whole path segments. `contracts/state-machine/host/...` and `contracts/src/state_machine/host/...` belong to `host`.
+- A contract's version is the first `## ` heading of its changelog, and it must be plain `MAJOR.MINOR.PATCH`. A changed contract needs a greater head version than the base's and a top section with at least one bullet. A changelog missing at the base means the contract is new, and then only the bullet rule applies.
+- A bullet is a `- ` or `* ` line with its continuation lines. A bullet is new when its text is absent from the base file. Every new bullet in any changelog must contain `DEC-<digits>`. The guard checks the form only; it does not confirm that the decision exists in `PLAN.md`.
+- A change to a shared file under `contracts/` needs a new `DEC-*` bullet in `contracts/CHANGELOG.md`, or a version bump of some contract in the same change. A new contract does not count as a bump.
+- Changed paths come from `git diff -z --name-only --no-renames <merge-base> HEAD`, where the merge base is `git merge-base <base> HEAD`. Names are NUL-separated, so git's quoting of non-ASCII names cannot hide a path. Base text is read with `git show <merge-base>:<path>`, so the diff and the base agree.
+- The base is `origin/<base_ref>` for a pull request, `github.event.before` for a push, and `origin/main` for a new branch. A missing base ref is a usage error, not a pass.
+- A file directly under `contracts/tests/` whose stem is a contract name, with `-` or `_`, belongs to that contract (`provider_role.rs`, `host.rs`). Any other file there stays shared. This settles the point an earlier reading left open.
+- A path touches every contract that either the base or the head `CONTRACTS` assigns it to; the base file is read with `git show`. A contract absent from the base `CONTRACTS` is new. A contract that the base lists but whose base changelog is missing is an error, not a new contract.
+- A new top heading alone is not a bump: its section must carry a bullet the base's top section lacks.
+- The guard runs on a push against `github.event.before`, and on a new branch (all-zero `before`) against `origin/main`. The value reaches the shell through `env:` only.
+- `parse_contracts` rejects two contracts whose artefact or module directories are equal. Nesting stays legal, because owners are found by longest prefix.
+- A bullet names a decision only when `DEC-` is standalone (no letter, digit or underscore before it), digits follow, and the digits end the token. So `(see DEC-4x)` and `_DEC-4` name none.

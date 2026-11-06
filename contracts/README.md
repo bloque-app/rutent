@@ -20,7 +20,8 @@ changelog.
 
 `contracts/CONTRACTS` lists the same mapping in a form tools read. A path belongs to the contract whose artefact or
 module directory is its longest matching prefix, so `contracts/state-machine/host/...` is the host contract's, not
-the state machine's.
+the state machine's. The guard takes a path as touching every contract that the base or the head `CONTRACTS` assigns
+it to, so a re-mapping cannot move a file out from under its contract's bump.
 
 ## Inside a contract's directory
 
@@ -41,7 +42,9 @@ contracts/<contract>/
   the Rust types are the API, and their records serialise to the schemas.
 - **Tests** live in `contracts/tests/<contract>.rs`. They load the schemas and fixtures, assert that every valid
   fixture passes and every invalid one fails, and carry the plan's test names with a `// verifies:` comment
-  (`DEC-21`). `jsonschema` is a dev-dependency only.
+  (`DEC-21`). `jsonschema` is a dev-dependency only. A file directly under `contracts/tests/` whose stem is a
+  contract's name, with `-` or `_` (`provider_role.rs`, `host.rs`), belongs to that contract; any other file there
+  is shared.
 
 ## Versions and changelogs
 
@@ -61,9 +64,9 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
 - Before `C1`, versions are `0.x.y`, starting at `0.1.0`. `T-006-01` sets every contract to `1.0.0`.
 - Every bullet names at least one `DEC-*`, and names the task that made it.
 - A change to anything a contract owns needs a new top heading, greater than the base's, with at least one bullet.
-- Files under `contracts/` that belong to no contract (`Cargo.toml`, `src/lib.rs`, this README, `CONTRACTS`) are
-  shared. A change to them needs a bullet in `contracts/CHANGELOG.md` naming a `DEC-*`, or a version bump of some
-  contract in the same change.
+- Files under `contracts/` that belong to no contract (`Cargo.toml`, `src/lib.rs`, this README, `CONTRACTS`, and
+  any file under `contracts/tests/` that names no contract) are shared. A change to them needs a bullet in
+  `contracts/CHANGELOG.md` naming a `DEC-*`, or a version bump of some contract in the same change.
 
 The contract guard (`T-001-05`) checks exactly these rules against a base ref passed as an argument (default
 `origin/main`).

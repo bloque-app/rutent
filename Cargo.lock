@@ -505,6 +505,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rutent-contract-guard"
+version = "0.0.0"
+
+[[package]]
 name = "rutent-contracts"
 version = "0.0.0"
 dependencies = [

@@ -13,6 +13,7 @@ members = [
     "tools/boundary-check",
     "tools/records",
     "tools/licence-check",
+    "tools/contract-guard",
 ]
 exclude = ["tools/boundary-check/tests/fixtures/undocumented"]
 
