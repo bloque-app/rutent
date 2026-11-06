@@ -12,8 +12,12 @@ members = [
     "components/evidence",
     "tools/boundary-check",
 ]
+exclude = ["tools/boundary-check/tests/fixtures/undocumented"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
 publish = false
+
+[workspace.lints.rust]
+missing_docs = "deny"

@@ -1,3 +1,5 @@
+//! Tests of the boundary check.
+
 use rutent_boundary_check::{Graph, load, members, parse_manifest, violations};
 use std::path::{Path, PathBuf};
 
@@ -183,4 +185,16 @@ fn array_of_tables_headers_are_accepted_with_dependencies_intact() {
         deps,
         vec![("rutent-contracts", false), ("rutent-conformance", true)]
     );
+}
+
+// verifies: REQ-MOD-2, NFR-7
+#[test]
+fn a_manifest_with_lints_tables_still_parses() {
+    let manifest = "[package]\nname = \"rutent-x\"\n\n[lints]\nworkspace = true\n\n\
+        [dependencies]\nrutent-contracts = { path = \"../contracts\" }\n";
+    let (name, deps) = parse_manifest(manifest).expect("lints table is accepted");
+    assert_eq!((name.as_str(), deps.len()), ("rutent-x", 1));
+    let root =
+        "[workspace]\nmembers = [\"a\"]\n\n[workspace.lints.rust]\nmissing_docs = \"deny\"\n";
+    assert_eq!(members(root).unwrap(), ["a"]);
 }
