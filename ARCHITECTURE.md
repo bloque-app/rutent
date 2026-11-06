@@ -1,6 +1,6 @@
 ---
 name: rutent architecture
-status: proposed. Digests SPEC.md v0.4.1 (accepted 2026-11-05). Produced under Narthex STEP-2 (REQ-CHN-8 to REQ-CHN-10, REQ-CHN-12). Every ADR it links to is accepted (2026-11-06); the SAD itself awaits the owner's acceptance.
+status: accepted by the owner on 2026-11-06 (decision-form item accept-sad), ending STEP-2. Digests SPEC.md v0.4.1 (accepted 2026-11-05). Produced under Narthex STEP-2 (REQ-CHN-8 to REQ-CHN-10, REQ-CHN-12); every ADR it links to is accepted.
 date: 2026-11-06
 ---
 
