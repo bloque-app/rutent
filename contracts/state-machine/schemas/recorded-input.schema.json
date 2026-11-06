@@ -1,0 +1,532 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:state-machine:recorded-input",
+  "title": "Recorded input",
+  "description": "The only thing that changes a state (REQ-STM-3). Anything from the outside world, route calculation and the passing of time included, enters the state machine only in this envelope: a record id, who stated it and with what standing, when and by which clock, what it is about, and what was observed. An input without its record is not an input.",
+  "type": "object",
+  "required": [
+    "record_id",
+    "recorded_at",
+    "time_source",
+    "source",
+    "standing",
+    "subject",
+    "observed"
+  ],
+  "properties": {
+    "record_id": {
+      "description": "The id of the record entry this input was written as, before any effect (INV-7). One record id names exactly one content: recording different content under a used id is a refusal by the record store (the host contract, T-005-02). The host delivers each recorded input exactly once; a repeat that still reaches the state machine moves nothing twice (INV-8, REQ-STM-4).",
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_at": {
+      "description": "When the input was recorded, as an RFC 3339 date-time. The state machine reads time only from here, never from a clock of its own. The pattern states the shape for validators that treat format as an annotation only. Seconds run 00 to 59: no leap second.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "time_source": {
+      "description": "Which clock gave recorded_at (REQ-AUD-1: the source of \"when\" is stated).",
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "description": "Who stated the input (REQ-AUD-2: a statement stays attributed to its maker).",
+      "type": "object",
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "customer",
+            "operator",
+            "provider",
+            "router",
+            "evidence_checker",
+            "orchestrator"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "standing": {
+      "description": "Whether the input is what its source stated, or what rutent verified (REQ-AUD-2).",
+      "enum": [
+        "stated",
+        "verified"
+      ]
+    },
+    "subject": {
+      "description": "What the input is about: an order, one of its parts, or one segment of a part, by id.",
+      "type": "object",
+      "required": [
+        "order"
+      ],
+      "properties": {
+        "order": {
+          "type": "string",
+          "minLength": 1
+        },
+        "part": {
+          "type": "string",
+          "minLength": 1
+        },
+        "segment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "dependentRequired": {
+        "segment": [
+          "part"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "observed": {
+      "description": "What was observed. The kinds are a closed list (REQ-STM-8).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/route_chosen"
+        },
+        {
+          "$ref": "#/$defs/route_recalculated"
+        },
+        {
+          "$ref": "#/$defs/destination_changed"
+        },
+        {
+          "$ref": "#/$defs/no_route"
+        },
+        {
+          "$ref": "#/$defs/provider_bound"
+        },
+        {
+          "$ref": "#/$defs/segment_settled"
+        },
+        {
+          "$ref": "#/$defs/segment_failed"
+        },
+        {
+          "$ref": "#/$defs/segment_outcome_unknown"
+        },
+        {
+          "$ref": "#/$defs/reversal_completed"
+        },
+        {
+          "$ref": "#/$defs/withdrawal_cancelled"
+        },
+        {
+          "$ref": "#/$defs/end_requested"
+        },
+        {
+          "$ref": "#/$defs/stuck_declared"
+        },
+        {
+          "$ref": "#/$defs/handed_on"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "Inputs about the order as a whole name no part or segment.",
+      "if": {
+        "$ref": "#/$defs/kind_of_order_input"
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "part"
+                  ]
+                },
+                {
+                  "required": [
+                    "segment"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Inputs about a part name the part and no segment.",
+      "if": {
+        "$ref": "#/$defs/kind_of_part_input"
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "required": [
+              "part"
+            ],
+            "not": {
+              "required": [
+                "segment"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Inputs about a segment name the part and the segment.",
+      "if": {
+        "$ref": "#/$defs/kind_of_segment_input"
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "required": [
+              "part",
+              "segment"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "kind_of_order_input": {
+      "required": [
+        "observed"
+      ],
+      "properties": {
+        "observed": {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "route_chosen",
+                "end_requested"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "kind_of_part_input": {
+      "required": [
+        "observed"
+      ],
+      "properties": {
+        "observed": {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "route_recalculated",
+                "destination_changed",
+                "no_route",
+                "withdrawal_cancelled",
+                "stuck_declared",
+                "handed_on"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "kind_of_segment_input": {
+      "required": [
+        "observed"
+      ],
+      "properties": {
+        "observed": {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "provider_bound",
+                "segment_settled",
+                "segment_failed",
+                "segment_outcome_unknown",
+                "reversal_completed"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:rutent:state-machine:segment-plan",
+        "unevaluatedProperties": false
+      }
+    },
+    "route_chosen": {
+      "description": "The route the customer accepted, as one or more parts (REQ-ORD-42, DEC-8). It opens the order. Which transitions the route takes enters here (REQ-STM-7).",
+      "type": "object",
+      "required": [
+        "kind",
+        "decision_record",
+        "parts"
+      ],
+      "properties": {
+        "kind": {
+          "const": "route_chosen"
+        },
+        "decision_record": {
+          "$ref": "#/$defs/id",
+          "description": "The router's decision record, by id."
+        },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "part_id",
+              "segments"
+            ],
+            "properties": {
+              "part_id": {
+                "$ref": "#/$defs/id"
+              },
+              "segments": {
+                "$ref": "#/$defs/segments"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "handed_on_from": {
+          "$ref": "#/$defs/id",
+          "description": "The order whose value this order was handed (REQ-ORD-43)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "route_recalculated": {
+      "description": "A new route for one part, from the node where its value sits, to the same destination and to asset (REQ-ORD-22, INV-10). Automatic, with no acceptance: it acts within the customer's authorisation and floor (REQ-AUZ-3, REQ-ORD-4); a route past the floor makes the part wait for the customer instead (REQ-ORD-27). A route that ends elsewhere is not applicable; a new destination is destination_changed.",
+      "type": "object",
+      "required": [
+        "kind",
+        "decision_record",
+        "segments"
+      ],
+      "properties": {
+        "kind": {
+          "const": "route_recalculated"
+        },
+        "decision_record": {
+          "$ref": "#/$defs/id"
+        },
+        "segments": {
+          "$ref": "#/$defs/segments"
+        }
+      },
+      "additionalProperties": false
+    },
+    "destination_changed": {
+      "description": "A new route for one part to another destination: the customer's choice after a failed final deposit (REQ-ORD-43). It always carries the customer's acceptance (REQ-ORD-34, REQ-AUZ-3).",
+      "type": "object",
+      "required": [
+        "kind",
+        "decision_record",
+        "acceptance",
+        "segments"
+      ],
+      "properties": {
+        "kind": {
+          "const": "destination_changed"
+        },
+        "decision_record": {
+          "$ref": "#/$defs/id"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/id",
+          "description": "The record of the customer's acceptance of the new destination, by id."
+        },
+        "segments": {
+          "$ref": "#/$defs/segments"
+        }
+      },
+      "additionalProperties": false
+    },
+    "no_route": {
+      "description": "The router found no route for the part.",
+      "type": "object",
+      "required": [
+        "kind",
+        "decision_record"
+      ],
+      "properties": {
+        "kind": {
+          "const": "no_route"
+        },
+        "decision_record": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider_bound": {
+      "description": "The segment's provider is bound: the segment has started.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "provider_bound"
+        }
+      },
+      "additionalProperties": false
+    },
+    "segment_settled": {
+      "description": "The segment settled, on the evidence named.",
+      "type": "object",
+      "required": [
+        "kind",
+        "evidence"
+      ],
+      "properties": {
+        "kind": {
+          "const": "segment_settled"
+        },
+        "evidence": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "segment_failed": {
+      "description": "The segment failed; its reversal is owed.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "segment_failed"
+        }
+      },
+      "additionalProperties": false
+    },
+    "segment_outcome_unknown": {
+      "description": "The segment's provider gave no outcome that settles or fails it.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "segment_outcome_unknown"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reversal_completed": {
+      "description": "The segment was truly undone: the value is back at its origin node, on the evidence named.",
+      "type": "object",
+      "required": [
+        "kind",
+        "evidence"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal_completed"
+        },
+        "evidence": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "withdrawal_cancelled": {
+      "description": "The part's reserve cancelled its withdrawal (REQ-ORD-40).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "withdrawal_cancelled"
+        }
+      },
+      "additionalProperties": false
+    },
+    "end_requested": {
+      "description": "The order is asked to end without completing (REQ-ORD-12).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "end_requested"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stuck_declared": {
+      "description": "The part is declared stuck. Time over its limit arrives here as a recorded statement, never as a clock read inside the state machine.",
+      "type": "object",
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "stuck_declared"
+        },
+        "reason": {
+          "enum": [
+            "over_time",
+            "no_route_left",
+            "dispute"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "handed_on": {
+      "description": "The part's value is handed on to a new, linked order (REQ-ORD-43). It always carries the customer's acceptance (REQ-ORD-34, REQ-AUZ-3).",
+      "type": "object",
+      "required": [
+        "kind",
+        "linked_order",
+        "acceptance"
+      ],
+      "properties": {
+        "kind": {
+          "const": "handed_on"
+        },
+        "linked_order": {
+          "$ref": "#/$defs/id"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/id",
+          "description": "The record of the customer's acceptance of the new order, by id."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

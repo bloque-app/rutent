@@ -1,0 +1,17 @@
+{
+  "record_id": "rec-0013",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "customer",
+    "id": "user-42"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-1",
+    "part": null
+  },
+  "observed": {
+    "kind": "end_requested"
+  }
+}

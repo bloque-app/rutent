@@ -1,0 +1,62 @@
+{
+  "order_id": "ord-1",
+  "state": "first_segment_settled",
+  "last_record": "rec-0002",
+  "parts": [
+    {
+      "part_id": "p1",
+      "state": "first_segment_settled",
+      "segments": [
+        {
+          "segment_id": "p1-s1",
+          "provider": "reserve-bank-co",
+          "operation": "withdrawal",
+          "from": {
+            "node": "bank-co",
+            "asset": "COP"
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": "COP"
+          },
+          "state": "settled",
+          "fee": "0.1"
+        },
+        {
+          "segment_id": "p1-s2",
+          "provider": "exchange-a",
+          "operation": "exchange",
+          "from": {
+            "node": "ledger-in",
+            "asset": "COP"
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": "USDC"
+          },
+          "state": "started"
+        },
+        {
+          "segment_id": "p1-s3",
+          "provider": "reserve-wallet",
+          "operation": "deposit",
+          "from": {
+            "node": "ledger-in",
+            "asset": "USDC"
+          },
+          "to": {
+            "node": "polygon",
+            "asset": "USDC"
+          },
+          "state": "pending"
+        }
+      ]
+    }
+  ],
+  "last_input": {
+    "record_id": "rec-0002",
+    "outcome": {
+      "outcome": "applied"
+    }
+  }
+}

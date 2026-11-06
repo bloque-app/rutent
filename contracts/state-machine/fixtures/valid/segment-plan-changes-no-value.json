@@ -1,0 +1,13 @@
+{
+  "segment_id": "s2",
+  "provider": "ramp-bridge",
+  "operation": "route",
+  "from": {
+    "node": "ledger-in",
+    "asset": "USDC"
+  },
+  "to": {
+    "node": "polygon",
+    "asset": "USDC"
+  }
+}

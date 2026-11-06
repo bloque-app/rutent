@@ -1,0 +1,12 @@
+{
+  "order_id": "ord-1",
+  "state": "not_past_first_segment",
+  "last_record": "rec-0040",
+  "last_input": {
+    "record_id": "rec-0040",
+    "outcome": {
+      "outcome": "applied"
+    }
+  },
+  "parts": []
+}

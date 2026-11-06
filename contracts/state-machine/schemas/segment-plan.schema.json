@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:state-machine:segment-plan",
+  "title": "Segment plan",
+  "description": "One segment of a route as the state machine sees it: a transition of a nondeterministic automaton from one (node, asset) pair to another, at one provider (REQ-STM-7). A transition that changes no value is allowed. Schemas that embed this shape close it themselves with unevaluatedProperties.",
+  "type": "object",
+  "required": ["segment_id", "provider", "operation", "from", "to"],
+  "properties": {
+    "segment_id": {
+      "description": "Unique within its order. Inputs name a segment by this id, never by position, so a report about a segment a recalculation replaced matches nothing current.",
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "description": "The provider the segment runs at.",
+      "type": "string",
+      "minLength": 1
+    },
+    "operation": {
+      "description": "The typed operation of REQ-ORD-37.",
+      "enum": ["withdrawal", "route", "exchange", "deposit"]
+    },
+    "from": { "$ref": "#/$defs/endpoint" },
+    "to": { "$ref": "#/$defs/endpoint" }
+  },
+  "$defs": {
+    "endpoint": {
+      "description": "A vertex of the automaton: a node and an asset.",
+      "type": "object",
+      "required": ["node", "asset"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "asset": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

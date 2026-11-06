@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:state-machine:segment-state",
+  "title": "Segment state",
+  "description": "The published list of states a segment can be in (REQ-STM-1, REQ-STM-2). `pending`, before its provider is bound, is a further state REQ-STM-2 allows; the other five are its table's.",
+  "type": "string",
+  "enum": [
+    "pending",
+    "started",
+    "settled",
+    "failed_reversal_owed",
+    "outcome_unknown",
+    "reversal_complete"
+  ]
+}
