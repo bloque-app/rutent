@@ -26,21 +26,46 @@ integrator. This document builds components, interfaces, data and deployment aro
 
 ## 1. Context and external actors
 
-```
-                     ┌──────────────┐
-  authN provider ──► │              │ ◄── integrator (files orders, consumes notices,
-  (identity only,    │    rutent    │      registers destinations before quoting)
-   PS-13)            │              │
-                     └──────┬───────┘
-                            │ policy-gated calls
-              ┌─────────────┼─────────────┐
-              ▼             ▼             ▼
-         reserves      exchanges/ramps  verifiers
-         (catalogue, under the operator's grant — REQ-CAT-2)
+```mermaid
+flowchart LR
+  authn["AuthN provider<br/>(identity only)"]
+  integ["Integrator"]
+  oper["Operator"]
+  pub["Publisher"]
+  rutent["rutent"]
+  subgraph grant["Under the operator's grant"]
+    res["Reserves"]
+    exr["Exchanges and ramps"]
+    ver["Verifiers"]
+  end
+  checker["Checker<br/>(appointed by the operator)"]
+  reg["Regulator<br/>(with permission)"]
 
-  appointed checker (human/org, OBL-4) ──► reads changed history (REQ-AUZ-7, INV-6)
-  regulator (with permission)          ──► reads the audit trail (REQ-AUD-12)
+  authn -- "who is calling" --> rutent
+  integ -- "orders, destinations" --> rutent
+  rutent -- "a notice per state change" --> integ
+  oper -- "grants, policy, stuck-order rulings" --> rutent
+  pub -- "signed modules" --> rutent
+  rutent -- "segment calls" --> res
+  rutent -- "segment calls" --> exr
+  rutent -- "judgement requests" --> ver
+  checker -- "checks history is unchanged" --> rutent
+  reg -- "reads the audit trail" --> rutent
+
+  classDef system fill:#1f3a5f,stroke:#1f3a5f,color:#ffffff
+  class rutent system
 ```
+
+| Actor | Relationship with rutent | Spec |
+|---|---|---|
+| AuthN provider | Says who is calling; rutent's own policy still decides each action | `REQ-OPS-4`, `REQ-AUZ-1`, `AC-25` |
+| Integrator | Files orders, registers destinations before quoting, consumes notices instead of polling | `REQ-ORD-20`, `INTEGRATORS.md` |
+| Operator | Grants entry, sets policy and ceilings, posts routes, resolves and bears stuck orders | `REQ-AUZ-2`, `REQ-CAT-2`, `REQ-ORD-8` |
+| Publisher | Publishes a provider's module with a signed assertion; Bloque's own team until `DEF-4` | `REQ-MDL-1`, `REQ-MDL-15` |
+| Reserves, exchanges and ramps | Providers in the catalogue, under the operator's grant; each segment call is policy-gated | `REQ-CAT-2`, `REQ-AUZ-1` |
+| Verifiers | Providers that answer judgements about a person and a class; move no value | `REQ-CPL-1`, `REQ-CPL-10` |
+| Checker | Appointed by the operator, outside it; checks that history hasn't changed | `OBL-4`, `REQ-AUZ-7`, `INV-6` |
+| Regulator | Reads the audit trail through an identified, recorded permission | `REQ-AUD-12`, `REQ-AUZ-7` |
 
 rutent authenticates nobody itself beyond what an external authN provider establishes (`REQ-AUZ-1`); it never
 holds customer value (`INV-5`); it is deployed and operated standalone, decoupled from any integrating platform
@@ -114,6 +139,40 @@ This table is the data-model skeleton; the full field-level schema for each reco
 (`STEP-3`), not a STEP-2 commitment.
 
 ## 5. Deployment view
+
+```mermaid
+flowchart LR
+  subgraph dep["Operator's deployment, standalone"]
+    rutent["rutent<br/>core, router, state machine"]
+    store[("Durable store<br/>host contract")]
+    log[("Authenticated log<br/>and checkpoints")]
+    evid["Evidence checker"]
+    compiler["Admitting compiler<br/>isolated"]
+    prov["Provider process<br/>one per provider"]
+    proxy["Credential proxy<br/>shared in v0"]
+    vault[("Secret store<br/>buckets by role")]
+  end
+  endpoints["Provider endpoints"]
+  public["Public records"]
+
+  rutent -- "transitions" --> store
+  rutent -- "entries" --> log
+  rutent -- "segment calls" --> prov
+  compiler -- "machine code" --> prov
+  prov -- "resolve by name" --> proxy
+  proxy --> vault
+  prov -- "declared destinations" --> endpoints
+  evid -- "reads" --> public
+  evid -- "graded evidence" --> rutent
+
+  classDef system fill:#1f3a5f,stroke:#1f3a5f,color:#ffffff
+  class rutent system
+```
+
+Read with the bullets below: the durable store's runtime is a milestone-1 experiment (ADR-0002); the module format
+is another (ADR-0003); the shared proxy is v0's, per-provider proxies come before v1 (ADR-0004); the log is kept
+apart from the execution store (ADR-0005); the evidence checker is operator-run, apart from provider modules
+(ADR-0007).
 
 - **Standalone operation** (`REQ-OPS-4`): one deployment, no higher-order platform; humans and agents share one
   contract (`REQ-OPS-5`).
