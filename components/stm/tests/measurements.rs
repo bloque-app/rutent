@@ -265,3 +265,39 @@ fn g42_sequential_synced_submits_per_second() {
         );
     }
 }
+
+// verifies: REQ-OPS-3, NFR-6, DEC-6, DEC-5
+#[test]
+#[ignore = "a measurement for the scoring sheet; run on purpose"]
+fn g32_the_largest_input_fixture_and_its_record() {
+    // The same fixture `G-32` measures VOS with: three parts, nine segments.
+    let fixture = include_str!(
+        "../../../contracts/state-machine/fixtures/valid/recorded-input-route-chosen-three-parts.json"
+    );
+    let input: RecordedInput = serde_json::from_str(fixture).unwrap();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let store = harness.fresh_store().unwrap();
+    let mut host = Pb::open(store.clone()).unwrap();
+    // The format entry is the log's first frame; take it out of the count.
+    host.submit(probe::order_inputs("ord-first", 0).remove(0))
+        .unwrap();
+    let before = std::fs::metadata(store.log_path()).unwrap().len() as usize;
+    let Delivery::Recorded(record) = host.submit(input.clone()).unwrap() else {
+        unreachable!("a fresh record id")
+    };
+    let after = std::fs::metadata(store.log_path()).unwrap().len() as usize;
+    println!(
+        "G-32 fixture: recorded-input-route-chosen-three-parts.json ({} parts), input JSON {} bytes, state JSON {} \
+         bytes, record JSON {} bytes, the log's frame {} bytes (payload {} of the {FRAME_CAP}-byte cap, behind an \
+         {FRAME_HEADER}-byte header)",
+        match &input.observed {
+            Observed::RouteChosen { parts, .. } => parts.len(),
+            _ => 0,
+        },
+        json_len(&record.input),
+        json_len(&record.state_after),
+        json_len(&record),
+        after - before,
+        after - before - FRAME_HEADER
+    );
+}
