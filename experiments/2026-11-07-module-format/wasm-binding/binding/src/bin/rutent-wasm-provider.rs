@@ -4,7 +4,7 @@
 //! loading it (`G-08`), starts both parts, and then hands each operation the platform sends to the sandboxed part.
 //! Every import a part calls goes to the platform as a request (`rutent_wasm_binding::host`).
 //!
-//! `--probe [file] [unix socket]` instead prints, as JSON, which of its restrictions held when tested from inside it.
+//! `--probe [file] [unix socket] [pid]` instead prints, as JSON, which of its restrictions held when tested from inside it.
 
 use std::cell::RefCell;
 use std::io::{self, StdinLock, StdoutLock};
@@ -20,6 +20,11 @@ type StdPipe = Pipe<StdinLock<'static>, StdoutLock<'static>>;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Before anything is read: on Linux the jail (`rutent_wasm_sandbox::confine`), elsewhere nothing to do.
+    if let Err(message) = rutent_wasm_sandbox::confine(rutent_wasm_sandbox::Role::Provider) {
+        eprintln!("rutent-wasm-provider: not confined, so not started: {message}");
+        return ExitCode::FAILURE;
+    }
     if args.first().map(String::as_str) == Some("--probe") {
         println!("{}", rutent_wasm_sandbox::probe_report(&args[1..]));
         return ExitCode::SUCCESS;

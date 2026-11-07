@@ -164,12 +164,28 @@ fn summary(durations: &[Duration]) -> serde_json::Value {
     })
 }
 
-/// The resident memory of each process, in KiB, as `ps` reports it.
+/// The process that runs a provider's module: on Linux the one child of the `unshare` whose id the platform
+/// holds, as `/proc` lists it; elsewhere the process itself.
+fn module_process(pid: u32) -> u32 {
+    if cfg!(target_os = "linux") {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .ok()
+            .and_then(|children| children.split_whitespace().next()?.parse().ok())
+            .unwrap_or(pid)
+    } else {
+        pid
+    }
+}
+
+/// The resident memory of each provider's module's process, in KiB, as `ps` reports it.
 fn resident_kib(processes: &[(String, u32)]) -> Vec<u64> {
     if processes.is_empty() {
         return Vec::new();
     }
-    let pids: Vec<String> = processes.iter().map(|(_, pid)| pid.to_string()).collect();
+    let pids: Vec<String> = processes
+        .iter()
+        .map(|(_, pid)| module_process(*pid).to_string())
+        .collect();
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &pids.join(",")])
         .output();
@@ -393,6 +409,10 @@ fn main() -> ExitCode {
         "platform_version": engine::platform_version(),
         "settings": engine::settings().into_iter().map(|(k, v)| json!({"setting": k, "value": v})).collect::<Vec<_>>(),
         "isolation": rutent_wasm_sandbox::layers(),
+        "seccomp_allowed": {
+            "compiler": rutent_wasm_sandbox::seccomp_allowed(rutent_wasm_sandbox::Role::Compiler),
+            "provider": rutent_wasm_sandbox::seccomp_allowed(rutent_wasm_sandbox::Role::Provider),
+        },
         "reports": json_reports,
         "rows": rows_json,
         "passed": all_passed,
