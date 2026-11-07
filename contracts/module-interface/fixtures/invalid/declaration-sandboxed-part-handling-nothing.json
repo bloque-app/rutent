@@ -1,7 +1,7 @@
 {
   "provider": "bridge-pay",
   "version": "2.1.0",
-  "interface": "2.0.0",
+  "interface": "2.0.1",
   "sandboxed": {
     "handles": []
   },

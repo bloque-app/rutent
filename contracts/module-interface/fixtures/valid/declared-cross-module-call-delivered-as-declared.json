@@ -2,7 +2,7 @@
   "declaration": {
     "provider": "acme-reserve",
     "version": "3.0.0",
-    "interface": "2.0.0",
+    "interface": "2.0.1",
     "sandboxed": {
       "handles": [
         "deposit"

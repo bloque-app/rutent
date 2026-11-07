@@ -1,5 +1,11 @@
 # provider-role changelog
 
+## 2.0.1
+- The newer-than check for `made_at` now fails closed: a time that isn't in the schema's form (UTC `Z`, at most 9
+  fraction digits, so no `+05:00` offset) is never newer, instead of being compared as text. The README adds that
+  the catalogue refuses an advertisement made more than a bounded skew ahead of its own clock. Every fixture's
+  `protocol_version` names 2.0.1. (DEC-4, DEC-20, T-002-03)
+
 ## 2.0.0
 - Breaking, after the M1 security review: every advertised key states its `purpose`, required, `advertising` or
   `statements`. An advertisement is signed with an `advertising` key it lists (`SignedWithStatementsKey`), and a

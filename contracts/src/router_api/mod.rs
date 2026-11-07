@@ -71,7 +71,7 @@ pub use atoms::{
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/router-api/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.1";
+pub const VERSION: &str = "1.0.2";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]

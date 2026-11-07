@@ -1,7 +1,7 @@
 {
   "provider": "acme-bank",
   "version": "1.4.2",
-  "interface": "2.0.0",
+  "interface": "2.0.1",
   "sandboxed": {
     "handles": [
       "withdrawal",

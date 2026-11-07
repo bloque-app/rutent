@@ -133,6 +133,9 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   advertisement that isn't newer, by `made_at`, than the last it accepted (`validate_successor` checks this against
   the one it is given, `SuccessorNotNewer`), and never re-lists a `statements` key an accepted advertisement
   dropped. Otherwise resubmitting v1 {A, S1} after v2 {A, S2} would bring the retired S1 back.
+- **No far-future time.** The catalogue refuses an advertisement whose `made_at` is more than a bounded skew ahead
+  of its own clock. `validate_successor` only orders times, so one leaked advertising key could otherwise sign an
+  advertisement made in the year 9999, and no later advertisement could ever be newer than it, so none could pass.
 - **Releases are checked against the accepted advertisement.** At admission `validate_assertion_key` is called with
   the advertisement the catalogue holds, never one that arrives with the release; it checks both the assertion's key
   and the declared `statement_key`. `validate_statement_key` is called the same way for each signed result.
@@ -346,11 +349,11 @@ Some rules this contract doesn't check, because they need the catalogue (`F-012`
   - The Rust types are checked against `rust_accepts`.
 - It checks that `VERSION` matches this changelog.
 
-Every fixture names `protocol_version` `2.0.0`, this contract's version since the M1 security review (it was
-`1.0.0` at `C1`), except `v3` in
+Every fixture names `protocol_version` `2.0.1`, this contract's version (it was `1.0.0` at `C1`, `2.0.0` before the
+final security review's fix), except `v3` in
 `statement-envelope-protocol-version-not-major-minor-patch`, which is malformed on purpose (the module-interface
 fixture `successive-releases-under-another-protocol-version` also keeps old versions, for a mismatch). No check compares a fixture's protocol version with
 `VERSION`: the tests run `check_context` against each fixture's own deployment and protocol version, since a fixture stands
 for a statement made at some deployment. The role suite's `SuiteContext` defaults to `VERSION`, so the stand-ins'
-statements carry `2.0.0`. The stand-ins sign their advertisements with an `advertising` key and everything else with
+statements carry `2.0.1`. The stand-ins sign their advertisements with an `advertising` key and everything else with
 a `statements` key, and the suite counts a result only if its key is published for `statements`.

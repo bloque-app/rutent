@@ -175,16 +175,63 @@ impl Advertisement {
     }
 }
 
-/// Whether the RFC 3339 UTC time `later` is after `earlier`. Both are schema-valid timestamps: a fixed-width
-/// date and time to the second, an optional fraction, then `Z`; the fraction compares as digits padded with
-/// zeros, so `.5` is after `.25` and no text comparison is fooled by the `.` sorting before `Z`.
+/// Whether the RFC 3339 UTC time `later` is after `earlier`. Both must be in the schema's form: a fixed-width
+/// date and time to the second, an optional fraction of 1 to 9 digits, then `Z`, with every field in range. The
+/// fraction compares as digits padded with zeros, so `.5` is after `.25` and no text comparison is fooled by the
+/// `.` sorting before `Z`. A time that isn't in that form (an offset such as `+05:00`, lowercase `t` or `z`, a
+/// leap second, garbage) can't be ordered, so it is never newer and nothing is newer than it: this returns
+/// `false`, which fails closed.
 fn made_after(later: &str, earlier: &str) -> bool {
-    fn parts(time: &str) -> (&str, String) {
-        let time = time.strip_suffix('Z').unwrap_or(time);
-        let (seconds, fraction) = time.split_once('.').unwrap_or((time, ""));
-        (seconds, format!("{fraction:0<9}"))
+    /// The time as (seconds as fixed-width text, fraction padded to nine digits), or `None` if it isn't in the
+    /// schema's form.
+    fn parts(time: &str) -> Option<(&str, String)> {
+        let time = time.strip_suffix('Z')?;
+        let (seconds, fraction) = match time.split_once('.') {
+            Some((seconds, fraction)) => {
+                if fraction.is_empty()
+                    || fraction.len() > 9
+                    || !fraction.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return None;
+                }
+                (seconds, fraction)
+            }
+            None => (time, ""),
+        };
+        let b = seconds.as_bytes();
+        if b.len() != 19 {
+            return None;
+        }
+        let digits = |range: std::ops::Range<usize>| -> Option<u32> {
+            let field = &b[range];
+            if !field.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            field
+                .iter()
+                .try_fold(0u32, |n, d| Some(n * 10 + u32::from(d - b'0')))
+        };
+        let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
+        if separators.iter().any(|&(i, c)| b[i] != c) {
+            return None;
+        }
+        let (month, day) = (digits(5..7)?, digits(8..10)?);
+        let (hour, minute, second) = (digits(11..13)?, digits(14..16)?, digits(17..19)?);
+        digits(0..4)?;
+        if !(1..=12).contains(&month)
+            || !(1..=31).contains(&day)
+            || hour > 23
+            || minute > 59
+            || second > 59
+        {
+            return None;
+        }
+        Some((seconds, format!("{fraction:0<9}")))
     }
-    parts(later) > parts(earlier)
+    match (parts(later), parts(earlier)) {
+        (Some(later), Some(earlier)) => later > earlier,
+        _ => false,
+    }
 }
 
 /// Checks the rules the schemas can't express, and returns every one broken, offer by offer.
@@ -311,6 +358,49 @@ mod tests {
         ));
         assert!(!made_after("2026-11-06T10:00:00Z", "2026-11-06T10:00:00Z"));
         assert!(!made_after("2026-11-05T10:00:00Z", "2026-11-06T10:00:00Z"));
+    }
+
+    // verifies: THR-4
+    #[test]
+    fn a_time_off_the_schemas_form_is_never_newer() {
+        // `+05:00` is later as text than `Z`, but it isn't a schema-valid time: not newer, either way round.
+        assert!(!made_after(
+            "2026-11-06T10:00:00+05:00",
+            "2026-11-06T09:00:00Z"
+        ));
+        assert!(!made_after(
+            "2026-11-07T10:00:00Z",
+            "2026-11-06T09:00:00+05:00"
+        ));
+        for bad in [
+            "",
+            "garbage",
+            "2026-11-06",
+            "2026-11-06T10:00:00",
+            "2026-11-06t10:00:00z",
+            "2026-11-06T10:00:00.Z",
+            "2026-11-06T10:00:00.1234567890Z",
+            "2026-13-06T10:00:00Z",
+            "2026-11-06T24:00:00Z",
+            "2026-11-06T10:00:60Z",
+            "+026-11-06T10:00:00Z",
+        ] {
+            assert!(!made_after(bad, "2026-11-06T10:00:00Z"), "{bad}");
+            assert!(!made_after("2030-01-01T00:00:00Z", bad), "{bad}");
+        }
+    }
+
+    // verifies: THR-4
+    #[test]
+    fn a_valid_newer_time_is_newer() {
+        assert!(made_after(
+            "2026-11-06T10:00:01Z",
+            "2026-11-06T10:00:00.999999999Z"
+        ));
+        assert!(made_after(
+            "2027-01-01T00:00:00.000000001Z",
+            "2026-12-31T23:59:59Z"
+        ));
     }
 
     // verifies: REQ-CAT-11

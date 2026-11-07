@@ -91,7 +91,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "2.0.0",
+          "protocol_version": "2.0.1",
           "shape": "urn:rutent:provider-role:judgement",
           "maker": "verifier-kyc",
           "made_at": "2026-11-06T14:59:56Z",
@@ -128,7 +128,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "2.0.0",
+          "protocol_version": "2.0.1",
           "shape": "urn:rutent:provider-role:judgement",
           "maker": "verifier-kyc",
           "made_at": "2026-11-06T14:59:56Z",

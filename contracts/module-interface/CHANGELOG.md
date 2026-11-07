@@ -1,5 +1,9 @@
 # module-interface changelog
 
+## 2.0.1
+- No change to this contract's shapes or types: its fixtures name provider-role 2.0.1 as their `protocol_version` and
+  this version as their `interface`, after provider-role's fix to its newer-than check. (DEC-4, DEC-20, T-002-03)
+
 ## 2.0.0
 - Breaking, after the M1 security review, following provider-role 2.0.0's key purposes: `validate_statement_key`
   refuses a `statement_key` the advertisement lists for `advertising` (`StatementKeyNotForStatements`), and

@@ -1,5 +1,9 @@
 # router-api changelog
 
+## 1.0.2
+- No change to this contract's shapes or types: its fixtures name provider-role 2.0.1 as their `protocol_version`,
+  after provider-role's fix to its newer-than check. (DEC-4, DEC-20, T-002-03)
+
 ## 1.0.1
 - No change to this contract's shapes or types, after the M1 security review: the README's "Unchecked by either"
   and the Rust docs state, as the orchestrator ruled, that nothing in a decision record ties a statement's

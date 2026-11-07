@@ -3,7 +3,7 @@
     "name": "rutent-test",
     "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
   },
-  "protocol_version": "2.0.0",
+  "protocol_version": "2.0.1",
   "shape": "urn:rutent:provider-role:result",
   "maker": "acme-co",
   "made_at": "2026-11-06T15:04:05Z",

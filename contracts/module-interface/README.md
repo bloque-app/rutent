@@ -425,8 +425,8 @@ as for the admission artefact's `if`/`then` rules, `rust_also_rejects` names tha
 - It checks that a resolved secret's `Debug` output, at every level, never contains its value (`THR-50`).
 - It checks that `VERSION` matches this changelog.
 
-Every fixture names `"interface": "2.0.0"` and `protocol_version` `2.0.0`, the module-interface and provider-role
-versions since the M1 security review (both were `1.0.0` at `C1`), except
+Every fixture names `"interface": "2.0.1"` and `protocol_version` `2.0.1`, the module-interface and provider-role
+versions (both were `1.0.0` at `C1`), except
 `successive-releases-under-another-protocol-version`, whose point is that its two releases name different protocol
 versions (`0.3.0` and `0.4.0`). No rule compares a declaration's `interface` with `VERSION`: it records which version
 the module implements (`REQ-MDL-19`), and a module declaring an older one stays valid.
