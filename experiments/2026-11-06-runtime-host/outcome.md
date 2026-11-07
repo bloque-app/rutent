@@ -30,16 +30,16 @@ about a fifth of VOS's default handler gas.
 ## Numbers
 
 Scored runs on GitHub's `ubuntu-latest` (AMD EPYC 9V45, 4 vCPUs, 16 GB, kernel 7.0.0-1019-azure), the JIT
-`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2` and `EXP-1-pb-20261107-5`, in one job on one runner, and
+forced and proved by each node's perf map: `EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2` and `EXP-1-pb-20261107-5`, in one job on one runner, and
 the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, not targets (`PLAN.md` §6.2, risk 9).
 
 | Row | `vos-rt1`, one node | `vos-rt3`, three nodes | `pb` |
 |---|---|---|---|
 | `H-01` to `H-17`, host contract 2.0.0 | 17 of 17 pass | 17 of 17 pass | 17 of 17 pass |
-| `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills, each with a submit in flight; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk opens in 11 to 24 ms |
+| `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills, a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk opens in 11 to 24 ms |
 | `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
 | `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, each already released, so its effects may have run |
-| `R-04a` the last batch damaged | pass: opens, nothing acknowledged lost | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
+| `R-04a` the last batch damaged | pass: opens, nothing acknowledged lost; on one node the damage left no visible trace | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
 | `R-04b` the leader and a follower damaged together | n/a | pass | n/a: one node |
 | `R-05` records/s at 1, 8, 64 submitters | 328, 1,538, 2,979 | 239, 1,387, 1,957 | 4,753, 4,568, 4,544 |
 | `R-05` fsyncs a record at 1, 8, 64 | 1.02, 0.15, 0.08 | 3.06, 0.83, 0.20 (three nodes) | 1.00, 1.00, 1.00 |
@@ -60,17 +60,18 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    build the same stop lands after an unheld commit, and `stop-after-computed` fails there, as the first run's
    control did. That is the stop's test, not a VOS gap.
 2. **Replication is one property, and only VOS has it.** `R-01` to `R-03` and `R-04b` pass on three VOS nodes:
-   no acknowledged record was lost when the leader was killed mid-submit at 21 points, or when a replica was replaced, with
+   no acknowledged record was lost when the leader was killed at 21 points, a submit in flight at each as the harness last saw it, or when a replica was replaced, with
    or without its data. `pb` has one node, so it fails `R-01` and `R-02` by construction, and its only recovery
    from a lost disk is a restore, which loses every record acknowledged after the copy (`R-03`), each already released
    to its submitter, so its effects may have run. Counted once, as the brief asks: `pb` lacks replication.
 3. **Damage.** A damaged last frame cut `pb` one acknowledged record short without a refusal (`R-04a`, `G-54`).
    On VOS, damage to the last journal batch cost no acknowledged record. That is VOS's layout more than proof: the
    last batch on disk after an acknowledged submit is the unsynced apply or commit-index batch that follows the
-   synced append, and the log replays over it. The harness could not place the damage on the append itself, so
-   fjall's silent cut of a corrupt tail, the single-node residual of `G-54`, stands. On three nodes fjall cut a damaged follower's tail at the open, about 3 KB, leaving it one entry
-   behind; it caught up from the leader once it saw the leader's next entry, and a third, undamaged node held every
-   entry when two were damaged (`R-04b`). No watermark patch exists at the pin, so that leg is n/a.
+   synced append, and the log replays over it. On one node the damage left no visible trace, and the harness could
+   not place it on the append itself, so fjall's silent cut of a corrupt tail, the single-node residual of
+   `G-54`, stands untested. On three nodes fjall cut a damaged follower's tail at the open, about 3 KB, leaving it one entry
+   behind; it caught up from the leader once it saw the leader's next entry, and when two nodes were damaged together both reopened
+   and agreed with the undamaged third, with nothing lost (`R-04b`). No watermark patch exists at the pin, so that leg is n/a.
 4. **Upgrades and formats.** Both survive an upgrade with an input in flight (`R-06a`), and both refuse a changed
    format (`R-06b`). On VOS the refusal is the program's own format check: `Admin::Install` checks nothing at the
    tip. Across VOS commits the tip refuses the pin's store cleanly (`R-07b`), and the swap stream carries a
