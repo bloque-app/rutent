@@ -36,7 +36,7 @@ the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, n
 | Row | `vos-rt1`, one node | `vos-rt3`, three nodes | `pb` |
 |---|---|---|---|
 | `H-01` to `H-17`, host contract 2.0.0 | 17 of 17 pass | 17 of 17 pass | 17 of 17 pass |
-| `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills, a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk, killed during a submit loop, opens in 11 to 24 ms in 5 rounds |
+| `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills (one placed through `hold_commits`, 20 at random), a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk, killed during a submit loop, opens in 11 to 24 ms in 5 rounds |
 | `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
 | `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, each already released, so its effects may have run |
 | `R-04a` the last batch damaged | pass: opens, nothing acknowledged lost; on one node the damage left no visible trace | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
@@ -45,8 +45,8 @@ the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, n
 | `R-05` fsyncs a record at 1, 8, 64 | 1.02, 0.15, 0.08 | 3.06, 0.83, 0.20 (three nodes) | 1.00, 1.00, 1.00 |
 | `R-06a` the program upgraded, one input in flight | pass | pass | pass, as a redeploy |
 | `R-06b` a changed state format installed | pass: the program refuses it | pass | pass: the layout version refuses it |
-| `R-07a` the 1aadf44 deployment swapped into the tip program | pass, as `H-13` | | n/a |
-| `R-07b` 1aadf44's data directory opened at the tip | pass: refused cleanly | | n/a |
+| `R-07a` the 1aadf44 deployment swapped into the tip program | pass, as `H-13` | n/a: run on one node | n/a |
+| `R-07b` 1aadf44's data directory opened at the tip | pass: refused cleanly | n/a: run on one node | n/a |
 | `R-07c` the same program across two VOS commits | n/a: no second `vos-core` commit builds it yet | n/a | n/a |
 | `R-08` 100,352 records: halt to export, import to ready (RTO) | 3.6 s + 55.5 s = 59.1 s | 4.8 s + 77.0 s = 81.8 s | 0.2 s + 2.8 s = 3.0 s |
 | `R-09` a step: gas; µs on the JIT and the interpreter | 1.87M gas (18.7% of 10M); 841 and 1,551 µs | 1.87M gas; 941 µs | 222 µs a synced submit; 0.42 µs the step alone |
@@ -65,9 +65,10 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    from a lost disk is a restore, which loses every record acknowledged after the copy (`R-03`), each already released
    to its submitter, so its effects may have run. Counted once, as the brief asks: `pb` lacks replication.
 3. **Damage.** A damaged last frame cut `pb` one acknowledged record short without a refusal (`R-04a`, `G-54`).
-   On VOS, damage to the last journal batch cost no acknowledged record. That is VOS's layout more than proof: the
-   last batch on disk after an acknowledged submit is the unsynced apply or commit-index batch that follows the
-   synced append, and the log replays over it. On one node the damage left no visible trace, consistent with that layout, and the harness
+   On VOS, damage to the last journal batch cost no acknowledged record. That is presumably VOS's layout more than proof:
+   the last batch on disk after an acknowledged submit is likely the unsynced apply or commit-index batch that
+   follows the synced append, which the log replays over. So the two results are not like for like: `pb`'s
+   last frame is its acknowledged append, and VOS's damage never reached one. On one node the damage left no visible trace, consistent with that layout, and the harness
    could not place it on the append itself, so fjall's silent cut of a corrupt tail, the single-node residual of
    `G-54`, stands untested. On three nodes fjall cut a damaged follower's tail at the open, about 3 KB, leaving it one entry
    behind; it caught up from the leader once it saw the leader's next entry, and when two nodes were damaged together both reopened
@@ -75,15 +76,17 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    (`R-04b`). No watermark patch exists at the pin, so that leg is n/a.
 4. **Upgrades and formats.** Both survive an upgrade with an input in flight (`R-06a`), and both refuse a changed
    format (`R-06b`). On VOS the refusal is the program's own format check: `Admin::Install` checks nothing at the
-   tip. Across VOS commits the tip refuses the pin's store cleanly (`R-07b`), and the swap stream carries a
-   deployment across (`R-07a`), so VOS upgrades go by swap stream, as `G-40`'s fix says.
+   tip. Across VOS commits the tip refuses 1aadf44's store cleanly (`R-07b`), and the swap stream carried the
+   first run's deployment, another program on another commit, into the tip program (`R-07a`): VOS upgrades can
+   go by swap stream, as `G-40`'s fix says. The same program across two commits is not runnable yet (`R-07c`).
 5. **Speed and recovery time.** `pb` is faster on one disk: about 4,500 to 4,800 records/s against VOS's 239 to
    2,979, and a 100k-record swap in 3.0 s against 59 to 82 s. VOS's group commit is visible: one fsync per record alone,
-   0.08 at 64 submitters. No `NFR-1` target exists before `M4`, and VOS's step is mostly rutent's own JSON work
-   inside the guest (1.87M gas). The JIT is only about 1.8 times the interpreter on this step.
-6. **What changed since the first outcome.** The six `pass (adapter)` rows are now the program's own code, as
-   VOS intends. The first outcome's cost argument, that VOS would be a replicated store and not the runtime, no
-   longer holds: the whole host contract runs inside VOS, through a plumbing-only `no_std` copy of `contracts/`.
+   0.08 at 64 submitters. No `NFR-1` target exists before `M4`. A VOS step costs 1.87M gas, the handler and the
+   agent's work together; the runs did not break it down. The JIT is only about 1.8 times the interpreter on this step.
+6. **What changed since the first outcome.** The six `pass (adapter)` rows of the first run (`G-01` to `G-03`,
+   `G-07`, `G-08`, `G-31`; scoring sheet §2) are now the program's own code, as VOS intends. The first outcome's cost argument, that VOS would be a replicated store and not the runtime, no
+   longer holds: the whole host contract runs inside VOS, through a `no_std` copy of `contracts/` whose patch
+   `vos-adapter/nostd.sh check` holds to plumbing only (the workflow's `checks` job).
 7. **A finding for the port.** The guest's canonical JSON is byte-equal to the native host's on every case of the
    corpus, but neither is RFC 8785, which the host contract names: serde_json sorts keys by UTF-8 bytes and
    writes numbers its own way. Dedup compares the guest's bytes with its own, so nothing fails here; the port
@@ -95,7 +98,7 @@ What must be true for v0 to ship on VOS (the rethink's §8), with where each sta
 
 | Precondition | Where it stands |
 |---|---|
-| The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines; the tip's lockfiles lock 277 external packages |
+| The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines, counted from every experiment lockfile; the tip's lockfiles (`vos-adapter/rt`, `vos-adapter/program`) lock 277 external packages |
 | A VOS commit pinned by SHA and mirrored, with its forks (`lsm-tree`, `stwo`, `s4`) | Pinned by SHA here; not mirrored yet (`G-48`) |
 | The state machine inside VOS, passing host contract 2.0.0 on three nodes | Done here, as an experiment. For `M2`, `contracts/` goes `no_std` + `alloc` through a `DEC-4` bump and the owner's click (`DEC-20`); the patch this experiment applied shows it is plumbing only |
 | `G-54` fixed upstream, or its residual accepted for both candidates | Not fixed at the tip. A damaged follower caught up from the leader in these runs; damage to a leader's append, and the single-node residual, are untested |
