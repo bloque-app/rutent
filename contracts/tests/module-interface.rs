@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::module_interface::{
-    self, Address, AddressBlock, CrossModuleCall, Declaration, DeclaredList, OutboundCallRecord,
-    OutsideRequest, OutsideResponse, RuleViolation, SecretAnswer, SecretLookup, SecretOutcome,
+    self, Address, AddressBlock, AdmissionArtefact, CrossModuleCall, Declaration, DeclaredList,
+    OutboundCallRecord, OutsideRequest, OutsideResponse, ReleaseAssertion, RuleViolation,
+    SecretAnswer, SecretLookup, SecretOutcome, Widening,
 };
 use rutent_contracts::provider_role::{self, Advertisement, ResultBody, Statement};
 use serde::de::DeserializeOwned;
@@ -16,7 +17,7 @@ use serde_json::Value;
 
 /// Every schema the contract's shapes reach, by contract and name; each is registered by its `$id`,
 /// `urn:rutent:<contract>:<name>`. The provider-role schemas are referred to, never copied.
-const SCHEMAS: [(&str, &str); 17] = [
+const SCHEMAS: [(&str, &str); 19] = [
     ("module-interface", "common"),
     ("module-interface", "declaration"),
     ("module-interface", "outside-request"),
@@ -25,6 +26,8 @@ const SCHEMAS: [(&str, &str); 17] = [
     ("module-interface", "secret-answer"),
     ("module-interface", "outbound-call-record"),
     ("module-interface", "cross-module-call"),
+    ("module-interface", "release-assertion"),
+    ("module-interface", "admission-artefact"),
     ("provider-role", "common"),
     ("provider-role", "declarations"),
     ("provider-role", "reserve-declaration"),
@@ -40,7 +43,7 @@ const SCHEMAS: [(&str, &str); 17] = [
 /// followed by `-`. `signed-result`, `declared-secret-lookup` and `declared-outbound-call-record` are bundles of
 /// values, not schemas of their own: see [`SignedResult`], [`DeclaredSecretLookup`] and
 /// [`DeclaredOutboundCallRecord`].
-const SHAPES: [&str; 10] = [
+const SHAPES: [&str; 14] = [
     "declaration",
     "outside-request",
     "outside-response",
@@ -51,7 +54,41 @@ const SHAPES: [&str; 10] = [
     "signed-result",
     "declared-secret-lookup",
     "declared-outbound-call-record",
+    "release-assertion",
+    "admission-artefact",
+    "advertised-artefact",
+    "successive-releases",
 ];
+
+/// The members of an `advertised-artefact` bundle: an admission artefact and its provider's enveloped
+/// advertisement, for the release-assertion key rules (`validate_assertion_key`).
+const ADVERTISED_ARTEFACT_MEMBERS: [(&str, &str); 2] = [
+    ("advertisement", "urn:rutent:provider-role:advertisement"),
+    ("artefact", "urn:rutent:module-interface:admission-artefact"),
+];
+
+/// The members of a `successive-releases` bundle: an admitted release and the release that follows it, for the
+/// rules that relate them (`validate_release`).
+const SUCCESSIVE_RELEASES_MEMBERS: [(&str, &str); 2] = [
+    ("previous", "urn:rutent:module-interface:admission-artefact"),
+    ("next", "urn:rutent:module-interface:admission-artefact"),
+];
+
+/// An `advertised-artefact` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdvertisedArtefact {
+    advertisement: Statement<Advertisement>,
+    artefact: AdmissionArtefact,
+}
+
+/// A `successive-releases` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SuccessiveReleases {
+    previous: AdmissionArtefact,
+    next: AdmissionArtefact,
+}
 
 /// The members of a `signed-result` bundle, each with the `$id` of the schema it follows.
 const SIGNED_RESULT_MEMBERS: [(&str, &str); 3] = [
@@ -259,6 +296,62 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             "cross-module-call-route-without-its-segment",
             vec![("/route", "required")],
         ),
+        (
+            "admission-artefact-without-a-signed-assertion",
+            vec![("", "required")],
+        ),
+        (
+            "admission-artefact-with-an-unsigned-assertion",
+            vec![("/assertion", "required")],
+        ),
+        (
+            "admission-artefact-without-its-platform-build-version",
+            vec![("/build", "required")],
+        ),
+        (
+            "admission-artefact-without-its-history",
+            vec![("", "required")],
+        ),
+        (
+            "admission-artefact-without-its-machine-code",
+            vec![("/build", "required")],
+        ),
+        (
+            "admission-artefact-widening-but-accepted-automatically",
+            vec![("/acceptance/required", "const")],
+        ),
+        (
+            "admission-artefact-of-a-first-release-accepted-automatically",
+            vec![("/acceptance/required", "const")],
+        ),
+        (
+            "admission-artefact-of-a-first-release-listing-widenings",
+            vec![("/capabilities/widenings", "maxItems")],
+        ),
+        (
+            "admission-artefact-freshly-accepted-by-no-one",
+            vec![("/acceptance/accepted", "required")],
+        ),
+        (
+            "admission-artefact-with-a-malformed-digest",
+            vec![("/received/outside/value", "pattern")],
+        ),
+        (
+            "admission-artefact-with-a-widening-of-an-unknown-kind",
+            vec![("/capabilities/widenings/0/kind", "enum")],
+        ),
+        (
+            "release-assertion-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "admission-artefact-of-a-first-release-comparing-with-a-version",
+            vec![("/capabilities", "not")],
+        ),
+        (
+            "admission-artefact-with-a-history-comparing-with-nothing",
+            vec![("/capabilities", "required")],
+        ),
     ]
 }
 
@@ -373,6 +466,76 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             "signed-result-made-by-another-provider",
             one(RuleViolation::ResultOfAnotherMaker),
         ),
+        (
+            "admission-artefact-of-an-altered-outside-part",
+            one(RuleViolation::PartAltered {
+                part: module_interface::PartName::Outside,
+            }),
+        ),
+        (
+            "admission-artefact-whose-history-names-its-own-version",
+            one(RuleViolation::VersionAlreadyAdmitted { entry: 0 }),
+        ),
+        (
+            "advertised-artefact-asserted-by-another-maker",
+            one(RuleViolation::AssertionOfAnotherMaker),
+        ),
+        (
+            "advertised-artefact-asserted-with-an-unadvertised-key",
+            one(RuleViolation::AssertionKeyNotAdvertised),
+        ),
+        (
+            "advertised-artefact-asserted-with-the-operator-key",
+            one(RuleViolation::AssertionKeyIsOperatorKey),
+        ),
+        (
+            "advertised-artefact-asserted-with-the-statement-key",
+            one(RuleViolation::AssertionSignedWithStatementKey),
+        ),
+        (
+            "advertised-artefact-checked-against-another-providers-advertisement",
+            one(RuleViolation::AdvertisementOfAnotherProvider),
+        ),
+        (
+            "advertised-artefact-from-another-deployment",
+            one(RuleViolation::AssertionOfAnotherDeployment),
+        ),
+        (
+            "admission-artefact-comparing-with-a-version-its-history-lacks",
+            one(RuleViolation::ComparedWithNotLastAdmitted),
+        ),
+        (
+            "successive-releases-widening-with-no-widening-recorded",
+            one(RuleViolation::WideningsMisrecorded),
+        ),
+        (
+            "successive-releases-of-another-providers-module",
+            one(RuleViolation::ReleaseOfAnotherModule),
+        ),
+        (
+            "successive-releases-asserted-with-the-previous-statement-key",
+            one(RuleViolation::AssertionSignedWithPreviousStatementKey),
+        ),
+        (
+            "successive-releases-of-another-deployment",
+            one(RuleViolation::ReleaseOfAnotherDeployment),
+        ),
+        (
+            "successive-releases-under-another-protocol-version",
+            one(RuleViolation::ReleaseUnderAnotherProtocolVersion),
+        ),
+        (
+            "admission-artefact-whose-history-lists-an-earlier-version-twice",
+            one(RuleViolation::VersionAlreadyAdmitted { entry: 1 }),
+        ),
+        (
+            "successive-releases-with-the-history-not-extended",
+            one(RuleViolation::HistoryNotExtended),
+        ),
+        (
+            "successive-releases-after-a-release-not-yet-accepted",
+            one(RuleViolation::PreviousNotAdmitted),
+        ),
     ]
 }
 
@@ -419,6 +582,34 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
             module_interface::validate_record_secrets(&bundle.declaration, &bundle.record)
                 .map_err(|v| format!("{v:?}"))
         }
+        "release-assertion" => {
+            let statement: Statement<ReleaseAssertion> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            statement
+                .check_shape()
+                .map_err(|_| "ShapeMismatch".to_owned())
+        }
+        "admission-artefact" => run(value, module_interface::validate_artefact),
+        "advertised-artefact" => {
+            let bundle: AdvertisedArtefact =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::validate_statement(&bundle.advertisement)
+                .map_err(|v| format!("advertisement: {v:?}"))?;
+            module_interface::validate_artefact(&bundle.artefact)
+                .map_err(|v| format!("artefact: {v:?}"))?;
+            module_interface::validate_assertion_key(&bundle.artefact, &bundle.advertisement)
+                .map_err(|v| format!("{v:?}"))
+        }
+        "successive-releases" => {
+            let bundle: SuccessiveReleases =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            module_interface::validate_artefact(&bundle.previous)
+                .map_err(|v| format!("previous: {v:?}"))?;
+            module_interface::validate_artefact(&bundle.next)
+                .map_err(|v| format!("next: {v:?}"))?;
+            module_interface::validate_release(&bundle.previous, &bundle.next)
+                .map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -442,6 +633,34 @@ fn signed_result_members_hold(bundle: &SignedResult) -> Result<(), String> {
 /// reject it. Every other schema-rejected fixture must fail to deserialise.
 fn rust_accepts() -> Vec<(&'static str, &'static str)> {
     vec![
+        (
+            "admission-artefact-widening-but-accepted-automatically",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
+        (
+            "admission-artefact-of-a-first-release-accepted-automatically",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
+        (
+            "admission-artefact-of-a-first-release-listing-widenings",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
+        (
+            "admission-artefact-freshly-accepted-by-no-one",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
+        (
+            "release-assertion-under-another-shape",
+            "const: check_shape refuses it, as for every provider-role statement",
+        ),
+        (
+            "admission-artefact-of-a-first-release-comparing-with-a-version",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
+        (
+            "admission-artefact-with-a-history-comparing-with-nothing",
+            "if/then across fields: validate_artefact refuses it too",
+        ),
         (
             "declaration-sandboxed-part-handling-nothing",
             "minItems: handles are a Vec",
@@ -469,6 +688,42 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
         (
             "outbound-call-record-without-hops",
             "minItems: hops are a Vec",
+        ),
+    ]
+}
+
+/// Schema-rejected fixtures in `rust_accepts` that a Rust rule still refuses once deserialised, with that rule as
+/// `rust_rules` names it. Both layers then hold the rule.
+fn rust_also_rejects() -> Vec<(&'static str, String)> {
+    let one = |v: RuleViolation| format!("{:?}", vec![v]);
+    vec![
+        (
+            "admission-artefact-widening-but-accepted-automatically",
+            one(RuleViolation::WidenedReleaseNotFresh),
+        ),
+        (
+            "admission-artefact-of-a-first-release-accepted-automatically",
+            one(RuleViolation::FirstReleaseNotFresh),
+        ),
+        (
+            "admission-artefact-of-a-first-release-listing-widenings",
+            one(RuleViolation::FirstReleaseWithWidenings),
+        ),
+        (
+            "admission-artefact-freshly-accepted-by-no-one",
+            one(RuleViolation::FreshAcceptanceByNoOne),
+        ),
+        (
+            "release-assertion-under-another-shape",
+            "ShapeMismatch".to_owned(),
+        ),
+        (
+            "admission-artefact-of-a-first-release-comparing-with-a-version",
+            one(RuleViolation::ComparedWithNotLastAdmitted),
+        ),
+        (
+            "admission-artefact-with-a-history-comparing-with-nothing",
+            one(RuleViolation::ComparedWithNotLastAdmitted),
         ),
     ]
 }
@@ -532,6 +787,8 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "signed-result" => &SIGNED_RESULT_MEMBERS,
         "declared-secret-lookup" => &DECLARED_SECRET_LOOKUP_MEMBERS,
         "declared-outbound-call-record" => &DECLARED_OUTBOUND_CALL_RECORD_MEMBERS,
+        "advertised-artefact" => &ADVERTISED_ARTEFACT_MEMBERS,
+        "successive-releases" => &SUCCESSIVE_RELEASES_MEMBERS,
         _ => {
             return schema_errors(
                 &validator(&format!("urn:rutent:module-interface:{shape}")),
@@ -584,6 +841,10 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "signed-result" => round_trip::<SignedResult>(value),
         "declared-secret-lookup" => round_trip::<DeclaredSecretLookup>(value),
         "declared-outbound-call-record" => round_trip::<DeclaredOutboundCallRecord>(value),
+        "release-assertion" => round_trip::<Statement<ReleaseAssertion>>(value),
+        "admission-artefact" => round_trip::<AdmissionArtefact>(value),
+        "advertised-artefact" => round_trip::<AdvertisedArtefact>(value),
+        "successive-releases" => round_trip::<SuccessiveReleases>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }
@@ -663,6 +924,17 @@ fn assert_schema_rejects(name: &str) {
             !allowed,
             "invalid fixture {name} is listed in rust_accepts but the Rust types reject it"
         ),
+    }
+    if let Some((_, rule)) = rust_also_rejects().into_iter().find(|(n, _)| *n == name) {
+        assert!(
+            allowed,
+            "{name} is in rust_also_rejects but not rust_accepts"
+        );
+        assert_eq!(
+            rust_rules(shape, &instance),
+            Err(rule),
+            "Rust rule refusing schema-rejected fixture {name}"
+        );
     }
 }
 
@@ -913,6 +1185,316 @@ fn address_forms_agree_between_the_schema_and_rust() {
             !rust || schema,
             "Rust accepts {text}, which the schema refuses"
         );
+    }
+}
+
+/// Asserts each named fixture breaks exactly the Rust rule `rust_rule_fixtures` gives it.
+fn assert_rules_reject(names: &[&str]) {
+    let table = rust_rule_fixtures();
+    for name in names {
+        let (_, rule) = table
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is not a Rust-rule fixture"));
+        assert_rule_rejects(name, rule);
+    }
+}
+
+// verifies: REQ-MDL-1
+#[test]
+fn artefact_without_a_signed_assertion_is_invalid() {
+    assert_schema_rejects("admission-artefact-without-a-signed-assertion");
+    assert_schema_rejects("admission-artefact-with-an-unsigned-assertion");
+}
+
+// verifies: REQ-MDL-1
+#[test]
+fn altered_or_wrongly_signed_release_is_refused() {
+    assert_rules_reject(&[
+        "admission-artefact-of-an-altered-outside-part",
+        "advertised-artefact-asserted-by-another-maker",
+        "advertised-artefact-asserted-with-an-unadvertised-key",
+        "advertised-artefact-asserted-with-the-operator-key",
+        "advertised-artefact-asserted-with-the-statement-key",
+        "advertised-artefact-checked-against-another-providers-advertisement",
+        "advertised-artefact-from-another-deployment",
+        "successive-releases-of-another-providers-module",
+        "successive-releases-asserted-with-the-previous-statement-key",
+        "successive-releases-of-another-deployment",
+        "successive-releases-under-another-protocol-version",
+    ]);
+    assert_schema_rejects("release-assertion-under-another-shape");
+}
+
+// verifies: REQ-MDL-2, REQ-MDL-15
+#[test]
+fn artefact_records_the_build_that_made_its_machine_code() {
+    // Both layers refuse an artefact that doesn't say which platform build made its machine code, or what that
+    // machine code was: without them, what runs can't be traced or re-derived.
+    assert_schema_rejects("admission-artefact-without-its-platform-build-version");
+    assert_schema_rejects("admission-artefact-without-its-machine-code");
+}
+
+// verifies: REQ-MDL-3
+#[test]
+fn release_widening_capabilities_is_marked_for_fresh_acceptance() {
+    assert_schema_rejects("admission-artefact-widening-but-accepted-automatically");
+    assert_schema_rejects("admission-artefact-of-a-first-release-accepted-automatically");
+    // A first release can't pass as a later one by naming a predecessor its history lacks.
+    assert_schema_rejects("admission-artefact-of-a-first-release-comparing-with-a-version");
+    assert_rules_reject(&[
+        "successive-releases-widening-with-no-widening-recorded",
+        "admission-artefact-comparing-with-a-version-its-history-lacks",
+    ]);
+    let pair: SuccessiveReleases = serde_json::from_value(fixture(
+        "valid",
+        "successive-releases-widening-and-marked-for-fresh-acceptance",
+    ))
+    .expect("deserialises");
+    let computed = module_interface::widening(pair.previous.declaration(), pair.next.declaration());
+    assert!(!computed.is_empty(), "the release widens");
+    assert_eq!(pair.next.capabilities.widenings, computed);
+    assert_eq!(
+        pair.next.acceptance.required,
+        module_interface::AcceptanceMode::Fresh
+    );
+}
+
+/// A declaration from the pinned-blocks fixture, changed by `change`.
+fn declaration_with(change: impl Fn(&mut Value)) -> Declaration {
+    let mut value = fixture("valid", "declaration-destinations-pinned-to-address-blocks");
+    change(&mut value);
+    let declaration: Declaration = serde_json::from_value(value).expect("deserialises");
+    module_interface::validate_declaration(&declaration).expect("a valid declaration");
+    declaration
+}
+
+fn unchanged(_: &mut Value) {}
+
+fn with_call(kinds: &'static [&'static str]) -> impl Fn(&mut Value) {
+    move |d: &mut Value| {
+        d["outside"]["calls"] = serde_json::json!([{ "callee": "bridge-pay", "kinds": kinds }]);
+    }
+}
+
+fn with_blocks(destination: usize, blocks: &'static [&'static str]) -> impl Fn(&mut Value) {
+    move |d: &mut Value| {
+        d["outside"]["destinations"][destination]["addresses"] = serde_json::json!(blocks)
+    }
+}
+
+// verifies: REQ-MDL-3
+#[test]
+fn widening_lists_every_widening_and_no_narrowing() {
+    type Change = Box<dyn Fn(&mut Value)>;
+    let cases: Vec<(&str, Change, Change, Value)> = vec![
+        (
+            "a new operation",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!(
+                        { "name": "statements.list", "destinations": ["bank_api"], "secrets": [] }
+                    ))
+            }),
+            serde_json::json!([{ "kind": "operation", "operation": "statements.list" }]),
+        ),
+        (
+            "a destination an operation gains",
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"][0]["destinations"] = serde_json::json!(["bank_api"])
+            }),
+            Box::new(unchanged),
+            serde_json::json!([{ "kind": "operation_destination", "operation": "statements.fetch", "destination": "bank_files" }]),
+        ),
+        (
+            "a secret an operation gains",
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"][0]["secrets"] =
+                    serde_json::json!(["bank.client_certificate"])
+            }),
+            Box::new(unchanged),
+            serde_json::json!([{ "kind": "operation_secret", "operation": "statements.fetch", "secret": "bank.client_key" }]),
+        ),
+        (
+            "a new secret",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["secrets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!("bank.archive_key"))
+            }),
+            serde_json::json!([{ "kind": "secret", "secret": "bank.archive_key" }]),
+        ),
+        (
+            "a destination of the same name at another host",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["destinations"][0]["host"] = serde_json::json!("elsewhere.example")
+            }),
+            serde_json::json!([{ "kind": "destination", "destination": "bank_api" }]),
+        ),
+        (
+            "blocks opened to public",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["destinations"][1]["addresses"] = serde_json::json!("public")
+            }),
+            serde_json::json!([{ "kind": "addresses", "destination": "bank_files" }]),
+        ),
+        (
+            "a block no old block contains",
+            Box::new(unchanged),
+            Box::new(with_blocks(1, &["185.12.65.16/28", "185.12.70.0/24"])),
+            serde_json::json!([{ "kind": "addresses", "destination": "bank_files" }]),
+        ),
+        (
+            "a block only the union of two old blocks covers",
+            Box::new(with_blocks(1, &["185.12.65.0/25", "185.12.65.128/25"])),
+            Box::new(with_blocks(1, &["185.12.65.0/24"])),
+            serde_json::json!([{ "kind": "addresses", "destination": "bank_files" }]),
+        ),
+        (
+            "a new callee",
+            Box::new(unchanged),
+            Box::new(with_call(&["transfer"])),
+            serde_json::json!([{ "kind": "call", "callee": "bridge-pay" }]),
+        ),
+        (
+            "a new kind asked of an existing callee",
+            Box::new(with_call(&["transfer"])),
+            Box::new(with_call(&["transfer", "conversion"])),
+            serde_json::json!([{ "kind": "call_kind", "callee": "bridge-pay", "operation_kind": "conversion" }]),
+        ),
+        (
+            "a changed statement-signing key",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["statement_key"] =
+                    serde_json::json!("CAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJic")
+            }),
+            serde_json::json!([{ "kind": "statement_key" }]),
+        ),
+        (
+            "nothing changed",
+            Box::new(unchanged),
+            Box::new(unchanged),
+            serde_json::json!([]),
+        ),
+        (
+            "an operation removed",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| d["outside"]["operations"] = serde_json::json!([])),
+            serde_json::json!([]),
+        ),
+        (
+            "a destination an operation loses",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"][0]["destinations"] = serde_json::json!(["bank_api"])
+            }),
+            serde_json::json!([]),
+        ),
+        (
+            "a block narrowed",
+            Box::new(unchanged),
+            Box::new(with_blocks(0, &["185.12.64.0/25"])),
+            serde_json::json!([]),
+        ),
+        (
+            "public narrowed to blocks",
+            Box::new(|d: &mut Value| {
+                d["outside"]["destinations"][1]["addresses"] = serde_json::json!("public")
+            }),
+            Box::new(unchanged),
+            serde_json::json!([]),
+        ),
+        (
+            "a kind no longer asked of a callee",
+            Box::new(with_call(&["transfer", "conversion"])),
+            Box::new(with_call(&["transfer"])),
+            serde_json::json!([]),
+        ),
+        (
+            "a callee no longer called",
+            Box::new(with_call(&["transfer"])),
+            Box::new(unchanged),
+            serde_json::json!([]),
+        ),
+        (
+            "a secret moved from one operation to another",
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!(
+                        { "name": "statements.list", "destinations": ["bank_api"], "secrets": [] }
+                    ))
+            }),
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"][0]["secrets"] =
+                    serde_json::json!(["bank.client_certificate"]);
+                d["outside"]["operations"].as_array_mut().unwrap().push(serde_json::json!(
+                    { "name": "statements.list", "destinations": ["bank_api"], "secrets": ["bank.client_key"] }
+                ))
+            }),
+            serde_json::json!([{ "kind": "operation_secret", "operation": "statements.list", "secret": "bank.client_key" }]),
+        ),
+        (
+            "an operation renamed",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["outside"]["operations"][0]["name"] = serde_json::json!("statements.download")
+            }),
+            serde_json::json!([{ "kind": "operation", "operation": "statements.download" }]),
+        ),
+        (
+            "a call to another callee",
+            Box::new(with_call(&["transfer"])),
+            Box::new(|d: &mut Value| {
+                d["outside"]["calls"] =
+                    serde_json::json!([{ "callee": "chain-bridge", "kinds": ["transfer"] }])
+            }),
+            serde_json::json!([{ "kind": "call", "callee": "chain-bridge" }]),
+        ),
+        (
+            "a reversal now asked of an existing callee",
+            Box::new(with_call(&["transfer"])),
+            Box::new(with_call(&["transfer", "reversal"])),
+            serde_json::json!([{ "kind": "call_kind", "callee": "bridge-pay", "operation_kind": "reversal" }]),
+        ),
+        (
+            "a new callee asked only for reversal confirmations",
+            Box::new(unchanged),
+            Box::new(
+                |d: &mut Value| d["outside"]["calls"] = serde_json::json!([{ "callee": "polygon-wallet-reserve", "kinds": ["reversal_confirmation"] }]),
+            ),
+            serde_json::json!([{ "kind": "call", "callee": "polygon-wallet-reserve" }]),
+        ),
+        (
+            "a reversal confirmation now asked of an existing callee",
+            Box::new(with_call(&["transfer"])),
+            Box::new(with_call(&["transfer", "reversal_confirmation"])),
+            serde_json::json!([{ "kind": "call_kind", "callee": "bridge-pay", "operation_kind": "reversal_confirmation" }]),
+        ),
+        (
+            "reversals no longer asked of a callee",
+            Box::new(with_call(&[
+                "transfer",
+                "reversal",
+                "reversal_confirmation",
+            ])),
+            Box::new(with_call(&["transfer"])),
+            serde_json::json!([]),
+        ),
+    ];
+    for (case, old, new, expected) in cases {
+        let found = module_interface::widening(&declaration_with(old), &declaration_with(new));
+        let expected: Vec<Widening> = serde_json::from_value(expected).expect("expected widenings");
+        assert_eq!(found, expected, "widenings for {case}");
     }
 }
 

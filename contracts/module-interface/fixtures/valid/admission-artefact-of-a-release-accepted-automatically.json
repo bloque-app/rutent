@@ -1,0 +1,136 @@
+{
+  "assertion": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "0.3.0",
+    "shape": "urn:rutent:module-interface:release-assertion",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T09:00:00Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+      "value": "-Io0N0IW7w7KwkuDY0pWTqLPW-oi5gawujnvcNZLOeDM9hqLKgrOGx-rk01yK4tpaHbVPuNB7EjAyFk0BbrdBw"
+    },
+    "statement": {
+      "declaration": {
+        "provider": "acme-co",
+        "version": "1.4.3",
+        "interface": "0.1.0",
+        "sandboxed": {
+          "handles": [
+            "withdrawal",
+            "deposit",
+            "balance_verification"
+          ]
+        },
+        "outside": {
+          "operations": [
+            {
+              "name": "statements.fetch",
+              "destinations": [
+                "bank_api",
+                "bank_files"
+              ],
+              "secrets": [
+                "bank.client_certificate",
+                "bank.client_key"
+              ]
+            }
+          ],
+          "destinations": [
+            {
+              "name": "bank_api",
+              "scheme": "https",
+              "host": "api.acme-bank.example",
+              "port": 8443,
+              "addresses": [
+                "185.12.64.0/25"
+              ]
+            },
+            {
+              "name": "bank_files",
+              "scheme": "https",
+              "host": "files.acme-bank.example",
+              "port": 443,
+              "addresses": [
+                "185.12.65.16/28"
+              ]
+            }
+          ],
+          "secrets": [
+            "bank.client_certificate",
+            "bank.client_key"
+          ],
+          "calls": [],
+          "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        }
+      },
+      "parts": {
+        "sandboxed": {
+          "format": "example-portable-format",
+          "digest": {
+            "algorithm": "sha-256",
+            "value": "c5f39f314986e128fa6ac3e3295159271eaf866b4d698c647365ed5549e30b26"
+          }
+        },
+        "outside": {
+          "format": "example-portable-format",
+          "digest": {
+            "algorithm": "sha-256",
+            "value": "8fe0b9e7890adc20e2fa7c90d38a33cca4a82b22c5ffee0ba12b4599ed16b05f"
+          }
+        }
+      }
+    }
+  },
+  "assertion_digest": {
+    "algorithm": "sha-256",
+    "value": "10bed65b77c94d30defb322c59bc26214f07f4fb3cb6c4817149aa37ba85be2c"
+  },
+  "received": {
+    "sandboxed": {
+      "algorithm": "sha-256",
+      "value": "c5f39f314986e128fa6ac3e3295159271eaf866b4d698c647365ed5549e30b26"
+    },
+    "outside": {
+      "algorithm": "sha-256",
+      "value": "8fe0b9e7890adc20e2fa7c90d38a33cca4a82b22c5ffee0ba12b4599ed16b05f"
+    }
+  },
+  "build": {
+    "platform_version": "0.1.0+compiler.1",
+    "machine_code": {
+      "sandboxed": {
+        "algorithm": "sha-256",
+        "value": "3dfd4ac395f7a93cd457e87123233b7be155aa0a7abb975ae285e10baaee1f5b"
+      },
+      "outside": {
+        "algorithm": "sha-256",
+        "value": "31c390649f36f6ff5cf2be13c4e3aac4ac0b668a777672820d85b5d1766f2fb5"
+      }
+    }
+  },
+  "history": [
+    {
+      "version": "1.4.2",
+      "assertion_digest": {
+        "algorithm": "sha-256",
+        "value": "4653da5dcde5b3a9d5e8969d9c1dce4bcecc7b6f3e7f44ba68d924545a5b9271"
+      },
+      "admitted_at": "2026-11-06T10:00:00Z",
+      "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    }
+  ],
+  "capabilities": {
+    "compared_with": "1.4.2",
+    "widenings": []
+  },
+  "acceptance": {
+    "required": "automatic",
+    "accepted": {
+      "at": "2026-11-07T10:00:00Z"
+    }
+  }
+}

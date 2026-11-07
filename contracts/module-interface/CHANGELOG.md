@@ -1,5 +1,21 @@
 # module-interface changelog
 
+## 0.3.0
+- Module admission: the provider's signed release assertion, in the provider-role envelope under the JCS and
+  Ed25519 signing rule, with the release's declaration and each part's portable binary by format and SHA-256
+  digest; and the platform's admission artefact, with the received digests, the platform build version and
+  machine-code digests, the version history, the widenings and the acceptance. (DEC-4, T-003-02)
+- `widening` computes a release's widenings from two declarations, narrowing never marked; a widening release and
+  a first release, one with no history, require a fresh acceptance, which names who gave it; a release compares
+  with the last version its history names. (DEC-4, T-003-02)
+- `validate_artefact`, `validate_assertion_key` and `validate_release` refuse an altered part, an assertion not the
+  provider's or signed with a key it doesn't advertise, the operator's key or the statement-signing key, and a
+  release that doesn't follow an accepted release of the same module or misrecords its widenings, with
+  `advertised-artefact-` and `successive-releases-` fixtures. (DEC-4, T-003-02)
+- After review: a history entry records the statement-signing key its release declared, and `validate_release`
+  refuses an assertion signed with any statement-signing key an earlier release declared, and a release of
+  another deployment or protocol version than the one it follows. (DEC-4, T-003-02)
+
 ## 0.2.0
 - A module may handle, and a call may ask, provider-role 0.4.0's two new kinds: `reversal`, an exchange's or
   ramp's true undo of a segment (REQ-CAT-15), and `reversal_confirmation`, a reserve's signed word that one

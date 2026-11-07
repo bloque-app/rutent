@@ -6,12 +6,13 @@ a module into a **sandboxed part** and an **outside part**, and states:
 - what each part may declare;
 - what crosses between them, and what leaves the outside part;
 - the record of every outbound call (`REQ-MDL-8`);
-- the declared calls between modules (`REQ-MDL-21`).
+- the declared calls between modules (`REQ-MDL-21`);
+- how a release is admitted: the provider's signed release assertion, and the platform's admission artefact that
+  binds it to what runs (`REQ-MDL-1`, `REQ-MDL-2`, `REQ-MDL-3`, `REQ-MDL-15`).
 
 It is format-neutral and language-neutral (`DEC-4`). Nothing here assumes Wasm, PVM or any module format, and
 nothing names an import, an export or a host function. Bindings to a format belong to `EXP-2` (`T-008-*`). The
-admission artefact that carries the declaration under a signed assertion is `T-003-02`; the module-boundary suite
-that runs hostile modules against it is `T-003-03`.
+module-boundary suite that runs hostile modules against this contract is `T-003-03`.
 
 ## Schemas
 
@@ -24,15 +25,19 @@ that runs hostile modules against it is `T-003-03`.
 | `urn:rutent:module-interface:secret-answer` | `schemas/secret-answer.schema.json` | Credential proxy to outside part: the value, or a refusal |
 | `urn:rutent:module-interface:outbound-call-record` | `schemas/outbound-call-record.schema.json` | The platform's record of one outbound call, hop by hop |
 | `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record |
-| `urn:rutent:module-interface:common` | `schemas/common.schema.json` | Shared atoms: declared name, scheme, host, port, address, address block, refusal reason |
+| `urn:rutent:module-interface:release-assertion` | `schemas/release-assertion.schema.json` | The provider's signed assertion of one release: its declaration and each part's portable binary, by format and digest |
+| `urn:rutent:module-interface:admission-artefact` | `schemas/admission-artefact.schema.json` | The platform's record of one admitted release: the assertion, what was received, the build that made the machine code, the version history, the widenings and the acceptance |
+| `urn:rutent:module-interface:common` | `schemas/common.schema.json` | Shared atoms: declared name, scheme, host, port, address, address block, refusal reason, digest |
 
 The schemas refer to each other by `$id`, and to the provider-role contract's by its `$id`s: its identifiers,
 versions, times, operation kinds and operations (`urn:rutent:provider-role:common`,
 `urn:rutent:provider-role:operation`). A validator registers both contracts' schemas and needs nothing from the
 network. A fixture's file name starts with its shape: `declaration-`, `outside-request-`, `outside-response-`,
 `secret-lookup-`, `secret-answer-`, `outbound-call-record-`, `cross-module-call-`, `signed-result-`,
-`declared-secret-lookup-` or `declared-outbound-call-record-`. The last three are bundles, not shapes of their own,
-for rules that relate several values.
+`declared-secret-lookup-`, `declared-outbound-call-record-`, `release-assertion-`, `admission-artefact-`,
+`advertised-artefact-` or `successive-releases-`. `signed-result-`, `declared-secret-lookup-`,
+`declared-outbound-call-record-`, `advertised-artefact-` and `successive-releases-` are bundles, not shapes of their
+own, for rules that relate several values.
 Each member is checked against its own schema and its own contract's rules, so an invalid bundle breaks only the
 rule it is named for:
 
@@ -42,7 +47,11 @@ rule it is named for:
 - a `declared-secret-lookup-` fixture holds a module's `declaration` and a secret `lookup` its outside part makes,
   for the rule that a lookup's operation declares its secret;
 - a `declared-outbound-call-record-` fixture holds a module's `declaration` and an outbound call `record` of it,
-  for the rule that a record's secrets are its operation's.
+  for the rule that a record's secrets are its operation's;
+- an `advertised-artefact-` fixture holds an admission `artefact` and its provider's enveloped `advertisement`, for
+  the release-assertion key rules;
+- a `successive-releases-` fixture holds an admitted `previous` release's artefact and the `next` one's, for the
+  rules that relate a release to the one it follows, widening included.
 
 ## The split
 
@@ -144,6 +153,70 @@ Ruled by the orchestrator, 2026-11-06 (`DEC-4`, `T-003-01`):
   - the result's `signature.key` equals it (`ResultNotSignedWithStatementKey`).
 
   It compares keys, deployments and makers only. Verifying the signature itself is `M2` and `M3` work, as in the provider-role contract.
+
+## Admission
+
+Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
+
+- **The provider asserts it.** The release assertion (`urn:rutent:module-interface:release-assertion`) is the
+  provider's statement in the provider-role envelope, under the same signing rule as every party statement: the
+  RFC 8785 (JCS) canonical JSON of the whole envelope with only the top-level `signature.value` removed, Ed25519.
+  - It holds the release's declaration, whole, which names the provider and the module version, and the portable
+    binary of each part, by `format` and `digest` (`REQ-MDL-15`). Both parts are asserted, since the outside part
+    holds real credentials (`REQ-MDL-1`, `THR-82`).
+  - A `format` is a name only. The contract names no format; binding one is `EXP-2`'s (`DEC-4`).
+  - Its maker is the provider, and its key is one of the provider's advertised `keys` (`REQ-MDL-1`, `REQ-CAT-2`).
+    The key is never the deployment's `operator_key`, and never the declaration's `statement_key`: the running
+    outside part can resolve that key, so running code could otherwise sign its own next release (`THR-4`).
+- **The platform records it.** The admission artefact (`urn:rutent:module-interface:admission-artefact`) is the
+  platform's record, written by `CMP-PROV`, never by the module. It binds what was approved to what runs
+  (`REQ-MDL-1`):
+  - `assertion`, as received. An artefact without one, or with one carrying no signature, is invalid;
+  - `assertion_digest`, the platform's digest of the assertion as received, by which a later release names this
+    one;
+  - `received`, the digests the platform computed of the two binaries it received. Each must equal the asserted
+    one, or the part was altered (`PartAltered`);
+  - `build`, the exact platform version, its compiler included, that made the machine code, and each part's
+    machine-code digest, so what runs can be traced and re-derived and compared after a flaw is found
+    (`REQ-MDL-2`, `THR-18`). By design, `build.machine_code` is tied to nothing this contract can check: only
+    re-deriving the machine code from the admitted binary with the same platform version, and comparing, tests it;
+  - `history`, the module's earlier admitted releases, oldest first, by version and assertion digest, each with
+    the statement-signing key it declared;
+  - `capabilities`, the version it compares with, the last its history names, and its `widenings`;
+  - `acceptance`, `automatic` or `fresh`, and once given, when, and for a fresh one, by whom.
+- **Widening** (`REQ-MDL-3`, `AC-21`). `widening(previous, next)` computes every way a release widens the one it
+  follows, from the two declarations, in the order of the new declaration's lists:
+  - a new outside operation, and a destination or secret an existing one gains;
+  - a new secret;
+  - a new destination, or one of the same name at another scheme, host or port, and a destination's addresses
+    grown: from blocks to `public`, or by a block no single old block contains;
+  - a new callee, and a new kind asked of an existing callee;
+  - a changed statement-signing key.
+
+  Narrowing is never listed: anything removed, a block within an old one, or `public` replaced by blocks, which can
+  only be globally routable ones (`SpecialPurposeAddressBlock`). A block covered only by the union of several old
+  blocks is listed, since containment is checked against single blocks, which errs towards a fresh acceptance.
+- **Fresh acceptance.** A release that widens anything requires a fresh acceptance, even where acceptance is
+  otherwise automated. So does a first release, which has no history, compares with nothing and lists no widening.
+  "First" is decided by the history, never by `compared_with` alone, so a release can't pass as a later one by
+  naming a predecessor it doesn't have (`ComparedWithNotLastAdmitted`). A fresh
+  acceptance names who gave it. The schema holds these, and so does `validate_artefact`.
+- **Checks across values.**
+  - `validate_assertion_key(artefact, advertisement)` checks the assertion's maker, deployment and key against the
+    provider's enveloped advertisement.
+  - `validate_release(previous, next)` checks that a release follows the one before it:
+    - both are one provider's module, so a publisher can't replace another's, in one deployment and protocol
+      version;
+    - its assertion isn't signed with a statement-signing key any earlier release declared. The previous
+      release's outside part could resolve its key, so a compromised release could otherwise sign its successor
+      and declare a new key, which a fresh acceptance would show only as a rotation;
+    - the previous release was accepted;
+    - the history is the previous one's, extended by it, so it compares with the previous version;
+    - its recorded widenings are exactly the computed ones, so a widening release can't be recorded as unchanged
+      and pass as automatic.
+- **Not shaped here.** Staging, stale marks, re-derivation results and the emergency bypass (`REQ-MDL-4`,
+  `REQ-MDL-5`, ADR-0014) are `CMP-PROV`'s lifecycle, not the artefact's. So is computing digests and verifying
+  signatures, which the contract states and checks the form of (`M2`, `M3`).
 
 ## Destinations and ADR-0004's checks
 
@@ -248,6 +321,15 @@ governs.
 | A declared call names kinds, carries no credentials, and isn't to the module's own provider | schema; Rust, `DeclaredCallToOwnProvider` | `declaration-call-without-kinds`, `declaration-call-carrying-credentials`, `declaration-call-to-its-own-provider` |
 | An outside request names its transaction, and neither a secret nor a destination | schema | `outside-request-without-a-transaction`, `outside-request-naming-a-secret`, `outside-request-naming-a-destination` |
 | An outside response's refusal states its reason; an unknown outcome carries nothing | schema | `outside-response-refused-without-a-reason`, `outside-response-unknown-carrying-a-body` |
+| An admission artefact holds a signed assertion, the platform build version, the machine-code digests and its history | schema | `admission-artefact-without-a-signed-assertion`, `admission-artefact-with-an-unsigned-assertion`, `admission-artefact-without-its-platform-build-version`, `admission-artefact-without-its-machine-code`, `admission-artefact-without-its-history` |
+| A digest is SHA-256 in 64 lower-case hexadecimal characters; a widening is of a known kind | schema, and Rust | `admission-artefact-with-a-malformed-digest`, `admission-artefact-with-a-widening-of-an-unknown-kind` |
+| A release assertion names its own shape | schema (`const`), and Rust (`check_shape`, `AssertionUnderAnotherShape` in an artefact) | `release-assertion-under-another-shape` |
+| A widening release and a first release require a fresh acceptance; a first release lists no widening; a fresh acceptance names who gave it | schema (`if`/`then`), and Rust (`validate_artefact`: `WidenedReleaseNotFresh`, `FirstReleaseNotFresh`, `FirstReleaseWithWidenings`, `FreshAcceptanceByNoOne`) | `admission-artefact-widening-but-accepted-automatically`, `admission-artefact-of-a-first-release-accepted-automatically`, `admission-artefact-of-a-first-release-listing-widenings`, `admission-artefact-freshly-accepted-by-no-one` |
+| Each part is received as asserted; the history names no version twice, nor its own | Rust, `PartAltered`, `VersionAlreadyAdmitted` | `admission-artefact-of-an-altered-outside-part`, `admission-artefact-whose-history-names-its-own-version`, `admission-artefact-whose-history-lists-an-earlier-version-twice` |
+| A release assertion is the provider's, of the advertisement's deployment, signed with an advertised key that is neither the operator's nor the statement-signing key | Rust, `validate_assertion_key`: `AdvertisementOfAnotherProvider`, `AssertionOfAnotherMaker`, `AssertionOfAnotherDeployment`, `AssertionKeyNotAdvertised`, `AssertionKeyIsOperatorKey`, `AssertionSignedWithStatementKey` | `advertised-artefact-checked-against-another-providers-advertisement`, `advertised-artefact-asserted-by-another-maker`, `advertised-artefact-from-another-deployment`, `advertised-artefact-asserted-with-an-unadvertised-key`, `advertised-artefact-asserted-with-the-operator-key`, `advertised-artefact-asserted-with-the-statement-key` |
+| A release follows an accepted release of the same module, in the same deployment and protocol version, extends its history and records exactly the computed widenings | Rust, `validate_release`: `ReleaseOfAnotherModule`, `ReleaseOfAnotherDeployment`, `ReleaseUnderAnotherProtocolVersion`, `PreviousNotAdmitted`, `HistoryNotExtended`, `WideningsMisrecorded` | `successive-releases-of-another-providers-module`, `successive-releases-of-another-deployment`, `successive-releases-under-another-protocol-version`, `successive-releases-after-a-release-not-yet-accepted`, `successive-releases-with-the-history-not-extended`, `successive-releases-widening-with-no-widening-recorded` |
+| A release isn't asserted with a statement-signing key any earlier release declared | Rust, `validate_release`, `AssertionSignedWithPreviousStatementKey` | `successive-releases-asserted-with-the-previous-statement-key` |
+| A release compares with the last version its history names; a first release, with no history, with none | schema (`if`/`then` on presence), and Rust (`validate_artefact`, `ComparedWithNotLastAdmitted`, which also checks the version) | `admission-artefact-of-a-first-release-comparing-with-a-version`, `admission-artefact-with-a-history-comparing-with-nothing`, `admission-artefact-comparing-with-a-version-its-history-lacks` |
 | A secret lookup names its transaction and its outside operation, and no provider | schema | `secret-lookup-without-a-transaction`, `secret-lookup-without-an-operation`, `secret-lookup-naming-a-provider` |
 | An outbound call record's secrets are ones its operation declares, and the record is the declared module's | Rust, `validate_record_secrets`: `RecordedSecretUndeclaredForOperation`, `RecordOfAnotherModule` | `declared-outbound-call-record-using-a-secret-its-operation-does-not-declare`, `declared-outbound-call-record-of-another-module-version` |
 | A secret lookup's operation is declared, and declares the secret | Rust, `validate_lookup`: `LookupForUndeclaredOperation`, `SecretUndeclaredForOperation` | `declared-secret-lookup-for-an-undeclared-operation`, `declared-secret-lookup-of-a-secret-its-operation-does-not-declare` |
@@ -286,7 +368,8 @@ modules:
 
 Every invalid fixture is also run through its Rust type. Most fail there too. The ones that deserialise, because
 only a schema can reject them (a pattern on a host, `minItems`, `uniqueItems`), are listed by name with the reason
-in `rust_accepts`. The test checks that list both ways.
+in `rust_accepts`. The test checks that list both ways. Where a Rust rule refuses such a fixture once deserialised,
+as for the admission artefact's `if`/`then` rules, `rust_also_rejects` names that rule, and the test checks it.
 
 ## Tests
 
@@ -298,6 +381,7 @@ in `rust_accepts`. The test checks that list both ways.
   - A Rust rejection must give exactly the named violation.
   - The Rust types are checked against `rust_accepts`.
 - It checks the address and address-block forms against both layers, from a table of each form's verdicts.
+- It checks `widening` against a table of every widening and every narrowing, one change at a time.
 - It checks that a resolved secret's `Debug` output, at every level, never contains its value (`THR-50`).
 - It checks that `VERSION` matches this changelog.
 

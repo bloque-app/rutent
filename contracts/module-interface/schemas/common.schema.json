@@ -65,6 +65,43 @@
         "redirect_to_undeclared_destination",
         "limit_reached"
       ]
+    },
+    "digest": {
+      "description": "A SHA-256 digest (FIPS 180-4) of the bytes it names, as 64 lower-case hexadecimal characters, its one text form. The contract states digests; computing and comparing them against bytes is the platform's (CMP-PROV).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "sha-256"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "part_digests": {
+      "description": "One digest for each of a module's two parts.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sandboxed",
+        "outside"
+      ],
+      "properties": {
+        "sandboxed": {
+          "$ref": "#/$defs/digest"
+        },
+        "outside": {
+          "$ref": "#/$defs/digest"
+        }
+      }
     }
   }
 }

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:release-assertion",
+  "title": "Release assertion",
+  "description": "The provider's signed assertion of one module release (REQ-MDL-1, REQ-MDL-15): the capability declaration it releases and the portable binary of each of its two parts, by format and digest, in the provider-role statement envelope. Its maker is the provider, and it is signed under the provider-role signing rule (RFC 8785 canonical JSON of the whole envelope with only the top-level signature.value removed, Ed25519) with one of the keys the provider's advertisement publishes. That key is never the deployment's operator_key and never the declaration's statement_key, which the running outside part can resolve. Checking the key against the advertisement is done in Rust, not by this schema.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:module-interface:release-assertion"
+    },
+    "statement": {
+      "$ref": "#/$defs/release"
+    }
+  },
+  "$defs": {
+    "release": {
+      "description": "What the provider asserts it releases.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declaration",
+        "parts"
+      ],
+      "properties": {
+        "declaration": {
+          "description": "The release's capability declaration, whole (REQ-MDL-3). It names the module's provider and version.",
+          "$ref": "urn:rutent:module-interface:declaration"
+        },
+        "parts": {
+          "description": "The portable binary of each part, both admitted, since the outside part holds real credentials (REQ-MDL-1, THR-82).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sandboxed",
+            "outside"
+          ],
+          "properties": {
+            "sandboxed": {
+              "$ref": "#/$defs/part"
+            },
+            "outside": {
+              "$ref": "#/$defs/part"
+            }
+          }
+        }
+      }
+    },
+    "part": {
+      "description": "One part's portable binary: its format and the digest of its bytes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "digest"
+      ],
+      "properties": {
+        "format": {
+          "description": "The portable binary format, by name. The contract names no format: binding one, such as Wasm or PVM, is EXP-2's (DEC-4, REQ-MDL-15).",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "maxLength": 64
+        },
+        "digest": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
+    }
+  }
+}

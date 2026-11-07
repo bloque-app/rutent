@@ -1,0 +1,285 @@
+{
+  "advertisement": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "0.3.0",
+    "shape": "urn:rutent:provider-role:advertisement",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "provider": "acme-co",
+      "publisher": "acme",
+      "version": "1.4.0",
+      "keys": [
+        {
+          "scheme": "ed25519",
+          "public_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        {
+          "scheme": "ed25519",
+          "public_key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg"
+        }
+      ],
+      "offers": {
+        "reserve": {
+          "tuples": [
+            {
+              "origin": {
+                "network": "co-bank-transfer"
+              },
+              "destination": "acme-ledger",
+              "asset": "COP",
+              "decimals": {
+                "origin": 2,
+                "destination": 2
+              },
+              "terms": {
+                "bands": [
+                  {
+                    "min": "100000",
+                    "max": "5000000000"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": [
+                  "payer.bank_account"
+                ]
+              }
+            },
+            {
+              "origin": "acme-ledger",
+              "destination": {
+                "network": "co-bank-transfer"
+              },
+              "asset": "COP",
+              "decimals": {
+                "origin": 2,
+                "destination": 2
+              },
+              "terms": {
+                "bands": [
+                  {
+                    "min": "100000",
+                    "max": "5000000000"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": [
+                  "beneficiary.bank_account",
+                  "beneficiary.name"
+                ]
+              }
+            }
+          ],
+          "declaration": {
+            "can_require_user_initiated_withdrawal": true,
+            "starts_routes_on_automatic_deposits": false,
+            "maker": "acme-co",
+            "declared_in_version": "1.2.0"
+          }
+        },
+        "exchange": {
+          "tuples": [
+            {
+              "node": "acme-ledger",
+              "from": {
+                "id": "COP",
+                "decimals": 2
+              },
+              "to": {
+                "id": "USDC",
+                "decimals": 6
+              },
+              "terms": {
+                "bands": [
+                  {
+                    "min": "100000",
+                    "max": "2000000000"
+                  }
+                ],
+                "increment": "100",
+                "reporting": "gross",
+                "required_inputs": []
+              }
+            }
+          ]
+        },
+        "ramp": {
+          "tuples": [
+            {
+              "origin": "acme-ledger",
+              "destination": "polygon",
+              "asset": "USDC",
+              "decimals": {
+                "origin": 6,
+                "destination": 6
+              },
+              "terms": {
+                "bands": [
+                  {
+                    "min": "1000000",
+                    "max": "500000000000"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": [
+                  "beneficiary.address"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "declarations": {
+        "tracking": [
+          "identifier",
+          "status_query"
+        ],
+        "evidence": {
+          "grade": 3,
+          "availability": {
+            "seconds": 7776000
+          }
+        },
+        "safe_retry": true
+      },
+      "private_nodes": [
+        "acme-ledger"
+      ]
+    }
+  },
+  "artefact": {
+    "assertion": {
+      "deployment": {
+        "name": "rutent-test",
+        "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "protocol_version": "0.3.0",
+      "shape": "urn:rutent:module-interface:release-assertion",
+      "maker": "acme-co",
+      "made_at": "2026-11-06T09:00:00Z",
+      "signature": {
+        "scheme": "ed25519",
+        "key": "x2q2JZUl9HcDvwqcX1wWKZH3tYV3vs26oFOdG-KSeNU",
+        "value": "_g_FPZQ4P8XwQ9sO4IlMBTMkrJU82ghtBi49Kcvwqq0uu1ATiyyjjboEhhS-SQEU5rL0ZL2Bk36cBfNRWQ3VVQ"
+      },
+      "statement": {
+        "declaration": {
+          "provider": "acme-co",
+          "version": "1.4.2",
+          "interface": "0.1.0",
+          "sandboxed": {
+            "handles": [
+              "withdrawal",
+              "deposit",
+              "balance_verification"
+            ]
+          },
+          "outside": {
+            "operations": [
+              {
+                "name": "statements.fetch",
+                "destinations": [
+                  "bank_api",
+                  "bank_files"
+                ],
+                "secrets": [
+                  "bank.client_certificate",
+                  "bank.client_key"
+                ]
+              }
+            ],
+            "destinations": [
+              {
+                "name": "bank_api",
+                "scheme": "https",
+                "host": "api.acme-bank.example",
+                "port": 8443,
+                "addresses": [
+                  "185.12.64.0/24",
+                  "2a0a:4cc0::/32"
+                ]
+              },
+              {
+                "name": "bank_files",
+                "scheme": "https",
+                "host": "files.acme-bank.example",
+                "port": 443,
+                "addresses": [
+                  "185.12.65.16/28"
+                ]
+              }
+            ],
+            "secrets": [
+              "bank.client_certificate",
+              "bank.client_key"
+            ],
+            "calls": [],
+            "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+          }
+        },
+        "parts": {
+          "sandboxed": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+            }
+          },
+          "outside": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+            }
+          }
+        }
+      }
+    },
+    "assertion_digest": {
+      "algorithm": "sha-256",
+      "value": "4653da5dcde5b3a9d5e8969d9c1dce4bcecc7b6f3e7f44ba68d924545a5b9271"
+    },
+    "received": {
+      "sandboxed": {
+        "algorithm": "sha-256",
+        "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+      },
+      "outside": {
+        "algorithm": "sha-256",
+        "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+      }
+    },
+    "build": {
+      "platform_version": "0.1.0+compiler.1",
+      "machine_code": {
+        "sandboxed": {
+          "algorithm": "sha-256",
+          "value": "9b164aeb1ca8ecfb396b594c50a704193d20aa10bdadcdd6f46d12f9381facda"
+        },
+        "outside": {
+          "algorithm": "sha-256",
+          "value": "ac9a90225f89619fdd904319721cfcf38201be5b3d177ee7a20a7e350de7c1ab"
+        }
+      }
+    },
+    "history": [],
+    "capabilities": {
+      "widenings": []
+    },
+    "acceptance": {
+      "required": "fresh",
+      "accepted": {
+        "by": "release-reviewer",
+        "at": "2026-11-06T10:00:00Z"
+      }
+    }
+  }
+}

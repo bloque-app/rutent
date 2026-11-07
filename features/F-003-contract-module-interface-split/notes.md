@@ -208,3 +208,102 @@ An Opus review of the split found six defects and four nits, fixed in the same e
     (`declaration-statement-key-malformed`).
   - `declaration-call-declared-twice` was added.
   - The README says `answered.body` can carry a secret inward at the provider's own risk.
+
+## T-003-02
+
+The admission artefact, in the module-interface contract at 0.3.0. It reuses what T-003-01 settled: the
+provider-role envelope and its signing rule (JCS, Ed25519 only), and the declaration, `statement_key` included.
+
+- **Two shapes, not one.** `REQ-MDL-1` asks for "the provider's signed assertion", and `REQ-MDL-2` for "the
+  platform version that made its machine code". The provider can't sign the second, which comes after it.
+  - The **release assertion** is the provider's statement.
+  - The **admission artefact** is the platform's record around it, as `ARCHITECTURE.md`'s "module admission
+    record" lists: admitted binary and platform build version, signature, capability declaration, version history.
+- **The assertion's envelope.** The provider-role envelope's `shape` admits any `urn:rutent:<contract>:<name>`, so
+  `urn:rutent:module-interface:release-assertion` needs no provider-role change. `ReleaseAssertion` implements
+  `StatementShape`, so `check_shape` applies as to every party statement.
+- **Who signs, and with which key.** The maker is the provider, as `REQ-MDL-1` words it. The key is one of the keys
+  its advertisement publishes, which the operator's grant makes authoritative (`REQ-CAT-2`).
+  - Not the `operator_key`, as for results.
+  - **Not the `statement_key` either (beyond the brief).** The running outside part resolves that key to sign
+    results, so a compromised outside part could otherwise sign its own next release (`THR-4`). The fixtures'
+    advertisement therefore publishes two keys.
+  - **The publisher.** `PS-84` speaks of a publisher's signed assertion, and the advertisement names the publisher
+    behind a provider. Publisher keys aren't shaped in any contract, so the assertion is read as the provider's,
+    signed by whoever holds its keys, the publisher in practice. "A publisher MUST NOT be able to replace
+    another's module" then holds through the maker check and `ReleaseOfAnotherModule`.
+- **Integrity: altered, unsigned and wrongly signed (`REQ-MDL-1`'s test).**
+  - **Unsigned:** an artefact without an assertion, or with one carrying no signature, fails its schema.
+  - **Wrongly signed:** `validate_assertion_key` covers the maker, deployment and key.
+  - **Altered:** the artefact records the digest the platform computed of each received binary beside the asserted
+    one, and `PartAltered` refuses a difference. Without `received`, the artefact couldn't show integrity was
+    checked.
+  - The contract checks digests' and signatures' form only. Computing them over bytes and verifying them is the
+    platform's (`M2`, `M3`), so no hashing or signature dependency is added.
+- **Digests.** SHA-256 only, as 64 lower-case hexadecimal characters, its one text form. The algorithm is named, so
+  another can be added by a later version.
+- **Formats.** A part's `format` is a free lower-case name, never an enum of Wasm or PVM (`DEC-4`); `EXP-2` binds
+  formats.
+- **The build.** `platform_version` names the exact platform build, its compiler included, that made the machine
+  code, with each part's machine-code digest. Re-deriving and comparing (`REQ-MDL-2`, ADR-0014) then needs only the
+  admitted binary and that version. Re-derivation results, staging, stale marks and the emergency bypass are
+  `CMP-PROV`'s lifecycle (`REQ-MDL-4`, `REQ-MDL-5`, ADR-0014), so they aren't shaped here.
+- **History.** Earlier admitted releases, oldest first, each by version, assertion digest and admission time.
+  `assertion_digest` is the platform's digest of the assertion as received, so a history entry names exactly what
+  was admitted, not only a version. A release extends the previous one's history by that release
+  (`HistoryNotExtended`), and only an accepted release can be followed (`PreviousNotAdmitted`).
+- **Widening.** It is computed from two declarations only, as the brief asks. The brief's list is a new operation,
+  secret, destination, block or call, or a broader block. The readings taken:
+  - **Beyond the list:** an existing operation gaining a destination or a secret, which reaches what it couldn't;
+    a destination of the same name at another scheme, host or port, which is a new endpoint; a new kind asked of an
+    existing callee.
+  - **Also beyond the list:** a changed `statement_key`. A release that swaps its result-signing key is the
+    `THR-4` pattern, so it takes a fresh acceptance.
+  - A "broader block" is a destination's addresses grown: blocks to `public`, or a block no single old block
+    contains. A block covered only by the union of two old blocks is marked: containment is checked against single
+    blocks, which errs towards a fresh acceptance. The widening table tests that case.
+  - `public` to blocks is narrowing only because T-003-01 refuses special-purpose blocks. Otherwise blocks could
+    reach what `public` excludes.
+  - Narrowing is never marked: anything removed, a sub-block, `public` replaced by blocks.
+  - Handled kinds (`sandboxed.handles`) aren't capabilities: they are the provider-role interface, which reaches
+    nothing outside. Call kinds are compared through `OperationKind`, so the kinds 0.2.0 added, `reversal` and
+    `reversal_confirmation` (T-002-03), widen and narrow like any other. The widening table has a case for each:
+    one asked of an existing callee, a new callee asked only for one, and both no longer asked.
+  - The recorded widenings follow the order of the new declaration's lists, so comparing recorded with computed is
+    exact (`WideningsMisrecorded`).
+- **A first release** is one with no history. It compares with nothing, lists no widening, and requires a fresh
+  acceptance by its own rule. Deriving it from "everything widens against nothing" would let a module with no
+  outside reach be admitted automatically on its first release.
+  - "First" is decided by the history, not by `compared_with` alone. Otherwise an artefact with no history could
+    name a predecessor it doesn't have and pass as automatic, and with no previous artefact to compare,
+    `validate_release` would never run. `compared_with` must be the last version the history names, and absent
+    exactly when the history is empty (`ComparedWithNotLastAdmitted`). That makes `validate_release`'s own
+    comparison with the previous version redundant, so it was dropped.
+- **Acceptance.** `required` is `automatic` or `fresh`. `accepted` is absent until given, and a fresh one names who
+  gave it. A refused release has no artefact, since it isn't admitted; recording refusals is `CMP-PROV`'s.
+- **REQ-MDL-19 stays a rule across values.** Checking that `interface` is equal across successive releases in
+  `validate_release` would stop a module from ever moving to a new interface version, so the rule stays with the
+  platform.
+- **Test-first.** The two plan tests were written first, and failed because no admission shape existed.
+
+### T-003-02 review (the orchestrator, 2026-11-06)
+
+- **The previous release's key.** Checking the assertion key against only the released declaration's
+  `statement_key` missed the key the running outside part can actually reach, which is the previous release's. A
+  compromised release could sign its successor's assertion with that key and declare a new one, and a fresh
+  acceptance would show only "key rotated".
+  - The ruling refuses any statement-signing key the module's history has ever declared, "if the history carries
+    the declarations". The history carried versions and digests only, so each history entry now also records the
+    `statement_key` its release declared. That is lighter than carrying whole declarations, and it is what the rule
+    needs.
+  - `validate_release` refuses an assertion signed with the previous declaration's key, or with any key a history
+    entry names (`AssertionSignedWithPreviousStatementKey`).
+- **Deployment and protocol version.** `validate_release` refuses a release of another deployment or protocol
+  version than the one it follows. A statement is void elsewhere (`REQ-PRT-1`). Under a new protocol version, a
+  module is therefore admitted again as a first release, with a fresh acceptance.
+- **Machine code.** `build.machine_code` is tied to nothing the contract can check, by design: only re-deriving
+  and comparing tests it (`REQ-MDL-2`). The build test now checks that both layers refuse an artefact without the
+  platform version or the machine-code digests, instead of an assertion that couldn't fail.
+- **Widening table.** It gained a secret moved between operations (one `operation_secret`), a renamed operation
+  (one `operation`), and a call to another callee (one `call`).
+- **History.** An earlier version listed twice has its own fixture.

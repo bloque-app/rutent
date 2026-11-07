@@ -3,6 +3,7 @@
 
 use std::net::IpAddr;
 
+use super::admission::PartName;
 use super::types::{
     Addresses, CallOutcome, CrossModuleCall, Declaration, OutboundCallRecord, SecretLookup,
 };
@@ -85,6 +86,58 @@ pub enum RuleViolation {
     /// A signed result names another maker than the declaring provider, so the provider's key would vouch for
     /// another party's statement (`REQ-AUD-2`).
     ResultOfAnotherMaker,
+    /// An admission artefact's assertion names another shape than a release assertion's.
+    AssertionUnderAnotherShape,
+    /// A part's received digest differs from the one the assertion states: the binary was altered
+    /// (`REQ-MDL-1`).
+    PartAltered {
+        /// The part.
+        part: PartName,
+    },
+    /// A history entry names a version an earlier entry names, or this release's (`REQ-MDL-1`).
+    VersionAlreadyAdmitted {
+        /// Index into `history`.
+        entry: usize,
+    },
+    /// A first release lists widenings, though it compares with nothing.
+    FirstReleaseWithWidenings,
+    /// A first release doesn't require a fresh acceptance (`REQ-MDL-3`).
+    FirstReleaseNotFresh,
+    /// A release that widens its capabilities doesn't require a fresh acceptance (`REQ-MDL-3`, `AC-21`).
+    WidenedReleaseNotFresh,
+    /// A fresh acceptance given by no one named.
+    FreshAcceptanceByNoOne,
+    /// A release assertion made by another party than the releasing provider, so one publisher could release
+    /// another's module (`REQ-MDL-1`).
+    AssertionOfAnotherMaker,
+    /// A release assertion of another deployment than the advertisement's (`REQ-PRT-1`).
+    AssertionOfAnotherDeployment,
+    /// A release assertion signed with a key the provider's advertisement doesn't publish (`REQ-MDL-1`).
+    AssertionKeyNotAdvertised,
+    /// A release assertion signed with the deployment's `operator_key` (`THR-8`).
+    AssertionKeyIsOperatorKey,
+    /// A release assertion signed with the declaration's statement-signing key, which the running outside part
+    /// can resolve, so running code could sign its own next release (`THR-4`).
+    AssertionSignedWithStatementKey,
+    /// A release that follows another provider's module (`REQ-MDL-1`).
+    ReleaseOfAnotherModule,
+    /// A release asserted in another deployment than the release it follows (`REQ-PRT-1`).
+    ReleaseOfAnotherDeployment,
+    /// A release asserted under another protocol version than the release it follows (`REQ-PRT-1`).
+    ReleaseUnderAnotherProtocolVersion,
+    /// A release asserted with a statement-signing key an earlier release declared, which that release's outside
+    /// part could resolve (`THR-4`).
+    AssertionSignedWithPreviousStatementKey,
+    /// A release that follows one not yet accepted.
+    PreviousNotAdmitted,
+    /// A release whose history isn't the previous release's, extended by that release.
+    HistoryNotExtended,
+    /// An admission artefact that compares with another version than the last its history names, or with one
+    /// though its history is empty, or with none though it has a history.
+    ComparedWithNotLastAdmitted,
+    /// A release whose recorded widenings aren't the ones its declaration and the previous one's give
+    /// (`REQ-MDL-3`).
+    WideningsMisrecorded,
     /// A signed result belongs to another deployment than the advertisement's, by name or operator key, so the
     /// statement-signing key wasn't checked against the deployment it was resolved for (`REQ-PRT-1`, `THR-8`).
     ResultOfAnotherDeployment,
@@ -391,7 +444,7 @@ fn check_repeats<'a>(
     }
 }
 
-fn done(violations: Vec<RuleViolation>) -> Result<(), Vec<RuleViolation>> {
+pub(super) fn done(violations: Vec<RuleViolation>) -> Result<(), Vec<RuleViolation>> {
     if violations.is_empty() {
         Ok(())
     } else {

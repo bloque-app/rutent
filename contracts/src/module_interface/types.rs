@@ -134,6 +134,28 @@ checked_text!(
 );
 
 checked_text!(
+    /// A SHA-256 digest's value: 64 lower-case hexadecimal characters, its one text form.
+    DigestValue,
+    |text| text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+    "a digest value must be 64 lower-case hexadecimal characters"
+);
+
+checked_text!(
+    /// A portable binary format's name, such as a format `EXP-2` binds: lower-case words joined by `-`. The
+    /// contract names no format (`DEC-4`).
+    BinaryFormat,
+    |text| {
+        let words: Vec<&str> = text.split('-').collect();
+        text.len() <= 64
+            && text.starts_with(|c: char| c.is_ascii_lowercase())
+            && words.iter().all(|w| {
+                !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            })
+    },
+    "a binary format must be lower-case words joined by '-'"
+);
+
+checked_text!(
     /// An Ed25519 public key, 32 bytes, base64url without padding, in its one canonical encoding, as
     /// `urn:rutent:provider-role:common#/$defs/public_key` writes it.
     PublicKey,
@@ -190,7 +212,7 @@ fn is_public_key(text: &str) -> bool {
 
 /// Deserialises a present optional field, refusing `null`: the schemas leave an absent field out, so an explicit
 /// `null` is not one of its forms. Used with `#[serde(default)]`, so an absent field is `None`.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(super) fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

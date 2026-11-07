@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:module-interface:declaration",
   "title": "Module interface declaration",
-  "description": "What a module declares about its two parts (REQ-MDL-16): the provider-role operations its sandboxed part computes, and everything its outside part may do, which is the module's capability declaration (REQ-MDL-3). Every list is required, so nothing is implied: an empty list declares none, and whatever isn't declared is refused (REQ-MDL-7, REQ-MDL-8). The admission artefact (T-003-02) carries it under the provider's signed assertion.",
+  "description": "What a module declares about its two parts (REQ-MDL-16): the provider-role operations its sandboxed part computes, and everything its outside part may do, which is the module's capability declaration (REQ-MDL-3). Every list is required, so nothing is implied: an empty list declares none, and whatever isn't declared is refused (REQ-MDL-7, REQ-MDL-8). A release carries it whole in the provider's signed release assertion (urn:rutent:module-interface:release-assertion), and the admission artefact compares it with the previous release's for widening (REQ-MDL-3).",
   "type": "object",
   "additionalProperties": false,
   "required": [

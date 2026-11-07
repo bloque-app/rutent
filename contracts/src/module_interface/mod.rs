@@ -27,10 +27,19 @@
 //! [`validate_declaration`], [`validate_record`], [`validate_call`], [`validate_lookup`],
 //! [`validate_record_secrets`] and [`validate_statement_key`] enforce the rules a schema can't express. A pinned address block may not overlap a
 //! [`SPECIAL_PURPOSE`] range, and an address is in its one text form.
+//! - **Admission** (`T-003-02`, `REQ-MDL-1`, `REQ-MDL-2`, `REQ-MDL-3`). A release travels as the provider's
+//!   signed [`ReleaseAssertion`]; the platform records it in an [`AdmissionArtefact`] with what it received, the
+//!   build that made the machine code, the version history and the acceptance. [`widening`] computes how one
+//!   release's capabilities widen the previous one's; a widening release, and a first release, require a fresh
+//!   acceptance. [`validate_artefact`], [`validate_assertion_key`] and [`validate_release`] check them.
+//!
 //! `contracts/module-interface/README.md` lists which rule lives where.
 
+mod admission;
 mod types;
 mod validate;
+
+pub use admission::*;
 
 pub use types::*;
 pub use validate::{
@@ -39,4 +48,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
