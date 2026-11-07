@@ -39,6 +39,10 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           run_id="${INPUT_RUN_ID:-EXP-2-pvm-ci-$RUN_NUMBER}"
+          if ! [[ "$run_id" =~ ^EXP-2-pvm-(ci-[0-9]+|[0-9]{8}-[0-9]+)$ ]]; then
+            echo "not a run id of the PolkaVM binding: $run_id" >&2
+            exit 1
+          fi
           echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"

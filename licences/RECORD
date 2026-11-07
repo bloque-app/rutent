@@ -17,6 +17,10 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
+# The check reads the root Cargo.lock only. The experiments' own workspaces (their Cargo.lock files under
+# experiments/) are not read: their dependencies are listed in each experiment's run notes and licence rows,
+# and enter this record only when a format or runtime is adopted into the root workspace.
+#
 # Workspace members have no `source` in Cargo.lock, so they have no line here.
 # Blank lines and lines starting with `#` are ignored.
 #
