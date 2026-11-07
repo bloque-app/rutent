@@ -1,5 +1,6 @@
 # EXP-2's PolkaVM binding of the module-boundary suite (T-008-03). Its own workspace and lock: nothing here is a
-# member of the repository's root workspace, and nothing here enters the root Cargo.lock or licences/RECORD.
+# member of the repository's root workspace, and nothing here enters the root Cargo.lock. Its lock is read by the
+# licence check, and its dependencies are recorded in licences/RECORD.
 [workspace]
 resolver = "3"
 members = ["binding", "stubs/dirs"]

@@ -1,6 +1,6 @@
 # The Wasm binding of the module-boundary suite (`EXP-2`, `T-008-02`). Its own workspace, with its own Cargo.lock,
-# outside the root workspace: nothing it brings reaches the root `Cargo.lock` or `licences/RECORD` until adoption
-# decides (`T-008-04`). This manifest is the binding's flag: it is built only from here.
+# outside the root workspace: nothing it brings reaches the root `Cargo.lock` until adoption decides (`T-008-04`).
+# The licence check reads this lock, and its dependencies are recorded in `licences/RECORD`. This manifest is the binding's flag: it is built only from here.
 [workspace]
 resolver = "3"
 members = ["sandbox", "binding"]

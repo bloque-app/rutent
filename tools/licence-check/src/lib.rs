@@ -1,12 +1,19 @@
 //! Licence record check (REQ-MOD-5, T-001-04).
 //!
-//! The check reads `Cargo.lock`, the record `licences/RECORD` and the root manifest's workspace members as text.
-//! It fails on a locked external package that the record does not list at its locked version, and on one whose
-//! recorded decision is still `pending`. A locked package is external unless it is a workspace member without a
-//! `source`, so a path dependency from outside the workspace is checked like any registry package. Lines marked
-//! `not-adopted` never fail it. The record's format is explained in its own header.
+//! The check reads every `Cargo.lock` in the repository (the root one, and each one under `experiments/`, found by
+//! walking the tree and skipping `target` directories), the record `licences/RECORD` and the root manifest's
+//! workspace members as text. It fails on a locked external package that the record does not list at its locked
+//! version, and on one whose recorded decision is still `pending`; each violation names the lockfile it came from.
+//! In the root lock a package is external unless it is a workspace member without a `source`, so a path
+//! dependency from outside the workspace is checked like any registry package. An experiment's lock is checked
+//! the same way against the members of the workspace beside it plus the root workspace's. One record serves
+//! all the locks: a package locked at the same name and version in several of them needs one line, and a name
+//! at several versions needs one line per version. Lines marked `not-adopted` never fail the check. The
+//! record's format is explained in its own header.
 
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Why a locked dependency fails the check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +27,8 @@ pub enum Reason {
 /// One locked dependency that fails the check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
+    /// The lockfile the package is locked in, as a path relative to the repository root.
+    pub lockfile: String,
     /// The package name, as `Cargo.lock` gives it.
     pub package: String,
     /// The locked version.
@@ -33,10 +42,14 @@ impl fmt::Display for Violation {
         match self.reason {
             Reason::Unrecorded => write!(
                 f,
-                "{} {}: not in licences/RECORD at this version",
-                self.package, self.version
+                "{}: {} {}: not in licences/RECORD at this version",
+                self.lockfile, self.package, self.version
             ),
-            Reason::Pending => write!(f, "{} {}: decision pending", self.package, self.version),
+            Reason::Pending => write!(
+                f,
+                "{}: {} {}: decision pending",
+                self.lockfile, self.package, self.version
+            ),
         }
     }
 }
@@ -71,17 +84,51 @@ pub struct Member {
     pub version: String,
 }
 
-/// Checks the record text against the lockfile text, given the workspace members.
+/// One lockfile to check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockFile {
+    /// The path relative to the repository root, with `/` separators. Violations name it.
+    pub path: String,
+    /// The file's text.
+    pub text: String,
+    /// The workspace members that may appear in this lock without a `source`. A package without a `source` that
+    /// is not one of them is checked like any registry package.
+    pub members: Vec<Member>,
+}
+
+/// Checks the record text against the root lockfile text, given the workspace members.
 ///
 /// Returns the failing dependencies, or an error if any text is malformed. A malformed text is an
 /// error, never a silent pass.
 pub fn check(lock: &str, record: &str, members: &[Member]) -> Result<Vec<Violation>, String> {
-    let locked = parse_lock(lock)?;
+    check_locks(
+        &[LockFile {
+            path: "Cargo.lock".to_string(),
+            text: lock.to_string(),
+            members: members.to_vec(),
+        }],
+        record,
+    )
+}
+
+/// Checks the record text against every given lockfile, in order.
+///
+/// Returns the failing dependencies, each naming its lockfile, or an error if any text is malformed.
+pub fn check_locks(locks: &[LockFile], record: &str) -> Result<Vec<Violation>, String> {
     let entries = parse_record(record)?;
     let mut found = Vec::new();
+    for lock in locks {
+        check_one(lock, &entries, &mut found)?;
+    }
+    Ok(found)
+}
+
+fn check_one(lock: &LockFile, entries: &[Entry], found: &mut Vec<Violation>) -> Result<(), String> {
+    let locked = parse_lock(&lock.text).map_err(|e| format!("{}: {e}", lock.path))?;
     for pkg in locked {
         let is_member = !pkg.has_source
-            && members
+            && lock
+                .members
                 .iter()
                 .any(|m| m.name == pkg.name && m.version == pkg.version);
         if is_member {
@@ -92,11 +139,13 @@ pub fn check(lock: &str, record: &str, members: &[Member]) -> Result<Vec<Violati
             .find(|e| e.name == pkg.name && e.version == pkg.version);
         match entry {
             None => found.push(Violation {
+                lockfile: lock.path.clone(),
                 package: pkg.name,
                 version: pkg.version,
                 reason: Reason::Unrecorded,
             }),
             Some(e) if e.decision == Decision::Pending => found.push(Violation {
+                lockfile: lock.path.clone(),
                 package: pkg.name,
                 version: pkg.version,
                 reason: Reason::Pending,
@@ -104,7 +153,56 @@ pub fn check(lock: &str, record: &str, members: &[Member]) -> Result<Vec<Violati
             Some(_) => {}
         }
     }
-    Ok(found)
+    Ok(())
+}
+
+/// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` is not
+/// entered. A symbolic link that is a `Cargo.lock` or a directory is an error, since the check would otherwise
+/// pass over it silently. A missing `dir` has none.
+pub fn find_locks(root: &Path, dir: &str) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    let start = root.join(dir);
+    if start.is_dir() {
+        walk(&start, &mut found)?;
+    }
+    let mut rel: Vec<String> = found
+        .iter()
+        .map(|p| {
+            let tail = p.strip_prefix(root).unwrap_or(p);
+            let parts: Vec<_> = tail.iter().map(|c| c.to_string_lossy()).collect();
+            parts.join("/")
+        })
+        .collect();
+    rel.sort();
+    Ok(rel)
+}
+
+fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let read = |e: std::io::Error| format!("cannot read {}: {e}", dir.display());
+    for entry in fs::read_dir(dir).map_err(read)? {
+        let entry = entry.map_err(read)?;
+        let kind = entry.file_type().map_err(read)?;
+        let path = entry.path();
+        let is_target = entry.file_name() == "target";
+        if kind.is_symlink() {
+            if is_target && path.is_dir() {
+                continue;
+            }
+            if entry.file_name() == "Cargo.lock" || path.is_dir() {
+                return Err(format!(
+                    "{} is a symbolic link; the licence check reads real files and directories only",
+                    path.display()
+                ));
+            }
+        } else if kind.is_dir() {
+            if !is_target {
+                walk(&path, found)?;
+            }
+        } else if kind.is_file() && entry.file_name() == "Cargo.lock" {
+            found.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Every package in a lockfile, with whether it has a `source`.
@@ -209,7 +307,8 @@ fn parse_record(record: &str) -> Result<Vec<Entry>, String> {
 
 /// The workspace member paths listed in a root manifest's `[workspace]` `members` array.
 ///
-/// Only the plain form is read: `members = [` on its own line, then one double-quoted path per line, then `]`.
+/// Only two plain forms are read: `members = [` on its own line, then one double-quoted path per line, then `]`;
+/// or the whole array on one line, `members = ["a", "b"]`.
 /// A glob, a comment on a member line, or any other form is an error, so no member is silently missed.
 pub fn member_paths(root_manifest: &str) -> Result<Vec<String>, String> {
     let mut in_workspace = false;
@@ -228,21 +327,17 @@ pub fn member_paths(root_manifest: &str) -> Result<Vec<String>, String> {
                 continue;
             }
             let item = line.strip_suffix(',').unwrap_or(line).trim_end();
-            let path = item
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .filter(|p| !p.is_empty() && !p.contains(['"', '\\', '*', '#', '[', ']', ',']));
-            match path {
-                Some(p) => paths.push(p.to_string()),
-                None => {
-                    return Err(format!(
-                        "Cargo.toml: unsupported workspace member `{item}`; list plain paths only"
-                    ));
-                }
-            }
+            paths.push(plain_member(item)?);
         } else if line.starts_with('[') {
             in_workspace = line == "[workspace]";
         } else if in_workspace && line.starts_with("members") {
+            if let Some(inline) = inline_members(line) {
+                for item in inline.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+                    paths.push(plain_member(item)?);
+                }
+                found_members = true;
+                continue;
+            }
             if !quoted_array_start(line) {
                 return Err(format!(
                     "Cargo.toml: unsupported `members` syntax `{line}`; use `members = [` on its own line"
@@ -258,6 +353,50 @@ pub fn member_paths(root_manifest: &str) -> Result<Vec<String>, String> {
         return Err("Cargo.toml: no `members` array under [workspace]".to_string());
     }
     Ok(paths)
+}
+
+/// The paths of the packages a workspace owns, relative to its manifest's directory, from that manifest's text.
+///
+/// A manifest with a `[package]` owns it (path `.`), and a `[workspace]` with a `members` array owns those
+/// paths too (see [`member_paths`]). A manifest with neither a `[workspace]` nor a `[package]` is an error, and
+/// so is a `[workspace]` with neither a `[package]` nor a `members` array, so a lock is never matched to nothing.
+pub fn workspace_member_paths(manifest: &str) -> Result<Vec<String>, String> {
+    let has = |header: &str| manifest.lines().any(|l| l.trim() == header);
+    let (workspace, package) = (has("[workspace]"), has("[package]"));
+    if !workspace && !package {
+        return Err("Cargo.toml: neither a [workspace] nor a [package]".to_string());
+    }
+    let has_members = manifest.lines().any(|l| l.trim().starts_with("members"));
+    let mut paths = if workspace && (!package || has_members) {
+        member_paths(manifest)?
+    } else {
+        Vec::new()
+    };
+    if package {
+        paths.push(".".to_string());
+    }
+    Ok(paths)
+}
+
+/// The text between the brackets of a one-line `members = ["a", "b"]`, when the line is that form.
+fn inline_members(line: &str) -> Option<&str> {
+    line.strip_prefix("members")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim()
+        .strip_prefix('[')?
+        .strip_suffix(']')
+}
+
+/// A member path from its double-quoted item, or an error for any other form.
+fn plain_member(item: &str) -> Result<String, String> {
+    item.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .filter(|p| !p.is_empty() && !p.contains(['"', '\\', '*', '#', '[', ']', ',']))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!("Cargo.toml: unsupported workspace member `{item}`; list plain paths only")
+        })
 }
 
 /// Whether a `members` line opens the plain array form, `members = [`.

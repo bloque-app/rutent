@@ -1,6 +1,9 @@
-//! Runs the licence record check on the repository's `Cargo.lock`, `licences/RECORD` and workspace members.
+//! Runs the licence record check on every `Cargo.lock` in the repository, `licences/RECORD` and the workspace members.
 
-use rutent_licence_check::{Violation, check, member_paths, package_identity};
+use rutent_licence_check::{
+    LockFile, Member, Violation, check_locks, find_locks, member_paths, package_identity,
+    workspace_member_paths,
+};
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -31,13 +34,45 @@ fn run(root: &Path) -> Result<Vec<Violation>, String> {
     let read = |rel: &str| {
         fs::read_to_string(root.join(rel)).map_err(|e| format!("cannot read {rel}: {e}"))
     };
-    let lock = read("Cargo.lock")?;
     let record = read("licences/RECORD")?;
     let manifest = read("Cargo.toml")?;
-    let mut members = Vec::new();
-    for path in member_paths(&manifest)? {
-        let text = read(&format!("{path}/Cargo.toml"))?;
-        members.push(package_identity(&text, &manifest).map_err(|e| format!("{path}: {e}"))?);
+    let members = members_of(root, "", &manifest, &member_paths(&manifest)?)?;
+    let mut locks = vec![LockFile {
+        path: "Cargo.lock".to_string(),
+        text: read("Cargo.lock")?,
+        members: members.clone(),
+    }];
+    for path in find_locks(root, "experiments")? {
+        let text = read(&path)?;
+        let dir = path.strip_suffix("Cargo.lock").unwrap_or_default();
+        let ws_manifest = read(&format!("{dir}Cargo.toml")).map_err(|e| format!("{path}: {e}"))?;
+        let own =
+            workspace_member_paths(&ws_manifest).map_err(|e| format!("{dir}Cargo.toml: {e}"))?;
+        let mut all = members_of(root, dir, &ws_manifest, &own)?;
+        all.extend(members.iter().cloned());
+        locks.push(LockFile {
+            path,
+            text,
+            members: all,
+        });
     }
-    check(&lock, &record, &members)
+    check_locks(&locks, &record)
+}
+
+/// The identities of the packages at `paths`, relative to the workspace in `dir` (relative to `root`, ending in
+/// `/` or empty) whose manifest text is `ws_manifest`.
+fn members_of(
+    root: &Path,
+    dir: &str,
+    ws_manifest: &str,
+    paths: &[String],
+) -> Result<Vec<Member>, String> {
+    let mut members = Vec::new();
+    for path in paths {
+        let rel = format!("{dir}{path}/Cargo.toml");
+        let text =
+            fs::read_to_string(root.join(&rel)).map_err(|e| format!("cannot read {rel}: {e}"))?;
+        members.push(package_identity(&text, ws_manifest).map_err(|e| format!("{rel}: {e}"))?);
+    }
+    Ok(members)
 }
