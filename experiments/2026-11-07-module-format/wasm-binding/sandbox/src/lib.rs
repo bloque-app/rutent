@@ -61,6 +61,9 @@ pub struct Limits {
     pub cpu_seconds: Option<u64>,
     /// The most file descriptors it may hold open.
     pub open_files: u64,
+    /// The largest file it may write, in bytes. With no file system it can write to, this bounds only the
+    /// anonymous memory files (`memfd`) a provider's process makes on Linux for its modules' memory images.
+    pub file_size: u64,
 }
 
 impl Limits {
@@ -68,11 +71,17 @@ impl Limits {
     pub const COMPILER: Self = Self {
         cpu_seconds: Some(60),
         open_files: 16,
+        file_size: 0,
     };
     /// A provider's process's.
     pub const PROVIDER: Self = Self {
         cpu_seconds: None,
         open_files: 32,
+        file_size: if cfg!(target_os = "linux") {
+            PROVIDER_MEMORY_FILE
+        } else {
+            0
+        },
     };
 }
 
@@ -94,6 +103,11 @@ pub enum Role {
 /// The highest file descriptor [`isolated`] closes in a child before it runs, where it can't close them all at once,
 /// whatever the parent's limit.
 pub const CLOSE_UP_TO: i32 = 65_536;
+
+/// The largest memory file a provider's process may write on Linux, in bytes: Wasmtime writes each module's
+/// initial linear memory into a `memfd` it maps copy-on-write, which `RLIMIT_FSIZE` bounds like any file. It is the
+/// binding's bound on a part's linear memory, 16 MiB, so no image of a memory it would run is refused.
+pub const PROVIDER_MEMORY_FILE: u64 = 16 * 1024 * 1024;
 
 /// The address space the admitting compiler may map on Linux, in bytes.
 pub const COMPILER_ADDRESS_SPACE: u64 = 8 << 30;
@@ -121,7 +135,8 @@ pub fn layers() -> Vec<String> {
          streams, each a pipe to the platform, stay"
             .into(),
         "working directory: an empty directory of its own, one per child".into(),
-        "RLIMIT_CORE 0, RLIMIT_FSIZE 0 (SIGXFSZ ignored, so a write fails), RLIMIT_NPROC 0, RLIMIT_NOFILE \
+        "RLIMIT_CORE 0, RLIMIT_FSIZE 0 (SIGXFSZ ignored, so a write fails; for a provider on Linux 16 MiB, the \
+         bound on its memfd memory images, with no file system it can write to), RLIMIT_NPROC 0, RLIMIT_NOFILE \
          bounded, RLIMIT_CPU where asked"
             .into(),
     ];
@@ -149,8 +164,7 @@ pub fn layers() -> Vec<String> {
                 .into(),
         );
         layers.push(
-            "close_range(3, ~0) again; RLIMIT_NPROC 0, RLIMIT_CORE 0, RLIMIT_FSIZE 0, and RLIMIT_AS 8 GiB for the \
-             compiler"
+            "close_range(3, ~0) again; RLIMIT_NPROC 0, RLIMIT_CORE 0, and RLIMIT_AS 8 GiB for the compiler"
                 .into(),
         );
         layers.push(
@@ -321,7 +335,7 @@ fn restrict(limits: Limits) -> io::Result<()> {
         libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
     }
     set_limit(libc::RLIMIT_CORE, 0)?;
-    set_limit(libc::RLIMIT_FSIZE, 0)?;
+    set_limit(libc::RLIMIT_FSIZE, limits.file_size)?;
     set_limit(libc::RLIMIT_NOFILE, limits.open_files)?;
     if let Some(seconds) = limits.cpu_seconds {
         set_limit(libc::RLIMIT_CPU, seconds)?;
@@ -741,7 +755,6 @@ mod linux {
         super::close_from_3();
         rlimit(libc::RLIMIT_NPROC, 0, "RLIMIT_NPROC")?;
         rlimit(libc::RLIMIT_CORE, 0, "RLIMIT_CORE")?;
-        rlimit(libc::RLIMIT_FSIZE, 0, "RLIMIT_FSIZE")?;
         if role == Role::Compiler {
             rlimit(libc::RLIMIT_AS, super::COMPILER_ADDRESS_SPACE, "RLIMIT_AS")?;
         }
