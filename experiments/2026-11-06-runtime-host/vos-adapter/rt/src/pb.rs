@@ -103,6 +103,8 @@ fn killed_child(
         .args([env.run_id.as_str(), "pb-submit-child"])
         .arg(dir)
         .env("PB_PREFIX", prefix)
+        // Many more inputs than the child can submit before its kill, so the kill lands mid-submit.
+        .env("PB_ORDERS", "3000")
         .env("EXP1_DEV", if env.dev { "1" } else { "0" })
         .stdout(Stdio::piped())
         .spawn()
@@ -453,8 +455,10 @@ pub fn r06a(env: &Env, base: PathBuf) -> bool {
     let after = Host::<Probe>::journal(&host, &inputs[1][0].subject.order).unwrap_or_default();
     let mut twice = 0;
     let mut in_flight_seen = 0;
-    for n in 0..50 {
-        let order = rutent_contracts::state_machine::Id::new(format!("ord-w{n}")).unwrap();
+    for order in Host::<Probe>::orders(&host).unwrap_or_default() {
+        if !order.as_str().starts_with("ord-w") {
+            continue;
+        }
         let journal = Host::<Probe>::journal(&host, &order).unwrap_or_default();
         let mut ids: Vec<_> = journal.iter().map(|r| r.input.record_id.clone()).collect();
         let len = ids.len();
