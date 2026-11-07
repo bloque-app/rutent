@@ -6,10 +6,10 @@
   "title": "Which runtime does M2 build the state machine on?",
   "lead": "Re-scored with the state machine inside VOS, at vos-core 5c78975 on Linux with the JIT, both candidates pass all 17 host-contract rows. On three nodes VOS passed every replication, damage and upgrade row it could run; the purpose-built store has no replication, and lost acknowledged records on a restore and on a damaged last frame.",
   "bullets": [
-    "VOS on three nodes lost no acknowledged record across 21 leader kills mid-submit, a replica replaced, and a replica's disk lost.",
+    "VOS on three nodes lost no acknowledged record across 21 leader kills with a submit in flight, a replica replaced, and a replica's disk lost.",
     "The purpose-built store is faster on one disk, about 4,500 to 4,800 records/s against VOS's 239 to 2,979, but has only restore to recover with.",
     "A 100k-record halted swap takes about 59 to 82 s on VOS and 3.0 s on the store: VOS's total-loss recovery time.",
-    "Before v0: pin and mirror VOS's forks, port contracts/ to no_std under DEC-4, accept or fix G-54, and check the JIT on the production host."
+    "Before v0: pin and mirror VOS's forks, port contracts/ to no_std under DEC-4, accept or fix G-54 (its single-node residual is untested), and check the JIT on the production host."
   ],
   "rec": "VOS as the whole runtime, because only it survives losing a node or a disk without losing acknowledged records.",
   "options": [
