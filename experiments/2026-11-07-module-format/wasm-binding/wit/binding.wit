@@ -1,0 +1,88 @@
+/// The Wasm binding's interface for the module-interface contract (`EXP-2`, `T-008-02`, item `exp2-wasm-shape`).
+///
+/// A module is two components, one per part. Nothing here is the contract: it is how this binding carries the
+/// contract's shapes to and from each part. Every import is served by the platform, outside the provider's process,
+/// and attributed to the provider by the process the call came from, never by anything in the call (`DEC-9`).
+package rutent:binding@0.1.0;
+
+/// The sandboxed part's one route outward: an outside request, the contract's
+/// `urn:rutent:module-interface:outside-request` as JSON, answered with an outside response as JSON. The platform
+/// checks the request against the running declaration before the outside part sees it.
+interface outside-requests {
+    request: func(outside-request: string) -> string;
+}
+
+/// What the sandboxed part has no route to. Each attempt is recorded by the platform and goes no further: there is no
+/// proxy and no state behind these functions, and they return nothing. They exist so that a hostile module's attempt
+/// is evidence, not silence (the module-boundary suite's `Step::LookUpSecret` and `Step::ReadState` for the
+/// sandboxed part).
+interface denied {
+    look-up-secret: func(operation: string, name: string);
+    read-state: func(key: string);
+}
+
+/// The credential proxy, for the outside part (`REQ-MDL-6`): one declared secret, by name, for the transaction and
+/// outside operation being served. The lookup names no provider.
+interface proxy {
+    enum secret-refusal {
+        undeclared-secret,
+        not-found,
+    }
+    look-up: func(transaction: string, operation: string, name: string) -> result<string, secret-refusal>;
+}
+
+/// The provider's own state, for the outside part.
+interface state {
+    read: func(key: string) -> option<string>;
+}
+
+/// The egress layer (item `exp2-outside-egress`): one outbound call for the outside operation being served. The
+/// platform checks every hop against the running declaration and writes the outbound call record; the module sees
+/// only the outcome.
+interface egress {
+    enum scheme {
+        https,
+        wss,
+    }
+    enum outcome {
+        completed,
+        failed,
+        unknown,
+        refused,
+    }
+    call: func(operation: string, scheme: scheme, host: string, port: u16, body: string) -> outcome;
+}
+
+/// Cross-module calls (`REQ-MDL-21`): ask another provider's module one operation kind, through the platform.
+interface modules {
+    enum call-outcome {
+        delivered,
+        refused,
+    }
+    call: func(callee: string, kind: string) -> call-outcome;
+}
+
+/// The sandboxed part: it computes.
+world sandboxed {
+    import outside-requests;
+    import denied;
+
+    /// Called once when its provider's process starts it. An error means the release doesn't start.
+    export start: func() -> result<_, string>;
+    /// One provider-role operation, in the operator's envelope, as JSON; the result body's bytes as the part emits
+    /// them.
+    export handle: func(operation: string) -> list<u8>;
+}
+
+/// The outside part: the provider's own code, doing all of the module's outside interaction.
+world outside {
+    import proxy;
+    import state;
+    import egress;
+    import modules;
+
+    /// Called once when its provider's process starts it. An error means the release doesn't start.
+    export start: func() -> result<_, string>;
+    /// One outside request, as JSON; its outside response, as JSON.
+    export perform: func(outside-request: string) -> string;
+}

@@ -18,3 +18,30 @@ readings are in its README, "Readings taken in opening it".
 - **A plan point, not raised as an item.** `PLAN.md` §6.2, risk 3, reads PVM as having one guest language, after
   ADR-0003. At PolkaVM `v0.38.0` the tree also carries a C guest header, with no C guest program or test. This is
   what `T-008-03` is for; the sheet scores it as `G-22`, and the ADR-0003 amendment draft lists it to reconcile.
+
+## T-008-02
+
+- **A development run after the freeze.** The README's Runs section defines a `dev` id for a run before `C1`.
+  `EXP-2-wasm-dev-20261107-1` ran against the frozen 1.0.0, but on arm64 macOS, not on the scoring platform
+  (`exp2-run-platform`). It takes the dev id, and its cells take the legend's `pre-freeze` marker, which here means
+  "not on the scoring platform". The legend is left as it is; item `exp2-dev-run-off-platform` records the reading,
+  for `T-008-04` to reword if it wants.
+- **One stand-in per category, and the suite's modules.** The suite builds its own modules from `ModuleSpec`s, about
+  forty per language, all handling withdrawals. Read as: each category's stand-in, in each language, is the compiled
+  code every one of those modules runs, with the spec written into a program slot (`exp2-wasm-standins`); the suite
+  runs once per category, and a row passes only if it passes in all four. Each stand-in also answers its own role's
+  kind, which is what the binding's `B-01` test checks; the role suite through the binding is `B-01`'s open gap.
+- **The sandboxed part's attempts.** The suite's steps have the sandboxed part try a secret and state, and count
+  only an observed refusal. The contract gives it no route to either, so the binding gives it `denied`, which
+  records the attempt and reaches nothing (`exp2-wasm-sandboxed-surface`).
+- **Two flaws the PVM binding's review found, checked here.** Every secret lookup, outbound call, state read and
+  cross-module call is judged against the outside request in flight, from the platform's own state, and a record
+  names that operation, never the one the guest gave (`tests/egress.rs`, a hostile stand-in step and its control).
+  A provider's process checks both parts' machine-code digests against the artefact's before it loads either. The
+  macOS isolation profile denies by default, and is probed with a read in `$HOME`, a signal to another process, a
+  network connect, a file write and a process start; `B-07` and `B-08` are scored on those probes only, on macOS.
+  The Linux layer does not meet that bar: its seccomp filter is a deny list and nothing restricts file reads, and
+  the probe test, which asserts the home-file read everywhere, fails there until it is rebuilt.
+- **Not done here.** No Linux run: the Linux isolation code is type-checked only, and `run.sh` is yet to be run on
+  x86_64 Linux for the scored run. `B-11` needs two machines. The outcome page and the adoption item are
+  `T-008-04`'s.

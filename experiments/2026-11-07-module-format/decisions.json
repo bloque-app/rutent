@@ -199,6 +199,224 @@
         {"label": "G-01, G-14", "url": "scoring.md#3-the-candidates-gaps"}
       ],
       "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-placement",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "Where does the Wasm binding sit?",
+      "lead": "The Wasm binding sits in its own cargo workspace, experiments/2026-11-07-module-format/wasm-binding/, with its own Cargo.lock, depending on rutent-contracts and rutent-conformance by path, unless this item says otherwise.",
+      "bullets": [
+        "Nothing it brings reaches the root Cargo.lock or licences/RECORD, so the licence check on main is untouched until adoption decides (T-008-04, REQ-MOD-5)",
+        "Its manifest is its flag: it builds only from there (Narthex REQ-EXP-3)",
+        "Its Rust stand-ins are a second workspace inside it, built for wasm32-unknown-unknown, so the host workspace's lints never see a guest",
+        "Reversible: adoption moves what it keeps into the root workspace"
+      ],
+      "rec": "its own workspace, because it keeps an undecided closure of 136 packages off main.",
+      "options": [
+        "Its own workspace inside the experiment directory (recommended)",
+        "A member of the root workspace behind a cargo feature"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "DEC-7",
+        "REQ-MOD-5"
+      ],
+      "refs": [
+        {
+          "label": "EXP-2 scope",
+          "url": "README.md#scope"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-sandboxed-surface",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "What may the sandboxed part's component import?",
+      "lead": "The sandboxed part imports two interfaces only: outside-requests, its one route outward, carrying the contract's outside request and response as JSON, and denied, whose functions record an attempt at a secret or at state and return nothing, unless this item says otherwise.",
+      "bullets": [
+        "The contract gives the sandboxed part no secret and no state (REQ-MDL-6); the suite still sends it steps that try both, and counts a fixture only on evidence of the refusal",
+        "With no import for them the attempt would be silence, which the suite leaves uncovered; denied makes it evidence while holding no proxy or state behind it",
+        "The admitting compiler refuses a sandboxed part importing anything else (B-02)",
+        "Reversible before the scored runs: dropping denied leaves M-02 to M-04 uncovered"
+      ],
+      "rec": "outside-requests and denied, because the attempt is recorded and nothing is reachable through either.",
+      "options": [
+        "outside-requests and denied (recommended)",
+        "outside-requests only, the attempts left unrecorded",
+        "outside-requests, and state read through the platform for the sandboxed part too"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "REQ-MDL-6",
+        "REQ-MDL-16",
+        "REQ-MDL-18"
+      ],
+      "refs": [
+        {
+          "label": "The binding's WIT",
+          "url": "wasm-binding/wit/binding.wit"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-c-toolchain",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "Which toolchain builds the Wasm C stand-ins?",
+      "lead": "The C stand-ins build with clang targeting wasm32, freestanding with no C library, linked by the rust-lld that rustup's toolchain ships, with bindings from wit-bindgen-c used as a library, unless this item says otherwise.",
+      "bullets": [
+        "It needs no WASI SDK, so nothing is downloaded for C; G-10 named a WASI SDK, and this is the deviation",
+        "With no C library a stand-in imports no WASI interface, which keeps B-02 and G-11 to the binding's own interfaces",
+        "The cost is two shim headers and a bump allocator in the stand-ins' own code",
+        "Reversible: a WASI SDK build can be scored later under its own run id"
+      ],
+      "rec": "clang and rust-lld with no C library, because it brings no download and no import beyond the binding's.",
+      "options": [
+        "clang to wasm32, no C library, rust-lld (recommended)",
+        "wasi-sdk, verified against its release checksum"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "AC-20",
+        "REQ-MDL-15"
+      ],
+      "refs": [
+        {
+          "label": "G-10",
+          "url": "scoring.md#31-wasmtime-v4808"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-cpu-target",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "What CPU target does the Wasm binding compile for?",
+      "lead": "The engine's target is set explicitly to the build's own triple, with no CPU feature flag, so that the machine code doesn't depend on the compiling machine's CPU, unless this item says otherwise.",
+      "bullets": [
+        "By default Wasmtime infers CPU features from the host, and two machines then make different code (G-03)",
+        "ADR-0014's re-derivation compares digests across machines, which needs the same target and flags on each",
+        "The baseline may run slower than host-tuned code; nothing is claimed about speed before M4",
+        "On one machine, two compiler processes gave identical code for all 16 stand-in parts in EXP-2-wasm-dev-20261107-1"
+      ],
+      "rec": "the build's triple with no feature flag, because it is what makes re-derivation possible.",
+      "options": [
+        "The build's triple, baseline features (recommended)",
+        "A named CPU level, such as x86-64-v2, set as flags"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "REQ-MDL-2",
+        "ADR-0014"
+      ],
+      "refs": [
+        {
+          "label": "B-11, G-03, G-04",
+          "url": "scoring.md#22-per-format"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-standins",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "How do the Wasm stand-ins carry the suite's modules?",
+      "lead": "Each stand-in part is compiled once per category and language, with a fixed program slot in its data segment; building a module for one of the suite's specs writes the spec's program into that slot in place, and the suite runs once per category's stand-ins, unless this item says otherwise.",
+      "bullets": [
+        "The suite builds about 40 modules per language; compiling a guest per spec would take minutes per run",
+        "The stand-in's own compiled code reads and runs its steps, so each admitted binary is a real component whose digest differs per spec",
+        "Running the suite per category puts all eight stand-ins through every check; a row passes only if it passes in all four",
+        "Reversible before the scored runs"
+      ],
+      "rec": "a program slot and one suite run per category, because every stand-in is then scored by every check.",
+      "options": [
+        "A program slot, the suite run per category (recommended)",
+        "A program slot, the suite run on the reserve stand-in only",
+        "A guest compiled per spec"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "DEC-7",
+        "AC-20"
+      ],
+      "refs": [
+        {
+          "label": "The program format",
+          "url": "wasm-binding/guests/rust/src/lib.rs"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
+    },
+    {
+      "id": "exp2-dev-run-off-platform",
+      "kind": "decide",
+      "section": "decide",
+      "group": "runs",
+      "title": "What id does a run off the scoring platform take?",
+      "lead": "A run against the frozen contract but off the scoring platform takes a development id, EXP-2-<candidate code>-dev-<yyyymmdd>-<n>, and its cells are marked pre-freeze as the legend's development row has it, unless this item says otherwise.",
+      "bullets": [
+        "The README defines dev ids for runs before C1; EXP-2-wasm-dev-20261107-1 ran after it, on arm64 macOS",
+        "No outcome may rest on a run off the scoring platform, which is what the dev marker already guarantees",
+        "The legend is left as it is; the run note and the F-008 notes say what the marker means here",
+        "Reversible: T-008-04 can reword the legend when it writes the outcome"
+      ],
+      "rec": "the dev id and the pre-freeze marker, because they keep the cell from being read as scored.",
+      "options": [
+        "The dev id and pre-freeze marker (recommended)",
+        "A new marker, off-platform, added to the legend"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": [
+        "DEC-7"
+      ],
+      "refs": [
+        {
+          "label": "README, Runs",
+          "url": "README.md#runs"
+        },
+        {
+          "label": "Run note",
+          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+        }
+      ],
+      "origin": "EXP-2, T-008-02, 2026-11-07"
     }
   ]
 }

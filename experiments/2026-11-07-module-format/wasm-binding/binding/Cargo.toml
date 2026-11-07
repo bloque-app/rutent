@@ -1,0 +1,29 @@
+[package]
+name = "rutent-wasm-binding"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A Wasm-component binding of rutent's module-boundary suite, on Wasmtime 48.0.8."
+
+[lints]
+workspace = true
+
+[dependencies]
+rutent-contracts.workspace = true
+rutent-conformance.workspace = true
+rutent-wasm-sandbox.workspace = true
+wasmtime.workspace = true
+wit-component.workspace = true
+wit-bindgen-c.workspace = true
+wit-bindgen-core.workspace = true
+wit-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+# Only to write hostile components for the admission tests: `wit-component`'s dummy module, which needs the
+# `wit-parser` its own version uses.
+wit-component = { workspace = true, features = ["dummy-module"] }
+wit-parser-of-wit-component = { package = "wit-parser", version = "=0.254.2" }
