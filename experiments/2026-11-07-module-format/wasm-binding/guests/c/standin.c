@@ -34,7 +34,17 @@ static const char MAGIC[] = "RUTENT-PROGRAM-SLOT-V1\n";
 
 /* The slot the binding writes the program into: `#` after the magic line, never zero, so that it sits in a data
  * segment of exactly this size, and volatile, so that the compiler can't fold the placeholder into the code. */
-__attribute__((used, nonstring)) static const volatile char PROGRAM[RUTENT_SLOT_SIZE] = RUTENT_SLOT_INIT;
+/* `nonstring` says the array holds no terminating NUL on purpose; newer clangs warn without it, and older ones,
+ * clang 18 among them, don't know it. */
+#if defined(__has_attribute)
+#if __has_attribute(nonstring)
+#define RUTENT_NONSTRING __attribute__((nonstring))
+#endif
+#endif
+#ifndef RUTENT_NONSTRING
+#define RUTENT_NONSTRING
+#endif
+__attribute__((used)) RUTENT_NONSTRING static const volatile char PROGRAM[RUTENT_SLOT_SIZE] = RUTENT_SLOT_INIT;
 
 enum step_kind { SECRET, STATE, CALL, MODULE, SPIN, GROW, TRAP, FORGE };
 
