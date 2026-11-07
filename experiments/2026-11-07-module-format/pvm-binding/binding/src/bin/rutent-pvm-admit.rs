@@ -3,16 +3,19 @@
 //! each against its part's allowed imports and required exports, compiles both with the binding's engine
 //! settings, and answers with each part's digest: of machine code under the compiler, or of the blob under the
 //! interpreter, which makes no machine code.
+//!
+//! On Linux it creates its engine, then confines itself (`isolation::confine`): an empty read-only root, resource
+//! limits and a `seccomp` filter, before it reads the release.
 
 use std::time::Instant;
 
 use polkavm::Engine;
 use rutent_contracts::module_interface::PartName;
-use rutent_pvm_binding::engine;
+use rutent_pvm_binding::isolation::{self, Role};
 use rutent_pvm_binding::protocol::{AdmitRequest, AdmitResponse, receive, send, unhex};
+use rutent_pvm_binding::{engine, probe};
 
-fn admit(request: &AdmitRequest) -> Result<AdmitResponse, String> {
-    let engine = Engine::new(&engine::config(0)).map_err(|e| e.to_string())?;
+fn admit(engine: &Engine, request: &AdmitRequest) -> Result<AdmitResponse, String> {
     let started = Instant::now();
     let mut parts = Vec::new();
     for (part, text) in [
@@ -22,7 +25,7 @@ fn admit(request: &AdmitRequest) -> Result<AdmitResponse, String> {
         let bytes = unhex(text).ok_or("a binary not in hexadecimal")?;
         let blob = engine::check(part, &bytes).map_err(|e| format!("{part:?} part: {e}"))?;
         let (_, compiled) =
-            engine::compile(&engine, &bytes, blob).map_err(|e| format!("{part:?} part: {e}"))?;
+            engine::compile(engine, &bytes, blob).map_err(|e| format!("{part:?} part: {e}"))?;
         parts.push(compiled);
     }
     let micros = started.elapsed().as_micros();
@@ -37,10 +40,28 @@ fn admit(request: &AdmitRequest) -> Result<AdmitResponse, String> {
 }
 
 fn main() {
-    let response = match receive::<AdmitRequest>(&mut std::io::stdin().lock()) {
-        Ok(Some(request)) => {
-            admit(&request).unwrap_or_else(|reason| AdmitResponse::Refused { reason })
+    let started = isolation::started();
+    let engine = Engine::new(&engine::config(0));
+    if let Err(e) = isolation::confine(&started, Role::Admit) {
+        let _ = std::io::Write::write_all(
+            &mut std::io::stderr(),
+            format!("rutent-pvm-admit: {e}\n").as_bytes(),
+        );
+        std::process::exit(1);
+    }
+    if let Some(code) = probe::run(&started.rest) {
+        std::process::exit(code);
+    }
+    let response = match (
+        engine,
+        receive::<AdmitRequest>(&mut std::io::stdin().lock()),
+    ) {
+        (Ok(engine), Ok(Some(request))) => {
+            admit(&engine, &request).unwrap_or_else(|reason| AdmitResponse::Refused { reason })
         }
+        (Err(e), _) => AdmitResponse::Refused {
+            reason: format!("no engine: {e}"),
+        },
         _ => AdmitResponse::Refused {
             reason: "no request".to_owned(),
         },

@@ -26,9 +26,14 @@ fi
 echo "open files: $(ulimit -n) -> raised for the workers' pipes"
 ulimit -n 4096 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 
+echo "== isolation probes (B-08): the user's files, a signal, the network and a write, each refused"
+# On Linux this is also the first run of the namespaces, the read-only roots, the rlimits and the admitting
+# compiler's seccomp filter (isolation.rs); it needs util-linux's unshare and unprivileged user namespaces.
+cargo test --release --locked --manifest-path "$HERE/Cargo.toml" --test isolation
+
 echo "== the binding's tests, the suite's included"
 RUTENT_PVM_GUESTS=$CARGO_TARGET_DIR/pvm-guests cargo test --release --locked --manifest-path "$HERE/Cargo.toml" \
     -- --include-ignored
 
 echo "== the suite"
-"$CARGO_TARGET_DIR/release/rutent-pvm-suite" --run-id "$RUN_ID" --guests "$CARGO_TARGET_DIR/pvm-guests"
+"$CARGO_TARGET_DIR/release/rutent-pvm-suite" --run-id "$RUN_ID" --guests "$CARGO_TARGET_DIR/pvm-guests" "${@:2}"

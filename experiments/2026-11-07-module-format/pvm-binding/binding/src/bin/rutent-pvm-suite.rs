@@ -1,7 +1,10 @@
 //! Runs the module-boundary suite on the PolkaVM binding, once per provider category, in Rust and C, and prints
 //! the report the run note records, with the binding's own checks beside it.
 //!
-//! `rutent-pvm-suite --run-id <id> --guests <dir> [--output-limit <bytes>]`
+//! `rutent-pvm-suite --run-id <id> --guests <dir> [--output-limit <bytes>] [--unisolated]`
+//!
+//! `--unisolated` runs the worker and the admitting compiler without isolation, for debugging; `B-07` and `B-08`
+//! are then not run.
 //!
 //! It exits non-zero if any category's report doesn't pass.
 
@@ -12,15 +15,13 @@ use rutent_conformance::boundary::{
     AdmissionRefusal, Admitted, Check, Exercised, ModuleBinding, Report, RunConfig,
     run_boundary_suite,
 };
-use rutent_conformance::role::{SuiteContext, placeholder_key, placeholder_signature};
-use rutent_contracts::module_interface::{
-    BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue, PartName, Parts,
-    RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
+use rutent_conformance::role::{SuiteContext, placeholder_key};
+use rutent_contracts::module_interface::{Declaration, PartName, Parts};
+use rutent_pvm_binding::binding::{
+    CATEGORIES, FORMAT, LANGUAGES, PvmBinding, Setup, Stats, assertion,
 };
-use rutent_contracts::provider_role::{Signature, SignatureScheme, Statement};
-use rutent_pvm_binding::binding::{CATEGORIES, FORMAT, LANGUAGES, PvmBinding, Setup, Stats};
 use rutent_pvm_binding::engine;
-use rutent_pvm_binding::isolation::{self, Role};
+use rutent_pvm_binding::isolation::{self, Isolation, Role};
 use rutent_pvm_binding::sha256::hex_digest;
 use rutent_pvm_binding::spec;
 use serde_json::json;
@@ -188,37 +189,6 @@ fn declaration(provider: &str) -> Declaration {
         },
     }))
     .expect("a valid declaration")
-}
-
-fn assertion(declaration: &Declaration, binaries: &Parts<Vec<u8>>) -> Statement<ReleaseAssertion> {
-    let format = BinaryFormat::new(FORMAT).expect("a format");
-    let part = |bytes: &[u8]| BinaryPart {
-        format: format.clone(),
-        digest: Digest {
-            algorithm: DigestAlgorithm::Sha256,
-            value: DigestValue::new(hex_digest(bytes)).expect("a digest"),
-        },
-    };
-    let context = SuiteContext::default();
-    Statement {
-        deployment: context.deployment,
-        protocol_version: context.protocol_version,
-        shape: RELEASE_ASSERTION_SHAPE.to_owned(),
-        maker: declaration.provider.as_str().to_owned(),
-        made_at: "2026-11-07T00:00:00Z".to_owned(),
-        signature: Signature {
-            scheme: SignatureScheme::Ed25519,
-            key: placeholder_key(2),
-            value: placeholder_signature(),
-        },
-        statement: ReleaseAssertion {
-            declaration: declaration.clone(),
-            parts: Parts {
-                sandboxed: part(&binaries.sandboxed),
-                outside: part(&binaries.outside),
-            },
-        },
-    }
 }
 
 /// `B-02` and part of `B-09`: hostile sandboxed parts, and blobs that aren't programs, are refused at admission,
@@ -403,6 +373,13 @@ fn print_stats(category: &str, stats: &Stats, workers: &[u64]) {
         "- loads whose digests differed from the admitted ones: {}",
         stats.digest_mismatches
     );
+    println!(
+        "- host calls refused before a record: {}",
+        stats.host_refusals.len()
+    );
+    for reason in &stats.host_refusals {
+        println!("  - {reason}");
+    }
     println!("- releases that didn't start: {}", stats.not_started.len());
     for reason in &stats.not_started {
         println!("  - {reason}");
@@ -416,12 +393,18 @@ fn main() {
     let output_limit = arg(&args, "--output-limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(4096);
+    let isolation = if args.iter().any(|a| a == "--unisolated") {
+        Isolation::Unisolated
+    } else {
+        Isolation::Required
+    };
     let here = std::env::current_exe().expect("the program's path");
     let dir = here.parent().expect("its directory");
     let setup = Setup {
         worker: dir.join("rutent-pvm-worker"),
         admit: dir.join("rutent-pvm-admit"),
         guests: guests.clone(),
+        isolation,
     };
 
     println!("# Module-boundary suite on PolkaVM: {run_id}\n");
@@ -444,9 +427,15 @@ fn main() {
     println!("- outside imports allowed: {:?}", engine::OUTSIDE_IMPORTS);
     println!(
         "- admitting compiler isolation: {}",
-        isolation::describe(Role::Admit)
+        isolation::describe(Role::Admit, isolation)
     );
-    println!("- worker isolation: {}", isolation::describe(Role::Worker));
+    println!(
+        "- worker isolation: {}",
+        isolation::describe(Role::Worker, isolation)
+    );
+    if isolation == Isolation::Unisolated {
+        println!("- UNISOLATED: --unisolated was given, so B-07 and B-08 are not run");
+    }
     println!("- output limit: {output_limit} bytes");
     println!("\n## Stand-ins\n");
     println!("| Category | Language | Part | Bytes | SHA-256 |");

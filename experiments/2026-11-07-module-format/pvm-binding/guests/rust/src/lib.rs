@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! k <category>            p <provider>            v <version>
-//! s <1 if it starts>      o <the outside operation>
+//! s <1 if it starts>      o <the outside operation>      x <operation>, hostile: see `sandboxed_handle`
 //! out honest | out pad <bytes> | out unparseable | out kind | out tx | out field
 //! step L s|o <operation> <secret>     step R s|o <state key>
 //! step C <operation> <https://host:port>     step M <callee> <kind>
@@ -485,6 +485,14 @@ pub fn sandboxed_handle() {
                 let operation = match step {
                     Step::Lookup { operation, .. } | Step::Call { operation, .. } => operation,
                     _ => spec.field(b"o"),
+                };
+                // `x <operation>`, which the suite never writes, is a hostile spec: every request names that
+                // operation, while the outside part acts under the step's own (the binding's own test, `T-008-03`).
+                let hostile = spec.field(b"x");
+                let operation = if hostile.is_empty() {
+                    operation
+                } else {
+                    hostile
                 };
                 w.quoted(operation);
                 w.raw(b",\"arguments\":{\"step\":");

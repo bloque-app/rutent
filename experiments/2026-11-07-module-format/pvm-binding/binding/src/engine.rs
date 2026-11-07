@@ -6,7 +6,8 @@
 //! sandbox is never used: it needs the `generic-sandbox` feature, which is experimental (scoring sheet `G-15`).
 
 use polkavm::{
-    BackendKind, Config, Engine, GasMeteringKind, Module, ModuleConfig, ProgramBlob, SandboxKind,
+    BackendKind, Config, CorePinning, Engine, GasMeteringKind, Module, ModuleConfig, ProgramBlob,
+    SandboxKind,
 };
 use rutent_contracts::module_interface::PartName;
 
@@ -61,6 +62,9 @@ pub fn config(worker_count: usize) -> Config {
     config.set_sandboxing_enabled(true);
     config.set_cache_enabled(false);
     config.set_worker_count(worker_count);
+    config.set_lru_cache_size(0);
+    config.set_default_cost_model(None);
+    config.set_core_pinning(CorePinning::Disabled);
     config
 }
 
@@ -72,6 +76,11 @@ pub fn module_config() -> ModuleConfig {
     config.set_strict(true);
     config.set_cache_by_hash(false);
     config.set_step_tracing(false);
+    config.set_page_size(0x1000);
+    config.set_aux_data_size(0);
+    config.set_cost_model(None);
+    config.set_per_instruction_metering(false);
+    config.set_interpreter_compilation_cost(None);
     config
 }
 
@@ -98,6 +107,14 @@ pub fn settings() -> Vec<(&'static str, String)> {
         ("strict", "true".to_owned()),
         ("cache_by_hash", "false".to_owned()),
         ("step_tracing", "false".to_owned()),
+        ("lru_cache_size", "0".to_owned()),
+        ("default_cost_model", "None: PolkaVM's own".to_owned()),
+        ("core_pinning", "Disabled".to_owned()),
+        ("page_size", "0x1000".to_owned()),
+        ("aux_data_size", "0".to_owned()),
+        ("cost_model", "None: the engine's default".to_owned()),
+        ("per_instruction_metering", "false".to_owned()),
+        ("interpreter_compilation_cost", "None".to_owned()),
         ("polkavm features", "std (default) only".to_owned()),
     ]
 }

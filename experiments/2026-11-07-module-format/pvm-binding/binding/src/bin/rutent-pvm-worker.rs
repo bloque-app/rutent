@@ -1,21 +1,25 @@
 //! A provider's worker process (ADR-0003: one OS process per provider). It runs the provider's two parts as two
 //! PolkaVM instances and carries everything they reach for to the platform, over its standard input and output.
 //!
-//! - **The sandboxed part** has three host functions: the operation in, the outside request, the result out. An
-//!   outside request is checked here against the contract's shape (`OutsideRequest`, which names no secret and no
-//!   destination), its transaction and the release's declared operations, before the outside part sees it.
-//! - **The outside part** serves each outside request. Its secret lookups, state reads, outbound calls and
-//!   cross-module calls go to the platform, which checks each against the running release's declaration and
+//! - **The sandboxed part** has three host functions: the operation in, the outside request, the result out. Each
+//!   outside request goes to the platform, which checks it against the contract's shape, the transaction and the
+//!   running release's declaration before the outside part may serve it, and checks the response after.
+//! - **The outside part** serves each outside request the platform let through. Its secret lookups, state reads,
+//!   outbound calls and cross-module calls go to the platform, which binds each to the request in flight and
 //!   writes every record. The worker sends no provider name: the platform knows the provider by the pipe.
+//! - **Isolation.** The worker confines itself before it reads anything (`isolation::confine`), and compiles
+//!   every blob inside that isolation. A load compiles both parts and compares their digests with the admitted
+//!   ones before it instantiates anything.
 
 use std::io::Write;
 
 use polkavm::{Caller, Engine, Instance, Linker};
-use rutent_contracts::module_interface::{OutsideRequest, OutsideResponse, PartName};
-use rutent_pvm_binding::engine;
+use rutent_contracts::module_interface::PartName;
+use rutent_pvm_binding::isolation::{self, Role};
 use rutent_pvm_binding::protocol::{
     FromWorker, HostCall, Reply, ToWorker, hex, receive, send, unhex,
 };
+use rutent_pvm_binding::{engine, probe};
 
 const NONE: u64 = u64::MAX;
 
@@ -38,7 +42,6 @@ fn ask(call: HostCall) -> Reply {
 struct OutsideState {
     request: Vec<u8>,
     response: Option<Vec<u8>>,
-    transaction: String,
 }
 
 struct Outside {
@@ -50,8 +53,6 @@ struct SandboxedState {
     outside: Outside,
     input: Vec<u8>,
     output: Option<Vec<u8>>,
-    transaction: String,
-    operations: Vec<String>,
 }
 
 struct Running {
@@ -126,12 +127,7 @@ fn outside_linker() -> Result<Linker<OutsideState, String>, String> {
              cap: u64| {
                 let operation = read_text(&mut c, op, op_len)?;
                 let name = read_text(&mut c, name, name_len)?;
-                let transaction = c.user_data.transaction.clone();
-                match ask(HostCall::Secret {
-                    transaction,
-                    operation,
-                    name,
-                }) {
+                match ask(HostCall::Secret { operation, name }) {
                     Reply::Value(value) => write(&mut c, out, cap, value.as_bytes()),
                     _ => Ok(NONE),
                 }
@@ -163,9 +159,7 @@ fn outside_linker() -> Result<Linker<OutsideState, String>, String> {
                 let operation = read_text(&mut c, op, op_len)?;
                 let url = read_text(&mut c, url, url_len)?;
                 let body = read_text(&mut c, body, len)?;
-                let transaction = c.user_data.transaction.clone();
                 match ask(HostCall::Egress {
-                    transaction,
                     operation,
                     url,
                     body,
@@ -196,42 +190,40 @@ fn outside_linker() -> Result<Linker<OutsideState, String>, String> {
     Ok(linker)
 }
 
-/// One outside request from the sandboxed part: checked, served by the outside part, its response checked.
+/// Asks the platform to check something, and waits for its status: 0 lets it through.
+fn allowed(message: FromWorker) -> bool {
+    tell(&message);
+    matches!(
+        receive::<ToWorker>(&mut std::io::stdin().lock()),
+        Ok(Some(ToWorker::Reply(Reply::Status(0))))
+    )
+}
+
+/// One outside request from the sandboxed part: the platform checks it, the outside part serves it, and the
+/// platform checks the response.
 fn outside_request(state: &mut SandboxedState, bytes: &[u8]) -> Option<Vec<u8>> {
-    // A request naming a secret isn't an outside request; it is refused here, and never reaches the outside part
-    // or the proxy. It is reported, so that the refused attempt is seen.
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
-        && let Some(name) = value.get("secret").and_then(|s| s.as_str())
-    {
-        let operation = value["operation"].as_str().unwrap_or_default().to_owned();
-        tell(&FromWorker::SandboxedSecretRefused {
-            operation,
-            name: name.to_owned(),
-        });
-        return None;
-    }
-    let request: OutsideRequest = serde_json::from_slice(bytes).ok()?;
-    if request.transaction.as_str() != state.transaction
-        || !state
-            .operations
-            .iter()
-            .any(|o| o == request.operation.as_str())
-    {
+    let request = String::from_utf8(bytes.to_vec()).ok()?;
+    if !allowed(FromWorker::Outside { request }) {
         return None;
     }
     let outside = &mut state.outside;
     outside.state.request = bytes.to_vec();
     outside.state.response = None;
-    outside.state.transaction = state.transaction.clone();
     outside.instance.set_gas(engine::GAS_PER_CALL);
-    outside
+    let served = outside
         .instance
         .call_typed(&mut outside.state, "serve", ())
-        .ok()?;
-    let response = outside.state.response.take()?;
-    let parsed: OutsideResponse = serde_json::from_slice(&response).ok()?;
-    (parsed.transaction == request.transaction && parsed.operation == request.operation)
-        .then_some(response)
+        .is_ok();
+    let response = outside
+        .state
+        .response
+        .take()
+        .filter(|_| served)
+        .and_then(|r| String::from_utf8(r).ok());
+    let passed = allowed(FromWorker::OutsideDone {
+        response: response.clone(),
+    });
+    response.filter(|_| passed).map(String::into_bytes)
 }
 
 fn sandboxed_linker() -> Result<Linker<SandboxedState, String>, String> {
@@ -271,21 +263,32 @@ fn sandboxed_linker() -> Result<Linker<SandboxedState, String>, String> {
     Ok(linker)
 }
 
-/// An instance, its part's digest and its sandbox worker's process, if any.
-type Instantiated<T> = (Instance<T, String>, String, Option<u32>);
-
-fn instantiate<T>(
+/// Compiles a part, inside this worker's isolation, and checks its digest is the admitted one.
+fn compile(
     engine: &Engine,
-    linker: &Linker<T, String>,
     part: PartName,
     bytes: &[u8],
-) -> Result<Instantiated<T>, String> {
+    expected: &str,
+) -> Result<(polkavm::Module, String), String> {
     let blob = engine::check(part, bytes)?;
     let (module, compiled) = engine::compile(engine, bytes, blob)?;
-    let pre = linker.instantiate_pre(&module).map_err(|e| e.to_string())?;
+    if compiled.digest != expected {
+        return Err(format!(
+            "the {part:?} part compiled to {}, not the admitted {expected}",
+            compiled.digest
+        ));
+    }
+    Ok((module, compiled.digest))
+}
+
+fn instantiate<T>(
+    linker: &Linker<T, String>,
+    module: &polkavm::Module,
+) -> Result<(Instance<T, String>, Option<u32>), String> {
+    let pre = linker.instantiate_pre(module).map_err(|e| e.to_string())?;
     let instance = pre.instantiate().map_err(|e| e.to_string())?;
     let pid = instance.pid();
-    Ok((instance, compiled.digest, pid))
+    Ok((instance, pid))
 }
 
 fn start<T>(instance: &mut Instance<T, String>, state: &mut T) -> Result<(), String> {
@@ -297,20 +300,22 @@ fn start<T>(instance: &mut Instance<T, String>, state: &mut T) -> Result<(), Str
     }
 }
 
+/// Compiles both parts, checks their digests, and only then instantiates and starts them.
 fn load(
     engine: &Engine,
     sandboxed: &[u8],
     outside: &[u8],
-    operations: Vec<String>,
+    expect: (&str, &str),
 ) -> Result<(Running, FromWorker), String> {
-    let (mut outside_instance, outside_digest, outside_pid) =
-        instantiate(engine, &outside_linker()?, PartName::Outside, outside)?;
-    let (mut sandboxed_instance, sandboxed_digest, sandboxed_pid) =
-        instantiate(engine, &sandboxed_linker()?, PartName::Sandboxed, sandboxed)?;
+    let (outside_module, outside_digest) = compile(engine, PartName::Outside, outside, expect.1)?;
+    let (sandboxed_module, sandboxed_digest) =
+        compile(engine, PartName::Sandboxed, sandboxed, expect.0)?;
+    let (mut outside_instance, outside_pid) = instantiate(&outside_linker()?, &outside_module)?;
+    let (mut sandboxed_instance, sandboxed_pid) =
+        instantiate(&sandboxed_linker()?, &sandboxed_module)?;
     let mut outside_state = OutsideState {
         request: Vec::new(),
         response: None,
-        transaction: String::new(),
     };
     start(&mut outside_instance, &mut outside_state)?;
     let mut state = SandboxedState {
@@ -320,8 +325,6 @@ fn load(
         },
         input: Vec::new(),
         output: None,
-        transaction: String::new(),
-        operations,
     };
     start(&mut sandboxed_instance, &mut state)?;
     let loaded = FromWorker::Loaded {
@@ -338,10 +341,9 @@ fn load(
     ))
 }
 
-fn handle(running: &mut Running, operation: String, transaction: String) -> FromWorker {
+fn handle(running: &mut Running, operation: String) -> FromWorker {
     running.state.input = operation.into_bytes();
     running.state.output = None;
-    running.state.transaction = transaction;
     running.sandboxed.set_gas(engine::GAS_PER_CALL);
     if let Err(e) = running
         .sandboxed
@@ -361,14 +363,20 @@ fn handle(running: &mut Running, operation: String, transaction: String) -> From
     }
 }
 
+fn fail(what: &str) -> ! {
+    let _ = writeln!(std::io::stderr(), "rutent-pvm-worker: {what}");
+    std::process::exit(1);
+}
+
 fn main() {
-    let engine = match Engine::new(&engine::config(2)) {
-        Ok(engine) => engine,
-        Err(e) => {
-            let _ = writeln!(std::io::stderr(), "rutent-pvm-worker: {e}");
-            std::process::exit(1);
-        }
-    };
+    let started = isolation::started();
+    if let Err(e) = isolation::confine(&started, Role::Worker) {
+        fail(&e);
+    }
+    if let Some(code) = probe::run(&started.rest) {
+        std::process::exit(code);
+    }
+    let engine = Engine::new(&engine::config(2)).unwrap_or_else(|e| fail(&e.to_string()));
     let mut running: Option<Running> = None;
     loop {
         let message = match receive::<ToWorker>(&mut std::io::stdin().lock()) {
@@ -379,25 +387,25 @@ fn main() {
             ToWorker::Load {
                 sandboxed,
                 outside,
-                operations,
+                expect_sandboxed,
+                expect_outside,
                 ..
             } => match (unhex(&sandboxed), unhex(&outside)) {
-                (Some(s), Some(o)) => match load(&engine, &s, &o, operations) {
-                    Ok((next, loaded)) => {
-                        running = Some(next);
-                        loaded
+                (Some(s), Some(o)) => {
+                    match load(&engine, &s, &o, (&expect_sandboxed, &expect_outside)) {
+                        Ok((next, loaded)) => {
+                            running = Some(next);
+                            loaded
+                        }
+                        Err(reason) => FromWorker::NotStarted { reason },
                     }
-                    Err(reason) => FromWorker::NotStarted { reason },
-                },
+                }
                 _ => FromWorker::NotStarted {
                     reason: "binaries not in hexadecimal".to_owned(),
                 },
             },
-            ToWorker::Handle {
-                operation,
-                transaction,
-            } => match running.as_mut() {
-                Some(running) => handle(running, operation, transaction),
+            ToWorker::Handle { operation, .. } => match running.as_mut() {
+                Some(running) => handle(running, operation),
                 None => FromWorker::Failed {
                     reason: "nothing running".to_owned(),
                 },

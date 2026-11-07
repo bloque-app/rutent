@@ -256,6 +256,7 @@ name = "rutent-pvm-binding"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "polkavm",
  "polkavm-linker",
  "rutent-conformance",

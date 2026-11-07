@@ -22,8 +22,11 @@ pub enum ToWorker {
         sandboxed: String,
         /// The outside part's blob.
         outside: String,
-        /// The outside operations the release declares, for the check of each outside request.
-        operations: Vec<String>,
+        /// The digests admission recorded for the sandboxed part, which the worker's own compilation must
+        /// give before anything is instantiated.
+        expect_sandboxed: String,
+        /// The same, for the outside part.
+        expect_outside: String,
     },
     /// Handle one provider-role operation, in its envelope, as JSON.
     Handle {
@@ -56,13 +59,18 @@ pub enum FromWorker {
     },
     /// The outside part asks a host call, which the platform answers with a [`Reply`].
     Host(HostCall),
-    /// The sandboxed part's outside request was refused before it reached the outside part, because it named a
-    /// secret, which an outside request can't. Reported so the refused attempt is seen.
-    SandboxedSecretRefused {
-        /// The outside operation it named.
-        operation: String,
-        /// The secret it named.
-        name: String,
+    /// The sandboxed part sends an outside request. The platform checks it and answers with a [`Reply::Status`],
+    /// 0 to let the outside part serve it; until the request's [`FromWorker::OutsideDone`], every host call is
+    /// bound to it.
+    Outside {
+        /// The request, as the sandboxed part wrote it.
+        request: String,
+    },
+    /// The outside part has served the request in flight. The platform checks the response and answers with a
+    /// [`Reply::Status`], 0 to pass it to the sandboxed part.
+    OutsideDone {
+        /// The response the outside part wrote, if any.
+        response: Option<String>,
     },
     /// The sandboxed part returned its output.
     Handled {
@@ -80,11 +88,9 @@ pub enum FromWorker {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostCall {
-    /// Resolve a secret for an outside operation of the transaction being served.
+    /// Resolve a secret for the outside request in flight.
     Secret {
-        /// The transaction.
-        transaction: String,
-        /// The outside operation.
+        /// The outside operation the guest names, which must be the request's in flight.
         operation: String,
         /// The secret's name.
         name: String,
@@ -96,9 +102,7 @@ pub enum HostCall {
     },
     /// Call an endpoint.
     Egress {
-        /// The transaction.
-        transaction: String,
-        /// The outside operation.
+        /// The outside operation the guest names, which must be the request's in flight.
         operation: String,
         /// `scheme://host:port`.
         url: String,

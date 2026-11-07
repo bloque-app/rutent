@@ -18,12 +18,13 @@ use rutent_conformance::boundary::{
     AdmissionRefusal, Admitted, BoundaryHarness, Endpoint, Events, Handled, LookupEvent,
     LookupOutcome, ModuleBinding, ModuleSpec, PlatformRefusal, ProcessId, StateEvent,
 };
-use rutent_conformance::role::placeholder_signature;
+use rutent_conformance::role::{SuiteContext, placeholder_key, placeholder_signature};
 use rutent_contracts::module_interface::{
-    Acceptance, AcceptanceMode, Accepted, Address, AdmissionArtefact, Build, CallOutcome,
-    CallRefusalReason, CallRefused, Capabilities, CrossModuleCall, CrossModuleOutcome, Declaration,
-    Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name, Nothing,
-    OperationKind, OutboundCallRecord, PartName, Parts, RefusalReason, Refused, ReleaseAssertion,
+    Acceptance, AcceptanceMode, Accepted, Address, AdmissionArtefact, BinaryFormat, BinaryPart,
+    Build, CallOutcome, CallRefusalReason, CallRefused, Capabilities, CrossModuleCall,
+    CrossModuleOutcome, Declaration, Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host,
+    Identifier, Name, Nothing, OperationKind, OutboundCallRecord, OutsideRequest, OutsideResponse,
+    PartName, Parts, RELEASE_ASSERTION_SHAPE, RefusalReason, Refused, ReleaseAssertion,
     RouteReference, Scheme, SecretLookup, SecretRefusalReason, Time, validate_lookup, widening,
 };
 use rutent_contracts::provider_role::{
@@ -33,7 +34,7 @@ use serde_json::Value;
 
 use crate::egress::allows;
 use crate::engine;
-use crate::isolation::{self, Role};
+use crate::isolation::{self, Isolation, Role};
 use crate::protocol::{
     AdmitRequest, AdmitResponse, FromWorker, HostCall, Reply, ToWorker, hex, receive, send, unhex,
 };
@@ -58,6 +59,8 @@ pub struct Setup {
     pub admit: PathBuf,
     /// The compiled stand-ins: `<language>/<part>-<category>.polkavm`.
     pub guests: PathBuf,
+    /// Whether the worker and the admitting compiler are isolated.
+    pub isolation: Isolation,
 }
 
 /// Measurements the run note records (scoring sheet `B-06`): never a target.
@@ -81,6 +84,8 @@ pub struct Stats {
     pub digest_mismatches: usize,
     /// PolkaVM sandbox worker processes seen, under the Linux sandbox.
     pub guest_pids: usize,
+    /// Host calls refused before any record could be written, with why.
+    pub host_refusals: Vec<String>,
 }
 
 struct Worker {
@@ -90,8 +95,8 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(exe: &Path) -> std::io::Result<Self> {
-        let mut child = isolation::spawn(Role::Worker, exe)?;
+    fn spawn(exe: &Path, isolation: Isolation) -> std::io::Result<Self> {
+        let mut child = isolation::spawn(Role::Worker, exe, isolation, std::iter::empty::<&str>())?;
         let stdin = child
             .stdin
             .take()
@@ -151,6 +156,7 @@ pub struct PvmBinding {
     operations_received: BTreeMap<String, usize>,
     providers: BTreeMap<String, Slot>,
     serving: BTreeMap<String, String>,
+    in_flight: BTreeMap<String, (String, String)>,
     resolved: BTreeMap<(String, String, String), Vec<Name>>,
     clock: u32,
     events: Events,
@@ -234,6 +240,7 @@ impl PvmBinding {
             operations_received: BTreeMap::new(),
             providers: BTreeMap::new(),
             serving: BTreeMap::new(),
+            in_flight: BTreeMap::new(),
             resolved: BTreeMap::new(),
             clock: 0,
             events: Events::default(),
@@ -269,8 +276,13 @@ impl PvmBinding {
     /// Runs the admitting compiler, in its own isolated process, on a release's two parts.
     pub fn compile(&mut self, binaries: &Parts<Vec<u8>>) -> Result<(Digest, Digest), String> {
         let started = Instant::now();
-        let mut child =
-            isolation::spawn(Role::Admit, &self.setup.admit).map_err(|e| e.to_string())?;
+        let mut child = isolation::spawn(
+            Role::Admit,
+            &self.setup.admit,
+            self.setup.isolation,
+            std::iter::empty::<&str>(),
+        )
+        .map_err(|e| e.to_string())?;
         let request = AdmitRequest {
             sandboxed: hex(&binaries.sandboxed),
             outside: hex(&binaries.outside),
@@ -329,13 +341,6 @@ impl PvmBinding {
         let Some(artefact) = self.artefact(provider, version).cloned() else {
             return;
         };
-        let operations = artefact
-            .declaration()
-            .outside
-            .operations
-            .iter()
-            .map(|o| o.name.as_str().to_owned())
-            .collect();
         let Some(binaries) = self
             .providers
             .get(provider)
@@ -344,10 +349,10 @@ impl PvmBinding {
         else {
             return;
         };
-        let worker_exe = self.setup.worker.clone();
+        let (worker_exe, isolation) = (self.setup.worker.clone(), self.setup.isolation);
         let slot = self.providers.entry(provider.to_owned()).or_default();
         if slot.worker.is_none() {
-            match Worker::spawn(&worker_exe) {
+            match Worker::spawn(&worker_exe, isolation) {
                 Ok(worker) => {
                     slot.worker = Some(worker);
                     self.stats.workers_started += 1;
@@ -367,7 +372,20 @@ impl PvmBinding {
                 version: version.to_owned(),
                 sandboxed: hex(&binaries.sandboxed),
                 outside: hex(&binaries.outside),
-                operations,
+                expect_sandboxed: artefact
+                    .build
+                    .machine_code
+                    .sandboxed
+                    .value
+                    .as_str()
+                    .to_owned(),
+                expect_outside: artefact
+                    .build
+                    .machine_code
+                    .outside
+                    .value
+                    .as_str()
+                    .to_owned(),
             })
             .then(|| worker.receive())
             .flatten();
@@ -577,8 +595,9 @@ impl PvmBinding {
         outcome
     }
 
-    /// A cross-module call: made only where the caller's running declaration names the callee and the kind, and
-    /// the callee runs; recorded either way.
+    /// A cross-module call: made only while an outside request is in flight, where the caller's running declaration
+    /// names the callee and the kind of the operation actually forwarded, and the callee runs; recorded either way.
+    /// A kind the guest names that isn't the forwarded operation's is refused as `undeclared_kind`.
     fn cross_module(
         &mut self,
         provider: &str,
@@ -586,19 +605,8 @@ impl PvmBinding {
         version: &str,
         operation: &Statement<Operation>,
         callee: &str,
-        kind: OperationKind,
+        claimed: OperationKind,
     ) -> bool {
-        let refusal = match declaration
-            .outside
-            .calls
-            .iter()
-            .find(|c| c.callee.as_str() == callee)
-        {
-            None => Some(CallRefusalReason::UndeclaredCallee),
-            Some(c) if !c.kinds.contains(&kind) => Some(CallRefusalReason::UndeclaredKind),
-            Some(_) if self.running(callee).is_none() => Some(CallRefusalReason::CalleeUnavailable),
-            Some(_) => None,
-        };
         let Ok(mut asked) = serde_json::to_value(operation) else {
             return false;
         };
@@ -606,17 +614,32 @@ impl PvmBinding {
         let Ok(asked) = serde_json::from_value::<Statement<Operation>>(asked) else {
             return false;
         };
+        let kind = OperationKind::of(&asked.statement);
+        let refusal = match declaration
+            .outside
+            .calls
+            .iter()
+            .find(|c| c.callee.as_str() == callee)
+        {
+            None => Some(CallRefusalReason::UndeclaredCallee),
+            Some(c) if !c.kinds.contains(&kind) || claimed != kind => {
+                Some(CallRefusalReason::UndeclaredKind)
+            }
+            Some(_) if self.running(callee).is_none() => Some(CallRefusalReason::CalleeUnavailable),
+            Some(_) => None,
+        };
         let transaction = serde_json::to_value(&operation.statement)
             .ok()
             .and_then(|v| v["transaction"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        let outcome = match refusal {
-            Some(reason) => CrossModuleOutcome::Refused(CallRefused {
-                callee: Identifier::new(callee).expect("a callee"),
+        let outcome = match (refusal, Identifier::new(callee)) {
+            (Some(reason), Some(callee)) => CrossModuleOutcome::Refused(CallRefused {
+                callee,
                 kind,
                 reason,
             }),
-            None => {
+            (Some(_), None) => return false,
+            (None, _) => {
                 self.handle(callee, &asked);
                 CrossModuleOutcome::Delivered(Nothing {})
             }
@@ -642,6 +665,10 @@ impl PvmBinding {
         delivered
     }
 
+    /// One host call of the provider's outside part. Each is bound to the outside request in flight, which the
+    /// platform let through on this provider's pipe: its transaction and operation are the platform's, never the
+    /// guest's. A call naming another operation is refused with the contract's reason, and recorded under the
+    /// operation in flight.
     fn host_call(
         &mut self,
         provider: &str,
@@ -650,16 +677,28 @@ impl PvmBinding {
         operation: &Statement<Operation>,
         call: HostCall,
     ) -> Reply {
-        let transaction = self.serving.get(provider).cloned().unwrap_or_default();
+        let Some((transaction, in_flight)) = self.in_flight.get(provider).cloned() else {
+            self.stats.host_refusals.push(format!(
+                "{provider}: a host call with no outside request in flight"
+            ));
+            return match call {
+                HostCall::Secret { .. } | HostCall::State { .. } => Reply::Nothing,
+                _ => Reply::Status(2),
+            };
+        };
         match call {
             HostCall::Secret {
-                transaction: asked,
-                operation: op,
+                operation: claimed,
                 name,
             } => {
-                let (Some(t), Some(o), Some(n)) =
-                    (Identifier::new(&asked), Name::new(&op), Name::new(&name))
-                else {
+                let (Some(t), Some(o), Some(n)) = (
+                    Identifier::new(&transaction),
+                    Name::new(&in_flight),
+                    Name::new(&name),
+                ) else {
+                    self.stats
+                        .host_refusals
+                        .push(format!("{provider}: a secret lookup with an unusable name"));
                     return Reply::Nothing;
                 };
                 let lookup = SecretLookup {
@@ -667,7 +706,14 @@ impl PvmBinding {
                     operation: o,
                     name: n.clone(),
                 };
-                let (outcome, value) = self.proxy(provider, declaration, &lookup);
+                let (outcome, value) = if claimed == in_flight {
+                    self.proxy(provider, declaration, &lookup)
+                } else {
+                    (
+                        LookupOutcome::Refused(SecretRefusalReason::UndeclaredSecret),
+                        None,
+                    )
+                };
                 self.events.lookups.push(LookupEvent {
                     provider: provider.to_owned(),
                     part: PartName::Outside,
@@ -677,7 +723,7 @@ impl PvmBinding {
                 match value {
                     Some(value) => {
                         self.resolved
-                            .entry((provider.to_owned(), transaction, op))
+                            .entry((provider.to_owned(), transaction, in_flight))
                             .or_default()
                             .push(n);
                         Reply::Value(value)
@@ -696,41 +742,161 @@ impl PvmBinding {
                 value.map_or(Reply::Nothing, Reply::Value)
             }
             HostCall::Egress {
-                operation: op,
+                operation: claimed,
                 url,
                 body,
-                ..
             } => {
                 let Some(endpoint) = parse_url(&url) else {
+                    self.stats.host_refusals.push(format!(
+                        "{provider}: an outbound call to {url:?}, which isn't scheme://host:port"
+                    ));
                     return Reply::Status(2);
                 };
-                match self.egress(
-                    provider,
-                    declaration,
-                    version,
-                    &transaction,
-                    &op,
-                    &endpoint,
-                    &body,
-                ) {
+                let outcome = if claimed == in_flight {
+                    self.egress(
+                        provider,
+                        declaration,
+                        version,
+                        &transaction,
+                        &in_flight,
+                        &endpoint,
+                        &body,
+                    )
+                } else {
+                    self.refuse_call(provider, version, &transaction, &in_flight, &endpoint)
+                };
+                match outcome {
                     CallOutcome::Completed(_) => Reply::Status(0),
                     CallOutcome::Refused(_) => Reply::Status(2),
                     _ => Reply::Status(1),
                 }
             }
             HostCall::Call { callee, kind } => {
-                let Ok(kind) = serde_json::from_value::<OperationKind>(Value::from(kind)) else {
+                let Ok(claimed) =
+                    serde_json::from_value::<OperationKind>(Value::from(kind.clone()))
+                else {
+                    self.stats.host_refusals.push(format!(
+                        "{provider}: a cross-module call to {callee:?} asking {kind:?}, which is no operation kind"
+                    ));
                     return Reply::Status(1);
                 };
                 let delivered =
-                    self.cross_module(provider, declaration, version, operation, &callee, kind);
+                    self.cross_module(provider, declaration, version, operation, &callee, claimed);
                 Reply::Status(u64::from(!delivered))
             }
         }
     }
 
-    /// Hands one operation to the provider's worker and serves its host calls until it answers. The provider's
-    /// output bytes, or `None` if its guest failed.
+    /// Records an outbound call refused at its first hop because the guest named an operation other than the one
+    /// in flight: `undeclared_operation`, under the operation in flight. Nothing is sent.
+    fn refuse_call(
+        &mut self,
+        provider: &str,
+        version: &str,
+        transaction: &str,
+        in_flight: &str,
+        endpoint: &Endpoint,
+    ) -> CallOutcome {
+        let outcome = CallOutcome::Refused(Refused {
+            reason: RefusalReason::UndeclaredOperation,
+        });
+        let started_at = self.now();
+        if let (Some(t), Some(p), Some(v), Some(o), Some(host), Some(port)) = (
+            Identifier::new(transaction),
+            Identifier::new(provider),
+            Identifier::new(version),
+            Name::new(in_flight),
+            Host::new(endpoint.host.clone()),
+            NonZeroU16::new(endpoint.port),
+        ) {
+            self.events.records.push(OutboundCallRecord {
+                transaction: t,
+                provider: p,
+                module_version: v,
+                operation: o,
+                secrets: Vec::new(),
+                started_at,
+                hops: vec![Hop {
+                    scheme: endpoint.scheme,
+                    host,
+                    port,
+                    destination: None,
+                    address: None,
+                }],
+                outcome: outcome.clone(),
+            });
+        }
+        outcome
+    }
+
+    /// Checks an outside request the sandboxed part sent: the contract's shape, which names no secret and no
+    /// destination; the transaction being served; an operation the running declaration declares; and none in
+    /// flight already. A request naming a secret is the sandboxed part reaching for one: it is recorded as a
+    /// lookup that never reached the proxy. True lets the outside part serve it.
+    fn outside_request(
+        &mut self,
+        provider: &str,
+        declaration: &Declaration,
+        transaction: &str,
+        request: &str,
+    ) -> bool {
+        if let Ok(value) = serde_json::from_str::<Value>(request)
+            && let Some(name) = value.get("secret").and_then(Value::as_str)
+        {
+            let operation = value["operation"].as_str().unwrap_or_default();
+            if let (Some(t), Some(o), Some(n)) = (
+                Identifier::new(transaction),
+                Name::new(operation),
+                Name::new(name),
+            ) {
+                self.events.lookups.push(LookupEvent {
+                    provider: provider.to_owned(),
+                    part: PartName::Sandboxed,
+                    lookup: SecretLookup {
+                        transaction: t,
+                        operation: o,
+                        name: n,
+                    },
+                    outcome: None,
+                });
+            }
+            return false;
+        }
+        let Ok(parsed) = serde_json::from_str::<OutsideRequest>(request) else {
+            return false;
+        };
+        let declared = declaration
+            .outside
+            .operations
+            .iter()
+            .any(|o| o.name == parsed.operation);
+        if parsed.transaction.as_str() != transaction
+            || !declared
+            || self.in_flight.contains_key(provider)
+        {
+            return false;
+        }
+        self.in_flight.insert(
+            provider.to_owned(),
+            (transaction.to_owned(), parsed.operation.as_str().to_owned()),
+        );
+        true
+    }
+
+    /// Checks the outside part's response to the request in flight, and ends it. True passes it on.
+    fn outside_done(&mut self, provider: &str, response: Option<&str>) -> bool {
+        let Some((transaction, operation)) = self.in_flight.remove(provider) else {
+            return false;
+        };
+        response
+            .and_then(|r| serde_json::from_str::<OutsideResponse>(r).ok())
+            .is_some_and(|r| {
+                r.transaction.as_str() == transaction && r.operation.as_str() == operation
+            })
+    }
+
+    /// Hands one operation to the provider's worker and serves its outside requests and host calls until it
+    /// answers. The provider's output bytes, or `None` if its guest failed.
     fn run(
         &mut self,
         provider: &str,
@@ -749,41 +915,30 @@ impl PvmBinding {
             transaction: transaction.to_owned(),
         });
         while alive {
-            match worker.receive() {
+            let reply = match worker.receive() {
                 Some(FromWorker::Host(call)) => {
-                    let reply = self.host_call(provider, declaration, version, operation, call);
-                    alive = worker.send(&ToWorker::Reply(reply));
+                    self.host_call(provider, declaration, version, operation, call)
                 }
-                Some(FromWorker::SandboxedSecretRefused {
-                    operation: op,
-                    name,
-                }) => {
-                    if let (Some(t), Some(o), Some(n)) = (
-                        Identifier::new(transaction),
-                        Name::new(&op),
-                        Name::new(&name),
-                    ) {
-                        self.events.lookups.push(LookupEvent {
-                            provider: provider.to_owned(),
-                            part: PartName::Sandboxed,
-                            lookup: SecretLookup {
-                                transaction: t,
-                                operation: o,
-                                name: n,
-                            },
-                            outcome: None,
-                        });
-                    }
+                Some(FromWorker::Outside { request }) => Reply::Status(u64::from(
+                    !self.outside_request(provider, declaration, transaction, &request),
+                )),
+                Some(FromWorker::OutsideDone { response }) => {
+                    Reply::Status(u64::from(!self.outside_done(provider, response.as_deref())))
                 }
                 Some(FromWorker::Handled { output: bytes }) => {
                     output = unhex(&bytes);
                     break;
                 }
                 Some(FromWorker::Failed { .. }) => break,
-                _ => alive = false,
-            }
+                _ => {
+                    alive = false;
+                    break;
+                }
+            };
+            alive = worker.send(&ToWorker::Reply(reply));
         }
         self.serving.remove(provider);
+        self.in_flight.remove(provider);
         self.resolved
             .retain(|(p, t, _), _| !(p == provider && t == transaction));
         if let Some(slot) = self.providers.get_mut(provider) {
@@ -794,6 +949,42 @@ impl PvmBinding {
             }
         }
         output
+    }
+}
+
+/// A release assertion for `declaration` and `binaries`, as the module-boundary suite writes one, with placeholder
+/// keys and signature: for the binding's own checks and tests.
+pub fn assertion(
+    declaration: &Declaration,
+    binaries: &Parts<Vec<u8>>,
+) -> Statement<ReleaseAssertion> {
+    let format = BinaryFormat::new(FORMAT).expect("a format");
+    let part = |bytes: &[u8]| BinaryPart {
+        format: format.clone(),
+        digest: Digest {
+            algorithm: DigestAlgorithm::Sha256,
+            value: DigestValue::new(hex_digest(bytes)).expect("a digest"),
+        },
+    };
+    let context = SuiteContext::default();
+    Statement {
+        deployment: context.deployment,
+        protocol_version: context.protocol_version,
+        shape: RELEASE_ASSERTION_SHAPE.to_owned(),
+        maker: declaration.provider.as_str().to_owned(),
+        made_at: "2026-11-07T00:00:00Z".to_owned(),
+        signature: Signature {
+            scheme: SignatureScheme::Ed25519,
+            key: placeholder_key(2),
+            value: placeholder_signature(),
+        },
+        statement: ReleaseAssertion {
+            declaration: declaration.clone(),
+            parts: Parts {
+                sandboxed: part(&binaries.sandboxed),
+                outside: part(&binaries.outside),
+            },
+        },
     }
 }
 

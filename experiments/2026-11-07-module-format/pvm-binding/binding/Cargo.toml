@@ -18,5 +18,6 @@ polkavm = "=0.38.0"
 # The PolkaVM linker, for the stand-ins' build only (`rutent-pvm-tool link`), never on admission's path.
 polkavm-linker = "=0.38.0"
 dirs = "5.0.1"
+libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

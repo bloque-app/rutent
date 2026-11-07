@@ -11,6 +11,9 @@ pub mod binding;
 pub mod egress;
 pub mod engine;
 pub mod isolation;
+#[cfg(target_os = "linux")]
+pub mod jail;
+pub mod probe;
 pub mod protocol;
 pub mod sha256;
 pub mod spec;

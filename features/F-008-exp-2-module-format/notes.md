@@ -42,3 +42,20 @@ readings are in its README, "Readings taken in opening it".
 - **Refusal reasons at admission.** `AdmissionRefusal` has no reason for an import a part may not have; the binding
   refuses such a part as `UnreadableBinary`, "not a module the binding can read", and the run note gives the
   admitting compiler's own reason.
+- **After review of `d272c15`** (`EXP-2-pvm-dev-20261107-2` supersedes `-1`):
+  - **Isolation.** The worker parses and compiles hostile blobs too, so it starts isolated like the admitting
+    compiler, and compiles only inside that isolation. On macOS both run under a `sandbox-exec` profile that
+    denies by default. Beyond the program and the system's library paths, it allows only reading the root
+    directory and the two page-size `sysctl`s, without which the program aborts before `main`. The Linux confinement (`jail.rs`) is written for the scored run and has not run.
+  - **Host calls are the platform's.** The outside part's secret lookups, outbound calls and cross-module calls
+    run under the transaction and operation of the outside request in flight, which the platform checked and
+    recorded from the provider's pipe. A guest naming another operation is refused: a lookup as
+    `undeclared_secret`, an outbound call as `undeclared_operation` at its first hop. Both are recorded under the
+    operation in flight. `undeclared_operation` is the closest reason the contract has for "not the operation
+    asked".
+  - **A suite follow-up, not a change to the frozen suite.** The module-boundary suite's specs give each step one
+    operation, which both parts use, and every declaration it writes has one outside operation. So no probe has an
+    outside part act under an operation other than the request in flight, and a binding that took the guest's word
+    passes it. A probe would need a declaration with two operations and a module whose outside part names the
+    other one. The binding's own test does this (`binding/tests/boundary_suite.rs`); `T-003-03`'s suite could
+    carry it at its next version.

@@ -335,6 +335,10 @@ static void handle(void) {
             lit(&w, "}");
         } else {
             span operation = eq(kind, "L") ? word(line, 3) : eq(kind, "C") ? word(line, 2) : field("o");
+            /* "x <operation>", which the suite never writes, is a hostile spec: every request names that operation,
+             * while the outside part acts under the step's own (the binding's own test, T-008-03). */
+            span hostile = field("x");
+            if (hostile.n) operation = hostile;
             quoted(&w, operation);
             lit(&w, ",\"arguments\":{\"step\":");
             num(&w, i);
