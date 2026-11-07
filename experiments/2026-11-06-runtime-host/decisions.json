@@ -31,6 +31,33 @@
         {"label": "EXP-1 candidates", "url": "README.md#candidates"}
       ],
       "origin": "EXP-1, T-007-01, 2026-11-06"
+    },
+    {
+      "id": "exp1-pb-placement",
+      "kind": "decide",
+      "section": "decide",
+      "group": "candidates",
+      "title": "Where does the purpose-built store sit?",
+      "lead": "The purpose-built store is a module of CMP-STM's crate, rutent-stm, beside the reference host, behind that crate's Cargo feature purpose-built-store, off by default. EXP-1 keeps it there unless this item says otherwise.",
+      "bullets": [
+        "The boundary check lets rutent-stm depend on the contracts; a new crate of ours may depend on nothing of ours",
+        "A crate of its own would mean an eighth package against DEC-2's seven, and widening the boundary check",
+        "With the flag off, CI's workspace build, lints, docs and tests don't compile it; a run turns it on",
+        "Reversible: moving it later changes its path, not its code"
+      ],
+      "rec": "inside rutent-stm behind the feature, because the boundary check allows it there without a change.",
+      "options": [
+        "A module of rutent-stm behind the purpose-built-store feature (recommended)",
+        "A crate of its own, with DEC-2 and the boundary check widened to allow it"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "DEC-2", "REQ-OPS-3"],
+      "refs": [
+        {"label": "Where pb sits", "url": "README.md#where-pb-sits"},
+        {"label": "The run note", "url": "runs/DEV-pb-20261106-1.md"}
+      ],
+      "origin": "EXP-1, T-007-02, 2026-11-06"
     }
   ]
 }

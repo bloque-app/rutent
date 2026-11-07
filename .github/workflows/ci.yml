@@ -37,3 +37,13 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # EXP-1's purpose-built store (T-007-02) is behind a feature, off by default, so the steps above don't build
+      # it. These build, lint, document and test it with the feature on, real-kill and torn-tail tests included.
+      - name: Lint, purpose-built store
+        run: cargo clippy --workspace --all-targets --features rutent-stm/purpose-built-store -- -D warnings
+      - name: Documentation check, purpose-built store
+        run: cargo doc --workspace --no-deps --features rutent-stm/purpose-built-store
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Test, purpose-built store
+        run: cargo test -p rutent-stm --features rutent-stm/purpose-built-store

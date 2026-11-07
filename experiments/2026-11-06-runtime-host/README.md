@@ -86,6 +86,17 @@ Scope is what the experiment may change (Narthex `REQ-EXP-1`).
 Whether `pb` runs in-process or in another process is `T-007-02`'s design. Each run's note says which, and how each
 fault was reached.
 
+### Where `pb` sits
+
+`pb` is the module `purpose_built_store` of `CMP-STM`'s crate, `rutent-stm` (`components/stm/`), beside the
+reference host, built only with that crate's Cargo feature `purpose-built-store`, off by default (Narthex
+`REQ-EXP-3`). It runs in-process: a store is a directory on disk, and the suite reaches it through
+`testing::Harness` and `testing::FaultSeam`. The boundary check (`DEC-2`) allows it there and nowhere else without
+a change: `rutent-stm` may depend on `rutent-contracts`, while a new crate of ours may depend on nothing of ours.
+With the flag on, it brings no package into `Cargo.lock` that wasn't there: only `serde` and `serde_json`, which
+`rutent-contracts` already uses, and so no new line in `licences/RECORD`. The default is item `exp1-pb-placement`
+in [`decisions.json`](decisions.json).
+
 ## Decision log
 
 [`decisions.json`](decisions.json): the questions and defaults raised inside this experiment, in the decision

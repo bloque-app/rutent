@@ -585,6 +585,8 @@ version = "0.0.0"
 dependencies = [
  "rutent-conformance",
  "rutent-contracts",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

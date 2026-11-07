@@ -163,3 +163,13 @@ at `T-007-04`.
 | `L-02` | Each VOS crate the adapter brings into `Cargo.lock` is listed with its own licence: the AGPL-3.0-or-later workspace crates, such as `vos-sdk`, `vos-wire` and `vos-raft`, apart from the Apache-2.0 PVM crates | Compare `Cargo.lock` with the flag on and off; check each new package's licence against the report's §2 and the crate's own manifest | | | | |
 | `L-03` | Each of VOS's own dependencies that enters `Cargo.lock`, forks and git dependencies included, has a line in `licences/RECORD` | Run the licence check with the flag on | | | | |
 | `L-04` | Each dependency the purpose-built store brings has a line in `licences/RECORD` with the owner's decision | Run the licence check with the flag on | | | | |
+
+## 4. Pre-freeze development runs (not scored)
+
+Runs made before the contract freeze `C1` (`T-006-01`), against the host contract as it stood, to develop a
+candidate. They fill no cell above: a scored cell names a run made after `C1`, with an `EXP-1-…` id. A development
+run has a `DEV-…` id, so the two can't be confused, and its note is in `runs/` like any other.
+
+| Run | Candidate | Host contract | What ran | Result | Note |
+|---|---|---|---|---|---|
+| `DEV-pb-20261106-1` | `pb` | 0.1.0, before `C1` | The host-contract suite with the fault seam, in three swap directions (`pb` to `ref`, `pb` to `pb`, `ref` to `pb`); a real SIGKILL of a writer process, twelve times; a log torn mid-record, seven ways; damage past one append, four ways; corruption inside synced history and inside an import, finished and unfinished; an import stopped right after its first frame, and that frame torn; another store format or contract version; the lock held from an import to its open; a failed write, a failed sync and a failed undo; one host per store | Every suite cell passes in each direction (16 of 16, three times); every test beyond the suite passes | [`runs/DEV-pb-20261106-1.md`](runs/DEV-pb-20261106-1.md) |
