@@ -8,9 +8,9 @@
   "bullets": [
     "Wasm alone claims AC-20 in Rust and C; PolkaVM adds no language.",
     "A second format doubles binding, jail, review and licence work, for nothing v0 needs.",
-    "Before production, F-013 adds per-module limits, schema checks, a process memory bound and cross-machine re-derivation.",
+    "Before production, F-013 adds per-module limits, schema checks and a process memory bound.",
     "Needs licence-llvm-exception ruled first: 29 Wasmtime crates carry only that licence.",
-    "Speed decides nothing: PolkaVM admits faster, Wasm starts providers faster."
+    "Both re-derive identical machine code on a second CPU; speed decides nothing."
   ],
   "rec": "Wasm only, because both pass the suite and PolkaVM's upstream calls it unfit for production.",
   "options": [

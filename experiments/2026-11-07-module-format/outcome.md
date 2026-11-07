@@ -27,17 +27,18 @@ language Wasm lacks, so it does not earn its upkeep (`DEC-7`).
 
 The scored runs were on GitHub's `ubuntu-24.04`, image `20261101.360.1`, `x86_64-unknown-linux-gnu`. PolkaVM's
 `EXP-2-pvm-20261107-1` ran on an AMD EPYC 7763. Wasm's `EXP-2-wasm-20261107-2`, after the binding's security review,
-ran on an AMD EPYC 9V74, so its times are not measured on the same CPU as PolkaVM's. Its first scored run,
-`EXP-2-wasm-20261107-1`, ran on a 7763: ~262 ms to compile in `rs`, a start median of 5.5 to 6.0 ms. Sizes and
+ran on an AMD EPYC 9V74, so its times are not measured on the same CPU as PolkaVM's. `EXP-2-wasm-20261107-3`, the
+same commit's push run, ran on a 7763: 264.2 to 268.4 ms to compile in `rs`, 56.0 to 56.7 ms in `c`, a start median
+of 6.4 to 7.3 ms. It is cited for `B-11` and `G-04`; the table's `B-06` rows name `-2`. Sizes and
 times are measurements, not targets (`PLAN.md` §6.2, risk 9).
 
 | Criterion | `wasm` | `wasm` run | `pvm` | `pvm` run |
 |---|---|---|---|---|
 | Suite rows `M-01` to `M-16` | 16 of 16 pass, in `rs` and in `c`; four category reports, 82 of 82 exercised, `missing_languages` 0 | `EXP-2-wasm-20261107-2` | 16 of 16 pass, in `rs` and in `c`; four category reports, 82 of 82 exercised, `missing_languages` 0 | `EXP-2-pvm-20261107-1` |
-| Binding rows `B-01` to `B-19` | 3 pass; 7 pass (binding); 3 fail (`B-01`, `B-14`, `B-19`); 1 measured; 5 not run (`B-09`, `B-11`, `B-16` to `B-18`) | `EXP-2-wasm-20261107-2` | 3 pass; 3 pass (binding); 3 fail (`B-01`, `B-14`, `B-19`); 1 measured; 9 not run (`B-03` to `B-05`, `B-09`, `B-13`, `B-15` to `B-18`) | `EXP-2-pvm-20261107-1`, `-2` |
+| Binding rows `B-01` to `B-19` | 4 pass; 7 pass (binding); 3 fail (`B-01`, `B-14`, `B-19`); 1 measured; 4 not run (`B-09`, `B-16` to `B-18`) | `EXP-2-wasm-20261107-2`, `-3` | 3 pass; 3 pass (binding); 3 fail (`B-01`, `B-14`, `B-19`); 1 measured; 9 not run (`B-03` to `B-05`, `B-09`, `B-13`, `B-15` to `B-18`) | `EXP-2-pvm-20261107-1`, `-2` |
 | A guest's CPU, memory and trap (`B-03` to `B-05`) | pass (binding): fuel, bounded per operation by the binding's one outside budget and its deadline; pass by `StoreLimits`; pass (binding) | `EXP-2-wasm-20261107-2` | not run | `EXP-2-pvm-20261107-1` |
-| Re-derivation on another CPU model (`B-11`) | not run; all 16 parts compiled to identical machine code in two compiler processes on one machine. | `EXP-2-wasm-20261107-2` | pass: the 16 parts' digests identical on an EPYC 7763 and an EPYC 9V74, both AMD | `EXP-2-pvm-20261107-1`, `-2` |
-| Gap rows | 12: 4 pass; 4 pass (binding); 2 fail (`G-05`, `G-09`); 2 not checked (`G-02`, `G-04`) | `EXP-2-wasm-20261107-2` | 19: 12 pass; 1 pass (binding), `G-31`; 1 fail, `G-13`; 5 not run (`G-20`, `G-21`, `G-24` to `G-26`) | `EXP-2-pvm-20261107-1`, `-2` |
+| Re-derivation on another CPU model (`B-11`) | pass: the 16 parts' digests identical on an EPYC 9V74 and an EPYC 7763, both AMD, two compilations each | `EXP-2-wasm-20261107-2`, `-3` | pass: the 16 parts' digests identical on an EPYC 7763 and an EPYC 9V74, both AMD | `EXP-2-pvm-20261107-1`, `-2` |
+| Gap rows | 12: 5 pass; 4 pass (binding); 2 fail (`G-05`, `G-09`); 1 not checked (`G-02`) | `EXP-2-wasm-20261107-2`, `-3` | 19: 12 pass; 1 pass (binding), `G-31`; 1 fail, `G-13`; 5 not run (`G-20`, `G-21`, `G-24` to `G-26`) | `EXP-2-pvm-20261107-1`, `-2` |
 | Admission (`B-06`) | Compile of both parts, the compiler's process from spawn to exit: ~276 ms in `rs` (274.3 to 287.2), 57.5 to 58.7 ms in `c`, on an EPYC 9V74 | `EXP-2-wasm-20261107-2` | Admission round trip, the compiler's process start and isolation included: ~6.4 ms (medians 6.3 to 6.5), both languages | `EXP-2-pvm-20261107-1` |
 | Start (`B-06`) | A provider's process, from the spawn of `unshare` to both parts started: median 7.1 to 7.8 ms, on an EPYC 9V74 | `EXP-2-wasm-20261107-2` | A first load into an already running worker: ~206 ms (medians 205.9 to 206.0). The worker's own spawn is left out | `EXP-2-pvm-20261107-1` |
 | Size and memory (`B-06`) | Portable 91,007 to 91,060 + 85,132 B (`rs`), 23,888 to 23,908 + 22,384 to 22,388 B (`c`); machine code 265,720 + 248,576 to 248,584 B (`rs`), 73,952 + 70,760 to 70,768 B (`c`); resident memory median 6,508 to 6,548 KiB | `EXP-2-wasm-20261107-2` | Blobs 9,374 to 9,388 + 8,197 to 8,212 B (`rs`), 7,902 to 7,910 + 6,974 to 6,982 B (`c`). Machine-code size and resident memory not measured | `EXP-2-pvm-20261107-1` |
@@ -56,8 +57,9 @@ Wasm's figure includes the spawn, and PolkaVM's leaves out the worker's own spaw
    for Wasm also the per-operation CPU bound (`B-03`), trap containment (`B-05`), the sandboxed part's tested
    restrictions (`B-13`) and the refusal of precompiled code (`B-15`). `F-013` carries that code, under `DEC-20`'s
    review. Like with like, Wasm has evidence PolkaVM lacks: the format's own fuel and memory limits stop a looping
-   and a growing guest (`B-03`, `B-04`, `EXP-2-wasm-20261107-2`). PolkaVM has evidence Wasm lacks: re-derivation on
-   a second CPU model (`B-11`, `EXP-2-pvm-20261107-1`, `-2`). Both fail `B-01`, `B-14` and `B-19`, which are the
+   and a growing guest (`B-03`, `B-04`, `EXP-2-wasm-20261107-2`). Both re-derive the same machine code on a
+   second CPU model, on two AMD EPYC generations (`B-11`: `EXP-2-wasm-20261107-2`, `-3`; `EXP-2-pvm-20261107-1`,
+   `-2`). Both fail `B-01`, `B-14` and `B-19`, which are the
    same binding work whichever format is chosen. A security review of the first scored Wasm run,
    `EXP-2-wasm-20261107-1`, found three claims that overstated, all in the binding's own code. A cross-module call's
    kind was the guest's word. CPU was bounded per call, not per operation, and there was no deadline. On macOS the
@@ -69,13 +71,14 @@ Wasm's figure includes the spawn, and PolkaVM's leaves out the worker's own spaw
    `G-25`, an advisory channel, and `G-26`, whether a pre-1.0 release keeps admitted binaries runnable. Its
    compiler and Linux sandbox exist only on x86_64 (`G-14`). Wasm fails two rows (`EXP-2-wasm-20261107-2`).
    Both are rutent's configuration: `G-05`, a bound on a provider process's whole memory, and `G-09`, a memory
-   layout chosen on purpose for Spectre. Two rows weren't run and must be before production: `G-02`, the 62
-   advisories of 2026 (5 Critical) against the pin, and `G-04`, compilation across machines.
+   layout chosen on purpose for Spectre. One row wasn't run and must be before production: `G-02`, the 62
+   advisories of 2026 (5 Critical) against the pin. `G-04`, compilation across machines, passes on two AMD models
+   (`EXP-2-wasm-20261107-2`, `-3`).
 4. **The licences.** Both closures carry `Apache-2.0 WITH LLVM-exception` as some crates' only expression. For Wasm
    that is 29 crates, the runtime and compiler themselves. For PolkaVM it is one, `regalloc2`, which only the
    stand-ins' linker brings. See [the legal question](#the-legal-question).
 5. **The cost of closing the gaps.** Wasm's are rutent's own work: a resource limit or cgroup, a chosen memory
-   configuration, a run on a second CPU model, an advisory read, fuzzing, and the binding rows both formats fail.
+   configuration, an advisory read, fuzzing, and the binding rows both formats fail.
    Its pin is an LTS release, supported until 2028-08-20 (`G-12`). PolkaVM's `G-13` closes only upstream. Adapting
    it would also need `B-03` to `B-05`, `B-13`, `B-15`, `G-20` and `G-21` run. Its jail is weaker as built: the
    worker keeps every capability but `CAP_SYS_ADMIN`, and the admitting compiler drops none and has no Landlock
@@ -87,7 +90,7 @@ release. Neither figure is a target before `M4` (risk 9).
 **A second format doesn't earn its upkeep** (`DEC-7`). Wasm alone claims `AC-20`'s two languages. PolkaVM runs C too
 (`G-22`), so ADR-0003's one-language concern no longer limits it, but it brings no language Wasm lacks. Keeping it
 would mean a second binding, jail, `DEC-20` review, licence closure (41 and 9 packages) and pre-1.0 pin to follow.
-In return it gives faster admission and a re-derivation already shown, and v0 requires neither.
+In return it gives faster admission, which v0 doesn't require. Re-derivation is shown for both.
 
 ## `AC-20`
 
@@ -106,7 +109,8 @@ provider's jailed process, with no network, file, other process or inherited des
 - Ubuntu 24.04 needs an operator setting for the namespaces;
 - Spectre is left at the defaults (`G-09`), the advisories aren't read against the pin (`G-02`), and no fuzzing was
   run (`B-09`);
-- for `THR-18`, re-derivation on separate hardware isn't yet shown for Wasm (`B-11`).
+- for `THR-18`, re-derivation on separate hardware is shown on two AMD models only (`B-11`, `EXP-2-wasm-20261107-2`,
+  `-3`); no Intel CPU was tried.
 
 The re-checked row is drafted in [`drafts/thr-85-recheck.md`](drafts/thr-85-recheck.md).
 
@@ -141,7 +145,7 @@ production.
 | No limit on outbound calls, state or pending work, per module or per provider | `B-14` | `REQ-MDL-11`, `THR-57` | `F-013` |
 | Output not checked against the schema's patterns and lengths | `B-19` | `REQ-MDL-12` | `F-013` |
 | Nothing bounds a provider process's whole memory | `G-05` | `REQ-MDL-11`; Wasmtime reserves address space per memory | `F-013`; the cgroup in `F-030` |
-| Re-derivation on separate hardware not shown for Wasm | `B-11`, `G-04` | ADR-0014, `REQ-MDL-2`, `THR-18` | `F-013` |
+| Re-derivation shown on two AMD EPYC models only, no other vendor | `B-11`, `G-04` | ADR-0014, `REQ-MDL-2`, `THR-18` | `F-013` |
 | Spectre settings are Wasmtime's defaults, not a choice | `G-09` | `THR-85` | `F-013`, reviewed in `F-025` |
 | No fuzzer-made binary or fuzz corpus admitted | `B-09` | The admitting compiler parses hostile input (`THR-85`) | `F-013`, under `DEC-20`'s review |
 | 2026's advisories not read against the pin; upkeep not measured | `G-02`, `B-16` | A known flaw in the pinned runtime | `F-013` reads `G-02` when it pins, and `F-025` reads it again; `F-033` and `F-034` for the pin's upkeep |
@@ -152,7 +156,8 @@ production.
 | The suite has no probe of an outside part naming another operation than the request in flight | F-008 notes, `T-008-03` | The binding's own test covers it; the suite doesn't | `F-013` keeps the test; the suite's next version, `F-024` |
 | The suite's undeclared-kind probe names the forwarded kind, so a binding that takes the guest's kind passes it | `M-10`, `EXP-2-wasm-20261107-2` note | The binding's `tests/calls.rs` covers it; the suite doesn't | `F-013` keeps the test; the suite's next version, `F-024` |
 | The admitting compiler has a CPU limit but no wall-time deadline; PolkaVM's binding bounds CPU per call and sets no deadline | `EXP-2-wasm-20261107-2` note, `EXP-2-pvm-20261107-1` note (`B-03`, `B-13`) | `REQ-MDL-11`, `THR-57` | `F-013` |
-| No closer refusal reason for a limit hit, a disallowed import or a re-admitted version; and none `validate_call_against` accepts for a cross-module call whose forwarded kind is declared but whose guest names another, which both bindings refuse as `undeclared_kind` | both run notes; `EXP-2-wasm-20261107-2` note | `PlatformRefusal::Unavailable` and `UnreadableBinary` stand in | `F-013`; a change in `contracts/` follows `DEC-4` and the owner's click |
+| `validate_call_against` accepts no refusal for a cross-module call whose forwarded kind is declared but whose guest names another; both bindings refuse it as `undeclared_kind`, and the record then fails the check | `EXP-2-wasm-20261107-2` note, `tests/calls.rs` | `REQ-MDL-21`: the contract and the platform disagree on one refused call | `M2`'s contract work with `F-014`; a change in `contracts/` follows `DEC-4` and the owner's click. The contract is unchanged here |
+| No closer refusal reason for a limit hit, a disallowed import or a re-admitted version | both run notes | `PlatformRefusal::Unavailable` and `UnreadableBinary` stand in | `F-013`; a change in `contracts/` follows `DEC-4` and the owner's click |
 
 Not this outcome's: signing and routes, which the suite leaves as placeholders (`REQ-MDL-1` in `F-013`,
 `REQ-MDL-21` in `F-014`).

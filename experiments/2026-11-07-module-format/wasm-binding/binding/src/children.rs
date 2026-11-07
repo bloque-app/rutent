@@ -365,6 +365,7 @@ impl Drop for ProviderProcess {
 mod tests {
     use super::*;
 
+    // verifies: REQ-MDL-11
     #[test]
     fn a_childs_standard_error_is_kept_to_its_cap_labelled_and_the_rest_read_and_dropped() {
         let stderrs = Stderrs::default();

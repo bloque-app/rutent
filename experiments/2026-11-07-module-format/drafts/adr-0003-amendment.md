@@ -19,13 +19,13 @@ format, Wasm, PVM or both, to a milestone-1 experiment, and kept a second format
 `EXP-2` bound each candidate to the module-boundary suite (`T-003-03`) against the module-interface contract frozen at
 `C1` (1.0.0); the Wasm binding's scored run is against 2.0.0, after the contracts' security fixes. Each binding had four stand-ins, reserve, exchange, ramp and verifier, in Rust and in C. It scored the
 obligations `DEC-7`, ADR-0003, ADR-0004 and ADR-0014 put on a binding, each candidate's own gaps, and the licence
-rows ([scoring sheet](../scoring.md)). The scored runs were on GitHub's `ubuntu-24.04`, `x86_64-unknown-linux-gnu`,
-an AMD EPYC 7763:
+rows ([scoring sheet](../scoring.md)). The scored runs were on GitHub's `ubuntu-24.04`, `x86_64-unknown-linux-gnu`:
 
 - `EXP-2-wasm-20261107-2`: components on Wasmtime 48.0.8, tag `v48.0.8`, commit `7b6c29e`, through `T-008-02`'s
-  binding after its security review, against the contracts at 2.0.0. It supersedes `EXP-2-wasm-20261107-1`;
+  binding after its security review, against the contracts at 2.0.0, on an AMD EPYC 9V74. It supersedes
+  `EXP-2-wasm-20261107-1`. `EXP-2-wasm-20261107-3` is the same commit on an EPYC 7763, for re-derivation;
 - `EXP-2-pvm-20261107-1`: PolkaVM 0.38.0, tag `v0.38.0`, commit `471a5b6`, its compiler and Linux sandbox, through
-  `T-008-03`'s binding; and `EXP-2-pvm-20261107-2`, the same commit on an AMD EPYC 9V74, for re-derivation.
+  `T-008-03`'s binding, on an AMD EPYC 7763; and `EXP-2-pvm-20261107-2`, the same commit on an AMD EPYC 9V74, for re-derivation.
 
 ## Outcome of EXP-2
 
@@ -38,10 +38,11 @@ The numbers, each with its run:
 
 - **The suite.** Both pass `M-01` to `M-16` in Rust and in C. Each ran four category reports, with 82 of 82
   exercised and `missing_languages` 0 (`EXP-2-wasm-20261107-2`, `EXP-2-pvm-20261107-1`).
-- **The binding's obligations.** Both fail `B-01`, `B-14` and `B-19`. Wasm passes `B-03` and `B-04` by the format's
-  own fuel and memory limits; PolkaVM's were not run. PolkaVM passes `B-11` on two CPU models
-  (`EXP-2-pvm-20261107-1`, `-2`); Wasm's was not run. Every "pass (binding)" is rutent's own code: `B-02`, `B-05`,
-  `B-07`, `B-08`, `B-13` and `B-15` for Wasm; `B-02`, `B-07` and `B-08` for PolkaVM.
+- **The binding's obligations.** Both fail `B-01`, `B-14` and `B-19`. Wasm's fuel and memory limits, the format's
+  own, stop a looping and a growing guest (`B-03`, `B-04`); the per-operation CPU bound is the binding's, so `B-03`
+  is a "pass (binding)". PolkaVM's were not run. Both pass `B-11` on two AMD CPU models (`EXP-2-wasm-20261107-2`,
+  `-3`; `EXP-2-pvm-20261107-1`, `-2`). Every "pass (binding)" is rutent's own code: `B-02`, `B-03`, `B-05`, `B-07`,
+  `B-08`, `B-13` and `B-15` for Wasm; `B-02`, `B-07` and `B-08` for PolkaVM.
 - **The gaps.**
   - PolkaVM's upstream says not to use it in production (`G-13`, `EXP-2-pvm-20261107-1`). Rutent can't close that
     row.
@@ -94,8 +95,8 @@ amendment is withdrawn.
   click after a separate security review (`DEC-20`).
 - **Before v0 reaches production**, these close (the outcome's [follow-up rows](../outcome.md#follow-up-rows)):
   - `F-013`: limits on outbound calls, state and pending work (`B-14`); output checked against the schema's
-    patterns and lengths (`B-19`); the pin read against 2026's advisories when it is set (`G-02`); a bound on a provider process's whole memory (`G-05`); re-derivation on separate
-    hardware (`B-11`, `G-04`, ADR-0014); Spectre settings chosen on purpose (`G-09`); fuzzed admission (`B-09`); and
+    patterns and lengths (`B-19`); the pin read against 2026's advisories when it is set (`G-02`); a bound on a provider process's whole memory (`G-05`); re-derivation on a CPU
+    of another vendor than the two AMD models shown (`B-11`, `G-04`, ADR-0014); Spectre settings chosen on purpose (`G-09`); fuzzed admission (`B-09`); and
     the role suite through the binding (`B-01`);
   - `F-014`: DNS rebinding and TLS at the egress layer (`B-17`, `B-18`);
   - `F-025`: the pin read again against the advisories (`G-02`); each jail layer probed alone; the seccomp allow-list
@@ -104,8 +105,8 @@ amendment is withdrawn.
     namespaces.
 - **`THR-85`** narrows and stays an accepted residual (`R72`). An escape from Wasmtime lands in one provider's jailed
   process, probed on the scoring platform. The re-checked row of `ARCHITECTURE.md` §6 is
-  [`thr-85-recheck.md`](thr-85-recheck.md). For `THR-18`, re-derivation on separate hardware is still to be shown for
-  Wasm.
+  [`thr-85-recheck.md`](thr-85-recheck.md). For `THR-18`, re-derivation on separate hardware is shown for Wasm
+  on two AMD models (`EXP-2-wasm-20261107-2`, `-3`).
 - **`AC-20`** is claimed for Wasm in Rust and C (`M-02`, `M-03`, `M-16`, `EXP-2-wasm-20261107-2`). `PLAN.md` §6.2's
   risk 3 is retired: PolkaVM ran C too (`G-22`).
 - **Only `x86_64-unknown-linux-gnu` was scored.** It is Wasmtime's Tier 1 target (`G-01`). Another deployment target

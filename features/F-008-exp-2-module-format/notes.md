@@ -151,6 +151,11 @@ readings are in its README, "Readings taken in opening it".
     request (`rutent-pvm-worker.rs:212`), and the platform reads the admitting compiler and the worker with no
     deadline (`binding.rs:405`, `:1051`). Its `B-03` and `B-13` weren't run. Its run note now says that, if run,
     they would be bounded per call, and that the per-operation bounds are `F-013`'s.
+  - **`B-11` and `G-04` on two runs.** The push run of `bd1cd98`, Actions run 42368299910, ran on an AMD EPYC
+    7763, and the scored run `-2` on an EPYC 9V74. Both reports give the same portable binaries and the same
+    machine-code SHA-256 for all 16 parts, two compilations each. Under the README's rule, any run on the platform
+    after `C1` takes a scored id and its own note, so the push run is `EXP-2-wasm-20261107-3`, numbered after `-2`
+    because it was given its id later. `B-11` and `G-04` pass on `-2` and `-3`, by digest, as PolkaVM's `B-11` did.
   - **The merge of `m1`'s `4072e0b`.** The scored run is at the branch's merge of the contracts' security fixes:
     provider-role, module-interface and host 2.0.0, router-api 1.0.1. The binding's only change from it is one
     line, `statement_key.clone()`.
