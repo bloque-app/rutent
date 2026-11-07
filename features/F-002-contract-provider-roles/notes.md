@@ -406,3 +406,68 @@ on it.
 - **No `null` (router review).** An optional field is present with a value or absent. `holder_key`, `session`,
   `increment`, `evidence`, `safe_retry` and the offers all refuse `null` in Rust as in the schemas, since the
   router contract embeds these types and promises never to write `null`.
+
+## The M1 security review (provider-role 2.0.0, `T-002-03`)
+
+Findings H1 and M2 of the security review of the frozen contracts, ruled by the orchestrator. A post-`C1` change, so
+a major bump under `DEC-4` and the owner's click under `DEC-20`; the M1 pull request waits for that click anyway.
+
+- **H1: a statement key could mint the next release key.** At 1.0.0 an advertisement had only to be signed by a key
+  it listed, and a release's `statement_key` had to be one of those keys. A compromised outside part, which resolves
+  its statement key, could sign an advertisement adding a fresh key, then sign its successor release's assertion
+  with the fresh key; every check passed, and it could rewrite the offers too.
+- **Where the fix lives.** `module_interface` imports `provider_role` and never the reverse (no `use` of
+  `module_interface` or `router_api` under `contracts/src/provider_role/`), so the advertisement checks can't see
+  which keys a release declared. Holding "no key a release declared as `statement_key`" only in the catalogue would
+  leave a hole this contract can't check. So keys carry a purpose here instead:
+  - `purpose`, required, `advertising` or `statements`;
+  - an advertisement is signed with an `advertising` key it lists (`SignedWithStatementsKey`);
+  - a key is listed once by its bytes (`KeyListedTwice`), since `uniqueItems` passes one key under two purposes;
+  - `validate_successor(previous, next)`: same provider and deployment, `next` signed with a key `previous` lists
+    for `advertising`, and no `statements` key of `previous` promoted. This is the rule that stops "add or promote
+    an advertising key signed only by a statements key": the advertisement's own checks can't, since a forged
+    advertisement can list its signer as `advertising`.
+  - module-interface holds the other two: `statement_key` is a `statements` key, and an assertion is signed with
+    an `advertising` key.
+- **A reading: results are signed with `statements` keys.** The brief names what an advertising key signs
+  (advertisements and release assertions) and that `statement_key` is a statements key. I read the split as both
+  ways: every other statement (results, quotes, judgements, reversal confirmations) is signed with a `statements`
+  key, so an advertising key is exposed as little as possible. The "rules across statements" say so, the role
+  suite's `MakerAndKey` check counts a result only under a `statements` key, and the stand-ins hold two keys.
+- **Retiring a key takes two advertisements**, because an advertisement must list the key it is signed with: one
+  adds the new key, signed with the old; the next drops the old. The valid fixture is the first step.
+- **One fixture breaks two rules.** `successive-advertisements-signed-with-the-previous-statements-key` is the
+  attack itself: a statements key can sign `next` only if `next` lists it for `advertising`, so it trips both
+  `SuccessorNotSignedWithPreviousAdvertisingKey` and `StatementsKeyPromoted`. Each rule also has a fixture of its
+  own.
+- **What the catalogue (`F-012`) must hold**, written into the README: the first advertisement's keys are trusted by
+  the operator's grant at admission (`REQ-CAT-2`), never because it lists its own signer; every later one passes
+  `validate_successor` against the accepted one; releases are checked against the accepted advertisement; across
+  the whole history, no key any earlier advertisement listed for `statements`, or any admitted release declared as
+  `statement_key`, is accepted for `advertising`; and losing every advertising key needs a fresh grant.
+- **M2: keys were unchecked strings in the envelope.** `PublicKey` moves here from module-interface (which
+  re-exports it) and types `Deployment.operator_key`, `Signature.key`, `SigningKey.public_key` and `holder_key`.
+  It is built only from canonical text and compares, hashes and orders by its decoded bytes, decoded by a small
+  base64url decoder, since the README adds no dependency without a licence decision. It stores the text only and
+  decodes when compared, so `ContextMismatch` stays small (clippy's `result_large_err`). The docs say the verifier
+  (`M2`) must refuse non-canonical base64 and non-canonical points (`y` at or above 2^255 − 19, and small-order
+  keys), which text checks can't see. `statement-envelope-key-in-a-non-canonical-encoding` left `rust_accepts`, as
+  Rust now refuses it too, and `operation-signed-with-a-non-canonical-alias-of-the-operator-key` is new.
+- **Fixtures.** Every key object gained a `purpose` by a text insertion anchored on its `public_key` line:
+  `statements` where the key is the bundle's `statement_key`, `advertising` elsewhere. Eleven module-interface
+  bundles signed their advertisement with the statement key itself, the pattern H1 abuses; they now sign with an
+  advertising key the advertisement lists, adding one where it had none.
+
+### The security delta review (still provider-role 2.0.0, unreleased)
+
+- **Replay (medium).** v1 {A advertising, S1 statements} replaced by v2 {A, S2} could be resubmitted: v1 is public
+  and validly signed, so `validate_successor(v2, v1)` passed and S1 counted again. `validate_successor` now
+  requires `next.made_at` after `previous.made_at` (`SuccessorNotNewer`), comparing the RFC 3339 times by their
+  second and then their fraction as digits, since `.` sorts before `Z` in text. Equal times are not newer. The
+  catalogue's duties grow: never re-accept an advertisement not newer than the last accepted, and never re-list a
+  dropped `statements` key, which no pairwise check can see.
+- **Reach (low).** A key's purpose holds across every deployment and provider; the credential proxy (`F-014`)
+  resolves only a release's declared statements key, never an advertising one. Both are README duties.
+- **Nits.** `validate_statement`, `validate_successor` and `validate_assertion_key` match the signature's scheme as
+  well as the key's bytes (`purpose_of_signer`), a no-op while Ed25519 is the only scheme. The role suite's two
+  canonical-key encoding checks are gone: a `PublicKey` only builds from its canonical text, so they couldn't fail.

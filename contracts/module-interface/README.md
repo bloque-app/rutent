@@ -132,21 +132,25 @@ Ruled by the orchestrator, 2026-11-06 (`DEC-4`, `T-003-01`):
 - **It declares the key it signs with.** `outside.statement_key` is the public half of the provider's
   statement-signing key, and is required. Signing is then part of the capability declaration like everything else
   the outside part does (`REQ-MDL-3`), not an exception to it.
-  - The advertisement's `keys` have no id, so a key is named by its public key, and `statement_key` is one.
+  - The advertisement's `keys` have no id, so a key is named by its public key, and `statement_key` is one, listed
+    for `statements` (provider-role 2.0.0's key purposes). Keys compare by their decoded bytes, never by text.
   - It is not one of the declared `secrets`, which are the provider's other credentials. The statement-signing key
     signs rutent statements, unlike, say, an on-chain `chain.signing_key` secret an outside operation uses.
 - **It resolves the private half by the deployment's name** at signing time, through the credential proxy. The
   deployment is the one the enveloped advertisement names, `{name, operator_key}`, so a key resolved for one
   deployment can't sign a statement for another (`REQ-PRT-1`, `THR-8`). As for every lookup, the proxy answers only
   for the calling process's own provider (`DEC-9`). The lookup has no wire shape here; the proxy's side is
-  `F-014`'s.
+  `F-014`'s. The proxy resolves only the `statement_key` the admitted release declares, a `statements` key, and
+  never a key the provider lists for `advertising` (provider-role's "Key purposes").
 - **The key is the provider's, not the operator's.** The deployment's `operator_key` only names the deployment; it
   signs the operator's own statements, never a provider's.
 - **What it signs** is the provider-role signing rule: the RFC 8785 (JCS) canonical JSON of the whole envelope,
   with only the top-level `signature.value` removed, under `ed25519` (RFC 8032).
 - **What is checked.** `validate_statement_key(declaration, advertisement, result)` relates the three values:
   - the advertisement is the declaring provider's (`AdvertisementOfAnotherProvider`);
-  - `statement_key` is one of the advertisement's `keys` (`StatementKeyNotAdvertised`);
+  - `statement_key` is one of the advertisement's `keys` (`StatementKeyNotAdvertised`), listed for `statements`,
+    never for `advertising`: the outside part resolves it, so it must never be a key that signs advertisements or
+    release assertions (`StatementKeyNotForStatements`, `THR-4`);
   - it isn't the `operator_key` of the advertisement's deployment (`StatementKeyIsOperatorKey`);
   - the result belongs to the advertisement's deployment, by name and operator key, so no caller has to relate
     the two first (`ResultOfAnotherDeployment`);
@@ -155,6 +159,8 @@ Ruled by the orchestrator, 2026-11-06 (`DEC-4`, `T-003-01`):
   - the result's `signature.key` equals it (`ResultNotSignedWithStatementKey`).
 
   It compares keys, deployments and makers only. Verifying the signature itself is `M2` and `M3` work, as in the provider-role contract.
+  The advertisement it is given must be the one the catalogue (`F-012`) accepted, as provider-role's README says
+  under "Key purposes".
 
 ## Admission
 
@@ -167,9 +173,18 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
     binary of each part, by `format` and `digest` (`REQ-MDL-15`). Both parts are asserted, since the outside part
     holds real credentials (`REQ-MDL-1`, `THR-82`).
   - A `format` is a name only. The contract names no format; binding one is `EXP-2`'s (`DEC-4`).
-  - Its maker is the provider, and its key is one of the provider's advertised `keys` (`REQ-MDL-1`, `REQ-CAT-2`).
-    The key is never the deployment's `operator_key`, and never the declaration's `statement_key`: the running
-    outside part can resolve that key, so running code could otherwise sign its own next release (`THR-4`).
+  - Its maker is the provider, and its key is one of the provider's advertised `keys`, listed for `advertising`
+    (`REQ-MDL-1`, `REQ-CAT-2`, provider-role 2.0.0). The key is never one listed for `statements`, never the
+    deployment's `operator_key`, and never the declaration's `statement_key`: the running outside part can resolve
+    that key, so running code could otherwise sign its own next release (`THR-4`).
+  - At admission the declared `statement_key` itself is checked against the accepted advertisement too: it is
+    listed for `statements`, never for `advertising`, and isn't the `operator_key`, so a release can't hand its
+    outside part a key that signs advertisements or releases. `validate_statement_key` holds the same rules for a
+    signed result, but a release has none yet, so `validate_assertion_key` holds them at admission.
+  - A statement key could once mint the next release key: sign a new advertisement listing a fresh key, then sign
+    the successor's assertion with it. Since 2.0.0 that fails in provider-role, where a later advertisement must be
+    signed with a key the accepted one lists for `advertising` (`validate_successor`), and here, where the
+    assertion is checked against the accepted advertisement only.
 - **The platform records it.** The admission artefact (`urn:rutent:module-interface:admission-artefact`) is the
   platform's record, written by `CMP-PROV`, never by the module. It binds what was approved to what runs
   (`REQ-MDL-1`):
@@ -188,6 +203,8 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
   - `acceptance`, `automatic` or `fresh`, and once given, when, and for a fresh one, by whom.
 - **Widening** (`REQ-MDL-3`, `AC-21`). `widening(previous, next)` computes every way a release widens the one it
   follows, from the two declarations, in the order of the new declaration's lists:
+  - an operation kind the sandboxed part newly handles (`handles`, since 2.0.0): a module that starts answering,
+    say, withdrawals reaches money it couldn't before;
   - a new outside operation, and a destination or secret an existing one gains;
   - a new secret;
   - a new destination, or one of the same name at another scheme, host or port, and a destination's addresses
@@ -195,7 +212,7 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
   - a new callee, and a new kind asked of an existing callee;
   - a changed statement-signing key.
 
-  Narrowing is never listed: anything removed, a block within an old one, or `public` replaced by blocks, which can
+  Narrowing is never listed: anything removed, a kind no longer handled included, a block within an old one, or `public` replaced by blocks, which can
   only be globally routable ones (`SpecialPurposeAddressBlock`). A block covered only by the union of several old
   blocks is listed, since containment is checked against single blocks, which errs towards a fresh acceptance.
 - **Fresh acceptance.** A release that widens anything requires a fresh acceptance, even where acceptance is
@@ -205,7 +222,8 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
   acceptance names who gave it. The schema holds these, and so does `validate_artefact`.
 - **Checks across values.**
   - `validate_assertion_key(artefact, advertisement)` checks the assertion's maker, deployment and key against the
-    provider's enveloped advertisement.
+    provider's enveloped advertisement, the one the catalogue (`F-012`) accepted, never one that arrives with the
+    release, and the declared `statement_key` against it.
   - `validate_release(previous, next)` checks that a release follows the one before it:
     - both are one provider's module, so a publisher can't replace another's, in one deployment and protocol
       version;
@@ -253,7 +271,9 @@ again on every redirect. A destination declaration carries what those checks nee
       `2001:1::1/128` to `2001:1::3/128`, AMT `2001:3::/32`, AS112-v6 `2001:4:112::/48` and ORCHIDv2
       `2001:20::/28`;
     - and also IETF protocol assignments `192.0.0.0/24`, benchmarking `198.18.0.0/15`, reserved `240.0.0.0/4`,
-      IPv4-compatible `::/96`, discard `100::/64` and 6to4 `2002::/16`.
+      IPv4-compatible `::/96`, discard `100::/64` and 6to4 `2002::/16`;
+    - since 2.0.0, the deprecated 6to4 relay anycast prefix `192.88.99.0/24` (RFC 7526), and the SRv6 SID block
+      `5f00::/16` (RFC 9602), whose addresses name functions inside a network, not hosts.
 
 An address is IPv4 in dotted decimal or IPv6 in its RFC 5952 text form, and an IPv4-mapped IPv6 address is refused:
 it is written as the IPv4 address. The schema checks the shape only (lower-case groups, at most one `::`); Rust also
@@ -330,7 +350,7 @@ governs.
 | A secret name is declared once | schema (`uniqueItems`) | `declaration-secret-declared-twice` |
 | An operation's destinations and secrets are declared by the outside part | Rust, `UndeclaredDestination`, `UndeclaredSecret` | `declaration-operation-naming-an-undeclared-destination`, `declaration-operation-using-an-undeclared-secret` |
 | An operation, destination or call is declared once by name or callee | Rust, `DeclaredTwice` | `declaration-operation-declared-twice`, `declaration-destination-declared-twice`, `declaration-call-declared-twice` |
-| A pinned address block overlaps no special-purpose range | Rust, `SpecialPurposeAddressBlock` | `declaration-destination-pinned-to-special-purpose-blocks` |
+| A pinned address block overlaps no special-purpose range | Rust, `SpecialPurposeAddressBlock` | `declaration-destination-pinned-to-special-purpose-blocks`, `declaration-destination-pinned-to-the-6to4-relay-and-srv6-blocks` |
 | The statement-signing key is a canonical Ed25519 public key | schema, and Rust (`PublicKey`) | `declaration-statement-key-malformed` |
 | A declared call names kinds, carries no credentials, and isn't to the module's own provider | schema; Rust, `DeclaredCallToOwnProvider` | `declaration-call-without-kinds`, `declaration-call-carrying-credentials`, `declaration-call-to-its-own-provider` |
 | An outside request names its transaction, and neither a secret nor a destination | schema | `outside-request-without-a-transaction`, `outside-request-naming-a-secret`, `outside-request-naming-a-destination` |
@@ -340,8 +360,10 @@ governs.
 | A release assertion names its own shape | schema (`const`), and Rust (`check_shape`, `AssertionUnderAnotherShape` in an artefact) | `release-assertion-under-another-shape` |
 | A widening release and a first release require a fresh acceptance; a first release lists no widening; a fresh acceptance names who gave it | schema (`if`/`then`), and Rust (`validate_artefact`: `WidenedReleaseNotFresh`, `FirstReleaseNotFresh`, `FirstReleaseWithWidenings`, `FreshAcceptanceByNoOne`) | `admission-artefact-widening-but-accepted-automatically`, `admission-artefact-of-a-first-release-accepted-automatically`, `admission-artefact-of-a-first-release-listing-widenings`, `admission-artefact-freshly-accepted-by-no-one` |
 | Each part is received as asserted; the history names no version twice, nor its own | Rust, `PartAltered`, `VersionAlreadyAdmitted` | `admission-artefact-of-an-altered-outside-part`, `admission-artefact-whose-history-names-its-own-version`, `admission-artefact-whose-history-lists-an-earlier-version-twice` |
-| A release assertion is the provider's, of the advertisement's deployment, signed with an advertised key that is neither the operator's nor the statement-signing key | Rust, `validate_assertion_key`: `AdvertisementOfAnotherProvider`, `AssertionOfAnotherMaker`, `AssertionOfAnotherDeployment`, `AssertionKeyNotAdvertised`, `AssertionKeyIsOperatorKey`, `AssertionSignedWithStatementKey` | `advertised-artefact-checked-against-another-providers-advertisement`, `advertised-artefact-asserted-by-another-maker`, `advertised-artefact-from-another-deployment`, `advertised-artefact-asserted-with-an-unadvertised-key`, `advertised-artefact-asserted-with-the-operator-key`, `advertised-artefact-asserted-with-the-statement-key` |
-| A release follows an accepted release of the same module, in the same deployment and protocol version, extends its history and records exactly the computed widenings | Rust, `validate_release`: `ReleaseOfAnotherModule`, `ReleaseOfAnotherDeployment`, `ReleaseUnderAnotherProtocolVersion`, `PreviousNotAdmitted`, `HistoryNotExtended`, `WideningsMisrecorded` | `successive-releases-of-another-providers-module`, `successive-releases-of-another-deployment`, `successive-releases-under-another-protocol-version`, `successive-releases-after-a-release-not-yet-accepted`, `successive-releases-with-the-history-not-extended`, `successive-releases-widening-with-no-widening-recorded` |
+| A release assertion is the provider's, of the advertisement's deployment, signed with a key advertised for `advertising` that is neither the operator's nor the statement-signing key | Rust, `validate_assertion_key`: `AdvertisementOfAnotherProvider`, `AssertionOfAnotherMaker`, `AssertionOfAnotherDeployment`, `AssertionKeyNotAdvertised`, `AssertionKeyNotForAdvertising`, `AssertionKeyIsOperatorKey`, `AssertionSignedWithStatementKey` | `advertised-artefact-checked-against-another-providers-advertisement`, `advertised-artefact-asserted-by-another-maker`, `advertised-artefact-from-another-deployment`, `advertised-artefact-asserted-with-an-unadvertised-key`, `advertised-artefact-asserted-with-an-advertised-statements-key`, `advertised-artefact-asserted-with-the-operator-key`, `advertised-artefact-asserted-with-the-statement-key` (which breaks both `AssertionKeyNotForAdvertising` and `AssertionSignedWithStatementKey`: since 2.0.0 the older rule is a second line, as a statement key listed for `advertising` is refused below) |
+| At admission, the declared `statement_key` is listed in the accepted advertisement for `statements`, and isn't the `operator_key` | Rust, `validate_assertion_key`: `StatementKeyNotAdvertised`, `StatementKeyNotForStatements`, `StatementKeyIsOperatorKey` | `advertised-artefact-declaring-an-unadvertised-statement-key`, `advertised-artefact-declaring-an-advertising-key-as-its-statement-key`, `advertised-artefact-declaring-the-operator-key-as-its-statement-key` |
+| A key is in its one canonical encoding, so an alias of the statement key with nonzero unused bits is no key | schema, and Rust (`PublicKey`) | `advertised-artefact-asserted-with-a-non-canonical-alias-of-the-statement-key` |
+| A release follows an accepted release of the same module, in the same deployment and protocol version, extends its history and records exactly the computed widenings | Rust, `validate_release`: `ReleaseOfAnotherModule`, `ReleaseOfAnotherDeployment`, `ReleaseUnderAnotherProtocolVersion`, `PreviousNotAdmitted`, `HistoryNotExtended`, `WideningsMisrecorded` | `successive-releases-of-another-providers-module`, `successive-releases-of-another-deployment`, `successive-releases-under-another-protocol-version`, `successive-releases-after-a-release-not-yet-accepted`, `successive-releases-with-the-history-not-extended`, `successive-releases-widening-with-no-widening-recorded`, `successive-releases-handling-a-new-kind-with-no-widening-recorded` |
 | A release isn't asserted with a statement-signing key any earlier release declared | Rust, `validate_release`, `AssertionSignedWithPreviousStatementKey` | `successive-releases-asserted-with-the-previous-statement-key` |
 | A release compares with the last version its history names; a first release, with no history, with none | schema (`if`/`then` on presence), and Rust (`validate_artefact`, `ComparedWithNotLastAdmitted`, which also checks the version) | `admission-artefact-of-a-first-release-comparing-with-a-version`, `admission-artefact-with-a-history-comparing-with-nothing`, `admission-artefact-comparing-with-a-version-its-history-lacks` |
 | A secret lookup names its transaction and its outside operation, and no provider | schema | `secret-lookup-without-a-transaction`, `secret-lookup-without-an-operation`, `secret-lookup-naming-a-provider` |
@@ -359,7 +381,7 @@ governs.
 | A refusal's callee and kind are the call's | Rust, `RefusalNamesAnotherCall` | `cross-module-call-refusal-naming-another-callee` |
 | A delivered call is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
 | A signed result's `signature.key` is the declared `statement_key` | Rust, `ResultNotSignedWithStatementKey` | `signed-result-signed-with-another-advertised-key` |
-| The `statement_key` is one of the provider's advertised `keys`, and isn't the deployment's `operator_key` | Rust, `StatementKeyNotAdvertised`, `StatementKeyIsOperatorKey` | `signed-result-statement-key-not-advertised`, `signed-result-statement-key-is-the-operator-key` |
+| The `statement_key` is one of the provider's advertised `keys`, listed for `statements`, and isn't the deployment's `operator_key` | Rust, `StatementKeyNotAdvertised`, `StatementKeyNotForStatements`, `StatementKeyIsOperatorKey` | `signed-result-statement-key-not-advertised`, `signed-result-statement-key-listed-for-advertising`, `signed-result-statement-key-is-the-operator-key` |
 | The advertisement checked is the declaring provider's own | Rust, `AdvertisementOfAnotherProvider` | `signed-result-checked-against-another-providers-advertisement` |
 | The signed result belongs to the advertisement's deployment | Rust, `ResultOfAnotherDeployment` | `signed-result-from-another-deployment` |
 | The signed result's maker is the declaring provider | Rust, `ResultOfAnotherMaker` | `signed-result-made-by-another-provider` |
@@ -403,7 +425,8 @@ as for the admission artefact's `if`/`then` rules, `rust_also_rejects` names tha
 - It checks that a resolved secret's `Debug` output, at every level, never contains its value (`THR-50`).
 - It checks that `VERSION` matches this changelog.
 
-At `C1` every fixture names `"interface": "1.0.0"` and `protocol_version` `1.0.0`, except
+Every fixture names `"interface": "2.0.0"` and `protocol_version` `2.0.0`, the module-interface and provider-role
+versions since the M1 security review (both were `1.0.0` at `C1`), except
 `successive-releases-under-another-protocol-version`, whose point is that its two releases name different protocol
 versions (`0.3.0` and `0.4.0`). No rule compares a declaration's `interface` with `VERSION`: it records which version
 the module implements (`REQ-MDL-19`), and a module declaring an older one stays valid.

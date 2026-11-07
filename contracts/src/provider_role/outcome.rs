@@ -541,7 +541,7 @@ pub struct Judgement {
         deserialize_with = "crate::provider_role::types::present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub holder_key: Option<String>,
+    pub holder_key: Option<super::types::PublicKey>,
 }
 
 impl StatementShape for Judgement {

@@ -571,7 +571,9 @@ impl CatalogueSnapshot {
         Ok((target, side))
     }
 
-    /// A statement figure's envelope names its shape, and its maker is the figure's provider.
+    /// A statement figure's envelope names its shape, and its maker is the figure's provider. Its key isn't
+    /// checked: the snapshot carries no keys, so tying `signature.key` to the maker's advertised `statements` key is
+    /// Core's precondition, met before a record is formed.
     fn check_envelope<T: StatementShape>(
         &self,
         figure: &Figure,

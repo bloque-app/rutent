@@ -458,3 +458,37 @@ Two fixes could still be slipped past; the reviewer built scratch doubles that p
   - each part is altered both by a byte appended and by a byte flipped in place.
 - **Counts.** 15 checks, 41 fixtures and controls per language, and 40 breakers: 38 flagged each by its own check
   only, and two that leave fixtures uncovered.
+
+## The M1 security review (module-interface 2.0.0, `T-002-03`)
+
+Findings H1, M1 and M2 and two lows of the security review of the frozen contracts, ruled by the orchestrator.
+A post-`C1` change, so a major bump under `DEC-4` and the owner's click under `DEC-20`.
+
+- **H1, this contract's half.** Provider-role 2.0.0's key purposes (F-002 notes) give two rules here:
+  `validate_statement_key` refuses a `statement_key` listed for `advertising` (`StatementKeyNotForStatements`), and
+  `validate_assertion_key` an assertion signed with a key listed for `statements` (`AssertionKeyNotForAdvertising`).
+  `AssertionSignedWith{,Previous}StatementKey` stay.
+- **The statement key at admission.** `validate_statement_key` needs a signed result, which a release doesn't have,
+  so on its own nothing at admission stopped a release declaring one of the provider's advertising keys as its
+  `statement_key`; its outside part would then resolve a key that signs advertisements. `validate_assertion_key`
+  now also checks the declared `statement_key` against the accepted advertisement, reusing
+  `StatementKeyNotAdvertised`, `StatementKeyNotForStatements` and `StatementKeyIsOperatorKey`, with one
+  `advertised-artefact-declaring-` fixture each.
+- **One fixture breaks two rules.** `advertised-artefact-asserted-with-the-statement-key` lists the statement key
+  for `statements`, as a valid advertisement must, so it trips `AssertionKeyNotForAdvertising` and
+  `AssertionSignedWithStatementKey` together. The older rule can't fire alone any more: a statement key listed for
+  `advertising` is refused as `StatementKeyNotForStatements`. It stays as a second line.
+- **The advertisement given to these checks is the accepted one.** The docs say so: one that arrives with the
+  release proves nothing, since a forged advertisement can list any key. Accepting a later advertisement is
+  provider-role's `validate_successor`, held by the catalogue (`F-012`).
+- **M1: newly handled kinds widen.** A release that starts handling a kind in `sandboxed.handles` was accepted
+  automatically. `Widening::Handles { operation_kind }` (`kind: "handles"`) comes first in `widening`'s order, as
+  the sandboxed part's list comes first in a declaration. A kind no longer handled is narrowing. The schema's
+  widening is an `allOf` of `if`/`then` on `kind`, so adding one changed no other fixture's exact errors.
+- **M2.** Keys are provider-role's `PublicKey`, re-exported as `module_interface::PublicKey`, so `as_str()` still
+  works for the bindings. `advertised-artefact-asserted-with-a-non-canonical-alias-of-the-statement-key` signs with
+  the statement key's last character moved from `w` to `x`, which differs only in the two unused bits: both layers
+  refuse it.
+- **Lows.** `SPECIAL_PURPOSE` adds `192.88.99.0/24`, the deprecated 6to4 relay anycast prefix (RFC 7526), and
+  `5f00::/16`, the SRv6 SID block (RFC 9602). A new fixture holds both; the old one's expected violations are
+  indexed by position, so it is left alone. No fixture or binding pins into either.

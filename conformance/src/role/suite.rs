@@ -5,16 +5,14 @@ use std::collections::BTreeSet;
 use rutent_contracts::provider_role::{
     Advertisement, BalanceOutcome, BalanceRefusal, BalanceVerification, Category, Conversion,
     ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee, Inputs,
-    JudgementOutcome, JudgementRequest, JudgementResult, NodeRef, OPERATION_SHAPE, Operation,
-    OuterNode, Refusal, ReserveMovementOutcome, ResultBody, Reversal, ReversalConfirmationOutcome,
-    ReversalConfirmationRequest, ReversalConfirmationResult, ReversalOutcome, Signature,
-    SignatureScheme, Slippage, Statement, StatementShape, Terms, Tracking, Transfer,
-    TransferOutcome, Withdrawal, validate_statement,
+    JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE,
+    Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
+    ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
+    ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape, Terms,
+    Tracking, Transfer, TransferOutcome, Withdrawal, validate_statement,
 };
 
-use super::encoding::{
-    is_canonical_public_key, is_canonical_signature, is_protocol_version, is_utc_timestamp,
-};
+use super::encoding::{is_canonical_signature, is_protocol_version, is_utc_timestamp};
 use super::{
     Check, Exercised, Finding, Report, RoleHarness, SignatureVerifier, SuiteContext, Uncovered,
     Verification, placeholder_key, placeholder_signature,
@@ -395,11 +393,13 @@ impl Run<'_> {
         }
     }
 
-    fn published_key(&self, key: &str) -> bool {
-        self.advertisement
-            .keys
-            .iter()
-            .any(|k| k.scheme == SignatureScheme::Ed25519 && k.public_key == key)
+    /// Whether the advertisement lists `key` for `statements`, the purpose a result is signed under.
+    fn published_key(&self, key: &PublicKey) -> bool {
+        self.advertisement.keys.iter().any(|k| {
+            k.scheme == SignatureScheme::Ed25519
+                && &k.public_key == key
+                && k.purpose == KeyPurpose::Statements
+        })
     }
 
     /// The envelope checks every statement gets: shape, context, encodings, and the signature hook.
@@ -412,15 +412,9 @@ impl Run<'_> {
         {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));
         }
+        // The operator key and the signing key need no check here: they are `PublicKey`s, which only their
+        // canonical encoding builds, so a statement with another doesn't deserialise.
         let encodings = [
-            (
-                "operator key",
-                is_canonical_public_key(&statement.deployment.operator_key),
-            ),
-            (
-                "signing key",
-                is_canonical_public_key(&statement.signature.key),
-            ),
             (
                 "signature value",
                 is_canonical_signature(&statement.signature.value),
@@ -465,7 +459,7 @@ impl Run<'_> {
         if !self.published_key(&statement.signature.key) {
             self.flag(
                 Check::MakerAndKey,
-                format!("{what}: signed with an unpublished key"),
+                format!("{what}: signed with a key not published for statements"),
             );
         }
     }
@@ -1871,6 +1865,7 @@ fn short_by_more_than(actual: (u128, u32), quoted: (u128, u32), bps: u16) -> boo
 #[cfg(test)]
 mod tests {
     use super::{decimal, is_protocol_version, other_protocol_versions, short_by_more_than};
+    use rutent_contracts::provider_role::VERSION;
 
     // verifies: REQ-QTE-1
     #[test]
@@ -1887,16 +1882,20 @@ mod tests {
 
     // verifies: REQ-PRT-1
     #[test]
-    fn the_other_protocol_versions_are_valid_and_differ_from_the_frozen_one() {
-        let others = other_protocol_versions("1.0.0");
+    fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
+        assert_eq!(
+            VERSION, "2.0.0",
+            "re-pin these values when the protocol version moves"
+        );
+        let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["2.0.0", "1.0.1", "0.0.0"]);
+        assert_eq!(versions, ["3.0.0", "2.0.1", "1.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),
                 "{version} is a protocol version"
             );
-            assert_ne!(version, "1.0.0");
+            assert_ne!(version, VERSION);
         }
     }
 }

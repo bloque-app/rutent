@@ -14,7 +14,7 @@ use super::types::{
     OperationKind, PublicKey, Time, present,
 };
 use super::validate::{RuleViolation, done, validate_declaration};
-use crate::provider_role::{Advertisement, Statement, StatementShape};
+use crate::provider_role::{Advertisement, KeyPurpose, Statement, StatementShape};
 
 /// The `shape` of a release assertion.
 pub const RELEASE_ASSERTION_SHAPE: &str = "urn:rutent:module-interface:release-assertion";
@@ -178,6 +178,8 @@ pub struct Capabilities {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Widening {
+    /// An operation kind the sandboxed part newly handles, such as a module that starts answering withdrawals.
+    Handles(HandlesWidening),
     /// A new outside operation.
     Operation(OperationWidening),
     /// A destination an existing outside operation gains.
@@ -196,6 +198,14 @@ pub enum Widening {
     CallKind(CallKindWidening),
     /// A changed statement-signing key.
     StatementKey(Nothing),
+}
+
+/// An operation kind the sandboxed part newly handles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandlesWidening {
+    /// The kind it now handles.
+    pub operation_kind: OperationKind,
 }
 
 /// A widening that names an outside operation.
@@ -302,20 +312,30 @@ pub struct Accepted {
 
 /// Every way `next` widens `previous`'s capabilities, in the order of `next`'s lists (`REQ-MDL-3`):
 ///
-/// 1. operations: a new operation; then, for an existing one, each destination and each secret it gains;
-/// 2. secrets: each new secret;
-/// 3. destinations: a new destination, or one of the same name at another scheme, host or port; then, for an
+/// 1. handled kinds: each operation kind the sandboxed part handles that it didn't, since a module that starts
+///    answering, say, withdrawals reaches money it couldn't before;
+/// 2. operations: a new operation; then, for an existing one, each destination and each secret it gains;
+/// 3. secrets: each new secret;
+/// 4. destinations: a new destination, or one of the same name at another scheme, host or port; then, for an
 ///    unchanged endpoint, addresses grown from blocks to `public`, or by a block no single old block contains;
-/// 4. calls: a new callee; then, for an existing one, each new kind asked of it;
-/// 5. a changed statement-signing key.
+/// 5. calls: a new callee; then, for an existing one, each new kind asked of it;
+/// 6. a changed statement-signing key.
 ///
-/// Narrowing is never listed: a removed operation, secret, destination, call or kind; a block within an old one;
+/// Narrowing is never listed: a kind no longer handled; a removed operation, secret, destination, call or kind; a
+/// block within an old one;
 /// `public` replaced by blocks, which can only be globally routable ones (`SpecialPurposeAddressBlock`). A block
 /// covered only by the union of several old blocks is listed: containment is checked against single blocks,
 /// which errs towards a fresh acceptance.
 pub fn widening(previous: &Declaration, next: &Declaration) -> Vec<Widening> {
     let (old, new) = (&previous.outside, &next.outside);
     let mut out = Vec::new();
+    for kind in &next.sandboxed.handles {
+        if !previous.sandboxed.handles.contains(kind) {
+            out.push(Widening::Handles(HandlesWidening {
+                operation_kind: *kind,
+            }));
+        }
+    }
     for operation in &new.operations {
         match old.operations.iter().find(|o| o.name == operation.name) {
             None => out.push(Widening::Operation(OperationWidening {
@@ -482,10 +502,20 @@ pub fn validate_artefact(artefact: &AdmissionArtefact) -> Result<(), Vec<RuleVio
 /// - the advertisement is the releasing provider's;
 /// - the assertion's maker is that provider, so a publisher can't release another's module;
 /// - it belongs to the advertisement's deployment, by name and operator key;
-/// - its key is one of the advertisement's `keys`, isn't the deployment's `operator_key`, and isn't the
-///   declaration's `statement_key`, which the running outside part can resolve.
+/// - its key is one of the advertisement's `keys`, listed for `advertising`, never for `statements` (`THR-4`);
+/// - it isn't the deployment's `operator_key`, and isn't the declaration's `statement_key`, which the running
+///   outside part can resolve;
+/// - the declaration's `statement_key` is listed for `statements`, never for `advertising`, and isn't the
+///   `operator_key`, so a release can't hand its outside part a key that signs advertisements or releases. This is
+///   checked here, at admission, since [`validate_statement_key`](super::validate_statement_key) needs a signed
+///   result, which a release doesn't have yet.
 ///
-/// It compares keys only; verifying the signature is `M2` and `M3` work.
+/// `advertisement` must be the one the catalogue (`F-012`) accepted for the provider, never one that arrives
+/// with the release: an advertisement vouches for its own keys only through
+/// [`validate_successor`](crate::provider_role::validate_successor) against the one before it, back to the
+/// operator's grant (`REQ-CAT-2`).
+///
+/// It compares keys by their bytes only; verifying the signature is `M2` and `M3` work.
 pub fn validate_assertion_key(
     artefact: &AdmissionArtefact,
     advertisement: &Statement<Advertisement>,
@@ -493,7 +523,7 @@ pub fn validate_assertion_key(
     let mut violations = Vec::new();
     let assertion = &artefact.assertion;
     let provider = artefact.declaration().provider.as_str();
-    let key = assertion.signature.key.as_str();
+    let key = &assertion.signature.key;
     if advertisement.statement.provider != provider {
         violations.push(RuleViolation::AdvertisementOfAnotherProvider);
     }
@@ -503,19 +533,32 @@ pub fn validate_assertion_key(
     if assertion.deployment != advertisement.deployment {
         violations.push(RuleViolation::AssertionOfAnotherDeployment);
     }
-    if !advertisement
+    match advertisement
         .statement
-        .keys
-        .iter()
-        .any(|k| k.public_key == key)
+        .purpose_of_signer(&assertion.signature)
     {
-        violations.push(RuleViolation::AssertionKeyNotAdvertised);
+        None => violations.push(RuleViolation::AssertionKeyNotAdvertised),
+        Some(KeyPurpose::Statements) => {
+            violations.push(RuleViolation::AssertionKeyNotForAdvertising);
+        }
+        Some(KeyPurpose::Advertising) => {}
     }
-    if key == advertisement.deployment.operator_key {
+    if key == &advertisement.deployment.operator_key {
         violations.push(RuleViolation::AssertionKeyIsOperatorKey);
     }
-    if key == artefact.declaration().outside.statement_key.as_str() {
+    if key == &artefact.declaration().outside.statement_key {
         violations.push(RuleViolation::AssertionSignedWithStatementKey);
+    }
+    let statement_key = &artefact.declaration().outside.statement_key;
+    match advertisement.statement.purpose_of(statement_key) {
+        None => violations.push(RuleViolation::StatementKeyNotAdvertised),
+        Some(KeyPurpose::Advertising) => {
+            violations.push(RuleViolation::StatementKeyNotForStatements);
+        }
+        Some(KeyPurpose::Statements) => {}
+    }
+    if statement_key == &advertisement.deployment.operator_key {
+        violations.push(RuleViolation::StatementKeyIsOperatorKey);
     }
     done(violations)
 }
@@ -549,11 +592,11 @@ pub fn validate_release(
     if next.assertion.protocol_version != previous.assertion.protocol_version {
         violations.push(RuleViolation::ReleaseUnderAnotherProtocolVersion);
     }
-    let key = next.assertion.signature.key.as_str();
+    let key = &next.assertion.signature.key;
     let declared_before = std::iter::once(&before.outside.statement_key)
         .chain(previous.history.iter().map(|entry| &entry.statement_key))
         .chain(next.history.iter().map(|entry| &entry.statement_key));
-    if declared_before.into_iter().any(|k| k.as_str() == key) {
+    if declared_before.into_iter().any(|k| k == key) {
         violations.push(RuleViolation::AssertionSignedWithPreviousStatementKey);
     }
     match previous.as_history_entry() {

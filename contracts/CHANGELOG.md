@@ -16,3 +16,6 @@ directory (see `README.md`).
 - `lib.rs` exports the `module_interface` module, for the module-interface contract. (DEC-4, T-003-01)
 - `C1`: all five contracts are at 1.0.0, so versions are now 1.x.y, a breaking change bumps the major, and every change
   waits for the owner's click. Fixtures name 1.0.0 where they name a contract's own version. (DEC-4, DEC-20, T-006-01)
+- After the M1 security review: versions follow semver from 1.0.0, not "1.x.y", since provider-role,
+  module-interface and host are now at 2.0.0; a breaking change bumps the major, and every change waits for the
+  owner's click. (DEC-4, DEC-20, T-002-03)

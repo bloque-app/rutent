@@ -13,14 +13,15 @@ use rutent_contracts::provider_role::{
     BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote, ConversionResult,
     ConversionSettlement, Declarations, Denomination, EndUnits, Evidence, EvidenceGrade,
     EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, Inputs, JUDGEMENT_SHAPE, Judged,
-    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, LiftsAt, MovementSettlement,
-    NoDetail, NodeRef, Offers, Operation, OuterNode, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE,
-    RampOffer, RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
-    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
-    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
-    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
-    SigningKey, Slippage, Statement, Terms, Tracking, TransferOutcome, TransferQuote,
-    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
+    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
+    MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
+    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
+    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
+    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
+    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
+    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
+    VerifierOffer, VoidedBy,
 };
 
 use super::{RoleHarness, RoleProvider, SuiteContext, placeholder_key, placeholder_signature};
@@ -69,12 +70,14 @@ enum Fault {
     DatesItsJudgementBadly,
 }
 
-/// Signs statements as one maker, with placeholder signatures.
+/// Signs statements as one maker, with placeholder signatures: its advertisements with its advertising key, and
+/// every other statement with its statements key (provider-role 2.0.0's key purposes).
 #[derive(Debug, Clone)]
 struct Signer {
     context: SuiteContext,
     maker: String,
-    key: String,
+    advertising_key: PublicKey,
+    key: PublicKey,
 }
 
 impl Signer {
@@ -82,6 +85,7 @@ impl Signer {
         Self {
             context: context.clone(),
             maker: maker.to_owned(),
+            advertising_key: placeholder_key(seed + 30),
             key: placeholder_key(seed),
         }
     }
@@ -95,7 +99,11 @@ impl Signer {
             made_at: MADE_AT.to_owned(),
             signature: Signature {
                 scheme: SignatureScheme::Ed25519,
-                key: self.key.clone(),
+                key: if shape == ADVERTISEMENT_SHAPE {
+                    self.advertising_key.clone()
+                } else {
+                    self.key.clone()
+                },
                 value: placeholder_signature(),
             },
             statement,
@@ -103,10 +111,18 @@ impl Signer {
     }
 
     fn keys(&self) -> Vec<SigningKey> {
-        vec![SigningKey {
-            scheme: SignatureScheme::Ed25519,
-            public_key: self.key.clone(),
-        }]
+        vec![
+            SigningKey {
+                scheme: SignatureScheme::Ed25519,
+                public_key: self.advertising_key.clone(),
+                purpose: KeyPurpose::Advertising,
+            },
+            SigningKey {
+                scheme: SignatureScheme::Ed25519,
+                public_key: self.key.clone(),
+                purpose: KeyPurpose::Statements,
+            },
+        ]
     }
 
     fn result(&self, body: ResultBody) -> Statement<ResultBody> {

@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::provider_role::Operation;
+/// An Ed25519 public key in its one canonical encoding, compared by its decoded bytes: the provider-role
+/// contract's [`PublicKey`](crate::provider_role::PublicKey), which every key in this contract is.
+pub use crate::provider_role::PublicKey;
 
 /// A value that breaks a rule of its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,14 +158,6 @@ checked_text!(
     "a binary format must be lower-case words joined by '-'"
 );
 
-checked_text!(
-    /// An Ed25519 public key, 32 bytes, base64url without padding, in its one canonical encoding, as
-    /// `urn:rutent:provider-role:common#/$defs/public_key` writes it.
-    PublicKey,
-    is_public_key,
-    "a public key must be 43 base64url characters in their canonical encoding"
-);
-
 impl Address {
     /// The parsed address.
     pub fn ip(&self) -> IpAddr {
@@ -200,14 +195,6 @@ fn is_address_block(text: &str) -> bool {
     };
     let max = if ip.is_ipv4() { 32 } else { 128 };
     parsed.to_string() == len && parsed <= max
-}
-
-fn is_public_key(text: &str) -> bool {
-    let base64url = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
-    let bytes = text.as_bytes();
-    bytes.len() == 43
-        && bytes.iter().all(|&b| base64url(b))
-        && b"AEIMQUYcgkosw048".contains(&bytes[42])
 }
 
 /// Deserialises a present optional field, refusing `null`: the schemas leave an absent field out, so an explicit

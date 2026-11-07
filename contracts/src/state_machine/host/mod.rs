@@ -37,7 +37,11 @@ use super::{Id, Order, RecordId, RecordedInput, StateMachine, Violation};
 pub mod testing;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/host/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "2.0.0";
+
+/// The largest sequence number, 2^53 - 1, so it survives RFC 8785 canonical JSON, which writes numbers as IEEE
+/// doubles: a transition record's `seq`, a refusal record's `seq`, and the `seq` a refusal points to.
+pub const MAX_SEQ: u64 = (1 << 53) - 1;
 
 /// The effect driver's obligation: what whoever acts on released records owes, per record id. A record can be
 /// released more than once (a resubmit after a crash, a read), so this, not the host, keeps a repeat from moving
@@ -148,7 +152,7 @@ pub const GUARANTEES: [Guarantee; 6] = [
 pub struct TransitionRecord {
     /// The order the input is about: its subject's order.
     pub order_id: Id,
-    /// Its place in the order's sequence, from 1, with no gap.
+    /// Its place in the order's sequence, from 1, with no gap, at most [`MAX_SEQ`].
     pub seq: u64,
     /// The input, exactly as submitted.
     pub input: RecordedInput,
@@ -167,11 +171,14 @@ fn some_order<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Order
 }
 
 impl TransitionRecord {
-    /// Checks the rules a field type can't carry: the sequence starts at 1; the record, its input's subject and
-    /// its state name the same order; and the state names this input as its last.
+    /// Checks the rules a field type can't carry: the sequence starts at 1 and is at most [`MAX_SEQ`]; the
+    /// record, its input's subject and its state name the same order; and the state names this input as its last.
     pub fn check(&self) -> Result<(), Violation> {
         if self.seq == 0 {
             return Err(Violation("sequence numbers start at 1"));
+        }
+        if self.seq > MAX_SEQ {
+            return Err(Violation("a sequence number is at most 2^53 - 1"));
         }
         if self.input.subject.order != self.order_id {
             return Err(Violation("a record is about its input's order"));
@@ -227,7 +234,7 @@ pub enum RefusalReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct RefusalRecord {
-    /// Its place in the host's refusal log, from 1, with no gap.
+    /// Its place in the host's refusal log, from 1, with no gap, at most [`MAX_SEQ`].
     pub seq: u64,
     /// The refused input, exactly as submitted.
     pub input: RecordedInput,
@@ -238,11 +245,15 @@ pub struct RefusalRecord {
 }
 
 impl RefusalRecord {
-    /// Checks the rules a field type can't carry: both sequence numbers start at 1. That the record it points to
+    /// Checks the rules a field type can't carry: both sequence numbers start at 1 and are at most [`MAX_SEQ`].
+    /// That the record it points to
     /// holds its record id is checked over a whole stream, by [`StreamCheck::finish`].
     pub fn check(&self) -> Result<(), Violation> {
         if self.seq == 0 || self.existing.seq == 0 {
             return Err(Violation("sequence numbers start at 1"));
+        }
+        if self.seq > MAX_SEQ || self.existing.seq > MAX_SEQ {
+            return Err(Violation("a sequence number is at most 2^53 - 1"));
         }
         Ok(())
     }

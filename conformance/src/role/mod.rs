@@ -36,7 +36,7 @@
 use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
-    Advertisement, Deployment, Operation, ResultBody, Signature, Statement, VERSION,
+    Advertisement, Deployment, Operation, PublicKey, ResultBody, Signature, Statement, VERSION,
 };
 
 mod encoding;
@@ -368,9 +368,9 @@ impl SignatureVerifier for DeferredVerifier {
 const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /// A well-formed, canonical placeholder for a 32-byte public key, distinct per seed. It is not a real key.
-pub fn placeholder_key(seed: u8) -> String {
+pub fn placeholder_key(seed: u8) -> PublicKey {
     let c = BASE64URL[usize::from(seed) % 64] as char;
-    format!("{}A", c.to_string().repeat(42))
+    PublicKey::new(format!("{}A", c.to_string().repeat(42))).expect("a canonical placeholder key")
 }
 
 /// A well-formed, canonical placeholder for a 64-byte signature value. It is not a real signature.

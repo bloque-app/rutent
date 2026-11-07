@@ -378,3 +378,23 @@ owner's click. They are done as a follow-up to `T-004-02`.
     0, are one rule with one message, so the fixture naming an operation before the last breaks only that.
 - **Documented limits, no change.** That the record lists every candidate, and the `quote_voided` conditions that
   rest on facts outside the record, stay as the README states them.
+
+## The M1 security review (router-api 1.0.1, `T-004-02`)
+
+- **M3: decision records can't show who signed.** A record carries each statement whole and checks its `maker`
+  against its figure's provider, but the snapshot carries no keys, so `signature.key` is tied to nothing. The
+  orchestrator ruled: state the precondition, add no keys. Core ties each provider statement to its provider's
+  advertised keys (provider-role 2.0.0: a key listed for `statements`), and the operator's to `operator_key`,
+  before a record is formed. This matches the earlier ruling that Core ties `refines` to the shortlist record it
+  keeps. It is in the README's "Unchecked by either" and in the Rust docs (`mod.rs`, `check_envelope`,
+  `RecordedDecision`).
+- **Why a patch.** The README's rule makes a fix a patch, and documentation is a fix: no schema, type or check of
+  this contract changed, and every record valid at 1.0.0 is valid at 1.0.1 under the same provider-role version.
+  The envelope it embeds is provider-role's, so `Signature.key` and `operator_key` are now `PublicKey`s, but that
+  is provider-role 2.0.0's change, bumped and recorded there; the host 0.1.1 bump set the precedent of a patch for
+  a contract whose fixtures follow another's.
+- **Fixtures.** Every `protocol_version` names provider-role's `2.0.0` (3145 fields), the same anchored
+  substitution as at `C1`. No router-api check compares a fixture's protocol version with a `VERSION`: each fixture
+  is checked in its own deployment and protocol version, so its tests passed before the rewrite and after.
+- **After the delta review, still 1.0.1:** the precondition names which advertisement applies, the provider's
+  accepted one current at the statement's `made_at`, not one accepted later, and covers nested statements.

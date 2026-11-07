@@ -87,6 +87,7 @@ fixture. Streams are fixtures too: `fixtures/*/snapshot-stream-*.jsonl`, one ent
 | Rule | Schema | Rust |
 |---|---|---|
 | Sequence numbers start at 1 | `minimum` | `TransitionRecord::check`, `RefusalRecord::check` |
+| Sequence numbers are at most 2^53 − 1 (`MAX_SEQ`, since 2.0.0), so they survive RFC 8785 canonical JSON | `maximum` | `TransitionRecord::check`, `RefusalRecord::check` |
 | A record or refusal holds its input whole, with its record id | `$ref` to `recorded-input` | `RecordedInput` |
 | An absent state is absent, never `null` | `$ref` to `order` | `deserialize_with` |
 | No unknown fields | `additionalProperties` | `deny_unknown_fields` |

@@ -1021,7 +1021,7 @@ impl ModuleBinding for WasmBinding {
         {
             return Handled::Refused(PlatformRefusal::NotHandled);
         }
-        let statement_key = declaration.outside.statement_key.as_str().to_owned();
+        let statement_key = declaration.outside.statement_key.clone();
         let bytes = match self.run_in_process(provider, operation, declaration, version) {
             Ok(bytes) => bytes,
             Err(refusal) => return Handled::Refused(refusal),

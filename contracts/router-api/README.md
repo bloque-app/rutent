@@ -158,6 +158,17 @@ Unchecked by either:
 - That `refines.taken_at` is the shortlist round's real time. The contract checks answers against the stated
   value, and that it is at or before the choice round's own snapshot; a backdated or postdated value can't be
   seen from the choice record. Core ties `refines` to the shortlist record it keeps (`REQ-AUD-4`).
+- Who signed each statement (the M1 security review's M3, ruled by the orchestrator: state the precondition, add no
+  keys). A record carries each fresh quote, dry run and eligibility judgement whole, and the contract checks that
+  its `maker` is its figure's provider, but the snapshot carries no keys, so nothing in a record ties a statement's
+  `signature.key` to its maker. **Precondition:** before a record is formed, Core ties each provider statement it
+  carries to a key listed for `statements` in its provider's accepted advertisement that was current when the
+  statement was made (its `made_at`), not one accepted later (provider-role's "Key purposes"), and the operator's own
+  statements, the recorded decision among them, to the deployment's `operator_key`. Nested statements are covered
+  too: a judgement inside a dry run or an eligibility figure, and any statement carried inside another, is tied the
+  same way to its own maker. Keys
+  compare by their decoded bytes (`PublicKey`). As with `refines`, this is Core's: the record can't show it, and a
+  reader of a record alone relies on it.
 
 Recorded since 0.7.0 (the orchestrator's pre-freeze audit, 2026-11-07): a candidate with an operation whose net is
 above its price's last levels mid-route is listed up to that operation, which arrives with 0, and dropped as

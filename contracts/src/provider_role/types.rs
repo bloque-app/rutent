@@ -31,14 +31,169 @@ impl StatementShape for Advertisement {
     const SHAPE: &'static str = ADVERTISEMENT_SHAPE;
 }
 
-/// One of a provider's public signing keys.
+/// One of a provider's public signing keys, with what it may sign.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SigningKey {
     /// The scheme.
     pub scheme: super::envelope::SignatureScheme,
-    /// The Ed25519 public key, base64url without padding.
-    pub public_key: String,
+    /// The Ed25519 public key.
+    pub public_key: PublicKey,
+    /// What the key may sign.
+    pub purpose: KeyPurpose,
+}
+
+/// What a provider's key may sign (`THR-4`). The two never overlap: a key is listed once, with one purpose.
+///
+/// - An **`advertising`** key signs the provider's advertisements and its modules' release assertions. Only the
+///   provider holds it; no running module can resolve it.
+/// - A **`statements`** key signs everything else the provider says: results, quotes, judgements and reversal
+///   confirmations. A module's outside part resolves it through the credential proxy (its `statement_key`), so a
+///   compromised outside part holds it. It therefore never signs an advertisement or a release assertion, and an
+///   advertisement it signed can't add or promote an advertising key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyPurpose {
+    /// Signs advertisements and release assertions.
+    Advertising,
+    /// Signs the provider's other statements.
+    Statements,
+}
+
+/// An Ed25519 public key (RFC 8032): 32 bytes, written as 43 characters of base64url without padding, in its one
+/// canonical encoding, as `urn:rutent:provider-role:common#/$defs/public_key` writes it.
+///
+/// Built only from canonical text: 43 characters of the base64url alphabet whose last character carries no unused
+/// bits (one of `AEIMQUYcgkosw048`). Two keys are equal when their decoded bytes are, never by comparing text, so
+/// an alias can't pass a "differs from" check.
+///
+/// This type checks the encoding only. The verifier (`M2`) must also refuse what this can't see: non-canonical
+/// base64 from any decoder it uses (a last character with nonzero unused bits, padding, or the `+`/`/` alphabet),
+/// and a non-canonical point: a `y` coordinate at or above the field prime 2^255 − 19, as RFC 8032 §5.1.3's strict
+/// decoding does, with a small-order key refused as well.
+#[derive(Clone)]
+pub struct PublicKey {
+    /// Canonical text, checked when built; the bytes are decoded from it when compared.
+    text: String,
+}
+
+impl PublicKey {
+    /// The key written by `text`, or `None` if `text` isn't a key in its canonical encoding.
+    pub fn new(text: impl Into<String>) -> Option<Self> {
+        let text = text.into();
+        decode_public_key(&text)?;
+        Some(Self { text })
+    }
+
+    /// The key as its canonical text.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// The key's 32 bytes.
+    pub fn bytes(&self) -> [u8; 32] {
+        decode_public_key(&self.text).expect("checked when built")
+    }
+}
+
+impl PartialEq for PublicKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for PublicKey {}
+
+impl std::hash::Hash for PublicKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bytes().hash(state);
+    }
+}
+
+impl PartialOrd for PublicKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PublicKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bytes().cmp(&other.bytes())
+    }
+}
+
+impl std::fmt::Debug for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PublicKey").field(&self.text).finish()
+    }
+}
+
+impl std::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl TryFrom<String> for PublicKey {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(text).ok_or_else(|| {
+            "a public key must be 43 base64url characters in their canonical encoding".to_owned()
+        })
+    }
+}
+
+impl From<PublicKey> for String {
+    fn from(key: PublicKey) -> Self {
+        key.text
+    }
+}
+
+impl Serialize for PublicKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::try_from(text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The 32 bytes `text` writes, if it is 43 characters of base64url without padding whose two unused bits are
+/// zero, the one canonical encoding.
+fn decode_public_key(text: &str) -> Option<[u8; 32]> {
+    let digit = |c: u8| -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    };
+    let chars = text.as_bytes();
+    if chars.len() != 43 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    let (mut acc, mut held, mut out) = (0u32, 0u32, 0usize);
+    for &c in chars {
+        acc = (acc << 6) | digit(c)?;
+        held += 6;
+        if held >= 8 {
+            held -= 8;
+            bytes[out] = (acc >> held) as u8;
+            out += 1;
+            acc &= (1 << held) - 1;
+        }
+    }
+    // 43 characters carry 258 bits: 32 bytes, and two left over that must be zero.
+    (out == 32 && held == 2 && acc == 0).then_some(bytes)
 }
 
 /// A non-negative integer no larger than 2^53 - 1, so it survives RFC 8785 canonical JSON.

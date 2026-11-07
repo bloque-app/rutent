@@ -8,7 +8,7 @@ use super::types::{
     Addresses, CallOutcome, CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration,
     OperationKind, OutboundCallRecord, SecretLookup,
 };
-use crate::provider_role::{Advertisement, ResultBody, Statement};
+use crate::provider_role::{Advertisement, KeyPurpose, ResultBody, Statement};
 
 /// A rule a module-interface value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +93,9 @@ pub enum RuleViolation {
     /// The declared statement-signing key is the deployment's `operator_key`, which signs only the operator's
     /// statements (`THR-8`).
     StatementKeyIsOperatorKey,
+    /// The declared statement-signing key is listed in the advertisement for `advertising`, not `statements`:
+    /// the outside part resolves it, so it could sign an advertisement or a release assertion (`THR-4`).
+    StatementKeyNotForStatements,
     /// A signed result names another key than the declared statement-signing key (`REQ-MDL-3`).
     ResultNotSignedWithStatementKey,
     /// A signed result names another maker than the declaring provider, so the provider's key would vouch for
@@ -128,8 +131,14 @@ pub enum RuleViolation {
     AssertionKeyNotAdvertised,
     /// A release assertion signed with the deployment's `operator_key` (`THR-8`).
     AssertionKeyIsOperatorKey,
+    /// A release assertion signed with a key the advertisement lists for `statements`, which a module's outside
+    /// part can resolve, so running code could sign a release (`THR-4`).
+    AssertionKeyNotForAdvertising,
     /// A release assertion signed with the declaration's statement-signing key, which the running outside part
-    /// can resolve, so running code could sign its own next release (`THR-4`).
+    /// can resolve, so running code could sign its own next release (`THR-4`). Since 2.0.0 it never fails alone:
+    /// a statement key listed for `statements` also fails `AssertionKeyNotForAdvertising`, one listed for
+    /// `advertising` fails `StatementKeyNotForStatements`, and an unlisted one fails `AssertionKeyNotAdvertised`.
+    /// It stays as a second line.
     AssertionSignedWithStatementKey,
     /// A release that follows another provider's module (`REQ-MDL-1`).
     ReleaseOfAnotherModule,
@@ -189,7 +198,9 @@ pub enum DeclaredList {
 ///   `/23` isn't listed whole, because some assignments in it are globally reachable: the anycast addresses
 ///   `2001:1::1/128` to `2001:1::3/128`, AMT `2001:3::/32`, AS112-v6 `2001:4:112::/48` and ORCHIDv2
 ///   `2001:20::/28`;
-/// - **6to4:** `2002::/16`;
+/// - **6to4:** `2002::/16`, and the deprecated 6to4 relay anycast prefix `192.88.99.0/24` (RFC 7526);
+/// - **SRv6 SIDs:** `5f00::/16` (RFC 9602), segment identifiers that address functions inside a provider's network,
+///   not hosts;
 /// - **unique-local and the deprecated site-local:** `fc00::/7`, `fec0::/10`.
 pub const SPECIAL_PURPOSE: &[(&str, u8)] = &[
     ("0.0.0.0", 8),
@@ -200,6 +211,7 @@ pub const SPECIAL_PURPOSE: &[(&str, u8)] = &[
     ("172.16.0.0", 12),
     ("192.0.0.0", 24),
     ("192.0.2.0", 24),
+    ("192.88.99.0", 24),
     ("192.168.0.0", 16),
     ("198.18.0.0", 15),
     ("198.51.100.0", 24),
@@ -218,6 +230,7 @@ pub const SPECIAL_PURPOSE: &[(&str, u8)] = &[
     ("2001:db8::", 32),
     ("2002::", 16),
     ("3fff::", 20),
+    ("5f00::", 16),
     ("fc00::", 7),
     ("fe80::", 10),
     ("fec0::", 10),
@@ -456,33 +469,35 @@ pub fn validate_call_against(
 /// `T-003-01`):
 ///
 /// - the advertisement is the declaring provider's own;
-/// - the declared `statement_key` is one of the advertisement's `keys`;
+/// - the declared `statement_key` is one of the advertisement's `keys`, listed for `statements`, never for
+///   `advertising`: the outside part resolves it, so it must not sign advertisements or release assertions
+///   (`THR-4`);
 /// - it isn't the `operator_key` of the deployment the enveloped advertisement names;
 /// - the signed result belongs to that same deployment, its name and operator key both, so a caller needn't
 ///   relate the result to the advertisement first;
 /// - the signed result's maker is the declaring provider;
 /// - the signed result names it as its `signature.key`.
 ///
-/// It compares keys and deployments only; verifying the signature is `M2` and `M3` work.
+/// `advertisement` must be the one the catalogue (`F-012`) accepted for the provider. Keys compare by their
+/// bytes. It compares keys and deployments only; verifying the signature is `M2` and `M3` work.
 pub fn validate_statement_key(
     declaration: &Declaration,
     advertisement: &Statement<Advertisement>,
     result: &Statement<ResultBody>,
 ) -> Result<(), Vec<RuleViolation>> {
     let mut violations = Vec::new();
-    let key = declaration.outside.statement_key.as_str();
+    let key = &declaration.outside.statement_key;
     if advertisement.statement.provider != declaration.provider.as_str() {
         violations.push(RuleViolation::AdvertisementOfAnotherProvider);
     }
-    if !advertisement
-        .statement
-        .keys
-        .iter()
-        .any(|k| k.public_key == key)
-    {
-        violations.push(RuleViolation::StatementKeyNotAdvertised);
+    match advertisement.statement.purpose_of(key) {
+        None => violations.push(RuleViolation::StatementKeyNotAdvertised),
+        Some(KeyPurpose::Advertising) => {
+            violations.push(RuleViolation::StatementKeyNotForStatements);
+        }
+        Some(KeyPurpose::Statements) => {}
     }
-    if key == advertisement.deployment.operator_key {
+    if key == &advertisement.deployment.operator_key {
         violations.push(RuleViolation::StatementKeyIsOperatorKey);
     }
     if result.deployment != advertisement.deployment {
@@ -491,7 +506,7 @@ pub fn validate_statement_key(
     if result.maker != declaration.provider.as_str() {
         violations.push(RuleViolation::ResultOfAnotherMaker);
     }
-    if result.signature.key != key {
+    if &result.signature.key != key {
         violations.push(RuleViolation::ResultNotSignedWithStatementKey);
     }
     done(violations)

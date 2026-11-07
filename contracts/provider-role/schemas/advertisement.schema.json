@@ -40,7 +40,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/version"
         },
         "keys": {
-          "description": "The provider's public signing keys. The operator's grant (REQ-CAT-2) makes them authoritative; a statement the provider makes names one of them as its signature key.",
+          "description": "The provider's public signing keys, each with its purpose (THR-4). The operator's grant (REQ-CAT-2) makes them authoritative; a statement the provider makes names one of them as its signature key. An advertisement and a release assertion are signed with an advertising key; every other statement with a statements key. A key is listed once, by its bytes, which the Rust validation checks.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -49,7 +49,8 @@
             "additionalProperties": false,
             "required": [
               "scheme",
-              "public_key"
+              "public_key",
+              "purpose"
             ],
             "properties": {
               "scheme": {
@@ -59,6 +60,13 @@
               },
               "public_key": {
                 "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+              },
+              "purpose": {
+                "description": "advertising: signs the provider's advertisements and its modules' release assertions, and is never resolvable by a running module. statements: signs the provider's other statements (results, quotes, judgements, reversal confirmations); a module's outside part resolves it as its statement_key, so it never signs an advertisement or a release assertion.",
+                "enum": [
+                  "advertising",
+                  "statements"
+                ]
               }
             }
           }

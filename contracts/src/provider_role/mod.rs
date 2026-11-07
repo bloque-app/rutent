@@ -4,7 +4,10 @@
 //!
 //! The language-neutral artefacts are the JSON Schemas under `contracts/provider-role/schemas/`. The types here
 //! mirror them with `serde`, and [`validate`] enforces the advertisement rules a schema can't express, such as a
-//! ramp's two nodes being different. `contracts/provider-role/README.md` lists which rule lives where.
+//! ramp's two nodes being different. [`validate_statement`] and [`validate_successor`] hold the key purposes
+//! ([`KeyPurpose`]): an advertisement is signed with an `advertising` key, and a later one only with a key the
+//! accepted one lists for `advertising`. Every key is a [`PublicKey`], compared by its decoded bytes.
+//! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
 mod envelope;
 mod operation;
@@ -20,7 +23,7 @@ pub use envelope::{
 pub use operation::*;
 pub use outcome::*;
 pub use types::*;
-pub use validate::{RuleViolation, validate, validate_statement};
+pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "2.0.0";

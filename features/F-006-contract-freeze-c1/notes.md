@@ -61,3 +61,35 @@ No other field names a contract's version. A walk over every bare `version` key 
 protocol version in both layers (the schema pattern `^(0|[1-9][0-9]*)\.…` and `is_protocol_version`), so the lower
 probe stays as it is and no change to 0.9.0 was needed. A new unit test pins the three values, checks each is valid
 and differs from `1.0.0`; the role suite's probes, run against the stand-ins in the workspace tests, refuse each.
+
+## After C1: the M1 security review's bumps
+
+The first post-`C1` change, under `DEC-4` and `DEC-20`: provider-role 2.0.0, module-interface 2.0.0 and host 2.0.0
+(`T-002-03`), router-api 1.0.1 (`T-004-02`). state-machine stays at 1.0.0: nothing it owns changed. 1.0.0 is not
+amended; each contract has a new top heading.
+
+### Version-bearing fields, rewritten again
+
+The same text substitution, matching key and old value.
+
+| Field | Done | Count |
+|---|---|---|
+| `protocol_version` | `1.0.0` to `2.0.0`, provider-role's new version | at the branch head, 182 in provider-role (163 at `m1`, the rest new fixtures), 81 in module-interface (65 at `m1`), and 3145 in router-api (as at `m1`), rewritten in router-api's own commit |
+| `interface` | `1.0.0` to `2.0.0` | at the branch head, 104, all in module-interface fixtures (93 at `m1`, the rest new fixtures) |
+| `host_version` | `1.0.0` to `2.0.0` | 10 |
+| `state_machine_version` | unchanged at `1.0.0` | |
+
+The fixtures left on an old version on purpose are unchanged: `successive-releases-under-another-protocol-version`
+(`0.3.0` against `0.4.0`, `interface` `0.1.0`), `statement-envelope-protocol-version-not-major-minor-patch` (`v3`)
+and `snapshot-entry-header-with-a-version-not-semver` (`latest`, with `host_version` `0.1.1`). No release version
+(`provider_version`, `module_version`, `version`) was touched.
+
+### Rust
+
+- `contracts/tests/provider-role.rs`: the refusal case used `2.0.0` as "another version", which is now the current
+  one; it uses `1.0.0`, the version before. Its other operator key was `"B".repeat(43)`, which isn't canonical and
+  no longer builds a `PublicKey`; it is `"A".repeat(43)`.
+- `conformance/src/role/suite.rs`: the pinned test now derives from `provider_role::VERSION`, asserts it is `2.0.0`,
+  and pins what `other_protocol_versions("2.0.0")` gives when run: a higher major `3.0.0`, a higher patch `2.0.1`, and
+  the previous major `1.0.0`. All three are valid and differ from `2.0.0`.
+- No other Rust literal used `2.0.0` or `3.0.0` as "a version other than the current one".

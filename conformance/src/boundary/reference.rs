@@ -1000,7 +1000,7 @@ impl ModuleBinding for ReferenceDouble {
             made_at: operation.made_at.clone(),
             signature: Signature {
                 scheme: SignatureScheme::Ed25519,
-                key: declaration.outside.statement_key.as_str().to_owned(),
+                key: declaration.outside.statement_key.clone(),
                 value: placeholder_signature(),
             },
             statement: result,

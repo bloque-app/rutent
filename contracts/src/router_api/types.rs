@@ -645,5 +645,7 @@ impl StatementShape for DecisionRecord {
     }
 }
 
-/// A decision record in its envelope, as the deployment records it (`REQ-PRT-1`).
+/// A decision record in its envelope, as the deployment records it (`REQ-PRT-1`), signed with the deployment's
+/// `operator_key`. Nothing in the record ties a carried statement's `signature.key` to its maker; Core does that
+/// before the record is formed (`contracts/router-api/README.md`, "Unchecked by either").
 pub type RecordedDecision = Statement<DecisionRecord>;

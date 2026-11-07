@@ -66,7 +66,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/version"
         },
         "widenings": {
-          "description": "Every way the release's declaration widens the previous one's, in the order of the new declaration's lists: operations (new ones, then destinations and secrets an existing one gains), secrets, destinations (new ones, then broader addresses), calls (new callees, then new kinds), then a changed statement-signing key. Narrowing is never listed. The list is computed from the two declarations, and checked against them in Rust.",
+          "description": "Every way the release's declaration widens the previous one's, in the order of the new declaration's lists: operation kinds the sandboxed part newly handles, operations (new ones, then destinations and secrets an existing one gains), secrets, destinations (new ones, then broader addresses), calls (new callees, then new kinds), then a changed statement-signing key. Narrowing is never listed. The list is computed from the two declarations, and checked against them in Rust.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/widening"
@@ -263,7 +263,7 @@
       }
     },
     "widening": {
-      "description": "One way a release widens the previous one's capabilities, by kind: a new outside operation; a destination or secret an existing operation gains; a new secret; a new destination, or one of the same name at another scheme, host or port; a destination's addresses grown, from blocks to public or by a block no old block contains; a new callee; a new kind asked of an existing callee; a changed statement-signing key.",
+      "description": "One way a release widens the previous one's capabilities, by kind: an operation kind the sandboxed part newly handles; a new outside operation; a destination or secret an existing operation gains; a new secret; a new destination, or one of the same name at another scheme, host or port; a destination's addresses grown, from blocks to public or by a block no old block contains; a new callee; a new kind asked of an existing callee; a changed statement-signing key.",
       "type": "object",
       "required": [
         "kind"
@@ -271,6 +271,7 @@
       "properties": {
         "kind": {
           "enum": [
+            "handles",
             "operation",
             "operation_destination",
             "operation_secret",
@@ -284,6 +285,33 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "handles"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "operation_kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "handles"
+              },
+              "operation_kind": {
+                "$ref": "urn:rutent:module-interface:declaration#/$defs/operation_kind"
+              }
+            }
+          }
+        },
         {
           "if": {
             "required": [
