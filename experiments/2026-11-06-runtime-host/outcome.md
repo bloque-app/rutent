@@ -39,8 +39,8 @@ the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, n
 | `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills (one placed through `hold_commits`, 20 at random), a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk, killed during a submit loop, opens in 11 to 24 ms in 5 rounds |
 | `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
 | `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, each already released, so its effects may have run |
-| `R-04a` the last batch damaged | pass: opens, nothing acknowledged lost; on one node the damage left no visible trace | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
-| `R-04b` the leader and a follower damaged together | n/a | pass: both reopen, nothing lost, all three agree; the cut's effect is not recorded | n/a: one node |
+| `R-04a` the last batch damaged | pass, the damage's effect not shown: opens, nothing acknowledged lost, no visible trace | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
+| `R-04b` the leader and a follower damaged together | n/a | pass, the damage's effect not shown: both reopen, nothing lost, all three agree | n/a: one node |
 | `R-05` records/s at 1, 8, 64 submitters | 328, 1,538, 2,979 | 239, 1,387, 1,957 | 4,753, 4,568, 4,544 |
 | `R-05` fsyncs a record at 1, 8, 64 | 1.02, 0.15, 0.08 | 3.06, 0.83, 0.20 (three nodes) | 1.00, 1.00, 1.00 |
 | `R-06a` the program upgraded, one input in flight | pass | pass | pass, as a redeploy |
@@ -59,7 +59,8 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    The after-computed rows (`H-02`, `H-06`, `H-11`) pass on the faults build, which holds commits; on the scored
    build the same stop lands after an unheld commit, and `stop-after-computed` fails there, as the first run's
    control did. That is the stop's test, not a VOS gap.
-2. **Replication is one property, and only VOS has it.** `R-01` to `R-03` and `R-04b` pass on three VOS nodes:
+2. **Replication is one property, and only VOS has it.** `R-01` to `R-03` pass on three VOS nodes (and `R-04b`,
+   whose damage's effect was not shown):
    no acknowledged record was lost when the leader was killed at 21 points, a submit in flight at each as the harness last saw it, or when a replica was replaced, with
    or without its data. `pb` has one node, so it fails `R-01` and `R-02` by construction, and its only recovery
    from a lost disk is a restore, which loses every record acknowledged after the copy (`R-03`), each already released
