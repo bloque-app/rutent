@@ -80,26 +80,6 @@ jobs:
             "$clang" -print-targets | grep riscv64
           } | tee "$REPORTS/toolchains.txt"
 
-      # Temporary: which confinement step PolkaVM's sandbox needs. Removed before the scored run.
-      - name: Diagnose the guest sandbox inside the worker's isolation
-        run: |
-          experiments/2026-11-07-module-format/pvm-binding/build.sh > /dev/null
-          w="$CARGO_TARGET_DIR/release/rutent-pvm-worker"
-          b="$CARGO_TARGET_DIR/pvm-guests/rs/sandboxed-reserve.polkavm"
-          u="unshare --user --map-root-user --net --ipc --uts --mount --pid --fork --kill-child --mount-proc --"
-          {
-            echo "unisolated: $(timeout 60 "$w" --probe sandbox - < "$b" 2>&1)"
-            echo "unshare, no jail: $(timeout 60 $u "$w" --probe sandbox - < "$b" 2>&1)"
-            for skip in final-setid final-sysadmin; do
-              args=()
-              for step in $skip; do args+=(--skip "$step"); done
-              for probe in "sandbox -" "umount /home" "umount /tmp" "status -"; do
-                echo "jail, steps [$skip], probe [$probe]: $(timeout 60 $u "$w" --jailed worker --hide "$HOME" \
-                  "${args[@]}" --probe $probe < "$b" 2>&1)"
-              done
-            done
-          } | tee "$REPORTS/sandbox-diagnosis.txt"
-
       - name: run.sh, the isolation tests and the suite
         run: |
           set -o pipefail

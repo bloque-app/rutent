@@ -1,6 +1,6 @@
 //! Linux only: how a process started by `isolation::spawn` confines itself, inside the namespaces `unshare`
-//! gave it, before it reads any input. See `isolation` for what each role gets. Written for the scored run on
-//! `x86_64-unknown-linux-gnu`; not yet run.
+//! gave it, before it reads any input. See `isolation` for what each role gets. Run on GitHub's `ubuntu-24.04`
+//! x86_64 runners (`.github/workflows/exp2-pvm.yml`), where `tests/isolation.rs` checks it.
 
 use std::ffi::CString;
 
@@ -114,14 +114,9 @@ struct CapData {
     inheritable: u32,
 }
 
-/// Drops every capability this process holds in its user namespace: effective, permitted and inheritable, and
-/// the ambient set. It keeps the bounding set, which PolkaVM's sandbox needs for the processes it starts in user
-/// namespaces of their own.
-fn drop_capabilities() -> Result<(), String> {
-    drop_capabilities_but(0)
-}
-
-/// As [`drop_capabilities`], keeping the capabilities in `keep`, a mask of capability bits.
+/// Drops every capability this process holds in its user namespace but those in `keep`, a mask of capability
+/// bits: from the effective and permitted sets, and all of the inheritable and ambient sets. The bounding set is
+/// left as it is.
 fn drop_capabilities_but(keep: u32) -> Result<(), String> {
     const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
     let header = CapHeader {
@@ -329,8 +324,7 @@ fn seccomp() -> Result<(), String> {
 }
 
 /// Confines this process as `role`; `hide` names more directories a worker hides.
-pub fn enter(role: Role, hide_also: &[String], skip: &[String]) -> Result<(), String> {
-    let skipped = |step: &str| skip.iter().any(|s| s == step);
+pub fn enter(role: Role, hide_also: &[String]) -> Result<(), String> {
     // SAFETY: plain prctl with integer arguments.
     check(
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
@@ -354,35 +348,13 @@ pub fn enter(role: Role, hide_also: &[String], skip: &[String]) -> Result<(), St
             .map(|p| (*p).to_owned())
             .collect();
             paths.extend(hide_also.iter().cloned());
-            if !skipped("hide") {
-                hide(&paths)?;
-            }
-            if !skipped("read-only") {
-                read_only_everywhere()?;
-            }
-            if !skipped("nofile") {
-                rlimit(libc::RLIMIT_NOFILE, 1024)?;
-            }
-            if skipped("final-setid") {
-                lock_mounts()?;
-                // CAP_SETGID and CAP_SETUID are bits 6 and 7.
-                return drop_capabilities_but((1 << 6) | (1 << 7));
-            }
-            if skipped("final-sysadmin") {
-                lock_mounts()?;
-                return drop_capabilities_but(!(1 << 21));
-            }
-            if skipped("drop-sys-admin-only") {
-                // CAP_SYS_ADMIN is bit 21.
-                return drop_capabilities_but(!(1 << 21));
-            }
-            if skipped("lock") {
-                lock_mounts()?;
-            }
-            if skipped("capabilities") {
-                return Ok(());
-            }
-            drop_capabilities()
+            hide(&paths)?;
+            read_only_everywhere()?;
+            rlimit(libc::RLIMIT_NOFILE, 1024)?;
+            lock_mounts()?;
+            // CAP_SYS_ADMIN is bit 21. Dropping every capability, or keeping only CAP_SETUID and CAP_SETGID, left
+            // PolkaVM's sandbox unable to start its guest process on the runner (an initialization timeout).
+            drop_capabilities_but(!(1 << 21))
         }
     }
 }

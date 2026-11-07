@@ -20,7 +20,7 @@
 //! writes. One thing it can't deny: a System V shared-memory segment, semaphore or message queue created with
 //! `IPC_PRIVATE` (no profile rule refused them; the run note records it).
 //!
-//! **Linux** (written for the scored run; not yet run). Each process starts under `unshare --user
+//! **Linux** (checked by `tests/isolation.rs` on GitHub's `ubuntu-24.04` x86_64 runners). Each process starts under `unshare --user
 //! --map-root-user --net --ipc --uts --mount --pid --fork --kill-child --mount-proc`, as root of a new user
 //! namespace with no network. Before reading any input it confines itself with `jail::enter`, which sets
 //! `no_new_privs` and makes every mount private. Then:
@@ -29,9 +29,10 @@
 //!   that allows a fixed list of system calls and fails every other with `EPERM`.
 //! - **A worker** hides `/home`, `/root`, `/tmp`, `/run`, `/var/run`, `/mnt`, `/media`, `/srv` and the user's home
 //!   directory under empty read-only `tmpfs` mounts, makes every other mount but `/proc` read-only, sets resource
-//!   limits (no core files, at most 1024 open files), and then drops every capability it holds, so it can't
-//!   unmount what hides those directories. `/proc` stays writable for PolkaVM's sandbox, whose child writes its own
-//!   `/proc/self/{setgroups,gid_map,uid_map}`. It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
+//!   limits (no core files, at most 1024 open files). It then enters a further user and mount namespace, which
+//!   locks every one of those mounts, and drops `CAP_SYS_ADMIN`, so it can't unmount what hides those
+//!   directories. `/proc` stays writable for PolkaVM's sandbox, whose child writes its own
+//!   `/proc/self/{setgroups,gid_map,uid_map}`. Dropping every capability left that sandbox unable to start. It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
 //!   its own worker processes for the guests, each with its own namespaces, `seccomp` filter and resource limits
 //!   (scoring sheet `G-20`), which a filter here would break.
 //!
@@ -250,8 +251,7 @@ pub struct Started {
     pub jailed: Option<String>,
     /// The directories to hide.
     pub hide: Vec<String>,
-    /// Diagnostic only, never passed by `spawn`: confinement steps to skip, to find which one a failure needs.
-    pub skip: Vec<String>,
+
     /// Every other argument.
     pub rest: Vec<String>,
 }
@@ -264,7 +264,6 @@ pub fn started() -> Started {
         match arg.as_str() {
             "--jailed" => out.jailed = args.next(),
             "--hide" => out.hide.extend(args.next()),
-            "--skip" => out.skip.extend(args.next()),
             _ => out.rest.push(arg),
         }
     }
@@ -282,7 +281,7 @@ pub fn confine(started: &Started, role: Role) -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     {
-        crate::jail::enter(role, &started.hide, &started.skip)
+        crate::jail::enter(role, &started.hide)
     }
     #[cfg(not(target_os = "linux"))]
     {

@@ -68,6 +68,9 @@ fn linux_only(role: Role, exe: &Path) {
                 "probe status: allowed NoNewPrivs=1 nofile=1024 core=0",
                 "the worker's no_new_privs or resource limits"
             );
+            for hidden in ["/home", "/tmp", "/run"] {
+                refused(role, exe, "umount", hidden);
+            }
         }
         Role::Admit => {
             refused(role, exe, "read", "/proc/self/status");
