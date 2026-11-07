@@ -132,6 +132,11 @@ Every filled cell of the scoring sheet names the run that produced it. A run id 
 - for each fault, how it was reached (a named crash point, or a timed kill);
 - the suite's report, per fault, as the suite printed it.
 
+A run made before the contract freeze `C1` (`T-006-01`), against the host contract as it then stood, is a
+pre-freeze development run. Its id is `EXP-1-<candidate code>-dev-<yyyymmdd>-<n>`, for example
+`EXP-1-vos-dev-20261106-1`, so it can't be taken for a scored run. Its note and every cell it fills say
+`pre-freeze`, and the scored run after `C1` gets an id of the form above.
+
 ## Promotion record
 
 Not promoted. The experiment is open.
