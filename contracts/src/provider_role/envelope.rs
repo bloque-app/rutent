@@ -72,6 +72,9 @@ pub const RESULT_SHAPE: &str = "urn:rutent:provider-role:result";
 /// The `shape` of a judgement statement.
 pub const JUDGEMENT_SHAPE: &str = "urn:rutent:provider-role:judgement";
 
+/// The `shape` of a reserve's reversal confirmation statement.
+pub const REVERSAL_CONFIRMATION_SHAPE: &str = "urn:rutent:provider-role:reversal-confirmation";
+
 /// A statement type with a fixed `shape`: the `$id` of its schema.
 pub trait StatementShape {
     /// The `$id` a statement of this type must name.

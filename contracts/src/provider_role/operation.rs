@@ -25,6 +25,10 @@ pub enum Operation {
     BalanceVerification(BalanceVerification),
     /// A question to a verifier (`DEC-16`).
     Judgement(JudgementRequest),
+    /// An exchange's or ramp's true undo of a segment (`REQ-CAT-15`).
+    Reversal(Reversal),
+    /// A question to a reversed segment's origin reserve about one credit (ADR-0008).
+    ReversalConfirmation(ReversalConfirmationRequest),
 }
 
 impl StatementShape for Operation {
@@ -44,7 +48,11 @@ pub struct Withdrawal {
     pub provider: String,
     /// The session of the account holder or their delegate (`REQ-CAT-3`). Required on a dry run, which
     /// reveals whether funds suffice (`REQ-CAT-4`); the schema enforces that.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session: Option<String>,
     /// The reserve's outer node.
     pub origin: OuterNode,
@@ -158,4 +166,40 @@ pub struct JudgementRequest {
     pub subject: String,
     /// The class asked about.
     pub class: String,
+}
+
+/// An exchange's or ramp's true undo of a segment: the value back at the segment's origin node, in full and in the
+/// asset it left (`REQ-CAT-15`, `REQ-ORD-3`). A reserve doesn't reverse. Never a dry run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reversal {
+    /// This reversal's transaction identifier.
+    pub transaction: String,
+    /// The exchange or ramp asked.
+    pub provider: String,
+    /// The transaction of the segment to undo.
+    pub reverses: String,
+    /// The segment's origin node, where the value goes back.
+    pub node: String,
+    /// The asset the value left in.
+    pub asset: String,
+    /// The amount that left, in full, in the origin unit.
+    pub amount: String,
+}
+
+/// A question to the reserve at a reversed segment's origin node: has this credit arrived? It names only the
+/// segment's transaction, amount and asset, never sufficiency in general (ADR-0008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReversalConfirmationRequest {
+    /// This question's transaction identifier.
+    pub transaction: String,
+    /// The reserve asked.
+    pub provider: String,
+    /// The transaction of the reversed segment.
+    pub segment: String,
+    /// The asset the value should be back in.
+    pub asset: String,
+    /// The amount that should be back, in full.
+    pub amount: String,
 }

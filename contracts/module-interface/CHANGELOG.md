@@ -1,5 +1,11 @@
 # module-interface changelog
 
+## 0.2.0
+- A module may handle, and a call may ask, provider-role 0.4.0's two new kinds: `reversal`, an exchange's or
+  ramp's true undo of a segment (REQ-CAT-15), and `reversal_confirmation`, a reserve's signed word that one
+  reversed credit arrived (ADR-0008). The schemas take the kind list from provider-role by `$ref`; the Rust
+  `OperationKind` and the cross-module call's callee and transaction now cover both. (DEC-4, DEC-14, T-002-03)
+
 ## 0.1.0
 - The module interface split: the sandboxed part's and the outside part's declarations, what crosses between
   them, destination declarations, secret lookups by name from the outside part only, the outbound call record and

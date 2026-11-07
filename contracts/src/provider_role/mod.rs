@@ -14,8 +14,8 @@ mod validate;
 
 pub use envelope::{
     ADVERTISEMENT_SHAPE, ContextMismatch, Deployment, JUDGEMENT_SHAPE, NotSignedByOperator,
-    OPERATION_SHAPE, RESULT_SHAPE, ShapeMismatch, Signature, SignatureScheme, Statement,
-    StatementShape,
+    OPERATION_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature,
+    SignatureScheme, Statement, StatementShape,
 };
 pub use operation::*;
 pub use outcome::*;
@@ -23,4 +23,4 @@ pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.4.0";

@@ -39,4 +39,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";

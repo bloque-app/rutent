@@ -105,7 +105,10 @@ rule it is named for:
   - A declaration names the module's `version` and, separately, the `interface` version it implements, this
     contract's.
   - The kinds a module handles or calls are provider-role kinds, referred to by `$id`, so a module can't invent
-    one.
+    one. Since 0.2.0 they include `reversal`, which an exchange's or ramp's module handles, and
+    `reversal_confirmation`, which a reserve's module handles (provider-role 0.4.0). The contract doesn't tie a
+    kind to a category: a declaration names its provider, not a category, and the catalogue (`F-012`) matches a
+    module's kinds to what its provider advertises.
 
 ## Signing a result
 
@@ -297,3 +300,8 @@ in `rust_accepts`. The test checks that list both ways.
 - It checks the address and address-block forms against both layers, from a table of each form's verdicts.
 - It checks that a resolved secret's `Debug` output, at every level, never contains its value (`THR-50`).
 - It checks that `VERSION` matches this changelog.
+
+The fixtures written for 0.1.0 keep `"interface": "0.1.0"`, and the two added with the reversal kinds name `0.2.0`.
+No rule compares a declaration's `interface` with `VERSION`: it records which version the module implements
+(`REQ-MDL-19`), and a module declaring an older one stays valid. `T-006-01` moves the fixtures to `1.0.0` at the
+freeze.

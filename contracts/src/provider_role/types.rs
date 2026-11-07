@@ -1,7 +1,7 @@
 //! Types mirroring the `urn:rutent:provider-role:*` schemas. Field names match the schemas, and every struct
 //! denies unknown fields, as the schemas set `additionalProperties: false`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::envelope::{ADVERTISEMENT_SHAPE, StatementShape};
 
@@ -101,16 +101,32 @@ impl Category {
 #[serde(deny_unknown_fields)]
 pub struct Offers {
     /// The reserve offer, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reserve: Option<ReserveOffer>,
     /// The exchange offer, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub exchange: Option<ExchangeOffer>,
     /// The ramp offer, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ramp: Option<RampOffer>,
     /// The verifier offer, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub verifier: Option<VerifierOffer>,
 }
 
@@ -282,7 +298,11 @@ pub struct Terms {
     /// The amount bands the provider serves; at least one.
     pub bands: Vec<Band>,
     /// The fill increment, if the provider fills in increments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub increment: Option<String>,
     /// Whether the provider's reports are gross or net of its charge.
     pub reporting: Reporting,
@@ -319,10 +339,18 @@ pub struct Declarations {
     /// How an outcome can be followed: at least one of an identifier and a status query (`REQ-CAT-16`).
     pub tracking: Vec<Tracking>,
     /// The evidence the provider gives of every segment outcome (`REQ-CAT-10`, `REQ-ORD-39`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub evidence: Option<Evidence>,
     /// Whether a repeat is safe (`REQ-CAT-10`). Where false, no retry is ever sent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub safe_retry: Option<bool>,
 }
 
@@ -419,4 +447,14 @@ pub struct ReserveDeclaration {
     pub maker: String,
     /// The provider version in which this declaration was made; a version that changes it declares again.
     pub declared_in_version: String,
+}
+
+/// Deserialises an optional field that, when present, holds a value: `null` is refused, as the schemas refuse it.
+/// An absent field stays `None` through `#[serde(default)]`.
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }

@@ -1,0 +1,32 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "bridge-pay",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "xMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3-Dh4uM",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "reversal",
+    "transaction": "tx-014",
+    "outcome": {
+      "status": "succeeded",
+      "node": "acme-ledger",
+      "asset": "USDC",
+      "amount": "1000000",
+      "evidence": [
+        {
+          "grade": 2,
+          "reference": "acme-ledger:credit-88231",
+          "by": "acme-ledger"
+        }
+      ]
+    }
+  }
+}

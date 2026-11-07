@@ -14,7 +14,7 @@
   },
   "$defs": {
     "operation": {
-      "description": "One operation, by kind: a reserve's withdrawal, deposit and balance verification, an exchange's conversion, a ramp's transfer, and a verifier's judgement (REQ-CAT-9).",
+      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008).",
       "type": "object",
       "required": [
         "kind"
@@ -27,7 +27,9 @@
             "transfer",
             "conversion",
             "balance_verification",
-            "judgement"
+            "judgement",
+            "reversal",
+            "reversal_confirmation"
           ]
         }
       },
@@ -120,6 +122,36 @@
           },
           "then": {
             "$ref": "#/$defs/judgement"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal_confirmation"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmation"
           }
         }
       ]
@@ -435,6 +467,87 @@
         "class": {
           "description": "The class asked about.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reversal": {
+      "description": "An exchange's or ramp's true undo of a segment: the value back at the segment's origin node, in full and in the asset it left, at the provider's cost (REQ-CAT-15, REQ-ORD-3). A reserve doesn't reverse. Never a dry run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "reverses",
+        "node",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reverses": {
+          "description": "The transaction of the segment to undo.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The segment's origin node, where the value goes back.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "description": "The asset the value left in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount that left, in full, in the origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    },
+    "reversal_confirmation": {
+      "description": "A question to the reserve at a reversed segment's origin node: has this credit arrived? It names only the segment's transaction, amount and asset, never sufficiency in general (ADR-0008, REQ-CAT-4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "segment",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal_confirmation"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The transaction of the reversed segment.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset the value should be back in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount that should be back, in full.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
         }
       }
     }

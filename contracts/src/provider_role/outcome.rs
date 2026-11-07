@@ -1,12 +1,13 @@
 //! Results a provider gives for an operation (`urn:rutent:provider-role:result`, `REQ-CAT-9`, `REQ-CAT-14`,
-//! `REQ-CAT-18`, `REQ-ORD-1`, `INV-9`), and the verifier's standalone judgement
-//! (`urn:rutent:provider-role:judgement`). On the wire each is its maker's [`Statement`].
+//! `REQ-CAT-15`, `REQ-CAT-18`, `REQ-ORD-1`, `INV-9`), the verifier's standalone judgement
+//! (`urn:rutent:provider-role:judgement`), and the reserve's reversal confirmation
+//! (`urn:rutent:provider-role:reversal-confirmation`, ADR-0008). On the wire each is its maker's [`Statement`].
 
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{
-    ContextMismatch, Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE, ShapeMismatch, Statement,
-    StatementShape,
+    ContextMismatch, Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE,
+    ShapeMismatch, Statement, StatementShape,
 };
 use super::types::{EvidenceGrade, SafeInteger};
 
@@ -26,6 +27,10 @@ pub enum ResultBody {
     BalanceVerification(BalanceVerificationResult),
     /// A judgement.
     Judgement(JudgementResult),
+    /// An exchange's or ramp's reversal's result.
+    Reversal(ReversalResult),
+    /// The origin reserve's answer about one reversed credit.
+    ReversalConfirmation(ReversalConfirmationResult),
 }
 
 impl StatementShape for ResultBody {
@@ -36,6 +41,10 @@ impl StatementShape for ResultBody {
             Self::Judgement(JudgementResult {
                 outcome: JudgementOutcome::Judged(judged),
             }) => judged.judgement.check_shape(),
+            Self::ReversalConfirmation(ReversalConfirmationResult {
+                outcome: ReversalConfirmationOutcome::Confirmed(confirmed),
+                ..
+            }) => confirmed.confirmation.check_shape(),
             _ => Ok(()),
         }
     }
@@ -51,6 +60,12 @@ impl StatementShape for ResultBody {
                 outcome: JudgementOutcome::Judged(judged),
             }) => judged
                 .judgement
+                .check_as_nested(maker, deployment, protocol_version),
+            Self::ReversalConfirmation(ReversalConfirmationResult {
+                outcome: ReversalConfirmationOutcome::Confirmed(confirmed),
+                ..
+            }) => confirmed
+                .confirmation
                 .check_as_nested(maker, deployment, protocol_version),
             _ => Ok(()),
         }
@@ -103,6 +118,26 @@ pub struct BalanceVerificationResult {
 pub struct JudgementResult {
     /// The outcome.
     pub outcome: JudgementOutcome,
+}
+
+/// The result of a reversal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReversalResult {
+    /// The transaction this answers: the reversal's own (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The outcome.
+    pub outcome: ReversalOutcome,
+}
+
+/// The origin reserve's answer about one reversed credit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReversalConfirmationResult {
+    /// The transaction this answers: the question's own (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The outcome.
+    pub outcome: ReversalConfirmationOutcome,
 }
 
 /// A withdrawal's or deposit's outcome. Succeeded and failed each rest on stated evidence; unknown is its own
@@ -172,6 +207,71 @@ pub enum JudgementOutcome {
     Judged(Judged),
     /// The verifier refused, with its class.
     Refused(Refused),
+}
+
+/// A reversal's outcome: a true undo or nothing (`REQ-CAT-15`). A refusal leaves the reversal owed
+/// (`REQ-CAT-7`). The provider's own word that it succeeded doesn't complete it (`REQ-ORD-3`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReversalOutcome {
+    /// The provider says the value is back where it left, in full.
+    Succeeded(ReversalSettlement),
+    /// Outcome unknown: neither success nor failure.
+    Unknown(Unknown),
+    /// The provider refused, with its class (`REQ-CAT-18`); the reversal stays owed.
+    Refused(Refused),
+}
+
+/// The origin reserve's answer about one reversed credit, and nothing about sufficiency (ADR-0008, `REQ-CAT-4`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReversalConfirmationOutcome {
+    /// The credit arrived, whole: the reserve's own signed statement.
+    Confirmed(Confirmed),
+    /// No credit matching the segment, amount and asset has arrived. It says nothing else.
+    NotConfirmed(NoDetail),
+    /// The reserve refused, with its class.
+    Refused(Refused),
+}
+
+/// A succeeded reversal, as the provider states it. Completion needs another party's statement, such as the
+/// origin reserve's confirmation (`REQ-ORD-3`, ADR-0008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReversalSettlement {
+    /// Where the value is back: the segment's origin node.
+    pub node: String,
+    /// The asset it is back in: the one it left in.
+    pub asset: String,
+    /// How much is back, in full, in the origin unit.
+    pub amount: String,
+    /// The evidence for the outcome: at least one piece.
+    pub evidence: Vec<EvidencePiece>,
+}
+
+/// A confirmed credit, carried whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Confirmed {
+    /// The reserve's own enveloped confirmation, boxed since it is a whole statement.
+    pub confirmation: Box<Statement<ReversalConfirmation>>,
+}
+
+/// That one reversed credit arrived (ADR-0008): the segment's transaction, amount and asset, and nothing else.
+/// Its maker and time made are its envelope's. It is recorded as the reserve's word (`REQ-ORD-3`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReversalConfirmation {
+    /// The transaction of the reversed segment.
+    pub segment: String,
+    /// The asset the credit arrived in.
+    pub asset: String,
+    /// The amount that arrived.
+    pub amount: String,
+}
+
+impl StatementShape for ReversalConfirmation {
+    const SHAPE: &'static str = REVERSAL_CONFIRMATION_SHAPE;
 }
 
 /// A succeeded withdrawal, deposit or transfer.
@@ -436,7 +536,11 @@ pub struct Judgement {
     /// The judgement's validity, as an RFC 3339 UTC time.
     pub valid_until: String,
     /// The holder's public key, when the judgement is handed to its holder to carry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub holder_key: Option<String>,
 }
 

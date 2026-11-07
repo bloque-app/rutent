@@ -4,7 +4,7 @@ This contract holds four things:
 
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
-- the verifier's standalone judgement;
+- the verifier's standalone judgement, and the reserve's reversal confirmation;
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -20,11 +20,13 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:operation` | `schemas/operation.schema.json` | An operation the operator asks of a provider, in the envelope |
 | `urn:rutent:provider-role:result` | `schemas/result.schema.json` | A provider's result for one operation, in the envelope |
 | `urn:rutent:provider-role:judgement` | `schemas/judgement.schema.json` | A verifier's judgement, in its own envelope |
+| `urn:rutent:provider-role:reversal-confirmation` | `schemas/reversal-confirmation.schema.json` | A reserve's confirmation that one reversed credit arrived, in its own envelope (ADR-0008) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all eight and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all nine and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-` or `result-`.
-The other schemas are exercised through those four. A judgement is exercised inside the results that carry it.
+The other schemas are exercised through those four. A judgement and a reversal confirmation are exercised inside the
+results that carry them.
 
 ## The envelope and the signing rule
 
@@ -64,7 +66,8 @@ In Rust, a reader calls two checks after deserialising a `Statement<T>`, because
 
 - `check_shape()` checks the statement's own shape, and any statement nested in it.
 - `check_context(deployment, protocol_version)` refuses a statement replayed from another deployment or protocol
-  version. It recurses into a nested judgement, which must also have the outer statement's maker.
+  version. It recurses into a nested judgement or reversal confirmation, which must also have the outer
+  statement's maker.
 
 Two more checks bind a statement's maker to its key:
 
@@ -109,8 +112,9 @@ Two more checks bind a statement's maker to its key:
 ## Operations and results in brief
 
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
-  - Its `kind` is one of `withdrawal`, `deposit` and `balance_verification` (reserve), `conversion` (exchange),
-    `transfer` (ramp), or `judgement` (verifier) (`REQ-CAT-9`).
+  - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
+    `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
+    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008).
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
     which says which amount is stated.
@@ -119,6 +123,12 @@ Two more checks bind a statement's maker to its key:
   - A balance verification names a session, an account, an asset and a stated amount, and is never a dry run.
   - A judgement question names the verifier, a subject reference and a class, and nothing else: no transaction
     (`REQ-CPL-4`).
+  - A reversal names its own `transaction`, the `provider` asked, the transaction it `reverses`, and the segment's
+    origin `node`, `asset` and full `amount`, where the value goes back. It is never a dry run. A reserve isn't
+    asked to reverse (`REQ-CAT-15`).
+  - A reversal confirmation asks the reserve at the reversed segment's origin node whether one credit arrived:
+    its own `transaction`, the `provider` asked, the `segment`, `asset` and `amount`. It names no session or
+    account, so it can't be used as a balance check (ADR-0008, `REQ-CAT-4`).
 - **Results.** A result is the provider's signed statement. That envelope counts as a reserve's "signed statement
   for its own book" (`REQ-ORD-33`). A result has the operation's `kind`, the `transaction` it answers (not for a
   judgement), and an `outcome` by `status`:
@@ -129,6 +139,13 @@ Two more checks bind a statement's maker to its key:
     `refused`, whose class is `waits_on_person` or `final` but never says when it lifts.
   - **judgement:** `judged`, carrying the verifier's whole enveloped judgement (`urn:rutent:provider-role:judgement`:
     subject reference, class, `yes` or `no`, validity, optional `holder_key`), or `refused`.
+  - **reversal:** `succeeded` (the origin `node`, `asset` and `amount` back, and evidence), `unknown`, or
+    `refused`, which leaves the reversal owed (`REQ-CAT-7`). There is no `failed`: only a true undo counts
+    (`REQ-CAT-15`). The provider's own word doesn't complete it (`REQ-ORD-3`).
+  - **reversal confirmation:** `confirmed`, carrying the reserve's whole enveloped confirmation
+    (`urn:rutent:provider-role:reversal-confirmation`: segment, asset and amount, and nothing else), `not_confirmed`
+    (nothing more), or `refused`.
+- **No `null`.** An optional field is present with a value or absent. Rust refuses `null` as the schemas do.
 - **Evidence** is a non-empty list of `{grade, reference, by}`, where `by` says whose evidence each piece is. A
   public record and a reserve's statement can then both close an order (`REQ-ORD-33`, `REQ-ORD-39`, ADR-0007).
 - **The quote.** A ramp's and an exchange's `dry_run_accepted` is the quote the provider signs (`REQ-CAT-9`,
@@ -190,8 +207,12 @@ class and regime each pick one closed shape, so a field that belongs to another 
 | Keys and signatures are in their one canonical encoding | schema | `statement-envelope-key-in-a-non-canonical-encoding`, `statement-envelope-signature-in-a-non-canonical-encoding` |
 | An operation is signed with its deployment's operator key | Rust, `check_signed_by_operator` | `operation-signed-with-another-key` |
 | A nested judgement belongs to the same deployment and protocol version, and has the outer maker | Rust, `check_context` | `result-judgement-from-another-deployment`, `result-judgement-made-by-another-verifier` |
-| A statement names its own shape | schema (`const`), and Rust `check_shape` | `advertisement-under-another-shape`, `operation-under-another-shape`, `result-under-another-shape`, `result-judgement-under-another-shape` |
-| An operation is one of the six kinds | schema | `operation-of-an-unknown-kind` |
+| A nested reversal confirmation does too | Rust, `check_context` | `result-reversal-confirmation-from-another-deployment`, `result-reversal-confirmation-made-by-another-reserve` |
+| A statement names its own shape | schema (`const`), and Rust `check_shape` | `advertisement-under-another-shape`, `operation-under-another-shape`, `result-under-another-shape`, `result-judgement-under-another-shape`, `result-reversal-confirmation-under-another-shape` |
+| An operation is one of the eight kinds | schema | `operation-of-an-unknown-kind` |
+| A reversal names the segment it reverses, a positive amount, and is never a dry run | schema | `operation-reversal-without-the-segment-it-reverses`, `operation-reversal-of-a-zero-amount`, `operation-reversal-as-a-dry-run` |
+| A reversal confirmation names no account | schema | `operation-reversal-confirmation-asking-about-an-account` |
+| An optional field is never `null` | schema, and Rust (`present`) | `operation-withdrawal-with-a-null-session`, `result-judgement-with-a-null-holder-key`, `advertisement-tuple-with-a-null-increment`, `advertisement-with-a-null-evidence-declaration`, `advertisement-with-a-null-safe-retry-declaration`, `advertisement-with-a-null-offer` |
 | An operation names its transaction, and a withdrawal goes into an inner node | schema | `operation-without-a-transaction`, `operation-withdrawal-into-an-outer-node` |
 | A withdrawal dry run names its session | schema (`if`/`then`) | `operation-withdrawal-dry-run-without-a-session` |
 | A conversion or transfer states its direction | schema | `operation-conversion-without-a-direction` |
@@ -207,6 +228,8 @@ class and regime each pick one closed shape, so a field that belongs to another 
 | A settlement time is at most 2^53 − 1 seconds | schema, and Rust (`SafeInteger`) | `result-settlement-time-beyond-two-to-the-fifty-three` |
 | An outcome has one of its kind's statuses | schema | `result-of-an-unknown-status` |
 | A judgement answers yes or no, with its validity, and its result names no transaction | schema | `result-judgement-answering-not-known`, `result-judgement-without-validity`, `result-judgement-carrying-a-transaction` |
+| A reversal succeeds with something back and evidence, and never fails | schema | `result-reversal-succeeded-without-evidence`, `result-reversal-succeeded-with-nothing-back`, `result-reversal-failed` |
+| A reversal confirmation speaks only to its credit, never to sufficiency | schema | `result-reversal-confirmation-saying-whether-funds-suffice`, `result-reversal-confirmation-naming-a-balance` |
 
 ### Rules across statements
 
@@ -245,3 +268,8 @@ Some rules this contract doesn't check, because they need the catalogue (`F-012`
   - A Rust rejection must give exactly the named violation.
   - The Rust types are checked against `rust_accepts`.
 - It checks that `VERSION` matches this changelog.
+
+The fixtures keep `protocol_version` `0.3.0`, the version they were written at, on purpose. No check compares a
+fixture's protocol version with `VERSION`: the tests run `check_context` against each fixture's own deployment and
+protocol version, since a fixture stands for a statement made at some deployment. The role suite's `SuiteContext`
+defaults to `VERSION`, so the stand-ins' statements carry `0.4.0`. `T-006-01` moves both to `1.0.0` at the freeze.

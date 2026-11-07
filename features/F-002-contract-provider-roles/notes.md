@@ -231,3 +231,178 @@ These are the readings taken where `SPEC.md` is silent or ambiguous, recorded pe
 - **Rules across statements are Core's.** A dry-run answer to a real operation, an execution answer to a dry
   run, and a result whose maker isn't the provider asked all fail `REQ-ORD-1`'s "attributable to that segment's
   provider and matches that transaction". `CMP-CORE-ORCH` holds them when it matches a result to its operation.
+
+## T-002-03
+
+- **Where it lives.** The role suite is `conformance/src/role/`, in `rutent-conformance`, which depends only on
+  `rutent-contracts`. The stand-ins are public in `role::stand_in`, so other suites and Core tests can use them
+  (`REQ-MOD-4`).
+- **The interface.** `RoleProvider` takes the contract's typed operation statements and returns its typed result
+  statements, as the brief asks. It has four methods:
+  - `advertisement()` gives the provider's statement.
+  - `handle(...)` answers one operation.
+  - `state()` gives an opaque fingerprint for the no-effect, repeat and undo checks.
+  - `status(tx)` is an optional status query (`REQ-CAT-16`).
+- **The harness is a separate trait** (ruled after the second review). `RoleHarness: RoleProvider` holds the test
+  hooks `force_outcome_unknown()`, `force_failure()` and `credit_reversal(...)`, so a reserve's production
+  adapter, which implements `RoleProvider` alone, can't fabricate the reserve's word (ADR-0008). `WithoutHooks`
+  runs a provider with no hooks, and what they provoke is then uncovered.
+- **The suite trusts `state()`.** "A dry run changes nothing" (`REQ-CAT-14`), "a repeat changes nothing"
+  (`REQ-CAT-10`) and "a reversal returns the state" (`REQ-CAT-15`) are all checked by comparing fingerprints. A
+  real provider in `M2` must give an honest one. The fingerprint is the value the provider has moved on and holds
+  on its books: a success changes it, and a refusal, a dry run or a failure doesn't. A failed segment's value,
+  held until its reversal, isn't part of it. The reserve stand-in's balances move with its withdrawals and
+  deposits.
+- **Some answers need a test hook.** A provider can't be made to report outcome unknown or a failure from
+  outside, nor to receive a reversed credit. Without the hook, outcome unknown, a failure and its reversal, or a
+  confirmed reversal stay uncovered, and the provider doesn't pass.
+- **What "passes" means** (closed in review). A report passes with no findings, nothing uncovered and nothing
+  deferred. Until `M2` every run defers `SignatureVerifies`, so the stand-ins pass but for that check
+  (`passed_but_for_deferred`), and pass whole with a verifier that concludes. The suite derives the answers
+  required from the advertisement, and reports any it didn't see as `Uncovered`:
+  - per value-moving tuple: a dry run accepted, a succeeded execution (so every quote is compared with one), a
+    refusal outside its terms, and a refusal for missing inputs where it declares any;
+  - per exchange or ramp tuple, also: a failure, and its true reversal;
+  - per reserve asset: a balance answer, and a reversal confirmed and one not confirmed;
+  - per verifier class: a judgement, and a refusal of an unadvertised class;
+  - for the provider: outcome unknown where it moves value, a resolving status query where it declares one, and
+    a refusal outside its role.
+
+  A provider that refuses everything breaks no rule but fails on coverage alone, with no hand-written list
+  (`stand_in_that_refuses_everything_fails_on_coverage_alone`).
+- **Where the suite's checks come from:**
+  - Everything is derived from the advertisement: its tuples, its bands' edges, a real operation above them, a
+    tuple with an unadvertised node or asset, missing inputs, the operations outside its role, balance checks
+    and confirmations for a reserve, and judgements and an unadvertised class for a verifier.
+  - An amount outside the bands, or a tuple the provider doesn't advertise, must be refused (`REQ-CAT-13`,
+    `REQ-CAT-14`). So must any operation outside the role (`REQ-CAT-9`), a reversal included for a reserve or
+    verifier, and a reversal confirmation for anyone but a reserve.
+  - The evidence on a success, failure or reversal must reach the grade the provider declares, which is its
+    weakest (`REQ-ORD-39`).
+  - A nested judgement or confirmation goes through the same envelope, maker and key checks as its result.
+- **Readings taken for the review's gaps:**
+  - **Refusal classes.** `REQ-CAT-18` names the classes but not which applies when. A refusal of what the
+    provider never serves (outside its bands, tuples or role, or a reversal of a segment it never served) must
+    be `final`. A refusal for missing inputs must be `waits_on_person`, since the order waits for the customer
+    (`REQ-CAT-12`). A balance check or withdrawal dry run outside the holder's session may be refused with
+    either class a balance refusal allows.
+  - **Status queries.** One that still answers outcome unknown doesn't resolve it, and is flagged.
+  - **Safe retry.** Where `safe_retry` is true, the suite repeats an executed transaction once. The repeat must
+    change nothing and be answered the same. Where it is false or absent, the suite never repeats one
+    (`REQ-CAT-10`: "a retry MUST NOT be sent where the provider doesn't declare it safe").
+  - **The provider honours its own quote's slippage** (the name ruled after the second review). The execution
+    may not charge a higher fee than quoted, in another asset, or give less out, or at a lower rate, than quoted.
+    A firm quote, and a ramp's or reserve's answer, which set no rate, allow nothing less. A bounded quote allows
+    its own `max_bps`. A floating quote bounds the amount and rate not at all. Giving more than quoted isn't
+    flagged. A quote must fix the direction asked. The operator's per-tuple slippage bound (`REQ-QTE-9`) is the
+    router's to apply, not this suite's.
+  - **A failure moves nothing on.** A failure that changes `state()` is flagged, like a success that doesn't.
+  - **A success changes something.** A success that leaves `state()` unchanged is flagged as not an execution.
+  - **Reversals** (revised after the second review). Every exchange and ramp tuple counts as reversible, as
+    `REQ-CAT-15` implies: one that can't truly undo a segment must decline the segment, so the advertisement
+    needs no reversal field. SPEC reverses failed segments (`AC-4`, `INV-3`, and the contract's own
+    `operation-reversal-of-a-failed-transfer` fixture), so the suite drives a segment to fail through
+    `force_failure` and asks for its reversal, in full, at its origin, in the asset it left. A success must
+    leave the state as it was before the segment. A final refusal there is flagged, since the provider should
+    have declined the segment. A non-final refusal or outcome unknown leaves the reversal owed (`REQ-CAT-7`) and
+    uncovered. The suite also asks to reverse the settled segment. SPEC owes nothing there, so any refusal is
+    allowed, but a success must still be a true undo. The exchange stand-in refuses it until a known time, which
+    exercises `lifts_at_known_time` as a valid refusal (`REQ-CAT-18`).
+  - **Confirmations** (revised after the second review). The suite asks about a credit that never arrived. Then
+    it credits one through `credit_reversal` and asks about that credit, the same credit for one unit more (a
+    short return), a fresh segment with the same asset and amount, and the credited segment in another asset.
+    Only the exact credit may be confirmed ("only that specific credit's arrival", ADR-0008), and its statement
+    must name the segment, asset and amount asked. No question may change state.
+  - **Operations from elsewhere** (second, third and fourth reviews). Each foreign probe is sent several ways,
+    since a provider can check one field of the envelope and not another:
+    - under this deployment's name with another operator key, signed with that key;
+    - under another deployment's name, with the operator's key;
+    - naming another operator key in the deployment, signed with the operator's key;
+    - under a higher major, a higher patch and a lower protocol version, since `check_context` asks for an
+      exact match;
+    - signed with a key other than the operator's.
+
+    The probes cover:
+    - a dry run and a real execution per tuple;
+    - a replay of the executed transaction itself, so a provider that answers repeats from its records before
+      checking the envelope is caught (`REQ-PRT-1`'s "replayed at another deployment");
+    - the reversal of the settled segment and of a second failed one (left unreversed);
+    - a reserve's in-session balance check and its confirmation of the credited segment;
+    - a verifier's judgement question for each class it advertises. Where an honest answer would be yes, a provider that
+    serves the foreign question would really give one (`INV-9`, ADR-0008). Anything but a final refusal is
+    flagged under `RefusesForeignOperations` alone, whatever class a non-final refusal states, so one breaker
+    trips one check. The stand-ins check `check_context` and `check_signed_by_operator` before anything else.
+  - **The second failure is checked like the first** (fourth review). It counts as its own subject's
+    `Failure`, and a hook that says yes without failing is flagged under `ExecutionReported`.
+  - **A status query's success is held to the quote** (third review). The status probe receives the tuple's
+    quote, and a success counts as the tuple's execution only once it has been compared with one.
+  - **Certification goes through `WithoutHooks`** (third review). The report records whether a hook took
+    effect (`hooks_used`), so a hooked run can't be passed off as the adapter's.
+  - **A certification is two reports** (ruled by the orchestrator, for `F-031` to apply in `M4`). Both are on
+    the same adapter build:
+    1. a `WithoutHooks` run with `hooks_used` false, in which every check that needs no hook passes and only
+       hook-only answers are uncovered;
+    2. a hooked run against the provider's test mode or sandbox, where it has one, passing everything.
+
+    The suite names the first case `Report::passed_without_hooks()`, so it is machine-checkable. It also
+    requires nothing deferred, as `passed()` does. The hook-only answers are those
+    `Exercised::needs_a_hook` lists: outcome unknown and its status query, a failure and its reversal, and a
+    confirmed reversed credit. `certification_takes_a_run_without_hooks_and_a_hooked_one` tests both reports for
+    each stand-in, and shows a hooked run, a deferred check, a silent provider and a broken rule each failing
+    the first.
+  - **What a true undo rests on.** The suite judges a reversal from what the provider reports, its node, asset,
+    amount and evidence, and from its `state` fingerprint. It has no independent view of the origin node, and
+    Core completes a reversal only on the origin reserve's confirmation (`REQ-ORD-3`).
+  - **The other asset** a confirmation is asked about is another asset the reserve advertises, where it has
+    one, and an unadvertised asset otherwise.
+  - **The suite's protocol version.** `SuiteContext` defaults to the contract's `VERSION`, `0.4.0`. The
+    contract's fixtures keep `0.3.0`, since their tests check each fixture against its own context and none
+    compares it with `VERSION`. `T-006-01` moves both to `1.0.0`.
+  - **The ramp's internal steps** are a log apart from its state, since a reversal returns the value, not its
+    history.
+- **INV-9 through typed results.** A balance answer carrying anything but yes or no can't even be built through
+  the contract's Rust types. That case is covered on the wire by `T-002-02`'s schema and Rust tests. Here the suite
+  checks that a balance check is answered or refused, only in the holder's session, and changes nothing.
+- **A breaker per check.** Each of the 21 checks has at least one stand-in, or for `SignatureVerifies` a
+  rejecting verifier, that is flagged by that check alone (`stand_in_that_breaks_its_role_is_flagged`).
+- **Signatures are deferred.** The suite checks every envelope's shape, context and canonical encodings, and hands
+  each signature to a `SignatureVerifier`. `DeferredVerifier` verifies nothing and the report counts the deferred
+  ones. Verification lands in `M2`, and will need the statement's bytes as received, so the hook's signature will
+  change then.
+- **Internal steps.** The ramp with internal steps converts to internal units and back while serving a transfer.
+  The suite sees only the segment and passes it, and the test checks the steps happened (`REQ-CAT-21`, `AC-30`).
+- **Placeholder keys and signatures.** Stand-ins and the suite use well-formed, canonical placeholders. They are
+  not real keys and sign nothing.
+
+### The reversal operation (0.4.0)
+
+Added in T-002-03 after review; T-002-02's operation list lacked it. `REQ-CAT-15`, `REQ-ORD-3` and ADR-0008 depend
+on it.
+
+- **Who reverses.** An exchange or a ramp, by a `reversal` operation. A reserve doesn't reverse: `REQ-CAT-15`
+  expects it to be infallible, and a failed final deposit follows `REQ-ORD-43`.
+- **What a reversal names.** Its own transaction, the transaction it `reverses`, and the segment's origin
+  `node`, `asset` and full `amount`. That is `REQ-ORD-3`'s "back at the segment's origin node, in full and in the
+  asset it left". It is never a dry run.
+- **No `failed`.** "Only a true undo counts as a reversal" (`REQ-CAT-15`), so the outcome is `succeeded`,
+  `unknown` or `refused`. A refusal leaves the reversal owed (`REQ-CAT-7`), and its class says when it may lift.
+- **The provider's success is only its word.** `REQ-ORD-3` completes a reversal only on another party's
+  statement. So a `succeeded` reversal carries evidence, and Core completes it on the origin reserve's
+  confirmation (ADR-0008).
+- **The confirmation.** A `reversal_confirmation` asks the reserve at the origin node whether one credit
+  arrived. It names the segment's transaction, asset and amount, and no session or account, so it can't serve as
+  a balance check (`REQ-CAT-4`). The answer is:
+  - `confirmed`, carrying the reserve's own enveloped `urn:rutent:provider-role:reversal-confirmation`
+    statement, with the same three fields and nothing else;
+  - `not_confirmed`, carrying nothing; a short return is not a confirmation;
+  - `refused`.
+
+  Like a nested judgement, a nested confirmation must share its result's context and maker.
+- **Its grade isn't in the contract.** ADR-0008 records the confirmation as "the reserve's word", graded on
+  ADR-0007's scale by where the reserve operates. Grading is the evidence checker's (`F-015`), so the statement
+  carries no grade.
+- **One reserve per node.** ADR-0008 leaves value returning to a different reserve at the same node open. The
+  confirmation is asked of the one reserve at the origin node.
+- **No `null` (router review).** An optional field is present with a value or absent. `holder_key`, `session`,
+  `increment`, `evidence`, `safe_retry` and the offers all refuse `null` in Rust as in the schemas, since the
+  router contract embeds these types and promises never to write `null`.

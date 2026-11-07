@@ -214,6 +214,10 @@ pub enum OperationKind {
     BalanceVerification,
     /// A verifier's judgement.
     Judgement,
+    /// An exchange's or ramp's reversal of a segment (`REQ-CAT-15`).
+    Reversal,
+    /// A reserve's confirmation that one reversed credit arrived (ADR-0008).
+    ReversalConfirmation,
 }
 
 impl OperationKind {
@@ -226,6 +230,8 @@ impl OperationKind {
             Operation::Conversion(_) => Self::Conversion,
             Operation::BalanceVerification(_) => Self::BalanceVerification,
             Operation::Judgement(_) => Self::Judgement,
+            Operation::Reversal(_) => Self::Reversal,
+            Operation::ReversalConfirmation(_) => Self::ReversalConfirmation,
         }
     }
 }
@@ -583,6 +589,8 @@ impl CrossModuleCall {
             Operation::Conversion(o) => &o.provider,
             Operation::BalanceVerification(o) => &o.provider,
             Operation::Judgement(o) => &o.provider,
+            Operation::Reversal(o) => &o.provider,
+            Operation::ReversalConfirmation(o) => &o.provider,
         }
     }
 
@@ -595,6 +603,8 @@ impl CrossModuleCall {
             Operation::Conversion(o) => Some(&o.transaction),
             Operation::BalanceVerification(o) => Some(&o.transaction),
             Operation::Judgement(_) => None,
+            Operation::Reversal(o) => Some(&o.transaction),
+            Operation::ReversalConfirmation(o) => Some(&o.transaction),
         }
     }
 }

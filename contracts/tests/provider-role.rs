@@ -1,4 +1,4 @@
-//! The provider-role contract's tests (`T-002-01`, `T-002-02`): its schemas against its fixtures, its Rust types
+//! The provider-role contract's tests (`T-002-01`, `T-002-02`, `T-002-03`): its schemas against its fixtures, its Rust types
 //! against its schemas, and its Rust validation.
 
 use std::fs;
@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 8] = [
+const SCHEMAS: [&str; 9] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -23,6 +23,7 @@ const SCHEMAS: [&str; 8] = [
     "operation",
     "result",
     "judgement",
+    "reversal-confirmation",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
@@ -376,6 +377,73 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement/outcome", "required")],
         ),
         (
+            "operation-reversal-as-a-dry-run",
+            vec![("/statement", "additionalProperties")],
+        ),
+        (
+            "operation-reversal-without-the-segment-it-reverses",
+            vec![("/statement", "required")],
+        ),
+        (
+            "operation-reversal-of-a-zero-amount",
+            vec![("/statement/amount", "pattern")],
+        ),
+        (
+            "operation-reversal-confirmation-asking-about-an-account",
+            vec![("/statement", "additionalProperties")],
+        ),
+        (
+            "operation-withdrawal-with-a-null-session",
+            vec![("/statement/session", "type")],
+        ),
+        (
+            "result-reversal-succeeded-without-evidence",
+            vec![("/statement/outcome", "required")],
+        ),
+        (
+            "result-reversal-succeeded-with-nothing-back",
+            vec![("/statement/outcome/amount", "pattern")],
+        ),
+        (
+            "result-reversal-failed",
+            vec![("/statement/outcome/status", "enum")],
+        ),
+        (
+            "result-reversal-confirmation-saying-whether-funds-suffice",
+            vec![("/statement/outcome", "additionalProperties")],
+        ),
+        (
+            "result-reversal-confirmation-naming-a-balance",
+            vec![(
+                "/statement/outcome/confirmation/statement",
+                "additionalProperties",
+            )],
+        ),
+        (
+            "result-reversal-confirmation-under-another-shape",
+            vec![("/statement/outcome/confirmation/shape", "const")],
+        ),
+        (
+            "advertisement-tuple-with-a-null-increment",
+            vec![("/statement/offers/ramp/tuples/0/terms/increment", "type")],
+        ),
+        (
+            "advertisement-with-a-null-evidence-declaration",
+            vec![("/statement/declarations/evidence", "type")],
+        ),
+        (
+            "advertisement-with-a-null-safe-retry-declaration",
+            vec![("/statement/declarations/safe_retry", "type")],
+        ),
+        (
+            "advertisement-with-a-null-offer",
+            vec![("/statement/offers/exchange", "type")],
+        ),
+        (
+            "result-judgement-with-a-null-holder-key",
+            vec![("/statement/outcome/judgement/statement/holder_key", "type")],
+        ),
+        (
             "statement-envelope-key-in-a-non-canonical-encoding",
             vec![("/signature/key", "pattern")],
         ),
@@ -449,6 +517,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         ),
         (
             "result-judgement-made-by-another-verifier",
+            "NestedMaker".to_owned(),
+        ),
+        (
+            "result-reversal-confirmation-from-another-deployment",
+            "Deployment".to_owned(),
+        ),
+        (
+            "result-reversal-confirmation-made-by-another-reserve",
             "NestedMaker".to_owned(),
         ),
     ]
@@ -586,6 +662,14 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
         (
             "result-success-with-no-evidence-listed",
             "minItems: evidence is a Vec",
+        ),
+        (
+            "operation-reversal-of-a-zero-amount",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "result-reversal-succeeded-with-nothing-back",
+            "pattern: amounts are strings in Rust",
         ),
     ]
 }

@@ -27,7 +27,9 @@
             "transfer",
             "conversion",
             "balance_verification",
-            "judgement"
+            "judgement",
+            "reversal",
+            "reversal_confirmation"
           ]
         }
       },
@@ -120,6 +122,36 @@
           },
           "then": {
             "$ref": "#/$defs/judgement_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal_confirmation"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmation_result"
           }
         }
       ]
@@ -225,6 +257,48 @@
         },
         "outcome": {
           "$ref": "#/$defs/judgement_outcome"
+        }
+      }
+    },
+    "reversal_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/reversal_outcome"
+        }
+      }
+    },
+    "reversal_confirmation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal_confirmation"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/reversal_confirmation_outcome"
         }
       }
     },
@@ -606,6 +680,194 @@
           }
         }
       ]
+    },
+    "reversal_outcome": {
+      "description": "A reversal is a true undo or nothing: succeeded, with the value back where it left, in full, on evidence; outcome unknown; or refused, with the reversal still owed (REQ-CAT-7, REQ-CAT-15). The provider's own word on its reversal doesn't complete it (REQ-ORD-3).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "unknown",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_succeeded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "reversal_succeeded": {
+      "description": "The provider says the value is back. Completion still needs another party's statement, such as the origin reserve's confirmation (REQ-ORD-3, ADR-0008).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "node",
+        "asset",
+        "amount",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        },
+        "node": {
+          "description": "Where the value is back: the segment's origin node.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "description": "The asset it is back in: the one it left in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "How much is back, in full, in the origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "evidence": {
+          "$ref": "#/$defs/outcome_evidence"
+        }
+      }
+    },
+    "reversal_confirmation_outcome": {
+      "description": "The origin reserve's answer about one credit, and nothing about sufficiency (ADR-0008, REQ-CAT-4).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "confirmed",
+            "not_confirmed",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "confirmed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_confirmed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_not_confirmed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "reversal_confirmed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "confirmation"
+      ],
+      "properties": {
+        "status": {
+          "const": "confirmed"
+        },
+        "confirmation": {
+          "description": "The reserve's own signed statement that the credit arrived, whole.",
+          "$ref": "urn:rutent:provider-role:reversal-confirmation"
+        }
+      }
+    },
+    "reversal_not_confirmed": {
+      "description": "No credit matching the segment, amount and asset has arrived. It says nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_confirmed"
+        }
+      }
     },
     "movement_succeeded": {
       "type": "object",

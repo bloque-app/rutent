@@ -1,5 +1,16 @@
 # provider-role changelog
 
+## 0.4.0
+- The reversal operation, added in T-002-03 after review, since T-002-02's operation list lacked it: an
+  exchange's or ramp's `reversal` of a segment, answered by a true undo with evidence, outcome unknown, or a
+  refusal that leaves it owed, never a failure (REQ-CAT-15, REQ-ORD-3); and the reserve's
+  `reversal_confirmation`, answered by its own signed statement (`urn:rutent:provider-role:reversal-confirmation`)
+  that one credit arrived, naming only the segment's transaction, amount and asset, or by `not_confirmed`.
+  A nested confirmation shares its result's context and maker. (DEC-4, DEC-14, ADR-0008, T-002-03)
+- No optional field accepts `null`: a judgement's `holder_key`, a withdrawal's `session`, a tuple's `increment`,
+  the `evidence` and `safe_retry` declarations and each offer are either present with a value or absent, in Rust
+  as in the schemas. (DEC-4, T-002-03)
+
 ## 0.3.0
 - Operation and result schemas per role, with the statement envelope every party statement travels in:
   withdrawal, deposit, transfer, conversion with a detailed quote, balance verification and judgement; dry runs;

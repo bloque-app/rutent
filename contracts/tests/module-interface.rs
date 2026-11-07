@@ -1,4 +1,4 @@
-//! The module-interface contract's tests (`T-003-01`): its schemas against its fixtures, its Rust types against
+//! The module-interface contract's tests (`T-003-01`, `T-002-03`): its schemas against its fixtures, its Rust types against
 //! its schemas, and its Rust rules.
 
 use std::fs;
@@ -16,7 +16,7 @@ use serde_json::Value;
 
 /// Every schema the contract's shapes reach, by contract and name; each is registered by its `$id`,
 /// `urn:rutent:<contract>:<name>`. The provider-role schemas are referred to, never copied.
-const SCHEMAS: [(&str, &str); 16] = [
+const SCHEMAS: [(&str, &str); 17] = [
     ("module-interface", "common"),
     ("module-interface", "declaration"),
     ("module-interface", "outside-request"),
@@ -33,6 +33,7 @@ const SCHEMAS: [(&str, &str); 16] = [
     ("provider-role", "operation"),
     ("provider-role", "judgement"),
     ("provider-role", "result"),
+    ("provider-role", "reversal-confirmation"),
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
