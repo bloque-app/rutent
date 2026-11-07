@@ -32,7 +32,17 @@ POLKAVM_MIN_STACK_SIZE(131072)
 #define DOTS256 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16
 #define DOTS4080 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 DOTS256 \
     DOTS256 DOTS256 DOTS256 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16 DOTS16
-static volatile unsigned char SLOT[SLOT_SIZE] __attribute__((nonstring)) = "RUTENT-SPEC-SLOT" DOTS4080;
+/* `nonstring` says the array holds no terminating NUL on purpose; clang 21 and later warn without it, and older
+ * ones don't know it. */
+#if defined(__has_attribute)
+#if __has_attribute(nonstring)
+#define RUTENT_NONSTRING __attribute__((nonstring))
+#endif
+#endif
+#ifndef RUTENT_NONSTRING
+#define RUTENT_NONSTRING
+#endif
+static volatile unsigned char SLOT[SLOT_SIZE] RUTENT_NONSTRING = "RUTENT-SPEC-SLOT" DOTS4080;
 
 static void trap(void) { POLKAVM_TRAP(); }
 
