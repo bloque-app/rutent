@@ -50,7 +50,8 @@ The numbers, each with its run:
   criterion says.
 - **The costs of VOS.** At 64 submitters the store writes about 4.5k records/s in-process behind a mutex, VOS 3.0k
   on one node and 2.0k on three through separate clients, with a far higher p50 and a lower p99 (`R-05`). A 100k-record halted export
-  and import takes the store 3.0 s, VOS 59.1 s and 81.8 s; both grow with history (`R-08`). A synced submit costs
+  and import takes the store 3.0 s in-process in one call, VOS 59.1 s and 81.8 s in pages of 8 entries over the
+  node API; both grow with history (`R-08`). A synced submit costs
   the store 222 µs; VOS's step costs 841 µs on the JIT and a whole single-input batch 1,348 µs, the guest's own
   work dominating (`R-09`).
 - **Licence.** The owner permitted VOS's 12 AGPL-3.0-or-later crates for the experiment (`DEC-6,counsel-licences`);

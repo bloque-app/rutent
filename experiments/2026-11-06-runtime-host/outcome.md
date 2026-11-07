@@ -20,13 +20,14 @@ any run (`decisions.json`, `exp1-rescore-criteria`). The first run's cells stay 
 | Candidate | Result | What it means |
 |---|---|---|
 | `vos`, VOS as the whole runtime at `vos-core` `5c78975` | **adapt** | `M2` builds `CMP-STM` as a VOS program on three replicas, at a pinned and mirrored commit, once the [preconditions](#preconditions) are met |
-| `pb`, the purpose-built store | the ruled fallback | ADR-0002's fallback, kept behind its flag. It has no replication, so its only recovery from a lost disk is a restore, which loses the records acknowledged after the copy |
+| `pb`, the purpose-built store | the ruled fallback | ADR-0002's fallback, kept behind its flag. It has no replication, so its only recovery from a lost disk is a restore, which lost the records acknowledged after the copy (`R-03`). VOS's own total-loss path, a halted export, was not run as a loss |
 | `ref`, the reference host | the floor | In memory; never a candidate |
 
-Both candidates pass the gate. On the operational rows the first run never reached, the candidates differ in one
+Both candidates pass the gate (VOS's three after-computed rows on its faults build, which can hold a commit). On the operational rows the first run never reached, the candidates differ in one
 property, replication (`R-01`, `R-02` and `R-03`, counted once): VOS on three nodes has it, `pb` does not. `R-04`
 was not delivered alike to the two, so it decides nothing: `G-54` is open for both, shown on `pb` and untested on
-VOS. Both pass the upgrade and format rows (`R-06`).
+VOS. Both pass the upgrade and format rows (`R-06`): VOS by installing a new program
+over a running instance, `pb` by the redeploy its criterion names, the same binary reopened after a kill.
 
 ### What adopting VOS costs
 
@@ -54,7 +55,7 @@ the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, n
 
 | Row | `vos-rt1`, one node | `vos-rt3`, three nodes | `pb` |
 |---|---|---|---|
-| `H-01` to `H-17`, host contract 2.0.0 | 17 of 17 pass | 17 of 17 pass | 17 of 17 pass |
+| `H-01` to `H-17`, host contract 2.0.0 | 17 of 17 pass; `H-02`, `H-06`, `H-11` on the faults build | 17 of 17 pass; the same | 17 of 17 pass, on its one build |
 | `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills (one placed through `hold_commits`, 20 at random), a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk, killed during a submit loop, opens in 11 to 24 ms in 5 rounds |
 | `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
 | `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, each already released, so its effects may have run |
