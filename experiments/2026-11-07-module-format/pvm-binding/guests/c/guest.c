@@ -2,7 +2,7 @@
  * EXP-2's C stand-ins for PolkaVM (T-008-03): the same step interpreter as the Rust stand-ins
  * (../rust/src/lib.rs), one sandboxed and one outside program per provider category, built by ../../build.sh
  * with clang for riscv64emac and linked by the PolkaVM linker. It uses PolkaVM's C guest header,
- * capi/polkavm_guest.h at v0.38.0, fetched by build.sh.
+ * capi/polkavm_guest.h at v0.38.0, vendored in vendor/polkavm/ and checked by build.sh.
  *
  * Compile with -DRUTENT_CATEGORY='"reserve"' (or exchange, ramp, verifier) and one of -DRUTENT_SANDBOXED or
  * -DRUTENT_OUTSIDE. -DRUTENT_HOSTILE=1 adds the outside part's secret lookup to a sandboxed part, and

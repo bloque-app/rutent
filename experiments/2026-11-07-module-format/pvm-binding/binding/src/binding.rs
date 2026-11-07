@@ -12,6 +12,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rutent_conformance::boundary::{
@@ -88,15 +89,109 @@ pub struct Stats {
     pub host_refusals: Vec<String>,
 }
 
+/// The most of one child's standard error the binding keeps.
+pub const STDERR_CAP: usize = 64 * 1024;
+
+/// What one child wrote to its standard error, as the binding kept it.
+#[derive(Debug, Clone, Default)]
+pub struct Stderr {
+    /// Whose: the provider's worker, or an admission.
+    pub label: String,
+    /// The first [`STDERR_CAP`] bytes.
+    pub bytes: Vec<u8>,
+    /// Whether it wrote more, which was read and dropped.
+    pub truncated: bool,
+}
+
+/// Every child's standard error, kept apart from the platform's own.
+pub type Stderrs = Arc<Mutex<Vec<Stderr>>>;
+
+/// Reads a child's standard error to its end on a thread of its own, keeping at most [`STDERR_CAP`] bytes under
+/// `label`; the rest is read and dropped, so the child never blocks on a full pipe.
+fn capture(child: &mut Child, label: String, into: &Stderrs) {
+    let Some(mut stderr) = child.stderr.take() else {
+        return;
+    };
+    let into = Arc::clone(into);
+    let _ = std::thread::Builder::new()
+        .name("child-stderr".to_owned())
+        .spawn(move || {
+            let mut kept = Stderr {
+                label,
+                ..Stderr::default()
+            };
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = std::io::Read::read(&mut stderr, &mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let room = STDERR_CAP.saturating_sub(kept.bytes.len());
+                kept.bytes.extend_from_slice(&buf[..n.min(room)]);
+                kept.truncated |= n > room;
+            }
+            if !kept.bytes.is_empty()
+                && let Ok(mut all) = into.lock()
+            {
+                all.push(kept);
+            }
+        });
+}
+
+/// On Linux, `unshare --fork` is the child the binding started, and the worker is its only child: the worker's
+/// own process id, as this process's `/proc` sees it. Elsewhere `sandbox-exec` became the program: its own id.
+fn real_pid(child: &Child, isolation: Isolation) -> ProcessId {
+    let wrapper = child.id();
+    if !cfg!(target_os = "linux") || isolation == Isolation::Unisolated {
+        return ProcessId::from(wrapper);
+    }
+    let children = format!("/proc/{wrapper}/task/{wrapper}/children");
+    for _ in 0..400 {
+        if let Ok(text) = std::fs::read_to_string(&children)
+            && let Some(pid) = text
+                .split_whitespace()
+                .next()
+                .and_then(|p| p.parse::<u32>().ok())
+        {
+            return ProcessId::from(pid);
+        }
+        // Without CONFIG_PROC_CHILDREN, the process whose parent is the wrapper.
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    continue;
+                };
+                let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+                let parent = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                    .and_then(|p| p.parse::<u32>().ok());
+                if parent == Some(wrapper) {
+                    return ProcessId::from(pid);
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    ProcessId::from(wrapper)
+}
+
 struct Worker {
     child: Child,
+    pid: ProcessId,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
 
 impl Worker {
-    fn spawn(exe: &Path, isolation: Isolation) -> std::io::Result<Self> {
+    fn spawn(
+        exe: &Path,
+        isolation: Isolation,
+        label: String,
+        stderrs: &Stderrs,
+    ) -> std::io::Result<Self> {
         let mut child = isolation::spawn(Role::Worker, exe, isolation, std::iter::empty::<&str>())?;
+        capture(&mut child, label, stderrs);
+        let pid = real_pid(&child, isolation);
         let stdin = child
             .stdin
             .take()
@@ -107,13 +202,14 @@ impl Worker {
             .ok_or_else(|| std::io::Error::other("no stdout"))?;
         Ok(Self {
             child,
+            pid,
             stdin,
             stdout: BufReader::new(stdout),
         })
     }
 
     fn pid(&self) -> ProcessId {
-        ProcessId::from(self.child.id())
+        self.pid
     }
 
     fn send(&mut self, message: &ToWorker) -> bool {
@@ -135,7 +231,7 @@ impl Drop for Worker {
 #[derive(Default)]
 struct Slot {
     accepted: Vec<AdmissionArtefact>,
-    pending: Option<AdmissionArtefact>,
+    pending: Option<(AdmissionArtefact, Parts<Vec<u8>>)>,
     binaries: BTreeMap<String, Parts<Vec<u8>>>,
     active: Option<String>,
     worker: Option<Worker>,
@@ -162,6 +258,8 @@ pub struct PvmBinding {
     events: Events,
     /// What the run measured.
     pub stats: Stats,
+    stderrs: Stderrs,
+    admissions: usize,
 }
 
 fn digest(bytes: &[u8]) -> Digest {
@@ -245,6 +343,8 @@ impl PvmBinding {
             clock: 0,
             events: Events::default(),
             stats: Stats::default(),
+            stderrs: Stderrs::default(),
+            admissions: 0,
         }
     }
 
@@ -257,6 +357,11 @@ impl PvmBinding {
         self.templates
             .get(&(language.to_owned(), part))
             .map(Vec::as_slice)
+    }
+
+    /// What every child wrote to its standard error, kept apart from the platform's own, capped per child.
+    pub fn stderrs(&self) -> Vec<Stderr> {
+        self.stderrs.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     /// The worker processes alive now, by provider.
@@ -283,6 +388,12 @@ impl PvmBinding {
             std::iter::empty::<&str>(),
         )
         .map_err(|e| e.to_string())?;
+        self.admissions += 1;
+        capture(
+            &mut child,
+            format!("admission {}", self.admissions),
+            &self.stderrs,
+        );
         let request = AdmitRequest {
             sandboxed: hex(&binaries.sandboxed),
             outside: hex(&binaries.outside),
@@ -350,9 +461,11 @@ impl PvmBinding {
             return;
         };
         let (worker_exe, isolation) = (self.setup.worker.clone(), self.setup.isolation);
+        let stderrs = Arc::clone(&self.stderrs);
+        let label = format!("{provider}'s worker {}", self.stats.workers_started + 1);
         let slot = self.providers.entry(provider.to_owned()).or_default();
         if slot.worker.is_none() {
-            match Worker::spawn(&worker_exe, isolation) {
+            match Worker::spawn(&worker_exe, isolation, label, &stderrs) {
                 Ok(worker) => {
                     slot.worker = Some(worker);
                     self.stats.workers_started += 1;
@@ -372,6 +485,8 @@ impl PvmBinding {
                 version: version.to_owned(),
                 sandboxed: hex(&binaries.sandboxed),
                 outside: hex(&binaries.outside),
+                received_sandboxed: artefact.received.sandboxed.value.as_str().to_owned(),
+                received_outside: artefact.received.outside.value.as_str().to_owned(),
                 expect_sandboxed: artefact
                     .build
                     .machine_code
@@ -414,6 +529,12 @@ impl PvmBinding {
                     restore = slot.active.take();
                     slot.worker = None;
                 }
+            }
+            Some(FromWorker::DigestMismatch { reason }) => {
+                self.stats.digest_mismatches += 1;
+                self.stats
+                    .not_started
+                    .push(format!("{provider} {version}: {reason}"));
             }
             Some(FromWorker::NotStarted { reason }) => self
                 .stats
@@ -863,6 +984,9 @@ impl PvmBinding {
             return false;
         }
         let Ok(parsed) = serde_json::from_str::<OutsideRequest>(request) else {
+            self.stats.host_refusals.push(format!(
+                "{provider}: an outside request that isn't the contract's shape"
+            ));
             return false;
         };
         let declared = declaration
@@ -870,10 +994,19 @@ impl PvmBinding {
             .operations
             .iter()
             .any(|o| o.name == parsed.operation);
-        if parsed.transaction.as_str() != transaction
-            || !declared
-            || self.in_flight.contains_key(provider)
-        {
+        let refusal = if parsed.transaction.as_str() != transaction {
+            Some("an outside request naming another transaction than the one being served")
+        } else if !declared {
+            Some("an outside request naming an operation its running release doesn't declare")
+        } else if self.in_flight.contains_key(provider) {
+            Some("an outside request while another is in flight")
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            self.stats
+                .host_refusals
+                .push(format!("{provider}: {refusal}"));
             return false;
         }
         self.in_flight.insert(
@@ -1028,6 +1161,19 @@ impl ModuleBinding for PvmBinding {
         let declaration = assertion.statement.declaration.clone();
         let provider = declaration.provider.as_str().to_owned();
         let version = declaration.version.as_str().to_owned();
+        // A version names one release: one already admitted, accepted or waiting, isn't admitted again.
+        if let Some(slot) = self.providers.get(&provider)
+            && (slot.binaries.contains_key(&version)
+                || slot
+                    .pending
+                    .as_ref()
+                    .is_some_and(|(a, _)| a.declaration().version.as_str() == version))
+        {
+            self.stats.refused.push(format!(
+                "{provider} {version}: that version was already admitted"
+            ));
+            return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+        }
         let previous = self
             .providers
             .get(&provider)
@@ -1076,10 +1222,11 @@ impl ModuleBinding for PvmBinding {
             },
         };
         let slot = self.providers.entry(provider.clone()).or_default();
-        slot.binaries.insert(version.clone(), binaries.clone());
         if fresh {
-            slot.pending = Some(artefact.clone());
+            // Kept apart until its acceptance: nothing running is touched.
+            slot.pending = Some((artefact.clone(), binaries.clone()));
         } else {
+            slot.binaries.insert(version.clone(), binaries.clone());
             slot.accepted.push(artefact.clone());
             self.start(&provider, &version);
         }
@@ -1089,11 +1236,12 @@ impl ModuleBinding for PvmBinding {
     fn accept(&mut self, provider: &str, version: &str, by: &str) -> Option<AdmissionArtefact> {
         let at = self.now();
         let slot = self.providers.get_mut(provider)?;
-        let mut artefact = slot.pending.take()?;
+        let (mut artefact, binaries) = slot.pending.take()?;
         if artefact.declaration().version.as_str() != version {
-            slot.pending = Some(artefact);
+            slot.pending = Some((artefact, binaries));
             return None;
         }
+        slot.binaries.insert(version.to_owned(), binaries);
         artefact.acceptance.accepted = Some(Accepted {
             by: Identifier::new(by),
             at,

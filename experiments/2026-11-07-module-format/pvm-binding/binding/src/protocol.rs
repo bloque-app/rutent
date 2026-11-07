@@ -27,6 +27,10 @@ pub enum ToWorker {
         expect_sandboxed: String,
         /// The same, for the outside part.
         expect_outside: String,
+        /// The SHA-256 of the sandboxed part's blob, as admission received it.
+        received_sandboxed: String,
+        /// The same, for the outside part.
+        received_outside: String,
     },
     /// Handle one provider-role operation, in its envelope, as JSON.
     Handle {
@@ -51,6 +55,12 @@ pub enum FromWorker {
         outside: String,
         /// The PolkaVM sandbox worker processes, under the Linux sandbox.
         guest_pids: Vec<u32>,
+    },
+    /// A part's blob or its compilation isn't what admission recorded; nothing was instantiated, and the previous
+    /// release, if any, still runs.
+    DigestMismatch {
+        /// Which part, and which digest.
+        reason: String,
     },
     /// The release didn't start; the previous one, if any, still runs.
     NotStarted {

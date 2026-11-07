@@ -6,12 +6,12 @@
 # Needs CARGO_TARGET_DIR set explicitly; everything it builds or fetches goes under it:
 #   $CARGO_TARGET_DIR/release/rutent-pvm-*      the binding's programs
 #   $CARGO_TARGET_DIR/pvm-guests/{rs,c}/*.polkavm  the stand-ins
-#   $CARGO_TARGET_DIR/pvm-fetched/               PolkaVM's C guest header, fetched and checked
 #
 # Toolchains:
 #   - Rust stand-ins: the pinned nightly below, as a non-default toolchain with rust-src, building core with
 #     -Z build-std for PolkaVM's riscv64emac target JSON. The default toolchain is never changed.
-#   - C stand-ins: clang with a riscv64 target ($CLANG, or Homebrew's LLVM on macOS, or clang on PATH), linked
+#   - C stand-ins: PolkaVM's C guest header, vendored in guests/c/vendor/polkavm/ at the pinned commit and checked
+#     by its SHA-256 (nothing is downloaded); clang with a riscv64 target ($CLANG, or Homebrew's LLVM on macOS, or clang on PATH), linked
 #     with the nightly's own rust-lld. On macOS rust-lld needs DYLD_LIBRARY_PATH set to the toolchain's lib
 #     directory to find its libLLVM. The C link needs -z notext, which the Rust link doesn't: the header's
 #     import and export metadata are absolute relocations in read-only sections.
@@ -22,11 +22,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 export CARGO_TARGET_DIR
 
 NIGHTLY=nightly-2026-09-20
-POLKAVM_COMMIT=471a5b68f9dfa41e49b5d2fe80c394c1a8d68a3d
 HEADER_SHA256=1b1f198f05cc51b5e82228282f7ec019608fcda21591fc57f8ab9f79e2cb9e9b
 CATEGORIES="reserve exchange ramp verifier"
 OUT=$CARGO_TARGET_DIR/pvm-guests
-FETCHED=$CARGO_TARGET_DIR/pvm-fetched
+VENDORED=$HERE/guests/c/vendor/polkavm
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
@@ -55,13 +54,8 @@ for hostile in hostile-secret hostile-clock; do
 done
 
 echo "== the C stand-ins"
-mkdir -p "$FETCHED"
-HEADER=$FETCHED/polkavm_guest.h
-if [ ! -f "$HEADER" ] || [ "$(sha256 "$HEADER")" != "$HEADER_SHA256" ]; then
-    curl -fsSL -o "$HEADER" "https://raw.githubusercontent.com/paritytech/polkavm/$POLKAVM_COMMIT/capi/polkavm_guest.h"
-fi
-if [ "$(sha256 "$HEADER")" != "$HEADER_SHA256" ]; then
-    echo "polkavm_guest.h doesn't match its pinned SHA-256" >&2
+if [ "$(sha256 "$VENDORED/polkavm_guest.h")" != "$HEADER_SHA256" ]; then
+    echo "guests/c/vendor/polkavm/polkavm_guest.h doesn't match its pinned SHA-256" >&2
     exit 1
 fi
 if [ -z "${CLANG:-}" ]; then
@@ -87,7 +81,7 @@ mkdir -p "$OBJ"
 c_guest() { # name, defines...
     local name=$1; shift
     # shellcheck disable=SC2086
-    "$CLANG" $CFLAGS -I"$FETCHED" "$@" -c "$HERE/guests/c/guest.c" -o "$OBJ/$name.o"
+    "$CLANG" $CFLAGS -I"$VENDORED" "$@" -c "$HERE/guests/c/guest.c" -o "$OBJ/$name.o"
     # shellcheck disable=SC2086
     lld $LDFLAGS -o "$OBJ/$name.elf" "$OBJ/$name.o"
     "$TOOL" link "$OBJ/$name.elf" "$OUT/c/$name.polkavm"

@@ -2,6 +2,10 @@
 //! scoring sheet `B-07`, `B-08`). Both the admitting compiler and a provider's worker parse and compile hostile
 //! blobs, so both start isolated, and a worker compiles only inside its isolation.
 //!
+//! **Every platform.** The child closes every descriptor from 3 up before it execs ([`close_inherited`]), so it
+//! holds only its three pipes: a descriptor the platform inherited can't be read through it. Its standard error is
+//! a pipe of its own, which the binding keeps a capped copy of, labelled; it never reaches the platform's own.
+//!
 //! **macOS** (verified by `tests/isolation.rs`). Each process starts under `sandbox-exec` with a profile that
 //! denies by default ([`macos_profile`]). It allows only:
 //! - executing its own program, and reading that program, the root directory and the system's library and `dyld`
@@ -10,8 +14,11 @@
 //!   guard page, and the program aborts before `main`);
 //! - signals to itself.
 //!
-//! Everything else is refused: other files, the network, `mach-lookup`, signals to other processes, file
-//! writes, and executing anything else. Its pipes are inherited, already open.
+//! It denies process information and IOKit properties explicitly, which `(deny default)` alone left open. The
+//! tests check these refusals: a file of the user's, an inherited descriptor, a signal to another process, another
+//! process's information, the IOKit serial number, a TCP connection, a connection to a Unix socket, and file
+//! writes. One thing it can't deny: a System V shared-memory segment, semaphore or message queue created with
+//! `IPC_PRIVATE` (no profile rule refused them; the run note records it).
 //!
 //! **Linux** (written for the scored run; not yet run). Each process starts under `unshare --user
 //! --map-root-user --net --ipc --uts --mount --pid --fork --kill-child --mount-proc`, as root of a new user
@@ -20,18 +27,21 @@
 //! - **The admitting compiler** moves its root to an empty, read-only `tmpfs`, sets resource limits (no core
 //!   files, at most 64 open files, no new processes, 8 GiB of address space), and installs a `seccomp` filter
 //!   that allows a fixed list of system calls and fails every other with `EPERM`.
-//! - **A worker** hides `/home`, `/root`, `/tmp`, `/mnt`, `/media`, `/srv` and the user's home directory under
-//!   empty read-only `tmpfs` mounts, makes every other mount read-only, and sets resource limits (no core
-//!   files, at most 1024 open files). It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
+//! - **A worker** hides `/home`, `/root`, `/tmp`, `/run`, `/var/run`, `/mnt`, `/media`, `/srv` and the user's home
+//!   directory under empty read-only `tmpfs` mounts, makes every other mount but `/proc` read-only, sets resource
+//!   limits (no core files, at most 1024 open files), and then drops every capability it holds, so it can't
+//!   unmount what hides those directories. `/proc` stays writable for PolkaVM's sandbox, whose child writes its own
+//!   `/proc/self/{setgroups,gid_map,uid_map}`. It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
 //!   its own worker processes for the guests, each with its own namespaces, `seccomp` filter and resource limits
 //!   (scoring sheet `G-20`), which a filter here would break.
 //!
-//! `run.sh` runs `tests/isolation.rs`, which checks the four refusals on either platform.
+//! `run.sh` runs `tests/isolation.rs`, which checks these refusals on either platform.
 //!
 //! [`Isolation::Unisolated`] runs both without any of this, for debugging only. A run that uses it says so, and
 //! scores neither `B-07` nor `B-08`.
 
 use std::ffi::OsStr;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
@@ -96,7 +106,9 @@ pub fn macos_profile(exe: &Path) -> Option<String> {
          (allow file-read* (subpath \"/usr/lib\") (subpath \"/System/Library\") \
             (subpath \"/System/Volumes/Preboot/Cryptexes\") (subpath \"/private/var/db/dyld\"))\
          (allow sysctl-read (sysctl-name \"hw.pagesize\") (sysctl-name \"hw.pagesize_compat\"))\
-         (allow signal (target self))"
+         (allow signal (target self))\
+         (deny process-info*)\
+         (deny iokit-get-properties)"
     ))
 }
 
@@ -156,8 +168,69 @@ where
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::piped());
+    // SAFETY: `close_inherited` makes only system calls, allocates nothing, and takes no lock.
+    unsafe { command.pre_exec(close_inherited) };
+    command.spawn()
+}
+
+/// Closes every descriptor from 3 up, in the child between `fork` and `exec`, after its standard input, output and
+/// error are in place. On Linux by `close_range`; on macOS by listing its own descriptors (`PROC_PIDLISTFDS`,
+/// before any profile applies); else, or if those fail, every descriptor below the open-file soft limit, at most
+/// 2^20. This also closes the standard library's own pipe for reporting a failed `exec`, so such a failure shows
+/// only as the child exiting.
+pub fn close_inherited() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `close_range` takes three integers.
+        if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } == 0 {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        const MAX: usize = 4096;
+        let mut fds = [libc::proc_fdinfo {
+            proc_fd: 0,
+            proc_fdtype: 0,
+        }; MAX];
+        let size = std::mem::size_of_val(&fds) as libc::c_int;
+        // SAFETY: the buffer is `size` bytes of `proc_fdinfo`, which the call fills.
+        let got = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0,
+                fds.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if got > 0 && got < size {
+            let count = got as usize / std::mem::size_of::<libc::proc_fdinfo>();
+            for fd in &fds[..count] {
+                if fd.proc_fd >= 3 {
+                    // SAFETY: closing a descriptor this process holds.
+                    unsafe { libc::close(fd.proc_fd) };
+                }
+            }
+            return Ok(());
+        }
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit to fill.
+    let top = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.min(1 << 20)
+    } else {
+        1 << 20
+    };
+    for fd in 3..top {
+        // SAFETY: closing a descriptor number, held or not.
+        unsafe { libc::close(fd as libc::c_int) };
+    }
+    Ok(())
 }
 
 /// The `--jailed <role>` and `--hide <path>` arguments a program was started with, and the rest.

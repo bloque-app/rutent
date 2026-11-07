@@ -263,20 +263,42 @@ fn sandboxed_linker() -> Result<Linker<SandboxedState, String>, String> {
     Ok(linker)
 }
 
-/// Compiles a part, inside this worker's isolation, and checks its digest is the admitted one.
+/// Why a load was refused.
+enum Refusal {
+    /// A blob or its compilation isn't what admission recorded.
+    Digest(String),
+    /// Anything else: unreadable, or it didn't start.
+    Other(String),
+}
+
+impl From<String> for Refusal {
+    fn from(reason: String) -> Self {
+        Refusal::Other(reason)
+    }
+}
+
+/// Checks a part's blob is the one admission received, then compiles it, inside this worker's isolation, and checks
+/// its compilation's digest is the admitted one.
 fn compile(
     engine: &Engine,
     part: PartName,
     bytes: &[u8],
+    received: &str,
     expected: &str,
-) -> Result<(polkavm::Module, String), String> {
+) -> Result<(polkavm::Module, String), Refusal> {
+    let blob_digest = rutent_pvm_binding::sha256::hex_digest(bytes);
+    if blob_digest != received {
+        return Err(Refusal::Digest(format!(
+            "the {part:?} part's blob is {blob_digest}, not the received {received}"
+        )));
+    }
     let blob = engine::check(part, bytes)?;
     let (module, compiled) = engine::compile(engine, bytes, blob)?;
     if compiled.digest != expected {
-        return Err(format!(
+        return Err(Refusal::Digest(format!(
             "the {part:?} part compiled to {}, not the admitted {expected}",
             compiled.digest
-        ));
+        )));
     }
     Ok((module, compiled.digest))
 }
@@ -305,11 +327,28 @@ fn load(
     engine: &Engine,
     sandboxed: &[u8],
     outside: &[u8],
-    expect: (&str, &str),
-) -> Result<(Running, FromWorker), String> {
-    let (outside_module, outside_digest) = compile(engine, PartName::Outside, outside, expect.1)?;
-    let (sandboxed_module, sandboxed_digest) =
-        compile(engine, PartName::Sandboxed, sandboxed, expect.0)?;
+    expect: [&str; 4],
+) -> Result<(Running, FromWorker), Refusal> {
+    let [
+        received_sandboxed,
+        received_outside,
+        expect_sandboxed,
+        expect_outside,
+    ] = expect;
+    let (outside_module, outside_digest) = compile(
+        engine,
+        PartName::Outside,
+        outside,
+        received_outside,
+        expect_outside,
+    )?;
+    let (sandboxed_module, sandboxed_digest) = compile(
+        engine,
+        PartName::Sandboxed,
+        sandboxed,
+        received_sandboxed,
+        expect_sandboxed,
+    )?;
     let (mut outside_instance, outside_pid) = instantiate(&outside_linker()?, &outside_module)?;
     let (mut sandboxed_instance, sandboxed_pid) =
         instantiate(&sandboxed_linker()?, &sandboxed_module)?;
@@ -389,15 +428,24 @@ fn main() {
                 outside,
                 expect_sandboxed,
                 expect_outside,
+                received_sandboxed,
+                received_outside,
                 ..
             } => match (unhex(&sandboxed), unhex(&outside)) {
                 (Some(s), Some(o)) => {
-                    match load(&engine, &s, &o, (&expect_sandboxed, &expect_outside)) {
+                    let expect = [
+                        received_sandboxed.as_str(),
+                        received_outside.as_str(),
+                        expect_sandboxed.as_str(),
+                        expect_outside.as_str(),
+                    ];
+                    match load(&engine, &s, &o, expect) {
                         Ok((next, loaded)) => {
                             running = Some(next);
                             loaded
                         }
-                        Err(reason) => FromWorker::NotStarted { reason },
+                        Err(Refusal::Digest(reason)) => FromWorker::DigestMismatch { reason },
+                        Err(Refusal::Other(reason)) => FromWorker::NotStarted { reason },
                     }
                 }
                 _ => FromWorker::NotStarted {

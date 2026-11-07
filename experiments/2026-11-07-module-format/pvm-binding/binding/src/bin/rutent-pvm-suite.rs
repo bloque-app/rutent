@@ -332,6 +332,80 @@ fn determinism(setup: &Setup) {
     }
 }
 
+/// The isolation probes (`tests/isolation.rs` asserts them), printed for the run note, with the one this platform
+/// is known not to refuse, an `IPC_PRIVATE` System V segment, beside them.
+fn isolation_probes(setup: &Setup) {
+    println!("\n## Isolation probes (B-08)\n");
+    if setup.isolation == Isolation::Unisolated {
+        println!("- Not run: unisolated");
+        return;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).and_then(|h| {
+        std::fs::read_dir(h)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_file() && std::fs::read(p).is_ok())
+    });
+    let mut other = std::process::Command::new("sleep").arg("30").spawn().ok();
+    let other_pid = other
+        .as_ref()
+        .map_or(0, std::process::Child::id)
+        .to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").ok();
+    let tcp = listener
+        .as_ref()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    let socket = std::env::temp_dir().join(format!("rpv-suite-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let unix = std::os::unix::net::UnixListener::bind(&socket).ok();
+    let written = std::env::temp_dir().join(format!("rpv-suite-{}", std::process::id()));
+    let probes: Vec<(&str, String)> = vec![
+        ("control", "-".to_owned()),
+        (
+            "read",
+            home.map(|h| h.display().to_string())
+                .unwrap_or_else(|| "/etc/hosts".to_owned()),
+        ),
+        ("signal", other_pid.clone()),
+        ("procinfo", other_pid),
+        ("connect", tcp),
+        ("unix", socket.display().to_string()),
+        ("write", written.display().to_string()),
+        ("iokit", "-".to_owned()),
+        ("sysv", "-".to_owned()),
+    ];
+    println!("| Probe | Worker | Admitting compiler |");
+    println!("|---|---|---|");
+    for (what, argument) in &probes {
+        let run = |role: Role, exe: &PathBuf| {
+            isolation::spawn(
+                role,
+                exe,
+                setup.isolation,
+                ["--probe", what, argument.as_str()],
+            )
+            .and_then(std::process::Child::wait_with_output)
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_else(|e| format!("didn't start: {e}"))
+        };
+        println!(
+            "| `{what}` | {} | {} |",
+            run(Role::Worker, &setup.worker),
+            run(Role::Admit, &setup.admit)
+        );
+    }
+    if let Some(other) = other.as_mut() {
+        let _ = other.kill();
+        let _ = other.wait();
+    }
+    drop((listener, unix));
+    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&written);
+}
+
 fn print_stats(category: &str, stats: &Stats, workers: &[u64]) {
     println!("\n### Measurements and processes, {category}\n");
     println!(
@@ -489,6 +563,21 @@ fn main() {
         println!("- passed: {}", report.passed());
         let workers: Vec<u64> = binding.workers().into_values().collect();
         print_stats(category, &binding.stats, &workers);
+        let stderrs = binding.stderrs();
+        println!(
+            "- children's standard error, kept apart and capped at {} bytes each: {} children wrote {} bytes",
+            rutent_pvm_binding::binding::STDERR_CAP,
+            stderrs.len(),
+            stderrs.iter().map(|s| s.bytes.len()).sum::<usize>()
+        );
+        for s in &stderrs {
+            println!(
+                "  - [{}]{}: {}",
+                s.label,
+                if s.truncated { " (truncated)" } else { "" },
+                String::from_utf8_lossy(&s.bytes).trim()
+            );
+        }
         reports.push((category, report));
     }
 
@@ -509,6 +598,7 @@ fn main() {
     let whole = if all { "pass" } else { "fail" };
     println!("| M-16 | Report::passed() | {whole} | {whole} |");
 
+    isolation_probes(&setup);
     let admission = admission_checks(&setup);
     determinism(&setup);
     println!("\n## Result\n");

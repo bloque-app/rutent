@@ -5,14 +5,14 @@
 use std::path::PathBuf;
 
 use rutent_conformance::boundary::{
-    Admitted, BoundaryHarness, Endpoint, Handled, LookupOutcome, ModuleBinding, ModuleSpec, Output,
-    RunConfig, Step, run_boundary_suite,
+    AdmissionRefusal, Admitted, BoundaryHarness, Endpoint, Handled, LookupOutcome, ModuleBinding,
+    ModuleSpec, Output, RunConfig, Step, run_boundary_suite,
 };
 use rutent_conformance::role::{SuiteContext, placeholder_key, placeholder_signature};
 use rutent_contracts::module_interface::{
-    CallOutcome, CallRefusalReason, CrossModuleOutcome, Declaration, OperationKind, PartName,
-    Parts, RefusalReason, Refused, SecretRefusalReason, validate_call, validate_call_against,
-    validate_record,
+    AcceptanceMode, CallOutcome, CallRefusalReason, CrossModuleOutcome, Declaration, Identifier,
+    OperationKind, PartName, Parts, RefusalReason, Refused, SecretRefusalReason, validate_call,
+    validate_call_against, validate_record,
 };
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_pvm_binding::binding::{CATEGORIES, LANGUAGES, PvmBinding, Setup, assertion};
@@ -205,14 +205,19 @@ fn an_outside_part_naming_another_operation_than_the_request_in_flight_gets_neit
     }
 }
 
-/// Builds and installs a release of `spec`, admitted and accepted.
-fn install(binding: &mut PvmBinding, language: &str, spec: &ModuleSpec) {
+/// The two parts of a release of `spec`.
+fn parts(binding: &PvmBinding, language: &str, spec: &ModuleSpec) -> Parts<Vec<u8>> {
     let text = spec::encode(spec, "reserve");
     let part = |p| spec::patch(binding.template(language, p).expect("built"), &text).expect("fits");
-    let binaries = Parts {
+    Parts {
         sandboxed: part(PartName::Sandboxed),
         outside: part(PartName::Outside),
-    };
+    }
+}
+
+/// Builds and installs a release of `spec`, admitted and accepted.
+fn install(binding: &mut PvmBinding, language: &str, spec: &ModuleSpec) {
+    let binaries = parts(binding, language, spec);
     let admitted = binding.admit(&assertion(&spec.declaration, &binaries), &binaries);
     assert!(
         matches!(admitted, Admitted::Artefact(_)),
@@ -279,6 +284,73 @@ fn a_cross_module_call_is_judged_by_the_kind_of_the_operation_forwarded_not_the_
         assert_eq!(
             validate_call_against(&spec_.declaration, call),
             Ok(()),
+            "{language}"
+        );
+    }
+}
+
+// verifies: REQ-MDL-3, REQ-MDL-4, AC-19, AC-21
+#[test]
+#[ignore = "needs the stand-ins build.sh makes; run.sh runs it with RUTENT_PVM_GUESTS set"]
+fn a_waiting_release_leaves_the_running_one_in_force_through_a_restart_and_a_version_names_one_release()
+ {
+    for language in LANGUAGES {
+        let mut binding = PvmBinding::new(setup(), "reserve");
+        binding.set_output_limit(4096);
+        let provider = format!("steady-{language}");
+        let running = ModuleSpec {
+            declaration: two_operations(&provider),
+            steps: Vec::new(),
+            output: Output::Honest,
+            starts: true,
+        };
+        install(&mut binding, language, &running);
+        // The same version again, widened by a callee: refused, so 1.0.0 names one release.
+        let mut widened = running.clone();
+        widened.declaration = declaration(
+            &provider,
+            json!([{ "callee": format!("other-{language}"), "kinds": ["withdrawal"] }]),
+        );
+        let binaries = parts(&binding, language, &widened);
+        let again = binding.admit(&assertion(&widened.declaration, &binaries), &binaries);
+        assert!(
+            matches!(again, Admitted::Refused(AdmissionRefusal::UnreadableBinary)),
+            "{language}: an admitted version was admitted again"
+        );
+        // A widening 1.1.0 waits for its acceptance; restarting the provider brings back 1.0.0, untouched.
+        widened.declaration.version = Identifier::new("1.1.0").expect("a version");
+        let binaries = parts(&binding, language, &widened);
+        let waiting = binding.admit(&assertion(&widened.declaration, &binaries), &binaries);
+        let Admitted::Artefact(artefact) = waiting else {
+            panic!("{language}: the widening release wasn't admitted");
+        };
+        assert_eq!(
+            artefact.acceptance.required,
+            AcceptanceMode::Fresh,
+            "{language}"
+        );
+        let before = binding.process(&provider);
+        assert!(binding.restart(&provider), "{language}: restarted");
+        assert_ne!(
+            binding.process(&provider),
+            before,
+            "{language}: a new process"
+        );
+        assert_eq!(
+            binding.active_version(&provider).as_deref(),
+            Some("1.0.0"),
+            "{language}"
+        );
+        let Handled::Answered(result) = binding.handle(
+            &provider,
+            &operation(&provider, &format!("tx-{language}-3")),
+        ) else {
+            panic!("{language}: the running release didn't answer after the restart");
+        };
+        let value = serde_json::to_value(&result.statement).expect("json");
+        assert_eq!(
+            value["outcome"]["evidence"][0]["reference"].as_str(),
+            Some(format!("{provider}-1.0.0").as_str()),
             "{language}"
         );
     }

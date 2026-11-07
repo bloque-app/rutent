@@ -65,12 +65,12 @@ const MOUNT_ATTR_NOSUID: u64 = 0x2;
 const MOUNT_ATTR_NODEV: u64 = 0x4;
 const AT_RECURSIVE: libc::c_uint = 0x8000;
 
-/// Makes every mount under `/` read-only, `nosuid` and `nodev`, recursively (Linux 5.12 or later).
-fn read_only_everywhere() -> Result<(), String> {
-    let root = cstr("/")?;
+/// Sets and clears mount attributes on `path` and every mount under it (`mount_setattr`, Linux 5.12 or later).
+fn set_attributes(path: &str, set: u64, clear: u64) -> Result<(), String> {
+    let target = cstr(path)?;
     let attr = MountAttr {
-        attr_set: MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
-        attr_clr: 0,
+        attr_set: set,
+        attr_clr: clear,
         propagation: 0,
         userns_fd: 0,
     };
@@ -79,13 +79,72 @@ fn read_only_everywhere() -> Result<(), String> {
         libc::syscall(
             libc::SYS_mount_setattr,
             libc::AT_FDCWD,
-            root.as_ptr(),
+            target.as_ptr(),
             AT_RECURSIVE,
             &attr as *const MountAttr,
             std::mem::size_of::<MountAttr>(),
         )
     };
-    check(i32::from(result != 0), "mount_setattr /")
+    check(i32::from(result != 0), &format!("mount_setattr {path}"))
+}
+
+/// Makes every mount read-only, `nosuid` and `nodev`, but `/proc`, which PolkaVM's sandbox child writes its own ID
+/// maps through, and which stays writable.
+fn read_only_everywhere() -> Result<(), String> {
+    set_attributes(
+        "/",
+        MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
+        0,
+    )?;
+    set_attributes("/proc", 0, MOUNT_ATTR_RDONLY)
+}
+
+/// The capability sets `capset(2)` takes, which `libc` doesn't define.
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: libc::c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+/// Drops every capability this process holds in its user namespace: effective, permitted and inheritable, and
+/// the ambient set. It keeps the bounding set, which PolkaVM's sandbox needs for the processes it starts in user
+/// namespaces of their own.
+fn drop_capabilities() -> Result<(), String> {
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    let header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [CapData {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    // SAFETY: the header and two data words are the layout `capset` takes for version 3.
+    let result =
+        unsafe { libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr()) };
+    check(i32::from(result != 0), "capset")?;
+    // SAFETY: plain prctl with integer arguments.
+    check(
+        unsafe {
+            libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                0,
+                0,
+                0,
+            )
+        },
+        "clear ambient capabilities",
+    )
 }
 
 /// Moves the root to an empty `tmpfs` and makes it read-only.
@@ -257,14 +316,17 @@ pub fn enter(role: Role, hide_also: &[String]) -> Result<(), String> {
             seccomp()
         }
         Role::Worker => {
-            let mut paths: Vec<String> = ["/home", "/root", "/tmp", "/mnt", "/media", "/srv"]
-                .iter()
-                .map(|p| (*p).to_owned())
-                .collect();
+            let mut paths: Vec<String> = [
+                "/home", "/root", "/tmp", "/run", "/var/run", "/mnt", "/media", "/srv",
+            ]
+            .iter()
+            .map(|p| (*p).to_owned())
+            .collect();
             paths.extend(hide_also.iter().cloned());
             hide(&paths)?;
             read_only_everywhere()?;
-            rlimit(libc::RLIMIT_NOFILE, 1024)
+            rlimit(libc::RLIMIT_NOFILE, 1024)?;
+            drop_capabilities()
         }
     }
 }

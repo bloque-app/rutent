@@ -89,7 +89,7 @@
       "reserved": false,
       "spec": ["DEC-7", "REQ-MDL-15", "REQ-MOD-5", "AC-20"],
       "refs": [
-        {"label": "The run note", "url": "runs/EXP-2-pvm-dev-20261107-2.md"},
+        {"label": "The run note", "url": "runs/EXP-2-pvm-dev-20261107-3.md"},
         {"label": "G-31", "url": "scoring.md#32-polkavm-v0380"}
       ],
       "origin": "EXP-2, T-008-03, 2026-11-07"

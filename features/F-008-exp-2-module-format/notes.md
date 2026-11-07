@@ -59,3 +59,17 @@ readings are in its README, "Readings taken in opening it".
     passes it. A probe would need a declaration with two operations and a module whose outside part names the
     other one. The binding's own test does this (`binding/tests/boundary_suite.rs`); `T-003-03`'s suite could
     carry it at its next version.
+- **After review of `37b9a97`** (`EXP-2-pvm-dev-20261107-3` supersedes `-2`):
+  - **What a profile can't hold.** A deny-by-default `sandbox-exec` profile still let a child list and read other
+    processes' information and read IOKit properties, until both were denied explicitly. It never mediates a read
+    of a descriptor the child already holds, so every child now closes descriptors from 3 up before it execs. It
+    couldn't be made to refuse a System V object created with `IPC_PRIVATE`: no profile rule tried refused it.
+    That is recorded in the run note, not claimed closed.
+  - **A child's standard error is evidence.** It is a pipe of the child's own. The platform keeps the first 64 KiB
+    of each child's, labelled by provider or admission, and none of it reaches the platform's own stream.
+  - **A version names one release.** A release of a version already admitted or waiting is refused. A waiting
+    release's binaries are kept apart until its acceptance, so it can't replace what a restart brings back.
+    `AdmissionRefusal` has no reason for "already admitted", so the binding refuses it as `UnreadableBinary` and
+    records why.
+  - **The C guest header is vendored** at PolkaVM's pinned commit, with its licence files and its upstream blob id
+    and SHA-256 (`pvm-binding/guests/c/vendor/polkavm/UPSTREAM`), so the stand-ins build offline.
