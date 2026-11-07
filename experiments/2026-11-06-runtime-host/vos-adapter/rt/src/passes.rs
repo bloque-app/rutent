@@ -435,6 +435,7 @@ pub fn run(env: &Env, pass: &str, base: PathBuf) -> bool {
         "r08-3" => rows::r08(env, base, 3),
         "r09-1" => rows::r09(env, base, 1),
         "r09-3" => rows::r09(env, base, 3),
+        "pb-suite" => pb::suite(env),
         "pb-r01" => pb::r01(env, base),
         "pb-r03" => pb::r03(env, base),
         "pb-r04a" => pb::r04a(env, base),

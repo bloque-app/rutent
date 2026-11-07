@@ -82,6 +82,11 @@ Scope is what the experiment may change (Narthex `REQ-EXP-1`).
 | `ref` | The in-memory reference host: the baseline and the floor, not a candidate | `T-005-04` | `testing::Harness`, `testing::FaultSeam` | The fault seam's named crash points |
 | `pb` | A purpose-built store behind `Host` | `T-007-02` | `testing::Harness`; `testing::FaultSeam` if in-process | The fault seam's named crash points, if in-process |
 | `vos` | VOS (`PS-66`), branch `vos-core` at commit `1aadf44fa2cb1eaedc015ee82343ac118cc89f1e`, the commit `research/2026-11-02-vos.md` read; the pin is a default, item `exp1-vos-commit` in [`decisions.json`](decisions.json) | `T-007-03` | `testing::Harness`, killing and restarting its process | A kill timed to each crash point, best-effort (`contracts/state-machine/host/README.md`) |
+| `vos-rt1` | The re-score: VOS as the whole runtime, the state machine a VOS program, at `vos-core` `5c7897582688ea93f8d02506bee8ea25da6b1458` (item `exp1-rescore-commit`), on one node, Linux x86_64 with the JIT | `T-007-03` | `testing::Harness` and `testing::FaultSeam` through a thin `Host` client, each node its own OS process | `hold_commits` on every node for after computed; a `kill -9` of every node for the other stops |
+| `vos-rt3` | The same, on three nodes | `T-007-03` | As `vos-rt1` | As `vos-rt1`; `R-01` kills the leader alone |
+
+The re-score (`vos-rt1`, `vos-rt3`, and `pb` on the new rows) is scored in its own section of the
+[scoring sheet](scoring.md), under its own run ids; the first run's cells stay as history.
 
 Whether `pb` runs in-process or in another process is `T-007-02`'s design. Each run's note says which, and how each
 fault was reached.

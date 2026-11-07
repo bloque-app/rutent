@@ -128,6 +128,35 @@ fn killed_child(
     acks.lock().unwrap().clone()
 }
 
+/// The suite on `pb` against host contract 2.0.0, swaps into the reference host, with the fault seam: its first
+/// scored run (`EXP-1-pb-20261107-1`) ran host contract 1.0.0.
+pub fn suite(env: &Env) -> bool {
+    header(env, "pb-suite");
+    let report = rutent_conformance::host::run_with_fault_seam(
+        rutent_conformance::host::RunConfig {
+            run_id: env.run_id.clone(),
+            candidate: "pb".into(),
+            target: "reference-host".into(),
+            seed: 20_261_106,
+        },
+        &mut rutent_stm::purpose_built_store::PurposeBuiltHarness::<Probe>::new(),
+        &mut rutent_stm::reference_host::ReferenceHarness::<Probe>::new(),
+    );
+    println!("{}", report.to_markdown());
+    let into = rutent_conformance::host::run_with_fault_seam(
+        rutent_conformance::host::RunConfig {
+            run_id: env.run_id.clone(),
+            candidate: "reference-host".into(),
+            target: "pb".into(),
+            seed: 20_261_106,
+        },
+        &mut rutent_stm::reference_host::ReferenceHarness::<Probe>::new(),
+        &mut rutent_stm::purpose_built_store::PurposeBuiltHarness::<Probe>::new(),
+    );
+    println!("\n{}", into.to_markdown());
+    true
+}
+
 pub fn r01(env: &Env, base: PathBuf) -> bool {
     header(env, "pb-r01");
     println!(

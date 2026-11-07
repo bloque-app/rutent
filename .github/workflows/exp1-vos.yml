@@ -174,7 +174,7 @@ jobs:
           else
             rt1_passes="platform smoke corpus suite-1 suite-1-faults swap-in-1 r04a-1 r05-1 r05-1-fsyncs r06a-1 r06b-1 r08-1 r09-1"
             rt3_passes="platform suite-3 suite-3-faults swap-in-3 r01 r02 r03 r04a-3 r04b r05-3 r05-3-fsyncs r06a-3 r06b-3 r08-3 r09-3"
-            pb_passes="platform pb-r01 pb-r03 pb-r04a pb-r05 pb-r05-fsyncs pb-r06a pb-r06b pb-r08 pb-r09"
+            pb_passes="platform pb-suite pb-r01 pb-r03 pb-r04a pb-r05 pb-r05-fsyncs pb-r06a pb-r06b pb-r08 pb-r09"
           fi
           run() {
             id=$1

@@ -1,77 +1,83 @@
 # VOS behind the host contract (`T-007-03`)
 
-> **Not mergeable until the owner rules on `DEC-6`.** The code in this directory links VOS, whose crates are
-> AGPL-3.0-or-later. `licences/RECORD` lists `vos not-adopted ... pending`, and the owner has not ruled. Under
-> `PLAN.md` `T-007-03`, only the measurement notes merge until VOS's licence decision is in the record. They live in
-> [`../runs/`](../runs/) and in [`../scoring.md`](../scoring.md), in commits of their own, so they can be picked
-> alone.
+> **VOS's licence.** The code in this directory links VOS, whose crates are AGPL-3.0-or-later. On 2026-11-07 the
+> owner approved recording them as permitted for this experiment (`licences/RECORD`, `DEC-6,counsel-licences`),
+> under the `counsel-licences` ruling. Adopting VOS is a separate ruling, the adoption item `exp1-adopt-runtime`:
+> until then `licences/RECORD` keeps `vos not-adopted ... pending`.
 
-`EXP-1`'s VOS candidate (`vos` in [the record](../README.md#candidates)): rutent's host contract
-(`contracts/state-machine/host/`) met by a VOS node, fault-injected, and scored by the host-contract suite
-(`conformance/src/host/`).
+`EXP-1`'s VOS candidate, two ways:
+
+- **The first run** (`EXP-1-vos-20261107-1`, VOS `vos-core` at `1aadf44`): VOS as a durable store behind an
+  adapter that ran the state machine itself. Its code is `journal/` and `adapter/`, kept buildable because the
+  re-score's `R-07a` and `R-07b` cross from it. Its note and cells stay as history.
+- **The re-score** (VOS `vos-core` at `5c78975`, items `exp1-rescore-*` in [`../decisions.json`](../decisions.json)):
+  VOS as the whole runtime. The state machine is a VOS program (`program/`), and `rt/` is its thin `Host` client,
+  run on one node (`vos-rt1`) and on three (`vos-rt3`), on Linux x86_64 with the JIT, by the workflow
+  `.github/workflows/exp1-vos.yml`.
 
 ## Kept out of rutent's build
 
-- `journal/` and `adapter/` are cargo workspaces of their own, each with its own lockfile and toolchain. Neither is
-  a member of rutent's workspace, so rutent's `Cargo.lock`, its licence check and its default build never see VOS.
-- VOS is named by its repository URL at the pinned commit, `1aadf44fa2cb1eaedc015ee82343ac118cc89f1e` (item
-  `exp1-vos-commit` in [`../decisions.json`](../decisions.json)). Nothing of VOS is copied here. The guest
-  build reads VOS's target and linker script from the checkout at `.vos`. Each lockfile started as a copy of VOS's
-  own lockfile at that commit (`agent/test-actors/Cargo.lock` for `journal/`, `Cargo.lock` for `adapter/`), which
-  cargo then re-resolved. The adapter repeats VOS's `[patch.crates-io]` for `lsm-tree`.
-- The flag that enables the candidate is `rutent-vos-adapter`'s cargo feature `vos`. Without it the library is
-  empty and nothing of VOS is compiled or linked; `build.sh` builds with `--features vos`.
-- The manifests declare no licence. How VOS-linked code is handled is the owner's `DEC-6` ruling.
+- `journal/`, `adapter/`, `program/` and `rt/` are cargo workspaces of their own, each with its own lockfile and
+  toolchain. None is a member of rutent's workspace, so rutent's `Cargo.lock` and default build never see VOS.
+  Rutent's licence check reads their lockfiles too, and `licences/RECORD` lists every package they lock.
+- VOS is named by its repository URL at each commit. Nothing of VOS is copied here. `fetch-vos.sh pin|tip DIR`
+  fetches a commit into a directory outside `experiments/` (or under a `target/` directory), and the build scripts
+  take the checkout from a variable, `VOS_PIN` or `VOS_TIP`, never from a link: the licence check refuses symbolic
+  links under `experiments/`, and VOS's own lockfiles never sit here.
+- The flag that enables the candidate is each client crate's cargo feature `vos`. Without it the library is empty
+  and nothing of VOS is compiled or linked.
 
 ## What is here
 
 | Path | What it is |
 |---|---|
-| `journal/` | The journal actor, a VOS guest (`no_std`, RV64EM), holding the host's durable state in its rows |
-| `adapter/` | `rutent-vos-adapter`: `VosHost` (`Host`), `VosHarness` (`Harness`, `FaultSeam`), and `exp1-vos`, which runs the suite and prints its report |
-| `fetch-vos.sh` | Fetches VOS at the pinned commit into an empty directory, and links it as `.vos` |
-| `build.sh` | Builds the `vos` binary with VOS's `faults` feature, VOS's default agent program, the journal and `exp1-vos` |
-| `run.sh` | Runs every pass of one run and writes each pass's report |
+| `program/` | The re-score's VOS program: one actor holding the journal and the state machine (`src/lib.rs`), built for the PVM with VOS's guest toolchain; features `next` and `next-format` build `R-06a`'s and `R-06b`'s versions |
+| `program/contracts-nostd/`, `program/probe-nostd/` | Generated no_std copies of `contracts/src` and of conformance's probe, and the patches that make them; `program/SEPARATE` lists the files beside them |
+| `nostd.sh` | `generate` writes the copies from the originals and the patches; `check` fails unless they are equal, every patch hunk is plumbing only, and the separate files are exactly the listed ones |
+| `rt/` | `rutent-vos-rt`: the thin `Host` client (`host.rs`), the node processes (`cluster.rs`), the platform assertion (`platform.rs`), and `exp1-rt`, which runs the passes (`passes.rs`, `rows.rs`, and `pb.rs` for the purpose-built store) |
+| `build-rt.sh`, `run-rt.sh`, `note-rt.sh` | Build the re-score on the machine that runs it, run its passes, write a run's note |
+| `journal/`, `adapter/` | The first run's journal actor and adapter, at VOS `1aadf44`; `exp1-vos export-file` exports the stream and leaves the data directory `R-07` crosses |
+| `fetch-vos.sh`, `build.sh`, `run.sh` | Fetch either commit; build and run the first run's passes |
 
-## How it meets the contract
+## The re-score: how it meets the contract
 
-**The state machine runs in the adapter, not in VOS.** rutent's state-machine contract needs `std` and `serde`. A
-VOS guest is `no_std` on a custom RV64EM target with no atomics. So `VosHost::submit` reads the order's latest
-state from VOS, calls `open` or `transition`, and sends the record to the journal.
+**One handler step a submit.** `submit(record_id, input)` does the format check, the import and halted checks,
+record-id dedup on byte-equal canonical JSON, the order's next sequence number, `open` or `transition` and the
+record or the refusal, in one step, which VOS commits whole or not at all. It rests on VOS v1's dispatch rule, one
+input at a time in batch order, which the program says in a comment.
 
-**Every rule that needs state is VOS's.** The journal decides, in one handler step, which VOS commits whole or not
-at all:
+**Reads** are queries: `orders`, `state`, `journal`, `refusals`, and the export's pages, each under VOS's 64 KiB
+reply cap. The effect driver's cursor is the query `released_from`. **Import** is paged: one chunk of the snapshot
+stream a call, at most `IMPORT_ENTRIES` (8) entries or `IMPORT_BYTES` (48 KiB), with a resume cursor; every run note
+states the page.
 
-- a halted journal refuses;
-- a record id seen before returns its record if the input is byte-equal canonical JSON, and otherwise is refused,
-  with the refusal written to the refusal log;
-- the order's next sequence number must be the one sent, a compare-and-set;
-- an open import refuses appends, and `open` refuses a store whose import never finished.
+**The state machine** is the suite's probe, built from the no_std copies, so the suite's assertions run unmodified
+and only the state machine's build target differs. `H-17`'s fold is the original `contracts/` and `Probe`, natively.
+The serialiser is not replaced: the guest uses serde_json built alloc-only, and a byte-equality corpus (the pass
+`corpus`) runs floats, `-0`, exponents, large integers, non-ASCII keys and every recorded-input fixture through the
+native build and the guest.
 
-The adapter keeps nothing authoritative in memory, so the suite's kill drops nothing the contract needs. Reads are
-linearizable queries of the journal.
+**Formats.** The actor's struct state is the same in every version; its `format` field names the rows' layout, and
+a version of another format refuses every handler and query before it reads a row (`R-06b`).
 
-**Faults.** A kill is a `SIGKILL` of the `vos node run` process; reopening starts it again on the same data
-directory. The harness implements `FaultSeam` by timing a kill to each crash point:
+**The platform, fail closed.** Before a pass: `uname -r` is 6.7 or later, and a userfaultfd probe with
+`UFFD_USER_MODE_ONLY` and asynchronous write-protect succeeds. Every node runs with `VOS_PVM_BACKEND=recompiler`
+and `VOS_PVM_PERF_MAP=1`; each node that answers a query of the program on its own replica must name the program
+in `/tmp/perf-<pid>.map`, and no node's log may say the map is off. `R-09`'s interpreter leg asserts the opposite.
+On three nodes each node's executors are floor(vCPUs ÷ 3), at least 1.
 
-| Crash point | How it is reached |
-|---|---|
-| After received | The adapter holds the input; nothing is computed or sent. The node is killed |
-| After computed | The adapter has computed the transition. VOS's fault file holds every commit (`hold_commits`), the append is sent, and after 1 s the node is killed; held, VOS cannot have made it durable. That VOS had received the append by then is inferred, not observed: a control pass (`control-no-hold`) sends the same append without the hold, and the record is then durable before the kill, so the append reached VOS within the 1 s and the hold, not the timing, is what keeps it out |
-| After durable | VOS answered the append as run, so it is committed. The node is killed before the adapter acknowledges it |
-| Stop during an import | The node is killed between two entries' calls |
-
-A refused import leaves the new store marked as importing, so it can't be opened; the import is redone on a fresh
-store. The reference host does the same (`components/stm/src/reference_host.rs`, `import_onto`).
+**Faults.** A kill is `kill -9` of a node's process. The suite's stop and reopen kill and restart every node; the
+after-computed stop holds every node's commits (`hold_commits`, the faults build) and kills them once the leader's
+`refine` stage counted the submit. `R-01` kills the leader alone.
 
 ## Build and run
 
 ```sh
-./fetch-vos.sh <empty dir>      # VOS at the pin, linked as .vos; read it before building it
-./build.sh <build dir>
-./run.sh <run id> <build dir> <short output dir>
+./fetch-vos.sh tip <dir outside experiments>        # read it before building it
+VOS_TIP=<dir> ./build-rt.sh <build dir>
+./run-rt.sh <run id> <build dir> <short output dir> platform smoke corpus suite-1 ...
+./note-rt.sh <run id> <candidate> <build dir> <output dir> <notes dir> <passes...>
 ```
 
-`run.sh`'s passes are those of `exp1-vos`: `sizes`, `compaction`, `session-expiry`, `vos-to-ref`, `ref-to-vos`,
-`compacted` and `control-no-hold` (see `adapter/src/main.rs`). The scripts set `CARGO_TARGET_DIR` for each build, so a global
-setting does not move the builds.
+`exp1-rt <id> list <dir>` lists every pass. Off Linux x86_64, `EXP1_DEV=1` runs a development run on the
+interpreter, which is never scored.
