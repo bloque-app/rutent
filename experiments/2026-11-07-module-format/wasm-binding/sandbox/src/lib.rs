@@ -6,8 +6,10 @@
 //! inherits only its three standard streams. The layers below are applied before the child's own code runs:
 //!
 //! - **macOS:** the child runs under `sandbox-exec` with a profile that denies by default, and allows only what a
-//!   child needs to start: executing and reading its own executable, reading the system's libraries and file
-//!   metadata, `sysctl` reads, and signals to itself;
+//!   child needs to start: executing and reading its own executable, reading the system's libraries and their
+//!   metadata, `sysctl` reads, and signals to itself; process information and IOKit properties are denied again
+//!   explicitly;
+//! - **both:** every inherited file descriptor above the standard three is closed before `exec`;
 //! - **Linux:** `no_new_privs`, a new user and network namespace where the kernel allows it unprivileged, and a
 //!   seccomp filter that refuses `socket(2)`, so that no socket can be made whether or not the namespaces took, and
 //!   signals to any other process. It is a deny list, not deny by default, and it restricts no file read: untested
@@ -59,27 +61,44 @@ pub struct Limits {
     pub open_files: u64,
 }
 
+impl Limits {
+    /// The admitting compiler's.
+    pub const COMPILER: Self = Self {
+        cpu_seconds: Some(60),
+        open_files: 16,
+    };
+    /// A provider's process's.
+    pub const PROVIDER: Self = Self {
+        cpu_seconds: None,
+        open_files: 32,
+    };
+}
+
 impl Default for Limits {
     fn default() -> Self {
-        Self {
-            cpu_seconds: None,
-            open_files: 64,
-        }
+        Self::PROVIDER
     }
 }
+
+/// The highest file descriptor [`isolated`] closes in a child before it runs, whatever the parent's limit.
+pub const CLOSE_UP_TO: i32 = 65_536;
 
 /// The layers [`isolated`] applies on this platform, as a run note states them.
 pub fn layers() -> Vec<&'static str> {
     let mut layers = vec![
-        "environment cleared; only standard input, output and error inherited",
-        "working directory: an empty directory of its own",
-        "RLIMIT_CORE 0, RLIMIT_FSIZE 0, RLIMIT_NPROC 0, RLIMIT_NOFILE bounded, RLIMIT_CPU where asked",
+        "environment cleared",
+        "every file descriptor from 3 up to the parent's open-file limit (at most 65,536) closed before exec, \
+         whether or not it is close-on-exec; only the three standard streams, each a pipe to the platform, stay",
+        "working directory: an empty directory of its own, one per child",
+        "RLIMIT_CORE 0, RLIMIT_FSIZE 0 (SIGXFSZ ignored, so a write fails), RLIMIT_NPROC 0, RLIMIT_NOFILE \
+         bounded, RLIMIT_CPU where asked",
     ];
     if cfg!(target_os = "macos") {
         layers.push(
-            "sandbox-exec profile, deny by default; allowed only: process-exec of the child's own executable, \
-             file-read-metadata, file-read* of that executable, of / itself, /usr/lib, /System, /dev/null, \
-             /dev/urandom and /dev/random, sysctl-read, and signals to itself",
+            "sandbox-exec profile, deny by default, with process-info* and iokit-get-properties denied again \
+             explicitly; allowed only: process-exec of the child's own executable; file-read* and \
+             file-read-metadata of that executable, of / itself, /usr/lib, /System, /dev/null, /dev/urandom and \
+             /dev/random; sysctl-read; and signals to itself",
         );
     }
     if cfg!(target_os = "linux") {
@@ -97,26 +116,30 @@ pub fn layers() -> Vec<&'static str> {
     layers
 }
 
-/// The macOS profile a child runs under: deny by default, then only what a child needs to start and run: to
-/// execute its own executable, read it and the system's libraries, read file metadata and `sysctl`s, and signal
-/// itself. Everything else, the network, every file write, every other file read, forking, other processes'
+/// The macOS profile a child runs under: deny by default, with process information and IOKit properties denied
+/// again explicitly, then only what a child needs to start and run: to execute its own executable, read it and the
+/// system's libraries, and their metadata, read `sysctl`s, and signal itself. Everything else, the network, every file write, every other file read, forking, other processes'
 /// signals, inter-process communication and Mach services among them, stays denied.
 #[cfg(target_os = "macos")]
 fn profile(executable: &Path) -> String {
-    let exe = executable.display();
+    // The path is a string literal of the profile language: its backslashes and quotes are escaped.
+    let exe = executable
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!(
-        "(version 1)(deny default)\
+        "(version 1)(deny default)(deny process-info*)(deny iokit-get-properties)\
          (allow process-exec (literal \"{exe}\"))\
-         (allow file-read-metadata)\
-         (allow file-read* (literal \"{exe}\") (literal \"/\") (subpath \"/usr/lib\") (subpath \"/System\") \
-         (literal \"/dev/null\") (literal \"/dev/urandom\") (literal \"/dev/random\"))\
+         (allow file-read* file-read-metadata (literal \"{exe}\") (literal \"/\") (subpath \"/usr/lib\") \
+         (subpath \"/System\") (literal \"/dev/null\") (literal \"/dev/urandom\") (literal \"/dev/random\"))\
          (allow sysctl-read)\
          (allow signal (target self))"
     )
 }
 
-/// A command that starts `executable` with `args` as an isolated child, its standard input and output piped and its
-/// standard error inherited. `workdir` must be an empty directory the child may have as its working directory.
+/// A command that starts `executable` with `args` as an isolated child, its standard input, output and error each a
+/// pipe. `workdir` must be an empty directory, the child's own, that it may have as its working directory.
 pub fn isolated(
     executable: &Path,
     args: &[&str],
@@ -138,7 +161,7 @@ pub fn isolated(
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -176,6 +199,24 @@ fn set_limit(resource: Resource, value: u64) -> io::Result<()> {
 /// The child's own restrictions, applied between `fork` and `exec`.
 #[cfg(unix)]
 fn restrict(limits: Limits) -> io::Result<()> {
+    // Every descriptor the parent left open, but the three standard streams, is closed first, close-on-exec or not,
+    // up to the parent's own limit: nothing it holds reaches the child. That includes the pipe the standard library
+    // reports a failed `exec` on; the platform then learns of a failed start from the child's silence instead.
+    // SAFETY: getrlimit and close are async-signal-safe and take plain values.
+    unsafe {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            (limit.rlim_cur.min(CLOSE_UP_TO as libc::rlim_t)) as i32
+        } else {
+            CLOSE_UP_TO
+        };
+        for fd in 3..top {
+            libc::close(fd);
+        }
+    }
     // With RLIMIT_FSIZE at 0 a write to a file would raise SIGXFSZ and kill the child; ignored, which survives
     // `exec`, the write fails with EFBIG instead.
     // SAFETY: setting a signal's disposition to ignored is async-signal-safe.
@@ -262,11 +303,14 @@ mod linux {
     }
 }
 
-/// What a child finds it can do, tested from inside: each is true if it held, that is, if the attempt failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a child finds it can do, tested from inside: each `_denied` is true if it held, that is, if the attempt
+/// failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
-    /// No IPv4 stream socket could be made, or none could connect to the loopback address.
+    /// No IPv4 stream socket could connect to the loopback address.
     pub network_denied: bool,
+    /// The Unix-domain socket named, if any, couldn't be connected to.
+    pub unix_socket_denied: Option<bool>,
     /// No file could be created in the working directory.
     pub file_write_denied: bool,
     /// The file named, if any, couldn't be read.
@@ -275,10 +319,93 @@ pub struct Probe {
     pub process_denied: bool,
     /// No signal could be sent to another process: the parent was sent signal 0.
     pub signal_denied: bool,
+    /// Another process's information couldn't be read: `proc_pidinfo` on the parent, on macOS.
+    pub process_info_denied: Option<bool>,
+    /// The machine's serial number couldn't be read through IOKit, on macOS.
+    pub iokit_denied: Option<bool>,
+    /// The file descriptors above the standard three open when the probe ran: none should be.
+    pub open_descriptors: Vec<i32>,
 }
 
-/// Tests the child's restrictions from inside it. `readable` names a file it should not be able to read.
-pub fn probe(readable: Option<&Path>) -> Probe {
+/// The open file descriptors from 3 up to [`CLOSE_UP_TO`].
+pub fn open_descriptors() -> Vec<i32> {
+    #[cfg(unix)]
+    {
+        // SAFETY: F_GETFD only reads a descriptor's flags.
+        (3..CLOSE_UP_TO)
+            .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } != -1)
+            .collect()
+    }
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::ffi::c_void;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOServiceMatching(name: *const libc::c_char) -> *mut c_void;
+        fn IOServiceGetMatchingService(port: u32, matching: *mut c_void) -> u32;
+        fn IORegistryEntryGetProperty(
+            entry: u32,
+            name: *const libc::c_char,
+            buffer: *mut libc::c_char,
+            size: *mut u32,
+        ) -> i32;
+        fn IOObjectRelease(object: u32) -> i32;
+    }
+
+    /// Whether the platform's serial number could be read.
+    pub(super) fn serial_number_readable() -> bool {
+        // SAFETY: IOKit calls with valid C strings and a buffer of the size given; the matching dictionary is
+        // consumed by IOServiceGetMatchingService.
+        unsafe {
+            let matching = IOServiceMatching(c"IOPlatformExpertDevice".as_ptr());
+            if matching.is_null() {
+                return false;
+            }
+            let service = IOServiceGetMatchingService(0, matching);
+            if service == 0 {
+                return false;
+            }
+            let mut buffer = [0 as libc::c_char; 128];
+            let mut size = buffer.len() as u32;
+            let rc = IORegistryEntryGetProperty(
+                service,
+                c"IOPlatformSerialNumber".as_ptr(),
+                buffer.as_mut_ptr(),
+                &mut size,
+            );
+            IOObjectRelease(service);
+            rc == 0 && size > 0
+        }
+    }
+
+    /// Whether another process's BSD information could be read.
+    pub(super) fn process_info_readable(pid: i32) -> bool {
+        // SAFETY: the buffer is a proc_bsdinfo of the size given.
+        unsafe {
+            let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            ) == size
+        }
+    }
+}
+
+/// Tests the child's restrictions from inside it. `readable` names a file it should not be able to read, and
+/// `unix_socket` a Unix-domain socket it should not be able to connect to.
+pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>) -> Probe {
+    let open_descriptors = open_descriptors();
     let network_denied = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], 9)),
         std::time::Duration::from_millis(200),
@@ -286,6 +413,11 @@ pub fn probe(readable: Option<&Path>) -> Probe {
     .map_err(|e| e.kind() != io::ErrorKind::ConnectionRefused)
     .err()
     .unwrap_or(false);
+    #[cfg(unix)]
+    let unix_socket_denied =
+        unix_socket.map(|path| std::os::unix::net::UnixStream::connect(path).is_err());
+    #[cfg(not(unix))]
+    let unix_socket_denied = unix_socket.map(|_| false);
     let file_write_denied = std::fs::write("probe-write", b"x").is_err();
     let file_read_denied = readable.map(|path| std::fs::read(path).is_err());
     let process_denied = Command::new("/bin/sh")
@@ -301,11 +433,44 @@ pub fn probe(readable: Option<&Path>) -> Probe {
     let signal_denied = unsafe { libc::kill(libc::getppid(), 0) != 0 };
     #[cfg(not(unix))]
     let signal_denied = false;
+    #[cfg(target_os = "macos")]
+    // SAFETY: getppid takes nothing.
+    let (process_info_denied, iokit_denied) = (
+        Some(!macos::process_info_readable(unsafe { libc::getppid() })),
+        Some(!macos::serial_number_readable()),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (process_info_denied, iokit_denied) = (None, None);
     Probe {
-        signal_denied,
         network_denied,
+        unix_socket_denied,
         file_write_denied,
         file_read_denied,
         process_denied,
+        signal_denied,
+        process_info_denied,
+        iokit_denied,
+        open_descriptors,
     }
+}
+
+/// The probe's report, as JSON, as both children print it for `--probe [file] [unix socket]`.
+pub fn probe_report(args: &[String]) -> String {
+    let path = |i: usize| args.get(i).map(Path::new);
+    let p = probe(path(0), path(1));
+    let flag = |b: Option<bool>| b.map_or("null".to_owned(), |b| b.to_string());
+    format!(
+        "{{\"network_denied\":{},\"unix_socket_denied\":{},\"file_write_denied\":{},\"file_read_denied\":{},\
+         \"process_denied\":{},\"signal_denied\":{},\"process_info_denied\":{},\"iokit_denied\":{},\
+         \"open_descriptors\":{:?}}}",
+        p.network_denied,
+        flag(p.unix_socket_denied),
+        p.file_write_denied,
+        flag(p.file_read_denied),
+        p.process_denied,
+        p.signal_denied,
+        flag(p.process_info_denied),
+        flag(p.iokit_denied),
+        p.open_descriptors,
+    )
 }

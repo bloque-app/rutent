@@ -254,9 +254,7 @@ mod sandboxed {
                 continue;
             }
             match step {
-                Step::Secret {
-                    operation, name, ..
-                } => denied::look_up_secret(operation, name),
+                Step::Secret { name, .. } => denied::look_up_secret(name),
                 Step::State { key, .. } => denied::read_state(key),
                 Step::Spin => spin(),
                 Step::Grow(pages) => grow(*pages),

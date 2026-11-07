@@ -101,7 +101,7 @@ fn hostile(imports: &str) -> Vec<u8> {
 
 interface outside-requests {{ request: func(outside-request: string) -> string; }}
 interface denied {{
-    look-up-secret: func(operation: string, name: string);
+    look-up-secret: func(name: string);
     read-state: func(key: string);
 }}
 interface undeclared {{ anything: func(what: string) -> string; }}
@@ -299,13 +299,19 @@ fn machine_code_offered_as_a_portable_binary_is_refused() {
 fn probe(
     executable: &std::path::Path,
     dir: &std::path::Path,
+    limits: rutent_wasm_sandbox::Limits,
     readable: &std::path::Path,
+    socket: &std::path::Path,
 ) -> serde_json::Value {
     let mut command = rutent_wasm_sandbox::isolated(
         executable,
-        &["--probe", readable.to_str().expect("a path")],
+        &[
+            "--probe",
+            readable.to_str().expect("a path"),
+            socket.to_str().expect("a path"),
+        ],
         dir,
-        rutent_wasm_sandbox::Limits::default(),
+        limits,
     )
     .expect("an isolated command");
     let output = command
@@ -315,13 +321,31 @@ fn probe(
     serde_json::from_slice(&output.stdout).expect("the probe's report")
 }
 
+/// Opens `path` as a descriptor that would survive `exec`: close-on-exec cleared, as a shell leaves one.
+fn inheritable(path: &std::path::Path) -> std::fs::File {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    const F_SETFD: i32 = 2;
+    let file = std::fs::File::open(path).expect("the file opens");
+    // SAFETY: F_SETFD with 0 clears close-on-exec on a descriptor this test owns.
+    assert_eq!(
+        unsafe { fcntl(file.as_raw_fd(), F_SETFD, 0) },
+        0,
+        "close-on-exec was not cleared"
+    );
+    file
+}
+
 // verifies: REQ-MDL-18, REQ-MDL-13
 #[test]
-fn the_compiler_and_every_provider_process_can_reach_no_network_no_home_file_no_other_process_and_write_nothing()
+fn the_compiler_and_every_provider_process_reach_no_network_no_home_file_no_other_process_and_inherit_nothing()
  {
     let dir = workdir("probe");
     let paths = common::paths();
-    // A file in the user's home directory, which no child may read.
+    // A file in the user's home directory, which no child may read, held open by the platform without
+    // close-on-exec, which no child may inherit.
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .expect("a home directory");
@@ -331,34 +355,54 @@ fn the_compiler_and_every_provider_process_can_reach_no_network_no_home_file_no_
         .map(|e| e.path())
         .find(|p| p.is_file() && std::fs::read(p).is_ok())
         .expect("a readable file in the home directory");
-    for executable in [&paths.compiler, &paths.provider] {
-        let report = probe(executable, &dir, &readable);
-        eprintln!("{}: {report}", executable.display());
+    let held = inheritable(&readable);
+    // A Unix-domain socket the platform listens on, which no child may connect to.
+    let socket = dir.join("probe.sock");
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a Unix socket");
+    let children = [
+        (&paths.compiler, rutent_wasm_sandbox::Limits::COMPILER),
+        (&paths.provider, rutent_wasm_sandbox::Limits::PROVIDER),
+    ];
+    for (executable, limits) in children {
+        let own = dir.join(executable.file_name().expect("a name"));
+        std::fs::create_dir_all(&own).expect("a work directory");
+        let report = probe(executable, &own, limits, &readable, &socket);
+        let name = executable.display();
+        eprintln!("{name}: {report}");
+        for (field, what) in [
+            (
+                "network_denied",
+                "a TCP connection to the loopback address was made",
+            ),
+            (
+                "unix_socket_denied",
+                "a Unix-domain socket was connected to",
+            ),
+            ("file_write_denied", "a file could be written"),
+            ("process_denied", "a process could be started"),
+            ("signal_denied", "another process could be signalled"),
+            // On every platform: on Linux this fails until a file-read layer is built (see the run note).
+            ("file_read_denied", "a file in the home directory was read"),
+        ] {
+            assert_eq!(report[field], true, "{name}: {what}");
+        }
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                report["process_info_denied"], true,
+                "{name}: another process's information was read"
+            );
+            assert_eq!(
+                report["iokit_denied"], true,
+                "{name}: the serial number was read through IOKit"
+            );
+        }
         assert_eq!(
-            report["network_denied"],
-            true,
-            "{}: the network was reachable",
-            executable.display()
-        );
-        assert_eq!(
-            report["file_write_denied"],
-            true,
-            "{}: a file could be written",
-            executable.display()
-        );
-        assert_eq!(
-            report["process_denied"],
-            true,
-            "{}: a process could be started",
-            executable.display()
-        );
-        // On every platform: on Linux this fails until a file-read layer is built (see the run note).
-        assert_eq!(
-            report["file_read_denied"],
-            true,
-            "{}: a file in the home directory was read",
-            executable.display()
+            report["open_descriptors"],
+            serde_json::json!([]),
+            "{name}: it inherited file descriptors"
         );
     }
+    drop((held, listener));
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -295,9 +295,8 @@ static void run(program *p, const char *transaction, values *got) {
         }
         switch (s->kind) {
             case SECRET: {
-                sandboxed_string_t operation = {(uint8_t *)s->a, strlen(s->a)};
                 sandboxed_string_t name = {(uint8_t *)s->b, strlen(s->b)};
-                rutent_binding_denied_look_up_secret(&operation, &name);
+                rutent_binding_denied_look_up_secret(&name);
                 break;
             }
             case STATE: {

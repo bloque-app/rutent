@@ -57,8 +57,6 @@ pub enum FromProvider {
     },
     /// The sandboxed part tried to look up a secret, which it has no route to.
     DeniedSecret {
-        /// The outside operation it named.
-        operation: String,
         /// The secret's name.
         name: String,
     },

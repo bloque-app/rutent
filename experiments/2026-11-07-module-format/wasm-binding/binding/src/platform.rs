@@ -222,6 +222,7 @@ impl WasmBinding {
         if let Ok(process) = ProviderProcess::spawn(
             &self.paths,
             &self.workdir,
+            provider,
             &machine,
             [&admitted[0], &admitted[1]],
         ) {
@@ -250,11 +251,19 @@ impl WasmBinding {
         match request {
             FromProvider::OutsideRequest { json } => self.outside_request(&json),
             FromProvider::OutsideResponse { json } => self.outside_response(&json),
-            FromProvider::DeniedSecret { operation, name } => {
+            FromProvider::DeniedSecret { name } => {
+                // The attempt names no operation; it is recorded under the running declaration's first outside
+                // operation, which the platform knows itself, and the transaction being handled.
                 let context = self.stack.last().expect("a context");
+                let operation = context
+                    .declaration
+                    .outside
+                    .operations
+                    .first()
+                    .map(|o| o.name.clone());
                 if let (Some(transaction), Some(operation), Some(name)) = (
                     Identifier::new(context.transaction.clone()),
-                    Name::new(operation),
+                    operation,
                     Name::new(name),
                 ) {
                     let provider = context.provider.clone();
@@ -866,6 +875,25 @@ impl ModuleBinding for WasmBinding {
             || binaries.outside.len() > MAX_BINARY
         {
             return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+        }
+        // A version already admitted, accepted or waiting, is never admitted again: its machine code and artefact
+        // stay what they are. The suite's refusals have no reason for it; it is refused as unreadable.
+        let (provider, version) = (
+            assertion.statement.declaration.provider.as_str(),
+            assertion.statement.declaration.version.as_str(),
+        );
+        if let Some(slot) = self.providers.get(provider) {
+            let accepted = slot
+                .accepted
+                .iter()
+                .any(|a| a.declaration().version.as_str() == version);
+            let pending = slot
+                .pending
+                .as_ref()
+                .is_some_and(|(a, _)| a.declaration().version.as_str() == version);
+            if accepted || pending {
+                return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+            }
         }
         let machine = match compile(
             &self.paths,

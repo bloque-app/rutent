@@ -298,6 +298,7 @@ fn main() -> ExitCode {
 
     println!("run id: {run_id}");
     println!("platform version: {}", engine::platform_version());
+    println!("wasm features: {}", engine::feature_names().join(", "));
     let first = &reports[0].1;
     println!(
         "format: {}; languages: {}; output limit: {} bytes",

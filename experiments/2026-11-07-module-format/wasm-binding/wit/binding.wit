@@ -15,9 +15,9 @@ interface outside-requests {
 /// What the sandboxed part has no route to. Each attempt is recorded by the platform and goes no further: there is no
 /// proxy and no state behind these functions, and they return nothing. They exist so that a hostile module's attempt
 /// is evidence, not silence (the module-boundary suite's `Step::LookUpSecret` and `Step::ReadState` for the
-/// sandboxed part).
+/// sandboxed part). An attempt names no operation: the platform records it under one it knows itself.
 interface denied {
-    look-up-secret: func(operation: string, name: string);
+    look-up-secret: func(name: string);
     read-state: func(key: string);
 }
 

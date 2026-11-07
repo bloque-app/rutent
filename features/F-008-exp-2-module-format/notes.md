@@ -45,3 +45,10 @@ readings are in its README, "Readings taken in opening it".
 - **Not done here.** No Linux run: the Linux isolation code is type-checked only, and `run.sh` is yet to be run on
   x86_64 Linux for the scored run. `B-11` needs two machines. The outcome page and the adoption item are
   `T-008-04`'s.
+- **After the review of `7af940e`.** Run 2, `EXP-2-wasm-dev-20261107-2`, replaces run 1 in every cell. Its commit
+  closes inherited file descriptors before `exec` (a descriptor the platform held open reached a child, where the
+  profile's file-read denial didn't stop it), turns every WebAssembly feature off but the five the stand-ins need,
+  marks `B-07`, `B-08`, `B-13` and `G-07` macOS only, and lets `denied` name no operation. From the PVM binding's
+  review it adds explicit `process-info*` and `iokit-get-properties` denials with probes, and refuses re-admitting a
+  version already admitted, with a test that a pending release leaves the running one in force across a restart.
+  Run 1's note is kept, marked superseded.

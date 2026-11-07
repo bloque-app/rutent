@@ -1,12 +1,42 @@
 //! The platform's side of its children: the admitting compiler, run once per admission, and each provider's
 //! process. Both are started isolated (`rutent_wasm_sandbox::isolated`).
 
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::time::{Duration, Instant};
 
 use rutent_wasm_sandbox::{Limits, isolated, read_frame, write_frame};
+
+/// A working directory of one child's own: empty, made before it starts and removed after it ends.
+struct Workdir(PathBuf);
+
+impl Workdir {
+    fn new(base: &Path) -> Result<Self, String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = base.join(format!("child-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for Workdir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Relays a child's standard error to the platform's, each line labelled with the child it came from.
+fn relay(stderr: Option<impl Read + Send + 'static>, label: String) {
+    if let Some(stderr) = stderr {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("[{label}] {line}");
+            }
+        });
+    }
+}
 
 use crate::engine;
 use crate::wire::{CompileRequest, Compiled, FromProvider, Reply, ToProvider};
@@ -55,13 +85,11 @@ pub fn compile(
     outside: &[u8],
 ) -> Result<Machine, String> {
     let started = Instant::now();
-    let limits = Limits {
-        cpu_seconds: Some(60),
-        open_files: 16,
-    };
-    let mut child = isolated(&paths.compiler, &[], workdir, limits)
+    let own = Workdir::new(workdir)?;
+    let mut child = isolated(&paths.compiler, &[], &own.0, Limits::COMPILER)
         .and_then(|mut c| c.spawn())
         .map_err(|e| format!("the compiler didn't start: {e}"))?;
+    relay(child.stderr.take(), format!("compiler {}", child.id()));
     let result = (|| {
         let mut stdin = BufWriter::new(child.stdin.take().ok_or("no stdin")?);
         let mut stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
@@ -110,6 +138,7 @@ pub fn compile(
 /// One provider's running process.
 pub struct ProviderProcess {
     child: Child,
+    _workdir: Workdir,
     stdin: BufWriter<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     /// How long it took from spawning to both parts started.
@@ -117,23 +146,23 @@ pub struct ProviderProcess {
 }
 
 impl ProviderProcess {
-    /// Starts a process for `machine`, and waits for both parts to start. Why not, if they didn't. `admitted` is
+    /// Starts a process for `machine`, in a working directory of its own under `workdir`, its standard error
+    /// relayed under `label`, and waits for both parts to start. Why not, if they didn't. `admitted` is
     /// each part's machine-code digest as the admission artefact records it, `[sandboxed, outside]`: the process
     /// checks the code it is given against them before it loads or instantiates anything.
     pub fn spawn(
         paths: &Paths,
         workdir: &Path,
+        label: &str,
         machine: &Machine,
         admitted: [&str; 2],
     ) -> Result<Self, String> {
         let started = Instant::now();
-        let limits = Limits {
-            cpu_seconds: None,
-            open_files: 32,
-        };
-        let mut child = isolated(&paths.provider, &[], workdir, limits)
+        let own = Workdir::new(workdir)?;
+        let mut child = isolated(&paths.provider, &[], &own.0, Limits::PROVIDER)
             .and_then(|mut c| c.spawn())
             .map_err(|e| format!("the provider's process didn't start: {e}"))?;
+        relay(child.stderr.take(), format!("{label} {}", child.id()));
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
@@ -141,6 +170,7 @@ impl ProviderProcess {
         };
         let mut process = Self {
             child,
+            _workdir: own,
             stdin: BufWriter::new(stdin),
             stdout: BufReader::new(stdout),
             took: Duration::ZERO,

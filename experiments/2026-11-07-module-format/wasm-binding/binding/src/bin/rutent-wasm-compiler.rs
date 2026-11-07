@@ -4,7 +4,7 @@
 //! [`Compiled`] verdict and the machine code Wasmtime made from the binary. It never loads machine code it is given
 //! (`B-15`, `G-08`): a binary Wasmtime recognises as precompiled is refused.
 //!
-//! `--probe [file]` instead prints, as JSON, which of its restrictions held when tested from inside it.
+//! `--probe [file] [unix socket]` instead prints, as JSON, which of its restrictions held when tested from inside it.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -19,17 +19,7 @@ use wasmtime::component::Component;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--probe") {
-        let probe = rutent_wasm_sandbox::probe(args.get(1).map(std::path::Path::new));
-        println!(
-            "{}",
-            serde_json::json!({
-                "network_denied": probe.network_denied,
-                "file_write_denied": probe.file_write_denied,
-                "file_read_denied": probe.file_read_denied,
-                "process_denied": probe.process_denied,
-                "signal_denied": probe.signal_denied,
-            })
-        );
+        println!("{}", rutent_wasm_sandbox::probe_report(&args[1..]));
         return ExitCode::SUCCESS;
     }
     match run() {

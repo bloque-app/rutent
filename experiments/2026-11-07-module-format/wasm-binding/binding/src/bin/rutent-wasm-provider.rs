@@ -4,7 +4,7 @@
 //! loading it (`G-08`), starts both parts, and then hands each operation the platform sends to the sandboxed part.
 //! Every import a part calls goes to the platform as a request (`rutent_wasm_binding::host`).
 //!
-//! `--probe [file]` instead prints, as JSON, which of its restrictions held when tested from inside it.
+//! `--probe [file] [unix socket]` instead prints, as JSON, which of its restrictions held when tested from inside it.
 
 use std::cell::RefCell;
 use std::io::{self, StdinLock, StdoutLock};
@@ -21,17 +21,7 @@ type StdPipe = Pipe<StdinLock<'static>, StdoutLock<'static>>;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--probe") {
-        let probe = rutent_wasm_sandbox::probe(args.get(1).map(std::path::Path::new));
-        println!(
-            "{}",
-            serde_json::json!({
-                "network_denied": probe.network_denied,
-                "file_write_denied": probe.file_write_denied,
-                "file_read_denied": probe.file_read_denied,
-                "process_denied": probe.process_denied,
-                "signal_denied": probe.signal_denied,
-            })
-        );
+        println!("{}", rutent_wasm_sandbox::probe_report(&args[1..]));
         return ExitCode::SUCCESS;
     }
     let pipe = Rc::new(RefCell::new(Pipe::new(

@@ -231,7 +231,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"
@@ -269,7 +269,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"
@@ -305,7 +305,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"
@@ -321,7 +321,7 @@
         "By default Wasmtime infers CPU features from the host, and two machines then make different code (G-03)",
         "ADR-0014's re-derivation compares digests across machines, which needs the same target and flags on each",
         "The baseline may run slower than host-tuned code; nothing is claimed about speed before M4",
-        "On one machine, two compiler processes gave identical code for all 16 stand-in parts in EXP-2-wasm-dev-20261107-1"
+        "On one machine, two compiler processes gave identical code for all 16 stand-in parts in EXP-2-wasm-dev-20261107-1 and -2"
       ],
       "rec": "the build's triple with no feature flag, because it is what makes re-derivation possible.",
       "options": [
@@ -341,7 +341,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"
@@ -378,7 +378,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"
@@ -413,7 +413,7 @@
         },
         {
           "label": "Run note",
-          "url": "runs/EXP-2-wasm-dev-20261107-1.md"
+          "url": "runs/EXP-2-wasm-dev-20261107-2.md"
         }
       ],
       "origin": "EXP-2, T-008-02, 2026-11-07"

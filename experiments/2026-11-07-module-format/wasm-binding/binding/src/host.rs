@@ -168,10 +168,10 @@ fn unknown_response(request: &str) -> String {
 }
 
 impl sandboxed::rutent::binding::denied::Host for SandboxedState {
-    fn look_up_secret(&mut self, operation: String, name: String) {
+    fn look_up_secret(&mut self, name: String) {
         self.platform
             .borrow_mut()
-            .ask(FromProvider::DeniedSecret { operation, name });
+            .ask(FromProvider::DeniedSecret { name });
     }
 
     fn read_state(&mut self, key: String) {

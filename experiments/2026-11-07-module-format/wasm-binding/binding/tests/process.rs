@@ -185,13 +185,19 @@ fn a_provider_process_refuses_machine_code_that_isnt_the_admitted_one_before_loa
     std::fs::create_dir_all(&dir).expect("a work directory");
     let (sandboxed, outside) = (sha256(&machine.sandboxed), sha256(&machine.outside));
     let wrong = "0".repeat(64);
-    let started = ProviderProcess::spawn(&common::paths(), &dir, &machine, [&sandboxed, &outside]);
+    let started = ProviderProcess::spawn(
+        &common::paths(),
+        &dir,
+        &provider,
+        &machine,
+        [&sandboxed, &outside],
+    );
     assert!(started.is_ok(), "the admitted machine code didn't start");
     for admitted in [
         [wrong.as_str(), outside.as_str()],
         [sandboxed.as_str(), wrong.as_str()],
     ] {
-        let refused = ProviderProcess::spawn(&common::paths(), &dir, &machine, admitted);
+        let refused = ProviderProcess::spawn(&common::paths(), &dir, &provider, &machine, admitted);
         let Err(why) = refused else {
             panic!("machine code other than the admitted one was started")
         };
@@ -201,4 +207,71 @@ fn a_provider_process_refuses_machine_code_that_isnt_the_admitted_one_before_loa
         );
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// verifies: AC-21, REQ-MDL-3, REQ-MDL-13, AC-19
+#[test]
+fn a_pending_release_leaves_the_running_version_in_force_across_a_restart() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("pending-{language}");
+        let running = spec(&provider, "1.0.0", Vec::new(), true);
+        install(&mut binding, &running, &language, "reserve", &[]);
+        // 1.1.0 widens by a destination, so it waits for a fresh acceptance.
+        let mut declaration = serde_json::to_value(&running.declaration).expect("JSON");
+        declaration["version"] = serde_json::Value::from("1.1.0");
+        declaration["outside"]["destinations"]
+            .as_array_mut()
+            .expect("destinations")
+            .push(serde_json::json!({
+                "name": "extra", "scheme": "https", "host": format!("extra.{provider}.example"), "port": 443,
+                "addresses": "public",
+            }));
+        declaration["outside"]["operations"][0]["destinations"]
+            .as_array_mut()
+            .expect("an operation's destinations")
+            .push(serde_json::Value::from("extra"));
+        let widened = rutent_conformance::boundary::ModuleSpec {
+            declaration: serde_json::from_value(declaration).expect("a valid declaration"),
+            ..running.clone()
+        };
+        let binaries = binding
+            .build_with(&widened, &language, "reserve", &[])
+            .expect("a stand-in");
+        let admitted = binding.admit(
+            &common::assertion(&widened.declaration, &binaries),
+            &binaries,
+        );
+        assert!(
+            matches!(&admitted, Admitted::Artefact(a) if a.acceptance.accepted.is_none()),
+            "the widening release didn't wait"
+        );
+        // The running version can't be admitted again, under any declaration, while 1.1.0 waits.
+        let again = binding
+            .build_with(&running, &language, "reserve", &[Probe::Trap])
+            .expect("a stand-in");
+        let readmitted = binding.admit(&common::assertion(&running.declaration, &again), &again);
+        assert!(
+            matches!(readmitted, Admitted::Refused(_)),
+            "a version already admitted was admitted again"
+        );
+        assert!(binding.restart(&provider), "the restart was refused");
+        assert_eq!(binding.active_version(&provider).as_deref(), Some("1.0.0"));
+        assert!(
+            answers_as(&mut binding, &provider, "1.0.0", 1),
+            "the running version stopped answering"
+        );
+        binding
+            .accept(&provider, "1.1.0", "test-reviewer")
+            .expect("the pending release");
+        assert!(
+            answers_as(&mut binding, &provider, "1.1.0", 2),
+            "the accepted release didn't run"
+        );
+        assert!(binding.restart(&provider), "the second restart was refused");
+        assert!(
+            answers_as(&mut binding, &provider, "1.1.0", 3),
+            "the accepted release didn't survive a restart"
+        );
+    }
 }

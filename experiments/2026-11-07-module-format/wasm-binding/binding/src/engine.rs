@@ -2,7 +2,7 @@
 //! one is loaded by the other, so they must agree setting for setting; Wasmtime refuses machine code made under
 //! another configuration.
 
-use wasmtime::{Config, Engine, OptLevel, Strategy};
+use wasmtime::{Config, Engine, OptLevel, Strategy, WasmFeatures};
 
 /// The portable binary format this binding admits, as a release assertion names it (item `exp2-format-names`).
 pub const FORMAT: &str = "wasm-component";
@@ -45,6 +45,17 @@ pub fn platform_version() -> String {
     format!("rutent-wasm-binding-{BINDING_VERSION}.wasmtime-{WASMTIME_VERSION}.{TARGET}")
 }
 
+/// Every WebAssembly feature the engine accepts, and nothing else: the ones all sixteen stand-ins fail to compile
+/// without, found by turning each off in turn. Every other proposal is off, among them function references, GC,
+/// exceptions, extended constants, tail calls, SIMD, threads, multiple memories, memory64, multi-value, mutable
+/// globals across modules and saturating conversions. `REFERENCE_TYPES` carries `CALL_INDIRECT_OVERLONG`, the
+/// encoding both toolchains use for `call_indirect`.
+pub const FEATURES: WasmFeatures = WasmFeatures::FLOATS
+    .union(WasmFeatures::SIGN_EXTENSION)
+    .union(WasmFeatures::BULK_MEMORY)
+    .union(WasmFeatures::REFERENCE_TYPES)
+    .union(WasmFeatures::COMPONENT_MODEL);
+
 /// The configuration, every setting the binding makes stated here and in [`settings`].
 pub fn config() -> wasmtime::Result<Config> {
     let mut config = Config::new();
@@ -55,19 +66,22 @@ pub fn config() -> wasmtime::Result<Config> {
         .cranelift_nan_canonicalization(true)
         .consume_fuel(true)
         .epoch_interruption(false)
-        .wasm_component_model(true)
-        .wasm_simd(false)
-        .wasm_relaxed_simd(false)
+        // Every feature off, then exactly [`FEATURES`] on.
+        .wasm_features(WasmFeatures::all(), false)
+        .wasm_features(FEATURES, true)
         .relaxed_simd_deterministic(true)
-        .wasm_multi_memory(false)
-        .wasm_memory64(false)
-        .wasm_tail_call(false)
-        .wasm_wide_arithmetic(false)
-        .wasm_custom_page_sizes(false)
         .debug_info(false)
         .generate_address_map(false)
         .max_wasm_stack(MAX_WASM_STACK);
     Ok(config)
+}
+
+/// The names of the features in [`FEATURES`], as wasmparser names them.
+pub fn feature_names() -> Vec<String> {
+    FEATURES
+        .iter_names()
+        .map(|(name, _)| name.to_owned())
+        .collect()
 }
 
 /// The engine both the compiler and the provider processes use.
@@ -87,21 +101,11 @@ pub fn settings() -> Vec<(&'static str, String)> {
             format!("true, {FUEL_PER_CALL} per call into a part"),
         ),
         ("epoch_interruption", "false".to_owned()),
-        ("wasm_component_model", "true".to_owned()),
         (
-            "wasm_threads",
-            "not built (the `threads` cargo feature is off)".to_owned(),
+            "wasm features (all off, then exactly these on)",
+            feature_names().join(", "),
         ),
-        ("wasm_simd", "false".to_owned()),
-        (
-            "wasm_relaxed_simd",
-            "false (relaxed_simd_deterministic true)".to_owned(),
-        ),
-        ("wasm_multi_memory", "false".to_owned()),
-        ("wasm_memory64", "false".to_owned()),
-        ("wasm_tail_call", "false".to_owned()),
-        ("wasm_wide_arithmetic", "false".to_owned()),
-        ("wasm_custom_page_sizes", "false".to_owned()),
+        ("relaxed_simd_deterministic", "true".to_owned()),
         ("debug_info", "false".to_owned()),
         ("generate_address_map", "false".to_owned()),
         ("max_wasm_stack", format!("{MAX_WASM_STACK} bytes")),
