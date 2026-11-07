@@ -197,9 +197,39 @@ impl ProviderProcess {
         }
     }
 
-    /// Its operating-system process id.
+    /// Its operating-system process id. On Linux that is `unshare`'s, whose one child runs the module.
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// The process that runs the module: on Linux the one child of `unshare`, as `/proc` lists it, if it is
+    /// still there; elsewhere the process itself.
+    pub fn module_pid(&self) -> Option<u32> {
+        let pid = self.child.id();
+        if cfg!(target_os = "linux") {
+            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                .ok()
+                .and_then(|children| children.split_whitespace().next()?.parse().ok())
+        } else {
+            Some(pid)
+        }
+    }
+
+    /// Kills it with SIGKILL, as a crash would, and reaps it: on Linux the module's process first, then
+    /// `unshare`, so that nothing of it answers after this returns.
+    pub fn kill(&mut self) {
+        if cfg!(target_os = "linux")
+            && let Some(module) = self.module_pid()
+        {
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            // SAFETY: a plain system call on the one child of a process this binding started and hasn't reaped,
+            // which therefore can't have been reused; SIGKILL is 9.
+            unsafe { kill(module as i32, 9) };
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Sends one message.
@@ -228,7 +258,6 @@ impl ProviderProcess {
 
 impl Drop for ProviderProcess {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.kill();
     }
 }

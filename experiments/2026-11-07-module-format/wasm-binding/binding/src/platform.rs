@@ -184,8 +184,7 @@ impl WasmBinding {
             .and_then(|s| s.process.as_mut())
         {
             Some(process) => {
-                // SAFETY: plain system call on a pid this binding spawned and has not reaped.
-                unsafe { libc_kill(process.pid()) };
+                process.kill();
                 true
             }
             None => false,
@@ -818,16 +817,6 @@ fn unique() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     NEXT.fetch_add(1, Ordering::Relaxed)
-}
-
-unsafe fn libc_kill(pid: u32) {
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-    // SAFETY: a plain system call; SIGKILL is 9 on every platform this binding builds for.
-    unsafe {
-        kill(pid as i32, 9);
-    }
 }
 
 impl Drop for WasmBinding {
