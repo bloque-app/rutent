@@ -1,0 +1,204 @@
+{
+  "form": {"title": "EXP-2 Decisions"},
+  "sections": [
+    {"id": "decide", "title": "Decide",
+     "groups": [
+       {"id": "candidates", "title": "Candidates"},
+       {"id": "bindings", "title": "Bindings"},
+       {"id": "runs", "title": "Runs"}
+     ]}
+  ],
+  "items": [
+    {
+      "id": "exp2-wasm-runtime",
+      "kind": "decide",
+      "section": "decide",
+      "group": "candidates",
+      "title": "Which Wasmtime release does EXP-2 score?",
+      "lead": "EXP-2 scores Wasm on Wasmtime 48.0.8, the current LTS release, at commit 7b6c29e, unless this item says otherwise.",
+      "bullets": [
+        "A release whose number is a multiple of 12 is supported for 24 months; others for 2 months",
+        "48.0.0 was published on 2026-08-20; 50.0.1, the newest stable, on 2026-10-29; 51.0.0-rc.1 was tagged on 2026-11-05",
+        "ADR-0014 keeps each admitted binary with the compiler version that made its machine code, which favours a long support window",
+        "Reversible: a later run can score another release under its own run id"
+      ],
+      "rec": "48.0.8, because it is supported until 2028 and gets every security backport.",
+      "options": [
+        "Wasmtime 48.0.8, the LTS release (recommended)",
+        "Wasmtime 50.0.1, the newest stable release at the opening",
+        "Wasmtime 51, once it is released"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-7", "ADR-0003", "ADR-0014"],
+      "refs": [
+        {"label": "EXP-2 candidates", "url": "README.md#candidates"},
+        {"label": "Version pinned, and why", "url": "README.md#version-pinned-and-why"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-pvm-implementation",
+      "kind": "decide",
+      "section": "decide",
+      "group": "candidates",
+      "title": "Which PVM implementation does EXP-2 score?",
+      "lead": "EXP-2 scores PVM on PolkaVM 0.38.0, at commit 471a5b6, unless this item says otherwise.",
+      "bullets": [
+        "PolkaVM is the PVM ADR-0003 names, and 0.38.0 was its newest release at the opening, published 2026-11-05",
+        "VOS's own PVM crates are Apache-2.0 and separable from its AGPL host, per research/2026-11-02-vos.md section 2, but are a different implementation",
+        "PolkaVM is pre-1.0 and its README says not to use it in production; gap rows G-13 to G-30 score what that means",
+        "Reversible: a later run can score another implementation under its own run id"
+      ],
+      "rec": "PolkaVM 0.38.0, because it is the PVM ADR-0003 names, and its tree carries a Rust guest path and a C guest header.",
+      "options": [
+        "PolkaVM 0.38.0 (recommended)",
+        "VOS's PVM crates at the commit research/2026-11-02-vos.md read",
+        "Both, as two PVM candidates"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-7", "ADR-0003", "REQ-MDL-15"],
+      "refs": [
+        {"label": "EXP-2 candidates", "url": "README.md#candidates"},
+        {"label": "VOS report, licence", "url": "../../research/2026-11-02-vos.md"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-languages",
+      "kind": "decide",
+      "section": "decide",
+      "group": "candidates",
+      "title": "Which two languages does each format's stand-ins use?",
+      "lead": "EXP-2 builds every stand-in in Rust and in C, on both formats, unless this item says otherwise.",
+      "bullets": [
+        "The same pair on both formats makes each language's cells comparable across formats",
+        "Wasm has a C path through wit-bindgen's C generator and a WASI SDK",
+        "PolkaVM ships a C guest header but no C guest program or test, so C on PVM may need building (PLAN.md risk 3)",
+        "A garbage-collected language would test memory limits harder, but PolkaVM has no such path and no floating point",
+        "Reversible: a third language can be scored later, in its own columns"
+      ],
+      "rec": "Rust and C on both formats, because the same pair keeps the comparison like for like.",
+      "options": [
+        "Rust and C on both formats (recommended)",
+        "Rust and C on PVM; Rust and a garbage-collected language, Go or Python, on Wasm",
+        "Rust and C on both, and a garbage-collected language on Wasm as a third, scored apart"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-7", "AC-20", "REQ-MDL-15"],
+      "refs": [
+        {"label": "Guest languages", "url": "README.md#guest-languages-ac-20-needs-two-per-format"},
+        {"label": "G-10 and G-22", "url": "scoring.md#3-the-candidates-gaps"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-wasm-shape",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "Is a Wasm module a component or a core module?",
+      "lead": "The Wasm binding takes components, with a WIT world written from the module-interface contract, unless this item says otherwise.",
+      "bullets": [
+        "Wasmtime lists the component model as Tier 1, and WIT gives typed bindings in each guest language",
+        "A core module with the binding's own ABI has a smaller host surface, but each language then needs hand-written glue",
+        "The WIT world is the binding's, outside the frozen contract (DEC-4), and names no import the contract doesn't declare",
+        "Reversible before the scored runs; after, a change means re-running every wasm cell"
+      ],
+      "rec": "components, because typed bindings in both languages come from one interface description.",
+      "options": [
+        "Components, with a WIT world written from the contract (recommended)",
+        "Core modules, with the binding's own ABI"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-4", "DEC-7", "REQ-MDL-16"],
+      "refs": [
+        {"label": "Sandboxing model", "url": "README.md#sandboxing-model"},
+        {"label": "Module interface", "url": "../../contracts/module-interface/README.md"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-outside-egress",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "How does an outside part reach its destinations?",
+      "lead": "In both formats the outside part reaches its declared destinations only through a host interface of the binding, served by the platform's egress layer, which checks and records every hop. It gets no sockets and no general HTTP client unless this item says otherwise.",
+      "bullets": [
+        "The contract has the platform's egress layer write the outbound call record, hop by hop, never the module",
+        "The same interface on both formats keeps the egress rows, M-06 to M-09, comparable",
+        "On Wasm, wasi-http served by the egress layer is the alternative; it brings a larger host surface, where many 2026 advisories fell",
+        "Reversible before the scored runs"
+      ],
+      "rec": "the binding's own egress interface on both formats, because it is the narrowest surface and the same on each.",
+      "options": [
+        "The binding's own egress interface on both formats (recommended)",
+        "wasi-http on Wasm, served by the egress layer; the binding's own on PVM"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["REQ-MDL-7", "REQ-MDL-8", "REQ-MDL-16", "DEC-9"],
+      "refs": [
+        {"label": "Destinations and ADR-0004's checks", "url": "../../contracts/module-interface/README.md#destinations-and-adr-0004s-checks"},
+        {"label": "G-11", "url": "scoring.md#31-wasmtime-v4808"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-format-names",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "What does a release assertion call each format?",
+      "lead": "A release assertion names its parts' format as wasm-component or polkavm, unless this item says otherwise.",
+      "bullets": [
+        "The contract takes any lower-case name matching its format pattern and names no format itself (DEC-4)",
+        "A name per binding, not per runtime version: the platform version is recorded apart, in build.platform_version",
+        "Reversible until the first module is admitted outside the experiment"
+      ],
+      "rec": "wasm-component and polkavm, because each names what the platform accepts and nothing more.",
+      "options": [
+        "wasm-component and polkavm (recommended)",
+        "wasm and pvm"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-4", "REQ-MDL-15"],
+      "refs": [
+        {"label": "B-12", "url": "scoring.md#22-per-format"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    },
+    {
+      "id": "exp2-run-platform",
+      "kind": "decide",
+      "section": "decide",
+      "group": "runs",
+      "title": "On which platform are EXP-2's scored runs made?",
+      "lead": "Scored runs are made on x86_64-unknown-linux-gnu, with unprivileged user namespaces and a CPU with BMI2, unless this item says otherwise. Development runs may be made anywhere.",
+      "bullets": [
+        "PolkaVM's compiler and its Linux sandbox exist only on x86_64; elsewhere it runs interpreted, in-process, with no machine code to digest",
+        "x86_64-unknown-linux-gnu is a Tier 1 Wasmtime target; aarch64 Linux and macOS are Tier 2",
+        "EXP-1's development machine is arm64 macOS, so EXP-2's scored runs need another host or CI",
+        "Reversible: a second platform can be scored under its own run ids"
+      ],
+      "rec": "x86_64-unknown-linux-gnu, because it is the only platform where both candidates run as they would in production.",
+      "options": [
+        "x86_64-unknown-linux-gnu only (recommended)",
+        "x86_64-unknown-linux-gnu, and aarch64-unknown-linux-gnu for Wasm as a second platform"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-7", "THR-85", "REQ-MDL-2"],
+      "refs": [
+        {"label": "Readings: the scoring platform", "url": "README.md#readings-taken-in-opening-it"},
+        {"label": "G-01, G-14", "url": "scoring.md#3-the-candidates-gaps"}
+      ],
+      "origin": "EXP-2, T-008-01, 2026-11-07"
+    }
+  ]
+}
