@@ -4,7 +4,7 @@
   "section": "decide",
   "group": "construction",
   "title": "Which runtime does M2 build the state machine on?",
-  "lead": "Re-scored with the state machine inside VOS, at vos-core 5c78975 on Linux with the JIT, both candidates pass all 17 host-contract rows. On three nodes VOS passed every replication, damage and upgrade row it could run; the purpose-built store has no replication, lost acknowledged records on a restore, and lost one on a damaged last frame, where VOS's single-node damage never reached an acknowledged append.",
+  "lead": "Re-scored with the state machine inside VOS, at vos-core 5c78975 on Linux with the JIT, both candidates pass all 17 host-contract rows. On three nodes VOS passed every replication, damage and upgrade row it could run (R-04b's run recorded no evidence that its damage took effect); the purpose-built store has no replication, lost acknowledged records on a restore, and lost one on a damaged last frame, where VOS's single-node damage left no trace, probably because it never reached an acknowledged append.",
   "bullets": [
     "VOS on three nodes lost no acknowledged record across 21 leader kills, each with a submit in flight as last seen, a replica replaced, and a replica's disk lost.",
     "The purpose-built store is faster on one disk, about 4,500 to 4,800 records/s against VOS's 239 to 2,979, but has only restore to recover with.",

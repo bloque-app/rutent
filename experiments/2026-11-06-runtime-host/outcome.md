@@ -25,7 +25,7 @@ any run (`decisions.json`, `exp1-rescore-criteria`). The first run's cells stay 
 
 Both candidates pass the gate. On the operational rows the first run never reached, VOS on three nodes passes every
 row it can run; `pb` fails four, two of them (replication) by construction. `pb` is faster on one disk. A VOS step costs about
-a fifth of VOS's default handler gas.
+a fifth of VOS's 10M default handler gas, about 2% of the 100M the program's `submit` declares.
 
 ## Numbers
 
@@ -80,8 +80,8 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    first run's deployment, another program on another commit, into the tip program (`R-07a`): VOS upgrades can
    go by swap stream, as `G-40`'s fix says. The same program across two commits is not runnable yet (`R-07c`).
 5. **Speed and recovery time.** `pb` is faster on one disk: about 4,500 to 4,800 records/s against VOS's 239 to
-   2,979, and a 100k-record swap in 3.0 s against 59 to 82 s. VOS's group commit is visible: one fsync per record alone,
-   0.08 at 64 submitters. No `NFR-1` target exists before `M4`. A VOS step costs 1.87M gas, the handler and the
+   2,979, and a 100k-record swap in 3.0 s against 59 to 82 s. VOS's group commit is visible: on one node one fsync per record
+   alone, 0.08 at 64 submitters; on three, 3.06 and 0.20 across the nodes. No `NFR-1` target exists before `M4`. A VOS step costs 1.87M gas, the handler and the
    agent's work together; the runs did not break it down. The JIT is only about 1.8 times the interpreter on this step.
 6. **What changed since the first outcome.** The six `pass (adapter)` rows of the first run (`G-01` to `G-03`,
    `G-07`, `G-08`, `G-31`; scoring sheet §2) are now the program's own code, as VOS intends. The first outcome's cost argument, that VOS would be a replicated store and not the runtime, no
