@@ -1,0 +1,11 @@
+diff -ruN a/probe-nostd/src/probe.rs b/probe-nostd/src/probe.rs
+--- a/probe-nostd/src/probe.rs	2026-11-07 14:32:53
++++ b/probe-nostd/src/probe.rs	2026-11-07 14:32:53
+@@ -2,6 +2,7 @@
+ //! drives. It is not `CMP-STM` (that comes in M2); it is just enough of the state-machine contract to give each
+ //! input an outcome a host can't fake. Every order it returns passes [`Order::check`].
+ 
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use rutent_contracts::provider_role::{Denomination, OuterNode};
+ use rutent_contracts::state_machine::Outcome as InputOutcome;
+ use rutent_contracts::state_machine::{Destination, deposit_failed_at_after};

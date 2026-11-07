@@ -1,0 +1,20 @@
+# A separate file of the no_std port (program/SEPARATE): the manifest of the generated copy of contracts/src, which
+# nostd.sh writes from contracts/ and contracts-nostd.patch. serde is built alloc-only; no serde_json is needed.
+[package]
+name = "rutent-contracts-nostd"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
+
+# The patch adds whole prelude `use` lines to every module, and some names go unused in some; the copy is never
+# linted for style, only built.
+[lints.rust]
+unused_imports = "allow"

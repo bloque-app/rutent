@@ -1,0 +1,6 @@
+# The separate files of the no_std port (re-score brief, section 3.1): every file beside the generated copies, under
+# contracts-nostd/ and probe-nostd/, that is not the original plus its plumbing-only patch. nostd.sh check requires
+# the files there to be exactly the copies and these; every run note lists them.
+contracts-nostd/Cargo.toml
+probe-nostd/Cargo.toml
+probe-nostd/src/lib.rs
