@@ -126,7 +126,7 @@ pub fn describe(role: Role, isolation: Isolation) -> String {
                 "an empty read-only tmpfs root, rlimits (core 0, nofile 64, nproc 0, as 8 GiB), no_new_privs, seccomp allow-list"
             }
             Role::Worker => {
-                "home and scratch directories hidden, every mount read-only, rlimits (core 0, nofile 1024), no_new_privs; guests in PolkaVM's sandbox"
+                "home and scratch directories hidden, every mount but /proc read-only, rlimits (core 0, nofile 1024), no_new_privs, the mounts locked in a further user namespace, CAP_SYS_ADMIN dropped; guests in PolkaVM's sandbox"
             }
         };
         format!("unshare {}, then {jail}", UNSHARE[..10].join(" "))
