@@ -10,7 +10,7 @@
     "No RECORD line carries it alone; wasip2 and wit-bindgen carry it as one choice of an OR.",
     "PolkaVM's binding brings one such crate, regalloc2, only through its stand-in linker, off admission's path.",
     "Declining it keeps Wasmtime off main at this pin, and leaves no format fit for production.",
-    "Until you rule, the licence check keeps Wasmtime off main and F-013 waits."
+    "Until you rule, F-013 can't bring Wasmtime into the root workspace the check reads."
   ],
   "options": [
     "Confirm: the standing permission covers it",
@@ -18,12 +18,23 @@
     "Decline it; Wasmtime stays off main",
     "Discuss first"
   ],
-  "spec": ["REQ-MOD-5", "DEC-7", "ADR-0003", "REQ-MDL-15"],
+  "spec": [
+    "REQ-MOD-5",
+    "DEC-7",
+    "ADR-0003",
+    "REQ-MDL-15"
+  ],
   "reserved": true,
   "blocks": true,
   "refs": [
-    {"label": "EXP-2 outcome, the legal question", "url": "../experiments/2026-11-07-module-format/outcome.md#the-legal-question"},
-    {"label": "EXP-2 licence rows", "url": "../experiments/2026-11-07-module-format/scoring.md#4-the-licence-question"}
+    {
+      "label": "EXP-2 outcome, the legal question",
+      "url": "../experiments/2026-11-07-module-format/outcome.md#the-legal-question"
+    },
+    {
+      "label": "EXP-2 licence rows",
+      "url": "../experiments/2026-11-07-module-format/scoring.md#4-the-licence-question"
+    }
   ],
   "origin": "T-008-04, 2026-11-07"
 }

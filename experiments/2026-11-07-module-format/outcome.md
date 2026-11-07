@@ -129,7 +129,17 @@ recommendation rests on the numbers above. What the owner's ruling changes:
   platform need not carry `regalloc2`: its binding takes `polkavm-linker` only to build stand-ins, never on
   admission's path (`pvm-binding/binding/Cargo.toml`). But `G-13` stands, so no format fit for production would
   remain, `REQ-MDL-15` would be unmet for v0, and this outcome would be reopened.
-- **Not ruled:** no Wasmtime line is recorded, the licence check keeps the binding off `main`, and `F-013` waits.
+- **Not ruled:** no Wasmtime line is recorded, and `F-013` can't bring Wasmtime into the root workspace, whose
+  `Cargo.lock` is the only one the licence check reads.
+
+The licence check doesn't read the experiments' own workspaces. Merging `M1` puts both bindings' manifests and
+lockfiles on `main`, naming every dependency listed in the licence rows, none of them recorded in
+`licences/RECORD`: 105 of Wasm's 136 host and 16 of its 33 guest external packages, and 17 of PolkaVM's 41 and 5 of
+its 9. Whether those workspaces stay in the merge unrecorded, as experiment code, is the owner's call (`REQ-MOD-5`).
+
+PolkaVM's scored runs used the contracts as frozen at 1.0.0. After the security review bumped provider-role,
+module-interface and host to 2.0.0, its binding was rebuilt and its tests pass, but it wasn't re-run on the scoring
+platform. Wasm's runs `-2` and `-3` used the 2.0.0 contracts.
 
 The C stand-ins of both formats are built with clang and LLD, which state the same expression. They are tools, not
 packages in a `Cargo.lock` (`L-05`). PolkaVM's own crates state `MIT/Apache-2.0` (`L-03`). This page draws no legal
