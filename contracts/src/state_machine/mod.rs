@@ -3,7 +3,29 @@
 //!
 //! This is a library API (`DEC-4`): these types are the API, and they serialise to the schemas under
 //! `contracts/state-machine/schemas/`. `CMP-STM` implements [`StateMachine`]; this module holds no transition
-//! rules of its own.
+//! rules of its own but one, published so that every implementation applies it the same way: what a part becomes
+//! when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`).
+//!
+//! # The typed operation is the router's
+//!
+//! A segment plan is the router contract's typed operation (`urn:rutent:router-api:operation#/$defs/operation`,
+//! [`OperationKind`] and [`Endpoint`]) with a segment id and a provider. [`SegmentPlan::check`] holds the rules of
+//! that operation that JSON Schema can't state, the same rules as the router's own `Operation::check`.
+//!
+//! # No route left
+//!
+//! A `no_route` input moves a part by [`after_no_route`]: a part whose value can't be routed to the node where the
+//! destination reserve lives becomes stuck (`REQ-ORD-28`); a part whose value is already at that node, after a
+//! failed final deposit, waits for the customer (`REQ-ORD-43`). The part remembers where its final deposit failed
+//! ([`Part::deposit_failed_at`]), kept by the published update rule [`deposit_failed_at_after`], so the rule holds
+//! after a recalculation that started from there failed too.
+//!
+//! # The destination
+//!
+//! A part's destination ([`Destination`]) is its route's last deposit: the destination reserve (its provider), the
+//! outer node it deposits to, and the asset with its decimals. `INV-10` keeps it: a recalculation must end at the
+//! same destination ([`recalculation_keeps_destination`]), and only the customer's accepted `destination_changed`
+//! replaces it. [`Order::check`] requires every part's route to end with a deposit at its destination.
 //!
 //! # Rust is as strict as the schemas
 //!
@@ -38,10 +60,13 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
+pub use crate::provider_role::NodeRef;
+pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
+
 pub mod host;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.4.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,9 +240,11 @@ pub enum OrderState {
     EndedWithoutCompleting,
     /// Its first segment settled.
     FirstSegmentSettled,
-    /// Waiting for the customer.
+    /// Waiting for the customer: among other causes, a part whose value is at the node where the destination
+    /// reserve lives, after a failed final deposit, with no route left (`REQ-ORD-43`, [`after_no_route`]).
     WaitingForCustomer,
-    /// Stuck.
+    /// Stuck: over time, in dispute, or with no route left to the node where the destination reserve lives
+    /// (`REQ-ORD-28`, [`after_no_route`]).
     Stuck,
     /// Complete.
     Complete,
@@ -272,46 +299,182 @@ impl SegmentState {
     ];
 }
 
-/// The typed operation of a segment (`REQ-ORD-37`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Operation {
-    /// Out of a reserve, from an outer node into an inner one.
-    Withdrawal,
-    /// Between nodes, keeping the asset.
-    Route,
-    /// From one asset to another.
-    Exchange,
-    /// Into a reserve, from an inner node out to an outer one.
-    Deposit,
-}
-
-/// A vertex of the automaton: a node and an asset (`REQ-STM-7`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Endpoint {
-    /// The node.
-    pub node: Id,
-    /// The asset.
-    pub asset: Id,
-}
-
-/// One segment of a route: a transition from one (node, asset) pair to another at one provider (`REQ-STM-7`).
-/// `from` may equal `to` in asset, a transition that changes no value. Schema:
-/// `urn:rutent:state-machine:segment-plan`.
+/// One segment of a route: the router's typed operation (`REQ-ORD-37`), a transition from one (node, asset) pair to
+/// another at one provider (`REQ-STM-7`). A withdrawal, route or deposit keeps its asset, a transition that changes
+/// no value. Schema: `urn:rutent:state-machine:segment-plan`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct SegmentPlan {
     /// Unique within its order for the order's whole life; inputs name a segment by this id, never by position.
     pub segment_id: Id,
     /// The provider the segment runs at.
     pub provider: Id,
-    /// The segment's typed operation.
-    pub operation: Operation,
+    /// The kind of the router's typed operation.
+    pub kind: OperationKind,
     /// Where the value starts.
     pub from: Endpoint,
     /// Where the value ends.
     pub to: Endpoint,
+}
+
+impl SegmentPlan {
+    /// Checks the typed operation's rules that JSON Schema can't state: a withdrawal, route or deposit keeps its
+    /// asset; a route runs between two different nodes; an exchange stays at one node. The router's schema states
+    /// which end of each kind is outer and which inner; this repeats those too, so a plan built in Rust is checked
+    /// whole.
+    pub fn check(&self) -> Result<(), Violation> {
+        check_operation(self.kind, &self.from, &self.to)
+    }
+}
+
+impl Serialize for SegmentPlan {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SegmentPlan::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SegmentPlan {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let plan = SegmentPlan::deserialize(deserializer)?;
+        plan.check().map_err(D::Error::custom)?;
+        Ok(plan)
+    }
+}
+
+/// The typed operation's rules, as the router contract's `Operation::check` states them.
+fn check_operation(kind: OperationKind, from: &Endpoint, to: &Endpoint) -> Result<(), Violation> {
+    check_endpoint(from)?;
+    check_endpoint(to)?;
+    let outer = |n: &NodeRef| matches!(n, NodeRef::Outer(_));
+    let same_asset = from.asset.id == to.asset.id;
+    match kind {
+        OperationKind::Withdrawal => {
+            if !outer(&from.node) || outer(&to.node) {
+                return Err(Violation(
+                    "a withdrawal goes from an outer node to an inner one",
+                ));
+            }
+            if !same_asset {
+                return Err(Violation("a withdrawal keeps its asset"));
+            }
+        }
+        OperationKind::Deposit => {
+            if outer(&from.node) || !outer(&to.node) {
+                return Err(Violation(
+                    "a deposit goes from an inner node to an outer one",
+                ));
+            }
+            if !same_asset {
+                return Err(Violation("a deposit keeps its asset"));
+            }
+        }
+        OperationKind::Route => {
+            if outer(&from.node) || outer(&to.node) {
+                return Err(Violation("a route runs between inner nodes"));
+            }
+            if from.node == to.node {
+                return Err(Violation("a route runs between two different nodes"));
+            }
+            if !same_asset {
+                return Err(Violation("a route keeps its asset"));
+            }
+        }
+        OperationKind::Exchange => {
+            if outer(&from.node) || outer(&to.node) {
+                return Err(Violation("an exchange runs at an inner node"));
+            }
+            if from.node != to.node {
+                return Err(Violation("an exchange stays at one node"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The provider-role atoms of an endpoint, as that contract's schema states them: every node, network and asset
+/// is an identifier (checked by the router's own [`crate::router_api::Id`]), and decimals are at most 36.
+fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
+    let node = match &endpoint.node {
+        NodeRef::Inner(id) => id,
+        NodeRef::Outer(outer) => &outer.network,
+    };
+    if NodeId::new(node.as_str()).is_none() || NodeId::new(endpoint.asset.id.as_str()).is_none() {
+        return Err(Violation(
+            "a node, network and asset is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
+        ));
+    }
+    if endpoint.asset.decimals > 36 {
+        return Err(Violation("an asset's decimals are at most 36"));
+    }
+    Ok(())
+}
+
+/// Each segment of a route starts where the one before it ended, in the same unit, as the router's `Part::check`
+/// requires of its operations; and the route ends with a deposit (`REQ-ORD-16`).
+fn check_chain<'a>(
+    steps: impl Iterator<Item = (OperationKind, &'a Endpoint, &'a Endpoint)>,
+) -> Result<(), Violation> {
+    let mut last: Option<(OperationKind, &Endpoint)> = None;
+    for (kind, from, to) in steps {
+        if let Some((_, end)) = last
+            && end != from
+        {
+            return Err(Violation(
+                "each segment starts where the one before it ended, in the same unit",
+            ));
+        }
+        last = Some((kind, to));
+    }
+    match last {
+        Some((OperationKind::Deposit, _)) => Ok(()),
+        _ => Err(Violation("a route ends with a deposit")),
+    }
+}
+
+/// A part's destination (`INV-10`): its route's last deposit, that is the destination reserve, the outer node it
+/// deposits to and the asset, decimals included. Schema: the `destination` of
+/// `urn:rutent:state-machine:order#/$defs/part`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Destination {
+    /// The destination reserve: the provider of the route's last deposit.
+    pub provider: Id,
+    /// Where it deposits to: an outer node, and the asset with its decimals.
+    pub to: Endpoint,
+}
+
+impl Destination {
+    /// The destination of a route: its last segment, when that is a deposit.
+    pub fn of(route: &[SegmentPlan]) -> Option<Destination> {
+        let last = route.last()?;
+        (last.kind == OperationKind::Deposit).then(|| Destination {
+            provider: last.provider.clone(),
+            to: last.to.clone(),
+        })
+    }
+
+    fn of_segments(segments: &[Segment]) -> Option<Destination> {
+        let last = segments.last()?;
+        (last.kind == OperationKind::Deposit).then(|| Destination {
+            provider: last.provider.clone(),
+            to: last.to.clone(),
+        })
+    }
+}
+
+/// The published rule of `INV-10` for a `route_recalculated` input: whether its route ends at the part's
+/// destination. One that doesn't is not applicable (`changes_destination`); another destination needs the
+/// customer's accepted `destination_changed`.
+pub fn recalculation_keeps_destination(part: &Part, route: &[SegmentPlan]) -> bool {
+    Destination::of(route).as_ref() == Some(&part.destination)
+}
+
+/// The published rule for a `destination_changed` input (the orchestrator's ruling): whether it changes the
+/// destination at all. One whose route keeps the destination ([`recalculation_keeps_destination`]) is a
+/// recalculation, not a change of destination, and is not applicable (`keeps_destination`); it changes nothing,
+/// `deposit_failed_at` included.
+pub fn destination_change_applies(part: &Part, route: &[SegmentPlan]) -> bool {
+    !recalculation_keeps_destination(part, route)
 }
 
 /// Who stated an input (`REQ-AUD-2`).
@@ -384,14 +547,13 @@ pub struct PartPlan {
     pub segments: Vec<SegmentPlan>,
 }
 
-/// Why a part is declared stuck.
+/// Why a part is declared stuck. No route left is not among them: it arrives as [`Observed::NoRoute`] and
+/// resolves by [`after_no_route`], to stuck or to waiting for the customer (`spec-no-route-left`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StuckReason {
     /// Over its time limit, as stated by whoever measured it.
     OverTime,
-    /// No route left.
-    NoRouteLeft,
     /// A dispute over who carries a reversal (`REQ-ORD-11`).
     Dispute,
 }
@@ -568,7 +730,9 @@ fn route_ids<'a>(segments: &'a [SegmentPlan], ids: &mut BTreeSet<&'a Id>) -> Res
     if segments.is_empty() {
         return Err(Violation("a route has at least one segment"));
     }
+    check_chain(segments.iter().map(|s| (s.kind, &s.from, &s.to)))?;
     for s in segments {
+        s.check()?;
         if !ids.insert(&s.segment_id) {
             return Err(Violation("segment ids are unique within an order"));
         }
@@ -598,8 +762,8 @@ pub struct Segment {
     pub segment_id: Id,
     /// The provider the segment runs at.
     pub provider: Id,
-    /// The segment's typed operation.
-    pub operation: Operation,
+    /// The kind of the router's typed operation.
+    pub kind: OperationKind,
     /// Where the value starts.
     pub from: Endpoint,
     /// Where the value ends.
@@ -614,14 +778,14 @@ impl Segment {
         let SegmentPlan {
             segment_id,
             provider,
-            operation,
+            kind,
             from,
             to,
         } = plan;
         Segment {
             segment_id,
             provider,
-            operation,
+            kind,
             from,
             to,
             state,
@@ -633,7 +797,7 @@ impl Segment {
         SegmentPlan {
             segment_id: self.segment_id.clone(),
             provider: self.provider.clone(),
-            operation: self.operation,
+            kind: self.kind,
             from: self.from.clone(),
             to: self.to.clone(),
         }
@@ -661,6 +825,95 @@ pub struct Part {
     /// late report about one is told apart from a report about nothing the order ever had.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retired_segments: Vec<Id>,
+    /// The part's destination (`INV-10`): its route's last deposit. Set when the route is chosen; kept by every
+    /// recalculation; replaced only by the customer's accepted `destination_changed`.
+    pub destination: Destination,
+    /// The inner node where the part's last failed final deposit left its value: where the destination reserve
+    /// lives (`REQ-ORD-43`). Kept by [`deposit_failed_at_after`]; [`after_no_route`] reads it. Absent if the part's
+    /// final deposit never failed, or the customer has since changed its destination. Only an inner node: value
+    /// never sits at an outer one.
+    #[serde(
+        default,
+        deserialize_with = "some_node",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deposit_failed_at: Option<NodeId>,
+}
+
+fn some_node<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<NodeId>, D::Error> {
+    NodeId::deserialize(deserializer).map(Some)
+}
+
+/// The published update rule for [`Part::deposit_failed_at`], applied with every input on the part: the value it
+/// has after `input`, given the part before it.
+///
+/// - A `segment_failed` on the part's last segment, a deposit, sets it to that deposit's `from` node: each failed
+///   final deposit overwrites it.
+/// - A `destination_changed` clears it: the destination reserve, and so its node, is another one. One whose route
+///   keeps the destination is not a change ([`destination_change_applies`]) and keeps it.
+/// - Anything else, a `route_recalculated` included, keeps it.
+pub fn deposit_failed_at_after(part: &Part, input: &RecordedInput) -> Option<NodeId> {
+    match &input.observed {
+        Observed::SegmentFailed {} => match part.segments.last() {
+            Some(last)
+                if last.kind == OperationKind::Deposit
+                    && input.subject.segment.as_ref() == Some(&last.segment_id) =>
+            {
+                inner_node(&last.from.node).or_else(|| part.deposit_failed_at.clone())
+            }
+            _ => part.deposit_failed_at.clone(),
+        },
+        Observed::DestinationChanged { segments, .. }
+            if destination_change_applies(part, segments) =>
+        {
+            None
+        }
+        _ => part.deposit_failed_at.clone(),
+    }
+}
+
+fn inner_node(node: &NodeRef) -> Option<NodeId> {
+    match node {
+        NodeRef::Inner(id) => NodeId::new(id.as_str()),
+        NodeRef::Outer(_) => None,
+    }
+}
+
+/// Where a part's value sits, as its segments show it: at the start of its first segment that hasn't settled,
+/// when that segment hasn't started, has been reversed, or is a deposit that failed (a failed deposit leaves the
+/// value where it was, `REQ-ORD-43`), and that start is an inner node. `None` when the value is in flight (a
+/// segment started, failed with its reversal owed, or with its outcome unknown), when it is still outside the book
+/// (the withdrawal hasn't settled: nothing has moved, `REQ-ORD-12`, `REQ-ORD-40`), or when the part has delivered.
+pub fn value_at(part: &Part) -> Option<&Endpoint> {
+    let segment = part
+        .segments
+        .iter()
+        .find(|s| s.state != SegmentState::Settled)?;
+    let at = match (segment.state, segment.kind) {
+        (SegmentState::Pending | SegmentState::ReversalComplete, _) => &segment.from,
+        (SegmentState::FailedReversalOwed, OperationKind::Deposit) => &segment.from,
+        _ => return None,
+    };
+    matches!(at.node, NodeRef::Inner(_)).then_some(at)
+}
+
+/// The published rule for a `no_route` input on a part (the owner's ruling `spec-no-route-left`): the state the
+/// part goes to, or `None` when the rule can't place its value, and the input is not applicable from this state.
+///
+/// - A part whose value sits at the node where the destination reserve lives, after a failed final deposit,
+///   waits for the customer (`REQ-ORD-43`). That node is [`Part::deposit_failed_at`], which [`Order::check`]
+///   requires to be the failed deposit's `from` node while that deposit is the part's last segment.
+/// - A part whose value can't be routed to that node becomes stuck (`REQ-ORD-28`).
+///
+/// "At that node" compares nodes only, as the ruling words it; the asset may differ after an exchange there.
+pub fn after_no_route(part: &Part) -> Option<OrderState> {
+    let at = value_at(part)?;
+    Some(match (&part.deposit_failed_at, &at.node) {
+        (Some(failed), NodeRef::Inner(here)) if failed.as_str() == here.as_str() => {
+            OrderState::WaitingForCustomer
+        }
+        _ => OrderState::Stuck,
+    })
 }
 
 /// Why an input changed nothing although it was about this order's subject or could have been.
@@ -678,6 +931,9 @@ pub enum NotApplicableReason {
     /// A recalculation whose route ends at another destination or to asset (`INV-10`); a new destination needs
     /// [`Observed::DestinationChanged`], with the customer's acceptance.
     ChangesDestination,
+    /// A `destination_changed` whose route ends at the part's destination: a recalculation, not a change of
+    /// destination ([`destination_change_applies`]).
+    KeepsDestination,
     /// A recalculation or change of destination whose route reuses a segment id the order has, current or
     /// retired: ids are unique for the order's whole life.
     ReusesSegmentId,
@@ -742,6 +998,11 @@ impl Order {
     /// - A handed-on order has a handed-on part.
     /// - Part ids, and segment ids current or retired, are unique within the order.
     /// - An `applied` last input is the input that reached the state.
+    /// - Every segment meets its typed operation's rules ([`SegmentPlan::check`]), and each starts where the one
+    ///   before it ended.
+    /// - Every part's route ends with a deposit at the part's destination (`INV-10`).
+    /// - While a part's last segment is a failed deposit, its `deposit_failed_at` is that deposit's `from` node; and
+    ///   it has one only where a final deposit failed: that last segment, or one a recalculation since retired.
     pub fn check(&self) -> Result<(), Violation> {
         if self.parts.is_empty() {
             return Err(Violation("an order has at least one part"));
@@ -751,6 +1012,37 @@ impl Order {
         for part in &self.parts {
             if part.segments.is_empty() {
                 return Err(Violation("a part has at least one segment"));
+            }
+            for segment in &part.segments {
+                check_operation(segment.kind, &segment.from, &segment.to)?;
+            }
+            check_chain(part.segments.iter().map(|s| (s.kind, &s.from, &s.to)))?;
+            if NodeId::new(part.destination.provider.as_str()).is_none() {
+                return Err(Violation(
+                    "a destination reserve is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
+                ));
+            }
+            if Destination::of_segments(&part.segments).as_ref() != Some(&part.destination) {
+                return Err(Violation(
+                    "a part's route ends with a deposit at its destination: the same reserve, outer node and asset",
+                ));
+            }
+            let last = part.segments.last().expect("a part has a segment");
+            if last.kind == OperationKind::Deposit
+                && last.state == SegmentState::FailedReversalOwed
+                && part.deposit_failed_at != inner_node(&last.from.node)
+            {
+                return Err(Violation(
+                    "while a part's last segment is a failed deposit, deposit_failed_at is that deposit's from node",
+                ));
+            }
+            let last_failed = last.kind == OperationKind::Deposit
+                && last.state == SegmentState::FailedReversalOwed;
+            if part.deposit_failed_at.is_some() && !last_failed && part.retired_segments.is_empty()
+            {
+                return Err(Violation(
+                    "deposit_failed_at only where a final deposit failed: the last segment, or one a recalculation retired",
+                ));
             }
             if (part.state == OrderState::HandedOn) != part.linked_order.is_some() {
                 return Err(Violation(
@@ -816,6 +1108,11 @@ pub trait StateMachine {
     /// The order's next state. Total: it always returns an order, whose [`Order::last_input`] says what this
     /// input did. An input that doesn't apply (a repeat, a late report, a report about another order or about
     /// an ended one) leaves every state as it was and is named there with its [`Outcome`] (`REQ-STM-4`,
-    /// `REQ-STM-6`, `REQ-AUD-1`). The input stays recorded either way.
+    /// `REQ-STM-6`, `REQ-AUD-1`). The input stays recorded either way. A `no_route` input moves its part by
+    /// [`after_no_route`], and is not applicable when that rule gives `None`. Every input updates
+    /// [`Part::deposit_failed_at`] by [`deposit_failed_at_after`]. A `route_recalculated` that leaves the
+    /// destination is not applicable (`changes_destination`, [`recalculation_keeps_destination`]); a
+    /// `destination_changed` that keeps it is not applicable (`keeps_destination`,
+    /// [`destination_change_applies`]).
     fn transition(state: &Order, input: &RecordedInput) -> Order;
 }

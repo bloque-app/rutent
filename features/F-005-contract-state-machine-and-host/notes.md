@@ -92,7 +92,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `changes_destination` (`INV-10`).
 - Another destination is its own kind, `destination_changed`, and it and `handed_on` both require `acceptance`,
   the id of the customer's acceptance record (`REQ-ORD-43`, `REQ-ORD-34`, `REQ-AUZ-3`).
-- Raised to the owner: does "no route left" make an order stuck (glossary, `REQ-ORD-4`) or make it wait for the
+- Ruled since (`spec-no-route-left`, state-machine 0.4.0, below). Was raised to the owner: does "no route left" make an order stuck (glossary, `REQ-ORD-4`) or make it wait for the
   customer (`REQ-ORD-43`)? The contract keeps both open, as `no_route` and `stuck_declared` with reason
   `no_route_left`, until the owner rules.
 
@@ -301,3 +301,64 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   suite passes all sixteen cells with `FaultSeam`, and every runnable cell black-box. Against a real process kill,
   power loss or a torn write nothing survives, since nothing is on disk; `EXP-1` scores durability across a real
   kill on the candidates only.
+
+## State-machine 0.4.0 (a follow-up to T-005-01)
+
+- The segment plan `$ref`s the router contract's typed operation, `urn:rutent:router-api:operation#/$defs/operation`:
+  `operation` became `kind`, and the endpoints are the router's, an inner node by identifier or an outer node by its
+  network, each with a denomination. The Rust types reuse `router_api::{OperationKind, Endpoint}`.
+- The router's schema states only which end of each kind is outer and which inner. Its other rules (an asset kept,
+  a route between two different nodes, an exchange at one node) live in its priced `Operation::check`, which the
+  bare typed operation can't call. `SegmentPlan::check` repeats them, run on every segment of an input and an order.
+  A shared function in `router_api` would remove the copy; that needs a router-api bump, so it is left as a
+  follow-up for that contract.
+- The owner's ruling `spec-no-route-left` is published as `after_no_route(part)`, the one transition rule the
+  contract holds, so every `StateMachine` applies it alike: stuck when the part's value can't be routed to the node
+  where the destination reserve lives (`REQ-ORD-28`); waiting for the customer when the value sits there after a
+  failed final deposit (`REQ-ORD-43`). "At that node" compares nodes only, as the ruling words it.
+- Where the value sits is read from the segments: the start of the first segment that hasn't settled, when it is
+  pending, reversed, or a deposit that failed (a failed deposit leaves the value where it was). With a segment
+  started, owed a reversal, or of unknown outcome, the value is in flight and the rule places nothing.
+- The recorded inputs alone can tell the two paths apart, but the current state can't always: after the final
+  deposit fails, a recalculation from that node replaces the deposit, and if its first segment fails and is
+  reversed, the segments no longer show a failed deposit. So the part keeps `deposit_failed_at`, the endpoint where
+  its final deposit failed, set by the state machine at that failure and kept across the recalculation. It is a
+  state field, not an input field: the fact is already in an earlier recorded input, and `transition` needs it in
+  the state it is given. No input field is added.
+- `stuck_declared` no longer takes `no_route_left`, so no route left has one path, `no_route`, resolved by the rule.
+  Past the recalculation bound (`REQ-ORD-4`), Core records `no_route` with the decision record of the last routing.
+- The host contract's shapes don't change, but its fixtures embed segment plans and its tests resolve the router and
+  provider-role schemas, so the host is bumped to 0.1.1. The suite's probe builds the new segment shape, with `bank`
+  and `chain` as outer nodes; its provenance test now reads both versions from the contracts. The reference host
+  needs no change.
+
+### After review
+
+- `deposit_failed_at` has a published update rule, `deposit_failed_at_after`, applied with every input: each failed
+  final deposit overwrites it; `destination_changed` clears it; a recalculation keeps it. Without it, a part whose
+  customer accepted a new destination from the same node, and whose first new segment was reversed, would wait
+  where it should be stuck, and implementations could disagree on a second failure. `Order::check` requires it to be
+  the failed deposit's `from` node while that deposit is the part's last segment, so `after_no_route` reads the field
+  alone. The suite's probe applies the rule, and the replay cell runs an order whose final deposit fails.
+- `deposit_failed_at` is an inner node only, and its asset is dropped: the ruling says "at that node". `value_at`
+  places nothing at an outer node, so with every segment pending nothing has moved, and `no_route` there is not
+  applicable rather than stuck (`REQ-ORD-12`, `REQ-ORD-40`).
+- `INV-10`'s destination, as the orchestrator ruled: the last deposit's provider (the destination reserve), its
+  `to` node and its to-asset, decimals included. A part keeps it as `destination`; `Order::check` requires every
+  route to end with a deposit there, and `recalculation_keeps_destination` is the published test a
+  `route_recalculated` must pass, else `changes_destination`.
+- Rules JSON Schema can't state get invalid fixtures too, listed in the test as rejected by Rust only, each with
+  its rule: another reserve depositing to the same network, segments that don't chain, and a failed final deposit
+  without `deposit_failed_at`.
+- `SegmentPlan::check` also checks the provider-role atoms, every node, network and asset an identifier (with the
+  router's own `Id`) and decimals at most 36; and each route chains, every segment starting where the one before
+  it ended, as the router's `Part::check` requires.
+- A `destination_changed` whose route ends at the part's destination is a recalculation, not a change of
+  destination, as the orchestrator ruled: not applicable, with the new reason `keeps_destination`, and it keeps
+  `deposit_failed_at`. Otherwise it would clear the field and send the part to stuck where a `route_recalculated`
+  would leave it waiting. `destination_change_applies` is the published test.
+- `Order::check` refuses a `deposit_failed_at` on a part where no final deposit failed. It reads "failed" as the
+  last segment being a failed deposit, or the part having retired segments, since only a recalculation keeps the
+  field after the deposit is gone; the state can't show more than that.
+- The rules only Rust checks now cover recorded inputs too: a recalculated route that doesn't chain, and one that
+  doesn't end with a deposit. A test checks the violation each Rust-only fixture is refused with.

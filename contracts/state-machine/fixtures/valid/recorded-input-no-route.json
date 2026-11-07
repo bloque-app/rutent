@@ -1,0 +1,18 @@
+{
+  "record_id": "rec-0050",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "router",
+    "id": "router"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-1",
+    "part": "p1"
+  },
+  "observed": {
+    "kind": "no_route",
+    "decision_record": "dr-0009"
+  }
+}

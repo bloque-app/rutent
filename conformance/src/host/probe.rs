@@ -2,11 +2,13 @@
 //! drives. It is not `CMP-STM` (that comes in M2); it is just enough of the state-machine contract to give each
 //! input an outcome a host can't fake. Every order it returns passes [`Order::check`].
 
+use rutent_contracts::provider_role::{Denomination, OuterNode};
 use rutent_contracts::state_machine::Outcome as InputOutcome;
+use rutent_contracts::state_machine::{Destination, deposit_failed_at_after};
 use rutent_contracts::state_machine::{
-    Endpoint, Id, LastInput, NotApplicableReason, Observed, Operation, Order, OrderState, Part,
-    PartPlan, RecordId, RecordedInput, Scope, Segment, SegmentPlan, SegmentState, Source,
-    SourceKind, Standing, StateMachine, Subject, Timestamp,
+    Endpoint, Id, LastInput, NodeRef, NotApplicableReason, Observed, OperationKind, Order,
+    OrderState, Part, PartPlan, RecordId, RecordedInput, Scope, Segment, SegmentPlan, SegmentState,
+    Source, SourceKind, Standing, StateMachine, Subject, Timestamp,
 };
 
 /// The probe state machine. A route opens an order; binding moves a segment from pending to started; settling moves
@@ -26,18 +28,22 @@ impl StateMachine for Probe {
         };
         let parts = parts
             .iter()
-            .map(|p| Part {
-                part_id: p.part_id.clone(),
-                state: OrderState::NotPastFirstSegment,
-                linked_order: None,
-                segments: p
-                    .segments
-                    .iter()
-                    .map(|s| Segment::new(s.clone(), SegmentState::Pending))
-                    .collect(),
-                retired_segments: Vec::new(),
+            .map(|p| {
+                Some(Part {
+                    part_id: p.part_id.clone(),
+                    state: OrderState::NotPastFirstSegment,
+                    destination: Destination::of(&p.segments)?,
+                    linked_order: None,
+                    segments: p
+                        .segments
+                        .iter()
+                        .map(|s| Segment::new(s.clone(), SegmentState::Pending))
+                        .collect(),
+                    retired_segments: Vec::new(),
+                    deposit_failed_at: None,
+                })
             })
-            .collect();
+            .collect::<Option<Vec<Part>>>()?;
         Some(Order {
             order_id: input.subject.order.clone(),
             state: OrderState::NotPastFirstSegment,
@@ -99,8 +105,14 @@ fn apply(order: &mut Order, input: &RecordedInput) -> InputOutcome {
             not_applicable(NotApplicableReason::UnknownSubject)
         };
     };
+    // The published update rule, read before the part changes.
+    let failed_at = deposit_failed_at_after(part, input);
     let segment = &mut part.segments[index];
     match (&input.observed, segment.state) {
+        (Observed::SegmentFailed {}, SegmentState::Started) => {
+            segment.state = SegmentState::FailedReversalOwed;
+            part.deposit_failed_at = failed_at;
+        }
         (Observed::ProviderBound {}, SegmentState::Pending) => {
             segment.state = SegmentState::Started
         }
@@ -138,19 +150,39 @@ fn id(text: &str) -> Id {
     Id::new(text).expect("a probe id is never empty")
 }
 
-fn endpoint(node: &str, asset: &str) -> Endpoint {
+/// An endpoint at an inner node.
+fn inner(node: &str, asset: &str) -> Endpoint {
+    endpoint(NodeRef::Inner(node.into()), asset)
+}
+
+/// An endpoint at an outer node, named for its network.
+fn outer(network: &str, asset: &str) -> Endpoint {
+    endpoint(
+        NodeRef::Outer(OuterNode {
+            network: network.into(),
+        }),
+        asset,
+    )
+}
+
+fn endpoint(node: NodeRef, asset: &str) -> Endpoint {
+    let decimals = if asset == "COP" { 2 } else { 6 };
     Endpoint {
-        node: id(node),
-        asset: id(asset),
+        node,
+        asset: Denomination {
+            id: asset.into(),
+            decimals,
+        },
     }
 }
 
-/// The three segments of every probe route: a withdrawal, an exchange and a deposit.
+/// The three segments of every probe route: a withdrawal from the outer node `bank`, an exchange at the inner node
+/// `ledger`, and a deposit out to the outer node `chain`.
 pub fn route() -> Vec<SegmentPlan> {
-    let segment = |n: u8, provider: &str, operation, from, to| SegmentPlan {
+    let segment = |n: u8, provider: &str, kind, from, to| SegmentPlan {
         segment_id: id(&format!("p1-s{n}")),
         provider: id(provider),
-        operation,
+        kind,
         from,
         to,
     };
@@ -158,23 +190,23 @@ pub fn route() -> Vec<SegmentPlan> {
         segment(
             1,
             "reserve-bank",
-            Operation::Withdrawal,
-            endpoint("bank", "COP"),
-            endpoint("ledger", "COP"),
+            OperationKind::Withdrawal,
+            outer("bank", "COP"),
+            inner("ledger", "COP"),
         ),
         segment(
             2,
             "exchange-a",
-            Operation::Exchange,
-            endpoint("ledger", "COP"),
-            endpoint("ledger", "USDC"),
+            OperationKind::Exchange,
+            inner("ledger", "COP"),
+            inner("ledger", "USDC"),
         ),
         segment(
             3,
             "reserve-wallet",
-            Operation::Deposit,
-            endpoint("ledger", "USDC"),
-            endpoint("chain", "USDC"),
+            OperationKind::Deposit,
+            inner("ledger", "USDC"),
+            outer("chain", "USDC"),
         ),
     ]
 }
@@ -214,6 +246,24 @@ pub fn input(
         },
         observed,
     }
+}
+
+/// The seven inputs of an order whose final deposit fails: as [`order_inputs`], but the deposit, once bound,
+/// fails, so the part records where (`deposit_failed_at`, `REQ-ORD-43`).
+pub fn order_inputs_with_a_failed_final_deposit(
+    order: &str,
+    first_tick: u32,
+) -> Vec<RecordedInput> {
+    let mut inputs = order_inputs(order, first_tick);
+    let last = inputs.pop().expect("an order has inputs");
+    inputs.push(input(
+        order,
+        last.record_id.as_str(),
+        first_tick + 6,
+        Some("p1-s3"),
+        Observed::SegmentFailed {},
+    ));
+    inputs
 }
 
 /// The seven inputs that take one order from its route to complete, in their recorded order: the route, then each

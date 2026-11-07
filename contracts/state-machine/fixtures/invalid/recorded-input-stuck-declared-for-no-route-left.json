@@ -1,0 +1,18 @@
+{
+  "record_id": "rec-0003",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "orchestrator",
+    "id": "core-orch"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-1",
+    "part": "p3"
+  },
+  "observed": {
+    "kind": "stuck_declared",
+    "reason": "no_route_left"
+  }
+}

@@ -1,5 +1,9 @@
 # host changelog
 
+## 0.1.1
+- No change to the host's shapes: its fixtures carry the state machine's 0.4.0 segment plans, the router's typed
+  operation, and its tests resolve the router and provider-role schemas those refer to. (DEC-4, T-005-01)
+
 ## 0.1.0
 - The host contract: the `Host` and `FaultSeam` traits, the six guarantees (durable, exactly-once,
   per-order-sequence, no-effect-without-record, swap, replay) with how the suite tests each, and schemas and

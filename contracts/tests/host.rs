@@ -52,8 +52,36 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&read_text(path)).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// Every schema of another contract the state machine's shapes refer to, by its own `$id`.
+fn schemas_of(contract: &str) -> Vec<(String, Value)> {
+    let dir = manifest_dir().join(contract).join("schemas");
+    let mut out: Vec<(String, Value)> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| read_json(&entry.unwrap().path()))
+        .map(|s| {
+            (
+                s["$id"]
+                    .as_str()
+                    .expect("a schema names its $id")
+                    .to_owned(),
+                s,
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 fn validator(shape: &str) -> Validator {
     let mut registry = Registry::new();
+    for (id, s) in schemas_of("provider-role")
+        .into_iter()
+        .chain(schemas_of("router-api"))
+    {
+        registry = registry
+            .add(id.clone(), s)
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
     for s in STATE_MACHINE_SHAPES {
         let path = manifest_dir().join(format!("state-machine/schemas/{s}.schema.json"));
         registry = registry

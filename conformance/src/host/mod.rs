@@ -1136,6 +1136,10 @@ fn replay_reaches_the_same_states<H: Harness<Probe>>(harness: &mut H, seed: u64)
     let mut reordered = probe::order_inputs("ord-3", 200);
     probe::shuffle(&mut reordered, seed);
     inputs.extend(reordered);
+    // An order whose final deposit fails, so each record's state carries where (deposit_failed_at).
+    inputs.extend(probe::order_inputs_with_a_failed_final_deposit(
+        "ord-4", 300,
+    ));
     let mut host = started(harness)?;
     let acks = record_all(&mut host, &inputs)?;
     if host.submit(probe::reusing(&acks[0].input)).is_ok() {

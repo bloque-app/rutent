@@ -32,7 +32,52 @@ field by field in Rust is checked only when `check` is called; a `StateMachine` 
 | A part retires a segment id once | `uniqueItems` | `Order::check` |
 | Part ids, and segment ids current or retired, are unique within the order for its whole life | can't be stated | `Order::check`, `RecordedInput::check` within one route |
 | An `applied` last input is the input that reached the state | can't be stated | `Order::check` |
-| A recalculation keeps the destination and to asset (`INV-10`) | can't be stated: needs the order | `CMP-STM`, as `not_applicable` / `changes_destination` |
+| A part's route ends with a deposit at its destination: the destination reserve, the outer node it deposits to, and the asset with its decimals (`INV-10`, `REQ-ORD-16`) | `destination` required; can't be stated that the route ends there | `Order::check`; for a `route_recalculated`, `recalculation_keeps_destination`, else `not_applicable` / `changes_destination`; for a `destination_changed`, `destination_change_applies`, else `not_applicable` / `keeps_destination` |
+| A segment is the router's typed operation: its kind, and which end of each kind is outer and which inner | `$ref` to `urn:rutent:router-api:operation#/$defs/operation` | `OperationKind`, `Endpoint`, `SegmentPlan::check` |
+| A withdrawal, route or deposit keeps its asset; a route runs between two different nodes; an exchange stays at one node | can't be stated | `SegmentPlan::check`, on every segment of an input and an order, as the router's `Operation::check` |
+| Every node, network and asset is a provider-role identifier, and decimals are at most 36 | provider-role's `identifier` and `decimals` | `SegmentPlan::check`, with the router's own `Id` |
+| Each segment starts where the one before it ended, in the same unit, and a route ends with a deposit | can't be stated | `RecordedInput::check`, `Order::check`, as the router's `Part::check` |
+| `deposit_failed_at`, when present, is an inner node, never an outer one or `null` | `$ref` to provider-role's `inner_node` | `NodeId`, `deserialize_with` |
+| While a part's last segment is a failed deposit, `deposit_failed_at` is that deposit's `from` node | can't be stated | `Order::check` |
+| A part has a `deposit_failed_at` only where a final deposit failed: its last segment, or one a recalculation retired | can't be stated | `Order::check` |
+| The destination reserve is a provider-role identifier | `identifier` | `Order::check`, with the router's own `Id` |
+| `deposit_failed_at` is overwritten by each failed final deposit, cleared by `destination_changed`, kept by a recalculation | can't be stated: a transition | `deposit_failed_at_after`, applied by `CMP-STM` with every input |
+| With no route left, a part becomes stuck unless its value sits at the node where the destination reserve lives, after a failed final deposit, when it waits for the customer (`REQ-ORD-28`, `REQ-ORD-43`, `spec-no-route-left`) | can't be stated: a transition | `after_no_route`, applied by `CMP-STM` to a `no_route` input |
+
+## No route left
+
+The owner's ruling `spec-no-route-left` settles what `no_route` does, and the contract publishes it as a pure
+function, `after_no_route`, that every `StateMachine` applies:
+
+- a part whose value can't be routed to the node where the destination reserve lives becomes **stuck**
+  (`REQ-ORD-28`);
+- a part whose value already sits at that node, after a failed final deposit, **waits for the customer**
+  (`REQ-ORD-43`).
+
+That node is the `from` node of the failed deposit, an inner node. The part remembers it in `deposit_failed_at`, by
+a second published rule, `deposit_failed_at_after`, so the first still holds after a recalculation from there fails
+and is reversed:
+
+- each failed final deposit overwrites it;
+- `destination_changed` clears it, since the destination reserve is then another one (one that keeps the destination
+  isn't a change, below, and keeps it);
+- a recalculation keeps it.
+
+The rule places nothing, and the input is not applicable, when the value is in flight (a segment started, owed a
+reversal, or with its outcome unknown) or still outside the book (the withdrawal hasn't settled: nothing has moved,
+`REQ-ORD-12`, `REQ-ORD-40`). `stuck_declared` no longer takes `no_route_left`: no route left has one path.
+
+## The destination
+
+A part's `destination` is its route's last deposit: the destination reserve (the deposit's provider), the outer node
+it deposits to, and the asset with its decimals. `INV-10` keeps it: a recalculation ending anywhere else, another
+reserve depositing to the same network included, is refused unless the customer accepts it as a
+`destination_changed`.
+
+The other way round, as the orchestrator ruled: a `destination_changed` whose route ends at the part's destination
+is a recalculation, not a change of destination. It is not applicable (`keeps_destination`), and changes nothing,
+`deposit_failed_at` included. `destination_change_applies` is the published test, `recalculation_keeps_destination`
+negated.
 
 ## Repeats and record ids
 
@@ -51,4 +96,4 @@ The state machine is a second line only: an input whose record id is the order's
 `transition` keeps the SAD's signature and returns the order. The order's `last_input` names the last input
 delivered and what it did (`REQ-AUD-1`): `applied`; `repeat`; `late`, when it names a retired segment and so
 matches no current one; or `not_applicable`, with a reason (`other_order`, `unknown_subject`, `ended`,
-`not_from_this_state`, `changes_destination`, `reuses_segment_id`).
+`not_from_this_state`, `changes_destination`, `keeps_destination`, `reuses_segment_id`).

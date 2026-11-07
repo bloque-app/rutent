@@ -188,7 +188,9 @@ fn a_run_reports_per_fault_and_per_guarantee_with_its_provenance() {
     let text = report.to_markdown();
     assert!(text.contains("### Per fault") && text.contains("### Per guarantee"));
     let provenance = format!(
-        "| test-ReplayDiverges | ReplayDiverges | ReplayDiverges | 0.1.0 | 0.3.0 | {SEED} |"
+        "| test-ReplayDiverges | ReplayDiverges | ReplayDiverges | {} | {} | {SEED} |",
+        rutent_contracts::state_machine::host::VERSION,
+        rutent_contracts::state_machine::VERSION
     );
     let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("| test-")).collect();
     assert_eq!(rows.len(), CELLS.len() + GUARANTEES.len());
@@ -389,5 +391,25 @@ fn a_redone_import_that_loses_refusals_fails_only_the_import_stop_cell() {
         Flaw::DropsRefusalsAfterAStoppedImport,
         "stop-during-import-is-refused-at-open",
         "the refusal log differs after the import was redone",
+    );
+}
+
+// verifies: REQ-ORD-43, NFR-4
+#[test]
+fn the_probe_records_where_a_final_deposit_failed() {
+    let states = probe::fold(&probe::order_inputs_with_a_failed_final_deposit("ord-4", 0));
+    let last = states.last().unwrap().as_ref().unwrap();
+    let part = &last.parts[0];
+    assert_eq!(
+        part.segments[2].state,
+        rutent_contracts::state_machine::SegmentState::FailedReversalOwed
+    );
+    assert_eq!(
+        part.deposit_failed_at.as_ref().map(|n| n.as_str()),
+        Some("ledger")
+    );
+    assert!(
+        states.iter().flatten().all(|o| o.check().is_ok()),
+        "the probe returned an invalid order"
     );
 }

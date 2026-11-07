@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::state_machine::{
-    Order, OrderState, RecordedInput, SegmentPlan, SegmentState, VERSION,
+    Destination, Id, NodeId, NodeRef, Observed, Order, OrderState, Part, RecordedInput, Segment,
+    SegmentPlan, SegmentState, VERSION, after_no_route, deposit_failed_at_after,
+    destination_change_applies, recalculation_keeps_destination, value_at,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -84,10 +86,13 @@ fn validator(shape: &str) -> Validator {
 /// The same, with `format` asserted or left as an annotation, the 2020-12 default.
 fn validator_with_formats(shape: &str, formats: bool) -> Validator {
     let mut registry = Registry::new();
-    for s in SHAPES {
+    let others = schemas_of("provider-role")
+        .into_iter()
+        .chain(schemas_of("router-api"));
+    for (id, s) in others.chain(SHAPES.iter().map(|s| (urn(s), schema(s)))) {
         registry = registry
-            .add(urn(s), schema(s))
-            .unwrap_or_else(|e| panic!("{s}: {e}"));
+            .add(id.clone(), s)
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
     }
     let registry = registry.prepare().expect("registry");
     jsonschema::options()
@@ -95,6 +100,29 @@ fn validator_with_formats(shape: &str, formats: bool) -> Validator {
         .should_validate_formats(formats)
         .build(&schema(shape))
         .unwrap_or_else(|e| panic!("{shape}: {e}"))
+}
+
+/// Every schema of another contract this one refers to, by its own `$id`: the router's typed operation and the
+/// provider-role shapes it is built from.
+fn schemas_of(contract: &str) -> Vec<(String, Value)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(contract)
+        .join("schemas");
+    let mut out: Vec<(String, Value)> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| read_json(&entry.unwrap().path()))
+        .map(|s| {
+            (
+                s["$id"]
+                    .as_str()
+                    .expect("a schema names its $id")
+                    .to_owned(),
+                s,
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// The shape a fixture belongs to: the longest shape its file name starts with, followed by `-`.
@@ -252,9 +280,16 @@ fn every_valid_fixture_validates_and_every_invalid_one_is_rejected() {
     }
     for path in &invalid {
         let shape = shape_of(path);
-        if validator(shape).is_valid(&read_json(path)) {
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let schema_valid = validator(shape).is_valid(&read_json(path));
+        if schema_valid && !rust_only(stem) {
             let name = path.file_name().unwrap().to_string_lossy();
             failures.push(format!("{name} should be rejected as {shape}"));
+        }
+        if !schema_valid && rust_only(stem) {
+            failures.push(format!(
+                "{stem} is listed as Rust-only, but the schema rejects it"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -300,6 +335,62 @@ fn every_schema_names_draft_2020_12_and_its_urn() {
 /// Empty: every rule the schemas state is also checked in Rust, by a field type or by `Order::check` and
 /// `RecordedInput::check`, which deserialisation runs. A fixture added here needs its reason beside it.
 const ACCEPTED_BY_RUST_ON_PURPOSE: [&str; 0] = [];
+
+/// Invalid fixtures that break a rule JSON Schema can't state, so the schema accepts them and only the Rust types
+/// refuse them: each with the rule, as the text of the violation Rust gives.
+const REJECTED_BY_RUST_ONLY: [(&str, &str); 6] = [
+    // INV-10: the route's last deposit is by another reserve than the part's destination, to the same network.
+    (
+        "order-part-depositing-through-another-reserve",
+        "a part's route ends with a deposit at its destination",
+    ),
+    // Each segment starts where the one before it ended (the router's Part::check).
+    (
+        "order-segments-that-do-not-chain",
+        "each segment starts where the one before it ended",
+    ),
+    // While the last segment is a failed deposit, deposit_failed_at is its from node.
+    (
+        "order-failed-final-deposit-without-deposit-failed-at",
+        "deposit_failed_at is that deposit's from node",
+    ),
+    // deposit_failed_at only where a final deposit failed: the last segment, or one a recalculation retired.
+    (
+        "order-deposit-failed-at-with-no-failed-deposit",
+        "deposit_failed_at only where a final deposit failed",
+    ),
+    // A recalculated route chains, segment to segment.
+    (
+        "recorded-input-route-recalculated-that-does-not-chain",
+        "each segment starts where the one before it ended",
+    ),
+    // A recalculated route ends with a deposit (REQ-ORD-16).
+    (
+        "recorded-input-route-recalculated-not-ending-with-a-deposit",
+        "a route ends with a deposit",
+    ),
+];
+
+fn rust_only(stem: &str) -> bool {
+    REJECTED_BY_RUST_ONLY.iter().any(|(name, _)| *name == stem)
+}
+
+// verifies: DEC-4, INV-10, REQ-ORD-16, REQ-ORD-43
+#[test]
+fn each_rule_only_rust_can_check_refuses_its_fixture_with_its_own_violation() {
+    for (name, rule) in REJECTED_BY_RUST_ONLY {
+        let path = contract_dir()
+            .join("fixtures/invalid")
+            .join(format!("{name}.json"));
+        match through_rust(shape_of(&path), &read_json(&path)) {
+            Err(e) => assert!(
+                e.contains(rule),
+                "{name} was refused for another reason: {e}"
+            ),
+            Ok(_) => panic!("{name}: Rust accepts it"),
+        }
+    }
+}
 
 // verifies: DEC-4, REQ-STM-1, REQ-STM-3, REQ-ORD-43
 #[test]
@@ -369,4 +460,307 @@ fn a_time_that_is_not_a_date_time_is_rejected_without_format_assertion() {
         &contract_dir().join("fixtures/invalid/recorded-input-with-time-not-a-date-time.json"),
     );
     assert!(!validator_with_formats("recorded-input", false).is_valid(&input));
+}
+
+fn part_of(fixture: &str) -> Part {
+    let order: Order = serde_json::from_value(valid_fixture(fixture)).unwrap();
+    order.parts.into_iter().next().unwrap()
+}
+
+/// The waiting part after a recalculation from the node where its final deposit failed: a route to `other`, then a
+/// deposit from there, with the route's state given.
+fn recalculated(route_state: &str, deposit_state: &str) -> Part {
+    let mut order = valid_fixture("order-waiting-for-the-customer-after-a-failed-final-deposit");
+    let part = &mut order["parts"][0];
+    let failed = part["segments"][2].clone();
+    let at = failed["from"].clone();
+    let mut route = failed.clone();
+    route["segment_id"] = "p1-s4".into();
+    route["kind"] = "route".into();
+    route["to"] = serde_json::json!({ "node": "other-ledger", "asset": at["asset"] });
+    route["state"] = route_state.into();
+    let mut deposit = failed.clone();
+    deposit["segment_id"] = "p1-s5".into();
+    deposit["from"] = route["to"].clone();
+    deposit["state"] = deposit_state.into();
+    let settled: Vec<Value> = part["segments"].as_array().unwrap()[..2].to_vec();
+    part["segments"] = Value::Array(settled.into_iter().chain([route, deposit]).collect());
+    part["retired_segments"] = serde_json::json!(["p1-s3"]);
+    serde_json::from_value::<Order>(order)
+        .unwrap()
+        .parts
+        .remove(0)
+}
+
+// verifies: REQ-ORD-28
+#[test]
+fn a_part_whose_value_cannot_reach_the_destination_reserve_s_node_becomes_stuck() {
+    let part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    assert_eq!(after_no_route(&part), Some(OrderState::Stuck));
+
+    // Its final deposit failed, but a recalculation's route moved the value on to another node.
+    let away = recalculated("settled", "pending");
+    assert_eq!(
+        after_no_route(&away),
+        Some(OrderState::Stuck),
+        "the value left the deposit's node"
+    );
+}
+
+// verifies: REQ-ORD-43
+#[test]
+fn a_part_whose_value_sits_at_the_destination_node_after_a_failed_final_deposit_waits_for_the_customer()
+ {
+    let part = part_of("order-waiting-for-the-customer-after-a-failed-final-deposit");
+    assert_eq!(after_no_route(&part), Some(OrderState::WaitingForCustomer));
+
+    // A recalculation from that node failed and was reversed: the value is back where the deposit failed.
+    let back = recalculated("reversal_complete", "pending");
+    assert_eq!(after_no_route(&back), Some(OrderState::WaitingForCustomer));
+    let mut forgotten = back.clone();
+    forgotten.deposit_failed_at = None;
+    assert_eq!(
+        after_no_route(&forgotten),
+        Some(OrderState::Stuck),
+        "without deposit_failed_at the segments can't show where the deposit failed"
+    );
+}
+
+fn input_on(part: &str, segment: Option<&str>, observed: Value) -> RecordedInput {
+    let mut input = valid_fixture("recorded-input-no-route");
+    input["record_id"] = "rec-0090".into();
+    input["subject"] = serde_json::json!({ "order": "ord-1", "part": part });
+    if let Some(segment) = segment {
+        input["subject"]["segment"] = segment.into();
+    }
+    input["observed"] = observed;
+    serde_json::from_value(input).unwrap()
+}
+
+// verifies: REQ-ORD-28, REQ-ORD-43, INV-10
+#[test]
+fn deposit_failed_at_is_overwritten_by_each_failed_final_deposit_cleared_by_a_destination_change_and_kept_by_a_recalculation()
+ {
+    let waiting = part_of("order-waiting-for-the-customer-after-a-failed-final-deposit");
+    let node = |text: &str| Some(NodeId::new(text).unwrap());
+    assert_eq!(waiting.deposit_failed_at, node("ledger-in"));
+
+    // A recalculation keeps it.
+    let usdc = serde_json::json!({ "id": "USDC", "decimals": 6 });
+    let route = |to: Value| {
+        serde_json::json!([
+            { "segment_id": "p1-s7", "provider": "ramp-b", "kind": "route",
+              "from": { "node": "ledger-in", "asset": usdc }, "to": { "node": "ledger-b", "asset": usdc } },
+            { "segment_id": "p1-s8", "provider": "reserve-b", "kind": "deposit",
+              "from": { "node": "ledger-b", "asset": usdc }, "to": to }
+        ])
+    };
+    let recalculation = input_on(
+        "p1",
+        None,
+        serde_json::json!({ "kind": "route_recalculated", "decision_record": "dr-1",
+            "segments": route(serde_json::json!({ "node": { "network": "polygon" }, "asset": usdc })) }),
+    );
+    assert_eq!(
+        deposit_failed_at_after(&waiting, &recalculation),
+        node("ledger-in")
+    );
+
+    // The customer accepts another destination, from ledger-in through ledger-b to the bank: it is cleared.
+    let changed = input_on(
+        "p1",
+        None,
+        serde_json::json!({ "kind": "destination_changed", "decision_record": "dr-2", "acceptance": "acc-1",
+            "segments": route(serde_json::json!({ "node": { "network": "bank" }, "asset": usdc })) }),
+    );
+    assert_eq!(deposit_failed_at_after(&waiting, &changed), None);
+
+    // On the new route, ledger-in to ledger-b and out to the bank, the first segment is reversed: the value is
+    // back at ledger-in, but the destination reserve now lives at ledger-b, so the part is stuck, not waiting.
+    let Observed::DestinationChanged { segments, .. } = &changed.observed else {
+        unreachable!()
+    };
+    let mut moved = waiting.clone();
+    moved.segments.truncate(2);
+    moved.segments.push(Segment::new(
+        segments[0].clone(),
+        SegmentState::ReversalComplete,
+    ));
+    moved
+        .segments
+        .push(Segment::new(segments[1].clone(), SegmentState::Pending));
+    moved.retired_segments = vec![Id::new("p1-s3").unwrap()];
+    moved.destination = Destination::of(segments).unwrap();
+    moved.deposit_failed_at = deposit_failed_at_after(&waiting, &changed);
+    assert_eq!(
+        value_at(&moved).map(|e| &e.node),
+        Some(&NodeRef::Inner("ledger-in".into()))
+    );
+    assert_eq!(after_no_route(&moved), Some(OrderState::Stuck));
+    let mut kept = moved.clone();
+    kept.deposit_failed_at = waiting.deposit_failed_at.clone();
+    assert_eq!(
+        after_no_route(&kept),
+        Some(OrderState::WaitingForCustomer),
+        "had the change kept deposit_failed_at, the part would wait where it should be stuck"
+    );
+
+    // The new route's deposit, at other-ledger, fails too: that failure overwrites it.
+    let mut second = recalculated("settled", "started");
+    let failed = input_on(
+        "p1",
+        Some("p1-s5"),
+        serde_json::json!({ "kind": "segment_failed" }),
+    );
+    assert_eq!(
+        deposit_failed_at_after(&second, &failed),
+        node("other-ledger")
+    );
+    second.deposit_failed_at = deposit_failed_at_after(&second, &failed);
+    second.segments[3].state = SegmentState::FailedReversalOwed;
+    assert_eq!(
+        after_no_route(&second),
+        Some(OrderState::WaitingForCustomer)
+    );
+
+    // A failure of a segment that isn't the final deposit leaves it as it was.
+    let earlier = input_on(
+        "p1",
+        Some("p1-s4"),
+        serde_json::json!({ "kind": "segment_failed" }),
+    );
+    assert_eq!(
+        deposit_failed_at_after(&waiting, &earlier),
+        node("ledger-in")
+    );
+}
+
+// verifies: REQ-ORD-28
+#[test]
+fn a_part_whose_value_sits_away_from_every_deposit_node_becomes_stuck() {
+    let part = part_of("order-stuck-with-its-value-away-from-the-deposit-node");
+    assert_eq!(
+        value_at(&part).map(|e| &e.node),
+        Some(&NodeRef::Inner("ledger-in".into()))
+    );
+    assert_eq!(after_no_route(&part), Some(OrderState::Stuck));
+}
+
+// verifies: REQ-ORD-12, REQ-ORD-40, REQ-ORD-28
+#[test]
+fn a_part_whose_value_is_still_outside_the_book_is_not_placed() {
+    let mut part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    for segment in &mut part.segments {
+        segment.state = SegmentState::Pending;
+    }
+    assert_eq!(
+        value_at(&part),
+        None,
+        "nothing has moved: the value is still at the outer node"
+    );
+    assert_eq!(after_no_route(&part), None);
+}
+
+// verifies: REQ-ORD-28, REQ-ORD-43
+#[test]
+fn a_failed_segment_that_isn_t_a_deposit_leaves_the_value_in_flight() {
+    let mut part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    part.segments[1].state = SegmentState::FailedReversalOwed;
+    assert_eq!(
+        value_at(&part),
+        None,
+        "the exchange owes its reversal: the value isn't placed yet"
+    );
+    assert_eq!(after_no_route(&part), None);
+}
+
+// verifies: INV-10
+#[test]
+fn a_recalculation_keeps_the_destination_reserve_its_node_and_its_asset() {
+    let part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    let route: Vec<SegmentPlan> = part.segments.iter().map(|s| s.plan()).collect();
+    assert!(recalculation_keeps_destination(&part, &route));
+    let mut other_reserve = route.clone();
+    other_reserve.last_mut().unwrap().provider =
+        rutent_contracts::state_machine::Id::new("reserve-other").unwrap();
+    assert!(
+        !recalculation_keeps_destination(&part, &other_reserve),
+        "another reserve, the same network"
+    );
+    let mut other_unit = route.clone();
+    let last = other_unit.last_mut().unwrap();
+    last.to.asset.decimals = 2;
+    assert!(
+        !recalculation_keeps_destination(&part, &other_unit),
+        "the same asset in another unit"
+    );
+}
+
+// verifies: REQ-ORD-28, REQ-ORD-43, REQ-STM-4
+#[test]
+fn no_route_while_the_value_is_in_flight_places_nothing() {
+    let mut part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    part.segments[1].state = SegmentState::Started;
+    assert_eq!(after_no_route(&part), None);
+    part.segments[1].state = SegmentState::OutcomeUnknown;
+    assert_eq!(after_no_route(&part), None);
+}
+
+// verifies: REQ-ORD-37, REQ-STM-7, DEC-4
+#[test]
+fn the_router_s_operation_rules_the_schema_cannot_state_hold_on_every_segment() {
+    let plan = valid_fixture("segment-plan-changes-no-value");
+    type Break = fn(&mut Value);
+    let cases: [(&str, Break); 3] = [
+        ("a route that changes its asset", |p| {
+            p["to"]["asset"]["id"] = "EURC".into()
+        }),
+        ("a route to its own node", |p| {
+            p["to"]["node"] = p["from"]["node"].clone()
+        }),
+        ("an exchange across two nodes", |p| {
+            p["kind"] = "exchange".into();
+            p["to"]["asset"]["id"] = "EURC".into();
+        }),
+    ];
+    let schema = validator("segment-plan");
+    for (case, breaks) in cases {
+        let mut value = plan.clone();
+        breaks(&mut value);
+        assert!(
+            schema.is_valid(&value),
+            "{case}: the schema already rejects it"
+        );
+        assert!(
+            serde_json::from_value::<SegmentPlan>(value).is_err(),
+            "{case}: Rust accepts it"
+        );
+    }
+}
+
+// verifies: INV-10, REQ-ORD-43
+#[test]
+fn a_destination_change_that_keeps_the_destination_is_a_recalculation_and_not_applicable() {
+    let waiting = part_of("order-waiting-for-the-customer-after-a-failed-final-deposit");
+    let mut route: Vec<SegmentPlan> = waiting.segments[2..].iter().map(|s| s.plan()).collect();
+    route[0].segment_id = Id::new("p1-s9").unwrap();
+    let mut input = valid_fixture("recorded-input-destination-changed-with-acceptance");
+    input["subject"] = serde_json::json!({ "order": "ord-1", "part": "p1" });
+    input["observed"]["segments"] = serde_json::to_value(&route).unwrap();
+    let same: RecordedInput = serde_json::from_value(input).unwrap();
+
+    assert!(recalculation_keeps_destination(&waiting, &route));
+    assert!(
+        !destination_change_applies(&waiting, &route),
+        "the route ends at the part's destination"
+    );
+    assert_eq!(
+        deposit_failed_at_after(&waiting, &same),
+        waiting.deposit_failed_at,
+        "a change that isn't one leaves deposit_failed_at as it was"
+    );
+    assert_eq!(
+        after_no_route(&waiting),
+        Some(OrderState::WaitingForCustomer)
+    );
 }

@@ -3,10 +3,16 @@
   "provider": "ramp-bridge",
   "from": {
     "node": "ledger-in",
-    "asset": "USDC"
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
   },
   "to": {
     "node": "polygon",
-    "asset": "USDC"
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
   }
 }

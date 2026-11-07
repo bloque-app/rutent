@@ -370,7 +370,7 @@
       "additionalProperties": false
     },
     "no_route": {
-      "description": "The router found no route for the part.",
+      "description": "The router found no route for the part; past the recalculation bound, Core records the last routing's decision record (REQ-ORD-4). By the published rule (spec-no-route-left), a part whose value sits at the node where the destination reserve lives, after a failed final deposit, waits for the customer (REQ-ORD-43); any other part becomes stuck (REQ-ORD-28).",
       "type": "object",
       "required": [
         "kind",
@@ -486,7 +486,7 @@
       "additionalProperties": false
     },
     "stuck_declared": {
-      "description": "The part is declared stuck. Time over its limit arrives here as a recorded statement, never as a clock read inside the state machine.",
+      "description": "The part is declared stuck, over time or in dispute. Time over its limit arrives here as a recorded statement, never as a clock read inside the state machine. No route left is not declared here: it arrives as no_route and resolves by the published rule (spec-no-route-left).",
       "type": "object",
       "required": [
         "kind",
@@ -499,7 +499,6 @@
         "reason": {
           "enum": [
             "over_time",
-            "no_route_left",
             "dispute"
           ]
         }

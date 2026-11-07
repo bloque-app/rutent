@@ -2,12 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:state-machine:segment-plan",
   "title": "Segment plan",
-  "description": "One segment of a route as the state machine sees it: a transition of a nondeterministic automaton from one (node, asset) pair to another, at one provider (REQ-STM-7). A transition that changes no value is allowed. Schemas that embed this shape close it themselves with unevaluatedProperties.",
+  "description": "One segment of a route as the state machine sees it: the router contract's typed operation (REQ-ORD-37), at one provider, with the segment's id. A transition of a nondeterministic automaton from one (node, asset) pair to another (REQ-STM-7); a withdrawal, route or deposit changes no value. That a withdrawal, route or deposit keeps its asset, a route's nodes differ and an exchange stays at one node can't be stated here; the Rust types check them, as the router's own Operation::check does. Schemas that embed this shape close it themselves with unevaluatedProperties.",
   "type": "object",
-  "required": ["segment_id", "provider", "operation", "from", "to"],
+  "$ref": "urn:rutent:router-api:operation#/$defs/operation",
+  "required": [
+    "segment_id",
+    "provider",
+    "kind",
+    "from",
+    "to"
+  ],
   "properties": {
     "segment_id": {
-      "description": "Unique within its order. Inputs name a segment by this id, never by position, so a report about a segment a recalculation replaced matches nothing current.",
+      "description": "Unique within its order for the order's whole life. Inputs name a segment by this id, never by position, so a report about a segment a recalculation replaced matches nothing current.",
       "type": "string",
       "minLength": 1
     },
@@ -15,24 +22,6 @@
       "description": "The provider the segment runs at.",
       "type": "string",
       "minLength": 1
-    },
-    "operation": {
-      "description": "The typed operation of REQ-ORD-37.",
-      "enum": ["withdrawal", "route", "exchange", "deposit"]
-    },
-    "from": { "$ref": "#/$defs/endpoint" },
-    "to": { "$ref": "#/$defs/endpoint" }
-  },
-  "$defs": {
-    "endpoint": {
-      "description": "A vertex of the automaton: a node and an asset.",
-      "type": "object",
-      "required": ["node", "asset"],
-      "properties": {
-        "node": { "type": "string", "minLength": 1 },
-        "asset": { "type": "string", "minLength": 1 }
-      },
-      "additionalProperties": false
     }
   }
 }
