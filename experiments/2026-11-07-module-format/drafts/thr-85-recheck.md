@@ -118,6 +118,10 @@ carries it (`F-024`).
 - **Hostile input.** The admitting compiler parsed truncated, noisy, corrupted and oversized binaries. It refused
   each while a provider kept answering. No fuzzer-made binary or fuzz corpus was tried (`B-09`).
 
+### Still open
+
+- A guest's `read_state` keys (up to about 8 MiB each) are copied into the host for no fuel and logged in an uncapped `events.state_reads` (`wasm-binding/binding/src/platform.rs:313-341`), so platform memory isn't bounded per operation; `F-013`.
+
 ## If the owner chooses PolkaVM
 
 The row's design would name PolkaVM 0.38.0's compiler and Linux sandbox, inside the binding's jail. Its status would
