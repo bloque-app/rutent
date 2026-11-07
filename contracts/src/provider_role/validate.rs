@@ -3,8 +3,8 @@
 
 use std::cmp::Ordering;
 
-use super::envelope::Statement;
-use super::types::{Advertisement, Band, Category, Terms};
+use super::envelope::{Signature, Statement};
+use super::types::{Advertisement, Band, Category, KeyPurpose, PublicKey, Terms};
 
 /// A rule an advertisement breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +27,35 @@ pub enum RuleViolation {
     AdvertisementOfAnotherMaker,
     /// An advertisement statement signed with a key not in its own `keys`.
     SignedWithUnpublishedKey,
+    /// An advertisement statement signed with a key it lists for `statements`: a module's outside part can
+    /// resolve such a key, so it never signs an advertisement (`THR-4`).
+    SignedWithStatementsKey,
+    /// A key listed twice in `keys`, by its decoded bytes, whatever the purposes, so one key can't hold both
+    /// (`THR-4`).
+    KeyListedTwice {
+        /// Index of the repeat in `keys`.
+        key: usize,
+        /// Index of the first entry with the same key.
+        first: usize,
+    },
+    /// A later advertisement of another provider than the one it follows.
+    SuccessorOfAnotherProvider,
+    /// A later advertisement of another deployment than the one it follows (`REQ-PRT-1`).
+    SuccessorOfAnotherDeployment,
+    /// A later advertisement made at or before the one it follows. An older advertisement is public and still
+    /// validly signed, so replayed after a newer one it would undo a key's removal, bringing back a `statements`
+    /// key the provider dropped (`THR-4`).
+    SuccessorNotNewer,
+    /// A later advertisement not signed with a key the advertisement it follows lists for `advertising`. Signed
+    /// with a key it adds itself, or with a `statements` key, it could add or promote an advertising key and
+    /// rewrite the offers (`THR-4`, `REQ-CAT-2`).
+    SuccessorNotSignedWithPreviousAdvertisingKey,
+    /// A later advertisement listing for `advertising` a key the advertisement it follows lists for `statements`,
+    /// which a module's outside part may have resolved (`THR-4`).
+    StatementsKeyPromoted {
+        /// Index into the later advertisement's `keys`.
+        key: usize,
+    },
     /// A reserve declaration whose `maker` is not the maker of the advertisement statement it sits in
     /// (`REQ-CAT-6`).
     ReserveDeclarationOfAnotherMaker,
@@ -44,20 +73,30 @@ pub enum RuleViolation {
 }
 
 /// Checks an advertisement statement: every rule of [`validate`]; that the provider made it, signing with a
-/// key it publishes in `keys`; and that a reserve's declaration is attributable to the statement's maker
-/// (`REQ-CAT-6`).
+/// key it publishes in `keys` for `advertising`; that no key is listed twice, by its bytes; and that a reserve's
+/// declaration is attributable to the statement's maker (`REQ-CAT-6`).
+///
+/// An advertisement that lists the key it is signed with vouches only for itself. Its keys are trusted by the
+/// operator's grant at admission (`REQ-CAT-2`), and a later advertisement by [`validate_successor`]: the
+/// catalogue (`F-012`) holds both, as `contracts/provider-role/README.md` says.
 pub fn validate_statement(statement: &Statement<Advertisement>) -> Result<(), Vec<RuleViolation>> {
     let mut violations = validate(&statement.statement).err().unwrap_or_default();
     let advertisement = &statement.statement;
     if statement.maker != advertisement.provider {
         violations.push(RuleViolation::AdvertisementOfAnotherMaker);
     }
-    if !advertisement
-        .keys
-        .iter()
-        .any(|k| k.scheme == statement.signature.scheme && k.public_key == statement.signature.key)
-    {
-        violations.push(RuleViolation::SignedWithUnpublishedKey);
+    match advertisement.purpose_of_signer(&statement.signature) {
+        None => violations.push(RuleViolation::SignedWithUnpublishedKey),
+        Some(KeyPurpose::Statements) => violations.push(RuleViolation::SignedWithStatementsKey),
+        Some(KeyPurpose::Advertising) => {}
+    }
+    for (key, entry) in advertisement.keys.iter().enumerate() {
+        if let Some(first) = advertisement.keys[..key]
+            .iter()
+            .position(|earlier| earlier.public_key == entry.public_key)
+        {
+            violations.push(RuleViolation::KeyListedTwice { key, first });
+        }
     }
     if let Some(reserve) = &statement.statement.offers.reserve
         && reserve.declaration.maker != statement.maker
@@ -69,6 +108,83 @@ pub fn validate_statement(statement: &Statement<Advertisement>) -> Result<(), Ve
     } else {
         Err(violations)
     }
+}
+
+/// Checks a later advertisement against the accepted one it follows, and returns every rule broken (`THR-4`,
+/// `REQ-CAT-2`):
+///
+/// - both are one provider's, of one deployment, by name and operator key;
+/// - `next` was made after `previous`, so a replayed older advertisement, public and validly signed, can't undo a
+///   key's removal;
+/// - `next` is signed with a key `previous` lists for `advertising`, so neither a key `next` adds nor a
+///   `statements` key, which a module's outside part can resolve, can add or promote an advertising key or
+///   rewrite the offers;
+/// - no key `previous` lists for `statements` is listed for `advertising` in `next`.
+///
+/// It assumes both passed [`validate_statement`], and compares keys only; verifying the signature is `M2` and
+/// `M3` work. It relates two advertisements: the catalogue (`F-012`) checks each against the one it accepted
+/// last, and holds the rules across the whole history.
+pub fn validate_successor(
+    previous: &Statement<Advertisement>,
+    next: &Statement<Advertisement>,
+) -> Result<(), Vec<RuleViolation>> {
+    let mut violations = Vec::new();
+    if next.statement.provider != previous.statement.provider {
+        violations.push(RuleViolation::SuccessorOfAnotherProvider);
+    }
+    if next.deployment != previous.deployment {
+        violations.push(RuleViolation::SuccessorOfAnotherDeployment);
+    }
+    if !made_after(&next.made_at, &previous.made_at) {
+        violations.push(RuleViolation::SuccessorNotNewer);
+    }
+    if previous.statement.purpose_of_signer(&next.signature) != Some(KeyPurpose::Advertising) {
+        violations.push(RuleViolation::SuccessorNotSignedWithPreviousAdvertisingKey);
+    }
+    for (key, entry) in next.statement.keys.iter().enumerate() {
+        if entry.purpose == KeyPurpose::Advertising
+            && previous.statement.purpose_of(&entry.public_key) == Some(KeyPurpose::Statements)
+        {
+            violations.push(RuleViolation::StatementsKeyPromoted { key });
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations)
+    }
+}
+
+impl Advertisement {
+    /// The purpose the advertisement lists `key` with, compared by bytes; `None` if it doesn't list it. A key
+    /// listed twice is [`RuleViolation::KeyListedTwice`]; this gives the first entry's purpose.
+    pub fn purpose_of(&self, key: &PublicKey) -> Option<KeyPurpose> {
+        self.keys
+            .iter()
+            .find(|k| &k.public_key == key)
+            .map(|k| k.purpose)
+    }
+
+    /// The purpose the advertisement lists a signature's key with, matching its scheme as well as its bytes;
+    /// `None` if it lists no such key.
+    pub fn purpose_of_signer(&self, signature: &Signature) -> Option<KeyPurpose> {
+        self.keys
+            .iter()
+            .find(|k| k.scheme == signature.scheme && k.public_key == signature.key)
+            .map(|k| k.purpose)
+    }
+}
+
+/// Whether the RFC 3339 UTC time `later` is after `earlier`. Both are schema-valid timestamps: a fixed-width
+/// date and time to the second, an optional fraction, then `Z`; the fraction compares as digits padded with
+/// zeros, so `.5` is after `.25` and no text comparison is fooled by the `.` sorting before `Z`.
+fn made_after(later: &str, earlier: &str) -> bool {
+    fn parts(time: &str) -> (&str, String) {
+        let time = time.strip_suffix('Z').unwrap_or(time);
+        let (seconds, fraction) = time.split_once('.').unwrap_or((time, ""));
+        (seconds, format!("{fraction:0<9}"))
+    }
+    parts(later) > parts(earlier)
 }
 
 /// Checks the rules the schemas can't express, and returns every one broken, offer by offer.
@@ -174,8 +290,28 @@ fn compare_amounts(a: &str, b: &str) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::compare_amounts;
+    use super::{compare_amounts, made_after};
     use std::cmp::Ordering;
+
+    // verifies: THR-4
+    #[test]
+    fn a_later_time_is_later_whatever_its_fraction() {
+        assert!(made_after(
+            "2026-11-07T00:00:00Z",
+            "2026-11-06T23:59:59.999Z"
+        ));
+        assert!(made_after(
+            "2026-11-06T10:00:00.5Z",
+            "2026-11-06T10:00:00.25Z"
+        ));
+        assert!(made_after("2026-11-06T10:00:00.1Z", "2026-11-06T10:00:00Z"));
+        assert!(!made_after(
+            "2026-11-06T10:00:00Z",
+            "2026-11-06T10:00:00.000Z"
+        ));
+        assert!(!made_after("2026-11-06T10:00:00Z", "2026-11-06T10:00:00Z"));
+        assert!(!made_after("2026-11-05T10:00:00Z", "2026-11-06T10:00:00Z"));
+    }
 
     // verifies: REQ-CAT-11
     #[test]

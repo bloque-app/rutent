@@ -158,6 +158,10 @@ struct SignedResult {
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         (
+            "advertised-artefact-asserted-with-a-non-canonical-alias-of-the-statement-key",
+            vec![("/artefact/assertion/signature/key", "pattern")],
+        ),
+        (
             "declaration-sandboxed-part-declaring-a-secret-lookup",
             vec![("/sandboxed", "additionalProperties")],
         ),
@@ -511,6 +515,30 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::StatementKeyIsOperatorKey),
         ),
         (
+            "signed-result-statement-key-listed-for-advertising",
+            one(RuleViolation::StatementKeyNotForStatements),
+        ),
+        (
+            "advertised-artefact-asserted-with-an-advertised-statements-key",
+            one(RuleViolation::AssertionKeyNotForAdvertising),
+        ),
+        (
+            "declaration-destination-pinned-to-the-6to4-relay-and-srv6-blocks",
+            format!(
+                "{:?}",
+                (0..2)
+                    .map(|block| RuleViolation::SpecialPurposeAddressBlock {
+                        destination: 0,
+                        block,
+                    })
+                    .collect::<Vec<_>>()
+            ),
+        ),
+        (
+            "successive-releases-handling-a-new-kind-with-no-widening-recorded",
+            one(RuleViolation::WideningsMisrecorded),
+        ),
+        (
             "signed-result-checked-against-another-providers-advertisement",
             one(RuleViolation::AdvertisementOfAnotherProvider),
         ),
@@ -546,7 +574,26 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         ),
         (
             "advertised-artefact-asserted-with-the-statement-key",
-            one(RuleViolation::AssertionSignedWithStatementKey),
+            // Both rules catch it: the statement key is listed for statements, and it is the declared one.
+            format!(
+                "{:?}",
+                vec![
+                    RuleViolation::AssertionKeyNotForAdvertising,
+                    RuleViolation::AssertionSignedWithStatementKey,
+                ]
+            ),
+        ),
+        (
+            "advertised-artefact-declaring-an-advertising-key-as-its-statement-key",
+            one(RuleViolation::StatementKeyNotForStatements),
+        ),
+        (
+            "advertised-artefact-declaring-an-unadvertised-statement-key",
+            one(RuleViolation::StatementKeyNotAdvertised),
+        ),
+        (
+            "advertised-artefact-declaring-the-operator-key-as-its-statement-key",
+            one(RuleViolation::StatementKeyIsOperatorKey),
         ),
         (
             "advertised-artefact-checked-against-another-providers-advertisement",
@@ -1048,6 +1095,7 @@ fn result_signed_with_another_key_than_the_statement_key_is_invalid() {
         "signed-result-checked-against-another-providers-advertisement",
         "signed-result-from-another-deployment",
         "signed-result-made-by-another-provider",
+        "signed-result-statement-key-listed-for-advertising",
     ] {
         let (_, rule) = table
             .iter()
@@ -1289,8 +1337,17 @@ fn altered_or_wrongly_signed_release_is_refused() {
         "successive-releases-asserted-with-the-previous-statement-key",
         "successive-releases-of-another-deployment",
         "successive-releases-under-another-protocol-version",
+        "advertised-artefact-asserted-with-an-advertised-statements-key",
+        "advertised-artefact-declaring-an-advertising-key-as-its-statement-key",
+        "advertised-artefact-declaring-an-unadvertised-statement-key",
+        "advertised-artefact-declaring-the-operator-key-as-its-statement-key",
     ]);
     assert_schema_rejects("release-assertion-under-another-shape");
+    // An alias of the statement key, differing only in its unused bits, is no key in either layer, so it can't
+    // slip past the "isn't the statement key" check.
+    assert_schema_rejects(
+        "advertised-artefact-asserted-with-a-non-canonical-alias-of-the-statement-key",
+    );
 }
 
 // verifies: REQ-MDL-2, REQ-MDL-15
@@ -1311,6 +1368,7 @@ fn release_widening_capabilities_is_marked_for_fresh_acceptance() {
     assert_schema_rejects("admission-artefact-of-a-first-release-comparing-with-a-version");
     assert_rules_reject(&[
         "successive-releases-widening-with-no-widening-recorded",
+        "successive-releases-handling-a-new-kind-with-no-widening-recorded",
         "admission-artefact-comparing-with-a-version-its-history-lacks",
     ]);
     let pair: SuccessiveReleases = serde_json::from_value(fixture(
@@ -1355,6 +1413,27 @@ fn with_blocks(destination: usize, blocks: &'static [&'static str]) -> impl Fn(&
 fn widening_lists_every_widening_and_no_narrowing() {
     type Change = Box<dyn Fn(&mut Value)>;
     let cases: Vec<(&str, Change, Change, Value)> = vec![
+        (
+            "a kind the sandboxed part newly handles",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["sandboxed"]["handles"] = serde_json::json!([
+                    "withdrawal",
+                    "deposit",
+                    "balance_verification",
+                    "reversal_confirmation"
+                ])
+            }),
+            serde_json::json!([{ "kind": "handles", "operation_kind": "reversal_confirmation" }]),
+        ),
+        (
+            "a kind no longer handled",
+            Box::new(unchanged),
+            Box::new(|d: &mut Value| {
+                d["sandboxed"]["handles"] = serde_json::json!(["withdrawal", "deposit"])
+            }),
+            serde_json::json!([]),
+        ),
         (
             "a new operation",
             Box::new(unchanged),

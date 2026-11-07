@@ -9,8 +9,8 @@ use rutent_contracts::provider_role::{
     self, Advertisement, Category, ContextMismatch, Deployment, Operation, ResultBody,
     RuleViolation, Statement, StatementShape, TransferOutcome,
 };
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
@@ -27,13 +27,44 @@ const SCHEMAS: [&str; 9] = [
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
-/// followed by `-`.
-const SHAPES: [&str; 4] = ["advertisement", "statement-envelope", "operation", "result"];
+/// followed by `-`. `successive-advertisements` is a bundle of values, not a schema of its own: see
+/// [`SuccessiveAdvertisements`].
+const SHAPES: [&str; 5] = [
+    "advertisement",
+    "statement-envelope",
+    "operation",
+    "result",
+    "successive-advertisements",
+];
+
+/// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
+/// follows it, each an enveloped advertisement, for the rules that relate them (`validate_successor`).
+const SUCCESSIVE_ADVERTISEMENTS_MEMBERS: [&str; 2] = ["previous", "next"];
+
+/// A `successive-advertisements` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SuccessiveAdvertisements {
+    previous: Statement<Advertisement>,
+    next: Statement<Advertisement>,
+}
 
 /// Invalid fixtures the schemas must reject, each with the exact (instance location, keyword) errors of the one
 /// rule it breaks.
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
+        (
+            "advertisement-key-without-a-purpose",
+            vec![("/statement/keys/0", "required")],
+        ),
+        (
+            "advertisement-key-of-an-unknown-purpose",
+            vec![("/statement/keys/0/purpose", "enum")],
+        ),
+        (
+            "operation-signed-with-a-non-canonical-alias-of-the-operator-key",
+            vec![("/signature/key", "pattern")],
+        ),
         (
             "advertisement-without-offers",
             vec![("/statement/offers", "minProperties")],
@@ -508,6 +539,46 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             advertisement(RuleViolation::SignedWithUnpublishedKey),
         ),
         (
+            "advertisement-signed-with-its-own-statements-key",
+            advertisement(RuleViolation::SignedWithStatementsKey),
+        ),
+        (
+            "advertisement-listing-one-key-for-both-purposes",
+            advertisement(RuleViolation::KeyListedTwice { key: 1, first: 0 }),
+        ),
+        (
+            "successive-advertisements-signed-with-a-key-the-next-one-adds",
+            advertisement(RuleViolation::SuccessorNotSignedWithPreviousAdvertisingKey),
+        ),
+        (
+            "successive-advertisements-signed-with-the-previous-statements-key",
+            // The one way through trips both rules: a statements key can sign `next` only once `next` lists it for
+            // advertising, which promotes it.
+            format!(
+                "{:?}",
+                vec![
+                    RuleViolation::SuccessorNotSignedWithPreviousAdvertisingKey,
+                    RuleViolation::StatementsKeyPromoted { key: 2 },
+                ]
+            ),
+        ),
+        (
+            "successive-advertisements-promoting-the-previous-statements-key",
+            advertisement(RuleViolation::StatementsKeyPromoted { key: 1 }),
+        ),
+        (
+            "successive-advertisements-replaying-an-older-advertisement",
+            advertisement(RuleViolation::SuccessorNotNewer),
+        ),
+        (
+            "successive-advertisements-of-another-provider",
+            advertisement(RuleViolation::SuccessorOfAnotherProvider),
+        ),
+        (
+            "successive-advertisements-of-another-deployment",
+            advertisement(RuleViolation::SuccessorOfAnotherDeployment),
+        ),
+        (
             "operation-signed-with-another-key",
             "NotSignedByOperator".to_owned(),
         ),
@@ -559,6 +630,15 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                     ContextMismatch::NestedMaker { .. } => "NestedMaker".to_owned(),
                 })
         }
+        "successive-advertisements" => {
+            let bundle: SuccessiveAdvertisements =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::validate_statement(&bundle.previous)
+                .map_err(|v| format!("previous: {v:?}"))?;
+            provider_role::validate_statement(&bundle.next).map_err(|v| format!("next: {v:?}"))?;
+            provider_role::validate_successor(&bundle.previous, &bundle.next)
+                .map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -567,10 +647,6 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
 /// reject it. Every other schema-rejected fixture must fail to deserialise.
 fn rust_accepts() -> Vec<(&'static str, &'static str)> {
     vec![
-        (
-            "statement-envelope-key-in-a-non-canonical-encoding",
-            "pattern: keys are strings in Rust",
-        ),
         (
             "statement-envelope-signature-in-a-non-canonical-encoding",
             "pattern: the signature value is a string in Rust",
@@ -724,6 +800,33 @@ fn validator(shape: &str) -> Validator {
         .unwrap_or_else(|e| panic!("{shape} schema builds: {e}"))
 }
 
+/// The schema errors of a fixture of `shape`, as sorted (instance location, keyword) pairs. A bundle's members
+/// are each checked against the advertisement schema, with locations under the member's name, and a missing or
+/// extra member is an error at the root.
+fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
+    if shape != "successive-advertisements" {
+        return schema_errors(&validator(shape), instance);
+    }
+    let advertisement = validator("advertisement");
+    let members = instance.as_object().cloned().unwrap_or_default();
+    let mut errors = Vec::new();
+    if members.len() != SUCCESSIVE_ADVERTISEMENTS_MEMBERS.len() {
+        errors.push((String::new(), "members".to_owned()));
+    }
+    for member in SUCCESSIVE_ADVERTISEMENTS_MEMBERS {
+        match members.get(member) {
+            Some(value) => errors.extend(
+                schema_errors(&advertisement, value)
+                    .into_iter()
+                    .map(|(at, keyword)| (format!("/{member}{at}"), keyword)),
+            ),
+            None => errors.push((String::new(), "members".to_owned())),
+        }
+    }
+    errors.sort();
+    errors
+}
+
 fn shape_of(name: &str) -> &'static str {
     SHAPES
         .iter()
@@ -754,6 +857,16 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "statement-envelope" => round_trip::<Statement<Value>>(value),
         "operation" => checked_round_trip::<Operation>(value),
         "result" => checked_round_trip::<ResultBody>(value),
+        "successive-advertisements" => {
+            let bundle: SuccessiveAdvertisements =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .previous
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.next.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
         other => Err(format!("no Rust type for {other}")),
     }
 }
@@ -816,7 +929,7 @@ fn assert_schema_rejects(name: &str) {
     expected.sort();
     let shape = shape_of(name);
     let instance = fixture("invalid", name);
-    let errors = schema_errors(&validator(shape), &instance);
+    let errors = shape_errors(shape, &instance);
     assert!(
         !errors.is_empty(),
         "invalid fixture {name} was accepted by the schemas"
@@ -840,7 +953,7 @@ fn assert_schema_rejects(name: &str) {
 fn assert_rule_rejects(name: &str, expected: &str) {
     let shape = shape_of(name);
     let instance = fixture("invalid", name);
-    let errors = schema_errors(&validator(shape), &instance);
+    let errors = shape_errors(shape, &instance);
     assert!(
         errors.is_empty(),
         "fixture {name} should pass the schemas, got {errors:?}"
@@ -947,7 +1060,7 @@ fn statement_without_its_deployment_and_protocol_version_is_invalid() {
                 .expect("an envelope")
                 .remove(field);
             assert_eq!(
-                schema_errors(&validator(shape), &instance),
+                shape_errors(shape, &instance),
                 vec![(envelope_at.to_owned(), "required".to_owned())],
                 "{name} without {field}"
             );
@@ -975,7 +1088,7 @@ fn statement_without_its_deployment_and_protocol_version_is_invalid() {
             .is_err()
     );
     let other_operator = Deployment {
-        operator_key: "B".repeat(43),
+        operator_key: provider_role::PublicKey::new("A".repeat(43)).expect("a canonical key"),
         ..here.clone()
     };
     assert!(
@@ -983,7 +1096,43 @@ fn statement_without_its_deployment_and_protocol_version_is_invalid() {
             .check_context(&other_operator, provider_role::VERSION)
             .is_err()
     );
-    assert!(statement.check_context(&here, "2.0.0").is_err());
+    assert!(statement.check_context(&here, "1.0.0").is_err());
+}
+
+// verifies: REQ-CAT-2, THR-4
+#[test]
+fn a_statements_key_never_signs_an_advertisement_nor_grants_an_advertising_key() {
+    for (name, rule) in rust_rule_fixtures() {
+        if name.starts_with("successive-advertisements-")
+            || name == "advertisement-signed-with-its-own-statements-key"
+            || name == "advertisement-listing-one-key-for-both-purposes"
+        {
+            assert_rule_rejects(name, &rule);
+        }
+    }
+    assert_schema_rejects("advertisement-key-without-a-purpose");
+    // A new advertising key signed in by a key the accepted advertisement lists for advertising is accepted;
+    // retiring the old key is a further advertisement, signed by either.
+    let rotation = fixture(
+        "valid",
+        "successive-advertisements-adding-an-advertising-key-signed-by-the-previous-one",
+    );
+    assert_eq!(rust_rules("successive-advertisements", &rotation), Ok(()));
+}
+
+// verifies: THR-8
+#[test]
+fn a_non_canonical_alias_of_a_key_is_refused_in_both_layers() {
+    assert_schema_rejects("operation-signed-with-a-non-canonical-alias-of-the-operator-key");
+    let alias = provider_role::PublicKey::new("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB");
+    assert!(
+        alias.is_none(),
+        "an alias with nonzero unused bits is no key"
+    );
+    let key = provider_role::PublicKey::new("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA")
+        .expect("a canonical key");
+    assert_eq!(key.bytes()[..4], [1, 2, 3, 4]);
+    assert_eq!(key.bytes()[31], 32);
 }
 
 // verifies: REQ-CAT-6, REQ-CAT-8, REQ-CAT-9, REQ-CAT-10, REQ-CAT-11, REQ-CAT-12, REQ-CAT-13, REQ-CAT-14, REQ-CAT-16, REQ-CAT-18, REQ-CAT-20, REQ-CAT-22, REQ-ORD-1, REQ-ORD-39, REQ-PRT-1, INV-9
@@ -993,7 +1142,7 @@ fn every_valid_fixture_validates_and_every_invalid_one_is_rejected() {
     assert!(!valid.is_empty(), "no valid fixtures");
     for (name, instance) in &valid {
         let shape = shape_of(name);
-        let errors = schema_errors(&validator(shape), instance);
+        let errors = shape_errors(shape, instance);
         assert!(
             errors.is_empty(),
             "valid fixture {name} was rejected by the schemas: {errors:?}"

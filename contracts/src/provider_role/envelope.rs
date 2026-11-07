@@ -5,8 +5,13 @@
 //! JSON of the whole envelope with only `signature.value` removed, so `scheme`, `key`, `shape`, `deployment` and
 //! `protocol_version` are all signed. The scheme is Ed25519 (RFC 8032), verified strictly. Every integer that can
 //! be signed is at most 2^53 - 1, or is carried as a string. Verifying signatures is not implemented here.
+//!
+//! Every key here is a [`PublicKey`], built only from its canonical encoding and compared by its decoded bytes.
+//! The verifier (`M2`) must still refuse non-canonical base64 and non-canonical points ([`PublicKey`] says which).
 
 use serde::{Deserialize, Serialize};
+
+use super::types::PublicKey;
 
 /// A party's statement in its envelope. `T` is the statement's own shape. The schema of each kind of statement
 /// fixes `shape` to its `$id`; [`Statement::check_shape`] does the same in Rust.
@@ -36,8 +41,8 @@ pub struct Statement<T> {
 pub struct Deployment {
     /// The deployment's name.
     pub name: String,
-    /// The operator's Ed25519 public key, base64url without padding.
-    pub operator_key: String,
+    /// The operator's Ed25519 public key.
+    pub operator_key: PublicKey,
 }
 
 /// A maker's signature over the canonical envelope, as the module docs state.
@@ -46,8 +51,9 @@ pub struct Deployment {
 pub struct Signature {
     /// The signature scheme.
     pub scheme: SignatureScheme,
-    /// The public key that signed: one of the maker's published keys, or the deployment's operator key.
-    pub key: String,
+    /// The public key that signed: one of the maker's published keys, or the deployment's operator key. Keys
+    /// compare by their decoded bytes ([`PublicKey`]).
+    pub key: PublicKey,
     /// The 64-byte signature, base64url without padding.
     pub value: String,
 }
@@ -194,9 +200,9 @@ impl<T: StatementShape> Statement<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotSignedByOperator {
     /// The deployment's operator key.
-    pub operator_key: String,
+    pub operator_key: PublicKey,
     /// The key the operation names.
-    pub key: String,
+    pub key: PublicKey,
 }
 
 impl Statement<super::Operation> {

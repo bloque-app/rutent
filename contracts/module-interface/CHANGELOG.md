@@ -1,5 +1,20 @@
 # module-interface changelog
 
+## 2.0.0
+- Breaking, after the M1 security review, following provider-role 2.0.0's key purposes: `validate_statement_key`
+  refuses a `statement_key` the advertisement lists for `advertising` (`StatementKeyNotForStatements`), and
+  `validate_assertion_key` a release assertion signed with a key it lists for `statements`
+  (`AssertionKeyNotForAdvertising`). At admission `validate_assertion_key` also checks the declared `statement_key`
+  against the advertisement (`StatementKeyNotAdvertised`, `StatementKeyNotForStatements`,
+  `StatementKeyIsOperatorKey`), since a release has no signed result yet. Both checks are called with the
+  advertisement the catalogue accepted, never one that arrives with the release. Keys are provider-role's `PublicKey`, compared by their bytes; a
+  non-canonical alias of the statement key has its own fixture. (DEC-4, DEC-20, T-002-03)
+- Breaking: a kind the sandboxed part newly handles is a widening, `handles` with its `operation_kind`, so a
+  release that starts answering, say, withdrawals takes a fresh acceptance; a release recorded without it is
+  `WideningsMisrecorded`. (DEC-4, DEC-20, T-002-03)
+- Breaking: the special-purpose ranges add the 6to4 relay anycast prefix `192.88.99.0/24` and the SRv6 SID
+  block `5f00::/16`. Fixtures name interface and protocol version 2.0.0. (DEC-4, DEC-20, T-002-03)
+
 ## 1.0.0
 - Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
 

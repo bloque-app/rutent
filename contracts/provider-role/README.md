@@ -14,7 +14,7 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `$id` | File | Holds |
 |---|---|---|
 | `urn:rutent:provider-role:statement-envelope` | `schemas/statement-envelope.schema.json` | The envelope of every party statement |
-| `urn:rutent:provider-role:advertisement` | `schemas/advertisement.schema.json` | A provider's advertisement, in the envelope: identifier, publisher, version, signing keys, offers by category, declarations, private nodes |
+| `urn:rutent:provider-role:advertisement` | `schemas/advertisement.schema.json` | A provider's advertisement, in the envelope: identifier, publisher, version, signing keys with their purposes, offers by category, declarations, private nodes |
 | `urn:rutent:provider-role:declarations` | `schemas/declarations.schema.json` | What a provider declares: tracking, and for value-moving providers evidence grade, availability and safe retry |
 | `urn:rutent:provider-role:reserve-declaration` | `schemas/reserve-declaration.schema.json` | A reserve's declaration at publishing (`REQ-CAT-6`) |
 | `urn:rutent:provider-role:operation` | `schemas/operation.schema.json` | An operation the operator asks of a provider, in the envelope |
@@ -24,8 +24,10 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
 The schemas refer to each other by `$id`. A validator registers all nine and needs nothing from the network.
-A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-` or `result-`.
-The other schemas are exercised through those four. A judgement and a reversal confirmation are exercised inside the
+A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-` or
+`successive-advertisements-`. The last is a bundle, not a schema: a `previous` and a `next` enveloped advertisement,
+each checked against the advertisement schema, for the rules that relate them (`validate_successor`). The other
+schemas are exercised through those. A judgement and a reversal confirmation are exercised inside the
 results that carry them.
 
 ## The envelope and the signing rule
@@ -53,10 +55,18 @@ decision records. All its fields are required:
   with a duplicate member name is rejected.
 - **Scheme:** `ed25519` (RFC 8032), the only one allowed, verified strictly.
 - **Key:** `key` is the signing public key. For a provider, it is one of the keys its advertisement publishes, made
-  authoritative by the operator's grant (`REQ-CAT-2`). For the operator, it is the deployment's `operator_key`.
+  authoritative by the operator's grant (`REQ-CAT-2`), with the purpose the statement needs: `advertising` for an
+  advertisement or a release assertion, `statements` for anything else (see "Key purposes"). For the operator, it is
+  the deployment's `operator_key`.
 - **Value:** the 64-byte signature, written as 86 characters of base64url without padding.
 - **Canonical encodings:** a key's last character is one of `AEIMQUYcgkosw048`, and a signature's one of
-  `AQgw`. The unused bits are then zero, so each value has exactly one encoding.
+  `AQgw`. The unused bits are then zero, so each value has exactly one encoding. In Rust every key is a `PublicKey`,
+  which only canonical text builds, and two keys are equal when their decoded bytes are, so an alias with nonzero
+  unused bits can't pass a "differs from" check.
+- **What the verifier must still refuse** (`M2`): non-canonical base64 from whatever decoder it uses (nonzero unused
+  bits, padding, the `+` and `/` alphabet), and a non-canonical point: a key whose `y` coordinate is at or above the
+  field prime 2^255 − 19, refused as RFC 8032 §5.1.3's strict decoding does, and a small-order key. The contract checks
+  the text only, since it has no curve arithmetic.
 - **Integers:** every integer that can be signed is at most 2^53 − 1, or is carried as a string, since JCS writes
   numbers as IEEE doubles. Amounts are strings. `seconds` and `settlement_seconds` are capped.
 
@@ -69,16 +79,79 @@ In Rust, a reader calls two checks after deserialising a `Statement<T>`, because
   version. It recurses into a nested judgement or reversal confirmation, which must also have the outer
   statement's maker.
 
-Two more checks bind a statement's maker to its key:
+Three more checks bind a statement's maker to its key:
 
-- `validate_statement` rejects an advertisement whose maker isn't its `provider`, or whose signing key isn't in its
-  `keys`.
+- `validate_statement` rejects an advertisement whose maker isn't its `provider`, whose signing key isn't in its
+  `keys`, or is there for `statements` only, and one that lists a key twice, by its bytes, whatever the purposes.
+- `validate_successor(previous, next)` rejects a later advertisement that isn't the same provider's and deployment's
+  as the accepted one, wasn't made after it, isn't signed with a key the accepted one lists for `advertising`, or
+  lists for `advertising` a key the accepted one lists for `statements`.
 - `check_signed_by_operator` rejects an operation not signed with its deployment's `operator_key`.
+
+## Key purposes, and what the catalogue must hold
+
+Added in 2.0.0, after the M1 security review (`THR-4`, `REQ-CAT-2`). Every advertised key states its `purpose`:
+
+- **`advertising`** signs the provider's advertisements and its modules' release assertions
+  (`urn:rutent:module-interface:release-assertion`). Only the provider holds it; no running module can resolve it.
+- **`statements`** signs everything else the provider says: results, quotes, judgements and reversal confirmations.
+  A module's outside part resolves this key through the credential proxy, as its declared `statement_key`, so a
+  compromised outside part holds it.
+
+**Why.** At 1.0.0 an advertisement needed only to be signed by a key it listed itself, and a release's
+`statement_key` had to be one of those keys. A compromised outside part, which can resolve its statement key, could
+therefore sign a new advertisement listing a fresh key, then sign its successor release with that fresh key, and
+rewrite the provider's offers on the way. Every check passed, `AssertionSignedWith{,Previous}StatementKey` included.
+
+**Why the purposes live here.** The module-interface contract imports this one, never the reverse, so this
+contract's advertisement rules can't see which keys a release declared as `statement_key`. A rule such as "an
+advertisement may not be signed with a key a release declared" could only be held by the catalogue, and this
+contract would carry a hole it can't check. The purpose puts the distinction in the advertisement itself.
+
+**What the contract checks:**
+
+| Rule | Where |
+|---|---|
+| Every key states its purpose, `advertising` or `statements` | schema, and Rust (`KeyPurpose`) |
+| An advertisement is signed with a key it lists for `advertising`, matching the signature's scheme and the key's bytes | Rust, `validate_statement`: `SignedWithUnpublishedKey`, `SignedWithStatementsKey` |
+| A key is listed once, by its bytes, so it can't hold both purposes | Rust, `validate_statement`: `KeyListedTwice` (`uniqueItems` can't see it once the purposes differ) |
+| A later advertisement is the same provider's and deployment's, made after the accepted one, signed with a key the accepted one lists for `advertising`, and promotes none of its `statements` keys | Rust, `validate_successor`: `SuccessorOfAnotherProvider`, `SuccessorOfAnotherDeployment`, `SuccessorNotNewer`, `SuccessorNotSignedWithPreviousAdvertisingKey`, `StatementsKeyPromoted` |
+| A module's `statement_key` is listed for `statements`, at admission and for each result; a release assertion is signed with a key listed for `advertising` | module-interface: `validate_assertion_key`'s `StatementKeyNotForStatements` and `AssertionKeyNotForAdvertising`, and `validate_statement_key`'s `StatementKeyNotForStatements` |
+
+So a key a statements key signs in can't sign anything that grants keys: a `next` signed with a key it adds itself,
+or with the accepted one's `statements` key (which `next` must then list for `advertising`, promoting it), fails
+`validate_successor`.
+
+**What the catalogue (`F-012`) must enforce,** since it holds what these checks are given:
+
+- **First trust.** A provider's first advertisement vouches for nothing by listing its own keys. Its `advertising`
+  keys are trusted only because the operator grants them at admission (`REQ-CAT-2`), never because the
+  advertisement lists the key it is signed with.
+- **Every later advertisement** is accepted only after `validate_successor` against the one the catalogue accepted
+  last, never against one that arrives alongside it, and never on `validate_statement` alone.
+- **No replay.** An older advertisement stays public and validly signed. The catalogue never re-accepts an
+  advertisement that isn't newer, by `made_at`, than the last it accepted (`validate_successor` checks this against
+  the one it is given, `SuccessorNotNewer`), and never re-lists a `statements` key an accepted advertisement
+  dropped. Otherwise resubmitting v1 {A, S1} after v2 {A, S2} would bring the retired S1 back.
+- **Releases are checked against the accepted advertisement.** At admission `validate_assertion_key` is called with
+  the advertisement the catalogue holds, never one that arrives with the release; it checks both the assertion's key
+  and the declared `statement_key`. `validate_statement_key` is called the same way for each signed result.
+- **The whole history, everywhere.** The contract compares each advertisement with the one before it. The catalogue
+  keeps every earlier advertisement and admitted release, and never accepts for `advertising` a key that any earlier
+  advertisement listed for `statements`, or that any admitted release declared as its `statement_key`. A key's
+  purpose holds across every deployment and every provider: a key used for `statements` anywhere, by any provider
+  in any deployment, is never accepted for `advertising` anywhere, since whoever resolved it there holds it here.
+- **The credential proxy (`F-014`)** resolves for a module's outside part only the `statement_key` its admitted
+  release declares, which is a `statements` key, and never a key listed for `advertising`. A provider's advertising
+  keys are never stored where the proxy can reach them for a module.
+- **Losing every advertising key** is recovered by a fresh operator grant, not by a successor advertisement.
+- Retiring an advertising key takes two advertisements: one that adds the new key, signed with the old; then one
+  that drops the old, signed with either.
 
 ## The advertisement in brief
 
 - An advertisement is the provider's own statement. Its envelope's `maker` is the provider, and it signs with one
-  of the keys in `keys`.
+  of the keys in `keys` listed for `advertising`. Each key in `keys` states its `purpose`.
 - `offers` is keyed by category, `reserve`, `exchange`, `ramp` and `verifier`, with at least one (`REQ-CAT-8`).
 - Each role has its own tuple shape (`REQ-CAT-13`):
   - **exchange:** `{node, from, to, terms}`, one inner node by construction. `from` and `to` each name an asset
@@ -181,6 +254,9 @@ comparing two fields, and comparing a key across list entries.
 | A reserve declares both answers, its maker and its version | schema | `advertisement-reserve-without-declaration`, `advertisement-reserve-declaration-without-maker`, `advertisement-reserve-declaration-without-automatic-deposit-answer` |
 | A reserve declaration's maker is the statement's maker | Rust, `ReserveDeclarationOfAnotherMaker` | `advertisement-reserve-declaration-of-another-maker` |
 | An advertisement is made by its provider, signed with a key it publishes | Rust, `AdvertisementOfAnotherMaker`, `SignedWithUnpublishedKey` | `advertisement-made-by-another-party`, `advertisement-signed-with-an-unpublished-key` |
+| Every key states its purpose, `advertising` or `statements` | schema | `advertisement-key-without-a-purpose`, `advertisement-key-of-an-unknown-purpose` |
+| An advertisement is signed with a key it lists for `advertising`, and lists each key once, by its bytes | Rust, `SignedWithStatementsKey`, `KeyListedTwice` | `advertisement-signed-with-its-own-statements-key`, `advertisement-listing-one-key-for-both-purposes` |
+| A later advertisement is the accepted one's provider's and deployment's, made after it, signed with a key the accepted one lists for `advertising`, promoting none of its `statements` keys | Rust, `validate_successor`: `SuccessorOfAnotherProvider`, `SuccessorOfAnotherDeployment`, `SuccessorNotNewer`, `SuccessorNotSignedWithPreviousAdvertisingKey`, `StatementsKeyPromoted` | `successive-advertisements-of-another-provider`, `successive-advertisements-of-another-deployment`, `successive-advertisements-replaying-an-older-advertisement`, `successive-advertisements-signed-with-a-key-the-next-one-adds`, `successive-advertisements-promoting-the-previous-statements-key`, `successive-advertisements-signed-with-the-previous-statements-key` (which breaks both of the last two: a statements key signs `next` only once `next` promotes it) |
 | A verifier advertises classes, never tuples | schema (`additionalProperties: false`) | `advertisement-verifier-advertising-a-tuple`, `advertisement-verifier-without-classes` |
 | At least one offer, only the four categories | schema | `advertisement-without-offers`, `advertisement-offer-under-an-unknown-category` |
 | An offer has at least one tuple | schema | `advertisement-offer-without-tuples` |
@@ -204,7 +280,7 @@ class and regime each pick one closed shape, so a field that belongs to another 
 | A deployment names its operator's key | schema | `statement-envelope-deployment-without-operator-key` |
 | Its time is RFC 3339 UTC, its protocol version `major.minor.patch`, its shape a rutent URN | schema | `statement-envelope-made-at-not-a-utc-time`, `statement-envelope-protocol-version-not-major-minor-patch`, `statement-envelope-naming-no-shape` |
 | It is signed with Ed25519, in unpadded base64url | schema, and Rust for the scheme | `statement-envelope-signed-with-another-scheme`, `statement-envelope-signature-with-padding` |
-| Keys and signatures are in their one canonical encoding | schema | `statement-envelope-key-in-a-non-canonical-encoding`, `statement-envelope-signature-in-a-non-canonical-encoding` |
+| Keys and signatures are in their one canonical encoding | schema, and Rust for keys (`PublicKey`) | `statement-envelope-key-in-a-non-canonical-encoding`, `statement-envelope-signature-in-a-non-canonical-encoding`, `operation-signed-with-a-non-canonical-alias-of-the-operator-key` |
 | An operation is signed with its deployment's operator key | Rust, `check_signed_by_operator` | `operation-signed-with-another-key` |
 | A nested judgement belongs to the same deployment and protocol version, and has the outer maker | Rust, `check_context` | `result-judgement-from-another-deployment`, `result-judgement-made-by-another-verifier` |
 | A nested reversal confirmation does too | Rust, `check_context` | `result-reversal-confirmation-from-another-deployment`, `result-reversal-confirmation-made-by-another-reserve` |
@@ -240,10 +316,11 @@ if it is attributable to that segment's provider and matches that transaction.
 - A `dry_run_accepted` answering an operation that wasn't a dry run doesn't count.
 - A `succeeded`, `failed` or `unknown` answering a dry run doesn't count.
 - A result whose envelope `maker` isn't the operation's `provider`, or whose signing key isn't one that provider
-  published, doesn't count.
+  published for `statements`, doesn't count. Keys compare by their bytes.
 
 The contract's own Rust checks cover what one statement can show about itself: `check_context`,
-`check_signed_by_operator`, and `validate_statement`'s maker and key bindings.
+`check_signed_by_operator`, and `validate_statement`'s maker and key bindings. `validate_successor` relates two
+advertisements, and the catalogue holds the rest (see "Key purposes").
 
 ### Agreement with the Rust types
 
@@ -269,9 +346,11 @@ Some rules this contract doesn't check, because they need the catalogue (`F-012`
   - The Rust types are checked against `rust_accepts`.
 - It checks that `VERSION` matches this changelog.
 
-At `C1` every fixture names `protocol_version` `1.0.0`, except `v3` in
+Every fixture names `protocol_version` `2.0.0`, this contract's version since the M1 security review (it was
+`1.0.0` at `C1`), except `v3` in
 `statement-envelope-protocol-version-not-major-minor-patch`, which is malformed on purpose (the module-interface
 fixture `successive-releases-under-another-protocol-version` also keeps old versions, for a mismatch). No check compares a fixture's protocol version with
 `VERSION`: the tests run `check_context` against each fixture's own deployment and protocol version, since a fixture stands
 for a statement made at some deployment. The role suite's `SuiteContext` defaults to `VERSION`, so the stand-ins'
-statements carry `1.0.0`.
+statements carry `2.0.0`. The stand-ins sign their advertisements with an `advertising` key and everything else with
+a `statements` key, and the suite counts a result only if its key is published for `statements`.

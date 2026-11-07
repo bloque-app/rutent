@@ -197,7 +197,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:55Z",
@@ -238,7 +238,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:50:00Z",
@@ -499,7 +499,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "ramp-x",
           "made_at": "2026-11-06T14:59:57Z",
@@ -550,7 +550,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-bank-co",
           "made_at": "2026-11-06T14:59:58Z",
@@ -591,7 +591,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:judgement",
           "maker": "verifier-kyc",
           "made_at": "2026-11-06T14:59:56Z",
@@ -628,7 +628,7 @@
             "name": "rutent-elsewhere",
             "operator_key": "DB_q1ZR5r420fqOGugtrpUfD7jVigeJU4wYKXVT-JtA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:55Z",
@@ -683,7 +683,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:55Z",
@@ -738,7 +738,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:judgement",
           "maker": "verifier-kyc",
           "made_at": "2026-11-06T14:59:56Z",
@@ -776,7 +776,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-bank-co",
           "made_at": "2026-11-06T14:59:58Z",
@@ -826,7 +826,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:58Z",
@@ -882,7 +882,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-wallet",
           "made_at": "2026-11-06T14:59:58Z",
@@ -933,7 +933,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-bank-co",
           "made_at": "2026-11-06T14:59:58Z",
@@ -983,7 +983,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1039,7 +1039,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-wallet",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1090,7 +1090,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-bank-co",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1140,7 +1140,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "ramp-x",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1191,7 +1191,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-b",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1247,7 +1247,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-wallet",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1298,7 +1298,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-bank-co",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1348,7 +1348,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-a",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1404,7 +1404,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-wallet",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1454,7 +1454,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "ramp-x",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1505,7 +1505,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "exchange-b",
           "made_at": "2026-11-06T14:59:58Z",
@@ -1561,7 +1561,7 @@
             "name": "rutent-test",
             "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
           },
-          "protocol_version": "1.0.0",
+          "protocol_version": "2.0.0",
           "shape": "urn:rutent:provider-role:result",
           "maker": "reserve-wallet",
           "made_at": "2026-11-06T14:59:58Z",

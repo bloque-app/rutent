@@ -1,5 +1,11 @@
 # host changelog
 
+## 2.0.0
+- Breaking, after the M1 security review: a transition record's `seq`, a refusal record's `seq` and the `seq` it
+  points to are at most 2^53 - 1 (`MAX_SEQ`), in the schemas and in Rust, so they survive RFC 8785 canonical
+  JSON. A record above it was valid at 1.0.0 and is refused now, so this is a major bump; the Rust field types
+  are unchanged; a fixture covers each of the three. Fixtures name host version 2.0.0. (DEC-4, DEC-20, T-002-03)
+
 ## 1.0.0
 - Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
 

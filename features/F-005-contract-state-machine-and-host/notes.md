@@ -362,3 +362,16 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   field after the deposit is gone; the state can't show more than that.
 - The rules only Rust checks now cover recorded inputs too: a recalculated route that doesn't chain, and one that
   doesn't end with a deposit. A test checks the violation each Rust-only fixture is refused with.
+
+## The M1 security review (host 2.0.0, `T-002-03`)
+
+- A low finding: `seq` was an unbounded integer. A transition record's `seq`, a refusal record's `seq` and the
+  `existing.seq` it points to are now at most 2^53 − 1 (`MAX_SEQ`), in the schemas (`maximum`) and in Rust (the
+  records' `check`, which deserialising runs). The Rust fields stay `u64`.
+- **Why major.** A record with a `seq` above 2^53 − 1 was valid at 1.0.0 and is refused now, which the contracts
+  README's rule calls breaking, even though no host could reach it. Host 2.0.0; the fixtures' `host_version` follow,
+  except the deliberate `snapshot-entry-header-with-a-version-not-semver`, which keeps `0.1.1`.
+- **A reading: the brief names no task for the host.** The change rides in `T-002-03`'s commit with the other
+  security-review fixes, and its changelog bullet names `T-002-03`.
+- An end entry's counts are not sequence numbers and stay uncapped; a stream whose counts exceed what came before
+  fails `StreamCheck` already.

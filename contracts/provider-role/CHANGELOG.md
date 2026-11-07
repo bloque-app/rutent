@@ -1,5 +1,24 @@
 # provider-role changelog
 
+## 2.0.0
+- Breaking, after the M1 security review: every advertised key states its `purpose`, required, `advertising` or
+  `statements`. An advertisement is signed with an `advertising` key it lists (`SignedWithStatementsKey`), and a
+  key is listed once by its bytes, whatever the purposes (`KeyListedTwice`). `validate_successor(previous, next)`
+  checks a later advertisement against the accepted one: same provider and deployment, made after it
+  (`SuccessorNotNewer`, so a replayed older advertisement can't undo a key's removal), signed with a key the
+  accepted one lists for `advertising`, scheme and bytes, and promoting none of its `statements` keys. So a module's outside part,
+  which resolves its statement key, can no longer sign an advertisement that adds a key and then sign its
+  successor release with it, nor rewrite the offers. The README states what the catalogue (`F-012`) must hold:
+  the first advertisement's keys by the operator's grant, no replay of an older advertisement or a dropped
+  statements key, and a key's purpose across the whole history, every deployment and every provider; and that the
+  credential proxy (`F-014`) resolves only a release's declared statements key.
+  (DEC-4, DEC-20, T-002-03)
+- Breaking: every key in the Rust envelope and types is a `PublicKey`: `Deployment.operator_key`,
+  `Signature.key`, `SigningKey.public_key` and a judgement's `holder_key`. It is built only from the canonical
+  encoding and compares by its decoded bytes, so an alias with nonzero unused bits can't pass a "differs from"
+  check; the docs state that the verifier (`M2`) must refuse non-canonical base64 and non-canonical points.
+  Fixtures name protocol version 2.0.0. (DEC-4, DEC-20, T-002-03)
+
 ## 1.0.0
 - Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
 

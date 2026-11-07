@@ -1,5 +1,14 @@
 # router-api changelog
 
+## 1.0.1
+- No change to this contract's shapes or types, after the M1 security review: the README's "Unchecked by either"
+  and the Rust docs state, as the orchestrator ruled, that nothing in a decision record ties a statement's
+  `signature.key` to its maker, since the snapshot carries no keys, and that Core ties each provider statement,
+  nested ones included, to a `statements` key of its provider's advertisement current when it was made, and the
+  operator's to `operator_key`, before a record is formed. The
+  envelope it embeds is provider-role 2.0.0's, by `$ref` and in Rust, so its keys are `PublicKey`s compared by their
+  bytes; the fixtures name protocol version 2.0.0. (DEC-4, DEC-20, T-004-02)
+
 ## 1.0.0
 - Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
 

@@ -62,7 +62,7 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
 - Advertisement and declaration schemas. (DEC-4, T-002-01)
 ```
 
-- `C1` has happened: `T-006-01` set every contract to `1.0.0`. From here versions are `1.x.y`. A breaking change
+- `C1` has happened: `T-006-01` set every contract to `1.0.0`. From there versions follow semver: a breaking change
   bumps the major, a compatible addition the minor, a fix the patch, and every change waits for the owner's click
   (`DEC-20`). Before `C1`, versions were `0.x.y`, starting at `0.1.0`.
 - Every bullet names at least one `DEC-*`, and names the task that made it.

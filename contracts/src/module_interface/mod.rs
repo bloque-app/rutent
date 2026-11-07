@@ -16,8 +16,9 @@
 //!   resolves the private half through the credential proxy by the deployment's name (the deployment
 //!   `{name, operator_key}` of the enveloped advertisement) and signs the RFC 8785 (JCS) canonical JSON of the
 //!   whole envelope with only the top-level `signature.value` removed. [`validate_statement_key`] checks that the
-//!   key is one of the advertisement's keys, isn't the `operator_key`, and is the `signature.key` of a result
-//!   the declaring provider made, in the advertisement's deployment.
+//!   key is one of the advertisement's keys listed for `statements`, isn't the `operator_key`, and is the
+//!   `signature.key` of a result the declaring provider made, in the advertisement's deployment. Keys are
+//!   provider-role's [`PublicKey`], compared by their decoded bytes.
 //! - The **platform** records every outbound call with its transaction, module version and destination, hop by
 //!   hop ([`OutboundCallRecord`], `REQ-MDL-8`), and mediates [`CrossModuleCall`]s, made only where the route
 //!   names them (`REQ-MDL-21`).
@@ -30,8 +31,10 @@
 //! - **Admission** (`T-003-02`, `REQ-MDL-1`, `REQ-MDL-2`, `REQ-MDL-3`). A release travels as the provider's
 //!   signed [`ReleaseAssertion`]; the platform records it in an [`AdmissionArtefact`] with what it received, the
 //!   build that made the machine code, the version history and the acceptance. [`widening`] computes how one
-//!   release's capabilities widen the previous one's; a widening release, and a first release, require a fresh
-//!   acceptance. [`validate_artefact`], [`validate_assertion_key`] and [`validate_release`] check them.
+//!   release's capabilities widen the previous one's, a newly handled operation kind included; a widening
+//!   release, and a first release, require a fresh acceptance. [`validate_artefact`], [`validate_assertion_key`]
+//!   and [`validate_release`] check them; an assertion is signed with a key the accepted advertisement lists for
+//!   `advertising`.
 //!
 //! `contracts/module-interface/README.md` lists which rule lives where.
 
@@ -49,4 +52,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "2.0.0";

@@ -46,6 +46,13 @@
 //! signature still verifies. A decision record is the deployment's statement, [`RecordedDecision`], signed when it
 //! is recorded, since a pure router can neither sign nor read the time.
 //!
+//! **Who signed is a precondition, not a check.** The contract checks that each carried statement's `maker` is its
+//! figure's provider, but a snapshot carries no keys, so nothing here ties a statement's `signature.key` to its
+//! maker. Before a record is formed, Core ties each provider statement, nested ones included, to a key listed for
+//! `statements` in its provider's accepted advertisement current at the statement's `made_at`, and the operator's
+//! statements, the recorded decision among them, to the deployment's `operator_key`
+//! (`contracts/router-api/README.md`, "Unchecked by either").
+//!
 //! # The typed operation
 //!
 //! The router contract owns the typed operation of `REQ-ORD-37` (ruled by the orchestrator, 2026-11-06):
@@ -64,7 +71,7 @@ pub use atoms::{
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/router-api/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]

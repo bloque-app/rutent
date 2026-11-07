@@ -8,9 +8,10 @@
   "properties": {
     "order_id": { "type": "string", "minLength": 1 },
     "seq": {
-      "description": "Its place in the order's sequence, from 1, with no gap (guarantee per-order-sequence).",
+      "description": "Its place in the order's sequence, from 1, with no gap (guarantee per-order-sequence), and at most 2^53 - 1, so it survives RFC 8785 canonical JSON.",
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "input": { "$ref": "urn:rutent:state-machine:recorded-input" },
     "state_after": {
