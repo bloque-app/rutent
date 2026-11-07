@@ -18,6 +18,9 @@
 //! - `iokit -`: read the machine's serial number from IOKit (macOS; IOKit is loaded only for this probe).
 //! - `sysv -`: create, then remove, an `IPC_PRIVATE` System V shared-memory segment.
 //! - `stderr <text>`: write `text` to standard error.
+//! - `sandbox -`: compile the PolkaVM blob on standard input and instantiate it, with the binding's engine
+//!   settings: under the compiler, in PolkaVM's Linux sandbox. It shows the guest sandbox works inside the
+//!   program's own isolation.
 
 use std::io::Write;
 
@@ -88,6 +91,7 @@ pub fn run(args: &[String]) -> Option<i32> {
                 Ok(String::new())
             }
         }
+        "sandbox" => sandbox(),
         "stderr" => std::io::stderr()
             .write_all(argument.as_bytes())
             .map(|_| String::new())
@@ -196,4 +200,28 @@ fn iokit() -> Result<String, String> {
 #[cfg(not(target_os = "macos"))]
 fn iokit() -> Result<String, String> {
     Err("no IOKit on this platform".to_owned())
+}
+
+fn sandbox() -> Result<String, String> {
+    use std::io::Read;
+    let mut blob = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut blob)
+        .map_err(|e| e.to_string())?;
+    let engine =
+        polkavm::Engine::new(&crate::engine::config(1)).map_err(|e| format!("engine: {e}"))?;
+    let program = crate::engine::check(
+        rutent_contracts::module_interface::PartName::Sandboxed,
+        &blob,
+    )?;
+    let (module, compiled) = crate::engine::compile(&engine, &blob, program)?;
+    let instance = module
+        .instantiate()
+        .map_err(|e| format!("instantiate: {e}"))?;
+    Ok(format!(
+        " backend={:?} machine_code={} sandbox_pid={:?}",
+        engine.backend(),
+        compiled.machine_code,
+        instance.pid()
+    ))
 }

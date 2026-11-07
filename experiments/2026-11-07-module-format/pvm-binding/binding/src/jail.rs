@@ -299,7 +299,8 @@ fn seccomp() -> Result<(), String> {
 }
 
 /// Confines this process as `role`; `hide` names more directories a worker hides.
-pub fn enter(role: Role, hide_also: &[String]) -> Result<(), String> {
+pub fn enter(role: Role, hide_also: &[String], skip: &[String]) -> Result<(), String> {
+    let skipped = |step: &str| skip.iter().any(|s| s == step);
     // SAFETY: plain prctl with integer arguments.
     check(
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
@@ -323,9 +324,18 @@ pub fn enter(role: Role, hide_also: &[String]) -> Result<(), String> {
             .map(|p| (*p).to_owned())
             .collect();
             paths.extend(hide_also.iter().cloned());
-            hide(&paths)?;
-            read_only_everywhere()?;
-            rlimit(libc::RLIMIT_NOFILE, 1024)?;
+            if !skipped("hide") {
+                hide(&paths)?;
+            }
+            if !skipped("read-only") {
+                read_only_everywhere()?;
+            }
+            if !skipped("nofile") {
+                rlimit(libc::RLIMIT_NOFILE, 1024)?;
+            }
+            if skipped("capabilities") {
+                return Ok(());
+            }
             drop_capabilities()
         }
     }

@@ -250,6 +250,8 @@ pub struct Started {
     pub jailed: Option<String>,
     /// The directories to hide.
     pub hide: Vec<String>,
+    /// Diagnostic only, never passed by `spawn`: confinement steps to skip, to find which one a failure needs.
+    pub skip: Vec<String>,
     /// Every other argument.
     pub rest: Vec<String>,
 }
@@ -262,6 +264,7 @@ pub fn started() -> Started {
         match arg.as_str() {
             "--jailed" => out.jailed = args.next(),
             "--hide" => out.hide.extend(args.next()),
+            "--skip" => out.skip.extend(args.next()),
             _ => out.rest.push(arg),
         }
     }
@@ -279,7 +282,7 @@ pub fn confine(started: &Started, role: Role) -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     {
-        crate::jail::enter(role, &started.hide)
+        crate::jail::enter(role, &started.hide, &started.skip)
     }
     #[cfg(not(target_os = "linux"))]
     {
