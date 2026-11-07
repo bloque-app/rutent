@@ -5,11 +5,12 @@ use std::time::Duration;
 
 use rutent_conformance::host::probe::Probe;
 use rutent_conformance::host::{RunConfig, Verdict, run_with_fault_seam};
-use rutent_contracts::state_machine::host::Host;
+use rutent_contracts::state_machine::host::{Host, HostError};
 use rutent_stm::reference_host::ReferenceHarness;
 use rutent_vos_rt::cluster::{ClusterConfig, NodeBuild, PROBED, STARTED};
 use rutent_vos_rt::host::{IMPORT_BYTES, IMPORT_ENTRIES, RtHarness, RtHost};
 use rutent_vos_rt::platform::{self, Backend, Facts};
+use vos_wire::Encode;
 
 use crate::{pb, rows};
 
@@ -350,6 +351,7 @@ fn smoke(env: &Env, base: PathBuf) -> bool {
     let delivered = host.submit(input.clone());
     let again = host.submit(input.clone());
     let stages = host.cluster.stages(1).unwrap_or_default();
+    let atomic = import_is_atomic(&mut harness);
     let pid = host
         .cluster
         .pids()
@@ -370,13 +372,60 @@ fn smoke(env: &Env, base: PathBuf) -> bool {
             );
         }
     }
-    let ok = delivered.is_ok()
+    println!(
+        "| A refused import chunk keeps none of its writes | {} |",
+        short(&atomic)
+    );
+    let ok = atomic.is_ok()
+        && delivered.is_ok()
         && matches!(
             again,
             Ok(rutent_contracts::state_machine::host::Delivery::AlreadyRecorded(_))
         );
     drop(host);
     backend_proof(env, config.backend, &pid) && ok
+}
+
+/// An import whose chunk holds a header, a good record and then a bad entry: the program refuses the chunk, and
+/// none of it is kept (its step failed), so the import goes on from the chunk's start.
+fn import_is_atomic(harness: &mut RtHarness) -> Result<(), String> {
+    use rutent_contracts::state_machine::host::{
+        self as contract, SnapshotEntry, TransitionRecord, Version,
+    };
+    use rutent_contracts::state_machine::{self as machine, StateMachine};
+    let store = harness.fresh().map_err(|e| e.to_string())?;
+    let mut host = RtHost::boot(store).map_err(|e| format!("{e:?}"))?;
+    let input = rutent_conformance::host::probe::order_inputs("ord-atomic", 0).remove(0);
+    let record = TransitionRecord {
+        order_id: input.subject.order.clone(),
+        seq: 1,
+        state_after: Probe::open(&input),
+        input,
+    };
+    let header = SnapshotEntry::Header {
+        host_version: Version::new(contract::VERSION).expect("a version"),
+        state_machine_version: Version::new(machine::VERSION).expect("a version"),
+    };
+    let lines: Vec<Vec<u8>> = vec![
+        serde_json::to_vec(&header).unwrap(),
+        serde_json::to_vec(&SnapshotEntry::Record(record)).unwrap(),
+        b"{\"entry\":\"nonsense\"}".to_vec(),
+    ];
+    let began = host.call::<rutent_vos_program::Imported>(host.methods.begin_import, &[]);
+    let refused = host.import_chunk(&[0u64.encode(), lines.encode()].concat());
+    let status = host.status().map_err(|e| format!("{e:?}"))?;
+    drop(host);
+    match (began, refused) {
+        (Ok(_), Err(HostError::SnapshotRefused { .. }))
+            if status.records == 0 && status.import_next == 0 =>
+        {
+            Ok(())
+        }
+        (b, r) => Err(format!(
+            "begin {b:?}, chunk {r:?}, then {} records and the import's next entry {}",
+            status.records, status.import_next
+        )),
+    }
 }
 
 pub fn short<T: std::fmt::Debug, E: std::fmt::Debug>(result: &Result<T, E>) -> String {

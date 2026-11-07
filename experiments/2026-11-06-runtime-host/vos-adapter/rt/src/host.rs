@@ -295,6 +295,26 @@ impl RtHost {
         }
     }
 
+    /// One import chunk. A chunk the program refuses fails its step, so none of it is kept: the refusal is the
+    /// step's error, an import refusal.
+    pub fn import_chunk(&mut self, arguments: &[u8]) -> Result<Imported, HostError> {
+        let response = self
+            .client
+            .call(self.agent, INSTANCE, self.methods.import_chunk, arguments);
+        if let Ok(Response::Ran {
+            outcome: Outcome::Failed { detail, .. },
+            ..
+        }) = &response
+            && let Ok((why, _)) = Refused::decode(detail)
+        {
+            return Err(refused(match why {
+                Refused::Import(why) => String::from_utf8_lossy(&why).into_owned(),
+                other => format!("{other:?}"),
+            }));
+        }
+        answer(response)
+    }
+
     pub fn call<T: Decode>(&mut self, method: MethodId, arguments: &[u8]) -> Result<T, HostError> {
         answer(self.client.call(self.agent, INSTANCE, method, arguments))
     }
@@ -387,16 +407,13 @@ impl RtHost {
                 return Ok(false);
             }
             let arguments = [at.encode(), chunk.encode()].concat();
-            match host.call::<Imported>(host.methods.import_chunk, &arguments)? {
+            match host.import_chunk(&arguments)? {
                 Imported::Taken { next, ended } => {
                     *at = next;
                     chunk.clear();
                     Ok(ended)
                 }
-                Imported::Refused(why) => Err(refused(match why {
-                    Refused::Import(why) => String::from_utf8_lossy(&why).into_owned(),
-                    other => format!("{other:?}"),
-                })),
+                Imported::Refused(why) => Err(refused(format!("{why:?}"))),
             }
         };
         for entry in stream {

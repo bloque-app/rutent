@@ -515,18 +515,23 @@ impl Rutent {
 
     /// One chunk of an open import: the snapshot stream's entries from place `at`, each one JSON line, which must
     /// be the import's next. Each entry is checked as `StreamCheck` checks it, against what the import took
-    /// before it; a chunk that fails is refused whole, and the import can go on from `at`. The end entry closes
-    /// the import, leaving the host halted.
+    /// before it. A chunk that fails is refused whole: the handler returns its error, which fails the step, so VOS
+    /// keeps none of the chunk's writes, and the import can go on from `at`. The end entry closes the import,
+    /// leaving the host halted.
     #[msg(gas = 100_000_000)]
-    pub async fn import_chunk(&mut self, at: u64, entries: Vec<Vec<u8>>) -> Imported {
+    pub async fn import_chunk(
+        &mut self,
+        at: u64,
+        entries: Vec<Vec<u8>>,
+    ) -> Result<Imported, Refused> {
         if let Some((stored, expected)) = self.format_error() {
-            return Imported::Refused(Refused::Format { stored, expected });
+            return Err(Refused::Format { stored, expected });
         }
         if !self.importing {
-            return Imported::Refused(Refused::Import(b"no import is open".to_vec()));
+            return Err(Refused::Import(b"no import is open".to_vec()));
         }
         if at != self.import_next {
-            return Imported::Refused(Refused::Import(
+            return Err(Refused::Import(
                 alloc::format!("the import's next entry is {}, not {at}", self.import_next)
                     .into_bytes(),
             ));
@@ -534,19 +539,17 @@ impl Rutent {
         let mut ended = false;
         for line in &entries {
             if ended {
-                return Imported::Refused(Refused::Import(
-                    b"nothing follows a stream's end".to_vec(),
-                ));
+                return Err(Refused::Import(b"nothing follows a stream's end".to_vec()));
             }
             let entry: SnapshotEntry = match serde_json::from_slice(line) {
                 Ok(entry) => entry,
                 Err(e) => {
-                    return Imported::Refused(Refused::Import(alloc::format!("{e}").into_bytes()));
+                    return Err(Refused::Import(alloc::format!("{e}").into_bytes()));
                 }
             };
             match self.take(entry) {
                 Ok(end) => ended = end,
-                Err(why) => return Imported::Refused(Refused::Import(why)),
+                Err(why) => return Err(Refused::Import(why)),
             }
             self.import_next += 1;
         }
@@ -554,10 +557,10 @@ impl Rutent {
             self.importing = false;
             self.halted = true;
         }
-        Imported::Taken {
+        Ok(Imported::Taken {
             next: self.import_next,
             ended,
-        }
+        })
     }
 
     #[msg]

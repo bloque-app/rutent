@@ -543,20 +543,32 @@ pub fn r01(env: &Env, base: PathBuf) -> bool {
         rest = later;
         let leader = host.cluster.leader().unwrap_or(1);
         let load = Load::start(&host.cluster, agent, methods, now.to_vec());
-        let delay = random.draw(400);
+        // The kill lands mid-submit: once the load has sent a random number of its inputs, a random 0 to 3 ms
+        // into the submit then in flight.
+        let at = 2 + random.draw(take as u64 - 3);
+        let delay = random.draw(4);
+        let until = Instant::now() + Duration::from_secs(30);
+        while load.sent.load(Ordering::SeqCst) < at && Instant::now() < until {
+            std::thread::sleep(Duration::from_micros(200));
+        }
         std::thread::sleep(Duration::from_millis(delay));
         let in_flight = load.in_flight.lock().unwrap().clone();
         host.cluster.kill(leader);
         let unanswered = load.finish_after_kill();
         acknowledged.extend(load_acknowledged(&unanswered.0));
+        let mid = in_flight.is_some();
         let input = in_flight.unwrap_or_else(|| now[0].clone());
-        let row = check_round(&mut host, leader, &input, &mut acknowledged, &mut client);
+        let mut row = check_round(&mut host, leader, &input, &mut acknowledged, &mut client);
+        if !mid {
+            row.good = false;
+            row.fate = format!("**no submit was in flight at the kill**; {}", row.fate);
+        }
         for left in unanswered.1 {
             let delivered = submit_via(&mut client, agent, &methods, &left);
             acknowledge(&mut acknowledged, &delivered);
         }
         println!(
-            "| random {round}: after {delay} ms, {} submits sent | {leader} | `{}` | {} | {} | {} | {} |",
+            "| random {round}: during submit {}, {delay} ms into it | {leader} | `{}` | {} | {} | {} | {} |",
             unanswered.2,
             input.record_id.as_str(),
             row.fate,
@@ -591,7 +603,7 @@ pub fn r01(env: &Env, base: PathBuf) -> bool {
     println!("\nVerdict: {}.", verdict(all_ok));
     let pids: Vec<u32> = host.cluster.pids().into_iter().map(|(_, p)| p).collect();
     drop(host);
-    backend_proof(env, config.backend, &pids)
+    backend_proof(env, config.backend, &pids) && all_ok
 }
 
 impl Load {
@@ -652,16 +664,11 @@ fn check_round(
     let resubmitted = match (&resubmit, count) {
         (Ok(Delivery::AlreadyRecorded(_)), 1) => "already recorded".to_string(),
         (Ok(Delivery::Recorded(_)), 0) => "recorded once, now".to_string(),
-        (Err(HostError::RecordIdReused { .. }), _) => {
-            "refused as reused (another input under its id)".to_string()
-        }
         (other, _) => format!("**{}**", short(other)),
     };
     let resubmit_ok = matches!(
         (&resubmit, count),
-        (Ok(Delivery::AlreadyRecorded(_)), 1)
-            | (Ok(Delivery::Recorded(_)), 0)
-            | (Err(HostError::RecordIdReused { .. }), _)
+        (Ok(Delivery::AlreadyRecorded(_)), 1) | (Ok(Delivery::Recorded(_)), 0)
     );
     let restarted = host.cluster.start(killed).is_ok();
     let (views, agree) = converge(
@@ -902,9 +909,9 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
         Some(&config),
     );
     println!(
-        "| Damage | Node | Journal file, bytes before | Opened | Acknowledged | Lost after the open | Caught up | Its replica after: term, commit, applied, last index (the leader's commit) | Result |"
+        "| Damage | Node | Journal file, bytes: before, damaged, after the open | Before the kill: applied, last index | At the open: applied, last index | Opened | Acknowledged | Lost after the open | Caught up | Its replica after: term, commit, applied, last index (the leader's commit) | Result |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
     let mut ok = true;
     let mut pids = Vec::new();
     // `none` is the control: the same kill and restart with no damage, so the harness's own reads are shown sound.
@@ -924,10 +931,23 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
         } else {
             (1..=3).find(|n| *n != leader).unwrap()
         };
+        let at_kill = host.cluster.status(node).map_or("unread".to_string(), |s| {
+            format!("{}, {}", s.applied, s.last_index)
+        });
         host.cluster.kill(node);
         let file = last_journal(&host.cluster, node);
         let before = file.as_ref().map(|f| damage(f, how));
+        let len_of = |f: &Option<PathBuf>| {
+            f.as_ref()
+                .and_then(|f| std::fs::metadata(f).ok())
+                .map_or("gone".to_string(), |m| m.len().to_string())
+        };
+        let damaged = len_of(&file);
         let opened = reopen(&mut host.cluster, node);
+        let after_open = len_of(&file);
+        let at_open = host.cluster.status(node).map_or("unread".to_string(), |s| {
+            format!("{}, {}", s.applied, s.last_index)
+        });
         // Idle first; then, if the node has not caught up, one more submit: a follower learns the commit index
         // from the leader's next entries, so an idle cluster can leave it behind.
         let mut idle = None;
@@ -975,7 +995,7 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
             )
         });
         println!(
-            "| {} | {node}{} | {} | {} | {} | {lost_now} | {} | {replica} | {} |",
+            "| {} | {node}{} | {} | {at_kill} | {at_open} | {} | {} | {lost_now} | {} | {replica} | {} |",
             if how == "none" {
                 "none (the control)".to_string()
             } else {
@@ -983,8 +1003,10 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
             },
             if replicas == 1 { "" } else { " (a follower)" },
             match (&file, &before) {
-                (Some(f), Some(Ok(len))) =>
-                    format!("`{}`, {len}", f.file_name().unwrap().to_string_lossy()),
+                (Some(f), Some(Ok(len))) => format!(
+                    "`{}`: {len}, {damaged}, {after_open}",
+                    f.file_name().unwrap().to_string_lossy()
+                ),
                 (_, Some(Err(e))) => format!("**not damaged: {e}**"),
                 _ => "**no journal file found**".into(),
             },
