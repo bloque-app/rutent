@@ -1,0 +1,46 @@
+# rutent's host as one VOS program, for EXP-1's re-score (T-007-03): a VOS guest built with VOS's guest toolchain,
+# in a workspace of its own outside rutent's, with the generated no_std copies of contracts/ and of conformance's
+# probe as its other members. It links VOS's AGPL-3.0-or-later SDK, which the owner permitted for this experiment
+# (DEC-6, counsel-licences); rutent's own Cargo.lock never sees it. ../build-rt.sh builds it:
+#     cargo build --release --target <vos>/pvm/guest/riscv64em-vos.json
+# with the linker script and build-std given on the command line, since cargo's config can't name the checkout.
+[package]
+name = "rutent-vos-program"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "rutent-vos-program"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# R-06a: the same layout under another program version.
+next = []
+# R-06b: a layout that changed, under its own format number, which refuses rows of another format.
+next-format = []
+
+[dependencies]
+rutent-contracts = { package = "rutent-contracts-nostd", path = "contracts-nostd" }
+rutent-probe = { package = "rutent-probe-nostd", path = "probe-nostd" }
+serde = { version = "1.0.229", default-features = false, features = ["alloc"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+# VOS at the re-score's commit, vos-core 5c78975 (item exp1-rescore-commit).
+vos-sdk = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458" }
+
+[workspace]
+resolver = "3"
+members = [".", "contracts-nostd", "probe-nostd"]
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1
