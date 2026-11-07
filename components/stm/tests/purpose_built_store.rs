@@ -608,6 +608,7 @@ fn a_store_opens_in_one_host_at_a_time() {
 /// A regression test for the gate: process spawns running beside a store that is closed and opened again must
 /// never make the reopen fail. With `Command::spawn` called directly instead of `spawn_writer` it failed within
 /// a few hundred iterations, with the "the store is open in another host" the suite's tests flaked with.
+// verifies: REQ-OPS-3, NFR-6
 #[test]
 fn a_process_spawned_beside_a_closing_store_never_keeps_its_lock() {
     use std::sync::atomic::{AtomicBool, Ordering};
