@@ -26,7 +26,7 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 94] = [
+const RUST_RULES: [(&str, &str); 101] = [
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -402,6 +402,34 @@ const RUST_RULES: [(&str, &str); 94] = [
     (
         "decision-record-quote-voided-citing-a-second-quote-at-another-amount",
         "a fresh quote an operation cites is for its amount in",
+    ),
+    (
+        "decision-record-beyond-levels-naming-an-operation-before-the-last",
+        "a beyond-levels reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-beyond-levels-with-something-out",
+        "a beyond-levels reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-beyond-levels-within-the-levels",
+        "a beyond-levels reason names an operation whose net is above its price's last level",
+    ),
+    (
+        "decision-record-confirmed-by-an-answer-made-before-the-shortlist",
+        "a confirming answer is made at or after the shortlist round it refines",
+    ),
+    (
+        "decision-record-judgement-of-no-made-before-the-shortlist-left-uncited",
+        "every operation cites every usable answer and judgement about its tuple at its amount in",
+    ),
+    (
+        "decision-record-judgement-of-no-between-the-shortlist-and-the-answers-left-uncited",
+        "every operation cites every usable answer and judgement about its tuple at its amount in",
+    ),
+    (
+        "decision-record-refining-a-shortlist-taken-after-its-snapshot",
+        "a choice round refines a shortlist round taken at or before its own snapshot",
     ),
 ];
 

@@ -41,7 +41,7 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, DropReason, Endpoint, Figure, FigureValue, Id, Objective, Operation,
-    Round, Router,
+    Round, Router, Timestamp,
 };
 
 /// One check the suite runs on a decision record.
@@ -182,6 +182,16 @@ fn accepted(body: &ResultBody) -> Option<Answer<'_>> {
     }
 }
 
+/// When a statement figure's envelope says it was made; `None` for a figure that isn't a statement.
+fn statement_made_at(figure: &Figure) -> Option<&str> {
+    match &figure.value {
+        FigureValue::FreshQuote { quote, .. } => Some(&quote.made_at),
+        FigureValue::DryRun { result, .. } => Some(&result.made_at),
+        FigureValue::Eligibility { judgement, .. } => Some(&judgement.made_at),
+        _ => None,
+    }
+}
+
 fn is_tuple(figure: &Figure) -> bool {
     matches!(
         figure.value,
@@ -279,7 +289,8 @@ impl<'a> Reader<'a> {
             .expect("the contract checked every cited figure is in the snapshot")
     }
 
-    /// Whether a statement figure is usable here: within its validity and not void (`REQ-QTE-4`, `REQ-PRT-1`).
+    /// Whether a statement figure is usable here: within its validity and not void (`REQ-QTE-4`, `REQ-PRT-1`), and,
+    /// for an accepted answer in a choice round, made at or after the shortlist round's `taken_at` (`REQ-CAT-5`).
     fn is_usable(&self, figure: &Figure) -> bool {
         let (deployment, version) = (
             &self.record.bounds.deployment,
@@ -295,7 +306,20 @@ impl<'a> Reader<'a> {
             }
             _ => true,
         };
-        figure.is_within_validity() && in_context
+        // In a choice round, an accepted answer made before the shortlist round's `taken_at` is not usable either;
+        // a refusal or a judgement binds whenever it was made.
+        let answer = match &figure.value {
+            FigureValue::FreshQuote { quote, .. } => accepted(&quote.statement).is_some(),
+            FigureValue::DryRun { result, .. } => accepted(&result.statement).is_some(),
+            _ => false,
+        };
+        let after_the_shortlist = match (&self.record.request.round, statement_made_at(figure)) {
+            _ if !answer => true,
+            (Round::Choice { refines }, Some(made_at)) => Timestamp::new(made_at)
+                .is_some_and(|t| t.unix_nanos() >= refines.taken_at.unix_nanos()),
+            _ => true,
+        };
+        figure.is_within_validity() && in_context && after_the_shortlist
     }
 
     fn cited(&self, operation: &'a Operation) -> Cited<'a> {

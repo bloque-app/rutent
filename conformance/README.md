@@ -230,7 +230,9 @@ rounds (each objective, and a floor no route meets); a policy network with an ex
 by what an exchange produces, a band, a deposit that keeps everything and a floor; and a tie.
 
 The suite can't see a candidate a router left out; the cases' expected routes catch that on its own inputs only. A candidate
-with an unserved operation mid-route can't be recorded at all (see the router-api README). The suite reads each
+cut short at an operation beyond its price's levels (`beyond_levels`) is recomputed like any other: its fee from
+the price, and nothing out. In a choice round, an accepted answer made before the shortlist round's `taken_at`
+binds nothing, as one past its validity; a refusal or a judgement binds whenever made. The suite reads each
 operation's figures as the contract binds them: since router-api 0.6.0 an operation must cite every usable
 statement about its tuple at its amount in, and a fresh quote only at its amount, so leaving a confirming answer,
 a refusal or a judgement of no out is the contract's to refuse.

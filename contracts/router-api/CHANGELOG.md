@@ -1,5 +1,19 @@
 # router-api changelog
 
+## 0.7.0
+- `check_typed_operation` and `check_typed_chain` check a bare typed operation and a chain of them, with no
+  prices; `Operation::check` and `Part::check` call them, and so does the state machine's segment plan, so the
+  rules are stated once. An operation's ends now have their provider-role atoms checked in Rust too.
+  (DEC-4, T-004-02)
+- A drop reason `beyond_levels {part, operation}`: the part is listed up to and including an operation whose net
+  is above its price's last level, which arrives with 0, and needn't reach the destination; the checker
+  verifies the net is beyond the levels. (DEC-4, T-004-02)
+- A choice round's `refines` is an object, the shortlist round's request id and its snapshot's `taken_at`, at or
+  before the choice round's own snapshot. A confirming answer is made at or after that stated time, and an
+  accepted answer made before it is not usable in the choice round; a refusal or a judgement binds whenever it
+  was made. That the stated time is the shortlist's real one is Core's, which keeps the shortlist record.
+  (DEC-4, T-004-02)
+
 ## 0.6.0
 - A candidate's outcome is judged per part: a kept candidate arrives with something in every part, and
   `no_positive_outcome` holds when any one part arrives with nothing, so a split with one empty part has a reason

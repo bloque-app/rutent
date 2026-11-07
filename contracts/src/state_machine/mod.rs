@@ -66,7 +66,7 @@ pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
 pub mod host;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "0.4.0";
+pub const VERSION: &str = "0.4.1";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,92 +341,24 @@ impl<'de> Deserialize<'de> for SegmentPlan {
     }
 }
 
-/// The typed operation's rules, as the router contract's `Operation::check` states them.
+/// The bare typed operation's rules, by the router contract's own [`crate::router_api::check_typed_operation`]:
+/// one rule, stated once, for a priced operation and a segment plan alike.
 fn check_operation(kind: OperationKind, from: &Endpoint, to: &Endpoint) -> Result<(), Violation> {
-    check_endpoint(from)?;
-    check_endpoint(to)?;
-    let outer = |n: &NodeRef| matches!(n, NodeRef::Outer(_));
-    let same_asset = from.asset.id == to.asset.id;
-    match kind {
-        OperationKind::Withdrawal => {
-            if !outer(&from.node) || outer(&to.node) {
-                return Err(Violation(
-                    "a withdrawal goes from an outer node to an inner one",
-                ));
-            }
-            if !same_asset {
-                return Err(Violation("a withdrawal keeps its asset"));
-            }
-        }
-        OperationKind::Deposit => {
-            if outer(&from.node) || !outer(&to.node) {
-                return Err(Violation(
-                    "a deposit goes from an inner node to an outer one",
-                ));
-            }
-            if !same_asset {
-                return Err(Violation("a deposit keeps its asset"));
-            }
-        }
-        OperationKind::Route => {
-            if outer(&from.node) || outer(&to.node) {
-                return Err(Violation("a route runs between inner nodes"));
-            }
-            if from.node == to.node {
-                return Err(Violation("a route runs between two different nodes"));
-            }
-            if !same_asset {
-                return Err(Violation("a route keeps its asset"));
-            }
-        }
-        OperationKind::Exchange => {
-            if outer(&from.node) || outer(&to.node) {
-                return Err(Violation("an exchange runs at an inner node"));
-            }
-            if from.node != to.node {
-                return Err(Violation("an exchange stays at one node"));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The provider-role atoms of an endpoint, as that contract's schema states them: every node, network and asset
-/// is an identifier (checked by the router's own [`crate::router_api::Id`]), and decimals are at most 36.
-fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
-    let node = match &endpoint.node {
-        NodeRef::Inner(id) => id,
-        NodeRef::Outer(outer) => &outer.network,
-    };
-    if NodeId::new(node.as_str()).is_none() || NodeId::new(endpoint.asset.id.as_str()).is_none() {
-        return Err(Violation(
-            "a node, network and asset is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
-        ));
-    }
-    if endpoint.asset.decimals > 36 {
-        return Err(Violation("an asset's decimals are at most 36"));
-    }
-    Ok(())
+    crate::router_api::check_typed_operation(kind, from, to).map_err(|v| Violation(v.0))
 }
 
 /// Each segment of a route starts where the one before it ended, in the same unit, as the router's `Part::check`
-/// requires of its operations; and the route ends with a deposit (`REQ-ORD-16`).
+/// requires of its operations, by the same [`crate::router_api::check_typed_chain`]; and the route ends with a
+/// deposit (`REQ-ORD-16`).
 fn check_chain<'a>(
     steps: impl Iterator<Item = (OperationKind, &'a Endpoint, &'a Endpoint)>,
 ) -> Result<(), Violation> {
-    let mut last: Option<(OperationKind, &Endpoint)> = None;
-    for (kind, from, to) in steps {
-        if let Some((_, end)) = last
-            && end != from
-        {
-            return Err(Violation(
-                "each segment starts where the one before it ended, in the same unit",
-            ));
-        }
-        last = Some((kind, to));
-    }
-    match last {
-        Some((OperationKind::Deposit, _)) => Ok(()),
+    let steps: Vec<(OperationKind, &Endpoint, &Endpoint)> = steps.collect();
+    crate::router_api::check_typed_chain(steps.iter().map(|(_, from, to)| (*from, *to))).map_err(
+        |_| Violation("each segment starts where the one before it ended, in the same unit"),
+    )?;
+    match steps.last() {
+        Some((OperationKind::Deposit, ..)) => Ok(()),
         _ => Err(Violation("a route ends with a deposit")),
     }
 }

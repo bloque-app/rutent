@@ -561,8 +561,9 @@ fn to_polygon() -> Value {
     json!({ "node": outer("polygon"), "asset": unit("USDC", 6) })
 }
 
+/// A choice round refining the shortlist round `shortlist`, whose snapshot was taken at `SHORTLIST_AT`.
 fn choice_of(shortlist: &str) -> Value {
-    json!({ "kind": "choice", "refines": shortlist })
+    json!({ "kind": "choice", "refines": { "request_id": shortlist, "taken_at": SHORTLIST_AT } })
 }
 
 const SLOW_ROUTE: [&str; 4] = ["f-w", "f-ex-slow", "f-ramp-x", "f-dep"];
@@ -610,6 +611,18 @@ fn policy_case() -> Case {
         RAMP_Y,
         WIDE,
         json!({ "fee": capped, "settlement_seconds": 300 }),
+    );
+    // Its book is 500,000.00 COP deep, short of the 996,003.00 COP net it would be asked: beyond its levels.
+    exchange(
+        &mut s,
+        "f-ex-shallow",
+        ("exchange-shallow", "shallow-co"),
+        cop_to_usdc(),
+        json!({
+            "fee": fee("0", "3", "1000"),
+            "rate": { "kind": "levels", "levels": [{ "up_to": "50000000", "rate": "0.00025" }] },
+            "settlement_seconds": 60,
+        }),
     );
     ramp(
         &mut s,

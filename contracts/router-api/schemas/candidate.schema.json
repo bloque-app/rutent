@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:candidate",
   "title": "Route candidate",
-  "description": "One candidate the router considered: a split of one or more parts, each a route, an ordered list of typed operations (REQ-ORD-37, REQ-QTE-16), and why it was dropped unless it was kept (REQ-AUD-4). A single route is a split of one part (DEC-8). That each operation starts where the one before it ended, with what it delivered, and that an outside-band or unconfirmed reason names an operation of the candidate, are checked by the contract's Rust types.",
+  "description": "One candidate the router considered: a split of one or more parts, each a route, an ordered list of typed operations (REQ-ORD-37, REQ-QTE-16), and why it was dropped unless it was kept (REQ-AUD-4). A single route is a split of one part (DEC-8). That each operation starts where the one before it ended, with what it delivered, that an outside-band, beyond-levels or unconfirmed reason names an operation of the candidate, and that a beyond-levels reason names its part's last operation, which arrives with 0, are checked by the contract's Rust types.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -66,6 +66,7 @@
             "over_ceiling",
             "unconfirmed",
             "outside_band",
+            "beyond_levels",
             "excluded_by_policy",
             "below_floor",
             "no_positive_outcome",
@@ -324,6 +325,39 @@
             "properties": {
               "reason": {
                 "const": "outside_band"
+              },
+              "part": {
+                "$ref": "#/$defs/index"
+              },
+              "operation": {
+                "$ref": "#/$defs/index"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "beyond_levels"
+              }
+            }
+          },
+          "then": {
+            "description": "An operation's net amount is above its price's last level, so the price serves it nothing (REQ-QTE-12, ADR-0006): the part is listed only up to and including that operation, which arrives with 0. That the net is above the last level, that the operation is its part's last, and that it arrives with 0 are checked by the contract's Rust types.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reason",
+              "part",
+              "operation"
+            ],
+            "properties": {
+              "reason": {
+                "const": "beyond_levels"
               },
               "part": {
                 "$ref": "#/$defs/index"

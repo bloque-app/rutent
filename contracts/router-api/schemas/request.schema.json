@@ -108,8 +108,21 @@
                 "const": "choice"
               },
               "refines": {
-                "description": "The shortlist round's request id.",
-                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+                "description": "The shortlist round this choice round refines: its request id, and its snapshot's taken_at. A confirming answer must be made at or after that time, checked by the contract's Rust types.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "taken_at"
+                ],
+                "properties": {
+                  "request_id": {
+                    "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+                  },
+                  "taken_at": {
+                    "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+                  }
+                }
               }
             }
           }

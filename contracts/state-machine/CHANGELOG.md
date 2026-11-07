@@ -1,5 +1,10 @@
 # state-machine changelog
 
+## 0.4.1
+- A segment plan's typed-operation rules and a route's chaining are checked by the router contract's own
+  `check_typed_operation` and `check_typed_chain`, not a copy, so the two contracts state each rule once. No
+  shape, rule or message changes. (DEC-4, T-004-02)
+
 ## 0.4.0
 - The segment plan is the router contract's typed operation (`urn:rutent:router-api:operation#/$defs/operation`):
   `kind`, and router endpoints, with `OperationKind` and `Endpoint` reused in Rust and the operation's other rules

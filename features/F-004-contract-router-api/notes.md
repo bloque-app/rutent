@@ -337,7 +337,44 @@ own tests under `conformance/tests/`. Readings taken where SPEC, PLAN or the con
     so it needs no contract change.
 - **Unchecked, still.** That the record lists every candidate the catalogue allows: the suite recomputes the
   choice among the candidates listed, and the cases' expected routes catch a missing one on the suite's own inputs
-  only. A candidate with an unserved operation mid-route (a net above its price's last level, followed by
-  another operation) can't be recorded at all, since what enters the next operation must be positive. That a
-  confirming answer was made after the shortlist round, and the `quote_voided` conditions that rest on facts
-  outside the record, are as T-004-01 left them.
+  only. The `quote_voided` conditions that rest on facts outside the record are as T-004-01 left them. (The
+  unserved mid-route candidate and the shortlist timing, listed here at 0.6.0, are settled by the pre-freeze
+  audit below.)
+
+## The orchestrator's pre-freeze audit (router-api 0.7.0, state-machine 0.4.1)
+
+Before the contract freeze (`T-006-01`), the orchestrator audited the open items of `T-004-02` and ruled
+(2026-11-07) that three need a contract change now, since after 1.0.0 each would cost a `DEC-*` entry and the
+owner's click. They are done as a follow-up to `T-004-02`.
+
+- **One check for the bare typed operation.** state-machine 0.4.0's `SegmentPlan::check` repeated the router's
+  unpriced rules, and one had already been found missing from that copy. router-api now exposes
+  `check_typed_operation(kind, from, to)` (the ends' provider-role atoms, outer and inner ends, the asset kept,
+  two nodes or one) and `check_typed_chain(ends)` (each starts where the one before ended). `Operation::check`
+  and `Part::check` call them; the state machine calls them in place of its copy, keeping its own wording for a
+  broken chain and its own rule that a route ends with a deposit. state-machine goes to 0.4.1; its fixtures and
+  tests keep their results. The router's operations now also check their ends' atoms, as the schemas do.
+- **The unserved mid-route candidate (`REQ-AUD-4`, ADR-0006's exhaustive search).** Ruled: a drop reason
+  `beyond_levels {part, operation}`. A candidate dropped with it lists that part's operations only up to and
+  including the unserved one, whose `amount_out` is 0; that part alone needn't reach the destination. The checker
+  verifies the operation is its part's last, arrives with 0, and that its net (amount in less fee) is above its
+  cited price's last level. The suite recomputes it as any operation: the fee from the price and, above the last
+  level, nothing out. The double now records such a route instead of dropping it from the search. Fixtures: a
+  valid shortlist with a route through a shallow exchange, and invalid ones naming an operation before the last,
+  stating something out, and naming an operation within its price's levels.
+- **Shortlist timing.** Ruled: a choice round's `refines` carries the shortlist round's `taken_at` with its request
+  id, and a confirming answer must be made at or after it. A chosen candidate confirmed only by earlier answers
+  is refused with its own message. Every choice fixture's `refines` now carries the shortlist fixture's
+  `taken_at`, 14:59:50; an invalid fixture moves it past the one-part split's answers.
+  - My first draft made every statement made before `taken_at` unusable. Review found that let whoever sets
+    `taken_at` hide a refusal or a judgement of no, made before it or between it and the answers. Ruled by the
+    orchestrator, 2026-11-07: the cutoff applies to accepted answers only. A refusal or a judgement binds while
+    within its validity and not void, whenever it was made. Two invalid fixtures leave such a no uncited.
+  - `refines.taken_at` is at or before the choice round's own snapshot (a fixture breaks it). Beyond that it is
+    checked against its stated value only: backdating can't be seen from the choice record, and Core ties
+    `refines` to the shortlist record it keeps (`REQ-AUD-4`). The README lists this under "Unchecked by
+    either".
+  - A `beyond_levels` reason's two conditions on the named operation, being its part's last and arriving with
+    0, are one rule with one message, so the fixture naming an operation before the last breaks only that.
+- **Documented limits, no change.** That the record lists every candidate, and the `quote_voided` conditions that
+  rest on facts outside the record, stay as the README states them.

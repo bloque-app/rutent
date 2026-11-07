@@ -101,9 +101,24 @@ pub enum Round {
     /// accepted dry-run answer of its provider for its tuple, at its amount, within its validity and not void
     /// (the fresh quote for a route or exchange, the reserve's accepted dry run for a withdrawal or deposit).
     Choice {
-        /// The shortlist round it refines, by its request id, so both rounds are recorded (`REQ-AUD-4`).
-        refines: Id,
+        /// The shortlist round it refines, so both rounds are recorded (`REQ-AUD-4`), with the time its snapshot
+        /// was taken: a confirming answer is made at or after it.
+        refines: Refines,
     },
+}
+
+/// The shortlist round a choice round refines (`REQ-CAT-5`, ruled by the orchestrator's pre-freeze audit,
+/// 2026-11-07).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Refines {
+    /// The shortlist round's request id.
+    pub request_id: Id,
+    /// When the shortlist round's snapshot was taken, at or before the choice round's own. In the choice round an
+    /// accepted answer made before it is not usable: it confirms nothing, needn't be cited and covers nothing, as
+    /// one past its validity. A refusal or a judgement binds whenever it was made. The contract checks against
+    /// this stated value; that it is the shortlist's real time is Core's to keep (`REQ-AUD-4`).
+    pub taken_at: Timestamp,
 }
 
 /// The customer's objective (`REQ-QTE-11`). Whoever builds the request writes the default, lowest total cost,
@@ -518,6 +533,16 @@ pub enum DropReason {
         /// The part, by index.
         part: u32,
         /// The operation within the part, by index.
+        operation: u32,
+    },
+    /// An operation's net amount is above its price's last level, so the price serves it nothing (`REQ-QTE-12`,
+    /// ADR-0006; ruled by the orchestrator's pre-freeze audit, 2026-11-07). The part is listed only up to and
+    /// including that operation, which arrives with `0`; the part needn't reach the destination, since nothing
+    /// after it can be stated. So an exhaustive search records every candidate it considered (`REQ-AUD-4`).
+    BeyondLevels {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last.
         operation: u32,
     },
     /// Its value in flight, its parts counted together, would pass a ceiling (`REQ-ORD-8`).

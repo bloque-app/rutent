@@ -373,6 +373,17 @@ fn the_policy_case_drops_by_policy_by_ceilings_on_output_and_by_outcome() {
         reason(&["f-w", "f-ex-fast", "f-ramp-y", "f-dep"]),
         Some(DropReason::BelowFloor {})
     );
+    // The shallow exchange's book can't take the net: the route is recorded up to it, arriving with 0, and the
+    // suite recomputes its fee and its nothing out from its price.
+    let shallow = on_path(&record, &["f-w", "f-ex-shallow"]);
+    assert_eq!(
+        shallow.dropped,
+        Some(DropReason::BeyondLevels {
+            part: 0,
+            operation: 1
+        })
+    );
+    assert!(shallow.parts[0].operations.last().amount_out.is_zero());
     let shortlist: Vec<_> = record
         .shortlist()
         .iter()

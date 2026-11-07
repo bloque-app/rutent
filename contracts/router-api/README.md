@@ -40,7 +40,9 @@ Core calls `route` twice per routing (ruled by the orchestrator, 2026-11-06). Th
 advertised figures and chooses nothing; the candidates it keeps are the shortlist. The choice round runs over a
 snapshot that adds fresh quotes, dry runs and eligibility judgements for the shortlisted providers only
 (`REQ-CAT-5`), names the shortlist round it refines, and chooses at most one candidate. Both records are kept
-(`REQ-AUD-4`).
+(`REQ-AUD-4`). `refines` carries the shortlist round's request id and its snapshot's `taken_at`; in the choice
+round an accepted answer made before that time is not usable, so it confirms nothing; a refusal or a judgement
+binds whenever it was made, so no choice of `taken_at` hides bad news.
 
 ## Computing, exactly
 
@@ -129,6 +131,9 @@ only records that pass theirs, so a stored record recomputes.
 | One tuple figure per provider and ends, and at most one price per tuple figure, so a copy can't dodge the agreement rules or the levels | can't be stated | `CatalogueSnapshot::check` |
 | All judgements in one snapshot about one relying provider's tuples are about one subject: the subject reference is the relying provider's (ADR-0012), and the relying provider is the provider of the tuple a judgement names, not the verifier | can't be stated | `CatalogueSnapshot::check` |
 | An operation cites each figure once | `uniqueItems` | `Operation::check` ("duplicate figure") |
+| A bare typed operation's rules (ends' atoms, outer and inner ends, asset kept, two nodes or one) and a chain's continuity, checked once for the router's operations and the state machine's segment plans | can't be stated | `check_typed_operation`, `check_typed_chain` |
+| A `beyond_levels` reason names its part's last operation, which arrives with 0 and whose net is above its price's last level; that part alone needn't reach the destination | can't be stated | `Candidate::check`, `DecisionRecord::check` |
+| A choice round's `refines` carries the shortlist round's `taken_at`, at or before its own snapshot's; a confirming answer is made at or after it, and an accepted answer made before it isn't usable, while a refusal or a judgement binds whenever made | `required` | `Refines`, `DecisionRecord::check` |
 | Within one snapshot, dry-run answers (fresh quotes included) for one tuple and amount agree, and so do judgements of one subject for one tuple; an accepted dry run states the amount its figure records | can't be stated | `CatalogueSnapshot::check` |
 | A statement figure's age is its `made_at` to `taken_at`, rounded up; its validity, to `valid_until`, rounded down, and absent for a refused dry run | can't be stated | `CatalogueSnapshot::check` |
 | A shortlist round chooses nothing; a choice round names the round it refines | `not`, `required` | `Round`, `DecisionRecord::check` |
@@ -147,14 +152,18 @@ the rest from the record alone; see `conformance/README.md`:
 
 Unchecked by either:
 
-- That a confirming answer was made after the shortlist round: the shortlist round's record isn't in the choice
-  round's, so only `refines` names it.
 - That the conditions of `quote_voided` other than `validity_passes` and `amount_changes` hold: they rest on facts
   outside the record.
 - That the record lists every candidate: a router that leaves out a better route isn't caught by its record.
-- A candidate with an unserved operation mid-route (a net above its price's last level, followed by another
-  operation) can't be recorded: the price gives it no output, and what enters the next operation must be
-  positive.
+- That `refines.taken_at` is the shortlist round's real time. The contract checks answers against the stated
+  value, and that it is at or before the choice round's own snapshot; a backdated or postdated value can't be
+  seen from the choice record. Core ties `refines` to the shortlist record it keeps (`REQ-AUD-4`).
+
+Recorded since 0.7.0 (the orchestrator's pre-freeze audit, 2026-11-07): a candidate with an operation whose net is
+above its price's last levels mid-route is listed up to that operation, which arrives with 0, and dropped as
+`beyond_levels`; the contract checks the net is beyond the levels, and the suite recomputes the operation. A
+confirming answer is checked to be made at or after the `taken_at` that `refines` states, against that stated
+value only.
 
 ## Tests
 

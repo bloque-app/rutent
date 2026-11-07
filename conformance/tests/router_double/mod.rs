@@ -7,7 +7,9 @@
 //! else from its price. Candidate ids follow the paths' tuple ids in order, so the record doesn't depend on the snapshot's order of
 //! anything but its answers, and nothing iterates a hash map.
 //!
-//! It drops a candidate for the first of these that holds: excluded by policy, a void statement, a stale figure,
+//! A path that meets an operation whose net is beyond its price's levels is recorded up to that operation, which
+//! arrives with nothing, and dropped as `beyond_levels`; it can't go further. It drops any other candidate for
+//! the first of these that holds: excluded by policy, a void statement, a stale figure,
 //! a refused dry run, an ineligible judgement, outside a band, over a ceiling, a part arriving with nothing,
 //! below the floor, a profitable rate cycle, unconfirmed (choice round). Among the rest, the choice round chooses
 //! the first by the objective and `candidate_id`, and drops the others as outranked by it; the shortlist round
@@ -26,7 +28,7 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{
     Amount, Candidate, CatalogueSnapshot, CeilingScope, Decimal, DecisionRecord, DropReason,
     Endpoint, FeeFormula, Figure, FigureValue, Id, NonEmpty, Objective, Operation, OperationKind,
-    Part, PolicyBounds, PositiveAmount, Pricing, Request, Round, Router, Version,
+    Part, PolicyBounds, PositiveAmount, Pricing, Request, Round, Router, Timestamp, Version,
 };
 
 /// No flaw: the reference double itself.
@@ -205,6 +207,8 @@ struct Step {
 struct Found {
     tuples: Vec<String>,
     steps: Vec<Step>,
+    /// Cut short at its last operation, whose net is beyond its price's levels.
+    beyond_levels: bool,
 }
 
 struct Search<'a, const FLAW: u8> {
@@ -323,7 +327,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         // Terms come from a usable answer; one past its validity or void binds nothing.
         let confirmed = statements
             .iter()
-            .filter(|f| f.is_within_validity() && !self.statement_is_void(f))
+            .filter(|f| self.usable(f))
             .find_map(answer);
         let (fee, amount_out, is_confirmed) = match confirmed {
             Some((fee, out)) => (fee, out, true),
@@ -353,7 +357,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         figures.extend(
             statements
                 .iter()
-                .filter(|f| !is_confirmed || (f.is_within_validity() && !self.statement_is_void(f)))
+                .filter(|f| !is_confirmed || self.usable(f))
                 .map(|f| f.figure_id.clone()),
         );
         Some(Step {
@@ -389,8 +393,11 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             let out = big(step.operation.amount_out.as_str());
             path.push(i);
             steps.push(step);
-            if hop.to == self.request.to {
+            let beyond =
+                hop.to != self.request.to && self.beyond_levels(hop, &steps[steps.len() - 1]);
+            if hop.to == self.request.to || beyond {
                 found.push(Found {
+                    beyond_levels: beyond,
                     tuples: path
                         .iter()
                         .map(|&j| self.hops[j].tuple.figure_id.as_str().to_owned())
@@ -537,8 +544,50 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         })
     }
 
+    /// Whether a statement may be used: within its validity, not void, and, for an accepted answer in a choice
+    /// round, made at or after the shortlist round's `taken_at`. A refusal or a judgement binds whenever made.
+    fn usable(&self, f: &Figure) -> bool {
+        let made_at = match &f.value {
+            FigureValue::FreshQuote { quote, .. } => Some(&quote.made_at),
+            FigureValue::DryRun { result, .. } if accepted_terms(&result.statement).is_some() => {
+                Some(&result.made_at)
+            }
+            _ => None,
+        };
+        let in_time = match (&self.request.round, made_at) {
+            (Round::Choice { refines }, Some(made_at)) => Timestamp::new(made_at.as_str())
+                .is_some_and(|t| t.unix_nanos() >= refines.taken_at.unix_nanos()),
+            _ => true,
+        };
+        f.is_within_validity() && !self.statement_is_void(f) && in_time
+    }
+
+    /// Whether a step's net, what enters less its fee, is above its price's last level. A step whose terms come
+    /// from a provider's answer is served by it, and states that answer's output, so it is never cut short.
+    fn beyond_levels(&self, hop: &Hop<'_>, step: &Step) -> bool {
+        if step.confirmed {
+            return false;
+        }
+        let FigureValue::Price {
+            rate: Some(Pricing::Levels { levels }),
+            ..
+        } = &hop.price.value
+        else {
+            return false;
+        };
+        let operation = &step.operation;
+        big(operation.amount_in.amount().as_str()) - big(&operation.fee.amount)
+            > big(levels.last().up_to.amount().as_str())
+    }
+
     /// Why a path is dropped, before ranking, or `None`.
     fn fault(&self, found: &Found) -> Option<DropReason> {
+        if found.beyond_levels {
+            return Some(DropReason::BeyondLevels {
+                part: 0,
+                operation: (found.steps.len() - 1) as u32,
+            });
+        }
         let operations: Vec<&Operation> = found.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations
             .iter()
@@ -648,7 +697,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
                         .figures
                         .iter()
                         .map(|id| self.figure(id))
-                        .filter(|f| f.is_within_validity() && !self.statement_is_void(f))
+                        .filter(|f| self.usable(f))
                         .filter_map(|f| match &f.value {
                             FigureValue::FreshQuote { quote, .. } => {
                                 accepted_terms(&quote.statement).map(|(.., seconds)| seconds)

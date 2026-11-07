@@ -15,60 +15,110 @@ use crate::provider_role::{
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
 };
 
-impl Operation {
-    /// Checks the rules a field type can't carry.
-    ///
-    /// - A withdrawal goes from an outer node to an inner one, a deposit from an inner node to an outer one, and
-    ///   both keep the asset.
-    /// - A route keeps the asset between two different inner nodes.
-    /// - An exchange stays at one inner node.
-    /// - The fee is in the from asset and at most the amount in.
-    /// - It cites each figure once.
-    pub fn check(&self) -> Result<(), Violation> {
-        let outer = |n: &NodeRef| matches!(n, NodeRef::Outer(_));
-        let (from, to) = (&self.from.node, &self.to.node);
-        let same_asset = self.from.asset.id == self.to.asset.id;
-        match self.kind {
-            OperationKind::Withdrawal => {
-                if !outer(from) || outer(to) {
-                    return Err(Violation(
-                        "a withdrawal goes from an outer node to an inner one",
-                    ));
-                }
-                if !same_asset {
-                    return Err(Violation("a withdrawal keeps its asset"));
-                }
+/// Checks a bare typed operation, with no prices (`REQ-ORD-37`): the rules of
+/// `urn:rutent:router-api:operation#/$defs/operation` that JSON Schema can't state, and the provider-role atoms of
+/// its two ends. The router's [`Operation`] and the state machine's segment plan both call it, so the two can't
+/// drift apart.
+///
+/// - Each end's node or network and asset is an identifier, and its decimals are at most 36.
+/// - A withdrawal goes from an outer node to an inner one, a deposit from an inner node to an outer one, and both
+///   keep the asset.
+/// - A route keeps the asset between two different inner nodes.
+/// - An exchange stays at one inner node.
+pub fn check_typed_operation(
+    kind: OperationKind,
+    from: &Endpoint,
+    to: &Endpoint,
+) -> Result<(), Violation> {
+    check_endpoint(from)?;
+    check_endpoint(to)?;
+    let outer = |n: &NodeRef| matches!(n, NodeRef::Outer(_));
+    let (from_node, to_node) = (&from.node, &to.node);
+    let same_asset = from.asset.id == to.asset.id;
+    match kind {
+        OperationKind::Withdrawal => {
+            if !outer(from_node) || outer(to_node) {
+                return Err(Violation(
+                    "a withdrawal goes from an outer node to an inner one",
+                ));
             }
-            OperationKind::Deposit => {
-                if outer(from) || !outer(to) {
-                    return Err(Violation(
-                        "a deposit goes from an inner node to an outer one",
-                    ));
-                }
-                if !same_asset {
-                    return Err(Violation("a deposit keeps its asset"));
-                }
-            }
-            OperationKind::Route => {
-                if outer(from) || outer(to) {
-                    return Err(Violation("a route runs between inner nodes"));
-                }
-                if from == to {
-                    return Err(Violation("a route runs between two different nodes"));
-                }
-                if !same_asset {
-                    return Err(Violation("a route keeps its asset"));
-                }
-            }
-            OperationKind::Exchange => {
-                if outer(from) || outer(to) {
-                    return Err(Violation("an exchange runs at an inner node"));
-                }
-                if from != to {
-                    return Err(Violation("an exchange stays at one node"));
-                }
+            if !same_asset {
+                return Err(Violation("a withdrawal keeps its asset"));
             }
         }
+        OperationKind::Deposit => {
+            if outer(from_node) || !outer(to_node) {
+                return Err(Violation(
+                    "a deposit goes from an inner node to an outer one",
+                ));
+            }
+            if !same_asset {
+                return Err(Violation("a deposit keeps its asset"));
+            }
+        }
+        OperationKind::Route => {
+            if outer(from_node) || outer(to_node) {
+                return Err(Violation("a route runs between inner nodes"));
+            }
+            if from_node == to_node {
+                return Err(Violation("a route runs between two different nodes"));
+            }
+            if !same_asset {
+                return Err(Violation("a route keeps its asset"));
+            }
+        }
+        OperationKind::Exchange => {
+            if outer(from_node) || outer(to_node) {
+                return Err(Violation("an exchange runs at an inner node"));
+            }
+            if from_node != to_node {
+                return Err(Violation("an exchange stays at one node"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks that a chain of bare typed operations, each given by its two ends, is unbroken: each starts where the
+/// one before it ended, node, asset and unit. The router's [`Part`] and the state machine's route both call it.
+pub fn check_typed_chain<'a>(
+    ends: impl IntoIterator<Item = (&'a Endpoint, &'a Endpoint)>,
+) -> Result<(), Violation> {
+    let mut last: Option<&Endpoint> = None;
+    for (from, to) in ends {
+        if last.is_some_and(|end| end != from) {
+            return Err(Violation(
+                "each operation of a part starts where the one before it ended",
+            ));
+        }
+        last = Some(to);
+    }
+    Ok(())
+}
+
+/// The provider-role atoms of an endpoint, as that contract's schema states them: every node, network and asset is
+/// an identifier, and decimals are at most 36.
+fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
+    let node = match &endpoint.node {
+        NodeRef::Inner(id) => id,
+        NodeRef::Outer(outer) => &outer.network,
+    };
+    if Id::new(node.as_str()).is_none() || Id::new(endpoint.asset.id.as_str()).is_none() {
+        return Err(Violation(
+            "a node, network and asset is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
+        ));
+    }
+    if endpoint.asset.decimals > 36 {
+        return Err(Violation("an asset's decimals are at most 36"));
+    }
+    Ok(())
+}
+
+impl Operation {
+    /// Checks the rules a field type can't carry: the bare typed operation's ([`check_typed_operation`]), then
+    /// that its fee is in the from asset and at most the amount in, and that it cites each figure once.
+    pub fn check(&self) -> Result<(), Violation> {
+        check_typed_operation(self.kind, &self.from, &self.to)?;
         if repeats(&self.figures) {
             return Err(Violation(
                 "duplicate figure: an operation cites each figure once",
@@ -92,12 +142,8 @@ impl Part {
         for operation in self.operations.iter() {
             operation.check()?;
         }
+        check_typed_chain(self.operations.iter().map(|o| (&o.from, &o.to)))?;
         for pair in self.operations.windows(2) {
-            if pair[0].to != pair[1].from {
-                return Err(Violation(
-                    "each operation of a part starts where the one before it ended",
-                ));
-            }
             if &pair[0].amount_out != pair[1].amount_in.amount() {
                 return Err(Violation(
                     "each operation of a part takes in what the one before it delivered",
@@ -127,6 +173,20 @@ impl Candidate {
                 if !found {
                     return Err(Violation(
                         "an outside-band or unconfirmed reason names an operation of its candidate",
+                    ));
+                }
+            }
+            Some(DropReason::BeyondLevels { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a beyond-levels reason names an operation of its candidate",
+                    ));
+                };
+                if *operation as usize + 1 != p.operations.len()
+                    || !p.operations.last().amount_out.is_zero()
+                {
+                    return Err(Violation(
+                        "a beyond-levels reason names its part's last operation, which arrives with nothing",
                     ));
                 }
             }
@@ -577,10 +637,14 @@ impl DecisionRecord {
     /// - The chosen candidate uses no statement void at the bounds' deployment and protocol version, by the
     ///   provider-role `check_context` (`REQ-PRT-1`), and no figure past its validity (`REQ-QTE-4`).
     /// - The choice round chooses only a candidate whose every operation is confirmed: it cites an accepted
-    ///   dry-run answer of its provider for its tuple, at its terms, within its validity and not void. That the
-    ///   answer was made after the shortlist round can't be checked from the record. For a
-    ///   route or exchange that is the fresh quote; for a withdrawal or deposit, the reserve's accepted dry run. A
-    ///   candidate dropped as `unconfirmed` names an operation that isn't.
+    ///   dry-run answer of its provider for its tuple, at its terms, within its validity, not void, and made at
+    ///   or after the shortlist round's `taken_at` that `refines` carries. For a route or exchange that is the
+    ///   fresh quote; for a withdrawal or deposit, the reserve's accepted dry run. A candidate dropped as
+    ///   `unconfirmed` names an operation that isn't. In a choice round an accepted answer made before the
+    ///   shortlist's stated `taken_at` is not usable; a refusal or a judgement binds whenever it was made. That
+    ///   `taken_at` is at or before the choice round's snapshot.
+    /// - A `beyond_levels` candidate's named part ends at the named operation, whose net is above its price's last
+    ///   levels and which arrives with nothing; that part alone needn't reach the destination.
     /// - Every operation cites one tuple figure, and every other figure it cites names that tuple.
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
     ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
@@ -608,6 +672,13 @@ impl DecisionRecord {
     pub fn check(&self) -> Result<(), Violation> {
         self.snapshot.check()?;
         self.bounds.check()?;
+        if let Round::Choice { refines } = &self.request.round
+            && refines.taken_at.unix_nanos() > self.snapshot.taken_at.unix_nanos()
+        {
+            return Err(Violation(
+                "a choice round refines a shortlist round taken at or before its own snapshot",
+            ));
+        }
         self.check_usable_answers_agree()?;
         for (i, candidate) in self.candidates.iter().enumerate() {
             candidate.check()?;
@@ -668,10 +739,40 @@ impl DecisionRecord {
         self.snapshot.figures.iter().find(|f| &f.figure_id == id)
     }
 
-    /// Whether a statement figure may be used here: within its validity and not void at the bounds' deployment and
-    /// protocol version. `false` for a figure that isn't a statement.
+    /// Whether a statement figure may be used here: within its validity, not void at the bounds' deployment and
+    /// protocol version, and, for an accepted answer in a choice round, made at or after the shortlist round's
+    /// `taken_at`. A refusal or a judgement stays binding whenever it was made, so no choice of `taken_at` can
+    /// hide bad news (ruled by the orchestrator, 2026-11-07). `false` for a figure that isn't a statement.
     fn is_usable(&self, figure: &Figure) -> bool {
-        figure.is_within_validity() && self.is_void(&figure.figure_id) == Some(false)
+        figure.is_within_validity()
+            && self.is_void(&figure.figure_id) == Some(false)
+            && (!self.is_accepted_answer(figure) || self.made_after_the_shortlist(figure))
+    }
+
+    /// Whether a figure is an accepted answer: a fresh quote, or a dry run its provider accepted.
+    fn is_accepted_answer(&self, figure: &Figure) -> bool {
+        let body = match &figure.value {
+            FigureValue::FreshQuote { quote, .. } => &quote.statement,
+            FigureValue::DryRun { result, .. } => &result.statement,
+            _ => return false,
+        };
+        matches!(dry_run_view(body), Some((_, DryRun::Accepted { .. })))
+    }
+
+    /// Whether a statement figure was made at or after the shortlist round's snapshot this choice round refines
+    /// (`REQ-CAT-5`): the providers' answers are asked after the shortlist. Always true in a shortlist round.
+    fn made_after_the_shortlist(&self, figure: &Figure) -> bool {
+        let Round::Choice { refines } = &self.request.round else {
+            return true;
+        };
+        let made_at = match &figure.value {
+            FigureValue::FreshQuote { quote, .. } => &quote.made_at,
+            FigureValue::DryRun { result, .. } => &result.made_at,
+            FigureValue::Eligibility { judgement, .. } => &judgement.made_at,
+            _ => return true,
+        };
+        Timestamp::new(made_at.as_str())
+            .is_some_and(|t| t.unix_nanos() >= refines.taken_at.unix_nanos())
     }
 
     /// The accepted answers in the snapshot, fresh quotes included: each figure with its tuple and its terms.
@@ -871,6 +972,11 @@ impl DecisionRecord {
     /// For a route or exchange that is the provider's fresh quote (`transfer_quote`, `conversion_quote`); for a
     /// withdrawal or deposit, the reserve's accepted dry run.
     fn is_confirmed(&self, operation: &Operation, tuple: &Id) -> bool {
+        self.confirms(operation, tuple, true)
+    }
+
+    /// As [`DecisionRecord::is_confirmed`], with or without the rule that the answer is made after the shortlist.
+    fn confirms(&self, operation: &Operation, tuple: &Id, timed: bool) -> bool {
         operation
             .figures
             .iter()
@@ -890,7 +996,10 @@ impl DecisionRecord {
                             && amount_out == operation.amount_out.as_str()
                             && fee == &operation.fee
                 );
-                same_terms && f.is_within_validity() && self.is_void(&f.figure_id) == Some(false)
+                same_terms
+                    && f.is_within_validity()
+                    && self.is_void(&f.figure_id) == Some(false)
+                    && (!timed || self.made_after_the_shortlist(f))
             })
     }
 
@@ -908,7 +1017,11 @@ impl DecisionRecord {
             if first.from != request.from {
                 return Err(Violation("every part starts at the request's origin"));
             }
-            if last.to != request.to {
+            let cut_short = matches!(
+                candidate.dropped,
+                Some(DropReason::BeyondLevels { part, .. }) if part as usize == p
+            );
+            if last.to != request.to && !cut_short {
                 return Err(Violation("every part ends at the request's destination"));
             }
             total = total
@@ -1008,6 +1121,16 @@ impl DecisionRecord {
                 ));
             }
             if choice && !unconfirmed.is_empty() {
+                let early = unconfirmed.iter().any(|&(p, o)| {
+                    let operation = &candidate.parts[p].operations[o];
+                    self.tuple_of(operation)
+                        .is_ok_and(|t| self.confirms(operation, &t.figure_id, false))
+                });
+                if early {
+                    return Err(Violation(
+                        "a confirming answer is made at or after the shortlist round it refines",
+                    ));
+                }
                 return Err(Violation(
                     "the choice round chooses only a candidate whose every operation is confirmed",
                 ));
@@ -1056,6 +1179,15 @@ impl DecisionRecord {
                 }
                 Ok(())
             }
+            DropReason::BeyondLevels { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                if !self.beyond_levels(named) {
+                    return Err(Violation(
+                        "a beyond-levels reason names an operation whose net is above its price's last level",
+                    ));
+                }
+                Ok(())
+            }
             DropReason::OutsideBand { part, operation } => {
                 if !outside_band.contains(&(*part as usize, *operation as usize)) {
                     return Err(Violation(
@@ -1097,6 +1229,28 @@ impl DecisionRecord {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Whether an operation's net amount, what enters less its fee, is above the last level of the price it cites,
+    /// which must set levels (`REQ-QTE-12`).
+    fn beyond_levels(&self, operation: &Operation) -> bool {
+        let fee = Amount::new(operation.fee.amount.as_str()).unwrap_or_else(Amount::zero);
+        operation
+            .figures
+            .iter()
+            .filter_map(|id| self.figure(id))
+            .any(|f| match &f.value {
+                FigureValue::Price {
+                    rate: Some(Pricing::Levels { levels }),
+                    ..
+                } => levels
+                    .last()
+                    .up_to
+                    .amount()
+                    .checked_add(&fee)
+                    .is_some_and(|bound| operation.amount_in.amount() > &bound),
+                _ => false,
+            })
     }
 
     /// Whether an operation's amount in falls within one of its tuple's bands, and, where it cites a price with
