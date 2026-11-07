@@ -1,0 +1,22 @@
+[package]
+name = "rutent-pvm-binding"
+version = "0.1.0"
+description = "EXP-2's PolkaVM binding of the module-boundary suite (T-008-03)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rutent-contracts = { path = "../../../../contracts" }
+rutent-conformance = { path = "../../../../conformance" }
+# PolkaVM 0.38.0, tag v0.38.0, commit 471a5b6 (EXP-2's candidate `pvm`). Default features only: no
+# `generic-sandbox`, which is experimental (scoring sheet G-15).
+polkavm = "=0.38.0"
+# The PolkaVM linker, for the stand-ins' build only (`rutent-pvm-tool link`), never on admission's path.
+polkavm-linker = "=0.38.0"
+dirs = "5.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
