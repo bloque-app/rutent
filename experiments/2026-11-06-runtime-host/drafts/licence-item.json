@@ -6,23 +6,34 @@
   "title": "Does rutent permit VOS's AGPL-3.0-or-later licence?",
   "lead": "Adopting VOS needs your licence decision recorded in licences/RECORD, case by case, with no counsel step (DEC-6).",
   "bullets": [
-    "11 VOS crates are AGPL-3.0-or-later and 14 are Apache-2.0, per EXP-1-vos-20261107-1.",
-    "221 other packages need lines too; permissive ones stand permitted, copyleft ones come to you.",
-    "Needed only if VOS was chosen on exp1-adopt-runtime.",
-    "No VOS code reaches main until this decision is recorded."
+    "At vos-core 5c78975, the re-score's commit, 12 VOS crates are AGPL-3.0-or-later and 14 are Apache-2.0 (the re-score's lockfiles; the first run at 1aadf44 counted 11 and 14).",
+    "The re-score's lockfiles need 277 lines in all; licences/RECORD now lists every package the experiment locks, VOS's AGPL crates permitted for the experiment (DEC-6,counsel-licences), the rest permitted standing.",
+    "Needed only if VOS was chosen on exp1-adopt-runtime: this item makes the experiment's permission the adoption's.",
+    "No VOS code reaches main as rutent's runtime until this decision is recorded."
   ],
   "options": [
     "Permit it for VOS's AGPL-3.0-or-later crates",
     "Decline it; VOS stays not adopted",
     "Discuss first"
   ],
-  "spec": ["DEC-6", "REQ-MOD-5", "PS-66", "ADR-0002"],
+  "spec": [
+    "DEC-6",
+    "REQ-MOD-5",
+    "PS-66",
+    "ADR-0002"
+  ],
   "reserved": true,
   "blocks": true,
   "follows": "exp1-adopt-runtime",
   "refs": [
-    {"label": "EXP-1 outcome, the legal question", "url": "../experiments/2026-11-06-runtime-host/outcome.md#the-legal-question"},
-    {"label": "EXP-1 licence rows", "url": "../experiments/2026-11-06-runtime-host/scoring.md#3-the-licence-question"}
+    {
+      "label": "EXP-1 outcome, the legal question",
+      "url": "../experiments/2026-11-06-runtime-host/outcome.md#the-legal-question"
+    },
+    {
+      "label": "EXP-1 licence rows",
+      "url": "../experiments/2026-11-06-runtime-host/scoring.md#3-the-licence-question"
+    }
   ],
   "origin": "T-007-04, 2026-11-07"
 }
