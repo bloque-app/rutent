@@ -63,8 +63,9 @@
 //!   is refused with [`HostError::Unavailable`] and nothing is cut.
 //! - **What it can't tell apart.** Damage confined to the last frame, its length intact, looks exactly like a torn
 //!   write and is cut as one: an acknowledged last entry that the media damaged afterwards is lost without a
-//!   refusal. Only a checksum or a copy kept apart from the log could tell the two apart. Recovery never cuts more
-//!   than that one frame.
+//!   refusal. The frame's checksum catches the damage but not its cause: a torn write and later damage fail it
+//!   alike, so only a copy kept apart from the log could tell the two apart. Recovery never cuts more than that
+//!   one frame.
 //! - **An unfinished import.** An import's log starts with a format entry that says it starts an import, written
 //!   and synced as one frame before anything else. Such a log with no import-complete entry refuses the store with
 //!   [`HostError::ImportIncomplete`], torn or corrupt bytes after it included: a crash during an import, whose

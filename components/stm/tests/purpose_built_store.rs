@@ -22,9 +22,9 @@ use rutent_stm::reference_host::ReferenceHarness;
 
 type Pb = PurposeBuiltHost<Probe>;
 
-/// The run these tests report under: a pre-freeze development run, not a scored `EXP-1` run. The scored run, after
-/// the contract freeze `C1`, names its own id here (`experiments/2026-11-06-runtime-host/README.md`, Runs).
-const RUN_ID: &str = "EXP-1-pb-dev-20261106-1";
+/// The run these tests report under: the scored `EXP-1` run after the contract freeze `C1`
+/// (`experiments/2026-11-06-runtime-host/README.md`, Runs).
+const RUN_ID: &str = "EXP-1-pb-20261107-1";
 
 fn config(candidate: &str, target: &str) -> RunConfig {
     RunConfig {
