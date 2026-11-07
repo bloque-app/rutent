@@ -34,8 +34,8 @@ Measured in one job on one runner (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20
 
 - **Throughput.** At 64 submitters `pb` writes about 4.5k records/s (4,544); VOS 3.0k on one node (2,979) and 2.0k
   on three (1,957) (`R-05`). The setups differ: `pb` ran in-process, one host behind a mutex; each VOS submitter was
-  a client of its own over the node API. Its tail was better: p99 at 64 submitters was 166 ms for `pb`, 27.7 ms
-  and 64.7 ms for VOS.
+  a client of its own over the node API. At 64 submitters `pb`'s median was far lower (p50 0.2 ms against 20.4 and
+  29.0 ms) and its tail higher (p99 166 ms against 27.7 and 64.7 ms).
 - **Recovery time.** A halted export and import of 100k records (100,352) takes `pb` 3.0 s, and VOS 59.1 s on one
   node and 81.8 s on three (`R-08`). On VOS that is the total-loss recovery path, a scheduled halted export. Both
   grow with the history the export carries (`pb` 0.06, 0.31 and 3.0 s at 1k, 10k and 100k records), VOS's from a
@@ -83,7 +83,9 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    `R-02` by construction, and its only recovery from a lost disk is a restore, which loses every record
    acknowledged after the copy (`R-03`), each already released to its submitter, so its effects may have run. Its
    restarts after a `kill -9` lost nothing (`R-01`, `R-06a`). The three VOS nodes ran on one runner, so losing the
-   host itself was not tested.
+   host itself was not tested. The two `R-03` faults differ in size: `pb` lost its only store, VOS one replica of
+   three. Losing every VOS copy was not run; VOS's path for it is a halted export, whose RPO is the export interval,
+   the same shape as `pb`'s restore.
 3. **Damage is not a difference.** The fault was not delivered alike. On `pb` the damage hit the frame that holds the
    last acknowledged record, and the store opened one record short without a refusal. On VOS it hit fjall's newest
    journal file, most likely the unsynced batch written after the acknowledged append, which the log replays over;

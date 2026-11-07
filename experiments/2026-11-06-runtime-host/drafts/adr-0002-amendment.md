@@ -49,7 +49,7 @@ The numbers, each with its run:
 - **Upgrades and formats** (`R-06`). Both pass; for the store the upgrade is a redeploy of the binary, as the
   criterion says.
 - **The costs of VOS.** At 64 submitters the store writes about 4.5k records/s in-process behind a mutex, VOS 3.0k
-  on one node and 2.0k on three through separate clients, with a lower p99 (`R-05`). A 100k-record halted export
+  on one node and 2.0k on three through separate clients, with a far higher p50 and a lower p99 (`R-05`). A 100k-record halted export
   and import takes the store 3.0 s, VOS 59.1 s and 81.8 s; both grow with history (`R-08`). A synced submit costs
   the store 222 µs; VOS's step costs 841 µs on the JIT and a whole single-input batch 1,348 µs, the guest's own
   work dominating (`R-09`).
@@ -67,8 +67,9 @@ replicas (`F-010`).
   (`DEC-20`). `EXP-1`'s generated copy shows the port is plumbing only.
 - **The purpose-built store** stays ADR-0002's ruled fallback, behind its flag, and the host contract stays
   runtime-neutral, so a later `EXP-n` may score another runtime without reopening `runtime-host-seam`.
-- **The reasons.** Only VOS has replication: it turns losing a node or a disk into replacing a replica, where the
-  store's only recovery is a restore that loses acknowledged records. The costs are throughput, a total-loss
+- **The reasons.** Only VOS has replication: it turns losing a node or a node's disk into replacing a replica,
+  where the store's only recovery from losing its disk is a restore that loses the records acknowledged after the
+  copy. Losing every copy was not run on VOS; its path for that is a halted export, with the same shape of loss. The costs are throughput, a total-loss
   recovery time longer than the store's, and a slower step, none of them against a target before `M4`.
 
 **Which wording stands on the licence.** ADR-0002 says VOS's licence needs counsel before adoption. The owner's
@@ -105,7 +106,7 @@ Then the Decision is reversed:
   experimental flag; it brings no new package;
 - v0 has no replication: losing the disk means restoring a copy, which loses the records acknowledged after it, so
   the deployment's backup interval is its RPO;
-- before production, `F-010` closes `G-54`, shown on the store (a damaged acknowledged last frame is cut
-  silently), and `G-33`, `G-40` and `G-51`, which both candidates fail, and tests power loss on the deployment
+- before production, `F-010` closes `G-54`, open for both (shown on the store, where a damaged acknowledged last
+  frame is cut silently, and untested on VOS), and `G-33`, `G-40` and `G-51`, which both candidates fail, and tests power loss on the deployment
   platform, which no run reached on either;
 - VOS is not adopted for v0, its code stays as `EXP-1`'s record, and the `vos` line stays `not-adopted`.
