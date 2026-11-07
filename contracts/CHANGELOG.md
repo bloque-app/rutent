@@ -14,3 +14,5 @@ directory (see `README.md`).
   one that owns base files still needs a base changelog. (DEC-4, T-001-05)
 - Stream fixtures in JSON Lines (`.jsonl`) for shapes that travel as a stream. (DEC-4, T-005-02)
 - `lib.rs` exports the `module_interface` module, for the module-interface contract. (DEC-4, T-003-01)
+- `C1`: all five contracts are at 1.0.0, so versions are now 1.x.y, a breaking change bumps the major, and every change
+  waits for the owner's click. Fixtures name 1.0.0 where they name a contract's own version. (DEC-4, DEC-20, T-006-01)

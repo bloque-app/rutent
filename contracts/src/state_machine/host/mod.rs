@@ -37,7 +37,7 @@ use super::{Id, Order, RecordId, RecordedInput, StateMachine, Violation};
 pub mod testing;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/host/CHANGELOG.md`.
-pub const VERSION: &str = "0.1.1";
+pub const VERSION: &str = "1.0.0";
 
 /// The effect driver's obligation: what whoever acts on released records owes, per record id. A record can be
 /// released more than once (a resubmit after a crash, a read), so this, not the host, keeps a repeat from moving

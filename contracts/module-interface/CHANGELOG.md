@@ -1,5 +1,8 @@
 # module-interface changelog
 
+## 1.0.0
+- Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
+
 ## 0.4.0
 - A cross-module call's record now states its outcome, required: `delivered`, or `refused` with the callee, the
   kind asked and the reason, `undeclared_callee`, `undeclared_kind`, `not_named_by_route` or `callee_unavailable`,

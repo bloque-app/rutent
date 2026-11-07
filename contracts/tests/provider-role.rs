@@ -961,18 +961,29 @@ fn statement_without_its_deployment_and_protocol_version_is_invalid() {
     let statement: Statement<ResultBody> =
         serde_json::from_value(fixture("valid", "result-transfer-failed")).expect("deserialises");
     let here = statement.deployment.clone();
-    assert_eq!(statement.check_context(&here, "0.3.0"), Ok(()));
+    assert_eq!(
+        statement.check_context(&here, provider_role::VERSION),
+        Ok(())
+    );
     let elsewhere = Deployment {
         name: "rutent-other".into(),
         ..here.clone()
     };
-    assert!(statement.check_context(&elsewhere, "0.3.0").is_err());
+    assert!(
+        statement
+            .check_context(&elsewhere, provider_role::VERSION)
+            .is_err()
+    );
     let other_operator = Deployment {
         operator_key: "B".repeat(43),
         ..here.clone()
     };
-    assert!(statement.check_context(&other_operator, "0.3.0").is_err());
-    assert!(statement.check_context(&here, "0.4.0").is_err());
+    assert!(
+        statement
+            .check_context(&other_operator, provider_role::VERSION)
+            .is_err()
+    );
+    assert!(statement.check_context(&here, "2.0.0").is_err());
 }
 
 // verifies: REQ-CAT-6, REQ-CAT-8, REQ-CAT-9, REQ-CAT-10, REQ-CAT-11, REQ-CAT-12, REQ-CAT-13, REQ-CAT-14, REQ-CAT-16, REQ-CAT-18, REQ-CAT-20, REQ-CAT-22, REQ-ORD-1, REQ-ORD-39, REQ-PRT-1, INV-9

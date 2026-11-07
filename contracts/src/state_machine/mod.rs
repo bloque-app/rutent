@@ -66,7 +66,7 @@ pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
 pub mod host;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "0.4.1";
+pub const VERSION: &str = "1.0.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]

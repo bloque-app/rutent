@@ -160,7 +160,7 @@ impl Snapshot {
     fn envelope(maker: &str, made_at: &str, shape: &str, body: Value) -> Value {
         json!({
             "deployment": deployment(),
-            "protocol_version": "0.3.0",
+            "protocol_version": rutent_contracts::provider_role::VERSION,
             "shape": shape,
             "maker": maker,
             "made_at": made_at,
@@ -530,7 +530,7 @@ fn bounds(max_hops: u8, provider_ceilings: Value, excluded_providers: Value) -> 
         "bounds",
         json!({
             "deployment": deployment(),
-            "protocol_version": "0.3.0",
+            "protocol_version": rutent_contracts::provider_role::VERSION,
             "policy_version": "policy-1",
             "max_hops": max_hops,
             "max_parts": 1,

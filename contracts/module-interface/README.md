@@ -403,7 +403,7 @@ as for the admission artefact's `if`/`then` rules, `rust_also_rejects` names tha
 - It checks that a resolved secret's `Debug` output, at every level, never contains its value (`THR-50`).
 - It checks that `VERSION` matches this changelog.
 
-The fixtures written for 0.1.0 keep `"interface": "0.1.0"`, and the two added with the reversal kinds name `0.2.0`.
-No rule compares a declaration's `interface` with `VERSION`: it records which version the module implements
-(`REQ-MDL-19`), and a module declaring an older one stays valid. `T-006-01` moves the fixtures to `1.0.0` at the
-freeze.
+At `C1` every fixture names `"interface": "1.0.0"` and `protocol_version` `1.0.0`, except
+`successive-releases-under-another-protocol-version`, whose point is that its two releases name different protocol
+versions (`0.3.0` and `0.4.0`). No rule compares a declaration's `interface` with `VERSION`: it records which version
+the module implements (`REQ-MDL-19`), and a module declaring an older one stays valid.

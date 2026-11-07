@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.3.0",
+  "protocol_version": "1.0.0",
   "shape": "urn:rutent:router-api:quote",
   "maker": "acme-co",
   "made_at": "2026-11-06T15:04:05Z",

@@ -1,5 +1,8 @@
 # state-machine changelog
 
+## 1.0.0
+- Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
+
 ## 0.4.1
 - A segment plan's typed-operation rules and a route's chaining are checked by the router contract's own
   `check_typed_operation` and `check_typed_chain`, not a copy, so the two contracts state each rule once. No

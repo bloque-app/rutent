@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.3.0",
+  "protocol_version": "1.0.0",
   "policy_version": "policy-7",
   "max_hops": 4,
   "max_parts": 1,

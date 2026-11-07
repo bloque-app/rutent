@@ -1,5 +1,8 @@
 # provider-role changelog
 
+## 1.0.0
+- Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
+
 ## 0.4.0
 - The reversal operation, added in T-002-03 after review, since T-002-02's operation list lacked it: an
   exchange's or ramp's `reversal` of a segment, answered by a true undo with evidence, outcome unknown, or a

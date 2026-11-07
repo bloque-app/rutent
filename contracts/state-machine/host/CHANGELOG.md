@@ -1,5 +1,8 @@
 # host changelog
 
+## 1.0.0
+- Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
+
 ## 0.1.1
 - No change to the host's shapes: its fixtures carry the state machine's 0.4.0 segment plans, the router's typed
   operation, and its tests resolve the router and provider-role schemas those refer to. (DEC-4, T-005-01)

@@ -269,7 +269,9 @@ Some rules this contract doesn't check, because they need the catalogue (`F-012`
   - The Rust types are checked against `rust_accepts`.
 - It checks that `VERSION` matches this changelog.
 
-The fixtures keep `protocol_version` `0.3.0`, the version they were written at, on purpose. No check compares a
-fixture's protocol version with `VERSION`: the tests run `check_context` against each fixture's own deployment and
-protocol version, since a fixture stands for a statement made at some deployment. The role suite's `SuiteContext`
-defaults to `VERSION`, so the stand-ins' statements carry `0.4.0`. `T-006-01` moves both to `1.0.0` at the freeze.
+At `C1` every fixture names `protocol_version` `1.0.0`, except `v3` in
+`statement-envelope-protocol-version-not-major-minor-patch`, which is malformed on purpose (the module-interface
+fixture `successive-releases-under-another-protocol-version` also keeps old versions, for a mismatch). No check compares a fixture's protocol version with
+`VERSION`: the tests run `check_context` against each fixture's own deployment and protocol version, since a fixture stands
+for a statement made at some deployment. The role suite's `SuiteContext` defaults to `VERSION`, so the stand-ins'
+statements carry `1.0.0`.

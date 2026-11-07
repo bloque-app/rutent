@@ -1,5 +1,8 @@
 # router-api changelog
 
+## 1.0.0
+- Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
+
 ## 0.7.0
 - `check_typed_operation` and `check_typed_chain` check a bare typed operation and a chain of them, with no
   prices; `Operation::check` and `Part::check` call them, and so does the state machine's segment plan, so the

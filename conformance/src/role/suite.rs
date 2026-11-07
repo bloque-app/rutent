@@ -1870,7 +1870,7 @@ fn short_by_more_than(actual: (u128, u32), quoted: (u128, u32), bps: u16) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::{decimal, short_by_more_than};
+    use super::{decimal, is_protocol_version, other_protocol_versions, short_by_more_than};
 
     // verifies: REQ-QTE-1
     #[test]
@@ -1883,5 +1883,20 @@ mod tests {
         assert!(!short_by_more_than(d("1.2"), d("1"), 0));
         assert_eq!(decimal("1e3"), None);
         assert_eq!(decimal(".5"), None);
+    }
+
+    // verifies: REQ-PRT-1
+    #[test]
+    fn the_other_protocol_versions_are_valid_and_differ_from_the_frozen_one() {
+        let others = other_protocol_versions("1.0.0");
+        let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
+        assert_eq!(versions, ["2.0.0", "1.0.1", "0.0.0"]);
+        for version in versions {
+            assert!(
+                is_protocol_version(version),
+                "{version} is a protocol version"
+            );
+            assert_ne!(version, "1.0.0");
+        }
     }
 }
