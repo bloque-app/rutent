@@ -43,7 +43,7 @@ const SCHEMAS: [(&str, &str); 19] = [
 /// followed by `-`. `signed-result`, `declared-secret-lookup` and `declared-outbound-call-record` are bundles of
 /// values, not schemas of their own: see [`SignedResult`], [`DeclaredSecretLookup`] and
 /// [`DeclaredOutboundCallRecord`].
-const SHAPES: [&str; 14] = [
+const SHAPES: [&str; 15] = [
     "declaration",
     "outside-request",
     "outside-response",
@@ -54,6 +54,7 @@ const SHAPES: [&str; 14] = [
     "signed-result",
     "declared-secret-lookup",
     "declared-outbound-call-record",
+    "declared-cross-module-call",
     "release-assertion",
     "admission-artefact",
     "advertised-artefact",
@@ -110,6 +111,21 @@ const DECLARED_SECRET_LOOKUP_MEMBERS: [(&str, &str); 2] = [
 struct DeclaredSecretLookup {
     declaration: Declaration,
     lookup: SecretLookup,
+}
+
+/// The members of a `declared-cross-module-call` bundle, each with the `$id` of the schema it follows.
+const DECLARED_CROSS_MODULE_CALL_MEMBERS: [(&str, &str); 2] = [
+    ("declaration", "urn:rutent:module-interface:declaration"),
+    ("call", "urn:rutent:module-interface:cross-module-call"),
+];
+
+/// A `declared-cross-module-call` fixture: a caller's declaration and a cross-module call it made, for the rules
+/// that relate the call's outcome to what the caller declares (`validate_call_against`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredCrossModuleCall {
+    declaration: Declaration,
+    call: CrossModuleCall,
 }
 
 /// The members of a `declared-outbound-call-record` bundle, each with the `$id` of the schema it follows.
@@ -297,6 +313,22 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/route", "required")],
         ),
         (
+            "cross-module-call-without-its-outcome",
+            vec![("", "required")],
+        ),
+        (
+            "cross-module-call-refused-with-a-null-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
+            "cross-module-call-refused-for-an-unknown-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
+            "cross-module-call-refused-without-its-reason",
+            vec![("/outcome", "required")],
+        ),
+        (
             "admission-artefact-without-a-signed-assertion",
             vec![("", "required")],
         ),
@@ -443,6 +475,30 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::TransactionMismatch),
         ),
         (
+            "cross-module-call-refusal-naming-another-callee",
+            one(RuleViolation::RefusalNamesAnotherCall),
+        ),
+        (
+            "declared-cross-module-call-delivered-to-an-undeclared-callee",
+            one(RuleViolation::UndeclaredCallDelivered),
+        ),
+        (
+            "declared-cross-module-call-refused-as-undeclared-though-declared",
+            one(RuleViolation::RefusalReasonUntrue),
+        ),
+        (
+            "declared-cross-module-call-of-another-module-version",
+            one(RuleViolation::CallOfAnotherModule),
+        ),
+        (
+            "declared-cross-module-call-delivered-of-an-undeclared-kind",
+            one(RuleViolation::UndeclaredCallDelivered),
+        ),
+        (
+            "declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee",
+            one(RuleViolation::RefusalReasonUntrue),
+        ),
+        (
             "signed-result-signed-with-another-advertised-key",
             one(RuleViolation::ResultNotSignedWithStatementKey),
         ),
@@ -580,6 +636,15 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
             module_interface::validate_record(&bundle.record)
                 .map_err(|v| format!("record: {v:?}"))?;
             module_interface::validate_record_secrets(&bundle.declaration, &bundle.record)
+                .map_err(|v| format!("{v:?}"))
+        }
+        "declared-cross-module-call" => {
+            let bundle: DeclaredCrossModuleCall =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            module_interface::validate_declaration(&bundle.declaration)
+                .map_err(|v| format!("declaration: {v:?}"))?;
+            module_interface::validate_call(&bundle.call).map_err(|v| format!("call: {v:?}"))?;
+            module_interface::validate_call_against(&bundle.declaration, &bundle.call)
                 .map_err(|v| format!("{v:?}"))
         }
         "release-assertion" => {
@@ -787,6 +852,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "signed-result" => &SIGNED_RESULT_MEMBERS,
         "declared-secret-lookup" => &DECLARED_SECRET_LOOKUP_MEMBERS,
         "declared-outbound-call-record" => &DECLARED_OUTBOUND_CALL_RECORD_MEMBERS,
+        "declared-cross-module-call" => &DECLARED_CROSS_MODULE_CALL_MEMBERS,
         "advertised-artefact" => &ADVERTISED_ARTEFACT_MEMBERS,
         "successive-releases" => &SUCCESSIVE_RELEASES_MEMBERS,
         _ => {
@@ -841,6 +907,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "signed-result" => round_trip::<SignedResult>(value),
         "declared-secret-lookup" => round_trip::<DeclaredSecretLookup>(value),
         "declared-outbound-call-record" => round_trip::<DeclaredOutboundCallRecord>(value),
+        "declared-cross-module-call" => round_trip::<DeclaredCrossModuleCall>(value),
         "release-assertion" => round_trip::<Statement<ReleaseAssertion>>(value),
         "admission-artefact" => round_trip::<AdmissionArtefact>(value),
         "advertised-artefact" => round_trip::<AdvertisedArtefact>(value),
@@ -1496,6 +1563,19 @@ fn widening_lists_every_widening_and_no_narrowing() {
         let expected: Vec<Widening> = serde_json::from_value(expected).expect("expected widenings");
         assert_eq!(found, expected, "widenings for {case}");
     }
+}
+
+// verifies: REQ-MDL-21, REQ-MDL-9
+#[test]
+fn refused_cross_module_call_is_recorded_with_its_reason() {
+    assert_schema_rejects("cross-module-call-without-its-outcome");
+    assert_schema_rejects("cross-module-call-refused-with-a-null-reason");
+    assert_schema_rejects("cross-module-call-refused-for-an-unknown-reason");
+    assert_rules_reject(&[
+        "cross-module-call-refusal-naming-another-callee",
+        "declared-cross-module-call-delivered-to-an-undeclared-callee",
+        "declared-cross-module-call-refused-as-undeclared-though-declared",
+    ]);
 }
 
 // verifies: DEC-4

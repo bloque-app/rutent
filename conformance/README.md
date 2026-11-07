@@ -2,7 +2,7 @@
 
 The shared conformance suites of `DEC-5`: each contract's implementations are scored by the same suite. This crate
 depends on no crate of ours but `rutent-contracts` (`DEC-2`); its other dependencies are `num-bigint`, `serde` and
-`serde_json`.
+`serde_json`. It also dev-depends on itself, to enable its `test-support` feature for its own tests.
 
 ## Role suite (`role`)
 
@@ -54,6 +54,92 @@ every probe from the provider's advertisement and returns a `Report`.
   Each check has a builder that breaks it alone, and `tests/role.rs` shows each one flagged by that check only.
 
 `features/F-002-contract-provider-roles/notes.md` records the readings behind each check.
+
+## Module-boundary suite (`boundary`)
+
+`T-003-03`'s suite for the module interface (`contracts/module-interface/`). It scores a **format binding**: the
+runtime that admits a module in some portable binary format, runs its two parts, resolves its secrets, carries its
+outbound calls and checks its output. `EXP-2` binds it to Wasm (`T-008-02`) and PVM (`T-008-03`), and scores each
+format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, config)` returns a `Report`.
+
+- **What it drives.** A binding implements `ModuleBinding`, which names no format and never hands out a secret's
+  value:
+  - `format` and `languages`, and `set_output_limit`, which the suite sets, so no binding passes by having no limit;
+  - `admit` and `accept`, which take the provider's signed release assertion and give the T-003-02 admission
+    artefact;
+  - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
+  - `handle`, for one provider-role operation, and `take_events`, for the outbound call records, the secret lookups
+    by outcome status only, the state reads, and the cross-module call records, delivered or refused, as the
+    contract shapes them.
+- **The test hooks.** `BoundaryHarness`, a separate test-only trait, holds what a production runtime must not offer:
+  - `build`, the binding's module for a format-neutral `ModuleSpec`: a module-interface declaration, the `Step`s its
+    parts take (look up a secret, read state, call an endpoint, call another module) and the `Output` its sandboxed
+    part returns. A binding writes these as guest code in each language. The honest output is a `succeeded`
+    `withdrawal` result, as compact JSON, whose one evidence reference is exactly `{provider}-{version}`, then
+    `-{value}` for each value the steps obtained; the suite compares it exactly to tell which version answered,
+    and sends only withdrawals;
+  - the world: the proxy's secrets, each provider's state, the endpoints, their addresses and redirects, and what
+    they received;
+  - `delivered_secrets`, the values the proxy delivered to a provider, which the suite searches for another
+    provider's canary.
+- **What it probes**, in each language, with another provider running beside the module, its own declaration
+  naming its own endpoint:
+  - **controls**, that must work: a module's own secret resolves for its declared operation, its own state reads
+    back, a declared endpoint receives its call, a redirect to a listed destination is followed, a declared
+    cross-module call is delivered to the running callee, its honest output is passed on;
+  - **another provider's secrets and state**, from either part, the outside part's lookup refused as `not_found`
+    (`AC-20`, `REQ-MDL-9`);
+  - **the sandboxed part's lookup** of even its own provider's secret, which must never reach the proxy, and a
+    lookup of a name the module doesn't declare, refused as `undeclared_secret` (`REQ-MDL-6`);
+  - **egress** (`REQ-MDL-7`, ADR-0004): an undeclared endpoint; the other provider's endpoint, which only it
+    declares; a redirect to an undeclared destination, alone and after a chain of declared hops; a declared host
+    at a private address, directly and after a redirect; declared hosts at `::1`, at `fd00::5` in `fc00::/7` and at
+    `::ffff:10.0.0.5`. Each refusal must come at the right hop with the right reason, and a record must name the
+    secrets its call used;
+  - **cross-module calls** to an undeclared callee and of an undeclared kind, each refused and recorded with its
+    reason, the running callee receiving nothing (`REQ-MDL-9`, `REQ-MDL-21`);
+  - **malformed output**, unparseable, of another kind, for another transaction, with an unknown field, and output
+    exactly at the limit, measured on what the platform passed on, and one byte over it (`REQ-MDL-12`);
+  - **admission:** a first release; each part altered in turn, by a byte appended and by one flipped in place, all
+    four refused as that part altered (`AdmissionRefusal::PartAltered`); and releases whose modules look up
+    secrets, call endpoints and call the other provider, so acceptance is judged by reach as well as by version
+    (`AC-21`, `REQ-MDL-1`, `REQ-MDL-3`):
+    - releases widening by a destination, a secret, a callee and an address. While each waits for its fresh
+      acceptance, what it adds is refused (`undeclared_destination`, `undeclared_secret`, `undeclared_callee`,
+      `address_not_allowed`); once accepted, it works. The address widening opens `spread`, served outside its pin;
+    - each is judged beside controls in the same operation, a secret and a callee no release declares. If a
+      control fails, the binding's own enforcement is broken, which the reach probes judge, and the widening's
+      fixture is left uncovered;
+    - one narrowing, which runs at once, after which the destination it dropped is refused.
+
+    Every artefact is checked with the contract's own validators;
+  - **isolation:** an upgrade, a failed upgrade (admitted, but it doesn't start; it widens nothing, so it must take
+    an automatic acceptance, and the suite accepts it first if it is held waiting, so it is started and can fail;
+    refused at admission, it leaves its fixture uncovered) and a restart of one provider beside another, which must keep its process and its answers
+    (`AC-19`, `REQ-MDL-13`).
+- **Evidence, not silence.** A hostile fixture counts only when the binding shows its refusal in contract terms,
+  with the expected reason: a refused secret lookup, a refused outbound call record at the right hop, a refused
+  output, a refused cross-module call record. Another provider's secret and state are seeded with canaries, and the
+  suite looks for them in every channel: the module's result, its records, the secrets the proxy delivered to it,
+  its calls, and what every endpoint received. A finding names the channel, never the value (`THR-50`).
+- **The report.** `findings` lists every broken rule under one of 15 `Check`s, by language. `uncovered` lists each
+  of the 41 fixtures and controls (`Exercised::ALL`, which a test keeps in step with the enum) not seen to pass, by language, so a binding whose modules attempt nothing, or that
+  refuses everything, doesn't pass. `missing_languages` counts how far it is short of `AC-20`'s two. `passed()`
+  needs none of the three. The report carries the run id, the format, the languages and the output limit, for
+  `EXP-2`'s scoring sheet.
+- **The reference double** (`boundary::reference::ReferenceDouble`, built only with the `test-support` feature, which
+  the crate's own tests enable) is an in-process binding with no format: a "binary" names a spec it built, and
+  running it interprets the steps. Its two languages are nominal; they show the coverage accounting, not `AC-20`
+  itself. It has 40 breakers: 38 each break one enforcement, flagged by its own check only, and two leave fixtures
+  uncovered. A broken egress check still writes the refusal into its record but lets the request through, so only
+  what the endpoint received gives it away; a reach probe of acceptance leaves such a call to the egress probes.
+- **Not covered.**
+  - **Signatures:** the suite's statements carry placeholder signatures, and nothing is verified (`M2`, `M3`).
+  - **The output shape** is checked with the contract's Rust types, which take what the schemas take but for
+    patterns and lengths.
+  - **`REQ-MDL-11`'s limits other than output:** CPU, memory, outbound calls, state and pending work.
+  - **DNS rebinding:** `BoundaryHarness::serve` gives an endpoint one address, so a name that resolves to one
+    address when checked and another when connected isn't expressible yet. Nor is TLS.
 
 ## Host-contract suite (`host`)
 

@@ -102,6 +102,15 @@
           "$ref": "#/$defs/digest"
         }
       }
+    },
+    "call_refusal_reason": {
+      "description": "Why the platform refused a cross-module call, in the order it checks: the caller doesn't declare the callee; it declares the callee but not the kind asked; the route doesn't name the call (REQ-MDL-21, THR-86); or the callee's module isn't running.",
+      "enum": [
+        "undeclared_callee",
+        "undeclared_kind",
+        "not_named_by_route",
+        "callee_unavailable"
+      ]
     }
   }
 }

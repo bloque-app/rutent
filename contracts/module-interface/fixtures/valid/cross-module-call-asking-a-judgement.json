@@ -11,5 +11,8 @@
     "provider": "kyc-check",
     "subject": "subj-77",
     "class": "kyc-basic"
+  },
+  "outcome": {
+    "status": "delivered"
   }
 }

@@ -24,7 +24,7 @@ module-boundary suite that runs hostile modules against this contract is `T-003-
 | `urn:rutent:module-interface:secret-lookup` | `schemas/secret-lookup.schema.json` | Outside part to credential proxy: resolve one declared secret by name, at call time, for one transaction and one outside operation |
 | `urn:rutent:module-interface:secret-answer` | `schemas/secret-answer.schema.json` | Credential proxy to outside part: the value, or a refusal |
 | `urn:rutent:module-interface:outbound-call-record` | `schemas/outbound-call-record.schema.json` | The platform's record of one outbound call, hop by hop |
-| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record |
+| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record: delivered, or refused with the callee, the kind and why |
 | `urn:rutent:module-interface:release-assertion` | `schemas/release-assertion.schema.json` | The provider's signed assertion of one release: its declaration and each part's portable binary, by format and digest |
 | `urn:rutent:module-interface:admission-artefact` | `schemas/admission-artefact.schema.json` | The platform's record of one admitted release: the assertion, what was received, the build that made the machine code, the version history, the widenings and the acceptance |
 | `urn:rutent:module-interface:common` | `schemas/common.schema.json` | Shared atoms: declared name, scheme, host, port, address, address block, refusal reason, digest |
@@ -34,10 +34,12 @@ versions, times, operation kinds and operations (`urn:rutent:provider-role:commo
 `urn:rutent:provider-role:operation`). A validator registers both contracts' schemas and needs nothing from the
 network. A fixture's file name starts with its shape: `declaration-`, `outside-request-`, `outside-response-`,
 `secret-lookup-`, `secret-answer-`, `outbound-call-record-`, `cross-module-call-`, `signed-result-`,
-`declared-secret-lookup-`, `declared-outbound-call-record-`, `release-assertion-`, `admission-artefact-`,
-`advertised-artefact-` or `successive-releases-`. `signed-result-`, `declared-secret-lookup-`,
-`declared-outbound-call-record-`, `advertised-artefact-` and `successive-releases-` are bundles, not shapes of their
-own, for rules that relate several values.
+`declared-secret-lookup-`, `declared-outbound-call-record-`, `declared-cross-module-call-`, `release-assertion-`,
+`admission-artefact-`, `advertised-artefact-` or `successive-releases-`. `signed-result-`, `declared-secret-lookup-`,
+`declared-outbound-call-record-`, `declared-cross-module-call-`, `advertised-artefact-` and `successive-releases-`
+are bundles, not shapes of their own, for rules that relate several values. A `declared-cross-module-call-` fixture
+holds a caller's `declaration` and a cross-module `call` it made, for the rules that relate the call's outcome to
+the declaration.
 Each member is checked against its own schema and its own contract's rules, so an invalid bundle breaks only the
 rule it is named for:
 
@@ -293,6 +295,18 @@ The platform's egress layer writes it, not the module, since the outside part is
 - **What the platform does.** It makes the call only when the caller declares it and the route names it
   (`REQ-MDL-21`, `THR-86`). The callee answers the operation as any other, on its own credentials. The call carries
   none.
+- **Its outcome** (added in 0.4.0, `DEC-4`, `T-003-03`). Every call's record says whether the platform delivered
+  it or refused it, so a refused call is recorded too, for audit and so that a format binding writes a contract
+  shape. A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
+  - `undeclared_callee`: the caller doesn't declare the callee;
+  - `undeclared_kind`: it declares the callee but not the kind;
+  - `not_named_by_route`: the route doesn't name the call;
+  - `callee_unavailable`: the callee's module isn't running.
+
+  `validate_call` checks that a refusal's callee and kind are the operation's. `validate_call_against(declaration,
+  call)` checks the outcome against the caller's declaration: a delivered call's callee and kind are declared, and
+  an undeclared callee or kind is refused for that reason. The route and the callee's running are the platform's to
+  hold at run time.
 
 ## Which rule lives where
 
@@ -300,8 +314,8 @@ A valid value passes its schema and deserialises into its type in `rutent_contra
 declaration, an outbound call record and a cross-module call also get `Ok` from `validate_declaration`,
 `validate_record` and `validate_call`. A `signed-result-` bundle also gets `Ok` from `validate_statement_key`, and a
 `declared-secret-lookup-` bundle from `validate_lookup` and a `declared-outbound-call-record-` bundle from
-`validate_record_secrets`, after each member passes its own contract's rules. Both assume their declaration
-passed `validate_declaration`. The Rust
+`validate_record_secrets`, and a `declared-cross-module-call-` bundle from `validate_call_against`, after each
+member passes its own contract's rules. They assume their declaration passed `validate_declaration`. The Rust
 rules are the ones JSON Schema can't express: a name compared across lists or entries, two fields compared, an
 address block compared with the special-purpose ranges, or values compared across a declaration and the values it
 governs.
@@ -341,6 +355,9 @@ governs.
 | Every hop matched a declared destination and connected, except the last hop of a refused call | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop` |
 | A cross-module call names its transaction and its route segment, and carries no credentials | schema | `cross-module-call-without-a-transaction`, `cross-module-call-without-a-route`, `cross-module-call-route-without-its-segment`, `cross-module-call-carrying-credentials` |
 | A cross-module call's callee isn't its caller, and its operation names the call's transaction | Rust, `CallToOwnProvider`, `TransactionMismatch` | `cross-module-call-to-its-own-provider`, `cross-module-call-for-another-transaction` |
+| A cross-module call records its outcome; a refusal names the callee, the kind and a known reason | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason` |
+| A refusal's callee and kind are the call's | Rust, `RefusalNamesAnotherCall` | `cross-module-call-refusal-naming-another-callee` |
+| A delivered call is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
 | A signed result's `signature.key` is the declared `statement_key` | Rust, `ResultNotSignedWithStatementKey` | `signed-result-signed-with-another-advertised-key` |
 | The `statement_key` is one of the provider's advertised `keys`, and isn't the deployment's `operator_key` | Rust, `StatementKeyNotAdvertised`, `StatementKeyIsOperatorKey` | `signed-result-statement-key-not-advertised`, `signed-result-statement-key-is-the-operator-key` |
 | The advertisement checked is the declaring provider's own | Rust, `AdvertisementOfAnotherProvider` | `signed-result-checked-against-another-providers-advertisement` |
@@ -360,7 +377,8 @@ modules:
 - an outbound call record's secrets are a subset of its operation's declared secrets. Given the record and its
   module's declaration, `validate_record_secrets` checks it, and the platform holds it as it records the call;
 - a hop matches a destination the call's operation declares, and connects within its `addresses`;
-- a cross-module call's caller declares the callee and kind, and the named route segment declares the call;
+- the named route segment declares a cross-module call, and its callee's module runs (the declared callee and kind
+  are checked by `validate_call_against`);
 - a provider-role operation reaches a module only if its kind is in `sandboxed.handles`;
 - a module's `interface` is the same across its versions (`REQ-MDL-19`).
 

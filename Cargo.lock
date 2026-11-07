@@ -502,6 +502,7 @@ name = "rutent-conformance"
 version = "0.0.0"
 dependencies = [
  "num-bigint",
+ "rutent-conformance",
  "rutent-contracts",
  "serde",
  "serde_json",

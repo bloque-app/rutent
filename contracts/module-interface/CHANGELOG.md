@@ -1,5 +1,12 @@
 # module-interface changelog
 
+## 0.4.0
+- A cross-module call's record now states its outcome, required: `delivered`, or `refused` with the callee, the
+  kind asked and the reason, `undeclared_callee`, `undeclared_kind`, `not_named_by_route` or `callee_unavailable`,
+  so a refused call is recordable in contract terms. (DEC-4, T-003-03)
+- `validate_call` checks that a refusal names the call's own callee and kind, and `validate_call_against` checks a
+  call's outcome against its caller's declaration, with `declared-cross-module-call-` fixtures. (DEC-4, T-003-03)
+
 ## 0.3.0
 - Module admission: the provider's signed release assertion, in the provider-role envelope under the JCS and
   Ed25519 signing rule, with the release's declaration and each part's portable binary by format and SHA-256

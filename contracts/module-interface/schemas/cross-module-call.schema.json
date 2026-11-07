@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:module-interface:cross-module-call",
   "title": "Cross-module call",
-  "description": "One module's call to another provider's module, through the platform, and the platform's record of it (REQ-MDL-21, THR-86). It names the route segment that declares the call; the platform makes it only when that route names it and the caller declares it. The callee receives a provider-role operation, answers it as any other, and acts on its own credentials: the call carries none.",
+  "description": "One module's call to another provider's module, through the platform, and the platform's record of it (REQ-MDL-21, THR-86). It names the route segment that declares the call; the platform makes it only when that route names it and the caller declares it. The callee receives a provider-role operation, answers it as any other, and acts on its own credentials: the call carries none. Its outcome says whether the platform delivered it or refused it, so a refused call is recorded too.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,8 @@
     "caller",
     "caller_version",
     "route",
-    "operation"
+    "operation",
+    "outcome"
   ],
   "properties": {
     "transaction": {
@@ -31,6 +32,9 @@
     "operation": {
       "description": "What is asked of the callee, as a provider-role operation; its provider is the callee.",
       "$ref": "urn:rutent:provider-role:operation#/$defs/operation"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
     }
   },
   "$defs": {
@@ -48,6 +52,92 @@
         },
         "segment": {
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "outcome": {
+      "description": "Delivered to the callee, or refused by the platform, naming the callee, the kind asked and why.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "delivered",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "delivered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/delivered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "delivered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "delivered"
+        }
+      }
+    },
+    "refused": {
+      "description": "A refused call. Its callee and kind are the operation's; that is checked in Rust, not by this schema. Whether the reason is true of the caller's declaration is checked in Rust against that declaration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "callee",
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "callee": {
+          "description": "The provider called.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "kind": {
+          "description": "The operation kind asked.",
+          "$ref": "urn:rutent:module-interface:declaration#/$defs/operation_kind"
+        },
+        "reason": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/call_refusal_reason"
         }
       }
     }

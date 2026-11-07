@@ -43,9 +43,10 @@ pub use admission::*;
 
 pub use types::*;
 pub use validate::{
-    DeclaredList, RuleViolation, SPECIAL_PURPOSE, validate_call, validate_declaration,
-    validate_lookup, validate_record, validate_record_secrets, validate_statement_key,
+    DeclaredList, RuleViolation, SPECIAL_PURPOSE, validate_call, validate_call_against,
+    validate_declaration, validate_lookup, validate_record, validate_record_secrets,
+    validate_statement_key,
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.4.0";

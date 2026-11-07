@@ -307,3 +307,154 @@ provider-role envelope and its signing rule (JCS, Ed25519 only), and the declara
 - **Widening table.** It gained a secret moved between operations (one `operation_secret`), a renamed operation
   (one `operation`), and a call to another callee (one `call`).
 - **History.** An earlier version listed twice has its own fixture.
+
+## T-003-03
+
+The module-boundary suite, in the conformance crate (`conformance/src/boundary/`), and module-interface 0.4.0's
+cross-module call outcome, which the suite needed to check a refused call in contract terms.
+
+- **What it scores.** A format binding, the runtime that admits a module in some portable binary format and runs
+  it. The suite drives it through `ModuleBinding`, which names no format. `EXP-2` binds it per format; the in-process
+  reference double runs it here.
+- **Format-neutral modules.** The suite describes each module it needs as a `ModuleSpec`: a module-interface
+  declaration, the steps its parts take, and the output its sandboxed part returns. A binding builds each spec in its
+  own format and in each language it offers, and the suite admits the binaries like any release. The steps are a
+  small fixed set, so a binding can write them as genuine guest code in each language.
+- **Evidence, not silence.** A canary that never leaks proves nothing about a module that never tried. So each
+  hostile fixture counts only when the binding shows the refusal in contract terms, with the expected reason. Each
+  has an honest control on the same declaration, which must succeed, so a binding that refuses everything fails
+  `DeclaredReachWorks`. Whatever isn't seen is uncovered, and the report doesn't pass.
+- **The output limit is the suite's.** A binding reporting its own limit could pass `oversized output is refused`
+  with an enormous one. The suite configures the limit, measures bytes as the module emitted them, and checks both
+  edges: at the limit passes, one byte over is refused.
+- **Both parts, secrets and state.** `AC-20` says "neither part", so another provider's secret and state are each
+  probed from the sandboxed and from the outside part. The sandboxed part's lookup of its own provider's secret is
+  probed too: it must never reach the proxy (`REQ-MDL-6`).
+- **Another provider, three ways:** its secret and state; its endpoint, which this module doesn't declare, refused as
+  `undeclared_destination`; and a cross-module call to it as an undeclared callee.
+- **A refused cross-module call, in the contract** (ruled by the orchestrator, 2026-11-07, before the freeze).
+  0.3.0's cross-module call had no outcome, so the suite first reported a refused call in a suite-side type.
+  - The ruling: a refused call must be recordable in contract terms, for audit and so that `EXP-2` bindings write a
+    contract shape.
+  - The record now has a required `outcome`: `delivered`, or `refused` with the callee, the kind asked and the
+    reason.
+  - **Reasons.** The three ruled are `undeclared_callee`, `undeclared_kind` and `callee_unavailable`. The fourth,
+    `not_named_by_route`, goes beyond the ruling: the contract already says the platform refuses a declared call
+    the route doesn't name (`REQ-MDL-21`, `THR-86`), so that refusal needs a reason too.
+  - The reason is the first check the call fails, in that order. `validate_call` checks that a refusal names the
+    call's own callee and kind. `validate_call_against` checks the outcome against the caller's declaration. That
+    moves "the caller declares the callee and kind" out of the rules across values; the route and the callee's
+    running stay the platform's.
+  - The suite checks the refused call through the record, and through both validators. Nothing was left that the
+    contract can't hold, so the suite-side `CallEvent` is gone.
+  - Required, not optional: every record of a call says what came of it, as an outbound call record does.
+- **Checks group by property.** Each `Check` covers every observation of one property. Each of the double's 19
+  breakers is flagged by its own check only, and every check has at least one breaker.
+  - A proxy answering from another provider's secrets both resolves where it should refuse and leaks the canary.
+    That is one check, `OtherProvidersSecrets`, not two.
+- **Upgrades.** `AC-19`'s "a failed upgrade leaves the previous version in force" is read as a release that is
+  admitted but fails to start. A refused admission is an admission failure, which `AdmissionRecordsWhatItAdmits`
+  covers. The version in force is checked two ways: `active_version`, and the version the module's own output names.
+- **Processes.** `ModuleBinding::process` names a provider's process, so one OS process per provider is checkable.
+  Through an upgrade, a failed upgrade and a restart of one provider, another keeps its process and its answers
+  (`REQ-MDL-13`).
+- **Admission uses the contract's validators**: `validate_artefact`, `validate_release` and `widening`. The suite
+  computes the digests its assertions state with a local SHA-256, checked against the standard vectors, since no
+  hashing dependency is added. It is crate-private and for the suite and its double only.
+- **The output shape** is checked with the contract's Rust types. The schema validator is a dev-dependency of the
+  contracts, so patterns and lengths aren't checked here; the contracts' own suite holds them.
+- **Not covered:** signatures, which are placeholders and unverified, as in the role suite (`M2`, `M3`);
+  `REQ-MDL-11`'s limits other than output; TLS; and resolution changes other than to a private address.
+- **`DEC-20`.** The suite and its double are neither the production admission path nor a signature check. The
+  cross-module call outcome changes `contracts/`, so its commit names `DEC-20` and waits for the owner's click.
+
+### T-003-03 review (the orchestrator, 2026-11-07)
+
+An Opus review ran two altered doubles that passed, and listed probe gaps. The fixes, and the readings taken:
+
+- **Both parts altered in turn.** The altered-release fixture alters the sandboxed part, then the outside part, and
+  counts only when both are refused. A binding comparing one part's digest is flagged.
+- **A failed upgrade must be admitted.** A failing release refused at admission proves nothing about a failed
+  upgrade, so the fixture is then uncovered, not passed.
+- **The other provider runs.** It is installed before the reach probes with a declaration naming its own
+  endpoint. So a binding sharing one egress allowlist reaches it and is flagged, and "the callee receives nothing"
+  is about a module that could receive.
+- **Egress beyond simple paths:**
+  - a redirect chain, declared to declared to undeclared, refused at the third hop;
+  - a redirect to a declared host at a private address, refused at the second hop;
+  - declared hosts at `::1`, in `fc00::/7` and at `::ffff:10.0.0.5`.
+
+  A breaker checking only the first redirect, only the first hop's address, or only IPv4 is flagged.
+- **Acceptance by reach, not only by version.** The release modules make calls.
+  - While 1.1.0 waits for its fresh acceptance, its new destination `extra` is refused as undeclared. Once accepted,
+    it is reached.
+  - After the narrowing 1.2.0, the destination it dropped is refused. That is `archive`, not `internal` as the
+    review named it: `internal` is at a private address and refused whatever the declaration says, so dropping it
+    would test nothing.
+  - Releases widening by a secret, a callee and an address each wait for a fresh acceptance. Breakers that don't
+    count one of them as a widening are flagged.
+  - A reach probe judges an acceptance only where the binding's record agrees with what the endpoint received. A
+    call recorded as refused but delivered is a broken egress check. The egress probes judge that, and the reach
+    probe's fixture is left uncovered. That keeps each breaker under one check.
+- **No secret value on the production trait.** `ModuleBinding::take_events` reports a lookup's outcome status only
+  (`LookupOutcome`). The values the proxy delivered are read through `BoundaryHarness::delivered_secrets`, where the
+  suite looks for another provider's canary.
+- **Nits:**
+  - the cross-module probes have an honest control, a declared call delivered to the running callee, and an
+    `undeclared_kind` probe;
+  - the contract has fixtures for a delivered call of an undeclared kind, and for `undeclared_kind` given when the
+    callee itself is undeclared;
+  - the outside part's lookup of another provider's secret must be refused as `not_found`, since the module declares
+    the name and holds no secret by it;
+  - a record must name the secret its call used;
+  - a lookup of a name the module doesn't declare must be refused as `undeclared_secret`, under its own check,
+    `UndeclaredSecretRefused`;
+  - output at the limit is measured on what the platform passed on, so a module padding short is flagged. Honest
+    output is compact JSON, so its re-serialised length is its emitted length;
+  - `build` moved from `ModuleBinding` to `BoundaryHarness`;
+  - the reference double is built only with the `test-support` feature, which the crate enables for its own tests
+    through a dev-dependency on itself. A production build can't link it, and `cargo test --workspace` still runs
+    every test;
+  - DNS rebinding isn't expressible yet: `serve` gives an endpoint one address.
+- **Records name exactly the secrets used.** A record's `secrets` must equal, as a set, the names the outside part
+  resolved for that operation in that transaction. `validate_record_secrets` checks only that they are declared, so
+  a binding listing every declared secret on every record would otherwise pass. A breaker that does so is flagged.
+- **The declared-call control can fail.** A breaker refusing every cross-module call, a declared one as
+  `callee_unavailable`, is flagged by `DeclaredReachWorks` alone, since the contract allows that reason for a
+  declared callee and kind.
+- **Counts.** The suite has 15 checks and 41 fixtures and controls per language. The double has 38 breakers: 36
+  flagged each by its own check only, and two that leave fixtures uncovered.
+
+### T-003-03 delta review (the orchestrator, 2026-11-07)
+
+Two fixes could still be slipped past; the reviewer built scratch doubles that passed.
+
+- **A failed upgrade held as waiting was never started.** "Kept the previous" was then counted for free. Now:
+  - the failing release, which widens nothing, must take an automatic acceptance;
+  - if it is held as waiting anyway, the suite accepts it first, and only then checks the version in force.
+
+  A breaker holding non-starting releases as waiting is flagged by `ProvidersAreIsolated` alone.
+- **Three of the four widenings weren't checked by reach.** The release modules now:
+  - look up `release.token`, seeded for the release provider;
+  - call a new endpoint, `spread`, served at an address outside its pin until 1.5.0 opens it to `public`;
+  - call the other provider.
+
+  While each widening release waits, what it adds must be refused, as `undeclared_destination`,
+  `undeclared_secret`, `undeclared_callee` and `address_not_allowed` respectively. Once accepted, it must work.
+  `answers_as` allows the resolved value in the evidence reference.
+- **Controls keep each breaker under one check.** Each widening is judged beside controls in the same operation:
+  the module's own secret resolving, and a secret and a callee no release declares being refused. If a control
+  fails, the binding's own secret or call enforcement is broken, which the reach probes judge, and the widening's
+  fixture is left uncovered.
+  - After acceptance, only the old declaration still being applied counts as a finding. A refusal any declared
+    call can get, such as `callee_unavailable`, leaves the fixture uncovered.
+  - A breaker honouring the waiting declaration in the proxy and the cross-module check is flagged by
+    `WideningNeedsFreshAcceptance` alone.
+- **Nits:**
+  - the unique-local probe uses `fd00::5`;
+  - `Admitted::Refused` carries an `AdmissionRefusal`, so an altered part must be refused as `PartAltered` of that
+    part;
+  - `Exercised::ordinal` is an exhaustive match, and a test checks `Exercised::ALL` against it;
+  - each part is altered both by a byte appended and by a byte flipped in place.
+- **Counts.** 15 checks, 41 fixtures and controls per language, and 40 breakers: 38 flagged each by its own check
+  only, and two that leave fixtures uncovered.

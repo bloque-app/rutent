@@ -599,6 +599,44 @@ pub struct CrossModuleCall {
     pub route: RouteReference,
     /// What is asked of the callee.
     pub operation: Operation,
+    /// Whether the platform delivered it or refused it.
+    pub outcome: CrossModuleOutcome,
+}
+
+/// A cross-module call's outcome, by status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CrossModuleOutcome {
+    /// The platform delivered it to the callee.
+    Delivered(Nothing),
+    /// The platform refused it.
+    Refused(CallRefused),
+}
+
+/// A refused cross-module call: the callee, the kind asked and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallRefused {
+    /// The provider called.
+    pub callee: Identifier,
+    /// The operation kind asked.
+    pub kind: OperationKind,
+    /// Why.
+    pub reason: CallRefusalReason,
+}
+
+/// Why the platform refused a cross-module call, in the order it checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallRefusalReason {
+    /// The caller doesn't declare the callee (`REQ-MDL-21`).
+    UndeclaredCallee,
+    /// The caller declares the callee but not the kind asked.
+    UndeclaredKind,
+    /// The route doesn't name the call (`REQ-MDL-21`, `THR-86`).
+    NotNamedByRoute,
+    /// The callee's module isn't running.
+    CalleeUnavailable,
 }
 
 impl CrossModuleCall {

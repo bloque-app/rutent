@@ -5,7 +5,8 @@ use std::net::IpAddr;
 
 use super::admission::PartName;
 use super::types::{
-    Addresses, CallOutcome, CrossModuleCall, Declaration, OutboundCallRecord, SecretLookup,
+    Addresses, CallOutcome, CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration,
+    OperationKind, OutboundCallRecord, SecretLookup,
 };
 use crate::provider_role::{Advertisement, ResultBody, Statement};
 
@@ -62,6 +63,17 @@ pub enum RuleViolation {
         /// Index into the record's `secrets`.
         secret: usize,
     },
+    /// A refused cross-module call whose refusal names another callee or kind than its operation.
+    RefusalNamesAnotherCall,
+    /// A cross-module call checked against a declaration of another module: its caller or caller version
+    /// differs from the declaration's.
+    CallOfAnotherModule,
+    /// A cross-module call recorded as delivered though its caller doesn't declare the callee and kind
+    /// (`REQ-MDL-21`).
+    UndeclaredCallDelivered,
+    /// A cross-module call refused for a reason its caller's declaration contradicts: the first check the call
+    /// fails names the reason.
+    RefusalReasonUntrue,
     /// A cross-module call whose callee is its caller (`REQ-MDL-21`).
     CallToOwnProvider,
     /// A cross-module call whose operation names another transaction than the call (`REQ-MDL-8`).
@@ -381,6 +393,61 @@ pub fn validate_call(call: &CrossModuleCall) -> Result<(), Vec<RuleViolation>> {
         && transaction != call.transaction.as_str()
     {
         violations.push(RuleViolation::TransactionMismatch);
+    }
+    if let CrossModuleOutcome::Refused(refused) = &call.outcome
+        && (refused.callee.as_str() != call.callee()
+            || refused.kind != OperationKind::of(&call.operation))
+    {
+        violations.push(RuleViolation::RefusalNamesAnotherCall);
+    }
+    done(violations)
+}
+
+/// Checks a cross-module call's outcome against its caller's declaration, and returns every rule broken:
+///
+/// - the call is the declared module's, by provider and version;
+/// - a delivered call's callee and kind are declared (`REQ-MDL-21`);
+/// - a refused call's reason is the first check it fails, in the order the platform checks: an undeclared
+///   callee, then an undeclared kind. A refusal because the route doesn't name the call or the callee isn't
+///   running is for a call whose callee and kind are declared.
+///
+/// Whether the route names the call, and whether the callee runs, the platform holds at run time. It assumes the
+/// declaration has passed [`validate_declaration`].
+pub fn validate_call_against(
+    declaration: &Declaration,
+    call: &CrossModuleCall,
+) -> Result<(), Vec<RuleViolation>> {
+    let mut violations = Vec::new();
+    if call.caller != declaration.provider || call.caller_version != declaration.version {
+        violations.push(RuleViolation::CallOfAnotherModule);
+    }
+    let declared = declaration
+        .outside
+        .calls
+        .iter()
+        .find(|c| c.callee.as_str() == call.callee());
+    let kind = OperationKind::of(&call.operation);
+    let first_failure = match declared {
+        None => Some(CallRefusalReason::UndeclaredCallee),
+        Some(c) if !c.kinds.contains(&kind) => Some(CallRefusalReason::UndeclaredKind),
+        Some(_) => None,
+    };
+    match (&call.outcome, first_failure) {
+        (CrossModuleOutcome::Delivered(_), Some(_)) => {
+            violations.push(RuleViolation::UndeclaredCallDelivered);
+        }
+        (CrossModuleOutcome::Refused(refused), Some(reason)) if refused.reason != reason => {
+            violations.push(RuleViolation::RefusalReasonUntrue);
+        }
+        (CrossModuleOutcome::Refused(refused), None)
+            if matches!(
+                refused.reason,
+                CallRefusalReason::UndeclaredCallee | CallRefusalReason::UndeclaredKind
+            ) =>
+        {
+            violations.push(RuleViolation::RefusalReasonUntrue);
+        }
+        _ => {}
     }
     done(violations)
 }
