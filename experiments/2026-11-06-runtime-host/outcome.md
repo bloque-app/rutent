@@ -98,7 +98,7 @@ What must be true for v0 to ship on VOS (the rethink's §8), with where each sta
 
 | Precondition | Where it stands |
 |---|---|
-| The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines, counted from every experiment lockfile; the tip's lockfiles (`vos-adapter/rt`, `vos-adapter/program`) lock 277 external packages |
+| The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines, counted from every experiment lockfile; the tip's lockfiles (`vos-adapter/rt`, `vos-adapter/program`) lock 274 packages from a registry or git, and 3 of the experiment's own path crates the licence check counts as external: 277 that need a line |
 | A VOS commit pinned by SHA and mirrored, with its forks (`lsm-tree`, `stwo`, `s4`) | Pinned by SHA here; not mirrored yet (`G-48`) |
 | The state machine inside VOS, passing host contract 2.0.0 on three nodes | Done here, as an experiment. For `M2`, `contracts/` goes `no_std` + `alloc` through a `DEC-4` bump and the owner's click (`DEC-20`); the patch this experiment applied shows it is plumbing only |
 | `G-54` fixed upstream, or its residual accepted for both candidates | Not fixed at the tip. A damaged follower caught up from the leader in these runs; damage to a leader's append, and the single-node residual, are untested |
