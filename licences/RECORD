@@ -96,5 +96,5 @@ wit-bindgen 0.57.1 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT pending l
 zerocopy 0.8.63 BSD-2-Clause OR Apache-2.0 OR MIT pending licence-permissive-standing
 zerocopy-derive 0.8.63 BSD-2-Clause OR Apache-2.0 OR MIT pending licence-permissive-standing
 zmij 1.0.23 MIT pending licence-permissive-standing
-vos not-adopted AGPL-3.0-or-later pending DEC-6,ADR-0004
+vos not-adopted AGPL-3.0-or-later pending DEC-6,ADR-0002
 vault not-adopted BUSL-1.1 pending DEC-9,ADR-0004
