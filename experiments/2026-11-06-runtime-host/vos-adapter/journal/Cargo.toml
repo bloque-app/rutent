@@ -6,6 +6,7 @@ name = "rutent-vos-journal"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [lib]
 test = false
