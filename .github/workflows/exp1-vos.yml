@@ -4,8 +4,12 @@ name: EXP-1 VOS
 # exp1-rescore-platform). The nodes run on the runner host, never in a container or a Docker step, whose default
 # seccomp profile blocks userfaultfd. Every binary is built on the runner that runs it, with no cache. The run notes
 # are uploaded as artifacts.
+# It never runs on a pull request, and a push starts it only on this task's own branch: squashed into a milestone
+# branch, the multi-hour experiment does not start there. A scored run is a dispatch.
 on:
   push:
+    branches:
+      - "f-007/t-007-03-vos-behind-the-host-contract-fault-injected-t"
     paths:
       - "experiments/2026-11-06-runtime-host/vos-adapter/**"
   workflow_dispatch:
