@@ -92,6 +92,7 @@ pub fn run(args: &[String]) -> Option<i32> {
             }
         }
         "sandbox" => sandbox(),
+        "umount" => umount(argument),
         "stderr" => std::io::stderr()
             .write_all(argument.as_bytes())
             .map(|_| String::new())
@@ -224,4 +225,19 @@ fn sandbox() -> Result<String, String> {
         compiled.machine_code,
         instance.pid()
     ))
+}
+
+#[cfg(target_os = "linux")]
+fn umount(path: &str) -> Result<String, String> {
+    let path = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
+    // SAFETY: the path is NUL-terminated.
+    match unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } {
+        0 => Ok(String::new()),
+        _ => Err(std::io::Error::last_os_error().to_string()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn umount(_: &str) -> Result<String, String> {
+    Err("Linux only".to_owned())
 }
