@@ -1,9 +1,11 @@
 //! The platform's side of its children: the admitting compiler, run once per admission, and each provider's
 //! process. Both are started isolated (`rutent_wasm_sandbox::isolated`).
 
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout};
+use std::process::Child;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rutent_wasm_sandbox::{Limits, isolated, read_frame, write_frame};
@@ -27,15 +29,55 @@ impl Drop for Workdir {
     }
 }
 
-/// Relays a child's standard error to the platform's, each line labelled with the child it came from.
-fn relay(stderr: Option<impl Read + Send + 'static>, label: String) {
-    if let Some(stderr) = stderr {
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("[{label}] {line}");
+/// The most of one child's standard error the binding keeps, as pvm-binding keeps it.
+pub const STDERR_CAP: usize = 64 * 1024;
+
+/// What one child wrote to its standard error, as the binding kept it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Stderr {
+    /// Whose: `compiler <pid>`, or the provider and its process id.
+    pub label: String,
+    /// The first [`STDERR_CAP`] bytes.
+    pub bytes: Vec<u8>,
+    /// Whether it wrote more, which was read and dropped.
+    pub truncated: bool,
+}
+
+/// Every child's standard error, kept apart from the platform's own: none of it reaches the platform's stream.
+pub type Stderrs = Arc<Mutex<Vec<Stderr>>>;
+
+/// Reads a child's standard error to its end on a thread of its own, keeping at most [`STDERR_CAP`] bytes under
+/// `label` in `into`, as they arrive; the rest is read and dropped, so the child never blocks on a full pipe.
+pub fn capture(stderr: Option<impl Read + Send + 'static>, label: String, into: &Stderrs) {
+    let Some(mut stderr) = stderr else {
+        return;
+    };
+    let into = Arc::clone(into);
+    let _ = std::thread::Builder::new()
+        .name("child-stderr".to_owned())
+        .spawn(move || {
+            let mut slot = None;
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let Ok(mut all) = into.lock() else {
+                    continue;
+                };
+                let index = *slot.get_or_insert_with(|| {
+                    all.push(Stderr {
+                        label: label.clone(),
+                        ..Stderr::default()
+                    });
+                    all.len() - 1
+                });
+                let kept = &mut all[index];
+                let room = STDERR_CAP.saturating_sub(kept.bytes.len());
+                kept.bytes.extend_from_slice(&buf[..n.min(room)]);
+                kept.truncated |= n > room;
             }
         });
-    }
 }
 
 use crate::engine;
@@ -83,13 +125,18 @@ pub fn compile(
     workdir: &Path,
     sandboxed: &[u8],
     outside: &[u8],
+    stderrs: &Stderrs,
 ) -> Result<Machine, String> {
     let started = Instant::now();
     let own = Workdir::new(workdir)?;
     let mut child = isolated(&paths.compiler, &[], &own.0, Limits::COMPILER)
         .and_then(|mut c| c.spawn())
         .map_err(|e| format!("the compiler didn't start: {e}"))?;
-    relay(child.stderr.take(), format!("compiler {}", child.id()));
+    capture(
+        child.stderr.take(),
+        format!("compiler {}", child.id()),
+        stderrs,
+    );
     let result = (|| {
         let mut stdin = BufWriter::new(child.stdin.take().ok_or("no stdin")?);
         let mut stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
@@ -135,64 +182,110 @@ pub fn compile(
     })
 }
 
-/// One provider's running process.
+/// What waiting for a provider's process gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Received {
+    /// Its next message.
+    Message(FromProvider),
+    /// It is gone, or said something unreadable.
+    Gone,
+    /// Nothing came before the deadline.
+    Overdue,
+}
+
+/// One provider's running process. Its standard output is read, and its standard input written, each on a thread
+/// of its own, so the platform never blocks on the process: it waits for a message only until a deadline.
 pub struct ProviderProcess {
     child: Child,
     _workdir: Workdir,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    to: Sender<Vec<u8>>,
+    from: Receiver<Option<Vec<u8>>>,
     /// How long it took from spawning to both parts started.
     pub took: Duration,
 }
 
 impl ProviderProcess {
     /// Starts a process for `machine`, in a working directory of its own under `workdir`, its standard error
-    /// relayed under `label`, and waits for both parts to start. Why not, if they didn't. `admitted` is
-    /// each part's machine-code digest as the admission artefact records it, `[sandboxed, outside]`: the process
-    /// checks the code it is given against them before it loads or instantiates anything.
+    /// kept in `stderrs` under `label`, and waits for both parts to start, for at most `within`; a process that
+    /// hasn't started by then is killed. Why not, if they didn't. `admitted` is each part's machine-code digest as
+    /// the admission artefact records it, `[sandboxed, outside]`: the process checks the code it is given against
+    /// them before it loads or instantiates anything.
     pub fn spawn(
         paths: &Paths,
         workdir: &Path,
         label: &str,
         machine: &Machine,
         admitted: [&str; 2],
+        stderrs: &Stderrs,
+        within: Duration,
     ) -> Result<Self, String> {
         let started = Instant::now();
         let own = Workdir::new(workdir)?;
         let mut child = isolated(&paths.provider, &[], &own.0, Limits::PROVIDER)
             .and_then(|mut c| c.spawn())
             .map_err(|e| format!("the provider's process didn't start: {e}"))?;
-        relay(child.stderr.take(), format!("{label} {}", child.id()));
+        capture(
+            child.stderr.take(),
+            format!("{label} {}", child.id()),
+            stderrs,
+        );
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
             return Err("the provider's process has no pipes".to_owned());
         };
+        let (to, outgoing) = mpsc::channel::<Vec<u8>>();
+        let (incoming, from) = mpsc::channel::<Option<Vec<u8>>>();
+        // A write that fails ends the writer: a process that stops reading, or refuses its code and says why,
+        // is then heard out by the reader.
+        let _ = std::thread::Builder::new()
+            .name("provider-stdin".to_owned())
+            .spawn(move || {
+                let mut stdin = BufWriter::new(stdin);
+                for frame in outgoing {
+                    if write_frame(&mut stdin, &frame).is_err() {
+                        break;
+                    }
+                }
+            });
+        let _ = std::thread::Builder::new()
+            .name("provider-stdout".to_owned())
+            .spawn(move || {
+                let mut stdout = BufReader::new(stdout);
+                loop {
+                    let frame = read_frame(&mut stdout).ok().flatten();
+                    let end = frame.is_none();
+                    if incoming.send(frame).is_err() || end {
+                        break;
+                    }
+                }
+            });
         let mut process = Self {
             child,
             _workdir: own,
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
+            to,
+            from,
             took: Duration::ZERO,
         };
         let load = ToProvider::Load {
             sandboxed: admitted[0].to_owned(),
             outside: admitted[1].to_owned(),
         };
-        // A process that refuses the code stops reading and says why; a write that fails because of that is read
-        // past, so that the platform hears its reason.
         let _ = process.send(&load);
         for code in [&machine.sandboxed, &machine.outside] {
-            if write_frame(&mut process.stdin, code).is_err() {
+            if process.to.send(code.clone()).is_err() {
                 break;
             }
         }
-        match process.receive() {
-            Some(FromProvider::Ready) => {
+        match process.receive_until(started + within) {
+            Received::Message(FromProvider::Ready) => {
                 process.took = started.elapsed();
                 Ok(process)
             }
-            Some(FromProvider::Failed { message }) => Err(message),
+            Received::Message(FromProvider::Failed { message }) => Err(message),
+            Received::Overdue => Err(format!(
+                "the provider's process didn't start within {within:?}, and was killed"
+            )),
             _ => Err("the provider's process stopped while starting".to_owned()),
         }
     }
@@ -232,22 +325,28 @@ impl ProviderProcess {
         let _ = self.child.wait();
     }
 
-    /// Sends one message.
+    /// Sends one message; it never blocks on the process.
     pub fn send(&mut self, message: &ToProvider) -> Result<(), String> {
         let bytes = serde_json::to_vec(message).map_err(|e| e.to_string())?;
-        write_frame(&mut self.stdin, &bytes).map_err(|e| e.to_string())
+        self.to.send(bytes).map_err(|e| e.to_string())
     }
 
-    /// Answers a request it made.
+    /// Answers a request it made; it never blocks on the process.
     pub fn reply(&mut self, reply: &Reply) -> Result<(), String> {
         let bytes = serde_json::to_vec(reply).map_err(|e| e.to_string())?;
-        write_frame(&mut self.stdin, &bytes).map_err(|e| e.to_string())
+        self.to.send(bytes).map_err(|e| e.to_string())
     }
 
-    /// The next message, or `None` if it is gone or said something unreadable.
-    pub fn receive(&mut self) -> Option<FromProvider> {
-        let frame = read_frame(&mut self.stdout).ok()??;
-        serde_json::from_slice(&frame).ok()
+    /// The next message, waiting at most until `deadline`.
+    pub fn receive_until(&mut self, deadline: Instant) -> Received {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        match self.from.recv_timeout(wait) {
+            Ok(Some(frame)) => {
+                serde_json::from_slice(&frame).map_or(Received::Gone, Received::Message)
+            }
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => Received::Gone,
+            Err(RecvTimeoutError::Timeout) => Received::Overdue,
+        }
     }
 
     /// Whether the process is still running.
@@ -259,5 +358,34 @@ impl ProviderProcess {
 impl Drop for ProviderProcess {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn a_childs_standard_error_is_kept_to_its_cap_labelled_and_the_rest_read_and_dropped() {
+        let stderrs = Stderrs::default();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "head -c 200000 /dev/zero | tr '\\0' x >&2; echo done"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh runs");
+        capture(child.stderr.take(), "noisy".to_owned(), &stderrs);
+        // The child finishes, so its pipe never filled.
+        let output = child.wait_with_output().expect("it ends");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
+        let kept = (0..200).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            let all = stderrs.lock().ok()?;
+            all.first().filter(|s| s.truncated).cloned()
+        });
+        let kept = kept.expect("its standard error was kept, and marked truncated");
+        assert_eq!(kept.label, "noisy");
+        assert_eq!(kept.bytes.len(), STDERR_CAP);
     }
 }

@@ -74,9 +74,22 @@ fn compiling_the_same_binary_twice_in_two_compiler_processes_gives_the_same_mach
             let outside = binding
                 .template(&language, category, "outside")
                 .expect("a stand-in");
-            let first = compile(&common::paths(), &dir, &sandboxed, &outside).expect("it compiles");
-            let second =
-                compile(&common::paths(), &dir, &sandboxed, &outside).expect("it compiles");
+            let first = compile(
+                &common::paths(),
+                &dir,
+                &sandboxed,
+                &outside,
+                &Default::default(),
+            )
+            .expect("it compiles");
+            let second = compile(
+                &common::paths(),
+                &dir,
+                &sandboxed,
+                &outside,
+                &Default::default(),
+            )
+            .expect("it compiles");
             assert_eq!(
                 sha256(&first.sandboxed),
                 sha256(&second.sandboxed),
@@ -393,6 +406,14 @@ fn the_compiler_and_every_provider_process_reach_no_network_no_home_file_no_othe
             ("process_denied", "a process could be started"),
             ("signal_denied", "another process could be signalled"),
             ("file_read_denied", "a file in the home directory was read"),
+            (
+                "process_list_denied",
+                "another process was listed (KERN_PROC_ALL on macOS, /proc on Linux)",
+            ),
+            (
+                "process_args_denied",
+                "another process's arguments were read (KERN_PROCARGS2 on macOS, /proc on Linux)",
+            ),
         ] {
             assert_eq!(report[field], true, "{name}: {what}");
         }

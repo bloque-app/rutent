@@ -13,7 +13,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rutent_conformance::boundary::{
     AdmissionRefusal, Admitted, BoundaryHarness, Endpoint, Events, Handled, LookupEvent,
@@ -32,13 +32,23 @@ use rutent_contracts::provider_role::{
 };
 use serde_json::Value;
 
-use crate::children::{Machine, Paths, ProviderProcess, compile};
+use crate::children::{Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile};
 use crate::engine::{self, FORMAT, MAX_BINARY};
 use crate::program::{self, Probe};
 use crate::wire::{FromProvider, Reply, ToProvider, sha256, unhex};
 
 /// The most hops an outbound call follows, redirects included.
 const MAX_HOPS: usize = 5;
+
+/// The longest one operation may take, from the platform handing it to a provider's process to that process's
+/// answer, cross-module calls it makes included, before the platform kills the process (`REQ-MDL-11`). Fuel
+/// bounds the instructions a guest runs; this bounds the wall time, which fuel doesn't: a process that stops
+/// answering, or keeps the platform busy with requests, is stopped by it. Far above what a guest that runs out of
+/// fuel takes.
+pub const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The most a provider's process may take to start, both parts started, before the platform kills it.
+pub const START_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One provider's releases and its running process.
 #[derive(Default)]
@@ -59,6 +69,8 @@ struct Context {
     transaction: String,
     serving: Option<OutsideRequest>,
     resolved: BTreeMap<String, Vec<Name>>,
+    /// When the operation's deadline passes: its own, or the operation that called it's, whichever is first.
+    due: Instant,
 }
 
 /// What the binding measured, for `B-06`.
@@ -69,8 +81,11 @@ pub struct Measurements {
     pub compiles: Vec<(Duration, [usize; 2], [usize; 2])>,
     /// Each provider process's start, spawn to both parts started.
     pub starts: Vec<Duration>,
-    /// Why the last operation a sandboxed part didn't finish stopped, as its process reported it.
+    /// Why the last operation a sandboxed part didn't finish stopped, as its process reported it, or
+    /// `deadline: ...` if the platform killed the process at the operation's deadline.
     pub last_trap: Option<String>,
+    /// Operations whose provider's process missed the deadline and was killed.
+    pub overdue: usize,
 }
 
 /// The Wasm-component binding.
@@ -90,6 +105,8 @@ pub struct WasmBinding {
     stack: Vec<Context>,
     clock: u32,
     events: Events,
+    deadline: Duration,
+    stderrs: Stderrs,
     /// What it measured.
     pub measurements: Measurements,
 }
@@ -119,8 +136,20 @@ impl WasmBinding {
             stack: Vec::new(),
             clock: 0,
             events: Events::default(),
+            deadline: OPERATION_DEADLINE,
+            stderrs: Stderrs::default(),
             measurements: Measurements::default(),
         })
+    }
+
+    /// Sets the operation deadline, [`OPERATION_DEADLINE`] by default.
+    pub fn set_deadline(&mut self, deadline: Duration) {
+        self.deadline = deadline;
+    }
+
+    /// What every child, compiler or provider, wrote to its standard error, each capped and labelled.
+    pub fn stderrs(&self) -> Vec<Stderr> {
+        self.stderrs.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     /// The directory the stand-ins are read from.
@@ -224,6 +253,8 @@ impl WasmBinding {
             provider,
             &machine,
             [&admitted[0], &admitted[1]],
+            &self.stderrs,
+            START_DEADLINE,
         ) {
             self.measurements.starts.push(process.took);
             let slot = self.providers.entry(provider.to_owned()).or_default();
@@ -608,9 +639,12 @@ impl WasmBinding {
     }
 
     /// The cross-module router: a call is made only if the caller's running declaration declares the callee and
-    /// the kind, and the callee's module runs; it is recorded either way (`REQ-MDL-21`). The route is the suite's
+    /// the kind of the operation actually forwarded, and the callee's module runs; it is recorded either way
+    /// (`REQ-MDL-21`). The kind is judged by `OperationKind::of` the forwarded operation, the one the caller is
+    /// handling, never by the kind the guest names: a guest naming another kind, or none the contract knows, is
+    /// refused as `undeclared_kind`, and the record names the forwarded kind. The route is the suite's
     /// placeholder, `conformance-route` and `segment-1`: the suite has no routes, so this binding checks none.
-    fn cross_module(&mut self, callee: &str, kind: &str) -> Reply {
+    fn cross_module(&mut self, callee: &str, claimed: &str) -> Reply {
         let context = self.stack.last().expect("a context");
         let (caller, version, transaction) = (
             context.provider.clone(),
@@ -620,11 +654,13 @@ impl WasmBinding {
         let envelope = context.operation.clone();
         let declaration = context.declaration.clone();
         let in_flight = context.serving.is_some();
-        let Ok(kind) = serde_json::from_value::<OperationKind>(Value::from(kind)) else {
+        let Some(asked) = with_provider(&envelope, callee) else {
             return Reply::Module {
                 outcome: "refused".to_owned(),
             };
         };
+        let kind = OperationKind::of(&asked.statement);
+        let claimed = serde_json::from_value::<OperationKind>(Value::from(claimed)).ok();
         let mut refusal = match declaration
             .outside
             .calls
@@ -632,15 +668,12 @@ impl WasmBinding {
             .find(|c| c.callee.as_str() == callee)
         {
             None => Some(CallRefusalReason::UndeclaredCallee),
-            Some(c) if !c.kinds.contains(&kind) => Some(CallRefusalReason::UndeclaredKind),
+            Some(c) if !c.kinds.contains(&kind) || claimed != Some(kind) => {
+                Some(CallRefusalReason::UndeclaredKind)
+            }
             // Outside an outside request, no route segment can name the call: the contract's third check.
             Some(_) if !in_flight => Some(CallRefusalReason::NotNamedByRoute),
             Some(_) => None,
-        };
-        let Some(asked) = with_provider(&envelope, callee) else {
-            return Reply::Module {
-                outcome: "refused".to_owned(),
-            };
         };
         if refusal.is_none() {
             let running = self
@@ -690,7 +723,8 @@ impl WasmBinding {
         }
     }
 
-    /// Hands the operation to the provider's process and serves its requests until it answers.
+    /// Hands the operation to the provider's process and serves its requests until it answers, or until the
+    /// operation's deadline, when the process is killed and the operation refused.
     fn run_in_process(
         &mut self,
         provider: &str,
@@ -707,6 +741,9 @@ impl WasmBinding {
             .ok()
             .and_then(|v| v["transaction"].as_str().map(str::to_owned))
             .unwrap_or_default();
+        // A cross-module call's operation ends no later than the one that made it.
+        let own = Instant::now() + self.deadline;
+        let due = self.stack.last().map_or(own, |caller| caller.due.min(own));
         self.stack.push(Context {
             provider: provider.to_owned(),
             version,
@@ -715,6 +752,7 @@ impl WasmBinding {
             transaction,
             serving: None,
             resolved: BTreeMap::new(),
+            due,
         });
         let json = serde_json::to_string(operation).unwrap_or_default();
         let mut outcome = Err(PlatformRefusal::Unavailable);
@@ -722,17 +760,26 @@ impl WasmBinding {
             .send(&ToProvider::Handle { operation: json })
             .is_ok();
         while alive {
-            match process.receive() {
-                None => alive = false,
-                Some(FromProvider::Done { output }) => {
+            match process.receive_until(due) {
+                Received::Gone => alive = false,
+                Received::Overdue => {
+                    // Whatever it would still say is dropped with it.
+                    self.measurements.overdue += 1;
+                    self.measurements.last_trap = Some(format!(
+                        "deadline: no answer within {:?}; the process was killed",
+                        self.deadline
+                    ));
+                    alive = false;
+                }
+                Received::Message(FromProvider::Done { output }) => {
                     outcome = unhex(&output).ok_or(PlatformRefusal::MalformedOutput);
                     break;
                 }
-                Some(FromProvider::Trapped { message }) => {
+                Received::Message(FromProvider::Trapped { message }) => {
                     self.measurements.last_trap = Some(message);
                     break;
                 }
-                Some(request) => {
+                Received::Message(request) => {
                     let reply = self.serve(request);
                     alive = process.reply(&reply).is_ok();
                 }
@@ -889,6 +936,7 @@ impl ModuleBinding for WasmBinding {
             &self.workdir,
             &binaries.sandboxed,
             &binaries.outside,
+            &self.stderrs,
         ) {
             Ok(machine) => Rc::new(machine),
             Err(_) => return Admitted::Refused(AdmissionRefusal::UnreadableBinary),

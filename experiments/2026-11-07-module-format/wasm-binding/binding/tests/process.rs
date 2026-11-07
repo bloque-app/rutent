@@ -4,7 +4,8 @@ mod common;
 
 use common::{alive, answers_as, binding, install, languages, spec};
 use rutent_conformance::boundary::{Admitted, Handled, ModuleBinding, PlatformRefusal};
-use rutent_wasm_binding::children::ProviderProcess;
+use rutent_wasm_binding::children::{ProviderProcess, Stderrs};
+use rutent_wasm_binding::platform::OPERATION_DEADLINE;
 use rutent_wasm_binding::program::Probe;
 use rutent_wasm_binding::wire::sha256;
 
@@ -185,19 +186,30 @@ fn a_provider_process_refuses_machine_code_that_isnt_the_admitted_one_before_loa
     std::fs::create_dir_all(&dir).expect("a work directory");
     let (sandboxed, outside) = (sha256(&machine.sandboxed), sha256(&machine.outside));
     let wrong = "0".repeat(64);
+    let stderrs = Stderrs::default();
     let started = ProviderProcess::spawn(
         &common::paths(),
         &dir,
         &provider,
         &machine,
         [&sandboxed, &outside],
+        &stderrs,
+        OPERATION_DEADLINE,
     );
     assert!(started.is_ok(), "the admitted machine code didn't start");
     for admitted in [
         [wrong.as_str(), outside.as_str()],
         [sandboxed.as_str(), wrong.as_str()],
     ] {
-        let refused = ProviderProcess::spawn(&common::paths(), &dir, &provider, &machine, admitted);
+        let refused = ProviderProcess::spawn(
+            &common::paths(),
+            &dir,
+            &provider,
+            &machine,
+            admitted,
+            &stderrs,
+            OPERATION_DEADLINE,
+        );
         let Err(why) = refused else {
             panic!("machine code other than the admitted one was started")
         };

@@ -231,8 +231,8 @@ fn standins_section(paths: &Paths) -> Result<Vec<serde_json::Value>, String> {
                 .map_err(|e| format!("{language}-{category}-{part}: {e}"))
             };
             let (sandboxed, outside) = (read("sandboxed")?, read("outside")?);
-            let first = compile(paths, &workdir, &sandboxed, &outside)?;
-            let second = compile(paths, &workdir, &sandboxed, &outside)?;
+            let first = compile(paths, &workdir, &sandboxed, &outside, &Default::default())?;
+            let second = compile(paths, &workdir, &sandboxed, &outside, &Default::default())?;
             for (index, (part, bytes)) in [("sandboxed", &sandboxed), ("outside", &outside)]
                 .into_iter()
                 .enumerate()
@@ -309,7 +309,13 @@ fn main() -> ExitCode {
         all_passed &= report.passed();
         let measurements = binding.measurements.clone();
         let resident = resident_kib(&binding.processes());
-        reports.push((category, report, measurements, resident));
+        // Every child's standard error, capped at 64 KiB each and labelled, kept apart from this process's own.
+        let stderrs: Vec<serde_json::Value> = binding
+            .stderrs()
+            .iter()
+            .map(|s| json!({"label": s.label, "bytes": s.bytes.len(), "truncated": s.truncated, "text": String::from_utf8_lossy(&s.bytes)}))
+            .collect();
+        reports.push((category, report, measurements, resident, stderrs));
     }
 
     println!("run id: {run_id}");
@@ -323,7 +329,7 @@ fn main() -> ExitCode {
         first.output_limit
     );
     let mut json_reports = Vec::new();
-    for (category, report, measurements, resident) in &reports {
+    for (category, report, measurements, resident, stderrs) in &reports {
         println!();
         println!(
             "## {category}: passed {}; findings {}; uncovered {}; missing_languages {}; exercised {}",
@@ -370,6 +376,8 @@ fn main() -> ExitCode {
             "machine_code_bytes": measurements.compiles.first().map(|c| c.2),
             "provider_processes_alive_at_the_end": resident.len(),
             "resident_kib": summary_kib(resident),
+            "overdue": measurements.overdue,
+            "child_stderr": stderrs,
         }));
     }
     println!();
@@ -382,7 +390,7 @@ fn main() -> ExitCode {
             .map(|l| {
                 reports
                     .iter()
-                    .all(|(_, r, _, _)| row_passes(r, l, check, &fixtures))
+                    .all(|(_, r, _, _, _)| row_passes(r, l, check, &fixtures))
             })
             .collect();
         let word = |b: bool| if b { "pass" } else { "fail" };
@@ -409,6 +417,8 @@ fn main() -> ExitCode {
         "platform_version": engine::platform_version(),
         "settings": engine::settings().into_iter().map(|(k, v)| json!({"setting": k, "value": v})).collect::<Vec<_>>(),
         "isolation": rutent_wasm_sandbox::layers(),
+        "operation_deadline_ms": rutent_wasm_binding::platform::OPERATION_DEADLINE.as_millis(),
+        "stderr_cap_bytes": rutent_wasm_binding::children::STDERR_CAP,
         "seccomp_allowed": {
             "compiler": rutent_wasm_sandbox::seccomp_allowed(rutent_wasm_sandbox::Role::Compiler),
             "provider": rutent_wasm_sandbox::seccomp_allowed(rutent_wasm_sandbox::Role::Provider),

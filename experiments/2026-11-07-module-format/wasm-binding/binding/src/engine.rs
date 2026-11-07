@@ -27,11 +27,20 @@ pub const TARGET: &str = "aarch64-unknown-linux-gnu";
 #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
 pub const TARGET: &str = "x86_64-apple-darwin";
 
-/// Fuel each call into a part gets: the CPU limit (`REQ-MDL-11`, `B-03`). Fuel is deterministic (`G-06`).
-pub const FUEL_PER_CALL: u64 = 200_000_000;
+/// Fuel each part gets per operation: the CPU limit (`REQ-MDL-11`, `B-03`). The sandboxed part's call gets it,
+/// and every call into the outside part made for that operation's outside requests draws on one budget of it
+/// together, not a fresh one each. Instantiating and starting a part get it again. Fuel is deterministic
+/// (`G-06`).
+pub const FUEL_PER_PART: u64 = 200_000_000;
 
 /// The most linear memory one part's instance may hold, in bytes (`REQ-MDL-11`, `B-04`).
 pub const MEMORY_PER_PART: usize = 16 * 1024 * 1024;
+
+/// The most elements any one table of a part may hold. The stand-ins' largest table has 51.
+pub const TABLE_ELEMENTS: usize = 1024;
+
+/// The most linear memories a part's store may hold: each stand-in's component defines one, in its main module.
+pub const MEMORIES_PER_PART: usize = 1;
 
 /// The largest portable binary admission takes, per part, in bytes (`B-09`).
 pub const MAX_BINARY: usize = 8 * 1024 * 1024;
@@ -98,7 +107,10 @@ pub fn settings() -> Vec<(&'static str, String)> {
         ("cranelift_nan_canonicalization", "true".to_owned()),
         (
             "consume_fuel",
-            format!("true, {FUEL_PER_CALL} per call into a part"),
+            format!(
+                "true, {FUEL_PER_PART} per part per operation, the outside part's calls for one operation drawing \
+                 on one budget; instantiation and start metered alike"
+            ),
         ),
         ("epoch_interruption", "false".to_owned()),
         (
@@ -110,8 +122,11 @@ pub fn settings() -> Vec<(&'static str, String)> {
         ("generate_address_map", "false".to_owned()),
         ("max_wasm_stack", format!("{MAX_WASM_STACK} bytes")),
         (
-            "memory limit (StoreLimits)",
-            format!("{MEMORY_PER_PART} bytes per part"),
+            "store limits (StoreLimits)",
+            format!(
+                "{MEMORY_PER_PART} bytes of linear memory per part, {TABLE_ELEMENTS} elements per table, 16 \
+                 instances, 4 tables, {MEMORIES_PER_PART} memory"
+            ),
         ),
         (
             "cargo features",

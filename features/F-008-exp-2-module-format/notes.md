@@ -102,9 +102,13 @@ readings are in its README, "Readings taken in opening it".
 - **The sandboxed part's attempts.** The suite's steps have the sandboxed part try a secret and state, and count
   only an observed refusal. The contract gives it no route to either, so the binding gives it `denied`, which
   records the attempt and reaches nothing (`exp2-wasm-sandboxed-surface`).
-- **Two flaws the PVM binding's review found, checked here.** Every secret lookup, outbound call, state read and
-  cross-module call is judged against the outside request in flight, from the platform's own state, and a record
-  names that operation, never the one the guest gave (`tests/egress.rs`, a hostile stand-in step and its control).
+- **Two flaws the PVM binding's review found, checked here.** Every secret lookup, outbound call and state read is
+  judged against the outside request in flight, from the platform's own state, and a record names that operation,
+  never the one the guest gave (`tests/egress.rs`, a hostile stand-in step and its control). *Corrected after the
+  security review of `EXP-2-wasm-20261107-1`:* this said cross-module calls too, but the port stopped short of
+  them. A cross-module call's kind was still the guest's own string, so a caller declared for one kind could
+  forward the operation in hand to that callee by naming that kind. The PolkaVM fix was ported then
+  (`EXP-2-wasm-20261107-2`, `tests/calls.rs`).
   A provider's process checks both parts' machine-code digests against the artefact's before it loads either. The
   macOS isolation profile denies by default, and is probed with a read in `$HOME`, a signal to another process, a
   network connect, a file write and a process start; `B-07` and `B-08` are scored on those probes only, on macOS.
@@ -120,6 +124,41 @@ readings are in its README, "Readings taken in opening it".
   review it adds explicit `process-info*` and `iokit-get-properties` denials with probes, and refuses re-admitting a
   version already admitted, with a test that a pending release leaves the running one in force across a restart.
   Run 1's note is kept, marked superseded.
+
+- **After the security review of `EXP-2-wasm-20261107-1`** (`EXP-2-wasm-20261107-2` supersedes `-1`):
+  - **The kind of a cross-module call** (M4) is the kind of the operation forwarded, as pvm-binding judges it.
+    A guest naming another kind is refused as `undeclared_kind`. So is a guest naming a kind the contract
+    doesn't know, but no test tries that: the suite's `Step::CallModule` can't carry one. The record names the forwarded kind. One case doesn't fit the contract's checks: the forwarded
+    kind is declared, but the guest names another. The binding refuses it as `undeclared_kind`, as pvm-binding
+    does, and `validate_call_against` reads no refusal for it. The brief's scenario names the callee "declared
+    for `quote`". The contract has no `quote` kind, so the test uses `conversion`, the exchange's kind, whose dry
+    run is its quote. The suite's `UndeclaredKindRefused` passed on the flawed code: its guest names the kind
+    forwarded. So `M-10` alone can't show the fix; the binding's test does.
+  - **macOS `sysctl`s** (M5). The profile allows reads of `hw.pagesize_compat` and `hw.pagesize` only, by name.
+    Without `hw.pagesize_compat` both programs panic before `main`; without `hw.pagesize` they start. It is kept
+    because pvm-binding's profile has it. The probe's new reads are named by what they test, a process list and
+    another process's arguments. On macOS they are `KERN_PROC_ALL` and `KERN_PROCARGS2`. On Linux they are
+    `/proc` and `/proc/<platform pid>/cmdline`, where the jail leaves no `/proc`. That way "every probe refused"
+    reads the same on both. macOS isn't the scoring platform, so the macOS probes stay development evidence.
+  - **Per call, not per operation** (M6). The outside part's fuel was refilled on every outside request. Now one
+    budget per part per operation is drawn on by all of them. A new stand-in probe, `burn`, shows the bound, so the
+    stand-ins' digests changed. The platform now kills a provider's process that hasn't answered within the
+    operation's deadline, 10 s by default. A cross-module call's operation ends no later than its caller's. A
+    process also has 10 s to start. Each child's standard error is kept to 64 KiB, labelled, as pvm-binding keeps
+    it, and the run report carries it. The admitting compiler is still read without a deadline: it gets 60 CPU
+    seconds, but nothing bounds its wall time.
+  - **The same per-call bound in pvm-binding**, left as it is. The worker sets `GAS_PER_CALL` on each outside
+    request (`rutent-pvm-worker.rs:212`), and the platform reads the admitting compiler and the worker with no
+    deadline (`binding.rs:405`, `:1051`). Its `B-03` and `B-13` weren't run. Its run note now says that, if run,
+    they would be bounded per call, and that the per-operation bounds are `F-013`'s.
+  - **`B-11` and `G-04` on two runs.** The push run of `bd1cd98`, Actions run 42368299910, ran on an AMD EPYC
+    7763, and the scored run `-2` on an EPYC 9V74. Both reports give the same portable binaries and the same
+    machine-code SHA-256 for all 16 parts, two compilations each. Under the README's rule, any run on the platform
+    after `C1` takes a scored id and its own note, so the push run is `EXP-2-wasm-20261107-3`, numbered after `-2`
+    because it was given its id later. `B-11` and `G-04` pass on `-2` and `-3`, by digest, as PolkaVM's `B-11` did.
+  - **The merge of `m1`'s `4072e0b`.** The scored run is at the branch's merge of the contracts' security fixes:
+    provider-role, module-interface and host 2.0.0, router-api 1.0.1. The binding's only change from it is one
+    line, `statement_key.clone()`.
 
 ## Audit corrections to the EXP-2 scores (T-008-02, T-008-03)
 

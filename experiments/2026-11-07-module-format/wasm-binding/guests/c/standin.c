@@ -46,7 +46,7 @@ static const char MAGIC[] = "RUTENT-PROGRAM-SLOT-V1\n";
 #endif
 __attribute__((used)) RUTENT_NONSTRING static const volatile char PROGRAM[RUTENT_SLOT_SIZE] = RUTENT_SLOT_INIT;
 
-enum step_kind { SECRET, STATE, CALL, MODULE, SPIN, GROW, TRAP, FORGE };
+enum step_kind { SECRET, STATE, CALL, MODULE, SPIN, GROW, TRAP, FORGE, BURN };
 
 typedef struct {
     enum step_kind kind;
@@ -150,6 +150,9 @@ static bool load(program *p) {
                 *s = (step){GROW, true, 0, 0, 0, 0, to_long(W[1])};
             } else if (count == 1 && eq(W[0], "trap")) {
                 *s = (step){TRAP, true, 0, 0, 0, 0, 0};
+            } else if (count == 2 && eq(W[0], "burn")) {
+                /* The outside part counts to W[1], then obtains `burned`: a probe of its fuel. */
+                *s = (step){BURN, false, 0, 0, 0, 0, to_long(W[1])};
             } else if (count == 6 && eq(W[0], "forge")) {
                 /* Hostile: the outside part names W[1] to the platform, not the operation it serves. */
                 *s = (step){FORGE, false, W[1], W[2], W[3], W[4], to_long(W[5])};
@@ -266,7 +269,7 @@ static void run(program *p, const char *transaction, values *got) {
     for (size_t i = 0; i < p->count; i++) {
         step *s = &p->steps[i];
         bool outside = (s->kind == SECRET || s->kind == STATE) ? !s->sandboxed
-                                                               : (s->kind == CALL || s->kind == MODULE || s->kind == FORGE);
+                                                               : (s->kind == CALL || s->kind == MODULE || s->kind == FORGE || s->kind == BURN);
         if (outside) {
             const char *operation = (s->kind == SECRET || s->kind == CALL) ? s->a : p->serves;
             text request = {0};
@@ -469,6 +472,14 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
                 outside_string_t callee = {(uint8_t *)s->a, strlen(s->a)};
                 outside_string_t kind = {(uint8_t *)s->b, strlen(s->b)};
                 rutent_binding_modules_call(&callee, &kind);
+                break;
+            }
+            case BURN: {
+                volatile unsigned long n = 0;
+                for (long i = 0; i < s->n; i++) {
+                    n = n + 1;
+                }
+                put_string(&obtained, "burned", 6);
                 break;
             }
             default:
