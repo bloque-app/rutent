@@ -363,6 +363,15 @@ pub fn enter(role: Role, hide_also: &[String], skip: &[String]) -> Result<(), St
             if !skipped("nofile") {
                 rlimit(libc::RLIMIT_NOFILE, 1024)?;
             }
+            if skipped("final-setid") {
+                lock_mounts()?;
+                // CAP_SETGID and CAP_SETUID are bits 6 and 7.
+                return drop_capabilities_but((1 << 6) | (1 << 7));
+            }
+            if skipped("final-sysadmin") {
+                lock_mounts()?;
+                return drop_capabilities_but(!(1 << 21));
+            }
             if skipped("drop-sys-admin-only") {
                 // CAP_SYS_ADMIN is bit 21.
                 return drop_capabilities_but(!(1 << 21));

@@ -90,10 +90,10 @@ jobs:
           {
             echo "unisolated: $(timeout 60 "$w" --probe sandbox - < "$b" 2>&1)"
             echo "unshare, no jail: $(timeout 60 $u "$w" --probe sandbox - < "$b" 2>&1)"
-            for skip in "" capabilities drop-sys-admin-only "lock capabilities" lock; do
+            for skip in final-setid final-sysadmin; do
               args=()
               for step in $skip; do args+=(--skip "$step"); done
-              for probe in "sandbox -" "umount /home" "read $HOME/.bashrc"; do
+              for probe in "sandbox -" "umount /home" "umount /tmp" "status -"; do
                 echo "jail, steps [$skip], probe [$probe]: $(timeout 60 $u "$w" --jailed worker --hide "$HOME" \
                   "${args[@]}" --probe $probe < "$b" 2>&1)"
               done
