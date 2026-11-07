@@ -204,3 +204,79 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - `Harness` drives imports (`import`, `import_crashing_after`), so a stop during an import is scored for an
   out-of-process runtime as well, by a kill timed to the entry count, best-effort.
 - Superseded: earlier bullets above that split effect duties between host and driver, say effects run "at least once per released record", or place `import_crashing_after` on `FaultSeam` are replaced by the later bullets: effects are the driver's alone, at most one attempt per record id without `safe_retry`, and imports run through `Harness`.
+
+## T-005-03
+
+- The suite lives in `rutent-conformance` as `conformance::host`, depending on `rutent-contracts` alone. It runs
+  every candidate with its own state machine, `host::probe::Probe`, so a candidate is scored as
+  `Harness<Probe>`: a real host is generic over its state machine (the host contract's `Host<M>`) and is
+  instantiated with the probe here. The probe is not `CMP-STM`; it binds and settles segments and names every
+  other input's outcome, and every order it returns passes `Order::check`.
+- Expected states always come from folding the probe over a journal's inputs, never from the host's own reads,
+  so a host can't vouch for itself (`NFR-4`).
+- Fifteen cells, each with a stable kebab-case id, the guarantees it checks and the fault it injects, derived
+  sentence by sentence from each guarantee's `suite` text. Each runs on a fresh store and inside `catch_unwind`,
+  so a panicking candidate fails that cell, not the run.
+- "Released" means acknowledged by `submit` or returned by a read. The crash between record and effect is scored
+  as: every record released before a kill is there, whole, after the reopen; a stop before durability leaves no
+  record and a resubmit applies the input once; a stop after durability leaves the record, and a resubmit returns
+  it as already recorded. A stopped host is only killed, never read first.
+- A black-box run (`run_black_box`, `Harness` alone) reports the three named-stop cells as not run, with the
+  reason; not run never counts as a pass, and a guarantee with such a cell is incomplete. A run with `FaultSeam`
+  runs all fifteen.
+- The reordered delivery shuffles one order's seven inputs with a fixed-seed linear congruential generator (std
+  only), and the seed is in the report. `recorded_at` values follow the recorded order, so a host that sorts by
+  time is caught. The suite refuses a seed that leaves the order unchanged.
+- The run id is the caller's; the suite reads no clock. Every Markdown row carries the run id, candidate, both
+  contract versions and the seed, so a row pasted into `EXP-1`'s sheet keeps its provenance.
+- The test double lives in `conformance/tests/support/`, test-only, and is not the reference host (`T-005-04`).
+  Each flaw breaks one guarantee and keeps the double otherwise contract-valid: the stream it exports without an
+  order is still a valid stream, the repeat it records twice keeps a gapless sequence, and the diverging state
+  still passes the record checks. A flaw can fail more than its matching cell where the guarantees overlap:
+  acknowledging before durability also loses acknowledged records under every stop.
+- Not claimed: concurrent submits (`&mut self` makes them untestable here), the effect driver's obligation and
+  `REQ-CAT-10`, the named stop points for an out-of-process runtime, and a swap between two different
+  implementations. The suite takes a separate target harness for the swap, but with one double both sides are the
+  same type; `EXP-1` pairs different ones.
+
+## T-005-03, after review
+
+- Every cell now checks each order's journal states and `state()` against the probe's fold of that journal, so a
+  host that updates its state before its record fails the stop cells (`INV-7`).
+- The reuse cell refuses three inputs under one used record id: one that differs in what was observed, one that
+  differs only in `recorded_at`, and one that differs only in its order. It then kills the host and checks the
+  refusal log again. A host that leaves `recorded_at` out of equality, looks ids up per order, or keeps refusals in
+  memory fails it.
+- The reordered delivery shuffles two orders' interleaved inputs, so a host with one sequence counter across orders
+  fails `per-order-sequence`.
+- A new cell, `import-refuses-a-stream-it-cannot-take`, feeds the target an export with a version it can't read,
+  one with a record id twice under two orders, and a valid export onto a store that isn't empty; each must be
+  refused. The stop during an import is tried at three points.
+- `RunConfig` names the swap target, every report row carries it, and a swap cell's row names its direction.
+- In the suite's own tests each flawed double is swapped onto another of the same kind, so a flaw in import is on
+  the side that imports.
+- Not covered, and stated in the suite's docs and README: power loss before an fsync and torn writes (a kill keeps
+  the page cache, and no crash point falls inside a write; `EXP-1` inspects each candidate's durability code), and
+  kills inside a submit for a black-box candidate, which is killed only between submits.
+
+## T-005-03, after a second review
+
+- The swap splits the scenario just after the input that opens nothing, so a record with no state crosses every
+  swap; a host that exports only records with a state fails `swap-mid-order-loses-no-order`.
+- After a submit is refused while halted, the halt cell resumes the host and checks nothing was applied, so a host
+  that keeps refused submits and applies them on resume fails it.
+- After each stopped import, the cell redoes the import onto a fresh store and checks the journals, refusals and
+  states arrive whole, as the contract says the import is redone.
+- The stop cells compare the record under the in-flight record id with the in-flight input itself, not only its id.
+- The replay cell also checks each order's `state()` against the replay, and that `orders` lists exactly the orders
+  with a record.
+- `conformance/README.md` maps every cell to the rows of `EXP-1`'s scoring sheet (`H-01` to `H-17`).
+- The halt cell, after resume, submits the refused input again and expects it recorded once, with the journals
+  the acknowledged records plus that one; a host that keeps a refused input and applies it at the next submit
+  fails it, and only it.
+- The swap's guard on the stateless record needs that order's journal to be non-empty, and checks the old host
+  holds every acknowledged record before the swap.
+- The three stop cells carry `exactly-once` too, since each repeats the stopped input after the reopen; the README
+  maps them to `H-06`.
+- Two more doubles show the in-flight input check and the redone-import refusal check can fail, each on its own
+  cell alone.
