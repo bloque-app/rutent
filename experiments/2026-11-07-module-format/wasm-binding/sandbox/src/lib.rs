@@ -3,19 +3,21 @@
 //! input and output. Nothing here knows Wasm, so it type-checks for any target (`cargo check --target ...`).
 //!
 //! A child is started by [`isolated`]: its environment is cleared, its working directory is an empty one, and it
-//! inherits only its three standard streams. The layers below are applied before the child's own code runs:
+//! inherits only its three standard streams. Every layer denies by default:
 //!
+//! - **both:** every inherited file descriptor above the standard three is closed before `exec`, and resource limits
+//!   are set: no core dumps, no file written, a bound on open files, and, where asked, on CPU seconds;
 //! - **macOS:** the child runs under `sandbox-exec` with a profile that denies by default, and allows only what a
 //!   child needs to start: executing and reading its own executable, reading the system's libraries and their
 //!   metadata, `sysctl` reads, and signals to itself; process information and IOKit properties are denied again
-//!   explicitly;
-//! - **both:** every inherited file descriptor above the standard three is closed before `exec`;
-//! - **Linux:** `no_new_privs`, a new user and network namespace where the kernel allows it unprivileged, and a
-//!   seccomp filter that refuses `socket(2)`, so that no socket can be made whether or not the namespaces took, and
-//!   signals to any other process. It is a deny list, not deny by default, and it restricts no file read: untested
-//!   here, since the development machine is macOS;
-//! - **both:** resource limits: no core dumps, no file written, no new process, a bound on open files, and, where
-//!   asked, on CPU seconds.
+//!   explicitly; and no new process (`RLIMIT_NPROC` 0);
+//! - **Linux:** the child starts under util-linux's `unshare` in new user, network, IPC, UTS, mount and PID
+//!   namespaces, as the only process of its PID namespace, killed if `unshare` is. Before it reads any input it
+//!   calls [`confine`], which sets `no_new_privs`, moves its root to an empty read-only `tmpfs`, closes every
+//!   descriptor above the standard three again, sets `RLIMIT_NPROC` to 0 (and, for the compiler, bounds its
+//!   address space), drops every capability, applies a Landlock ruleset that handles every access right the kernel
+//!   knows and grants none (where the kernel has Landlock), and installs a `seccomp` filter that allows only the
+//!   system calls its role needs, kills the process on any other architecture or ABI, and fails every other call.
 //!
 //! A child can test what holds from inside with [`probe`].
 
@@ -59,6 +61,9 @@ pub struct Limits {
     pub cpu_seconds: Option<u64>,
     /// The most file descriptors it may hold open.
     pub open_files: u64,
+    /// The largest file it may write, in bytes. With no file system it can write to, this bounds only the
+    /// anonymous memory files (`memfd`) a provider's process makes on Linux for its modules' memory images.
+    pub file_size: u64,
 }
 
 impl Limits {
@@ -66,11 +71,17 @@ impl Limits {
     pub const COMPILER: Self = Self {
         cpu_seconds: Some(60),
         open_files: 16,
+        file_size: 0,
     };
     /// A provider's process's.
     pub const PROVIDER: Self = Self {
         cpu_seconds: None,
         open_files: 32,
+        file_size: if cfg!(target_os = "linux") {
+            PROVIDER_MEMORY_FILE
+        } else {
+            0
+        },
     };
 }
 
@@ -80,38 +91,101 @@ impl Default for Limits {
     }
 }
 
-/// The highest file descriptor [`isolated`] closes in a child before it runs, whatever the parent's limit.
+/// Which child confines itself, for [`confine`]: each has its own list of the system calls it may make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The admitting compiler, `rutent-wasm-compiler`.
+    Compiler,
+    /// A provider's process, `rutent-wasm-provider`.
+    Provider,
+}
+
+/// The highest file descriptor [`isolated`] closes in a child before it runs, where it can't close them all at once,
+/// whatever the parent's limit.
 pub const CLOSE_UP_TO: i32 = 65_536;
 
-/// The layers [`isolated`] applies on this platform, as a run note states them.
-pub fn layers() -> Vec<&'static str> {
-    let mut layers = vec![
-        "environment cleared",
-        "every file descriptor from 3 up to the parent's open-file limit (at most 65,536) closed before exec, \
-         whether or not it is close-on-exec; only the three standard streams, each a pipe to the platform, stay",
-        "working directory: an empty directory of its own, one per child",
-        "RLIMIT_CORE 0, RLIMIT_FSIZE 0 (SIGXFSZ ignored, so a write fails), RLIMIT_NPROC 0, RLIMIT_NOFILE \
-         bounded, RLIMIT_CPU where asked",
+/// The largest memory file a provider's process may write on Linux, in bytes: Wasmtime writes each module's
+/// initial linear memory into a `memfd` it maps copy-on-write, which `RLIMIT_FSIZE` bounds like any file. It is the
+/// binding's bound on a part's linear memory, 16 MiB, so no image of a memory it would run is refused.
+pub const PROVIDER_MEMORY_FILE: u64 = 16 * 1024 * 1024;
+
+/// The address space the admitting compiler may map on Linux, in bytes.
+pub const COMPILER_ADDRESS_SPACE: u64 = 8 << 30;
+
+/// The arguments `unshare` is given on Linux, before the child's executable.
+pub const UNSHARE: [&str; 10] = [
+    "--user",
+    "--map-root-user",
+    "--net",
+    "--ipc",
+    "--uts",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--kill-child",
+    "--",
+];
+
+/// The layers [`isolated`] and [`confine`] apply on this platform, as a run note states them.
+pub fn layers() -> Vec<String> {
+    let mut layers: Vec<String> = vec![
+        "environment cleared".into(),
+        "every file descriptor from 3 up closed before exec, whether or not it is close-on-exec (close_range on \
+         Linux; on macOS every one up to the parent's open-file limit, at most 65,536); only the three standard \
+         streams, each a pipe to the platform, stay"
+            .into(),
+        "working directory: an empty directory of its own, one per child".into(),
+        "RLIMIT_CORE 0, RLIMIT_FSIZE 0 (SIGXFSZ ignored, so a write fails; for a provider on Linux 16 MiB, the \
+         bound on its memfd memory images, with no file system it can write to), RLIMIT_NPROC 0, RLIMIT_NOFILE \
+         bounded, RLIMIT_CPU where asked"
+            .into(),
     ];
     if cfg!(target_os = "macos") {
         layers.push(
             "sandbox-exec profile, deny by default, with process-info* and iokit-get-properties denied again \
              explicitly; allowed only: process-exec of the child's own executable; file-read* and \
              file-read-metadata of that executable, of / itself, /usr/lib, /System, /dev/null, /dev/urandom and \
-             /dev/random; sysctl-read; and signals to itself",
+             /dev/random; sysctl-read; and signals to itself"
+                .into(),
         );
     }
     if cfg!(target_os = "linux") {
-        layers.push("prctl(PR_SET_NO_NEW_PRIVS)");
+        layers.push(format!(
+            "started as `unshare {}`: new user (root mapped to the platform's user), network, IPC, UTS, mount and \
+             PID namespaces; the child is PID 1 of its own PID namespace and is killed with SIGKILL if unshare \
+             ends; the process id the platform holds is unshare's",
+            UNSHARE[..9].join(" ")
+        ));
         layers.push(
-            "unshare(CLONE_NEWUSER | CLONE_NEWNET), where unprivileged user namespaces are allowed",
+            "then, in the child before it reads any input (rutent_wasm_sandbox::confine): refuses to go on unless \
+             it is PID 1; prctl(PR_SET_NO_NEW_PRIVS); every mount made private; root moved (pivot_root) to an \
+             empty tmpfs mounted read-only, nosuid, nodev, noexec, and the old root detached, so no file of the \
+             machine's, home directories, /run and /var/run included, is visible"
+                .into(),
         );
         layers.push(
-            "seccomp filter: socket(2) fails with EACCES; kill(2), tkill(2) and tgkill(2) to any process but \
-             the child itself fail with EPERM; every other system call passes (a deny list, not deny by default)",
+            "close_range(3, ~0) again; RLIMIT_NPROC 0, RLIMIT_CORE 0, and RLIMIT_AS 8 GiB for the compiler"
+                .into(),
         );
-        layers
-            .push("no file-read restriction: a child can read what the user can (a gap on Linux)");
+        layers.push(
+            "every capability dropped: the bounding set emptied, securebits set and locked (noroot, \
+             no_setuid_fixup, keep_caps locked off, no_cap_ambient_raise), the ambient set cleared, and the \
+             effective, permitted and inheritable sets emptied, checked with capget"
+                .into(),
+        );
+        layers.push(
+            "Landlock, where the kernel has it: a ruleset that handles every file-system right of the kernel's \
+             ABI, TCP bind and connect (ABI 4 and later), and abstract Unix sockets and signals scoped to the \
+             domain (ABI 6 and later), with no rule, so every one is denied; the ABI applied is in the probe's \
+             report"
+                .into(),
+        );
+        layers.push(
+            "seccomp filter, an allow-list, last: any architecture but x86_64, or an x32 system call, kills the \
+             process; the system calls of its role (seccomp_allowed) proceed, tgkill only to the process itself; \
+             every other fails with EPERM"
+                .into(),
+        );
     }
     layers
 }
@@ -138,8 +212,22 @@ fn profile(executable: &Path) -> String {
     )
 }
 
+/// The first `unshare` on the platform's own `PATH`, since the child's environment is cleared; else
+/// `/usr/bin/unshare`.
+#[cfg(target_os = "linux")]
+fn unshare() -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("unshare"))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from("/usr/bin/unshare"))
+}
+
 /// A command that starts `executable` with `args` as an isolated child, its standard input, output and error each a
-/// pipe. `workdir` must be an empty directory, the child's own, that it may have as its working directory.
+/// pipe. `workdir` must be an empty directory, the child's own, that it may have as its working directory. On
+/// Linux the child must call [`confine`] before it reads anything.
 pub fn isolated(
     executable: &Path,
     args: &[&str],
@@ -153,8 +241,19 @@ pub fn isolated(
         command.arg("-p").arg(profile(&executable)).arg(&executable);
         command
     };
-    #[cfg(not(target_os = "macos"))]
-    let mut command = Command::new(&executable);
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new(unshare());
+        command.args(UNSHARE).arg(&executable);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let mut command = {
+        let _ = &executable;
+        return Err(io::Error::other(
+            "no isolation for this platform: children start only on macOS and Linux",
+        ));
+    };
     command
         .args(args)
         .env_clear()
@@ -196,12 +295,15 @@ fn set_limit(resource: Resource, value: u64) -> io::Result<()> {
     }
 }
 
-/// The child's own restrictions, applied between `fork` and `exec`.
+/// Closes every descriptor from 3 up: on Linux with `close_range`, else, or if that fails, each one up to the
+/// open-file limit, at most [`CLOSE_UP_TO`].
 #[cfg(unix)]
-fn restrict(limits: Limits) -> io::Result<()> {
-    // Every descriptor the parent left open, but the three standard streams, is closed first, close-on-exec or not,
-    // up to the parent's own limit: nothing it holds reaches the child. That includes the pipe the standard library
-    // reports a failed `exec` on; the platform then learns of a failed start from the child's silence instead.
+fn close_from_3() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: close_range takes three integers.
+    if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } == 0 {
+        return;
+    }
     // SAFETY: getrlimit and close are async-signal-safe and take plain values.
     unsafe {
         let mut limit = libc::rlimit {
@@ -217,6 +319,15 @@ fn restrict(limits: Limits) -> io::Result<()> {
             libc::close(fd);
         }
     }
+}
+
+/// The child's own restrictions, applied between `fork` and `exec`.
+#[cfg(unix)]
+fn restrict(limits: Limits) -> io::Result<()> {
+    // Every descriptor the parent left open, but the three standard streams, is closed first, close-on-exec or not:
+    // nothing it holds reaches the child. That includes the pipe the standard library reports a failed `exec` on;
+    // the platform then learns of a failed start from the child's silence instead.
+    close_from_3();
     // With RLIMIT_FSIZE at 0 a write to a file would raise SIGXFSZ and kill the child; ignored, which survives
     // `exec`, the write fails with EFBIG instead.
     // SAFETY: setting a signal's disposition to ignored is async-signal-safe.
@@ -224,82 +335,435 @@ fn restrict(limits: Limits) -> io::Result<()> {
         libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
     }
     set_limit(libc::RLIMIT_CORE, 0)?;
-    set_limit(libc::RLIMIT_FSIZE, 0)?;
+    set_limit(libc::RLIMIT_FSIZE, limits.file_size)?;
     set_limit(libc::RLIMIT_NOFILE, limits.open_files)?;
     if let Some(seconds) = limits.cpu_seconds {
         set_limit(libc::RLIMIT_CPU, seconds)?;
     }
-    #[cfg(target_os = "linux")]
-    linux::restrict()?;
-    // Last, since on macOS `sandbox-exec` itself must still be executed by this process; the limit is on new
-    // processes, not on `exec`.
+    // On macOS last, since `sandbox-exec` itself must still be executed by this process; the limit is on new
+    // processes, not on `exec`. On Linux `unshare` must still fork the child, which sets it itself (`confine`).
+    #[cfg(not(target_os = "linux"))]
     set_limit(libc::RLIMIT_NPROC, 0)?;
     Ok(())
 }
 
+/// Confines this process, a child [`isolated`] started, as `role`, before it reads any input. On Linux this is the
+/// jail the module's documentation describes, and an error if any of it can't be applied; elsewhere the isolation
+/// was applied before the program started, and there is nothing to do.
+pub fn confine(role: Role) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let applied = linux::confine(role)?;
+        let _ = CONFINED.set(applied);
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = role;
+        Ok(())
+    }
+}
+
+/// What [`confine`] applied that the kernel may or may not offer: the Landlock ABI, if any.
+#[cfg(target_os = "linux")]
+static CONFINED: std::sync::OnceLock<linux::Applied> = std::sync::OnceLock::new();
+
+/// The system calls `role` may make once confined on Linux x86_64, by name, as the run note lists them.
+pub fn seccomp_allowed(role: Role) -> Vec<&'static str> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        linux::allowed(role).iter().map(|(name, _)| *name).collect()
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = role;
+        Vec::new()
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::ffi::CString;
     use std::io;
 
-    // Classic BPF opcodes (linux/filter.h, linux/bpf_common.h).
-    const LD_W_ABS: u16 = 0x20;
-    const JEQ_K: u16 = 0x15;
-    const RET_K: u16 = 0x06;
-    // seccomp_data offsets: `nr` at 0, `arch` at 4, the low half of the first argument at 16 (little-endian).
-    const NR: u32 = 0;
-    const ARCH: u32 = 4;
-    const ARG0: u32 = 16;
+    use super::Role;
 
-    #[cfg(target_arch = "x86_64")]
-    const AUDIT_ARCH: u32 = 0xC000_003E;
-    #[cfg(target_arch = "aarch64")]
-    const AUDIT_ARCH: u32 = 0xC000_00B7;
-
-    const fn op(code: u16, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
-        libc::sock_filter { code, jt, jf, k }
+    /// What the jail applied that the kernel decides on.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct Applied {
+        /// The Landlock ABI the ruleset was made for, or `None` if the kernel has no Landlock.
+        pub(super) landlock_abi: Option<u32>,
     }
 
-    pub(super) fn restrict() -> io::Result<()> {
-        // SAFETY: each call takes plain integers or a pointer to a filter that outlives the call.
+    fn os_error(what: &str) -> String {
+        format!("{what}: {}", io::Error::last_os_error())
+    }
+
+    fn check(rc: libc::c_long, what: &str) -> Result<(), String> {
+        if rc == 0 { Ok(()) } else { Err(os_error(what)) }
+    }
+
+    fn cstr(text: &str) -> Result<CString, String> {
+        CString::new(text).map_err(|e| e.to_string())
+    }
+
+    fn mount(
+        source: &str,
+        target: &str,
+        fstype: Option<&str>,
+        flags: libc::c_ulong,
+        data: Option<&str>,
+    ) -> Result<(), String> {
+        let (source, target_c) = (cstr(source)?, cstr(target)?);
+        let fstype = fstype.map(cstr).transpose()?;
+        let data = data.map(cstr).transpose()?;
+        // SAFETY: every pointer is to a NUL-terminated string that outlives the call, or null.
+        let rc = unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target_c.as_ptr(),
+                fstype.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+                flags,
+                data.as_ref()
+                    .map_or(std::ptr::null(), |d| d.as_ptr().cast()),
+            )
+        };
+        check(rc.into(), &format!("mount {target}"))
+    }
+
+    fn rlimit(resource: libc::__rlimit_resource_t, value: u64, what: &str) -> Result<(), String> {
+        super::set_limit(resource, value).map_err(|e| format!("{what}: {e}"))
+    }
+
+    /// Moves the root to an empty `tmpfs`, read-only, `nosuid`, `nodev` and `noexec`, and detaches the old one: no
+    /// file of the machine's is reachable by any path afterwards.
+    fn empty_root() -> Result<(), String> {
+        mount("none", "/", None, libc::MS_REC | libc::MS_PRIVATE, None)?;
+        mount(
+            "rutent-empty",
+            "/tmp",
+            Some("tmpfs"),
+            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            Some("size=4k,mode=0555"),
+        )?;
+        let (tmp, dot, slash) = (cstr("/tmp")?, cstr(".")?, cstr("/")?);
+        // SAFETY: NUL-terminated paths that outlive each call.
         unsafe {
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                return Err(io::Error::last_os_error());
+            check(libc::chdir(tmp.as_ptr()).into(), "chdir /tmp")?;
+            // pivot_root(".", "."): the old root ends up stacked on the new one, and is then detached.
+            check(
+                libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()),
+                "pivot_root",
+            )?;
+            check(
+                libc::umount2(dot.as_ptr(), libc::MNT_DETACH).into(),
+                "detach the old root",
+            )?;
+            check(libc::chdir(slash.as_ptr()).into(), "chdir /")?;
+        }
+        // The new root holds nothing: a home directory, /run or /var/run would be found only on the old one.
+        for gone in [
+            "/home", "/root", "/run", "/var/run", "/proc", "/usr", "/etc",
+        ] {
+            if std::path::Path::new(gone).exists() {
+                return Err(format!("{gone} is still visible after the root moved"));
             }
-            // Best effort: refused where unprivileged user namespaces are off. The seccomp filter holds either way.
-            let _ = libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET);
-            // socket(2) fails; kill(2), tkill(2) and tgkill(2) reach only this process itself; all else passes.
-            let own = libc::getpid() as u32;
-            let filter = [
-                op(LD_W_ABS, 0, 0, ARCH),
-                op(JEQ_K, 1, 0, AUDIT_ARCH),
-                op(RET_K, 0, 0, libc::SECCOMP_RET_KILL_PROCESS),
-                op(LD_W_ABS, 0, 0, NR),
-                op(JEQ_K, 0, 1, libc::SYS_socket as u32),
-                op(RET_K, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EACCES as u32),
-                op(JEQ_K, 2, 0, libc::SYS_kill as u32),
-                op(JEQ_K, 1, 0, libc::SYS_tgkill as u32),
-                op(JEQ_K, 0, 3, libc::SYS_tkill as u32),
-                op(LD_W_ABS, 0, 0, ARG0),
-                op(JEQ_K, 1, 0, own),
-                op(RET_K, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
-                op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW),
-            ];
-            let program = libc::sock_fprog {
-                len: filter.len() as u16,
-                filter: filter.as_ptr() as *mut libc::sock_filter,
+        }
+        Ok(())
+    }
+
+    /// `capset(2)`'s header and data, which `libc` doesn't define.
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: libc::c_int,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    /// `SECBIT_NOROOT`, `SECBIT_NO_SETUID_FIXUP` and `SECBIT_NO_CAP_AMBIENT_RAISE`, each with its lock, and
+    /// `SECBIT_KEEP_CAPS` locked off.
+    const SECUREBITS: libc::c_ulong = 0b1110_1111;
+
+    /// Drops every capability this process holds in its user namespace, and keeps it from gaining any again.
+    fn drop_capabilities() -> Result<(), String> {
+        // SAFETY: plain prctl and capset calls with integer arguments, or pointers to values that outlive them.
+        unsafe {
+            for cap in 0..64 {
+                if libc::prctl(libc::PR_CAPBSET_DROP, cap as libc::c_ulong, 0, 0, 0) != 0 {
+                    if io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+                        break;
+                    }
+                    return Err(os_error("drop the bounding set"));
+                }
+            }
+            check(
+                libc::prctl(libc::PR_SET_SECUREBITS, SECUREBITS, 0, 0, 0).into(),
+                "securebits",
+            )?;
+            check(
+                libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+                    0,
+                    0,
+                    0,
+                )
+                .into(),
+                "clear the ambient set",
+            )?;
+            let header = CapHeader {
+                version: LINUX_CAPABILITY_VERSION_3,
+                pid: 0,
             };
-            if libc::prctl(
+            let none = [CapData::default(); 2];
+            check(
+                libc::syscall(libc::SYS_capset, &header as *const CapHeader, none.as_ptr()),
+                "capset",
+            )?;
+            let mut held = [CapData {
+                effective: u32::MAX,
+                permitted: u32::MAX,
+                inheritable: u32::MAX,
+            }; 2];
+            check(
+                libc::syscall(
+                    libc::SYS_capget,
+                    &header as *const CapHeader,
+                    held.as_mut_ptr(),
+                ),
+                "capget",
+            )?;
+            if held
+                .iter()
+                .any(|d| d.effective | d.permitted | d.inheritable != 0)
+            {
+                return Err("a capability is still held after capset".to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    /// `landlock_ruleset_attr`, at its largest; a kernel of an older ABI is given only the fields it knows.
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+        handled_access_net: u64,
+        scoped: u64,
+    }
+
+    const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1;
+
+    /// A Landlock ruleset that handles every right the kernel's ABI knows and grants none, applied to this process;
+    /// the ABI, or `None` if the kernel has no Landlock.
+    fn landlock() -> Result<Option<u32>, String> {
+        // SAFETY: asking for the ABI version takes a null attribute of size 0.
+        let abi = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<RulesetAttr>(),
+                0usize,
+                LANDLOCK_CREATE_RULESET_VERSION,
+            )
+        };
+        if abi < 1 {
+            return match io::Error::last_os_error().raw_os_error() {
+                Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => Ok(None),
+                _ => Err(os_error("landlock ABI")),
+            };
+        }
+        let abi = abi as u32;
+        // ABI 1: EXECUTE to MAKE_SYM; 2: REFER; 3: TRUNCATE; 5: IOCTL_DEV.
+        let mut fs: u64 = (1 << 13) - 1;
+        if abi >= 2 {
+            fs |= 1 << 13;
+        }
+        if abi >= 3 {
+            fs |= 1 << 14;
+        }
+        if abi >= 5 {
+            fs |= 1 << 15;
+        }
+        let attr = RulesetAttr {
+            handled_access_fs: fs,
+            // ABI 4: BIND_TCP and CONNECT_TCP.
+            handled_access_net: if abi >= 4 { 0b11 } else { 0 },
+            // ABI 6: ABSTRACT_UNIX_SOCKET and SIGNAL.
+            scoped: if abi >= 6 { 0b11 } else { 0 },
+        };
+        let size: usize = match abi {
+            1..=3 => 8,
+            4 | 5 => 16,
+            _ => 24,
+        };
+        // SAFETY: `attr` is a ruleset attribute of at least `size` bytes, which outlives the call.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                &attr as *const RulesetAttr,
+                size,
+                0u32,
+            )
+        };
+        if fd < 0 {
+            return Err(os_error("landlock ruleset"));
+        }
+        // SAFETY: `fd` is the ruleset just made; it is closed once applied.
+        let rc = unsafe { libc::syscall(libc::SYS_landlock_restrict_self, fd, 0u32) };
+        let error = (rc != 0).then(|| os_error("landlock restrict_self"));
+        // SAFETY: closing the descriptor this function opened.
+        unsafe { libc::close(fd as libc::c_int) };
+        match error {
+            Some(e) => Err(e),
+            None => Ok(Some(abi)),
+        }
+    }
+
+    /// The system calls `role` may make once confined, with their numbers. What both children need: their pipes,
+    /// memory (Wasmtime's code and linear memories, and the allocator), signal handling (Wasmtime's trap handlers
+    /// and their alternate stack), locks, randomness for hash maps, clocks, their own ids, and exiting. A provider
+    /// also makes memory images of its modules' data segments (`memfd_create`, `ftruncate`). Written from what the
+    /// standard library, glibc and Wasmtime call on these paths, not pruned by tracing the calls that succeed, so
+    /// an entry may go unused.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn allowed(role: Role) -> Vec<(&'static str, libc::c_long)> {
+        let mut calls = vec![
+            ("read", libc::SYS_read),
+            ("write", libc::SYS_write),
+            ("readv", libc::SYS_readv),
+            ("writev", libc::SYS_writev),
+            ("close", libc::SYS_close),
+            ("fstat", libc::SYS_fstat),
+            ("newfstatat", libc::SYS_newfstatat),
+            ("statx", libc::SYS_statx),
+            ("lseek", libc::SYS_lseek),
+            ("fcntl", libc::SYS_fcntl),
+            ("mmap", libc::SYS_mmap),
+            ("mprotect", libc::SYS_mprotect),
+            ("munmap", libc::SYS_munmap),
+            ("mremap", libc::SYS_mremap),
+            ("madvise", libc::SYS_madvise),
+            ("brk", libc::SYS_brk),
+            ("rt_sigaction", libc::SYS_rt_sigaction),
+            ("rt_sigprocmask", libc::SYS_rt_sigprocmask),
+            ("rt_sigreturn", libc::SYS_rt_sigreturn),
+            ("sigaltstack", libc::SYS_sigaltstack),
+            ("futex", libc::SYS_futex),
+            ("sched_yield", libc::SYS_sched_yield),
+            ("getrandom", libc::SYS_getrandom),
+            ("clock_gettime", libc::SYS_clock_gettime),
+            ("getpid", libc::SYS_getpid),
+            ("gettid", libc::SYS_gettid),
+            ("exit", libc::SYS_exit),
+            ("exit_group", libc::SYS_exit_group),
+        ];
+        if role == Role::Provider {
+            calls.push(("memfd_create", libc::SYS_memfd_create));
+            calls.push(("ftruncate", libc::SYS_ftruncate));
+        }
+        calls
+    }
+
+    /// Installs the `seccomp` filter, an allow-list: a call from any architecture but x86_64, or of the x32 ABI,
+    /// kills the process; an allowed call proceeds; `tgkill` proceeds only to this process itself; every other fails
+    /// with `EPERM`.
+    #[cfg(target_arch = "x86_64")]
+    fn seccomp(role: Role) -> Result<(), String> {
+        const LD_W_ABS: u16 = 0x20;
+        const JEQ_K: u16 = 0x15;
+        const JGE_K: u16 = 0x35;
+        const RET_K: u16 = 0x06;
+        const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+        const X32_SYSCALL_BIT: u32 = 0x4000_0000;
+        // seccomp_data: `nr` at 0, `arch` at 4, the low half of the first argument at 16 (little-endian).
+        const NR: u32 = 0;
+        const ARCH: u32 = 4;
+        const ARG0: u32 = 16;
+        let op = |code: u16, jt: u8, jf: u8, k: u32| libc::sock_filter { code, jt, jf, k };
+        let kill = libc::SECCOMP_RET_KILL_PROCESS;
+        let refuse = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+        let allow = libc::SECCOMP_RET_ALLOW;
+        let calls = allowed(role);
+        let n = calls.len();
+        // SAFETY: getpid takes nothing. In its own PID namespace this process is 1.
+        let own = unsafe { libc::getpid() } as u32;
+        let mut filter = vec![
+            op(LD_W_ABS, 0, 0, ARCH),
+            op(JEQ_K, 1, 0, AUDIT_ARCH_X86_64),
+            op(RET_K, 0, 0, kill),
+            op(LD_W_ABS, 0, 0, NR),
+            op(JGE_K, 0, 1, X32_SYSCALL_BIT),
+            op(RET_K, 0, 0, kill),
+        ];
+        // After the n comparisons: [tgkill?] [refuse] [load arg0] [arg0 == own?] [refuse] [allow].
+        for (i, (_, nr)) in calls.iter().enumerate() {
+            let to_allow = u8::try_from(n - i + 4).map_err(|e| e.to_string())?;
+            filter.push(op(JEQ_K, to_allow, 0, *nr as u32));
+        }
+        filter.push(op(JEQ_K, 1, 0, libc::SYS_tgkill as u32));
+        filter.push(op(RET_K, 0, 0, refuse));
+        filter.push(op(LD_W_ABS, 0, 0, ARG0));
+        filter.push(op(JEQ_K, 1, 0, own));
+        filter.push(op(RET_K, 0, 0, refuse));
+        filter.push(op(RET_K, 0, 0, allow));
+        let program = libc::sock_fprog {
+            len: u16::try_from(filter.len()).map_err(|e| e.to_string())?,
+            filter: filter.as_mut_ptr(),
+        };
+        // SAFETY: `program` points at `filter`, which outlives the call; the kernel copies it.
+        let rc = unsafe {
+            libc::prctl(
                 libc::PR_SET_SECCOMP,
                 libc::SECCOMP_MODE_FILTER as libc::c_ulong,
                 &program as *const libc::sock_fprog as libc::c_ulong,
                 0,
                 0,
-            ) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            )
+        };
+        check(rc.into(), "seccomp")
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn seccomp(_role: Role) -> Result<(), String> {
+        Err(
+            "the seccomp allow-list is written for x86_64 only: refusing to run unconfined"
+                .to_owned(),
+        )
+    }
+
+    /// The jail, in order; the first step that fails stops the child.
+    pub(super) fn confine(role: Role) -> Result<Applied, String> {
+        // SAFETY: getpid takes nothing.
+        if unsafe { libc::getpid() } != 1 {
+            return Err(
+                "not started in a PID namespace of its own: start it through \
+                        rutent_wasm_sandbox::isolated"
+                    .to_owned(),
+            );
         }
-        Ok(())
+        // SAFETY: plain prctl with integer arguments.
+        check(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) }.into(),
+            "no_new_privs",
+        )?;
+        empty_root()?;
+        super::close_from_3();
+        rlimit(libc::RLIMIT_NPROC, 0, "RLIMIT_NPROC")?;
+        rlimit(libc::RLIMIT_CORE, 0, "RLIMIT_CORE")?;
+        if role == Role::Compiler {
+            rlimit(libc::RLIMIT_AS, super::COMPILER_ADDRESS_SPACE, "RLIMIT_AS")?;
+        }
+        drop_capabilities()?;
+        let landlock_abi = landlock()?;
+        seccomp(role)?;
+        Ok(Applied { landlock_abi })
     }
 }
 
@@ -317,7 +781,7 @@ pub struct Probe {
     pub file_read_denied: Option<bool>,
     /// No child process could be started.
     pub process_denied: bool,
-    /// No signal could be sent to another process: the parent was sent signal 0.
+    /// No signal could be sent to another process: the process named, else the parent, was sent signal 0.
     pub signal_denied: bool,
     /// Another process's information couldn't be read: `proc_pidinfo` on the parent, on macOS.
     pub process_info_denied: Option<bool>,
@@ -325,6 +789,8 @@ pub struct Probe {
     pub iokit_denied: Option<bool>,
     /// The file descriptors above the standard three open when the probe ran: none should be.
     pub open_descriptors: Vec<i32>,
+    /// The Landlock ABI the child confined itself with, on Linux, if the kernel has Landlock.
+    pub landlock_abi: Option<u32>,
 }
 
 /// The open file descriptors from 3 up to [`CLOSE_UP_TO`].
@@ -402,9 +868,10 @@ mod macos {
     }
 }
 
-/// Tests the child's restrictions from inside it. `readable` names a file it should not be able to read, and
-/// `unix_socket` a Unix-domain socket it should not be able to connect to.
-pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>) -> Probe {
+/// Tests the child's restrictions from inside it. `readable` names a file it should not be able to read,
+/// `unix_socket` a Unix-domain socket it should not be able to connect to, and `other` a process it should not be
+/// able to signal; by default its parent, which in a PID namespace of its own it can't name.
+pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>, other: Option<i32>) -> Probe {
     let open_descriptors = open_descriptors();
     let network_denied = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], 9)),
@@ -430,9 +897,12 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>) -> Probe {
         .is_err();
     // SAFETY: plain system calls; signal 0 only checks that the signal could be sent.
     #[cfg(unix)]
-    let signal_denied = unsafe { libc::kill(libc::getppid(), 0) != 0 };
+    let signal_denied = unsafe { libc::kill(other.unwrap_or_else(|| libc::getppid()), 0) != 0 };
     #[cfg(not(unix))]
-    let signal_denied = false;
+    let signal_denied = {
+        let _ = other;
+        false
+    };
     #[cfg(target_os = "macos")]
     // SAFETY: getppid takes nothing.
     let (process_info_denied, iokit_denied) = (
@@ -441,6 +911,10 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>) -> Probe {
     );
     #[cfg(not(target_os = "macos"))]
     let (process_info_denied, iokit_denied) = (None, None);
+    #[cfg(target_os = "linux")]
+    let landlock_abi = CONFINED.get().and_then(|a| a.landlock_abi);
+    #[cfg(not(target_os = "linux"))]
+    let landlock_abi = None;
     Probe {
         network_denied,
         unix_socket_denied,
@@ -451,18 +925,20 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>) -> Probe {
         process_info_denied,
         iokit_denied,
         open_descriptors,
+        landlock_abi,
     }
 }
 
-/// The probe's report, as JSON, as both children print it for `--probe [file] [unix socket]`.
+/// The probe's report, as JSON, as both children print it for `--probe [file] [unix socket] [pid]`.
 pub fn probe_report(args: &[String]) -> String {
     let path = |i: usize| args.get(i).map(Path::new);
-    let p = probe(path(0), path(1));
+    let other = args.get(2).and_then(|pid| pid.parse().ok());
+    let p = probe(path(0), path(1), other);
     let flag = |b: Option<bool>| b.map_or("null".to_owned(), |b| b.to_string());
     format!(
         "{{\"network_denied\":{},\"unix_socket_denied\":{},\"file_write_denied\":{},\"file_read_denied\":{},\
          \"process_denied\":{},\"signal_denied\":{},\"process_info_denied\":{},\"iokit_denied\":{},\
-         \"open_descriptors\":{:?}}}",
+         \"open_descriptors\":{:?},\"landlock_abi\":{}}}",
         p.network_denied,
         flag(p.unix_socket_denied),
         p.file_write_denied,
@@ -472,5 +948,6 @@ pub fn probe_report(args: &[String]) -> String {
         flag(p.process_info_denied),
         flag(p.iokit_denied),
         p.open_descriptors,
+        p.landlock_abi.map_or("null".to_owned(), |a| a.to_string()),
     )
 }

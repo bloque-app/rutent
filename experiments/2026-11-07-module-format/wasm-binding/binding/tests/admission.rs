@@ -303,12 +303,15 @@ fn probe(
     readable: &std::path::Path,
     socket: &std::path::Path,
 ) -> serde_json::Value {
+    // The process it must not signal: the platform's own, which in a PID namespace of its own it can't name.
+    let platform = std::process::id().to_string();
     let mut command = rutent_wasm_sandbox::isolated(
         executable,
         &[
             "--probe",
             readable.to_str().expect("a path"),
             socket.to_str().expect("a path"),
+            &platform,
         ],
         dir,
         limits,
@@ -318,7 +321,14 @@ fn probe(
         .stdin(std::process::Stdio::null())
         .output()
         .expect("the probe ran");
-    serde_json::from_slice(&output.stdout).expect("the probe's report")
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "{}: no probe report ({e}), {}; its standard error: {}",
+            executable.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
 }
 
 /// Opens `path` as a descriptor that would survive `exec`: close-on-exec cleared, as a shell leaves one.
@@ -382,7 +392,6 @@ fn the_compiler_and_every_provider_process_reach_no_network_no_home_file_no_othe
             ("file_write_denied", "a file could be written"),
             ("process_denied", "a process could be started"),
             ("signal_denied", "another process could be signalled"),
-            // On every platform: on Linux this fails until a file-read layer is built (see the run note).
             ("file_read_denied", "a file in the home directory was read"),
         ] {
             assert_eq!(report[field], true, "{name}: {what}");
