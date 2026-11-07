@@ -22,6 +22,10 @@ use crate::platform::Backend;
 /// Every `vos` process a cluster started in its space, with its log: a pass checks each one's backend at its end.
 pub static STARTED: std::sync::Mutex<Vec<(u32, PathBuf)>> = std::sync::Mutex::new(Vec::new());
 
+/// The `vos` processes that answered a query of the program on their own replica: each has run the program, so on
+/// the JIT its perf map must name it.
+pub static PROBED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
 /// The program's instance in its agent.
 pub const INSTANCE: InstanceId = InstanceId(1);
 /// The client key the host signs its calls with.
@@ -352,7 +356,47 @@ impl Cluster {
         std::fs::write(self.faults_file(n), &self.config.settings).map_err(|e| e.to_string())?;
         let running = self.spawn(n, true)?;
         self.running[n - 1] = Some(running);
+        if self.agent.is_some() {
+            self.probe(n, Duration::from_secs(5));
+        }
         Ok(())
+    }
+
+    /// Asks node `n`'s own replica a query of the program (`status`, on whatever it has applied), so the node runs
+    /// the program: once it answers, the node's pid is in [`PROBED`]. False if it did not answer in `wait`, as a
+    /// replica that does not hold the agent yet does not.
+    pub fn probe(&self, n: usize, wait: Duration) -> bool {
+        let (Some(agent), Some(pid)) = (self.agent, self.running[n - 1].as_ref().map(|r| r.pid))
+        else {
+            return false;
+        };
+        let until = Instant::now() + wait;
+        let client = Client::new(&self.target(n), SigningKey::from_bytes(&[3; 32]));
+        loop {
+            let method = vos_node::client::schema(&self.target(n), agent, INSTANCE)
+                .ok()
+                .flatten()
+                .and_then(|schema| schema.method_id("status"));
+            if let Some(method) = method {
+                let not_after = vos_node::wall_clock() + 60_000;
+                let answer = client.query_with(
+                    agent,
+                    INSTANCE,
+                    method,
+                    &[],
+                    not_after,
+                    vos_wire::ingress::Consistency::Applied { at: 0 },
+                );
+                if let Ok(Response::Ran { .. }) = answer {
+                    PROBED.lock().unwrap().push(pid);
+                    return true;
+                }
+            }
+            if Instant::now() > until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Kill node `n` with SIGKILL.
@@ -468,6 +512,11 @@ impl Cluster {
         let elf = std::fs::read(&self.config.program_elf)
             .map_err(|e| format!("the program's ELF: {e}"))?;
         self.install(&elf)?;
+        for n in 1..=self.count() {
+            if self.is_running(n) {
+                self.probe(n, self.config.wait);
+            }
+        }
         Ok(agent)
     }
 
@@ -505,7 +554,10 @@ impl Cluster {
             |a| matches!(a, Response::Placed(_)),
         )?;
         match answer {
-            Response::Placed(replicas) => Ok(replicas),
+            Response::Placed(replicas) => {
+                self.probe(add, self.config.wait);
+                Ok(replicas)
+            }
             other => Err(format!("replacing a replica: {other:?}")),
         }
     }

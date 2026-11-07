@@ -515,7 +515,7 @@ pub fn r08(env: &Env, base: PathBuf) -> bool {
     );
     println!("|---|---|---|---|---|---|---|---|");
     let mut ok = true;
-    for records in [1_000usize, 10_000, 100_000] {
+    for records in env.r08_sizes() {
         let host = Pb::open(store(&base, &format!("x{records}"))).expect("a store");
         let fill_started = Instant::now();
         let (host, filled, ..) = pb_load(host, 64, records / 7 / 64 + 1);

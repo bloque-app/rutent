@@ -7,7 +7,7 @@ use rutent_conformance::host::probe::Probe;
 use rutent_conformance::host::{RunConfig, Verdict, run_with_fault_seam};
 use rutent_contracts::state_machine::host::Host;
 use rutent_stm::reference_host::ReferenceHarness;
-use rutent_vos_rt::cluster::{ClusterConfig, NodeBuild, STARTED};
+use rutent_vos_rt::cluster::{ClusterConfig, NodeBuild, PROBED, STARTED};
 use rutent_vos_rt::host::{IMPORT_BYTES, IMPORT_ENTRIES, RtHarness, RtHost};
 use rutent_vos_rt::platform::{self, Backend, Facts};
 
@@ -99,6 +99,15 @@ impl Env {
         self.facts.assert_jit()
     }
 
+    /// `R-08`'s sizes: 1k, 10k and 100k records; a development run stops at 1k.
+    pub fn r08_sizes(&self) -> Vec<usize> {
+        if self.dev {
+            vec![1_000]
+        } else {
+            vec![1_000, 10_000, 100_000]
+        }
+    }
+
     /// The backend the nodes run: the JIT, unless this is a development run.
     pub fn backend(&self) -> Backend {
         if self.dev {
@@ -188,10 +197,16 @@ impl Env {
     }
 }
 
-/// Every node a pass started ran on the backend it was given: on the JIT each node's perf map is non-empty and no
-/// log says the map is off; the nodes named must name the program. On the interpreter every map is absent or empty.
+/// Every node a pass started ran on the backend it was given. On the JIT: no node's log says its perf map is off,
+/// every node's perf map is non-empty, and every node that answered a query of the program on its own replica
+/// (`cluster::PROBED`, and the pids in `named_by`) names the program there. On the interpreter: every map is
+/// absent or empty.
 pub fn backend_proof(env: &Env, backend: Backend, named_by: &[u32]) -> bool {
     let started = std::mem::take(&mut *STARTED.lock().unwrap());
+    let mut probed = std::mem::take(&mut *PROBED.lock().unwrap());
+    probed.extend_from_slice(named_by);
+    probed.sort_unstable();
+    probed.dedup();
     let program = std::fs::read(&env.program_elf)
         .map_err(|e| e.to_string())
         .and_then(|elf| platform::perf_map_name(&elf));
@@ -205,6 +220,7 @@ pub fn backend_proof(env: &Env, backend: Backend, named_by: &[u32]) -> bool {
     let mut ok = true;
     let mut empty = 0;
     let mut naming = 0;
+    let mut unnamed = 0;
     for (pid, log) in &started {
         let (lines, named) = platform::perf_map_lines(*pid, &program);
         let text = std::fs::read_to_string(log).unwrap_or_default();
@@ -214,17 +230,10 @@ pub fn backend_proof(env: &Env, backend: Backend, named_by: &[u32]) -> bool {
         }
         match backend {
             Backend::Jit => {
-                if lines == 0 {
-                    empty += 1;
-                }
-                if named > 0 {
-                    naming += 1;
-                }
-                if named_by.contains(pid) && named == 0 {
-                    println!(
-                        "Node pid {pid} ran the program, and its perf map does not name `{program}`."
-                    );
-                    ok = false;
+                empty += usize::from(lines == 0);
+                naming += usize::from(named > 0);
+                if probed.contains(pid) && named == 0 {
+                    unnamed += 1;
                 }
             }
             Backend::Interpreter => {
@@ -237,12 +246,9 @@ pub fn backend_proof(env: &Env, backend: Backend, named_by: &[u32]) -> bool {
             }
         }
     }
-    if backend == Backend::Jit && empty > 0 {
-        println!(
-            "{empty} of {} node processes left an empty or absent perf map.",
-            started.len()
-        );
-        ok = false;
+    let ran = started.iter().filter(|(p, _)| probed.contains(p)).count();
+    if backend == Backend::Jit {
+        ok &= empty == 0 && unnamed == 0 && naming > 0;
     }
     println!("\n| Backend proof | Value |\n|---|---|");
     println!("| Node processes started | {} |", started.len());
@@ -253,11 +259,14 @@ pub fn backend_proof(env: &Env, backend: Backend, named_by: &[u32]) -> bool {
                 "| Processes whose perf map is non-empty | {} |",
                 started.len() - empty
             );
-            println!("| Processes whose perf map names the program | {naming} |");
             println!(
-                "| Processes checked to name it (they ran it at the pass's end) | {} |",
-                named_by.len()
+                "| Processes that answered a query of the program on their own replica | {ran} |"
             );
+            println!(
+                "| Of those, whose perf map names the program | {} |",
+                ran - unnamed
+            );
+            println!("| Processes whose perf map names the program, in all | {naming} |");
         }
         Backend::Interpreter => println!(
             "| Processes whose perf map is absent or empty | {} |",
@@ -374,6 +383,11 @@ pub fn short<T: std::fmt::Debug, E: std::fmt::Debug>(result: &Result<T, E>) -> S
     let text = match result {
         Ok(v) => format!("{v:?}"),
         Err(e) => format!("error: {e:?}"),
+    };
+    let text = if text == "Ok(())" || text == "()" {
+        "done".to_string()
+    } else {
+        text
     };
     let mut text: String = text.chars().take(160).collect();
     text = text.replace('|', "\\|");

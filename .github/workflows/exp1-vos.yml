@@ -155,6 +155,14 @@ jobs:
       - name: Build on this runner
         run: $ADAPTER/build-rt.sh "$BUILD"
 
+      - name: The client's own tests
+        run: |
+          cd "$ADAPTER/rt"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$VOS_TIP.insteadOf" \
+            GIT_CONFIG_VALUE_0="https://github.com/virto-network/vos" CARGO_NET_GIT_FETCH_WITH_CLI=true \
+            CARGO_TARGET_DIR="$BUILD/rt-target" cargo test --release --locked --features vos 2>&1 \
+            | grep -E "^test |test result" | tee "$OUT/unit-tests.txt"
+
       - name: The runs
         run: |
           set +e

@@ -125,6 +125,7 @@ pub fn view(
 }
 
 /// Waits until every listed node's view equals the first's, or the wait ends: the views, and whether they agree.
+/// A node whose view can't be read counts as disagreeing; the last such error is printed once the wait ends.
 fn converge(
     cluster: &Cluster,
     nodes: &[usize],
@@ -134,12 +135,20 @@ fn converge(
 ) -> (Vec<View>, bool) {
     let until = Instant::now() + wait;
     loop {
-        let views: Vec<View> = nodes
+        let read: Vec<Result<View, HostError>> = nodes
             .iter()
-            .map(|n| view(cluster, *n, agent, methods).unwrap_or_default())
+            .map(|n| view(cluster, *n, agent, methods))
             .collect();
-        let equal = views.windows(2).all(|w| w[0] == w[1]) && !views.is_empty();
+        let failed = read.iter().find_map(|r| r.as_ref().err().cloned());
+        let views: Vec<View> = read.into_iter().map(Result::unwrap_or_default).collect();
+        let equal = failed.is_none() && !views.is_empty() && views.windows(2).all(|w| w[0] == w[1]);
         if equal || Instant::now() > until {
+            if let Some(e) = failed {
+                println!(
+                    "A node's view could not be read when the wait ended: {}",
+                    short::<(), _>(&Err(e))
+                );
+            }
             return (views, equal);
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -534,7 +543,8 @@ pub fn r01(env: &Env, base: PathBuf) -> bool {
         rest = later;
         let leader = host.cluster.leader().unwrap_or(1);
         let load = Load::start(&host.cluster, agent, methods, now.to_vec());
-        std::thread::sleep(Duration::from_millis(random.draw(400)));
+        let delay = random.draw(400);
+        std::thread::sleep(Duration::from_millis(delay));
         let in_flight = load.in_flight.lock().unwrap().clone();
         host.cluster.kill(leader);
         let unanswered = load.finish_after_kill();
@@ -546,7 +556,7 @@ pub fn r01(env: &Env, base: PathBuf) -> bool {
             acknowledge(&mut acknowledged, &delivered);
         }
         println!(
-            "| random {round}: after {} ms | {leader} | `{}` | {} | {} | {} | {} |",
+            "| random {round}: after {delay} ms, {} submits sent | {leader} | `{}` | {} | {} | {} | {} |",
             unanswered.2,
             input.record_id.as_str(),
             row.fate,
@@ -852,6 +862,7 @@ fn last_journal(cluster: &Cluster, n: usize) -> Option<PathBuf> {
 fn damage(file: &Path, how: &str) -> Result<u64, String> {
     let len = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
     match how {
+        "none" => {}
         "truncated" => {
             let f = std::fs::OpenOptions::new()
                 .write(true)
@@ -891,12 +902,13 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
         Some(&config),
     );
     println!(
-        "| Damage | Node | Journal file, bytes before | Opened | Acknowledged | Lost after the open | Caught up | Result |"
+        "| Damage | Node | Journal file, bytes before | Opened | Acknowledged | Lost after the open | Caught up | Its replica after: term, commit, applied, last index (the leader's commit) | Result |"
     );
-    println!("|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|");
     let mut ok = true;
     let mut pids = Vec::new();
-    for (i, how) in ["truncated", "flipped"].into_iter().enumerate() {
+    // `none` is the control: the same kill and restart with no damage, so the harness's own reads are shown sound.
+    for (i, how) in ["none", "truncated", "flipped"].into_iter().enumerate() {
         let mut host = match fresh(env, config.clone(), &base, &format!("d{i}-")) {
             Ok(host) => host,
             Err(e) => {
@@ -916,15 +928,31 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
         let file = last_journal(&host.cluster, node);
         let before = file.as_ref().map(|f| damage(f, how));
         let opened = reopen(&mut host.cluster, node);
+        // Idle first; then, if the node has not caught up, one more submit: a follower learns the commit index
+        // from the leader's next entries, so an idle cluster can leave it behind.
+        let mut idle = None;
         let (lost_now, caught) = if opened.is_ok() {
             let nodes: Vec<usize> = (1..=replicas).collect();
-            let (views, agree) = converge(
+            let (mut views, mut agree) = converge(
                 &host.cluster,
                 &nodes,
                 host.agent,
                 &host.methods,
-                Duration::from_secs(30),
+                Duration::from_secs(10),
             );
+            idle = Some(agree);
+            if !agree {
+                let next = probe::order_inputs(&format!("ord-d{i}-next"), 0).remove(0);
+                let delivered = host.submit(next);
+                acknowledge(&mut acknowledged, &delivered);
+                (views, agree) = converge(
+                    &host.cluster,
+                    &nodes,
+                    host.agent,
+                    &host.methods,
+                    Duration::from_secs(30),
+                );
+            }
             let mine = view(&host.cluster, node, host.agent, &host.methods).unwrap_or_default();
             (lost(&acknowledged, &mine), agree && !views.is_empty())
         } else {
@@ -935,9 +963,24 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
             Ok(()) if replicas == 1 => lost_now == 0,
             Ok(()) => lost_now == 0 && caught,
         };
-        ok &= pass;
+        if how != "none" {
+            ok &= pass;
+        }
+        let leader_now = host.cluster.leader().unwrap_or(leader);
+        let leader_commit = host.cluster.status(leader_now).map_or(0, |s| s.commit);
+        let replica = host.cluster.status(node).map_or("unread".to_string(), |s| {
+            format!(
+                "{}, {}, {}, {} ({leader_commit})",
+                s.term, s.commit, s.applied, s.last_index
+            )
+        });
         println!(
-            "| last batch {how} | {node}{} | {} | {} | {} | {lost_now} | {} | {} |",
+            "| {} | {node}{} | {} | {} | {} | {lost_now} | {} | {replica} | {} |",
+            if how == "none" {
+                "none (the control)".to_string()
+            } else {
+                format!("last batch {how}")
+            },
             if replicas == 1 { "" } else { " (a follower)" },
             match (&file, &before) {
                 (Some(f), Some(Ok(len))) =>
@@ -950,12 +993,12 @@ pub fn r04a(env: &Env, base: PathBuf, replicas: usize) -> bool {
                 Err(e) => format!("no, refused: {}", e.replace('|', "\\|")),
             },
             acknowledged.len(),
-            if replicas == 1 {
-                "n/a (one node)".to_string()
-            } else if caught {
-                "yes".into()
-            } else {
-                "no".into()
+            match (replicas, idle, caught) {
+                (1, _, _) => "n/a (one node)".to_string(),
+                (_, Some(true), _) => "yes, idle".into(),
+                (_, _, true) =>
+                    "yes, after one more submit (idle, it waited behind the commit index)".into(),
+                _ => "no".into(),
             },
             if pass {
                 "pass"
@@ -1138,7 +1181,7 @@ pub fn r05(env: &Env, base: PathBuf, replicas: usize, fsyncs: bool) -> bool {
                     calls as f64 / measured.records.max(1) as f64
                 )
             } else {
-                "counted in `r05-fsyncs`".into()
+                format!("counted in `r05-{replicas}-fsyncs`")
             };
             let (p50, p99) = percentiles(&mut measured.latencies.clone());
             println!(
@@ -1625,7 +1668,7 @@ pub fn r08(env: &Env, base: PathBuf, replicas: usize) -> bool {
     println!("|---|---|---|---|---|---|---|---|");
     let mut ok = true;
     let mut pids = Vec::new();
-    for records in [1_000usize, 10_000, 100_000] {
+    for records in env.r08_sizes() {
         let mut source = match fresh(env, config.clone(), &base, &format!("x{records}-")) {
             Ok(host) => host,
             Err(e) => {
@@ -1751,4 +1794,67 @@ pub fn r09(env: &Env, base: PathBuf, replicas: usize) -> bool {
         "\nOne submitter, single-input batches, read from the leader's stats. Gas counts the program's handler and the agent's work on the input; the handler's own limit is 100M (`#[msg(gas = 100_000_000)]`), against VOS's 10M default (`agent/wire/src/defaults.rs:59-66`)."
     );
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // verifies: REQ-STM-4
+    #[test]
+    fn keys_sorted_by_their_utf8_bytes_leave_rfc_8785_order_for_a_supplementary_character() {
+        let sorted: serde_json::Value =
+            serde_json::from_str("{\"\u{1F600}\":2,\"\u{E000}\":1}").unwrap();
+        // serde_json's map sorts U+E000 (EE 80 80) before U+1F600 (F0 9F 98 80); UTF-16 puts D83D first.
+        assert!(!keys_in_utf16_order(&sorted));
+        let ascii: serde_json::Value =
+            serde_json::from_str("{\"b\":{\"d\":1,\"c\":2},\"a\":[]}").unwrap();
+        assert!(keys_in_utf16_order(&ascii));
+    }
+
+    // verifies: REQ-STM-4
+    #[test]
+    fn every_recorded_input_fixture_reads_back_to_the_same_canonical_bytes_natively() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../contracts/state-machine/fixtures/valid"
+        );
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("recorded-input-") {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path()).unwrap();
+            let once = native_canonical(&text, true).unwrap();
+            let twice = native_canonical(std::str::from_utf8(&once).unwrap(), true).unwrap();
+            assert_eq!(once, twice, "{name}");
+        }
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn percentiles_take_the_median_and_the_ninety_ninth() {
+        let mut latencies: Vec<u64> = (1..=100).rev().collect();
+        assert_eq!(percentiles(&mut latencies), (51, 99));
+        assert_eq!(percentiles(&mut []), (0, 0));
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn strace_summaries_are_summed_over_every_node_and_call() {
+        let dir = std::env::temp_dir().join(format!("exp1-strace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let summary = "% time     seconds  usecs/call     calls    errors syscall\n\
+                       ------ ----------- ----------- --------- --------- ----------------\n\
+                        90.00    0.009000          10       900           fdatasync\n\
+                        10.00    0.001000          10       100           fsync\n\
+                       ------ ----------- ----------- --------- --------- ----------------\n\
+                       100.00    0.010000          10      1000           total\n";
+        std::fs::write(dir.join("node-1.strace"), summary).unwrap();
+        std::fs::write(dir.join("node-2.strace"), summary).unwrap();
+        std::fs::write(dir.join("node-1.log"), summary).unwrap();
+        let (calls, _) = strace_calls(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(calls, 2000);
+    }
 }

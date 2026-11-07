@@ -209,3 +209,71 @@ pub fn perf_map_lines(pid: u32, program: &str) -> (usize, usize) {
     let naming = text.lines().filter(|l| l.contains(program)).count();
     (lines, naming)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(os: &str, kernel: &str, uffd: Result<(), String>) -> Facts {
+        Facts {
+            os: os.into(),
+            kernel: kernel.into(),
+            cpu: "a CPU".into(),
+            vcpus: 4,
+            memory_mib: 16_000,
+            uffd,
+        }
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn linux_x86_64_on_kernel_6_7_or_later_with_write_protect_passes_the_assertion() {
+        assert_eq!(
+            machine("Linux x86_64", "6.7.0-1-azure", Ok(())).assert_jit(),
+            Ok(())
+        );
+        assert_eq!(
+            machine("Linux x86_64", "7.0.0-1019-azure", Ok(())).assert_jit(),
+            Ok(())
+        );
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_kernel_before_6_7_fails_the_assertion() {
+        let refused = machine("Linux x86_64", "6.6.30-generic", Ok(())).assert_jit();
+        assert!(refused.is_err_and(|e| e.contains("6.7")));
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_machine_off_linux_x86_64_fails_the_assertion() {
+        assert!(
+            machine("Darwin arm64", "25.6.0", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+        assert!(
+            machine("Linux aarch64", "6.8.0", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_failed_userfaultfd_probe_fails_the_assertion() {
+        let refused = machine("Linux x86_64", "6.8.0", Err("EPERM".into())).assert_jit();
+        assert!(refused.is_err_and(|e| e.contains("userfaultfd")));
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_kernel_release_that_does_not_read_as_a_version_fails_the_assertion() {
+        assert!(
+            machine("Linux x86_64", "unknown", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+    }
+}
