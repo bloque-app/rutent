@@ -1,0 +1,40 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "acme-co",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "conversion",
+    "transaction": "tx-004",
+    "outcome": {
+      "status": "dry_run_accepted",
+      "amount_in": "25000000",
+      "amount_out": "61250000",
+      "rate": "0.000245",
+      "slippage": {
+        "regime": "bounded",
+        "max_bps": 50
+      },
+      "fee": {
+        "asset": "COP",
+        "amount": "100000"
+      },
+      "direction": "exact_in",
+      "valid_until": "2026-11-06T15:05:05Z",
+      "voided_by": [
+        "validity_passes",
+        "rate_moves_beyond_slippage"
+      ],
+      "settlement_seconds": 60
+    }
+  }
+}

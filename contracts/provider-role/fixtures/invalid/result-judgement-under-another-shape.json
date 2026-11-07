@@ -1,0 +1,42 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "id-check",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "judgement",
+    "outcome": {
+      "status": "judged",
+      "judgement": {
+        "deployment": {
+          "name": "rutent-test",
+          "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        },
+        "protocol_version": "0.3.0",
+        "shape": "urn:rutent:provider-role:result",
+        "maker": "id-check",
+        "made_at": "2026-11-06T15:04:05Z",
+        "signature": {
+          "scheme": "ed25519",
+          "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+          "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+        },
+        "statement": {
+          "subject": "subj-acme-co-77",
+          "class": "kyc.natural_person",
+          "answer": "yes",
+          "valid_until": "2026-11-13T15:04:05Z"
+        }
+      }
+    }
+  }
+}

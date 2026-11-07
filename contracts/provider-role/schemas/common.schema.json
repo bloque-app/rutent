@@ -27,6 +27,43 @@
       "type": "string",
       "pattern": "^[1-9][0-9]*$",
       "maxLength": 78
+    },
+    "timestamp": {
+      "description": "A UTC time in RFC 3339 form, to the second or finer, ending in Z.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    },
+    "evidence_grade": {
+      "description": "ADR-0007's scale: 1 checkable by anyone; 2 signed by another party; 3 signed by the provider, with something external to compare later; 4 the provider's bare statement.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "decimal": {
+      "description": "A positive decimal number, in digits with an optional fraction and no exponent.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$",
+      "not": {
+        "pattern": "^0$"
+      },
+      "maxLength": 96
+    },
+    "protocol_version": {
+      "description": "A protocol version, as major.minor.patch (REQ-PRT-1, REQ-PRT-4).",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "maxLength": 32
+    },
+    "public_key": {
+      "description": "An Ed25519 public key (RFC 8032), 32 bytes, base64url without padding, in its one canonical encoding: the last character carries no unused bits.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "safe_integer": {
+      "description": "A non-negative integer no larger than 2^53 - 1, so it survives RFC 8785 canonical JSON, which writes numbers as IEEE doubles.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     }
   }
 }

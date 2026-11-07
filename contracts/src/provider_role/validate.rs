@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 
+use super::envelope::Statement;
 use super::types::{Advertisement, Band, Category, Terms};
 
 /// A rule an advertisement breaks.
@@ -22,6 +23,13 @@ pub enum RuleViolation {
         /// Index into the tuple's `terms.bands`.
         band: usize,
     },
+    /// An advertisement statement whose maker is not its `provider`.
+    AdvertisementOfAnotherMaker,
+    /// An advertisement statement signed with a key not in its own `keys`.
+    SignedWithUnpublishedKey,
+    /// A reserve declaration whose `maker` is not the maker of the advertisement statement it sits in
+    /// (`REQ-CAT-6`).
+    ReserveDeclarationOfAnotherMaker,
     /// A tuple listed twice in one offer: two ramp or reserve tuples with one origin, destination and asset,
     /// or two exchange tuples with one node, from asset and to asset. Their terms could conflict
     /// (`REQ-CAT-11`).
@@ -33,6 +41,34 @@ pub enum RuleViolation {
         /// Index of the first tuple with the same key.
         first: usize,
     },
+}
+
+/// Checks an advertisement statement: every rule of [`validate`]; that the provider made it, signing with a
+/// key it publishes in `keys`; and that a reserve's declaration is attributable to the statement's maker
+/// (`REQ-CAT-6`).
+pub fn validate_statement(statement: &Statement<Advertisement>) -> Result<(), Vec<RuleViolation>> {
+    let mut violations = validate(&statement.statement).err().unwrap_or_default();
+    let advertisement = &statement.statement;
+    if statement.maker != advertisement.provider {
+        violations.push(RuleViolation::AdvertisementOfAnotherMaker);
+    }
+    if !advertisement
+        .keys
+        .iter()
+        .any(|k| k.scheme == statement.signature.scheme && k.public_key == statement.signature.key)
+    {
+        violations.push(RuleViolation::SignedWithUnpublishedKey);
+    }
+    if let Some(reserve) = &statement.statement.offers.reserve
+        && reserve.declaration.maker != statement.maker
+    {
+        violations.push(RuleViolation::ReserveDeclarationOfAnotherMaker);
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations)
+    }
 }
 
 /// Checks the rules the schemas can't express, and returns every one broken, offer by offer.

@@ -1,0 +1,86 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "chain-bridge",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "tba3uLm6u7y9vr_AwcLDxMXGx8jJysvMzc7P0NHS09Q",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "chain-bridge",
+    "publisher": "acme",
+    "version": "1.0.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "tba3uLm6u7y9vr_AwcLDxMXGx8jJysvMzc7P0NHS09Q"
+      }
+    ],
+    "offers": {
+      "ramp": {
+        "tuples": [
+          {
+            "origin": "polygon",
+            "destination": "bsc",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 18
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000",
+                  "max": "100000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": [
+                "beneficiary.address"
+              ]
+            }
+          },
+          {
+            "origin": "bsc",
+            "destination": "polygon",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 18,
+              "destination": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000000000000000",
+                  "max": "100000000000000000000000"
+                }
+              ],
+              "increment": "1000000000000",
+              "reporting": "net",
+              "required_inputs": [
+                "beneficiary.address"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "identifier"
+      ],
+      "evidence": {
+        "grade": 1,
+        "availability": "unbounded"
+      },
+      "safe_retry": false
+    },
+    "private_nodes": []
+  }
+}

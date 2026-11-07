@@ -1,0 +1,26 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:operation",
+  "maker": "rutent-operator",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "transfer",
+    "provider": "bridge-pay",
+    "origin": "acme-ledger",
+    "destination": "polygon",
+    "asset": "USDC",
+    "direction": "exact_in",
+    "amount": "1000000",
+    "dry_run": false,
+    "inputs": {}
+  }
+}

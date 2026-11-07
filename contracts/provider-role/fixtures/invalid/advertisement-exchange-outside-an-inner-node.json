@@ -1,0 +1,154 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "acme-co",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "acme-co",
+    "publisher": "acme",
+    "version": "1.4.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+      }
+    ],
+    "offers": {
+      "reserve": {
+        "tuples": [
+          {
+            "origin": {
+              "network": "co-bank-transfer"
+            },
+            "destination": "acme-ledger",
+            "asset": "COP",
+            "decimals": {
+              "origin": 2,
+              "destination": 2
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "100000",
+                  "max": "5000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": [
+                "payer.bank_account"
+              ]
+            }
+          },
+          {
+            "origin": "acme-ledger",
+            "destination": {
+              "network": "co-bank-transfer"
+            },
+            "asset": "COP",
+            "decimals": {
+              "origin": 2,
+              "destination": 2
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "100000",
+                  "max": "5000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": [
+                "beneficiary.bank_account",
+                "beneficiary.name"
+              ]
+            }
+          }
+        ],
+        "declaration": {
+          "can_require_user_initiated_withdrawal": true,
+          "starts_routes_on_automatic_deposits": false,
+          "maker": "acme-co",
+          "declared_in_version": "1.2.0"
+        }
+      },
+      "exchange": {
+        "tuples": [
+          {
+            "node": {
+              "network": "co-bank-transfer"
+            },
+            "from": {
+              "id": "COP",
+              "decimals": 2
+            },
+            "to": {
+              "id": "USDC",
+              "decimals": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "100000",
+                  "max": "2000000000"
+                }
+              ],
+              "increment": "100",
+              "reporting": "gross",
+              "required_inputs": []
+            }
+          }
+        ]
+      },
+      "ramp": {
+        "tuples": [
+          {
+            "origin": "acme-ledger",
+            "destination": "polygon",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000",
+                  "max": "500000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": [
+                "beneficiary.address"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "identifier",
+        "status_query"
+      ],
+      "evidence": {
+        "grade": 3,
+        "availability": {
+          "seconds": 7776000
+        }
+      },
+      "safe_retry": true
+    },
+    "private_nodes": [
+      "acme-ledger"
+    ]
+  }
+}

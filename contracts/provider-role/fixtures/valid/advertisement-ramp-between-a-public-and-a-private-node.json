@@ -1,0 +1,88 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "bridge-pay",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "xMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3-Dh4uM",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "bridge-pay",
+    "publisher": "acme",
+    "version": "2.0.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "xMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3-Dh4uM"
+      }
+    ],
+    "offers": {
+      "ramp": {
+        "tuples": [
+          {
+            "origin": "polygon",
+            "destination": "acme-ledger",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000",
+                  "max": "100000000000"
+                }
+              ],
+              "increment": "1000000",
+              "reporting": "gross",
+              "required_inputs": []
+            }
+          },
+          {
+            "origin": "acme-ledger",
+            "destination": "polygon",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000",
+                  "max": "100000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": [
+                "beneficiary.address"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "status_query"
+      ],
+      "evidence": {
+        "grade": 2,
+        "availability": {
+          "seconds": 2592000
+        }
+      },
+      "safe_retry": true
+    },
+    "private_nodes": [
+      "acme-ledger"
+    ]
+  }
+}

@@ -31,9 +31,7 @@
       "properties": {
         "grade": {
           "description": "The grade the provider gives on every outcome, so its weakest, on ADR-0007's scale: 1 checkable by anyone; 2 signed by another party; 3 signed by the provider, with something external to compare later; 4 the provider's bare statement. The operator's per-tuple floor (REQ-ORD-39) compares against it.",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 4
+          "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
         },
         "availability": {
           "description": "How long evidence of an outcome stays available: a number of seconds from the outcome, or \"unbounded\".",
@@ -46,9 +44,8 @@
               ],
               "properties": {
                 "seconds": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 18446744073709551615
+                  "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer",
+                  "minimum": 1
                 }
               }
             },

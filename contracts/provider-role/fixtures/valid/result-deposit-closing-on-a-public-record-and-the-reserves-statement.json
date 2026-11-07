@@ -1,0 +1,40 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "polygon-wallet-reserve",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "T1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW4",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "deposit",
+    "transaction": "tx-013",
+    "outcome": {
+      "status": "succeeded",
+      "amount_in": "1000000",
+      "amount_out": "1000000",
+      "fee": {
+        "asset": "USDC",
+        "amount": "0"
+      },
+      "evidence": [
+        {
+          "grade": 1,
+          "reference": "0x9f3c2a",
+          "by": "polygon"
+        },
+        {
+          "grade": 3,
+          "reference": "pwr-book-5521",
+          "by": "polygon-wallet-reserve"
+        }
+      ]
+    }
+  }
+}

@@ -21,7 +21,7 @@
       "type": "boolean"
     },
     "maker": {
-      "description": "The party the declaration is attributable to.",
+      "description": "The party the declaration is attributable to: the maker of the advertisement statement it sits in, which the Rust validation checks.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "declared_in_version": {

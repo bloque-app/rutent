@@ -1,0 +1,85 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "dex-pool",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "lpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq-wsbKztLU",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "dex-pool",
+    "publisher": "acme",
+    "version": "0.3.1",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "CAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJic"
+      }
+    ],
+    "offers": {
+      "exchange": {
+        "tuples": [
+          {
+            "node": "polygon",
+            "from": {
+              "id": "USDC",
+              "decimals": 6
+            },
+            "to": {
+              "id": "USDT",
+              "decimals": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1000000",
+                  "max": "100000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": []
+            }
+          },
+          {
+            "node": "polygon",
+            "from": {
+              "id": "USDC.e",
+              "decimals": 6
+            },
+            "to": {
+              "id": "USDC",
+              "decimals": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1",
+                  "max": "100000000000"
+                }
+              ],
+              "reporting": "gross",
+              "required_inputs": []
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "identifier"
+      ],
+      "evidence": {
+        "grade": 1,
+        "availability": "unbounded"
+      },
+      "safe_retry": false
+    },
+    "private_nodes": []
+  }
+}

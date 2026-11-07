@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:statement-envelope",
+  "title": "Statement envelope",
+  "description": "What every party statement carries: the deployment and protocol version it belongs to, void at any other (REQ-PRT-1); the shape of the statement inside it; its maker and time; and the maker's signature, so it stays attributed to its maker and a restatement by anyone else is detectable (REQ-AUD-2, REQ-QTE-1). A schema for a particular statement refers to this one by $id, fixes shape to its own $id, and narrows statement. Signing rule (ruled by the orchestrator, 2026-11-06): the signed bytes are the RFC 8785 (JCS) canonical JSON of the whole envelope with only the top-level signature.value removed, canonicalised from the JSON as received, never from a re-serialisation of parsed types; duplicate member names are rejected; the scheme is Ed25519 (RFC 8032), verified strictly; every integer that can be signed is at most 2^53 - 1, or is carried as a string.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deployment",
+    "protocol_version",
+    "shape",
+    "maker",
+    "made_at",
+    "signature",
+    "statement"
+  ],
+  "properties": {
+    "deployment": {
+      "description": "The deployment the statement belongs to, globally unique and bound to its operator. Elsewhere the statement is void (REQ-PRT-1, THR-8).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "operator_key"
+      ],
+      "properties": {
+        "name": {
+          "description": "The deployment's name.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "operator_key": {
+          "description": "The operator's public key, which binds the deployment to its operator.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "protocol_version": {
+      "description": "The protocol version the statement belongs to (REQ-PRT-1).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/protocol_version"
+    },
+    "shape": {
+      "description": "The $id of the schema the statement follows, such as urn:rutent:provider-role:result. Signed with the rest, so a statement can't be presented as another kind.",
+      "type": "string",
+      "pattern": "^urn:rutent:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 128
+    },
+    "maker": {
+      "description": "The party that made the statement.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "made_at": {
+      "description": "When the maker made it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "signature": {
+      "description": "The maker's signature over the RFC 8785 canonical JSON of the whole envelope with only the top-level signature.value removed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "key",
+        "value"
+      ],
+      "properties": {
+        "scheme": {
+          "description": "The signature scheme: Ed25519 (RFC 8032), verified strictly.",
+          "enum": [
+            "ed25519"
+          ]
+        },
+        "key": {
+          "description": "The public key that signed: one of the maker's published keys, or the deployment's operator_key for the operator.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        },
+        "value": {
+          "description": "The 64-byte signature, base64url without padding, in its one canonical encoding: the last character carries no unused bits.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+        }
+      }
+    },
+    "statement": {
+      "description": "The statement itself, in the shape named by shape.",
+      "type": "object"
+    }
+  }
+}

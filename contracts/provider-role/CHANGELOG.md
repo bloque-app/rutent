@@ -1,5 +1,20 @@
 # provider-role changelog
 
+## 0.3.0
+- Operation and result schemas per role, with the statement envelope every party statement travels in:
+  withdrawal, deposit, transfer, conversion with a detailed quote, balance verification and judgement; dry runs;
+  outcome unknown as its own result; refusal classes. Fixtures are now named by shape. (DEC-4, DEC-16, T-002-02)
+- Tightened after review: the signing rule (RFC 8785 canonical JSON, Ed25519, integers at most 2^53 - 1); a
+  deployment bound to its operator's key; the advertisement enveloped, with the provider's signing keys; a
+  standalone enveloped judgement with an optional holder key, and a judgement question without a transaction;
+  evidence as a list naming whose each piece is; the signed quote's direction, slippage regime, what voids it and
+  settlement time; a session on withdrawal dry runs; no lifting time on balance refusals. (DEC-4, T-002-02)
+- Makers bound to keys: an advertisement is made by its provider and signed with a key it publishes; an
+  operation is signed with its deployment's operator key; a nested judgement shares its result's context and
+  maker. Keys and signatures have one canonical encoding. A reserve's dry-run answer states what voids it and
+  its settlement time. The signing rule says the top-level signature.value, the JSON as received, and no
+  duplicate member names. (DEC-4, T-002-02)
+
 ## 0.2.0
 - Tightened after review: a tuple listed twice is invalid; the evidence grade is the provider's weakest; private
   nodes are unique identifiers and an outer node names only its network, both implied by the advertisement; ramp

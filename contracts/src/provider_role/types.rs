@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A provider's advertisement in the catalogue (`urn:rutent:provider-role:advertisement`).
+use super::envelope::{ADVERTISEMENT_SHAPE, StatementShape};
+
+/// A provider's advertisement in the catalogue, the statement inside a `urn:rutent:provider-role:advertisement`
+/// envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Advertisement {
@@ -13,6 +16,8 @@ pub struct Advertisement {
     pub publisher: String,
     /// The version of the provider this advertisement belongs to.
     pub version: String,
+    /// The provider's public signing keys, made authoritative by the operator's grant (`REQ-CAT-2`).
+    pub keys: Vec<SigningKey>,
     /// What the provider advertises, by category (`REQ-CAT-8`).
     pub offers: Offers,
     /// The provider-wide declarations (`REQ-CAT-10`, `REQ-CAT-16`, `REQ-ORD-39`).
@@ -20,6 +25,53 @@ pub struct Advertisement {
     /// The identifiers of the private nodes this provider declares and publishes, each once (`REQ-CAT-22`).
     /// Their publisher is the advertisement's `publisher`.
     pub private_nodes: Vec<String>,
+}
+
+impl StatementShape for Advertisement {
+    const SHAPE: &'static str = ADVERTISEMENT_SHAPE;
+}
+
+/// One of a provider's public signing keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningKey {
+    /// The scheme.
+    pub scheme: super::envelope::SignatureScheme,
+    /// The Ed25519 public key, base64url without padding.
+    pub public_key: String,
+}
+
+/// A non-negative integer no larger than 2^53 - 1, so it survives RFC 8785 canonical JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct SafeInteger(u64);
+
+impl SafeInteger {
+    /// The largest value: 2^53 - 1.
+    pub const MAX: u64 = (1 << 53) - 1;
+
+    /// The value.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for SafeInteger {
+    type Error = String;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if value <= Self::MAX {
+            Ok(Self(value))
+        } else {
+            Err(format!("{value} is above 2^53 - 1"))
+        }
+    }
+}
+
+impl From<SafeInteger> for u64 {
+    fn from(value: SafeInteger) -> Self {
+        value.0
+    }
 }
 
 /// The four categories (`REQ-CAT-8`).
@@ -344,7 +396,7 @@ pub enum Availability {
 #[serde(deny_unknown_fields)]
 pub struct BoundedAvailability {
     /// Seconds from the outcome; at least one.
-    pub seconds: u64,
+    pub seconds: SafeInteger,
 }
 
 /// The `"unbounded"` keyword.

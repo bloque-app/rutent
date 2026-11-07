@@ -1,0 +1,61 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "id-check",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "id-check",
+    "publisher": "acme",
+    "version": "0.1.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
+      }
+    ],
+    "offers": {
+      "verifier": {
+        "classes": [
+          "kyc.natural_person",
+          "aml.sanctions_screening"
+        ],
+        "tuples": [
+          {
+            "origin": "polygon",
+            "destination": "acme-ledger",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 6
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1",
+                  "max": "1000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": []
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "identifier"
+      ]
+    },
+    "private_nodes": []
+  }
+}

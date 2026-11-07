@@ -2,63 +2,136 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:advertisement",
   "title": "Provider advertisement",
-  "description": "What one provider advertises in the catalogue: its offers by category (REQ-CAT-8), each tuple with its terms (REQ-CAT-11, REQ-CAT-12, REQ-CAT-13), its declarations (REQ-CAT-10, REQ-CAT-16, REQ-ORD-39), a reserve's declaration (REQ-CAT-6), and the private nodes it publishes (REQ-CAT-20, REQ-CAT-22). A provider that advertises a reserve, exchange or ramp declares evidence and safe retry; a verifier-only provider may leave them out. Rules a schema can't express are checked by the contract's Rust validation; see the contract's README.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "provider",
-    "publisher",
-    "version",
-    "offers",
-    "declarations",
-    "private_nodes"
-  ],
+  "description": "A provider's advertisement, as a party statement in the envelope (REQ-PRT-1, REQ-CAT-6). Rules a schema can't express are checked by the contract's Rust validation; see the contract's README.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
   "properties": {
-    "provider": {
-      "description": "The provider's identifier in the catalogue.",
-      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    "shape": {
+      "const": "urn:rutent:provider-role:advertisement"
     },
-    "publisher": {
-      "description": "The publisher behind the provider, and behind every private node it declares (REQ-CAT-20).",
-      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
-    },
-    "version": {
-      "description": "The provider version this advertisement belongs to.",
-      "$ref": "urn:rutent:provider-role:common#/$defs/version"
-    },
-    "offers": {
-      "description": "What the provider advertises, keyed by category. A category attaches to what is advertised, so one provider may advertise under several (REQ-CAT-8).",
-      "type": "object",
-      "additionalProperties": false,
-      "minProperties": 1,
-      "properties": {
-        "reserve": {
-          "$ref": "#/$defs/reserve_offer"
-        },
-        "exchange": {
-          "$ref": "#/$defs/exchange_offer"
-        },
-        "ramp": {
-          "$ref": "#/$defs/ramp_offer"
-        },
-        "verifier": {
-          "$ref": "#/$defs/verifier_offer"
-        }
-      }
-    },
-    "declarations": {
-      "$ref": "urn:rutent:provider-role:declarations"
-    },
-    "private_nodes": {
-      "description": "The identifiers of the private nodes this provider declares and publishes, each once (REQ-CAT-22). Their publisher is the advertisement's publisher. Empty if none.",
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
-      }
+    "statement": {
+      "$ref": "#/$defs/advertisement"
     }
   },
   "$defs": {
+    "advertisement": {
+      "description": "The advertisement itself: what one provider advertises in the catalogue: its offers by category (REQ-CAT-8), each tuple with its terms (REQ-CAT-11, REQ-CAT-12, REQ-CAT-13), its declarations (REQ-CAT-10, REQ-CAT-16, REQ-ORD-39), a reserve's declaration (REQ-CAT-6), and the private nodes it publishes (REQ-CAT-20, REQ-CAT-22). A provider that advertises a reserve, exchange or ramp declares evidence and safe retry; a verifier-only provider may leave them out. Rules a schema can't express are checked by the contract's Rust validation; see the contract's README.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "publisher",
+        "version",
+        "keys",
+        "offers",
+        "declarations",
+        "private_nodes"
+      ],
+      "properties": {
+        "provider": {
+          "description": "The provider's identifier in the catalogue.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "publisher": {
+          "description": "The publisher behind the provider, and behind every private node it declares (REQ-CAT-20).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "version": {
+          "description": "The provider version this advertisement belongs to.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "keys": {
+          "description": "The provider's public signing keys. The operator's grant (REQ-CAT-2) makes them authoritative; a statement the provider makes names one of them as its signature key.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scheme",
+              "public_key"
+            ],
+            "properties": {
+              "scheme": {
+                "enum": [
+                  "ed25519"
+                ]
+              },
+              "public_key": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+              }
+            }
+          }
+        },
+        "offers": {
+          "description": "What the provider advertises, keyed by category. A category attaches to what is advertised, so one provider may advertise under several (REQ-CAT-8).",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "reserve": {
+              "$ref": "#/$defs/reserve_offer"
+            },
+            "exchange": {
+              "$ref": "#/$defs/exchange_offer"
+            },
+            "ramp": {
+              "$ref": "#/$defs/ramp_offer"
+            },
+            "verifier": {
+              "$ref": "#/$defs/verifier_offer"
+            }
+          }
+        },
+        "declarations": {
+          "$ref": "urn:rutent:provider-role:declarations"
+        },
+        "private_nodes": {
+          "description": "The identifiers of the private nodes this provider declares and publishes, each once (REQ-CAT-22). Their publisher is the advertisement's publisher. Empty if none.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "offers"
+        ],
+        "properties": {
+          "offers": {
+            "anyOf": [
+              {
+                "required": [
+                  "reserve"
+                ]
+              },
+              {
+                "required": [
+                  "exchange"
+                ]
+              },
+              {
+                "required": [
+                  "ramp"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "declarations": {
+            "required": [
+              "evidence",
+              "safe_retry"
+            ]
+          }
+        }
+      }
+    },
     "inner_node": {
       "description": "An inner node, by identifier: one on the operator's public list, or a declared private node.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
@@ -340,42 +413,6 @@
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
           }
         }
-      }
-    }
-  },
-  "if": {
-    "required": [
-      "offers"
-    ],
-    "properties": {
-      "offers": {
-        "anyOf": [
-          {
-            "required": [
-              "reserve"
-            ]
-          },
-          {
-            "required": [
-              "exchange"
-            ]
-          },
-          {
-            "required": [
-              "ramp"
-            ]
-          }
-        ]
-      }
-    }
-  },
-  "then": {
-    "properties": {
-      "declarations": {
-        "required": [
-          "evidence",
-          "safe_retry"
-        ]
       }
     }
   }

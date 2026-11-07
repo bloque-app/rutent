@@ -1,0 +1,30 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "0.3.0",
+  "shape": "urn:rutent:provider-role:operation",
+  "maker": "rutent-operator",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "deposit",
+    "transaction": "tx-002",
+    "provider": "polygon-wallet-reserve",
+    "origin": "polygon",
+    "destination": {
+      "network": "polygon"
+    },
+    "asset": "USDC",
+    "amount": "1000000",
+    "dry_run": true,
+    "inputs": {
+      "beneficiary.address": "0x5a1e"
+    }
+  }
+}
