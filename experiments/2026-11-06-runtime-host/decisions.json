@@ -55,7 +55,7 @@
       "spec": ["DEC-6", "DEC-2", "REQ-OPS-3"],
       "refs": [
         {"label": "Where pb sits", "url": "README.md#where-pb-sits"},
-        {"label": "The run note", "url": "runs/DEV-pb-20261106-1.md"}
+        {"label": "The run note", "url": "runs/EXP-1-pb-dev-20261106-1.md"}
       ],
       "origin": "EXP-1, T-007-02, 2026-11-06"
     }

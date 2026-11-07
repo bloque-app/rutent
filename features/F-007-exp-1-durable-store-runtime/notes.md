@@ -7,7 +7,7 @@ experiment's own questions and defaults are in `experiments/2026-11-06-runtime-h
 
 - **Built before the freeze.** `T-007-02` depends on `T-006-01`, the freeze `C1`, which had not happened. The store
   was built and tested against host contract 0.1.0, and its results recorded as a pre-freeze development run,
-  `DEV-pb-20261106-1`, in the scoring sheet's section 4. No `pb` cell of the sheet is filled: the plan's "done when"
+  `EXP-1-pb-dev-20261106-1`, in the scoring sheet's section 4. No `pb` cell of the sheet is filled (a development run may fill cells marked pre-freeze, but this one does not): the plan's "done when"
   asks for a run id, and that is the scored run after `C1`.
 - **Where it sits.** A module of `rutent-stm`, behind that crate's `purpose-built-store` feature, off by default: the
   only place the boundary check allows it without a change (`exp1-pb-placement`). The flag being off means CI's

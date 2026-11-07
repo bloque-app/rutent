@@ -171,9 +171,12 @@ at `T-007-04`.
 ## 4. Pre-freeze development runs (not scored)
 
 Runs made before the contract freeze `C1` (`T-006-01`), against the host contract as it stood, to develop a
-candidate. They fill no cell above: a scored cell names a run made after `C1`, with an `EXP-1-…` id. A development
-run has a `DEV-…` id, so the two can't be confused, and its note is in `runs/` like any other.
+candidate. Each has a development id, `EXP-1-<candidate code>-dev-<yyyymmdd>-<n>` (README, Runs), so it can't be
+taken for a scored run, and its note is in `runs/` like any other. A development run may fill cells above, each
+marked `pre-freeze`; the scored run after `C1` replaces every such cell, and no outcome rests on one. This section
+lists every development run, whether or not it filled cells.
 
 | Run | Candidate | Host contract | What ran | Result | Note |
 |---|---|---|---|---|---|
-| `DEV-pb-20261106-1` | `pb` | 0.1.0, before `C1` | The host-contract suite with the fault seam, in three swap directions (`pb` to `ref`, `pb` to `pb`, `ref` to `pb`); a real SIGKILL of a writer process, twelve times; a log torn mid-record, seven ways; damage past one append, four ways; corruption inside synced history and inside an import, finished and unfinished; an import stopped right after its first frame, and that frame torn; another store format or contract version; the lock held from an import to its open; a failed write, a failed sync and a failed undo; one host per store | Every suite cell passes in each direction (16 of 16, three times); every test beyond the suite passes | [`runs/DEV-pb-20261106-1.md`](runs/DEV-pb-20261106-1.md) |
+| `EXP-1-pb-dev-20261106-1` | `pb` | 0.1.0, before `C1` | The host-contract suite with the fault seam, in three swap directions (`pb` to `ref`, `pb` to `pb`, `ref` to `pb`); a real SIGKILL of a writer process, twelve times; a log torn mid-record, seven ways; damage past one append, four ways; corruption inside synced history and inside an import, finished and unfinished; an import stopped right after its first frame, and that frame torn; another store format or contract version; the lock held from an import to its open; a failed write, a failed sync and a failed undo; one host per store | Every suite cell passes in each direction (16 of 16, three times); every test beyond the suite passes | [`runs/EXP-1-pb-dev-20261106-1.md`](runs/EXP-1-pb-dev-20261106-1.md) |
+| `EXP-1-vos-dev-20261106-1` | `vos` | 0.1.0, before `C1` | The host-contract suite with the fault seam: VOS to the reference host, the reference host to VOS, and VOS with its log forced to compact; a control pass without VOS's commit hold; the gap list read and run against VOS at the report's pin | All 17 host rows pass; gap rows 39 fail, 4 pass, 6 pass (adapter), 1 n/a, 1 measured, 2 not run; licence rows fail, as facts | [`runs/EXP-1-vos-dev-20261106-1.md`](runs/EXP-1-vos-dev-20261106-1.md) |
