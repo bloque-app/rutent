@@ -1,0 +1,36 @@
+{
+  "form": {"title": "EXP-1 Decisions"},
+  "sections": [
+    {"id": "decide", "title": "Decide",
+     "groups": [{"id": "candidates", "title": "Candidates"}]}
+  ],
+  "items": [
+    {
+      "id": "exp1-vos-commit",
+      "kind": "decide",
+      "section": "decide",
+      "group": "candidates",
+      "title": "Which VOS commit does EXP-1 score?",
+      "lead": "The VOS report read one commit of the vos-core branch, and every gap row cites paths there. EXP-1 scores that commit unless this item says otherwise.",
+      "bullets": [
+        "vos-core and master are different products, per the report's section 1",
+        "Scoring a later tip means re-reading every gap row first",
+        "Reversible: a later run can score another commit under its own run id"
+      ],
+      "rec": "the report's commit, because every gap row cites paths there.",
+      "options": [
+        "vos-core at 1aadf44, the report's commit (recommended)",
+        "vos-core at its tip when T-007-03 starts",
+        "master at its tip"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "PS-66"],
+      "refs": [
+        {"label": "VOS report, basis", "url": "../../research/2026-11-02-vos.md#basis"},
+        {"label": "EXP-1 candidates", "url": "README.md#candidates"}
+      ],
+      "origin": "EXP-1, T-007-01, 2026-11-06"
+    }
+  ]
+}
