@@ -20,7 +20,7 @@
 //! writes. One thing it can't deny: a System V shared-memory segment, semaphore or message queue created with
 //! `IPC_PRIVATE` (no profile rule refused them; the run note records it).
 //!
-//! **Linux** (written for the scored run; not yet run). Each process starts under `unshare --user
+//! **Linux** (checked by `tests/isolation.rs` on GitHub's `ubuntu-24.04` x86_64 runners). Each process starts under `unshare --user
 //! --map-root-user --net --ipc --uts --mount --pid --fork --kill-child --mount-proc`, as root of a new user
 //! namespace with no network. Before reading any input it confines itself with `jail::enter`, which sets
 //! `no_new_privs` and makes every mount private. Then:
@@ -29,9 +29,10 @@
 //!   that allows a fixed list of system calls and fails every other with `EPERM`.
 //! - **A worker** hides `/home`, `/root`, `/tmp`, `/run`, `/var/run`, `/mnt`, `/media`, `/srv` and the user's home
 //!   directory under empty read-only `tmpfs` mounts, makes every other mount but `/proc` read-only, sets resource
-//!   limits (no core files, at most 1024 open files), and then drops every capability it holds, so it can't
-//!   unmount what hides those directories. `/proc` stays writable for PolkaVM's sandbox, whose child writes its own
-//!   `/proc/self/{setgroups,gid_map,uid_map}`. It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
+//!   limits (no core files, at most 1024 open files). It then enters a further user and mount namespace, which
+//!   locks every one of those mounts, and drops `CAP_SYS_ADMIN`, so it can't unmount what hides those
+//!   directories. `/proc` stays writable for PolkaVM's sandbox, whose child writes its own
+//!   `/proc/self/{setgroups,gid_map,uid_map}`. Dropping every capability left that sandbox unable to start. It installs no `seccomp` filter of its own: PolkaVM's Linux sandbox clones
 //!   its own worker processes for the guests, each with its own namespaces, `seccomp` filter and resource limits
 //!   (scoring sheet `G-20`), which a filter here would break.
 //!
@@ -125,7 +126,7 @@ pub fn describe(role: Role, isolation: Isolation) -> String {
                 "an empty read-only tmpfs root, rlimits (core 0, nofile 64, nproc 0, as 8 GiB), no_new_privs, seccomp allow-list"
             }
             Role::Worker => {
-                "home and scratch directories hidden, every mount read-only, rlimits (core 0, nofile 1024), no_new_privs; guests in PolkaVM's sandbox"
+                "home and scratch directories hidden, every mount but /proc read-only, rlimits (core 0, nofile 1024), no_new_privs, the mounts locked in a further user namespace, CAP_SYS_ADMIN dropped; guests in PolkaVM's sandbox"
             }
         };
         format!("unshare {}, then {jail}", UNSHARE[..10].join(" "))
@@ -150,7 +151,10 @@ where
             c
         }
         Isolation::Required if cfg!(target_os = "linux") => {
-            let mut c = Command::new("unshare");
+            // The child's environment is cleared, so `unshare` is found on the platform's `PATH` first.
+            let mut c = Command::new(on_path("unshare").ok_or_else(|| {
+                std::io::Error::other("no unshare on PATH; it comes with util-linux")
+            })?);
             c.args(UNSHARE).arg(exe).args(["--jailed", role.name()]);
             if let Some(home) = std::env::var_os("HOME") {
                 c.arg("--hide").arg(home);
@@ -233,6 +237,13 @@ pub fn close_inherited() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The first executable `name` on this process's `PATH`.
+fn on_path(name: &str) -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
+
 /// The `--jailed <role>` and `--hide <path>` arguments a program was started with, and the rest.
 #[derive(Debug, Clone, Default)]
 pub struct Started {
@@ -240,6 +251,7 @@ pub struct Started {
     pub jailed: Option<String>,
     /// The directories to hide.
     pub hide: Vec<String>,
+
     /// Every other argument.
     pub rest: Vec<String>,
 }

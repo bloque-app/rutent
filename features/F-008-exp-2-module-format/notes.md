@@ -73,6 +73,20 @@ readings are in its README, "Readings taken in opening it".
     records why.
   - **The C guest header is vendored** at PolkaVM's pinned commit, with its licence files and its upstream blob id
     and SHA-256 (`pvm-binding/guests/c/vendor/polkavm/UPSTREAM`), so the stand-ins build offline.
+- **The scored run, on GitHub's `ubuntu-24.04` x86_64 runners** (`EXP-2-pvm-20261107-1`, workflow
+  `exp2-pvm.yml` on branch `exp2/pvm-linux`):
+  - **A runner setting, not the binding.** Ubuntu 24.04's AppArmor restricts unprivileged user namespaces, which
+    both the binding's isolation and PolkaVM's sandbox need. The workflow lifts the restriction for the job only,
+    and the run note records it as an operator obligation.
+  - **The worker's capabilities.** Dropping every capability broke PolkaVM's sandbox on the runner, and so did
+    keeping only `CAP_SETUID` and `CAP_SETGID`. The worker therefore locks its mounts in a further user namespace
+    and drops `CAP_SYS_ADMIN` only. That meets the review's aim, that it can't unmount what hides the user's
+    directories, which a probe checks. The capability set wasn't narrowed further.
+  - **`B-11` across two workflow runs.** A runner can't be chosen by CPU model. Two runs of the same commit landed
+    on two models (AMD EPYC 9V74 and 7763), built the same blobs and compiled them to the same machine code, which
+    the run note reads as `B-11`'s two machines. Each run's own second runner had the same CPU model as its
+    first.
+
 ## T-008-02
 
 - **A development run after the freeze.** The README's Runs section defines a `dev` id for a run before `C1`.

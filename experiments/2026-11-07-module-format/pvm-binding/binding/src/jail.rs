@@ -1,6 +1,6 @@
 //! Linux only: how a process started by `isolation::spawn` confines itself, inside the namespaces `unshare`
-//! gave it, before it reads any input. See `isolation` for what each role gets. Written for the scored run on
-//! `x86_64-unknown-linux-gnu`; not yet run.
+//! gave it, before it reads any input. See `isolation` for what each role gets. Run on GitHub's `ubuntu-24.04`
+//! x86_64 runners (`.github/workflows/exp2-pvm.yml`), where `tests/isolation.rs` checks it.
 
 use std::ffi::CString;
 
@@ -114,20 +114,27 @@ struct CapData {
     inheritable: u32,
 }
 
-/// Drops every capability this process holds in its user namespace: effective, permitted and inheritable, and
-/// the ambient set. It keeps the bounding set, which PolkaVM's sandbox needs for the processes it starts in user
-/// namespaces of their own.
-fn drop_capabilities() -> Result<(), String> {
+/// Drops every capability this process holds in its user namespace but those in `keep`, a mask of capability
+/// bits: from the effective and permitted sets, and all of the inheritable and ambient sets. The bounding set is
+/// left as it is.
+fn drop_capabilities_but(keep: u32) -> Result<(), String> {
     const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
     let header = CapHeader {
         version: LINUX_CAPABILITY_VERSION_3,
         pid: 0,
     };
-    let data = [CapData {
-        effective: 0,
-        permitted: 0,
-        inheritable: 0,
-    }; 2];
+    let data = [
+        CapData {
+            effective: keep,
+            permitted: keep,
+            inheritable: 0,
+        },
+        CapData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+    ];
     // SAFETY: the header and two data words are the layout `capset` takes for version 3.
     let result =
         unsafe { libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr()) };
@@ -145,6 +152,24 @@ fn drop_capabilities() -> Result<(), String> {
         },
         "clear ambient capabilities",
     )
+}
+
+/// Enters a new user and mount namespace, mapping root to root. Every mount this process made in its old mount
+/// namespace is then locked: from the new one, none can be unmounted to reveal what it hides.
+fn lock_mounts() -> Result<(), String> {
+    // SAFETY: `unshare` takes integer flags.
+    check(
+        unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) },
+        "unshare",
+    )?;
+    for (file, text) in [
+        ("/proc/self/setgroups", "deny"),
+        ("/proc/self/uid_map", "0 0 1"),
+        ("/proc/self/gid_map", "0 0 1"),
+    ] {
+        std::fs::write(file, text).map_err(|e| format!("{file}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Moves the root to an empty `tmpfs` and makes it read-only.
@@ -326,7 +351,10 @@ pub fn enter(role: Role, hide_also: &[String]) -> Result<(), String> {
             hide(&paths)?;
             read_only_everywhere()?;
             rlimit(libc::RLIMIT_NOFILE, 1024)?;
-            drop_capabilities()
+            lock_mounts()?;
+            // CAP_SYS_ADMIN is bit 21. Dropping every capability, or keeping only CAP_SETUID and CAP_SETGID, left
+            // PolkaVM's sandbox unable to start its guest process on the runner (an initialization timeout).
+            drop_capabilities_but(!(1 << 21))
         }
     }
 }

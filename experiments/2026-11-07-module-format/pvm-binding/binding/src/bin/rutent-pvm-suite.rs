@@ -3,6 +3,9 @@
 //!
 //! `rutent-pvm-suite --run-id <id> --guests <dir> [--output-limit <bytes>] [--unisolated]`
 //!
+//! `--digests <file>` writes each stand-in part's blob and machine-code digests there, and `--digests-only` does
+//! only that, for a second runner to re-derive another's (`B-11`).
+//!
 //! `--unisolated` runs the worker and the admitting compiler without isolation, for debugging; `B-07` and `B-08`
 //! are then not run.
 //!
@@ -293,7 +296,10 @@ fn admission_checks(setup: &Setup) -> bool {
 
 /// `B-11` and `G-19`, where the compiler runs: each compiled stand-in admitted twice, in two separate admitting
 /// compiler processes, and the digests compared.
-fn determinism(setup: &Setup) {
+/// Each stand-in part compiled twice, in two admitting-compiler processes; one line per part, `<category>
+/// <language> <part> <blob SHA-256> <machine-code SHA-256>`, written to `--digests <file>` for another runner to
+/// compare (`B-11`).
+fn determinism(setup: &Setup, digests: Option<&str>) {
     println!("\n## Same input, two compilations (B-11, G-19 in part)\n");
     if !engine::COMPILER {
         println!(
@@ -302,6 +308,7 @@ fn determinism(setup: &Setup) {
         return;
     }
     let mut binding = PvmBinding::new(setup.clone(), "reserve");
+    let mut lines = Vec::new();
     for category in CATEGORIES {
         for language in LANGUAGES {
             let read = |part: &str| {
@@ -318,6 +325,18 @@ fn determinism(setup: &Setup) {
             };
             let binaries = Parts { sandboxed, outside };
             let (first, second) = (binding.compile(&binaries), binding.compile(&binaries));
+            if let Ok(a) = &first {
+                for (part, bytes, code) in [
+                    ("sandboxed", &binaries.sandboxed, &a.0),
+                    ("outside", &binaries.outside, &a.1),
+                ] {
+                    lines.push(format!(
+                        "{category} {language} {part} {} {}",
+                        hex_digest(bytes),
+                        code.value.as_str()
+                    ));
+                }
+            }
             match (first, second) {
                 (Ok(a), Ok(b)) => println!(
                     "- {category} {language}: sandboxed {} {}, outside {} {}",
@@ -328,6 +347,13 @@ fn determinism(setup: &Setup) {
                 ),
                 (a, b) => println!("- {category} {language}: not compiled: {a:?} {b:?}"),
             }
+        }
+    }
+    if let Some(path) = digests {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        if let Err(e) = std::fs::write(path, text) {
+            println!("- the digests weren't written to {path}: {e}");
         }
     }
 }
@@ -464,6 +490,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let run_id = arg(&args, "--run-id").unwrap_or_else(|| "EXP-2-pvm-local".to_owned());
     let guests = PathBuf::from(arg(&args, "--guests").expect("--guests <dir>"));
+    let digests = arg(&args, "--digests");
     let output_limit = arg(&args, "--output-limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(4096);
@@ -532,6 +559,10 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--digests-only") {
+        determinism(&setup, digests.as_deref());
+        return;
+    }
     let mut reports = Vec::new();
     for category in CATEGORIES {
         let mut binding = PvmBinding::new(setup.clone(), category);
@@ -600,7 +631,7 @@ fn main() {
 
     isolation_probes(&setup);
     let admission = admission_checks(&setup);
-    determinism(&setup);
+    determinism(&setup, digests.as_deref());
     println!("\n## Result\n");
     println!("- every category's report passed: {all}");
     println!("- admission checks as expected: {admission}");
