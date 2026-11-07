@@ -9,60 +9,63 @@ decision_item: exp1-adopt-runtime (pending)
 
 A draft of `EXP-1` (Narthex `REQ-EXP-3`). It is not accepted and not part of ADR-0002 until the owner answers item
 `exp1-adopt-runtime` and promotion consolidates it (Narthex `REQ-EXP-5`). It amends ADR-0002 and does not reopen
-`runtime-host-seam` (`DEC-6`). It is written for the item's recommended option. [If the owner chooses
-VOS](#if-the-owner-chooses-vos) says what changes.
+`runtime-host-seam` (`DEC-6`). It is written for the item's recommended option, from the revised
+[outcome](../outcome.md). [If the owner chooses the purpose-built store](#if-the-owner-chooses-the-purpose-built-store)
+says what changes.
 
 ## Context
 
 ADR-0002 made `CMP-STM` host-agnostic and left the runtime to a milestone-1 experiment: VOS (`PS-66`), or a
-purpose-built store as the ruled fallback. `EXP-1` scored both behind the host contract frozen at `C1` (host
-contract 1.0.0, state-machine contract 1.0.0). It used the host-contract suite (`T-005-03`), the gap list of
-`research/2026-11-02-vos.md`, and the licence rows of `DEC-6` ([scoring sheet](../scoring.md)). The scored runs:
+purpose-built store as the ruled fallback. `EXP-1` scored both behind the host contract, with the host-contract
+suite (`T-005-03`), the gap list of `research/2026-11-02-vos.md`, and the licence rows of `DEC-6`
+([scoring sheet](../scoring.md)).
 
-- `EXP-1-pb-20261107-1`, `-2` and `-3`: the purpose-built store, `rutent_stm::purpose_built_store`, store format 1;
-- `EXP-1-vos-20261107-1`: VOS at `vos-core` `1aadf44fa2cb1eaedc015ee82343ac118cc89f1e`, through `T-007-03`'s
-  adapter.
+- **The first runs** (host contract 1.0.0) scored VOS at `vos-core` `1aadf44` as a store behind an adapter that ran
+  the state machine itself: `EXP-1-vos-20261107-1`, and the store in `EXP-1-pb-20261107-1` to `-3`. They stay as
+  history.
+- **The re-score** (host contract 2.0.0) ran VOS the way it is meant to be run: the state machine a VOS program, at
+  `vos-core` `5c7897582688ea93f8d02506bee8ea25da6b1458`, on Linux x86_64 with the JIT, on one node and on three,
+  against new operational rows whose criteria were fixed before any run (`decisions.json`,
+  `exp1-rescore-criteria`): `EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2` and `EXP-1-pb-20261107-5`.
 
 ## Outcome of EXP-1
 
 From the [outcome page](../outcome.md):
 
-- **VOS: drop for v0.**
-- **The purpose-built store: adapt.**
+- **VOS, as the whole runtime: adapt.**
+- **The purpose-built store: the ruled fallback.**
 
 The numbers, each with its run:
 
-- **Gate.** Both pass all 17 host-contract rows (`EXP-1-pb-20261107-1`, `EXP-1-vos-20261107-1`).
-- **Shared gaps.** Of the 29 gap rows scored for both, outside the module rows, the store fails 17. VOS fails 21,
-  and passes 6 more only through the adapter (`EXP-1-pb-20261107-1`, `-2`, `-3`; `EXP-1-vos-20261107-1`). Every
-  row the store fails, VOS fails too.
-- **VOS-only fails.** VOS fails 9 rows the store doesn't (`EXP-1-vos-20261107-1`). Four of them bear on a
-  production v0:
-  - `G-37`: two pinned nightly toolchains;
-  - `G-39`: a restored backup counts as a compromised node;
-  - `G-48`: forks under a personal account;
-  - `G-49`: no CI.
-- **Module rows.** The 16 module-runtime rows are not counted. The store is a host, not a module runtime; those
-  rows are `EXP-2`'s (ADR-0003).
-- **Licence rows.**
-  - The store brings no new package (`L-04`, `EXP-1-pb-20261107-1`).
-  - VOS's licence decision is pending (`L-01`).
-  - 25 VOS crates have no line (`L-02`): 11 AGPL-3.0-or-later and 14 Apache-2.0.
-  - 221 of the adapter's 240 other packages have no line either (`L-03`, `EXP-1-vos-20261107-1`).
+- **Gate.** Both pass all 17 host-contract rows at host contract 2.0.0; VOS on one node and on three, its three
+  after-computed rows on its faults build (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`,
+  `EXP-1-pb-20261107-5`).
+- **Replication, one property** (`R-01` to `R-03`). On three VOS nodes no acknowledged record was lost across 21
+  leader kills, a replica replaced, and a replica's disk lost (`EXP-1-vos-rt3-20261107-2`). The store has one node,
+  and a restore from a copy lost the 28 records acknowledged after it (`EXP-1-pb-20261107-5`).
+- **Damage** (`R-04`, `G-54`) was not delivered alike and decides nothing: on the store it hit an acknowledged
+  frame, which was cut silently; on VOS it did not land on an acknowledged batch. `G-54` is open for both.
+- **Upgrades and formats** (`R-06`). Both pass.
+- **The costs of VOS.** At 64 submitters the store writes about 4.5k records/s, VOS 3.0k on one node and 2.0k on
+  three (`R-05`). A 100k-record halted export and import takes the store 3.0 s, VOS 59.1 s and 81.8 s (`R-08`). A
+  step costs the store 222 µs and VOS 841 µs on the JIT, the guest's own work dominating (`R-09`).
+- **Licence.** The owner permitted VOS's 12 AGPL-3.0-or-later crates for the experiment (`DEC-6,counsel-licences`);
+  `licences/RECORD` lists every package the experiment's lockfiles lock. Adoption is the item's ruling.
 
 ## Decision
 
-The purpose-built store implements the host contract for v0. `M2` builds `CMP-STM`'s library on it (`F-010`).
+VOS implements the host contract for v0, as the whole runtime: `M2` builds `CMP-STM` as a VOS program on three
+replicas (`F-010`).
 
-- **VOS is not adopted** at `1aadf44`. The adapter and its notes stay as `EXP-1`'s record, and its code does not
-  merge.
-- **The host contract stays runtime-neutral.** A later experiment may score a tagged VOS release, or another
-  runtime, against it, as its own `EXP-n`, without reopening `runtime-host-seam`.
-- **The reasons.** Every gap the store leaves open, VOS leaves open too, and VOS has nine more. The store's gaps
-  close in rutent's own MIT code. VOS's shared gaps would close upstream, in a one-maintainer project with no tagged
-  release (`G-47`, `G-46`). The store needs no licence ruling, and VOS needs one plus 246 more licence lines.
-- **VOS's role.** The state machine ran in the adapter, not in VOS, so VOS was tried as a replicated store, not as
-  the whole runtime `PS-66` names.
+- **The commit.** A `vos-core` commit pinned by SHA and mirrored on Bloque's side, with its forks (`lsm-tree`,
+  `stwo`, `s4`) at their pinned revisions (`G-48`). A tag is followed, not required (`G-46`).
+- **The contracts.** `contracts/` is ported to `no_std` + `alloc` through a `DEC-4` bump and the owner's click
+  (`DEC-20`). `EXP-1`'s generated copy shows the port is plumbing only.
+- **The purpose-built store** stays ADR-0002's ruled fallback, behind its flag, and the host contract stays
+  runtime-neutral, so a later `EXP-n` may score another runtime without reopening `runtime-host-seam`.
+- **The reasons.** Only VOS has replication: it turns losing a node or a disk into replacing a replica, where the
+  store's only recovery is a restore that loses acknowledged records. The costs are throughput, a total-loss
+  recovery time that grows with history, and a slower step, none of them against a target before `M4`.
 
 **Which wording stands on the licence.** ADR-0002 says VOS's licence needs counsel before adoption. The owner's
 later ruling `counsel-licences` and `DEC-6` replace that step: a dependency's licence is the owner's decision,
@@ -71,34 +74,32 @@ read as superseded by it. This records which ruling applies. It draws no legal c
 
 ## Consequences
 
-- **The flag.** The store leaves its experimental flag: `F-010` makes `purpose_built_store` the library's store,
-  in place of the `purpose-built-store` feature that is off by default. It brings no new package, so
-  `licences/RECORD` needs no new line and `E4`'s licence clause holds.
-- **Before v0 reaches production,** `F-010` closes these, which both candidates fail:
-  - `G-54`: a damaged, acknowledged last frame is cut without a refusal;
-  - `G-33`: the store holds every record in memory, with no stated bound;
-  - `G-40` and `G-51`: the store format has no upgrade path;
-  - power loss, never reached by a test, on the deployment platform's sync.
-- **Owned elsewhere.** The other gaps go to their features, as the outcome's
-  [follow-up rows](../outcome.md#follow-up-rows) list them:
-  - the audit trail to `F-022`, apart from the execution store (ADR-0005);
-  - metrics and load figures to `F-033`;
-  - `G-26` to `F-025`;
-  - the release to `F-034`.
-- **The `vos` line.** It stays `not-adopted` and `pending` in `licences/RECORD`. The licence check never fails on
-  such a line, and no VOS code is in rutent's `Cargo.lock`.
+- **Preconditions before v0 ships on VOS** (the outcome's [preconditions](../outcome.md#preconditions)):
+  - the licence ruled, covering a state machine that links `vos-sdk`;
+  - the commit pinned and mirrored, with its forks;
+  - the state machine inside VOS passing host contract 2.0.0 on three nodes, after the `DEC-4` port;
+  - `G-54` fixed upstream or its residual accepted for both candidates, after the targeted test: damage to the
+    frame holding the last acknowledged append, on one VOS node and on a leader of three;
+  - a recovery story for total loss: scheduled halted exports, whose downtime and RPO are written down, or
+    upstream `vos node restore`;
+  - the JIT verified on the production host (kernel 6.7 or later, userfaultfd allowed), and a build without native
+    codegen (`G-37`);
+  - journal growth bounded: the program archives terminal orders (`G-33`).
+- **Owned elsewhere.** The audit trail to `F-022`, apart from the execution store (ADR-0005); metrics and load
+  figures to `F-033`; `G-26` to `F-025`; the release to `F-034`.
+- **The `vos` line** in `licences/RECORD` moves from `not-adopted` and `pending` to the owner's decision, with the
+  pinned commit's crates already listed.
 - **The module side.** `EXP-2` (ADR-0003) is unaffected. The module-runtime rows VOS failed are reported to it,
   not decided here.
 
-## If the owner chooses VOS
+## If the owner chooses the purpose-built store
 
-Then the Decision is reversed, with these changes:
+Then the Decision is reversed:
 
-- the owner's licence decision on VOS goes into `licences/RECORD` first, with 246 more lines for the 25 VOS crates
-  and the 221 other packages (`DEC-6`, `REQ-MOD-5`). Permissive ones are permitted by the standing ruling
-  `licence-permissive-standing`; copyleft ones go to the owner one by one;
-- the adapter merges behind its flag only after that (`T-007-03`);
-- the nine VOS-only fails, and the shared gaps above, become `F-010`'s work against an upstream rutent doesn't
-  control;
-- the six `pass (adapter)` rows stay closed only while `T-007-03`'s adapter code, the journal actor and the host
-  adapter, is kept.
+- the store implements the host contract for v0, and `F-010` builds `CMP-STM`'s library on it, out of its
+  experimental flag; it brings no new package;
+- v0 has no replication: losing the disk means restoring a copy, which loses the records acknowledged after it, so
+  the deployment's backup interval is its RPO;
+- before production, `F-010` closes the store's gaps: `G-54` (a damaged acknowledged last frame is cut silently),
+  `G-33`, `G-40` and `G-51`, and tests power loss on the deployment platform;
+- VOS is not adopted for v0, its code stays as `EXP-1`'s record, and the `vos` line stays `not-adopted`.
