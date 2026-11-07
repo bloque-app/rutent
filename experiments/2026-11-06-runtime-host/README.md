@@ -126,7 +126,8 @@ nothing reads them as accepted.
 ## Outcome
 
 [`outcome.md`](outcome.md): one page, adopt, adapt or drop, with the numbers behind it, each naming a run (Narthex
-`REQ-EXP-4`, Narthex `REQ-CHN-17`). Written by `T-007-04`: VOS dropped for v0, the purpose-built store adapted.
+`REQ-EXP-4`, Narthex `REQ-CHN-17`). Written by `T-007-04`, and revised by it from the re-score: VOS adapted, as the
+whole runtime on three replicas, with the purpose-built store kept as ADR-0002's fallback.
 
 ## Runs
 
@@ -151,7 +152,8 @@ pre-freeze development run. Its id is `EXP-1-<candidate code>-dev-<yyyymmdd>-<n>
 Not promoted. The experiment is open until the owner answers the adoption item.
 
 `T-007-04` wrote the outcome on 2026-11-07, recommending that VOS be dropped for v0 and the purpose-built store
-adapted, and drafted the adoption item `exp1-adopt-runtime` in [`drafts/adoption-item.json`](drafts/adoption-item.json),
+adapted. After the re-score of the same day, it revised the outcome to recommend VOS, adapted as the whole runtime,
+and redrafted the adoption item `exp1-adopt-runtime` in [`drafts/adoption-item.json`](drafts/adoption-item.json),
 with [`outcome.md`](outcome.md) as its ref. It is on the owner's form once published there. When the owner answers,
 this section records one of:
 

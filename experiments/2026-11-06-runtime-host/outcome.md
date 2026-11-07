@@ -1,6 +1,6 @@
 ---
 experiment: EXP-1
-status: written by T-007-04, 2026-11-07; awaiting the owner's answer to item exp1-adopt-runtime
+status: revised by T-007-04, 2026-11-07, from the re-score; awaiting the owner's answer to item exp1-adopt-runtime
 ---
 
 # EXP-1 outcome
@@ -9,93 +9,103 @@ The one-page outcome of `EXP-1` (Narthex `REQ-EXP-4`). Every number names the ru
 `REQ-CHN-17`), from the [scoring sheet](scoring.md) and the [run notes](runs/). Adopting it is one item on the
 owner's form, `exp1-adopt-runtime`, with this page as its ref (Narthex `REQ-EXP-7`).
 
+This revision replaces the first outcome (VOS dropped, the store adapted), which scored VOS at `1aadf44` as a remote
+key-value store: the state machine outside VOS, one node, the interpreter on macOS. The re-score ran VOS the way it
+is meant to be run: the state machine a VOS program, `vos-core` at `5c78975`, Linux x86_64 with the JIT, one node
+and three ([scoring sheet §5](scoring.md#5-the-re-score-vos-as-the-whole-runtime)). Its criteria were fixed before
+any run (`decisions.json`, `exp1-rescore-criteria`). The first run's cells stay as history.
+
 ## Result
 
 | Candidate | Result | What it means |
 |---|---|---|
-| `pb`, the purpose-built store | **adapt** | `M2` builds `CMP-STM` on it (`F-010`), with the [follow-up rows](#follow-up-rows) closed before v0 reaches production |
-| `vos`, VOS at `vos-core` `1aadf44` | **drop** for v0 | Not adopted. The host contract stays runtime-neutral (ADR-0002), so a later experiment can score a tagged VOS release |
+| `vos`, VOS as the whole runtime at `vos-core` `5c78975` | **adapt** | `M2` builds `CMP-STM` as a VOS program on three replicas, at a pinned and mirrored commit, once the [preconditions](#preconditions) are met |
+| `pb`, the purpose-built store | the ruled fallback | ADR-0002's fallback, kept behind its flag. It has no replication, and it loses acknowledged records on a restore and on a damaged last frame |
 | `ref`, the reference host | the floor | In memory; never a candidate |
 
-Both candidates pass the gate. Outside the module-runtime rows, every gap row `pb` fails VOS fails too, and VOS
-fails nine more (`EXP-1-pb-20261107-1`, `EXP-1-vos-20261107-1`). `pb` brings no new package and needs no licence
-ruling. Choosing VOS would need its licence ruled first, and 246 more packages recorded (`EXP-1-vos-20261107-1`).
+Both candidates pass the gate. On the operational rows the first run never reached, VOS on three nodes passes every
+row it can run; `pb` fails three, two of them by construction. `pb` is faster on one disk, and a VOS step costs
+about a fifth of VOS's default handler gas.
 
 ## Numbers
 
-All runs on one Apple M2 Pro. Timings are measurements, not targets (`PLAN.md` §6.2, risk 9).
+Scored runs on GitHub's `ubuntu-latest` (Intel Xeon Platinum 8370C, 4 vCPUs, 16 GB, kernel 7.0.0-1019-azure), the JIT forced and proved by each node's perf map:
+`EXP-1-vos-rt1-20261107-1`, `EXP-1-vos-rt3-20261107-1` and `EXP-1-pb-20261107-4`, in one job on one runner, and
+the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, not targets (`PLAN.md` §6.2, risk 9).
 
-| Criterion | `pb` | `pb` run | `vos` | `vos` run |
-|---|---|---|---|---|
-| Host rows `H-01` to `H-17` | 17 of 17 pass, in 3 swap directions | `EXP-1-pb-20261107-1` | 17 of 17 pass, in `vos-to-ref`, `ref-to-vos` and `compacted` | `EXP-1-vos-20261107-1` |
-| The 29 gap rows scored for both, outside the module rows | 12 pass, 17 fail | `EXP-1-pb-20261107-1`, `-2`, `-3` | 2 pass, 6 pass (adapter), 21 fail | `EXP-1-vos-20261107-1` |
-| The 7 gap rows on VOS's own parts (proof stack, JIT, node key, `cipher-clerk`, docs) | do not apply | `EXP-1-pb-20261107-1` | 2 pass, 5 fail | `EXP-1-vos-20261107-1` |
-| Gap rows only this candidate fails | 0 | `EXP-1-pb-20261107-1` | 9: `G-13`, `G-14`, `G-36` to `G-39`, `G-48`, `G-49`, `G-53` | `EXP-1-vos-20261107-1` |
-| The 16 module-runtime rows (`G-06`, `G-15` to `G-25`, `G-27` to `G-30`) | 16 fail: no module runtime. Not counted | `EXP-1-pb-20261107-1` | 14 fail, 2 not run | `EXP-1-vos-20261107-1` |
-| `G-01`, a journal past the compaction defaults | 1,201 entries, 93 MiB, replayed whole; reopen 339.6 ms | `EXP-1-pb-20261107-2` | 40 of 40 journals whole under `compact 16 4`, through the adapter | `EXP-1-vos-20261107-1` |
-| `G-32`, the largest fixture's record | 4,818 bytes; frame payload 4,844 of 67,108,864 | `EXP-1-pb-20261107-3` | value about 4,782 of 65,536; request about 4,814 of 65,536 | `EXP-1-vos-20261107-1` |
-| A synced submit, end to end | median 4.81 to 4.89 ms, p99 7.35 to 8.04 ms; 202 to 209 submits/s. Release build, in-process | `EXP-1-pb-20261107-2` | `batch` mean 7.6 ms, `flush_synced` mean 6.2 ms, 281 single-call batches. `faults` build, interpreter, `compact 16 4`. The `refine` mean, 831 µs, is one stage and excludes commit and sync | `EXP-1-vos-20261107-1` |
-| `G-45`, own tests | 19 passed, 0 failed | `EXP-1-pb-20261107-1` | 473 passed, 0 failed, 35 not run or not finished, in 6 of 38 crates | `EXP-1-vos-20261107-1` |
-| Licence rows | `L-04` pass: no new package | `EXP-1-pb-20261107-1` | `L-01` pending; `L-02` 25 VOS crates unlisted (11 AGPL-3.0-or-later, 14 Apache-2.0); `L-03` 221 of 240 packages with no line | `EXP-1-vos-20261107-1` |
+| Row | `vos-rt1`, one node | `vos-rt3`, three nodes | `pb` |
+|---|---|---|---|
+| `H-01` to `H-17`, host contract 2.0.0 | 17 of 17 pass | 17 of 17 pass | 17 of 17 pass |
+| `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills, 0 acknowledged records lost | **fail (by construction)**; its restart on the same disk opens in 15 to 33 ms |
+| `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
+| `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, their effects released |
+| `R-04a` the last batch damaged | pass: opens, nothing acknowledged lost | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
+| `R-04b` the leader and a follower damaged together | n/a | pass | n/a: one node |
+| `R-05` records/s at 1, 8, 64 submitters | 269, 1,045, 1,739 | 214, 977, 1,460 | 4,969, 4,694, 4,876 |
+| `R-05` fsyncs a record at 1, 8, 64 | 1.02, 0.15, 0.08 | 3.06, 0.83, 0.24 (three nodes) | 1.00, 1.00, 1.00 |
+| `R-06a` the program upgraded, one input in flight | pass | pass | pass, as a redeploy |
+| `R-06b` a changed state format installed | pass: the program refuses it | pass | pass: the layout version refuses it |
+| `R-07a` the 1aadf44 deployment swapped into the tip program | pass, as `H-13` | | n/a |
+| `R-07b` 1aadf44's data directory opened at the tip | pass: refused cleanly | | n/a |
+| `R-07c` the same program across two VOS commits | n/a: no second `vos-core` commit builds it yet | n/a | n/a |
+| `R-08` 100k records: halt to export, import to ready (RTO) | 5.7 s + 77.5 s = 83.2 s | 6.9 s + 103.7 s = 110.7 s | 0.2 s + 2.6 s = 2.8 s |
+| `R-09` a step: gas; µs on the JIT and the interpreter | 1.87M gas (18.7% of 10M); 1,328 and 2,554 µs | 1.87M gas; 1,383 µs | 199 µs a synced submit; 0.65 µs the step alone |
 
-The timing row compares a median with means, and the two setups differ. It isn't a ranking.
+The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one job, not either against production.
 
 ## Why
 
-1. **The gate.** Both pass all 17 host rows, so the gate does not choose.
-2. **The gaps.** `pb` fails all 16 module-runtime rows, as any store would: `pb` is a host, not a module
-   runtime. That is `EXP-2`'s question, so those rows are left out of the count. VOS's 14 fails there go to
-   `EXP-2`. Outside them, `pb`'s 17 fails are all VOS fails too (all counts in this section: `EXP-1-pb-20261107-1`,
-   `-2`, `-3` and `EXP-1-vos-20261107-1`). Of VOS's 9 extra fails, four matter for a v0 in
-   production with real customer value (`DEC-19`): two pinned nightlies (`G-37`), a restored backup counted as a
-   compromised node (`G-39`), forks under a personal account (`G-48`), and no CI (`G-49`). `G-13`, `G-14` and
-   `G-53` don't, because rutent rides no value on a VOS proof. `G-36` misses VOS's own invocation budget, not a
-   rutent target, and `G-38` makes key rotation a node replacement. VOS's six `pass (adapter)` rows are open VOS
-   gaps that `T-007-03`'s adapter code closes. `pb` passes all six on its own.
-3. **The licence.** `pb` adds no line to `licences/RECORD` (`L-04`), so `E4`'s licence clause already holds for it.
-   For VOS, see [below](#the-legal-question).
-4. **The cost of closing the gaps.** `pb`'s gaps are rutent's own MIT code in `rutent-stm`. VOS's shared gaps sit
-   upstream:
-   - `G-54` in fjall's recovery mode, which offers no other choice;
-   - `G-40` and `G-51` in VOS's store-layout rule;
-   - `G-33` in VOS's agent.
+1. **The gate does not choose.** Both pass all 17 host rows at host contract 2.0.0, VOS on one node and on three.
+   The after-computed rows (`H-02`, `H-06`, `H-11`) pass on the faults build, which holds commits; on the scored
+   build the same stop lands after an unheld commit, and `stop-after-computed` fails there, as the first run's
+   control did. That is the stop's test, not a VOS gap.
+2. **Replication is one property, and only VOS has it.** `R-01` to `R-03` and `R-04b` pass on three VOS nodes:
+   no acknowledged record was lost when the leader was killed at 21 points, or when a replica was replaced, with
+   or without its data. `pb` has one node, so it fails `R-01` and `R-02` by construction, and its only recovery
+   from a lost disk is a restore, which loses every record acknowledged after the copy (`R-03`), effects already
+   released. Counted once, as the brief asks: `pb` lacks replication.
+3. **Damage.** A damaged last frame cut `pb` one acknowledged record short without a refusal (`R-04a`, `G-54`).
+   On VOS, damage to the last journal batch cost no acknowledged record in these placements, and a damaged
+   follower caught up from the leader once it saw the leader's next entry. VOS's fjall still tolerates a corrupt
+   tail silently, so the single-node residual of `G-54` stands; three replicas cover it, and no watermark patch
+   exists at the pin, so the watermark leg is n/a.
+4. **Upgrades and formats.** Both survive an upgrade with an input in flight (`R-06a`), and both refuse a changed
+   format (`R-06b`). On VOS the refusal is the program's own format check: `Admin::Install` checks nothing at the
+   tip. Across VOS commits the tip refuses the pin's store cleanly (`R-07b`), and the swap stream carries a
+   deployment across (`R-07a`), so VOS upgrades go by swap stream, as `G-40`'s fix says.
+5. **Speed and recovery time.** `pb` is faster on one disk: about 4,700 to 5,000 records/s against VOS's 214 to
+   1,739, and a 100k-record swap in 2.8 s against 83 to 111 s. VOS's group commit is visible: one fsync per record alone,
+   0.08 at 64 submitters. No `NFR-1` target exists before `M4`, and VOS's step is mostly rutent's own JSON work
+   inside the guest (1.87M gas). The JIT is only about 1.9 times the interpreter on this step.
+6. **What changed since the first outcome.** The six `pass (adapter)` rows are now the program's own code, as
+   VOS intends. The first outcome's cost argument, that VOS would be a replicated store and not the runtime, no
+   longer holds: the whole host contract runs inside VOS, through a plumbing-only `no_std` copy of `contracts/`.
 
-   That project has one maintainer (`G-47`) and no tagged release (`G-46`), so rutent would depend on work it
-   doesn't control. Its other costs are the nine extra fails, keeping the adapter for the six adapter rows, and
-   adapter merges that wait on the licence ruling (`DEC-6`). The state machine also runs in the adapter, not in
-   VOS, so VOS would be a replicated store here, not the whole runtime `PS-66` describes.
+## Preconditions
+
+What must be true for v0 to ship on VOS (the rethink's §8), with where each stands after the re-score:
+
+| Precondition | Where it stands |
+|---|---|
+| The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines; the tip's lockfiles lock 277 external packages |
+| A VOS commit pinned by SHA and mirrored, with its forks (`lsm-tree`, `stwo`, `s4`) | Pinned by SHA here; not mirrored yet (`G-48`) |
+| The state machine inside VOS, passing host contract 2.0.0 on three nodes | Done here, as an experiment. For `M2`, `contracts/` goes `no_std` + `alloc` through a `DEC-4` bump and the owner's click (`DEC-20`); the patch this experiment applied shows it is plumbing only |
+| `G-54` fixed upstream, or its residual accepted for both candidates | Not fixed at the tip; three replicas cover it in these runs |
+| A recovery story for total loss | Scheduled halted exports: about 83 to 111 s of downtime at 100k records, the RPO the export interval (`R-08`); or upstream `vos node restore` |
+| The JIT verified on the production host | Verified on the runner (kernel 7.0, userfaultfd write-protect, perf maps); the production host is still to check, and VOS's node still builds on two pinned nightlies with native codegen (`G-37`) |
+| Journal growth bounded | Open (`G-33`): archive terminal orders in the program |
+
+Things to follow, not preconditions: a tag (`G-46`), the forks upstreamed (`G-48`), a second maintainer (`G-47`).
 
 ## The legal question
 
-The recommendation doesn't depend on VOS's licence: it holds on the numbers alone. What the owner's ruling would
-change:
+The owner approved recording VOS's AGPL crates as permitted for this experiment, under `counsel-licences`. The
+adoption is the separate ruling this item asks; until then `licences/RECORD` keeps `vos not-adopted ... pending`.
+This page draws no legal conclusion. `drafts/licence-item.json` stays the item to publish if the owner wants the
+licence ruled apart from the adoption.
 
-- **VOS's licence permitted:** VOS could be chosen, but first the 25 VOS crates and 221 other packages need 246
-  more lines in `licences/RECORD` (`REQ-MOD-5`). Permissive ones, the 14 Apache-2.0 VOS crates among them, are
-  permitted by the standing ruling `licence-permissive-standing`; copyleft ones come to the owner one by one. The
-  run didn't count the copyleft among the 221. The gaps above would still stand.
-- **Declined:** VOS can't be chosen at this pin. This outcome doesn't change.
-- **Not ruled:** the `vos` line stays `not-adopted` and `pending`, which the licence check never fails on. No VOS
-  code reaches `main`.
+## The drafts
 
-This page draws no legal conclusion. If the owner leans to VOS, `drafts/licence-item.json` is the item to publish
-first.
-
-## Follow-up rows
-
-The gaps the recommendation leaves, each with the plan feature that would own it.
-
-| Gap | Rows | Why it matters for v0 | Owner |
-|---|---|---|---|
-| A damaged, acknowledged last frame is cut silently | `G-54` | At most one acknowledged entry lost without a refusal (`EXP-1-pb-20261107-1`) | `F-010` |
-| Every record is held in memory, and the whole log is read on open | `G-33` | Grows with production volume. Reopening a 93 MiB journal took 339.6 ms (`EXP-1-pb-20261107-2`) | `F-010`; the bound's figure with `NFR-1` in `M4` (`F-033`) |
-| No upgrade path for the store format | `G-40`, `G-51` | The first format change after production data exists (`NFR-6`, `REQ-OPS-3`) | `F-010`; cutovers in `F-030` |
-| Power loss not reached; no scored run or timing on Linux, only macOS `F_FULLFSYNC` | `EXP-1-pb-20261107-1` note | Production durability rests on the deployment platform's sync | `F-010` tests; `F-030` on the platform |
-| No metrics | `G-41` | `STEP-5` signals | `F-033` |
-| No figure beyond one host and one disk | `G-42` | `NFR-1`, risk 9 | `F-033`, bounds set when `M4`'s tasks are written |
-| No signature, operator name, check, side store or tamper evidence in the store | `G-04`, `G-05`, `G-09` to `G-11` | `PS-21`, `REQ-AUD-1`. ADR-0005 puts these in the authenticated log, apart from the execution store | `F-022`; `F-021` for `G-05`'s operator |
-| The state in the log is readable by its operators | `G-26` | `THR-79`. Credentials stay in the proxy (ADR-0004), never in the store | `F-025` |
-| No tagged release; one author | `G-46`, `G-47` | The release pins the store; reviews follow `DEC-20` | `F-034`; `DEC-20` |
-
-Not v0's: `G-12` (ADR-0005 rejected an outside anchor; checkpoints are `F-022`'s), `G-43` and `G-44` (`PS-23`, one
-deployment under `REQ-OPS-4`; protocol work for v1, `F-052`). The module rows are `EXP-2`'s (`F-008`) and `F-013`'s.
+`drafts/adr-0002-amendment.md` and `drafts/plan-decision.md` were written for the first outcome. Their
+[If the owner chooses VOS](drafts/adr-0002-amendment.md#if-the-owner-chooses-vos) section is the starting point if
+the owner takes this recommendation; promotion rewrites them from the owner's answer.
