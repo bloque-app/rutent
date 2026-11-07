@@ -1,0 +1,94 @@
+name: EXP-2
+
+# EXP-2's format bindings on the scoring platform, x86_64-unknown-linux-gnu (item exp2-run-platform). One job per
+# binding: `pvm` here; the Wasm binding adds its own `wasm` job beside it.
+on:
+  push:
+    branches:
+      - "exp2/**"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "The run id the reports carry, for a scored run EXP-2-pvm-<yyyymmdd>-<n>"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NIGHTLY: nightly-2026-09-20
+  STABLE: 1.98.0
+
+jobs:
+  pvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: The run's id and directories
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          run_id="${INPUT_RUN_ID:-EXP-2-pvm-ci-$RUN_NUMBER}"
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "REPORTS=$RUNNER_TEMP/reports" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/reports"
+
+      - name: The runner
+        run: |
+          {
+            echo "run id: $RUN_ID"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -a)"
+            grep -m1 'model name' /proc/cpuinfo
+            nproc
+            grep -m1 -o -w bmi2 /proc/cpuinfo || echo "no bmi2"
+            grep -m1 -o -w avx2 /proc/cpuinfo || echo "no avx2"
+            cat /etc/os-release
+            unshare --version
+            for s in kernel.unprivileged_userns_clone user.max_user_namespaces vm.unprivileged_userfaultfd \
+                kernel.apparmor_restrict_unprivileged_userns kernel.yama.ptrace_scope; do
+              sysctl "$s" 2>/dev/null || echo "$s: not present"
+            done
+          } | tee "$REPORTS/runner.txt"
+
+      # A runner setting, not part of the binding: Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, which both the binding's own isolation and PolkaVM's Linux sandbox need.
+      - name: Allow unprivileged user namespaces on this runner
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 | tee -a "$REPORTS/runner.txt"
+
+      - name: Toolchains
+        run: |
+          rustup toolchain install "$STABLE" --profile minimal --component clippy --component rustfmt
+          rustup default "$STABLE"
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+          clang=$(command -v clang-18 || command -v clang)
+          echo "CLANG=$clang" >> "$GITHUB_ENV"
+          {
+            rustc --version
+            rustup run "$NIGHTLY" rustc --version
+            "$clang" --version | head -1
+            "$clang" -print-targets | grep riscv64
+          } | tee "$REPORTS/toolchains.txt"
+
+      - name: run.sh, the isolation tests and the suite
+        run: |
+          set -o pipefail
+          experiments/2026-11-07-module-format/pvm-binding/run.sh "$RUN_ID" 2>&1 | tee "$REPORTS/run.log"
+
+      - name: Upload the reports and the full log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp2-pvm-${{ env.RUN_ID }}
+          path: ${{ env.REPORTS }}
+          if-no-files-found: error
