@@ -1,0 +1,170 @@
+diff -ruN a/contracts-nostd/src/lib.rs b/contracts-nostd/src/lib.rs
+--- a/contracts-nostd/src/lib.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/lib.rs	2026-11-07 14:32:53
+@@ -1,5 +1,8 @@
+ //! The contracts: the schemas and shared shapes every component meets the others through (DEC-2, DEC-4).
++#![no_std]
++extern crate alloc;
+ 
++#[cfg(any())]
+ pub mod module_interface;
+ pub mod provider_role;
+ pub mod router_api;
+diff -ruN a/contracts-nostd/src/provider_role/envelope.rs b/contracts-nostd/src/provider_role/envelope.rs
+--- a/contracts-nostd/src/provider_role/envelope.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/envelope.rs	2026-11-07 14:32:53
+@@ -9,6 +9,7 @@
+ //! Every key here is a [`PublicKey`], built only from its canonical encoding and compared by its decoded bytes.
+ //! The verifier (`M2`) must still refuse non-canonical base64 and non-canonical points ([`PublicKey`] says which).
+ 
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use serde::{Deserialize, Serialize};
+ 
+ use super::types::PublicKey;
+diff -ruN a/contracts-nostd/src/provider_role/mod.rs b/contracts-nostd/src/provider_role/mod.rs
+--- a/contracts-nostd/src/provider_role/mod.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/mod.rs	2026-11-07 14:32:53
+@@ -15,6 +15,7 @@
+ mod types;
+ mod validate;
+ 
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ pub use envelope::{
+     ADVERTISEMENT_SHAPE, ContextMismatch, Deployment, JUDGEMENT_SHAPE, NotSignedByOperator,
+     OPERATION_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature,
+diff -ruN a/contracts-nostd/src/provider_role/operation.rs b/contracts-nostd/src/provider_role/operation.rs
+--- a/contracts-nostd/src/provider_role/operation.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/operation.rs	2026-11-07 14:32:53
+@@ -1,7 +1,9 @@
+ //! Operations the operator asks of a provider (`urn:rutent:provider-role:operation`, `REQ-CAT-9`,
+ //! `REQ-CAT-14`). On the wire each is the operator's [`Statement`](super::Statement) of an [`Operation`].
+ 
+-use std::collections::BTreeMap;
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
++use alloc::collections::BTreeMap;
+ 
+ use serde::{Deserialize, Serialize};
+ 
+diff -ruN a/contracts-nostd/src/provider_role/outcome.rs b/contracts-nostd/src/provider_role/outcome.rs
+--- a/contracts-nostd/src/provider_role/outcome.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/outcome.rs	2026-11-07 14:32:53
+@@ -3,6 +3,7 @@
+ //! (`urn:rutent:provider-role:judgement`), and the reserve's reversal confirmation
+ //! (`urn:rutent:provider-role:reversal-confirmation`, ADR-0008). On the wire each is its maker's [`Statement`].
+ 
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use serde::{Deserialize, Serialize};
+ 
+ use super::envelope::{
+diff -ruN a/contracts-nostd/src/provider_role/types.rs b/contracts-nostd/src/provider_role/types.rs
+--- a/contracts-nostd/src/provider_role/types.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/types.rs	2026-11-07 14:32:53
+@@ -1,6 +1,8 @@
+ //! Types mirroring the `urn:rutent:provider-role:*` schemas. Field names match the schemas, and every struct
+ //! denies unknown fields, as the schemas set `additionalProperties: false`.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use serde::{Deserialize, Deserializer, Serialize};
+ 
+ use super::envelope::{ADVERTISEMENT_SHAPE, StatementShape};
+diff -ruN a/contracts-nostd/src/provider_role/validate.rs b/contracts-nostd/src/provider_role/validate.rs
+--- a/contracts-nostd/src/provider_role/validate.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/provider_role/validate.rs	2026-11-07 14:32:53
+@@ -1,6 +1,8 @@
+ //! The rules of an advertisement that JSON Schema can't express: they compare two fields, or two entries of a
+ //! list. An advertisement is valid when it passes the schemas and [`validate`] returns `Ok`.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use std::cmp::Ordering;
+ 
+ use super::envelope::{Signature, Statement};
+diff -ruN a/contracts-nostd/src/router_api/atoms.rs b/contracts-nostd/src/router_api/atoms.rs
+--- a/contracts-nostd/src/router_api/atoms.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/router_api/atoms.rs	2026-11-07 14:32:53
+@@ -1,6 +1,8 @@
+ //! Checked atoms: the router API's identifiers, versions, amounts and lists, each as strict as the schema atom
+ //! it mirrors.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use std::cmp::Ordering;
+ use std::fmt;
+ 
+diff -ruN a/contracts-nostd/src/router_api/check.rs b/contracts-nostd/src/router_api/check.rs
+--- a/contracts-nostd/src/router_api/check.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/router_api/check.rs	2026-11-07 14:32:53
+@@ -2,6 +2,7 @@
+ //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
+ //! checked whole by one call.
+ 
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+ 
+ use super::atoms::{seconds_down, seconds_up};
+diff -ruN a/contracts-nostd/src/router_api/mod.rs b/contracts-nostd/src/router_api/mod.rs
+--- a/contracts-nostd/src/router_api/mod.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/router_api/mod.rs	2026-11-07 14:32:53
+@@ -63,6 +63,8 @@
+ mod check;
+ mod types;
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ pub use check::{check_typed_chain, check_typed_operation};
+ 
+ pub use atoms::{
+diff -ruN a/contracts-nostd/src/router_api/types.rs b/contracts-nostd/src/router_api/types.rs
+--- a/contracts-nostd/src/router_api/types.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/router_api/types.rs	2026-11-07 14:32:53
+@@ -1,6 +1,8 @@
+ //! Types mirroring the `urn:rutent:router-api:*` schemas. Field names match the schemas, and every struct and
+ //! tagged kind denies unknown fields, as the schemas set `additionalProperties: false`.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use std::num::NonZeroU8;
+ 
+ use serde::{Deserialize, Serialize};
+diff -ruN a/contracts-nostd/src/state_machine/host/mod.rs b/contracts-nostd/src/state_machine/host/mod.rs
+--- a/contracts-nostd/src/state_machine/host/mod.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/state_machine/host/mod.rs	2026-11-07 14:32:53
+@@ -28,7 +28,9 @@
+ //! released record, so every effect has its record (`INV-7`). What happens to effects after that is not the
+ //! host's to guarantee, and not scored through [`Host`]: it is the effect driver's obligation, [`EFFECT_DRIVER`].
+ 
+-use std::collections::BTreeMap;
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
++use alloc::collections::BTreeMap;
+ 
+ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+ 
+diff -ruN a/contracts-nostd/src/state_machine/host/testing.rs b/contracts-nostd/src/state_machine/host/testing.rs
+--- a/contracts-nostd/src/state_machine/host/testing.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/state_machine/host/testing.rs	2026-11-07 14:32:53
+@@ -8,6 +8,8 @@
+ //! [`FaultSeam`], which stops a submit at a named point. For an out-of-process runtime the named points
+ //! are best-effort, reached by timing a kill rather than by a hook.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use std::fmt;
+ 
+ use super::{Host, HostError, SnapshotStream};
+diff -ruN a/contracts-nostd/src/state_machine/mod.rs b/contracts-nostd/src/state_machine/mod.rs
+--- a/contracts-nostd/src/state_machine/mod.rs	2026-11-07 14:32:53
++++ b/contracts-nostd/src/state_machine/mod.rs	2026-11-07 14:32:53
+@@ -55,7 +55,9 @@
+ //! its [`LastInput::record_id`] comes back as [`Outcome::Repeat`]. It keeps no other history, so it can't tell an
+ //! older repeat from a fresh input, and doesn't try.
+ 
+-use std::collections::BTreeSet;
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
++use alloc::collections::BTreeSet;
+ use std::fmt;
+ 
+ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};

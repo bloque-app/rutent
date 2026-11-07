@@ -1,0 +1,20 @@
+# A separate file of the no_std port (program/SEPARATE): the manifest of the generated copy of conformance's probe,
+# which nostd.sh writes from conformance/src/host/probe.rs and probe-nostd.patch. The copy of contracts/src is
+# named rutent-contracts here, so the probe's own `use rutent_contracts::...` lines need no change.
+[package]
+name = "rutent-probe-nostd"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+rutent-contracts = { package = "rutent-contracts-nostd", path = "../contracts-nostd" }
+
+[lints.rust]
+unused_imports = "allow"

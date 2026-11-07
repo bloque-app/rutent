@@ -55,3 +55,21 @@ experiment's own questions and defaults are in `experiments/2026-11-06-runtime-h
 - **For `F-010`.** The same window exists in production for any process that spawns children (module workers, for
   one) while it reopens a store. The store fails closed, refusing the reopen, so no record is at risk, but the
   platform must not count on reopening a store while it spawns, or `F-010` must retry such a refusal.
+
+## A finding of the re-score: canonical JSON is not RFC 8785 (T-007-03, 2026-11-07)
+
+- **What the contract says.** The host contract's `exactly-once` guarantee defines equal inputs as "the same
+  canonical JSON under RFC 8785 (JCS)" (`contracts/src/state_machine/host/mod.rs:88`, repeated in
+  `contracts/state-machine/host/README.md:76` and `contracts/state-machine/host/CHANGELOG.md:30`).
+- **What the hosts write.** The VOS program dedups on byte-equal canonical JSON, which it writes as serde_json's
+  value model with no whitespace (`experiments/2026-11-06-runtime-host/vos-adapter/program/src/lib.rs`,
+  `canonical`); the native client writes the same form, as the first run's adapter did. That is not RFC 8785:
+  serde_json sorts object keys by their UTF-8 bytes, where RFC 8785 sorts by UTF-16 code units, and writes numbers
+  its own way (`1.0`, `-0.0`, `25000000000.0`, `1e+21`), where RFC 8785 writes ECMAScript's shortest form.
+- **The corpus evidence** (`corpus` in `EXP-1-vos-rt1-20261107-2`): 28 of 28 cases byte-equal between the native
+  build and the guest, so the two builds agree; 27 of 28 keep RFC 8785's key order, the one that doesn't being keys
+  U+E000 and U+1F600, which serde_json orders the other way.
+- **Why nothing failed.** Dedup compares a host's bytes with its own, and `pb` and the reference host compare
+  `RecordedInput` values, not bytes, so no row depends on the form. The port of `contracts/` to `no_std` (`DEC-4`,
+  `DEC-20`) should either give the hosts an RFC 8785 writer or change the guarantee's wording to the canonical form
+  they write. `contracts/` is a `DEC-20` path, so this note does not change it.

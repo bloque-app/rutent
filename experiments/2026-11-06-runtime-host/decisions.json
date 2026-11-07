@@ -2,7 +2,8 @@
   "form": {"title": "EXP-1 Decisions"},
   "sections": [
     {"id": "decide", "title": "Decide",
-     "groups": [{"id": "candidates", "title": "Candidates"}]}
+     "groups": [{"id": "candidates", "title": "Candidates"},
+                {"id": "rescore", "title": "Re-score: VOS as the whole runtime"}]}
   ],
   "items": [
     {
@@ -58,6 +59,146 @@
         {"label": "The run note", "url": "runs/EXP-1-pb-dev-20261106-1.md"}
       ],
       "origin": "EXP-1, T-007-02, 2026-11-06"
+    },
+    {
+      "id": "exp1-rescore-commit",
+      "kind": "decide",
+      "section": "decide",
+      "group": "rescore",
+      "title": "Which VOS commit does the re-score run?",
+      "lead": "The re-score runs VOS as the whole runtime, the state machine a VOS program, at vos-core's tip when it was ruled: 5c7897582688ea93f8d02506bee8ea25da6b1458 (2026-11-06). GitHub's master is older than the first run's pin, so the commit is fetched by its SHA from vos-core.",
+      "bullets": [
+        "The first run's pin, 1aadf44, stays scored as history under EXP-1-vos-20261107-1",
+        "The tip is 102 commits past the pin; its store layout was reset, so R-07a and R-07b cross the two",
+        "Reversible: a later run can score another commit under its own run id"
+      ],
+      "rec": "the tip, 5c78975, because the re-score asks how VOS does run the way it is meant to be run.",
+      "options": [
+        "vos-core at 5c78975 (recommended)",
+        "vos-core at the first run's pin, 1aadf44"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "PS-66"],
+      "refs": [
+        {"label": "EXP-1 scoring sheet", "url": "scoring.md"},
+        {"label": "The VOS adapter", "url": "vos-adapter/README.md"}
+      ],
+      "origin": "EXP-1, T-007-03, 2026-11-07, before any re-score run"
+    },
+    {
+      "id": "exp1-rescore-platform",
+      "kind": "decide",
+      "section": "decide",
+      "group": "rescore",
+      "title": "Where do the scored re-score runs happen?",
+      "lead": "On GitHub Actions' standard ubuntu-latest runner, through .github/workflows/exp1-vos.yml, with the nodes run on the runner host (never in a container, whose seccomp profile blocks userfaultfd). The harness fails closed: uname -r is 6.7 or later, a userfaultfd(UFFD_USER_MODE_ONLY) probe with write-protect succeeds, every node runs with VOS_PVM_BACKEND=recompiler and VOS_PVM_PERF_MAP=1, and each node's /tmp/perf-<pid>.map names the rutent program. The interpreter leg of R-09 runs with VOS_PVM_BACKEND=interpreter and asserts the map absent or empty. On three nodes each node's executors are floor(vCPUs / 3), at least 1. Binaries are built on the runner that runs them, with no cache.",
+      "bullets": [
+        "The absence of VOS's fallback warning is not evidence: it is sent once per process, only on the default path",
+        "Local runs on macOS use the interpreter and are never scored",
+        "The note of every run records the kernel, the CPU, the vCPUs, the memory, the backend and the node build"
+      ],
+      "rec": "ubuntu-latest, asserted and fail closed, because the JIT needs Linux x86_64 on kernel 6.7 or later.",
+      "options": [
+        "GitHub's ubuntu-latest, asserted (recommended)",
+        "A self-hosted runner"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "NFR-7"],
+      "refs": [
+        {"label": "EXP-1 scoring sheet", "url": "scoring.md"},
+        {"label": "The VOS adapter", "url": "vos-adapter/README.md"}
+      ],
+      "origin": "EXP-1, T-007-03, 2026-11-07, before any re-score run"
+    },
+    {
+      "id": "exp1-rescore-criteria",
+      "kind": "decide",
+      "section": "decide",
+      "group": "rescore",
+      "title": "What does each new row pass on?",
+      "lead": "The new rows' pass criteria, fixed before any run (the re-score brief, section 5). A cell is pass, fail, fail (by construction), a measured value with its unit, or n/a with its reason. fail (by construction) is a value of its own: outcome.md counts replication as one property, not as independent fails. G-39 gets no pass row: its recovery story is R-02, R-03 and R-08 together. Acknowledged means the Host client got an Ok reply.",
+      "bullets": [
+        "R-01, the leader killed mid-submit on three nodes (each node its own process, kill -9; one placement deterministic through hold_commits or delay_commits, twenty at random points): passes when no acknowledged record is lost, the in-flight input is fully recorded or absent, resubmitting it returns the dedup result and not a second record, and the refusal log is consistent on all three nodes. pb: fail (by construction), one node; its restart on the same disk is timed for the note",
+        "R-02, one replica replaced from the survivors under a new key: passes when the new replica catches up and every journal is equal across the nodes. pb: fail (by construction), no replicas",
+        "R-03, one replica's data directory lost, then replaced under a new key, never from a copied store; once with the leader losing its data, once a follower: passes when no acknowledged record is lost. pb: restored from a copy taken at time T; the note counts the acknowledged records lost after T and whether their effects were released; fail if any were lost",
+        "R-04a, the last batch damaged on one node (truncated, or bytes flipped): passes when the store refuses to open, or the node rejoins and catches up; it never opens silently short. pb: the same damage, the same criterion",
+        "R-04b, the last batch damaged on the leader and one follower together, each node's last acknowledged sequence number recorded first: passes when the store refuses to open, or no acknowledged record is lost. pb: n/a, one node, so this is R-04a",
+        "R-04 with a durable-index watermark runs only if the VOS maintainer's watermark patch exists at the pinned commit; otherwise its cell reads n/a with the reason. The experiment does not patch VOS",
+        "R-05, concurrent submitters 1, 8 and 64, pb and VOS in the same job on the same runner: measured values, records per second, p50 and p99 latency, and fsyncs per record (counted in a separate run with strace -f -c -e trace=fsync,fdatasync,sync_file_range); the suite's guarantees hold under load. The numbers compare the two candidates on a noisy disk, not either against production",
+        "R-06a, the program upgraded over a running instance, one input in flight during the install: passes when state and journals survive, the in-flight input is recorded once or not at all, and the next input applies to the state from before the upgrade. pb: a redeploy of the binary",
+        "R-06b, a version installed whose state format changed: passes when rutent's program refuses it, through a format version kept in state, and never misreads bytes. pb: the same check on its layout version",
+        "R-07a, from the store deployment (the 1aadf44 adapter build) into the tip program through the swap stream: as H-13. pb: n/a",
+        "R-07b, record only, 1aadf44's data directory opened with the tip node (G-40): passes when it refuses cleanly, or opens with a journal byte-equal to the source; fails if it opens and misreads. pb: n/a",
+        "R-07c, the same program across two VOS commits through the swap stream: not runnable at the tip, no second vos-core commit builds this program yet; the cell reads n/a with that reason, never covered. pb: n/a",
+        "R-08, a timed halted export, then an import, at 1k, 10k and 100k records, paged at the stated page size: measured values, halt to export done, plus import start to ready on the new host; their sum is the RTO, the export interval the RPO, G-39's recovery figures. pb: the same procedure",
+        "R-09, gas and microseconds per step, JIT against interpreter: measured values, set against the 10M gas default. pb: microseconds per step only",
+        "H-01 to H-17 run against host contract 2.0.0 on one node and on three. H-02, H-06 and H-11 stop after computed: the program has computed and the commit is held (hold_commits, the faults build). H-17's native side is the original contracts/ and Probe, not the patched copies"
+      ],
+      "rec": "these criteria, as the brief fixed them, because a criterion set after a run can be fitted to it.",
+      "options": [
+        "The brief's criteria, unchanged (recommended)"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "ADR-0002", "REQ-OPS-3", "NFR-6"],
+      "refs": [
+        {"label": "EXP-1 scoring sheet", "url": "scoring.md"},
+        {"label": "The VOS adapter", "url": "vos-adapter/README.md"}
+      ],
+      "origin": "EXP-1, T-007-03, 2026-11-07, before any re-score run"
+    },
+    {
+      "id": "exp1-nostd-port",
+      "kind": "decide",
+      "section": "decide",
+      "group": "rescore",
+      "title": "How is the state machine built for the VOS guest?",
+      "lead": "vos-adapter/program/contracts-nostd/ and probe-nostd/ are generated by vos-adapter/nostd.sh: it copies contracts/src (and conformance's probe.rs) and applies a committed patch whose hunks touch only #![no_std], extern crate alloc, use lines and cfg attributes. Anything else goes in a named file of its own, listed in vos-adapter/program/SEPARATE and in every run note. contracts/ itself is never touched.",
+      "bullets": [
+        "CI checks that the copy equals contracts/ plus the patch, that every hunk is plumbing only, and that the separate files are exactly the listed ones",
+        "The serialiser is not replaced: the guest uses serde_json built alloc-only. The byte-equality corpus runs anyway, through the guest, because the guest's serde_json is another build",
+        "H-17's native side folds with the original contracts/ and Probe"
+      ],
+      "rec": "a generated, plumbing-only copy, because contracts/ waits for the owner's click (DEC-20).",
+      "options": [
+        "A generated copy with a plumbing-only patch (recommended)",
+        "A DEC-4 bump of contracts/ to no_std"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-4", "DEC-20", "DEC-6"],
+      "refs": [
+        {"label": "EXP-1 scoring sheet", "url": "scoring.md"},
+        {"label": "The VOS adapter", "url": "vos-adapter/README.md"}
+      ],
+      "origin": "EXP-1, T-007-03, 2026-11-07, before any re-score run"
+    },
+    {
+      "id": "exp1-pin-build-kept",
+      "kind": "decide",
+      "section": "decide",
+      "group": "rescore",
+      "title": "What happens to the first run's adapter?",
+      "lead": "The first run's adapter and journal, at VOS 1aadf44, stay in vos-adapter/adapter and vos-adapter/journal, buildable, because R-07a exports from that build and R-07b opens its data directory with the tip node. The tip build is new code beside it: vos-adapter/program (the VOS program) and vos-adapter/rt (the Host client and the runs).",
+      "bullets": [
+        "The first run's note and cells stay as history",
+        "The two VOS revisions never share a crate graph: R-07a crosses them as a JSON-lines snapshot stream in a file"
+      ],
+      "rec": "keep it beside the new code, because R-07 needs it.",
+      "options": [
+        "Keep it, buildable (recommended)",
+        "Remove it"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-6", "REQ-OPS-3"],
+      "refs": [
+        {"label": "EXP-1 scoring sheet", "url": "scoring.md"},
+        {"label": "The VOS adapter", "url": "vos-adapter/README.md"}
+      ],
+      "origin": "EXP-1, T-007-03, 2026-11-07, before any re-score run"
     }
   ]
 }

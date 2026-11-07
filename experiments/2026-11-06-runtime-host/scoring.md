@@ -185,3 +185,99 @@ lists every development run, whether or not it filled cells.
 `EXP-1-pb-dev-20261106-1` was superseded by the scored run `EXP-1-pb-20261107-1` ([note](runs/EXP-1-pb-20261107-1.md)),
 made after `C1` against host contract 1.0.0 and state machine 1.0.0. It filled no `pb` cell, so there is none to
 replace; the `pb` cells of this sheet name the scored run. The development run stays listed above, and its note is unchanged.
+
+## 5. The re-score: VOS as the whole runtime
+
+The re-score asks whether VOS, run the way it is meant to be run, meets the host contract and the operational rows
+the first run never reached: the state machine a VOS program, VOS at `vos-core` `5c78975`, on Linux x86_64 with the
+JIT, on one node and on three. Its commit, platform and every new row's pass criterion were fixed before any run, in
+[`decisions.json`](decisions.json) (items `exp1-rescore-*`). The cells above stay as the first run's history; the
+re-score's are here, under their own run ids.
+
+| Code | Candidate |
+|---|---|
+| `vos-rt1` | VOS as the runtime, on one node |
+| `vos-rt3` | The same, on three nodes, each its own OS process on one runner |
+| `pb` | The purpose-built store, on the new rows and on the suite at host contract 2.0.0 |
+
+A cell is `pass`, `fail`, **`fail (by construction)`**, **`not reached`** (the fault was not delivered to what the
+criterion names, so the row neither passes nor fails), a measured value with its unit, or `n/a` with its reason.
+`fail (by construction)` is a value of its own: a property the candidate's design does not have, here replication,
+counted once in [`outcome.md`](outcome.md), not as independent fails. `G-39` gets no pass row: its recovery story is
+`R-02`, `R-03` and `R-08` together. Acknowledged means the `Host` client got an `Ok` reply.
+
+The runs: one job on one GitHub `ubuntu-latest` runner (AMD EPYC 9V45 96-Core Processor, 4 vCPUs, 16 GB, kernel 7.0.0-1019-azure) for `vos-rt1`,
+`vos-rt3` and `pb`, and the `R-07` job's own runner (AMD EPYC 9V74 80-Core Processor, 4 vCPUs, the same kernel) for `R-07a` and `R-07b`,
+whose facts are in the `vos-rt1` note's section "The R-07 job"; workflow run https://github.com/bloque-app/rutent/actions/runs/42416437674. Every VOS node ran
+`VOS_PVM_BACKEND=recompiler`, and each node that answered a query of the program on its own replica named the
+program in its perf map; `R-09`'s interpreter leg showed none. The `no_std` port's separate files are
+`program/SEPARATE`'s three. The serialiser is not replaced: the guest's canonical JSON is serde_json's, as the
+native host's is, and the corpus finds the two byte-equal (28 of 28 cases byte-equal between the native build and the guest; 27 of 28 keep RFC 8785's key order). That canonical form is not RFC 8785:
+serde_json sorts keys by their UTF-8 bytes, and writes numbers its own way. Dedup compares the guest's bytes with
+the guest's, so it is not affected; `contracts/`'s RFC 8785 wording is a finding for the port, not a fail here.
+
+### 5.1 The host-contract suite, host contract 2.0.0
+
+| ID | Guarantee | Fault or check | `vos-rt1` | `vos-rt1` run | `vos-rt3` | `vos-rt3` run | `pb` | `pb` run |
+|---|---|---|---|---|---|---|---|---|
+| `H-01` | `durable` | Stop after received; reopen | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-02` | `durable` | Stop after computed; reopen | pass (faults build, `hold_commits`) | `EXP-1-vos-rt1-20261107-2` | pass (faults build, `hold_commits`) | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-03` | `durable` | Stop after durable; reopen | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-04` | `durable` | Halt, stop, reopen | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-05` | `exactly-once` | The same input twice | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-06` | `exactly-once` | A repeat after a stop at each crash point | pass (faults build, `hold_commits`) | `EXP-1-vos-rt1-20261107-2` | pass (faults build, `hold_commits`) | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-07` | `exactly-once` | A repeat after a swap | pass, as exporter and as importer | `EXP-1-vos-rt1-20261107-2` | pass, as exporter and as importer | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-08` | `exactly-once` | A record id reused with other content | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-09` | `per-order-sequence` | Out-of-order delivery | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-10` | `no-effect-without-record` | Stop after received | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-11` | `no-effect-without-record` | Stop after computed | pass (faults build, `hold_commits`) | `EXP-1-vos-rt1-20261107-2` | pass (faults build, `hold_commits`) | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-12` | `no-effect-without-record` | Stop after durable | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-13` | `swap` | Halt mid-order, export, import, resume | pass, as exporter and as importer | `EXP-1-vos-rt1-20261107-2` | pass, as exporter and as importer | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-14` | `swap` | Submit while halted | pass, as exporter and as importer | `EXP-1-vos-rt1-20261107-2` | pass, as exporter and as importer | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-15` | `swap` | Import a stream of another version | pass, as exporter and as importer | `EXP-1-vos-rt1-20261107-2` | pass, as exporter and as importer | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-16` | `swap` | Stop the new host during an import | pass, as exporter and as importer | `EXP-1-vos-rt1-20261107-2` | pass, as exporter and as importer | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+| `H-17` | `replay` | Fold each journal through the state machine alone | pass: the original `contracts/` and `Probe` fold, natively, to the states the guest recorded | `EXP-1-vos-rt1-20261107-2` | pass: the original `contracts/` and `Probe` fold, natively, to the states the guest recorded | `EXP-1-vos-rt3-20261107-2` | pass | `EXP-1-pb-20261107-5` |
+
+The after-computed rows run on the faults build, which holds every node's commits (`hold_commits`); the scored
+build can hold nothing, and there its `stop-after-computed` cell fails, as the first run's `control-no-hold` did
+(`suite-1`, `suite-3`). Every other cell passes on the scored build. The importer side of the swap rows is the pass
+`swap-in-1` or `swap-in-3`, the reference host swapping into VOS. `pb` ran the suite at host contract 2.0.0 in both
+swap directions (`pb-suite`).
+
+### 5.2 The new rows
+
+| Row | Fault or check | `vos-rt1` | `vos-rt1` run | `vos-rt3` | `vos-rt3` run | `pb` | `pb` run |
+|---|---|---|---|---|---|---|---|
+| `R-01` | The leader killed mid-submit, on three nodes: one placement through `hold_commits` (on all three; once the leader is killed, the followers' holds are lifted, so the entry they received can become durable), twenty at random while a submit is in flight, `kill -9` | n/a: a three-node row; `vos-rt3` runs it | `EXP-1-vos-rt1-20261107-2` | pass: 21 kills, a submit in flight at each as the harness last saw it before the kill (every one then recorded whole, none absent); 497 acknowledged, 0 lost; each in-flight input whole, resubmitted as already recorded; the three nodes byte-equal. Faults build | `EXP-1-vos-rt3-20261107-2` | **fail (by construction)**: one node; its restart on the same disk after a `kill -9` during a submit loop, in 5 rounds, opens in 11.1 to 24.2 ms, losing nothing | `EXP-1-pb-20261107-5` |
+| `R-02` | A replica replaced from the survivors, under a new key | n/a: a three-node row | `EXP-1-vos-rt1-20261107-2` | pass: the new node caught up; every journal and the refusal log byte-equal across the three; nothing lost | `EXP-1-vos-rt3-20261107-2` | **fail (by construction)**: no replicas | `EXP-1-pb-20261107-5` |
+| `R-03` | A replica's data directory lost, then replaced under a new key; the leader once, a follower once | n/a: a three-node row | `EXP-1-vos-rt1-20261107-2` | pass: no acknowledged record lost, either way; never from a copy | `EXP-1-vos-rt3-20261107-2` | **fail**: restored from a copy at T, 28 of 28 acknowledged after T lost; each was released to its submitter, so its effects may have run | `EXP-1-pb-20261107-5` |
+| `R-04a` | The last batch damaged on one node: its last 8 bytes cut, or its last byte flipped | not reached: the damage did not land on an acknowledged batch (the pass report reads pass: it opened with no acknowledged record lost, and nothing shows the damage reached one; the newest journal file's last batch is most likely the unsynced batch after the acknowledged append) | `EXP-1-vos-rt1-20261107-2` | pass, for what it showed: a damaged follower (fjall cut about 3 KB of its tail at the open, leaving it one entry behind) caught up from the leader; nothing lost | `EXP-1-vos-rt3-20261107-2` | **fail**: opens one acknowledged record short, without a refusal (`G-54`) | `EXP-1-pb-20261107-5` |
+| `R-04b` | The last batch damaged on the leader and a follower together | n/a: one node, so it is `R-04a` | `EXP-1-vos-rt1-20261107-2` | not reached: the damage did not land on an acknowledged batch (the pass report reads pass: both nodes reopened with nothing lost and all three agree, but it records the sizes before the damage only) | `EXP-1-vos-rt3-20261107-2` | n/a: one node, so it is `R-04a` | `EXP-1-pb-20261107-5` |
+| `R-04, watermark` | `R-04` with a durable-index watermark | n/a: no such patch at `vos-core` `5c78975` | `EXP-1-vos-rt1-20261107-2` | n/a: the same | `EXP-1-vos-rt3-20261107-2` | n/a: no such patch in `pb` | `EXP-1-pb-20261107-5` |
+| `R-05` | Concurrent submitters, 1, 8 and 64; fsyncs counted in a separate run, under `strace -f -c` | 328, 1,538, 2,979 records/s; p50 3.0, 5.1, 20.4 ms; p99 3.3, 6.0, 27.7 ms; 1.02, 0.15, 0.08 fsyncs a record; the guarantees hold | `EXP-1-vos-rt1-20261107-2` | 239, 1,387, 1,957 records/s; p50 4.1, 5.5, 29.0 ms; p99 5.5, 9.4, 64.7 ms; 3.06, 0.83, 0.20 fsyncs a record, the three nodes together; the guarantees hold | `EXP-1-vos-rt3-20261107-2` | 4,753, 4,568, 4,544 records/s; p50 0.2, 0.2, 0.2 ms; p99 0.3, 0.5, 166.0 ms; 1.00, 1.00, 1.00 fsyncs a record; the guarantees hold | `EXP-1-pb-20261107-5` |
+| `R-06a` | The program upgraded over a running instance, one input in flight | pass | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass, as a redeploy of the binary | `EXP-1-pb-20261107-5` |
+| `R-06b` | A version installed whose state format changed | pass: the program refuses it by its format version, and reads its rows again once the old version is back | `EXP-1-vos-rt1-20261107-2` | pass | `EXP-1-vos-rt3-20261107-2` | pass: a store of layout 2 is refused | `EXP-1-pb-20261107-5` |
+| `R-07a` | The 1aadf44 adapter build's swap stream into the tip program | pass, as `H-13` | `EXP-1-vos-rt1-20261107-2` | n/a: run on one node | `EXP-1-vos-rt1-20261107-2` | n/a | `EXP-1-pb-20261107-5` |
+| `R-07b` | 1aadf44's data directory opened with the tip node (record only, `G-40`) | pass: refused cleanly, naming its layout | `EXP-1-vos-rt1-20261107-2` | n/a: run on one node | `EXP-1-vos-rt1-20261107-2` | n/a | `EXP-1-pb-20261107-5` |
+| `R-07c` | The same program across two VOS commits | n/a: no second `vos-core` commit builds this program yet | `EXP-1-vos-rt1-20261107-2` | n/a: the same | `EXP-1-vos-rt3-20261107-2` | n/a | `EXP-1-pb-20261107-5` |
+| `R-08` | A timed halted export, then an import, of 1,344, 10,304, 100,352 records (the fill rounds 1k, 10k and 100k up to whole orders of 64 submitters); import page 8 entries or 48 KiB | RTO 1.3, 6.3, 59.1 s (export 0.04, 0.33, 3.60 s; import 1.21, 6.00, 55.48 s); RPO the export interval | `EXP-1-vos-rt1-20261107-2` | RTO 3.9, 10.1, 81.8 s (export 0.07, 0.51, 4.85 s; import 3.88, 9.60, 76.97 s); RPO the export interval | `EXP-1-vos-rt3-20261107-2` | RTO 0.06, 0.31, 3.0 s (export 0.01, 0.02, 0.20 s; import 0.05, 0.29, 2.75 s); RPO the export interval | `EXP-1-pb-20261107-5` |
+| `R-09` | Gas and µs per step, the JIT against the interpreter | 1,872,024 gas (18.7% of 10M); `refine` 841 µs on the JIT, 1,551 µs on the interpreter | `EXP-1-vos-rt1-20261107-2` | 1,871,732 gas; `refine` 941 µs on the JIT, read from the leader | `EXP-1-vos-rt3-20261107-2` | µs only: 222 µs a synced submit, 0.42 µs the step alone | `EXP-1-pb-20261107-5` |
+
+`R-04` was not delivered alike: on `pb` the damage hit the frame holding an acknowledged record; on VOS it hit
+fjall's newest journal file, most likely the unsynced batch written after the acknowledged append. So `G-54` is open
+for both candidates, shown on `pb` and untested on VOS; the test that would reach VOS is damage to the frame holding
+the last acknowledged append. The criteria in `decisions.json` are unchanged.
+
+`R-05` and `R-08` compare the candidates on one runner's disk in one job, not either against production. `pb`
+serialises its submits behind one mutex: its store takes an exclusive lock, and each submit pays its own sync.
+
+### 5.3 The re-score's runs
+
+| Run | Candidate | What ran | Note |
+|---|---|---|---|
+| `EXP-1-vos-rt1-20261107-2` | `vos-rt1` | The platform, one submit and an import's atomicity, the corpus, the suite on both builds and as importer, `R-04a`, `R-05` to `R-09` on one node; `R-07a` and `R-07b` in their own job | [`runs/EXP-1-vos-rt1-20261107-2.md`](runs/EXP-1-vos-rt1-20261107-2.md) |
+| `EXP-1-vos-rt3-20261107-2` | `vos-rt3` | The suite on both builds and as importer, `R-01` to `R-06`, `R-08` and `R-09` on three nodes | [`runs/EXP-1-vos-rt3-20261107-2.md`](runs/EXP-1-vos-rt3-20261107-2.md) |
+| `EXP-1-pb-20261107-5` | `pb` | The suite at host contract 2.0.0, and `R-01` to `R-09` where they apply | [`runs/EXP-1-pb-20261107-5.md`](runs/EXP-1-pb-20261107-5.md) |
+| `EXP-1-vos-rt1-20261107-1`, `EXP-1-vos-rt3-20261107-1`, `EXP-1-pb-20261107-4` | all three | The same passes, before a review found `R-01`'s random kills mostly not mid-submit, a refused import chunk not kept whole, and `R-04a` without evidence of its damage. Superseded; no cell names them | [`-vos-rt1-…-1`](runs/EXP-1-vos-rt1-20261107-1.md), [`-vos-rt3-…-1`](runs/EXP-1-vos-rt3-20261107-1.md), [`-pb-…-4`](runs/EXP-1-pb-20261107-4.md) |
+
+Development runs on macOS, on the interpreter, were never scored and have no ids.
