@@ -1,6 +1,6 @@
 ---
 experiment: EXP-2
-status: written by T-008-04, 2026-11-07; adopted by the owner on 2026-11-07 (exp2-adopt-format: Wasm only; licence-llvm-exception: covered); promoted into ADR-0003 and ARCHITECTURE.md §6
+status: written by T-008-04, 2026-11-07; adopted by the owner on 2026-11-07 (exp2-adopt-format, Wasm only; licence-llvm-exception, covered); promoted into ADR-0003 and ARCHITECTURE.md §6
 ---
 
 # EXP-2 outcome

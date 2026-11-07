@@ -1,7 +1,7 @@
 ---
 status: accepted by the owner on 2026-11-07; waits for its DEC number and row in PLAN.md §2.1, which only the owner edits
 experiment: EXP-2
-decision_item: exp2-adopt-format (answered 2026-11-07: Wasm only); licence-llvm-exception (answered 2026-11-07: covered)
+decision_item: exp2-adopt-format (answered 2026-11-07, Wasm only); licence-llvm-exception (answered 2026-11-07, covered)
 ---
 
 # Draft: the plan decision EXP-2 would bring

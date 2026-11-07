@@ -1,7 +1,7 @@
 ---
 status: promoted into ARCHITECTURE.md §6 on 2026-11-07; kept as the experiment's record
 experiment: EXP-2
-decision_item: exp2-adopt-format (answered 2026-11-07: Wasm only)
+decision_item: exp2-adopt-format (answered 2026-11-07, Wasm only)
 ---
 
 # Draft: the THR-85 re-check
