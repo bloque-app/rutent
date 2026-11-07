@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:cross-module-call",
+  "title": "Cross-module call",
+  "description": "One module's call to another provider's module, through the platform, and the platform's record of it (REQ-MDL-21, THR-86). It names the route segment that declares the call; the platform makes it only when that route names it and the caller declares it. The callee receives a provider-role operation, answers it as any other, and acts on its own credentials: the call carries none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "transaction",
+    "caller",
+    "caller_version",
+    "route",
+    "operation"
+  ],
+  "properties": {
+    "transaction": {
+      "description": "The transaction the call is made for (REQ-MDL-8). The callee's operation names the same one, unless it is a judgement question, which names none (REQ-CPL-4).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "caller": {
+      "description": "The calling module's provider.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "caller_version": {
+      "description": "The calling module's version.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/version"
+    },
+    "route": {
+      "$ref": "#/$defs/route_reference"
+    },
+    "operation": {
+      "description": "What is asked of the callee, as a provider-role operation; its provider is the callee.",
+      "$ref": "urn:rutent:provider-role:operation#/$defs/operation"
+    }
+  },
+  "$defs": {
+    "route_reference": {
+      "description": "The route decision record, and the segment in it, that names this call.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_record",
+        "segment"
+      ],
+      "properties": {
+        "decision_record": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    }
+  }
+}

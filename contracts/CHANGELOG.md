@@ -12,3 +12,4 @@ directory (see `README.md`).
 - A contract listed in the base `CONTRACTS` with no files at the base is new, so its first version needs no bump;
   one that owns base files still needs a base changelog. (DEC-4, T-001-05)
 - Stream fixtures in JSON Lines (`.jsonl`) for shapes that travel as a stream. (DEC-4, T-005-02)
+- `lib.rs` exports the `module_interface` module, for the module-interface contract. (DEC-4, T-003-01)

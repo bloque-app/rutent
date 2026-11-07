@@ -1,0 +1,22 @@
+{
+  "transaction": "tx-003",
+  "provider": "bridge-pay",
+  "module_version": "2.1.0",
+  "operation": "payouts.create",
+  "secrets": [
+    "bridge.api_key"
+  ],
+  "started_at": "2026-11-06T15:04:07Z",
+  "hops": [
+    {
+      "scheme": "https",
+      "host": "api.bridge-pay.example",
+      "port": 443,
+      "destination": null,
+      "address": "185.12.66.10"
+    }
+  ],
+  "outcome": {
+    "status": "completed"
+  }
+}

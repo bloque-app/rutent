@@ -1,0 +1,15 @@
+{
+  "transaction": "tx-011",
+  "caller": "acme-reserve",
+  "caller_version": "3.0.0",
+  "route": {
+    "decision_record": "dr-0042",
+    "segment": "seg-2"
+  },
+  "operation": {
+    "kind": "judgement",
+    "provider": "kyc-check",
+    "subject": "subj-77",
+    "class": "kyc-basic"
+  }
+}

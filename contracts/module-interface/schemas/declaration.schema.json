@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:declaration",
+  "title": "Module interface declaration",
+  "description": "What a module declares about its two parts (REQ-MDL-16): the provider-role operations its sandboxed part computes, and everything its outside part may do, which is the module's capability declaration (REQ-MDL-3). Every list is required, so nothing is implied: an empty list declares none, and whatever isn't declared is refused (REQ-MDL-7, REQ-MDL-8). The admission artefact (T-003-02) carries it under the provider's signed assertion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "version",
+    "interface",
+    "sandboxed",
+    "outside"
+  ],
+  "properties": {
+    "provider": {
+      "description": "The provider whose module this is. Its outside part acts on this provider's credentials only (REQ-MDL-6, REQ-MDL-21).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "version": {
+      "description": "The module's version, as its publisher names it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/version"
+    },
+    "interface": {
+      "description": "The version of this contract the module implements. Module versions change; the interface they implement doesn't (REQ-MDL-19).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/protocol_version"
+    },
+    "sandboxed": {
+      "$ref": "#/$defs/sandboxed"
+    },
+    "outside": {
+      "$ref": "#/$defs/outside"
+    }
+  },
+  "$defs": {
+    "operation_kind": {
+      "description": "A provider-role operation kind, as urn:rutent:provider-role:operation names it.",
+      "$ref": "urn:rutent:provider-role:operation#/$defs/operation/properties/kind"
+    },
+    "sandboxed": {
+      "description": "The sandboxed part: it computes provider-role results from provider-role operations, and asks the outside part for the outside operations declared below. It declares only the operation kinds it handles. It has no outside reach of its own and never sees secret plaintext, so it declares no destination, secret or call (REQ-MDL-6, REQ-MDL-16). It returns a provider-role result body, never a signed statement: the module never holds a key, and the outside part signs with its declared statement-signing key (DEC-4, T-003-01).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handles"
+      ],
+      "properties": {
+        "handles": {
+          "description": "The provider-role operation kinds the module answers, each once (REQ-CAT-9).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/operation_kind"
+          }
+        }
+      }
+    },
+    "outside": {
+      "description": "The outside part: the provider's own code, admitted with the module (REQ-MDL-1, REQ-MDL-16). It performs only the operations listed here, reaches only the destinations listed here, resolves only the secrets listed here, by name at call time, calls another provider's module only as listed here and where the route names the call, and signs the sandboxed part's results only with the statement-signing key declared here (DEC-4, T-003-01).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operations",
+        "destinations",
+        "secrets",
+        "calls",
+        "statement_key"
+      ],
+      "properties": {
+        "operations": {
+          "description": "The outside operations the sandboxed part may ask for (REQ-MDL-8). Each name is declared once.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/outside_operation"
+          }
+        },
+        "destinations": {
+          "description": "The destination allow-list, deny by default: nothing else is reachable (REQ-MDL-7, ADR-0004). Each name is declared once.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/destination"
+          }
+        },
+        "secrets": {
+          "description": "The names of the provider's secrets the outside part may resolve. Names only: values are resolved at call time, so rotating one needs no release (REQ-MDL-6, REQ-MDL-17).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:module-interface:common#/$defs/name"
+          }
+        },
+        "calls": {
+          "description": "The other providers' modules this module may call, and for which operation kinds. A declared call is still made only where the route names it (REQ-MDL-21, THR-86).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/call"
+          }
+        },
+        "statement_key": {
+          "description": "The public half of the provider's statement-signing key: the one key, of the keys the provider's advertisement publishes, that the outside part signs the sandboxed part's results with (DEC-4, T-003-01). At signing time the outside part resolves the private half through the credential proxy by the deployment's name, the deployment {name, operator_key} its enveloped advertisement names, and signs the RFC 8785 (JCS) canonical JSON of the whole provider-role envelope with only the top-level signature.value removed. The module never holds the key. A signed result belongs to the advertisement's deployment and its signature.key equals this key; this key is one of the advertisement's keys and is never the deployment's operator_key. It is not one of the declared secrets, which are the provider's other credentials, such as an on-chain chain.signing_key.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "outside_operation": {
+      "description": "One outside operation: its name, the declared destinations it may reach, and the declared secrets it may use.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "destinations",
+        "secrets"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/name"
+        },
+        "destinations": {
+          "description": "Names from the outside part's destinations. A redirect is followed only to one of these (ADR-0004).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:module-interface:common#/$defs/name"
+          }
+        },
+        "secrets": {
+          "description": "Names from the outside part's secrets. Empty if it uses none.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:module-interface:common#/$defs/name"
+          }
+        }
+      }
+    },
+    "destination": {
+      "description": "One allowed destination, with what ADR-0004's checks need: the exact name the connection is made to, and the addresses it may connect to. The platform checks both on the first connection and again on every redirect.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "scheme",
+        "host",
+        "port",
+        "addresses"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/name"
+        },
+        "scheme": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/scheme"
+        },
+        "host": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/host"
+        },
+        "port": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/port"
+        },
+        "addresses": {
+          "description": "The addresses a connection to host may land on, checked on the address actually connected to. \"public\" allows any globally routable address the host resolves to at call time, never a loopback, private, link-local or otherwise special-purpose one. A list pins the connection to those blocks, each globally routable: a block overlapping a special-purpose range (unspecified, loopback, private, shared address space, link-local, documentation, multicast, IPv4-mapped, unique-local and the others the module-interface README lists), such as 0.0.0.0/0, ::/0 or 169.254.169.254/32, is invalid. That rule is checked in Rust, not by this schema.",
+          "oneOf": [
+            {
+              "const": "public"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/address_block"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "call": {
+      "description": "A declared call to another provider's module (REQ-MDL-21). The callee acts on its own credentials; the declaration carries none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callee",
+        "kinds"
+      ],
+      "properties": {
+        "callee": {
+          "description": "The provider whose module may be called.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "kinds": {
+          "description": "The provider-role operation kinds that may be asked of it.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/operation_kind"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "transaction": "tx-003",
+  "operation": "payouts.create",
+  "outcome": {
+    "status": "completed",
+    "body": {
+      "payout_id": "po_81",
+      "state": "pending"
+    }
+  }
+}

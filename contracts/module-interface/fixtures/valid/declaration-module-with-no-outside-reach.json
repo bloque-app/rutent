@@ -1,0 +1,17 @@
+{
+  "provider": "kyc-check",
+  "version": "0.9.0",
+  "interface": "0.1.0",
+  "sandboxed": {
+    "handles": [
+      "judgement"
+    ]
+  },
+  "outside": {
+    "operations": [],
+    "destinations": [],
+    "secrets": [],
+    "calls": [],
+    "statement_key": "0hGborCc7IvUFtBlnxHXe7O90_PemP4cKISqYOUl4HY"
+  }
+}
