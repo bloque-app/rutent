@@ -10,7 +10,7 @@ use std::rc::Rc;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::engine::{FUEL_PER_CALL, MEMORY_PER_PART};
+use crate::engine::{FUEL_PER_PART, MEMORIES_PER_PART, MEMORY_PER_PART, TABLE_ELEMENTS};
 use crate::wire::{FromProvider, Reply};
 
 /// The sandboxed part's world, as `bindgen!` generates it.
@@ -96,6 +96,8 @@ pub struct SandboxedState {
     platform: Shared,
     limits: StoreLimits,
     outside: OutsideSlot,
+    /// The outside part's fuel left for the operation in hand: one budget across all its outside requests.
+    outside_fuel: u64,
 }
 
 /// The outside part's instance, inside the sandboxed part's store data so that an outside request can reach it.
@@ -109,9 +111,10 @@ pub struct OutsideSlot {
 fn limits() -> StoreLimits {
     StoreLimitsBuilder::new()
         .memory_size(MEMORY_PER_PART)
+        .table_elements(TABLE_ELEMENTS)
         .instances(16)
-        .tables(16)
-        .memories(4)
+        .tables(4)
+        .memories(MEMORIES_PER_PART)
         .trap_on_grow_failure(false)
         .build()
 }
@@ -141,12 +144,18 @@ impl sandboxed::rutent::binding::outside_requests::Host for SandboxedState {
 }
 
 impl SandboxedState {
+    /// Calls the outside part on what is left of the operation's outside budget, and keeps what it didn't use.
     fn perform(&mut self, request: &str) -> String {
         let slot = &mut self.outside;
-        if slot.poisoned || slot.store.set_fuel(FUEL_PER_CALL).is_err() {
+        if slot.poisoned
+            || self.outside_fuel == 0
+            || slot.store.set_fuel(self.outside_fuel).is_err()
+        {
             return unknown_response(request);
         }
-        match slot.bindings.call_perform(&mut slot.store, request) {
+        let result = slot.bindings.call_perform(&mut slot.store, request);
+        self.outside_fuel = slot.store.get_fuel().unwrap_or(0);
+        match result {
             Ok(response) => response,
             Err(_) => {
                 slot.poisoned = true;
@@ -301,13 +310,13 @@ impl Loaded {
         outside_store.limiter(|s| &mut s.limits);
         // Instantiating runs code too, so it is metered like any call.
         outside_store
-            .set_fuel(FUEL_PER_CALL)
+            .set_fuel(FUEL_PER_PART)
             .map_err(|e| e.to_string())?;
         let bindings =
             outside::Outside::instantiate(&mut outside_store, &self.outside, &self.outside_linker)
                 .map_err(|e| format!("the outside part didn't instantiate: {e}"))?;
         outside_store
-            .set_fuel(FUEL_PER_CALL)
+            .set_fuel(FUEL_PER_PART)
             .map_err(|e| e.to_string())?;
         bindings
             .call_start(&mut outside_store)
@@ -323,14 +332,15 @@ impl Loaded {
                     bindings,
                     poisoned: false,
                 },
+                outside_fuel: FUEL_PER_PART,
             },
         );
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(FUEL_PER_CALL).map_err(|e| e.to_string())?;
+        store.set_fuel(FUEL_PER_PART).map_err(|e| e.to_string())?;
         let bindings =
             sandboxed::Sandboxed::instantiate(&mut store, &self.sandboxed, &self.sandboxed_linker)
                 .map_err(|e| format!("the sandboxed part didn't instantiate: {e}"))?;
-        store.set_fuel(FUEL_PER_CALL).map_err(|e| e.to_string())?;
+        store.set_fuel(FUEL_PER_PART).map_err(|e| e.to_string())?;
         bindings
             .call_start(&mut store)
             .map_err(|e| format!("the sandboxed part trapped starting: {e}"))?
@@ -343,8 +353,9 @@ impl Running {
     /// Hands one operation to the sandboxed part: its output, or why it gave none. After an error the instances
     /// can't be used again.
     pub fn handle(&mut self, operation: &str) -> Result<Vec<u8>, String> {
+        self.store.data_mut().outside_fuel = FUEL_PER_PART;
         self.store
-            .set_fuel(FUEL_PER_CALL)
+            .set_fuel(FUEL_PER_PART)
             .map_err(|e| e.to_string())?;
         self.bindings
             .call_handle(&mut self.store, operation)

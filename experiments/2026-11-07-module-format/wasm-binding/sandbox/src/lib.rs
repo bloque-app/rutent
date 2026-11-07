@@ -9,8 +9,9 @@
 //!   are set: no core dumps, no file written, a bound on open files, and, where asked, on CPU seconds;
 //! - **macOS:** the child runs under `sandbox-exec` with a profile that denies by default, and allows only what a
 //!   child needs to start: executing and reading its own executable, reading the system's libraries and their
-//!   metadata, `sysctl` reads, and signals to itself; process information and IOKit properties are denied again
-//!   explicitly; and no new process (`RLIMIT_NPROC` 0);
+//!   metadata, reading the two page-size `sysctl`s by name, and signals to itself; process information and IOKit
+//!   properties are denied again explicitly, and every other `sysctl`, the process table and other processes'
+//!   arguments among them, is denied by default; and no new process (`RLIMIT_NPROC` 0);
 //! - **Linux:** the child starts under util-linux's `unshare` in new user, network, IPC, UTS, mount and PID
 //!   namespaces, as the only process of its PID namespace, killed if `unshare` is. Before it reads any input it
 //!   calls [`confine`], which sets `no_new_privs`, moves its root to an empty read-only `tmpfs`, closes every
@@ -145,7 +146,8 @@ pub fn layers() -> Vec<String> {
             "sandbox-exec profile, deny by default, with process-info* and iokit-get-properties denied again \
              explicitly; allowed only: process-exec of the child's own executable; file-read* and \
              file-read-metadata of that executable, of / itself, /usr/lib, /System, /dev/null, /dev/urandom and \
-             /dev/random; sysctl-read; and signals to itself"
+             /dev/random; sysctl-read of hw.pagesize and hw.pagesize_compat only, by name, so the process table \
+             (KERN_PROC_ALL) and other processes' arguments (KERN_PROCARGS2) stay denied; and signals to itself"
                 .into(),
         );
     }
@@ -192,8 +194,14 @@ pub fn layers() -> Vec<String> {
 
 /// The macOS profile a child runs under: deny by default, with process information and IOKit properties denied
 /// again explicitly, then only what a child needs to start and run: to execute its own executable, read it and the
-/// system's libraries, and their metadata, read `sysctl`s, and signal itself. Everything else, the network, every file write, every other file read, forking, other processes'
-/// signals, inter-process communication and Mach services among them, stays denied.
+/// system's libraries, and their metadata, read two `sysctl`s by name, and signal itself. Everything else, the
+/// network, every file write, every other file read, every other `sysctl`, forking, other processes' signals,
+/// inter-process communication and Mach services among them, stays denied.
+///
+/// The `sysctl`s, as pvm-binding's profile (`isolation.rs`) allows them: `hw.pagesize_compat`, which the standard
+/// library reads to place its stack guard, without which the program panics before `main`; and `hw.pagesize`. A
+/// bare `(allow sysctl-read)` would undo the `process-info*` denial: through `sysctl` a child could list every
+/// process (`KERN_PROC_ALL`) and read another's arguments (`KERN_PROCARGS2`), which the probe now tries.
 #[cfg(target_os = "macos")]
 fn profile(executable: &Path) -> String {
     // The path is a string literal of the profile language: its backslashes and quotes are escaped.
@@ -207,7 +215,7 @@ fn profile(executable: &Path) -> String {
          (allow process-exec (literal \"{exe}\"))\
          (allow file-read* file-read-metadata (literal \"{exe}\") (literal \"/\") (subpath \"/usr/lib\") \
          (subpath \"/System\") (literal \"/dev/null\") (literal \"/dev/urandom\") (literal \"/dev/random\"))\
-         (allow sysctl-read)\
+         (allow sysctl-read (sysctl-name \"hw.pagesize\") (sysctl-name \"hw.pagesize_compat\"))\
          (allow signal (target self))"
     )
 }
@@ -787,6 +795,12 @@ pub struct Probe {
     pub process_info_denied: Option<bool>,
     /// The machine's serial number couldn't be read through IOKit, on macOS.
     pub iokit_denied: Option<bool>,
+    /// No other process could be listed: on macOS `sysctl` `CTL_KERN, KERN_PROC, KERN_PROC_ALL` (its size query and
+    /// its read) failed or named no process but this one; on Linux `/proc` couldn't be listed or named no other.
+    pub process_list_denied: bool,
+    /// Another process's arguments couldn't be read: on macOS `sysctl` `CTL_KERN, KERN_PROCARGS2` of the process
+    /// named, else the parent; on Linux its `/proc/<pid>/cmdline`.
+    pub process_args_denied: bool,
     /// The file descriptors above the standard three open when the probe ran: none should be.
     pub open_descriptors: Vec<i32>,
     /// The Landlock ABI the child confined itself with, on Linux, if the kernel has Landlock.
@@ -851,6 +865,76 @@ mod macos {
         }
     }
 
+    /// `struct kinfo_proc`'s size and `kp_proc.p_pid`'s offset in it, on 64-bit macOS (`<sys/sysctl.h>`); `libc`
+    /// doesn't define the struct.
+    const KINFO_PROC_SIZE: usize = 648;
+    const KINFO_PROC_PID: usize = 40;
+
+    /// Whether any process other than this one could be listed through `sysctl` `KERN_PROC_ALL`, by its size
+    /// query or its read.
+    pub(super) fn processes_listable() -> bool {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL, 0];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a size query: a null buffer and a size to write.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        let counted = rc == 0 && size > KINFO_PROC_SIZE;
+        let mut buffer = vec![0u8; size.max(KINFO_PROC_SIZE) * 2];
+        let mut size = buffer.len();
+        // SAFETY: the buffer is `size` bytes long.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        // SAFETY: getpid takes nothing.
+        let own = unsafe { libc::getpid() };
+        let listed = rc == 0
+            && buffer[..size.min(buffer.len())]
+                .chunks_exact(KINFO_PROC_SIZE)
+                .any(|entry| {
+                    let pid = i32::from_ne_bytes(
+                        entry[KINFO_PROC_PID..KINFO_PROC_PID + 4]
+                            .try_into()
+                            .unwrap_or_default(),
+                    );
+                    pid != own && pid != 0
+                });
+        counted || listed
+    }
+
+    /// Whether `pid`'s arguments could be read through `sysctl` `KERN_PROCARGS2`.
+    pub(super) fn arguments_readable(pid: i32) -> bool {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut buffer = vec![0u8; 1 << 20];
+        let mut size = buffer.len();
+        // SAFETY: the buffer is `size` bytes long.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        rc == 0 && size > 0
+    }
+
     /// Whether another process's BSD information could be read.
     pub(super) fn process_info_readable(pid: i32) -> bool {
         // SAFETY: the buffer is a proc_bsdinfo of the size given.
@@ -911,6 +995,30 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>, other: Option<
     );
     #[cfg(not(target_os = "macos"))]
     let (process_info_denied, iokit_denied) = (None, None);
+    #[cfg(unix)]
+    // SAFETY: getppid takes nothing.
+    let target = other.unwrap_or_else(|| unsafe { libc::getppid() });
+    #[cfg(target_os = "macos")]
+    let (process_list_denied, process_args_denied) = (
+        !macos::processes_listable(),
+        !macos::arguments_readable(target),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (process_list_denied, process_args_denied) = {
+        // `/proc`, which the jail leaves unmounted: any process but this one listed, and the target's arguments.
+        let own = std::process::id().to_string();
+        let listed = std::fs::read_dir("/proc").is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name != own && !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+            })
+        });
+        #[cfg(unix)]
+        let read = std::fs::read(format!("/proc/{target}/cmdline")).is_ok();
+        #[cfg(not(unix))]
+        let read = false;
+        (!listed, !read)
+    };
     #[cfg(target_os = "linux")]
     let landlock_abi = CONFINED.get().and_then(|a| a.landlock_abi);
     #[cfg(not(target_os = "linux"))]
@@ -924,6 +1032,8 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>, other: Option<
         signal_denied,
         process_info_denied,
         iokit_denied,
+        process_list_denied,
+        process_args_denied,
         open_descriptors,
         landlock_abi,
     }
@@ -938,6 +1048,7 @@ pub fn probe_report(args: &[String]) -> String {
     format!(
         "{{\"network_denied\":{},\"unix_socket_denied\":{},\"file_write_denied\":{},\"file_read_denied\":{},\
          \"process_denied\":{},\"signal_denied\":{},\"process_info_denied\":{},\"iokit_denied\":{},\
+         \"process_list_denied\":{},\"process_args_denied\":{},\
          \"open_descriptors\":{:?},\"landlock_abi\":{}}}",
         p.network_denied,
         flag(p.unix_socket_denied),
@@ -947,6 +1058,8 @@ pub fn probe_report(args: &[String]) -> String {
         p.signal_denied,
         flag(p.process_info_denied),
         flag(p.iokit_denied),
+        p.process_list_denied,
+        p.process_args_denied,
         p.open_descriptors,
         p.landlock_abi.map_or("null".to_owned(), |a| a.to_string()),
     )

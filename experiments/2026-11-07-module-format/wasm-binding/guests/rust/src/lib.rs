@@ -16,7 +16,9 @@
 //! - `spin`, `grow <pages>`, `trap`: the binding's own probes of its limits, run by the sandboxed part;
 //! - `forge <operation> <secret> <https|wss> <host> <port>`: the binding's hostile probe, an outside step asked for
 //!   under the `serves` operation, in which the outside part looks up the secret and calls the endpoint naming
-//!   `<operation>` instead.
+//!   `<operation>` instead;
+//! - `burn <iterations>`: the binding's probe of the outside part's fuel, an outside step in which the outside part
+//!   counts to `<iterations>` and then obtains `burned`.
 
 #[cfg(all(feature = "sandboxed", feature = "outside"))]
 compile_error!("choose one part: `sandboxed` or `outside`");
@@ -101,6 +103,7 @@ enum Step {
     Spin,
     Grow(u32),
     Trap,
+    Burn(u64),
     Forge {
         claimed: String,
         name: String,
@@ -115,7 +118,7 @@ impl Step {
     fn is_outside(&self) -> bool {
         match self {
             Self::Secret { sandboxed, .. } | Self::State { sandboxed, .. } => !sandboxed,
-            Self::Call { .. } | Self::Module { .. } | Self::Forge { .. } => true,
+            Self::Call { .. } | Self::Module { .. } | Self::Forge { .. } | Self::Burn(_) => true,
             Self::Spin | Self::Grow(_) | Self::Trap => false,
         }
     }
@@ -174,6 +177,7 @@ fn program() -> Option<Program> {
             ["spin"] => program.steps.push(Step::Spin),
             ["grow", n] => program.steps.push(Step::Grow(n.parse().ok()?)),
             ["trap"] => program.steps.push(Step::Trap),
+            ["burn", n] => program.steps.push(Step::Burn(n.parse().ok()?)),
             ["forge", o, n, s, h, port] => program.steps.push(Step::Forge {
                 claimed: (*o).to_owned(),
                 name: (*n).to_owned(),
@@ -259,7 +263,7 @@ mod sandboxed {
                 Step::Spin => spin(),
                 Step::Grow(pages) => grow(*pages),
                 Step::Trap => core::arch::wasm32::unreachable(),
-                Step::Call { .. } | Step::Module { .. } | Step::Forge { .. } => {}
+                Step::Call { .. } | Step::Module { .. } | Step::Forge { .. } | Step::Burn(_) => {}
             }
         }
         obtained
@@ -412,6 +416,13 @@ mod outside {
                 }
                 Some(Step::Module { callee, kind }) => {
                     modules::call(&callee, &kind);
+                }
+                Some(Step::Burn(iterations)) => {
+                    let mut n: u64 = 0;
+                    for _ in 0..iterations {
+                        n = core::hint::black_box(n.wrapping_add(1));
+                    }
+                    obtained.push("burned".to_owned());
                 }
                 Some(Step::Forge {
                     claimed,

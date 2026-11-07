@@ -22,6 +22,14 @@ pub enum Probe {
     Grow(u32),
     /// Trap (`B-05`).
     Trap,
+    /// Ask the outside part `times` times, through outside requests for the operation it serves, to count to
+    /// `iterations` and obtain `burned`: one budget of fuel bounds them all (`B-03`).
+    Burn {
+        /// What the outside part counts to, each time.
+        iterations: u64,
+        /// How many outside requests.
+        times: usize,
+    },
     /// Hostile: asked through an outside request for the operation the module serves first, the outside part
     /// looks up `secret` and calls `endpoint` naming the operation `claimed` instead.
     Forge {
@@ -102,6 +110,9 @@ pub fn encode(spec: &ModuleSpec, probes: &[Probe]) -> String {
             Probe::Spin => "spin".to_owned(),
             Probe::Grow(pages) => format!("grow {pages}"),
             Probe::Trap => "trap".to_owned(),
+            Probe::Burn { iterations, times } => {
+                vec![format!("burn {iterations}"); *times].join("\n")
+            }
             Probe::Forge {
                 claimed,
                 secret,
