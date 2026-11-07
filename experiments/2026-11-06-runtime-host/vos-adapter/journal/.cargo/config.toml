@@ -1,11 +1,5 @@
-# VOS's guest configuration at the pinned commit (its pvm/guest/config.toml), pointing at its target and linker
-# script in ../.vos rather than copying them. Build from this directory with
-#     cargo build --release --target ../.vos/pvm/guest/riscv64em-vos.json
-[target.riscv64em-vos]
-rustflags = [
-    "-Zunstable-options",
-    "-Clink-arg=-T../.vos/pvm/guest/pvm.ld",
-]
+# VOS's guest configuration at the pinned commit (its pvm/guest/config.toml), without its target's rustflags: the
+# linker script is the checkout's, which ../build.sh names on the command line, from VOS_PIN.
 
 [unstable]
 json-target-spec = true

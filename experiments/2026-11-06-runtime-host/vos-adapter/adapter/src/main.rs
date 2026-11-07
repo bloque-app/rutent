@@ -16,7 +16,10 @@
 //!   replica's log start read, the node killed and reopened, and every journal checked whole and replayed;
 //! - `session-expiry`: one order recorded, the node's clock moved past VOS's session expiry with its `clock`
 //!   fault, another order recorded, the node killed and reopened, and every input's source read back;
-//! - `sizes`: the largest input and state the suite's probe writes, as canonical JSON, against VOS's caps.
+//! - `sizes`: the largest input and state the suite's probe writes, as canonical JSON, against VOS's caps;
+//! - `export-file`: for the re-score's `R-07a` and `R-07b`, three orders part-way and a refusal recorded on this
+//!   build's VOS, the host halted, its snapshot stream written to `<base>/stream.jsonl`, one entry a line, and the
+//!   node killed, leaving its data directory at `<base>/x1` for the tip's node to open.
 //!
 //! The paths come from the environment: `VOS_BIN` (a `vos` built with `--features faults`), `VOS_AGENT_ELF`
 //! and `JOURNAL_ELF`. Each pass makes its stores under `<base>`, which it must not hold yet.
@@ -291,6 +294,42 @@ fn session_expiry(base: PathBuf) {
     let _ = harness.kill(host);
 }
 
+/// Records three orders part-way and one refusal on this build's VOS, halts, writes the snapshot stream to
+/// `<base>/stream.jsonl` and kills the node, leaving its data directory at `<base>/x1`.
+fn export_file(base: PathBuf) {
+    let mut harness = VosHarness::<Probe>::new(config(base.clone(), ""), "x");
+    let store = harness.fresh_store().expect("a store");
+    let mut host = harness.start(store).expect("a host");
+    let mut first = None;
+    for (n, keep) in [(0u32, 4usize), (1, 6), (2, 2)] {
+        let inputs = probe::order_inputs(&format!("ord-pin{n}"), 100 * n);
+        for input in &inputs[..keep] {
+            host.submit(input.clone()).expect("a submit");
+        }
+        first.get_or_insert(inputs[1].clone());
+    }
+    let reused = probe::reusing(first.as_ref().expect("an input"));
+    let refused = host.submit(reused);
+    host.halt().expect("a halt");
+    let entries: Vec<_> = host
+        .export()
+        .expect("an export")
+        .collect::<Result<_, _>>()
+        .expect("the stream");
+    let lines: String = entries
+        .iter()
+        .map(|e| serde_json::to_string(e).expect("an entry serialises") + "\n")
+        .collect();
+    std::fs::write(base.join("stream.jsonl"), lines).expect("the stream file");
+    let _ = harness.kill(host);
+    println!("| What | Value |");
+    println!("|---|---|");
+    println!("| VOS | vos-core at 1aadf44, the first run's adapter and journal |");
+    println!("| Entries written to `stream.jsonl` | {} |", entries.len());
+    println!("| The reused record id | refused: {} |", refused.is_err());
+    println!("| The data directory left for `R-07b` | `x1` |");
+}
+
 /// The report, its verdict line saying it is a pre-freeze development run when the host contract is still 0.x,
 /// before the `C1` freeze. From 1.0.0 the report is a scored run's and is left as the suite printed it.
 fn pre_freeze(markdown: String) -> String {
@@ -349,6 +388,10 @@ fn main() {
         }
         "session-expiry" => {
             session_expiry(base);
+            return;
+        }
+        "export-file" => {
+            export_file(base);
             return;
         }
         other => {
