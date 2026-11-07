@@ -68,7 +68,7 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    On VOS, damage to the last journal batch cost no acknowledged record. That is presumably VOS's layout more than proof:
    the last batch on disk after an acknowledged submit is likely the unsynced apply or commit-index batch that
    follows the synced append, which the log replays over. So the two results are not like for like: `pb`'s
-   last frame is its acknowledged append, and VOS's damage never reached one. On one node the damage left no visible trace, consistent with that layout, and the harness
+   last frame is its acknowledged append, and VOS's damage probably never reached one. On one node the damage left no visible trace, consistent with that layout, and the harness
    could not place it on the append itself, so fjall's silent cut of a corrupt tail, the single-node residual of
    `G-54`, stands untested. On three nodes fjall cut a damaged follower's tail at the open, about 3 KB, leaving it one entry
    behind; it caught up from the leader once it saw the leader's next entry, and when two nodes were damaged together both reopened
