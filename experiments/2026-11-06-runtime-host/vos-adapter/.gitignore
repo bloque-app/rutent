@@ -1,0 +1,3 @@
+# The VOS checkout fetch-vos.sh links here, and any build made in place.
+/.vos
+target/

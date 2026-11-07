@@ -1,0 +1,38 @@
+# The VOS adapter: rutent's host contract met by a VOS node, for EXP-1 (T-007-03). Its own workspace, outside
+# rutent's default build, so rutent's Cargo.lock and licence check never see it: it links VOS's
+# AGPL-3.0-or-later crates, and nothing that links VOS may merge until the owner rules on DEC-6 (see ../README.md).
+[package]
+name = "rutent-vos-adapter"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "exp1-vos"
+path = "src/main.rs"
+required-features = ["vos"]
+
+# The flag that enables the candidate (PLAN.md T-007-03). Without it nothing of VOS is compiled or linked: the
+# library is empty and exp1-vos is not built.
+[features]
+vos = ["dep:ed25519-dalek", "dep:rutent-vos-journal", "dep:vos-node", "dep:vos-wire"]
+
+[dependencies]
+ed25519-dalek = { version = "2", optional = true }
+serde = "1"
+serde_json = "1"
+rutent-contracts = { path = "../../../../contracts" }
+rutent-conformance = { path = "../../../../conformance" }
+rutent-stm = { path = "../../../../components/stm" }
+rutent-vos-journal = { path = "../journal", optional = true }
+# VOS at the pinned commit. ../README.md says how to build against a local checkout instead of fetching it.
+vos-node = { git = "https://github.com/virto-network/vos", rev = "1aadf44fa2cb1eaedc015ee82343ac118cc89f1e", optional = true }
+vos-wire = { git = "https://github.com/virto-network/vos", rev = "1aadf44fa2cb1eaedc015ee82343ac118cc89f1e", optional = true }
+
+[workspace]
+resolver = "3"
+
+# VOS's own patch at the pinned commit (its Cargo.toml): fjall's lsm-tree with three fixes, on a fork. A patch
+# does not reach a workspace that depends on VOS, so it is repeated here to link what VOS links.
+[patch.crates-io]
+lsm-tree = { git = "https://github.com/olanod/lsm-tree", rev = "d0791931a96ff2be9b23af4e0d1ef17a330ed9f2" }

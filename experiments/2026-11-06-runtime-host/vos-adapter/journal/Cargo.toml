@@ -1,0 +1,31 @@
+# The journal actor, a VOS guest built for the PVM with VOS's guest toolchain. Its own workspace, outside rutent's
+# default build: it links VOS's AGPL-3.0-or-later SDK, and nothing that links VOS may merge until the owner rules
+# on DEC-6 (see ../README.md).
+[package]
+name = "rutent-vos-journal"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+test = false
+bench = false
+
+[[bin]]
+name = "rutent-vos-journal"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+# VOS at the pinned commit. ../README.md says how to build against a local checkout instead of fetching it.
+vos-sdk = { git = "https://github.com/virto-network/vos", rev = "1aadf44fa2cb1eaedc015ee82343ac118cc89f1e" }
+
+[workspace]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1

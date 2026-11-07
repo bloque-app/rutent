@@ -1,0 +1,13 @@
+# VOS's guest configuration at the pinned commit (its pvm/guest/config.toml), pointing at its target and linker
+# script in ../.vos rather than copying them. Build from this directory with
+#     cargo build --release --target ../.vos/pvm/guest/riscv64em-vos.json
+[target.riscv64em-vos]
+rustflags = [
+    "-Zunstable-options",
+    "-Clink-arg=-T../.vos/pvm/guest/pvm.ld",
+]
+
+[unstable]
+json-target-spec = true
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
