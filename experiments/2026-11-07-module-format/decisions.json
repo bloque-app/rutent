@@ -66,6 +66,35 @@
       "origin": "EXP-2, T-008-01, 2026-11-07"
     },
     {
+      "id": "exp2-pvm-placement",
+      "kind": "decide",
+      "section": "decide",
+      "group": "bindings",
+      "title": "Where does the PVM binding sit, and how do its stand-ins take the suite's modules?",
+      "lead": "The PVM binding sits in its own cargo workspace, experiments/2026-11-07-module-format/pvm-binding/, outside the root workspace, and each category's stand-in is one compiled program per part and language that the binding writes each suite module's spec into, unless this item says otherwise.",
+      "bullets": [
+        "Its own workspace and Cargo.lock keep PolkaVM out of the root lock and licences/RECORD until the owner decides (REQ-MOD-5); building it at all is the flag (Narthex REQ-EXP-3)",
+        "polkavm-linker 0.38.0 brings MPL-2.0 option-ext through dirs; the workspace patches dirs with its own MIT stub (scoring sheet G-31)",
+        "Each stand-in, reserve, exchange, ramp and verifier, in Rust and C, is a step interpreter compiled once; build() writes the module's spec into a reserved data slot, so every release is its own blob and digest while its code is unchanged",
+        "The suite runs once per category, so each of the eight stand-ins meets every fixture; a row passes only if all four categories pass it",
+        "Reversible: per-module compilation, or a different category mapping, would only change build() and re-run the cells"
+      ],
+      "rec": "the binding's own workspace with spec-slot stand-ins, because it keeps the root lock clean and runs every stand-in through the whole suite.",
+      "options": [
+        "Its own workspace, stand-ins taking the spec in a data slot, the suite once per category (recommended)",
+        "Its own workspace, each suite module compiled from generated source",
+        "A member of the root workspace behind a cargo feature"
+      ],
+      "default": 0,
+      "reserved": false,
+      "spec": ["DEC-7", "REQ-MDL-15", "REQ-MOD-5", "AC-20"],
+      "refs": [
+        {"label": "The run note", "url": "runs/EXP-2-pvm-dev-20261107-3.md"},
+        {"label": "G-31", "url": "scoring.md#32-polkavm-v0380"}
+      ],
+      "origin": "EXP-2, T-008-03, 2026-11-07"
+    },
+    {
       "id": "exp2-languages",
       "kind": "decide",
       "section": "decide",
