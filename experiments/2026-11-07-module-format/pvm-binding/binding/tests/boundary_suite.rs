@@ -40,11 +40,20 @@ fn every_categorys_stand_ins_pass_the_module_boundary_suite_in_rust_and_in_c() {
         let mut binding = PvmBinding::new(setup(), category);
         let report = run_boundary_suite(&mut binding, &RunConfig::default());
         assert_eq!(report.languages, ["rs", "c"], "{category}");
+        let stderrs: Vec<String> = binding
+            .stderrs()
+            .iter()
+            .take(3)
+            .map(|s| format!("[{}] {}", s.label, String::from_utf8_lossy(&s.bytes)))
+            .collect();
         assert!(
             report.passed(),
-            "{category}: findings {:?}, uncovered {:?}",
+            "{category}: findings {:?}, uncovered {:?}; releases that didn't start {:?}; admissions refused {:?}; \
+             children's standard error {stderrs:?}",
             report.findings,
-            report.uncovered
+            report.uncovered,
+            binding.stats.not_started.iter().take(5).collect::<Vec<_>>(),
+            binding.stats.refused.iter().take(5).collect::<Vec<_>>(),
         );
     }
 }
