@@ -203,3 +203,17 @@ and no binding source changed.
   not carry it. Nothing was built to show it.
 - **macOS evidence.** The macOS probes come from development runs only, and the re-check of `THR-85` rests no
   status on them.
+
+## Promotion (2026-11-07)
+
+- **The rulings.** The owner answered `exp2-adopt-format` with "Wasm only for M2; drop PolkaVM for v0" and
+  `licence-llvm-exception` with "the standing permission covers it".
+- **What was promoted** (Narthex `REQ-EXP-5`):
+  - the amendment, as a new section of `adr/0003-module-format-sandbox.md`, with the two reconciled points applied
+    to its context and last consequence;
+  - the re-checked `THR-85` row, into `ARCHITECTURE.md` §6.
+  The PolkaVM variants were dropped, not promoted.
+- **The plan decision** is accepted, but it is not in `PLAN.md`: only the owner edits that file. It waits in
+  `drafts/plan-decision.md` for its `DEC` number and row in §2.1.
+- **No questions** were left for the lead.
+- **The drafts stay** as the experiment's record, each marked promoted.

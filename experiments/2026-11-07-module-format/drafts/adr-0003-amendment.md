@@ -1,8 +1,8 @@
 ---
-Status: experimental
+Status: promoted into adr/0003-module-format-sandbox.md on 2026-11-07; kept as the experiment's record
 amends: adr/0003-module-format-sandbox.md
 experiment: EXP-2
-decision_item: exp2-adopt-format (pending); licence-llvm-exception (pending)
+decision_item: exp2-adopt-format (answered 2026-11-07: Wasm only); licence-llvm-exception (answered 2026-11-07: covered)
 ---
 
 # Draft: amendment to ADR-0003, the admitted module format

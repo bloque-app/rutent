@@ -1,6 +1,6 @@
 ---
 experiment: EXP-2
-status: written by T-008-04, 2026-11-07; awaiting the owner's answer to items exp2-adopt-format and licence-llvm-exception
+status: written by T-008-04, 2026-11-07; adopted by the owner on 2026-11-07 (exp2-adopt-format: Wasm only; licence-llvm-exception: covered); promoted into ADR-0003 and ARCHITECTURE.md §6
 ---
 
 # EXP-2 outcome
@@ -76,7 +76,7 @@ Wasm's figure includes the spawn, and PolkaVM's leaves out the worker's own spaw
    (`EXP-2-wasm-20261107-2`, `-3`).
 4. **The licences.** Both closures carry `Apache-2.0 WITH LLVM-exception` as some crates' only expression. For Wasm
    that is 29 crates, the runtime and compiler themselves. For PolkaVM it is one, `regalloc2`, which only the
-   stand-ins' linker brings. See [the legal question](#the-legal-question).
+   stand-ins' linker brings. See [the licences](#the-licences).
 5. **The cost of closing the gaps.** Wasm's are rutent's own work: a resource limit or cgroup, a chosen memory
    configuration, an advisory read, fuzzing, and the binding rows both formats fail.
    Its pin is an LTS release, supported until 2028-08-20 (`G-12`). PolkaVM's `G-13` closes only upstream. Adapting
@@ -112,30 +112,16 @@ provider's jailed process, with no network, file, other process or inherited des
 - for `THR-18`, re-derivation on separate hardware is shown on two AMD models only (`B-11`, `EXP-2-wasm-20261107-2`,
   `-3`); no Intel CPU was tried.
 
-The re-checked row is drafted in [`drafts/thr-85-recheck.md`](drafts/thr-85-recheck.md).
+The re-checked row is now in `ARCHITECTURE.md` §6; its draft stays in [`drafts/thr-85-recheck.md`](drafts/thr-85-recheck.md).
 
-## The legal question
+## The licences
 
-Facts only. `licences/RECORD`'s standing permission names Apache-2.0, not its LLVM exception. Two existing lines
-carry the exception as one choice of an `OR`: `wasip2` and `wit-bindgen`. No line carries it as the only
-expression. The orchestrator read it as covered by the standing permission; the owner has not confirmed that. The
-recommendation rests on the numbers above. What the owner's ruling changes:
-
-- **Covered by the standing permission:** the 29 Wasmtime crates take `permitted` lines when `F-013` brings them
-  into the root `Cargo.lock`. The other 76 unlisted host packages, and the 16 guest ones, state only licences the
-  standing ruling names. `E4`'s licence clause can then hold for Wasm.
-- **Ruled case by case:** the owner rules each of the 29 crates, and each later version, one at a time.
-- **Declined:** Wasmtime can't reach `main` at this pin, since the 29 are its runtime and compiler. PolkaVM's
-  platform need not carry `regalloc2`: its binding takes `polkavm-linker` only to build stand-ins, never on
-  admission's path (`pvm-binding/binding/Cargo.toml`). But `G-13` stands, so no format fit for production would
-  remain, `REQ-MDL-15` would be unmet for v0, and this outcome would be reopened.
-- **Not ruled:** no Wasmtime line is recorded, and `F-013` can't bring Wasmtime into the root workspace, whose
-  `Cargo.lock` is the only one the licence check reads.
-
-The licence check doesn't read the experiments' own workspaces. Merging `M1` puts both bindings' manifests and
-lockfiles on `main`, naming every dependency listed in the licence rows, none of them recorded in
-`licences/RECORD`: 105 of Wasm's 136 host and 16 of its 33 guest external packages, and 17 of PolkaVM's 41 and 5 of
-its 9. Whether those workspaces stay in the merge unrecorded, as experiment code, is the owner's call (`REQ-MOD-5`).
+Both rulings are made (2026-11-07). The owner confirmed that the standing permission covers
+`Apache-2.0 WITH LLVM-exception` (item `licence-llvm-exception`). For `licence-experiment-workspaces`, the owner
+chose to record the experiments' dependencies before merging. Since `T-001-04`'s follow-up, the licence check reads
+every `Cargo.lock` under `experiments/` as well as the root one. All four binding locks' external packages have
+their lines in `licences/RECORD`, the 29 Wasmtime crates among them, and none is pending. The licence rows above
+give the state at the runs, before that record.
 
 PolkaVM's scored runs used the contracts as frozen at 1.0.0. After the security review bumped provider-role,
 module-interface and host to 2.0.0, its binding was rebuilt and its tests pass, but it wasn't re-run on the scoring
