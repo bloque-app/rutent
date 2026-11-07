@@ -20,12 +20,26 @@ any run (`decisions.json`, `exp1-rescore-criteria`). The first run's cells stay 
 | Candidate | Result | What it means |
 |---|---|---|
 | `vos`, VOS as the whole runtime at `vos-core` `5c78975` | **adapt** | `M2` builds `CMP-STM` as a VOS program on three replicas, at a pinned and mirrored commit, once the [preconditions](#preconditions) are met |
-| `pb`, the purpose-built store | the ruled fallback | ADR-0002's fallback, kept behind its flag. It has no replication, and it loses acknowledged records on a restore and on a damaged last frame |
+| `pb`, the purpose-built store | the ruled fallback | ADR-0002's fallback, kept behind its flag. It has no replication, so its only recovery from a lost disk is a restore, which loses the records acknowledged after the copy |
 | `ref`, the reference host | the floor | In memory; never a candidate |
 
-Both candidates pass the gate. On the operational rows the first run never reached, VOS on three nodes passes every
-row it can run; `pb` fails four, two of them (replication) by construction. `pb` is faster on one disk. A VOS step costs about
-a fifth of VOS's 10M default handler gas, about 2% of the 100M the program's `submit` declares.
+Both candidates pass the gate. On the operational rows the first run never reached, the candidates differ in one
+property, replication (`R-01`, `R-02` and `R-03`, counted once): VOS on three nodes has it, `pb` does not. `R-04`
+was not delivered alike to the two, so it decides nothing: `G-54` is open for both, shown on `pb` and untested on
+VOS. Both pass the upgrade and format rows (`R-06`).
+
+### What adopting VOS costs
+
+Measured in one job on one runner (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`, `EXP-1-pb-20261107-5`):
+
+- **Throughput.** At 64 submitters `pb` writes about 4.5k records/s (4,544); VOS 3.0k on one node (2,979) and 2.0k
+  on three (1,957) (`R-05`).
+- **Recovery time.** A halted export and import of 100k records (100,352) takes `pb` 3.0 s, and VOS 59.1 s on one
+  node and 81.8 s on three (`R-08`). On VOS that is the total-loss recovery path, a scheduled halted export, and its
+  time grows with the history the export carries.
+- **A step.** A synced submit costs `pb` 222 µs, and VOS 841 µs on the JIT (`R-09`). The JIT is only about 1.8 times
+  the interpreter (1,551 µs), so the guest's own work dominates the step: 1.87M gas, about a fifth of VOS's 10M
+  default handler gas.
 
 ## Numbers
 
@@ -39,8 +53,8 @@ the `R-07` job's own runner for `R-07a` and `R-07b`. Timings are measurements, n
 | `R-01` the leader killed mid-submit | n/a: a three-node row | pass: 21 kills (one placed through `hold_commits`, 20 at random), a submit in flight at each as last seen; 0 of 497 acknowledged lost | **fail (by construction)**; its restart on the same disk, killed during a submit loop, opens in 11 to 24 ms in 5 rounds |
 | `R-02` a replica replaced from the survivors | n/a | pass | **fail (by construction)** |
 | `R-03` a replica's data lost, then replaced | n/a | pass, leader and follower | **fail**: restored from a copy, 28 of 28 records acknowledged after it are lost, each already released, so its effects may have run |
-| `R-04a` the last batch damaged | pass, the damage's effect on the node not shown: opens, nothing acknowledged lost | pass: the follower rejoins and catches up | **fail**: opens one acknowledged record short, silently |
-| `R-04b` the leader and a follower damaged together | n/a | pass, the damage's effect not shown: both reopen, nothing lost, all three agree | n/a: one node |
+| `R-04a` the last batch damaged | not reached: the damage did not land on an acknowledged batch | pass, for what it showed: a damaged follower caught up from the leader | **fail**: the damage hit the acknowledged last frame, and the store opens one record short, silently |
+| `R-04b` the leader and a follower damaged together | n/a | not reached: the damage did not land on an acknowledged batch | n/a: one node |
 | `R-05` records/s at 1, 8, 64 submitters | 328, 1,538, 2,979 | 239, 1,387, 1,957 | 4,753, 4,568, 4,544 |
 | `R-05` fsyncs a record at 1, 8, 64 | 1.02, 0.15, 0.08 | 3.06, 0.83, 0.20 (three nodes) | 1.00, 1.00, 1.00 |
 | `R-06a` the program upgraded, one input in flight | pass | pass | pass, as a redeploy |
@@ -59,30 +73,26 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    The after-computed rows (`H-02`, `H-06`, `H-11`) pass on the faults build, which holds commits; on the scored
    build the same stop lands after an unheld commit, and `stop-after-computed` fails there, as the first run's
    control did. That is the stop's test, not a VOS gap.
-2. **Replication is one property, and only VOS has it.** `R-01` to `R-03` pass on three VOS nodes:
-   no acknowledged record was lost when the leader was killed at 21 points, a submit in flight at each as the harness last saw it, or when a replica was replaced, with
-   or without its data. `pb` has one node, so it fails `R-01` and `R-02` by construction, and its only recovery
-   from a lost disk is a restore, which loses every record acknowledged after the copy (`R-03`), each already released
-   to its submitter, so its effects may have run. Counted once, as the brief asks: `pb` lacks replication.
-3. **Damage.** A damaged last frame cut `pb` one acknowledged record short without a refusal (`R-04a`, `G-54`).
-   On VOS, damage to the last journal batch cost no acknowledged record. That is presumably VOS's layout more than proof:
-   the last batch on disk after an acknowledged submit is likely the unsynced apply or commit-index batch that
-   follows the synced append, which the log replays over. So the two results are not like for like: `pb`'s
-   last frame is its acknowledged append, and VOS's damage probably never reached one. On one node the damage left no visible trace, consistent with that layout, and the harness
-   could not place it on the append itself, so fjall's silent cut of a corrupt tail, the single-node residual of
-   `G-54`, stands untested. On three nodes fjall cut a damaged follower's tail at the open, about 3 KB, leaving it one entry
-   behind; it caught up from the leader once it saw the leader's next entry, and when two nodes were damaged together both reopened
-   and all three agreed, with nothing lost, though that run recorded no evidence that the cut took effect
-   (`R-04b`). No watermark patch exists at the pin, so that leg is n/a.
+2. **Replication is one property, and only VOS has it.** `R-01` to `R-03`, counted once: on three VOS nodes no
+   acknowledged record was lost when the leader was killed at 21 points, a submit in flight at each as the harness
+   last saw it, or when a replica was replaced, with or without its data. `pb` has one node, so it fails `R-01` and
+   `R-02` by construction, and its only recovery from a lost disk is a restore, which loses every record
+   acknowledged after the copy (`R-03`), each already released to its submitter, so its effects may have run.
+3. **Damage is not a difference.** The fault was not delivered alike. On `pb` the damage hit the frame that holds the
+   last acknowledged record, and the store opened one record short without a refusal. On VOS it hit fjall's newest
+   journal file, most likely the unsynced batch written after the acknowledged append, which the log replays over;
+   on one node and in `R-04b` nothing shows it reached an acknowledged batch, so those cells read not reached. What
+   three VOS nodes did show is that a damaged follower, its tail cut about 3 KB at the open, caught up from the
+   leader. `G-54` is therefore open for both candidates: shown on `pb`, untested on VOS, and fjall still discards a
+   corrupt tail without an error. No watermark patch exists at the pin, so that leg is n/a.
 4. **Upgrades and formats.** Both survive an upgrade with an input in flight (`R-06a`), and both refuse a changed
    format (`R-06b`). On VOS the refusal is the program's own format check: `Admin::Install` checks nothing at the
    tip. Across VOS commits the tip refuses 1aadf44's store cleanly (`R-07b`), and the swap stream carried the
    first run's deployment, another program on another commit, into the tip program (`R-07a`): VOS upgrades can
    go by swap stream, as `G-40`'s fix says. The same program across two commits is not runnable yet (`R-07c`).
-5. **Speed and recovery time.** `pb` is faster on one disk: about 4,500 to 4,800 records/s against VOS's 239 to
-   2,979, and a 100k-record swap in 3.0 s against 59 to 82 s. VOS's group commit is visible: on one node one fsync per record
-   alone, 0.08 at 64 submitters; on three, 3.06 and 0.20 across the nodes. No `NFR-1` target exists before `M4`. A VOS step costs 1.87M gas, the handler and the
-   agent's work together; the runs did not break it down. The JIT is only about 1.8 times the interpreter on this step.
+5. **Speed and recovery time** are the costs above. VOS's group commit is visible in them: on one node one fsync per
+   record alone, 0.08 at 64 submitters; on three, 3.06 and 0.20 across the nodes; `pb` pays one a record at every
+   load. No `NFR-1` target exists before `M4`.
 6. **What changed since the first outcome.** The six `pass (adapter)` rows of the first run (`G-01` to `G-03`,
    `G-07`, `G-08`, `G-31`; scoring sheet §2) are now the program's own code, as VOS intends. The first outcome's cost argument, that VOS would be a replicated store and not the runtime, no
    longer holds: the whole host contract runs inside VOS, through a `no_std` copy of `contracts/` whose patch
@@ -101,7 +111,7 @@ What must be true for v0 to ship on VOS (the rethink's §8), with where each sta
 | The licence ruled, covering a state machine that links `vos-sdk` | The owner permitted VOS's 12 AGPL-3.0-or-later crates for this experiment (`DEC-6,counsel-licences`); adoption is this item. `licences/RECORD` gained 225 lines, counted from every experiment lockfile; the tip's lockfiles (`vos-adapter/rt`, `vos-adapter/program`) lock 274 packages from a registry or git, and 3 of the experiment's own path crates the licence check counts as external: 277 that need a line |
 | A VOS commit pinned by SHA and mirrored, with its forks (`lsm-tree`, `stwo`, `s4`) | Pinned by SHA here; not mirrored yet (`G-48`) |
 | The state machine inside VOS, passing host contract 2.0.0 on three nodes | Done here, as an experiment. For `M2`, `contracts/` goes `no_std` + `alloc` through a `DEC-4` bump and the owner's click (`DEC-20`); the patch this experiment applied shows it is plumbing only |
-| `G-54` fixed upstream, or its residual accepted for both candidates | Not fixed at the tip. A damaged follower caught up from the leader in these runs; damage to a leader's append, and the single-node residual, are untested |
+| `G-54` fixed upstream, or its residual accepted for both candidates | Open for both: shown on `pb` (`R-04a`), untested on VOS. Before v0, the targeted test: damage to the frame holding the last acknowledged append, on one VOS node and on a leader of three. A damaged follower did catch up from the leader in these runs |
 | A recovery story for total loss | Scheduled halted exports: about 59 to 82 s of downtime at 100k records, the RPO the export interval (`R-08`); or upstream `vos node restore` |
 | The JIT verified on the production host | Verified on the runner (kernel 7.0, userfaultfd write-protect, perf maps); the production host is still to check, and VOS's node still builds on two pinned nightlies with native codegen (`G-37`) |
 | Journal growth bounded | Open (`G-33`): archive terminal orders in the program |
@@ -117,6 +127,6 @@ licence ruled apart from the adoption.
 
 ## The drafts
 
-`drafts/adr-0002-amendment.md` and `drafts/plan-decision.md` were written for the first outcome. Their
-[If the owner chooses VOS](drafts/adr-0002-amendment.md#if-the-owner-chooses-vos) section is the starting point if
-the owner takes this recommendation; promotion rewrites them from the owner's answer.
+`drafts/adr-0002-amendment.md` (`Status: experimental`) and `drafts/plan-decision.md` (`proposed`) are written for
+this recommendation: VOS adapted as the whole runtime, the purpose-built store as the fallback, and the
+preconditions above. Promotion rewrites them from the owner's answer.
