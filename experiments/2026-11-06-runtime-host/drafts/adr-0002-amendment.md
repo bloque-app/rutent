@@ -40,15 +40,19 @@ The numbers, each with its run:
 - **Gate.** Both pass all 17 host-contract rows at host contract 2.0.0; VOS on one node and on three, its three
   after-computed rows on its faults build (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`,
   `EXP-1-pb-20261107-5`).
-- **Replication, one property** (`R-01` to `R-03`). On three VOS nodes no acknowledged record was lost across 21
-  leader kills, a replica replaced, and a replica's disk lost (`EXP-1-vos-rt3-20261107-2`). The store has one node,
-  and a restore from a copy lost the 28 records acknowledged after it (`EXP-1-pb-20261107-5`).
+- **Replication, one property** (`R-01` to `R-03`). On three VOS nodes, all on one runner, no acknowledged record
+  was lost across 21 leader kills, a replica replaced, and a replica's disk lost (`EXP-1-vos-rt3-20261107-2`). The
+  store has one node: its restarts after a `kill -9` lost nothing, and a restore from a copy lost the 28 records
+  acknowledged after it (`EXP-1-pb-20261107-5`). Losing the host was not tested.
 - **Damage** (`R-04`, `G-54`) was not delivered alike and decides nothing: on the store it hit an acknowledged
   frame, which was cut silently; on VOS it did not land on an acknowledged batch. `G-54` is open for both.
-- **Upgrades and formats** (`R-06`). Both pass.
-- **The costs of VOS.** At 64 submitters the store writes about 4.5k records/s, VOS 3.0k on one node and 2.0k on
-  three (`R-05`). A 100k-record halted export and import takes the store 3.0 s, VOS 59.1 s and 81.8 s (`R-08`). A
-  step costs the store 222 µs and VOS 841 µs on the JIT, the guest's own work dominating (`R-09`).
+- **Upgrades and formats** (`R-06`). Both pass; for the store the upgrade is a redeploy of the binary, as the
+  criterion says.
+- **The costs of VOS.** At 64 submitters the store writes about 4.5k records/s in-process behind a mutex, VOS 3.0k
+  on one node and 2.0k on three through separate clients, with a lower p99 (`R-05`). A 100k-record halted export
+  and import takes the store 3.0 s, VOS 59.1 s and 81.8 s; both grow with history (`R-08`). A synced submit costs
+  the store 222 µs; VOS's step costs 841 µs on the JIT and a whole single-input batch 1,348 µs, the guest's own
+  work dominating (`R-09`).
 - **Licence.** The owner permitted VOS's 12 AGPL-3.0-or-later crates for the experiment (`DEC-6,counsel-licences`);
   `licences/RECORD` lists every package the experiment's lockfiles lock. Adoption is the item's ruling.
 
@@ -65,7 +69,7 @@ replicas (`F-010`).
   runtime-neutral, so a later `EXP-n` may score another runtime without reopening `runtime-host-seam`.
 - **The reasons.** Only VOS has replication: it turns losing a node or a disk into replacing a replica, where the
   store's only recovery is a restore that loses acknowledged records. The costs are throughput, a total-loss
-  recovery time that grows with history, and a slower step, none of them against a target before `M4`.
+  recovery time longer than the store's, and a slower step, none of them against a target before `M4`.
 
 **Which wording stands on the licence.** ADR-0002 says VOS's licence needs counsel before adoption. The owner's
 later ruling `counsel-licences` and `DEC-6` replace that step: a dependency's licence is the owner's decision,
@@ -84,7 +88,8 @@ read as superseded by it. This records which ruling applies. It draws no legal c
     upstream `vos node restore`;
   - the JIT verified on the production host (kernel 6.7 or later, userfaultfd allowed), and a build without native
     codegen (`G-37`);
-  - journal growth bounded: the program archives terminal orders (`G-33`).
+  - journal growth bounded: the program archives terminal orders (`G-33`);
+  - power loss and the loss of the host tested, which no run reached on either candidate.
 - **Owned elsewhere.** The audit trail to `F-022`, apart from the execution store (ADR-0005); metrics and load
   figures to `F-033`; `G-26` to `F-025`; the release to `F-034`.
 - **The `vos` line** in `licences/RECORD` moves from `not-adopted` and `pending` to the owner's decision, with the
@@ -100,6 +105,7 @@ Then the Decision is reversed:
   experimental flag; it brings no new package;
 - v0 has no replication: losing the disk means restoring a copy, which loses the records acknowledged after it, so
   the deployment's backup interval is its RPO;
-- before production, `F-010` closes the store's gaps: `G-54` (a damaged acknowledged last frame is cut silently),
-  `G-33`, `G-40` and `G-51`, and tests power loss on the deployment platform;
+- before production, `F-010` closes `G-54`, shown on the store (a damaged acknowledged last frame is cut
+  silently), and `G-33`, `G-40` and `G-51`, which both candidates fail, and tests power loss on the deployment
+  platform, which no run reached on either;
 - VOS is not adopted for v0, its code stays as `EXP-1`'s record, and the `vos` line stays `not-adopted`.
