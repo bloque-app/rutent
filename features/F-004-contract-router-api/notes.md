@@ -225,3 +225,119 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - Shortlist-round snapshots carrying fresh quotes. A shortlist round runs over advertised figures, but nothing
   here refuses a statement in its snapshot.
 
+
+## T-004-02
+
+The router suite is `rutent-conformance`'s `router` (`conformance/src/router/`), with its reference double and its
+own tests under `conformance/tests/`. Readings taken where SPEC, PLAN or the contract leave a choice:
+
+- **Where the double lives.** The boundary check allows `components/router` to hold it, but there the suite's own
+  tests couldn't use it, since the conformance crate may depend on the contracts alone. So it is test-only, in
+  `conformance/tests/router_double/`, beside the breakers, as the host suite's double is. That also leaves
+  `CMP-ROUTER`'s design to M2.
+- **Dependencies.** `num-bigint` 0.4.8, `serde` and `serde_json` are added to the conformance crate. All three
+  were already in `Cargo.lock` and `licences/RECORD`, permitted under `licence-permissive-standing`, so the lock
+  gains no package and the record no line. Amounts are up to 78 digits and their products are longer, so the
+  arithmetic is arbitrary-precision whole numbers. Nothing is floating point.
+- **Which figure sets an operation's amounts.** An operation that cites usable accepted answers for its amount
+  in (a fresh quote, or a reserve's accepted dry run, within its validity and not void) states each one's fee and
+  `amount_out`. Any other operation states what its price gives on its amount in. This follows the contract's
+  confirmation rule, which already holds the chosen candidate to its answers' terms. Answers at another amount,
+  past their validity or void set nothing.
+- **No output above the last level.** The contract says a net above a price's last level "isn't served: the
+  price gives no output". I read that as zero. An operation after such a one can't be stated, since what enters
+  an operation is positive, so a router can list such a candidate only when the unserved operation is its last.
+  An operation whose fee is above what enters it can't be stated at all. The double lists neither, and a
+  candidate with an unserved operation mid-route can't be recorded by any router (listed as unchecked below).
+- **Settlement time.** For `fastest_settlement`, an operation's seconds come from the usable fresh quote it cites
+  for its amount in, or else its price. A quote at another amount never counts: since 0.6.0 the contract lets an
+  operation cite one only where its candidate is dropped `quote_voided` for `amount_changes` naming it, so such a
+  candidate is never ranked. Usable quotes for one amount agree on their terms but may not on their time; where
+  several are cited, the slowest counts.
+- **`suspect_rate_cycle`, defined.** A part follows a suspect rate cycle when it comes back to a node and asset
+  it held before with strictly more than it held there: free profit, possibly stale or false, never followed
+  (ADR-0006). The two holdings may be counted in different units of the asset (an exchange from USDC in 6
+  decimals to COP and back to USDC in 18), so they are compared in whole numbers over a common unit: `a` in
+  `da` decimals against `b` in `db` is `a × 10^db` against `b × 10^da`. No kept or outranked candidate may follow
+  one, and the reason may name only a candidate that does.
+- **Who is eligible, and the ranking.** The pool is the kept candidates and the outranked ones.
+  - An outranked candidate must be one the contract would accept in the choice's place. The suite checks that by
+    running `DecisionRecord::check` on the record with that candidate chosen (or kept, in a shortlist round) and
+    the chosen one outranked by it. So the contract's rules for a kept candidate apply to it unchanged.
+  - Every kept candidate ranks ahead of every outranked one, and an outranked candidate's `by` is in the pool
+    and ranks ahead of it. In the choice round that makes the chosen candidate the first of the pool, and a choice
+    round with any candidate in the pool must choose.
+  - In the shortlist round, the router may cut the shortlist, since the bounds give no size, but only from the
+    bottom: what it keeps must rank ahead of what it outranks. The double keeps every eligible candidate.
+  - Every other drop reason is the contract's to recompute, and it does; the suite accepts any reason that holds
+    and asks no order among them. The double's order (in its module header) is its own.
+- **Contract change, router-api 0.6.0.** These rules moved into the contract. For the first two, the suite would
+  have refused records that the contract gave a router no valid way to write; the citation rules close a hole the
+  review of the first draft found, where the suite trusted each operation's `figures` against the snapshot:
+  - A positive outcome is per part. Before, `no_positive_outcome` was refused unless the whole candidate arrived
+    with nothing, so a split with one empty part had no reason that fit. Now a kept candidate arrives with
+    something in every part, and the reason holds when any one part arrives with nothing.
+  - Ceilings count what an operation produces. Before, an `over_ceiling` reason for a ceiling in an exchange's
+    output asset was refused, since only `amount_in` counted. Now an operation counts its `amount_in` where its
+    from asset is the ceiling's, or else its `amount_out` where its to asset is. Each operation counts once per
+    ceiling, so a route keeping its asset isn't counted twice.
+  - An operation cites every usable statement about its tuple that bears on it: each fresh quote and dry run
+    for its amount in, and each eligibility judgement (ruled by the orchestrator after review, 2026-11-07).
+    Otherwise a router could drop the best route as `unconfirmed` by leaving its quote out and choose a worse
+    one, or choose a route by leaving out a refusal or a judgement of no. Statements past their validity or void
+    needn't be cited: they confirm nothing and refuse nothing.
+  - A fresh quote an operation cites is for its amount in, as a dry run already had to be, so a quote at another
+    amount can't lend a route a slower settlement time and reverse the AC-2 choice. The one exception is the
+    quote a `quote_voided` reason for `amount_changes` names, which is that very mismatch; its candidate is never
+    ranked.
+  - Usable accepted answers for one tuple and amount agree on their fee and amount out. Without this, an
+    operation made to cite them all couldn't state terms that follow every one, and the router would have no
+    valid record. It extends the earlier ruling that answers for one tuple and amount don't disagree.
+  - A `stale_figure`, `void_statement` or `quote_voided` reason holds only where no operation citing the named
+    statement also cites a usable accepted answer for its tuple at its amount in (the delta review's fix, ruled
+    by the orchestrator, 2026-11-07). The citation rule stops a good figure being left out; this stops a bad one
+    being added in, as a stale quote beside a confirmed one, or a quote at another amount through the
+    `amount_changes` exception, to drop a confirmed route and choose a worse one. No valid record is lost: a
+    router can always leave a statement past its validity, void or at another amount out. The rule binds only a
+    reason that names a statement, since an operation can't leave out its tuple or its price.
+  - New fixtures: a valid split dropped for one empty part, an invalid shortlist keeping one (a shortlist
+    round, so that it breaks only this rule and not confirmation), a valid record whose ceiling on exchange-a's
+    USDC output drops the best candidate and moves the choice to the next, and an invalid one choosing it; for
+    the citation rules, the best route dropped as unconfirmed with its quote left out, a choice leaving a
+    judgement of no uncited, a quote at another amount on an operation it doesn't drop, and two usable answers
+    disagreeing; for the drop rule, the review's two scenarios (`c1` removed from the one-part split, `c2` chosen,
+    and `c3` on `c1`'s path dropped by a stale quote, or by a quote at another amount, beside its usable
+    answers), and a `quote_voided` candidate citing a second quote at another amount that its reason doesn't name.
+  - Existing fixtures, changed to the citation rule. Every operation now cites every usable statement about its
+    tuple at its amount (a script added them). Then:
+    - The fixtures' shared snapshot held a judgement of no for `f-ex-a`, which every route through exchange-a
+      had left uncited, the chosen ones included. It is removed from every fixture where no candidate used it,
+      and kept where one does (the every-drop-reason record and those made from it).
+    - In `split-of-one-part`, `c2` cites its answers and is confirmed, so it is `outranked` by `c1` again, as
+      T-004-01 had it; the first draft of this task had re-marked it `unconfirmed` for want of the citations.
+    - In `split-of-three-parts`, `single` cited its answers would be confirmed and better than the chosen
+      split. Its deposit's confirming answer is removed from that snapshot, so it is dropped `unconfirmed` at
+      operation 2 and the split stays the choice.
+    - In the every-drop-reason record, `c7` was the chosen route with its answers left out. It is now that
+      route split 70,000,000 and 30,000,000, priced, unconfirmed at the 70,000,000 withdrawal, which no answer
+      covers.
+    - The routes dropped by a bad statement beside a usable answer (`c3` of the one-part split and of the
+      ceiling-on-output record, `c3` and `c6` of the every-drop-reason record, and the invalid fixtures that copy
+      them unchanged) now take the same route split 70,000,000 and 30,000,000. At 69,930,000 COP exchange-a has
+      no usable answer, so the bad statement is the only one: a stale quote `f-ex-a-quote-old-70m` and a void
+      one `f-ex-a-quote-elsewhere-70m` are added at that amount, and `quote_voided` names `f-ex-a-quote-50m` as
+      before. Those records allow two parts.
+    - `split-with-a-part-arriving-with-nothing` is built from `split-of-three-parts`, so it lacks
+      `f-confirm-dep-in-249250500` too, and its `single` is dropped `unconfirmed` at operation 2 likewise.
+    - `choosing-an-unconfirmed-candidate` loses its withdrawal's answer from its snapshot, so the choice is
+      unconfirmed for real; `quote-voided-by-a-condition-it-does-not-name` names the quote at its operation's
+      amount.
+    - Every valid decision record among the fixtures passes the suite (a test checks this).
+  - The shortlist rule (no statements in a shortlist snapshot) stays in the suite. A router can always meet it,
+    so it needs no contract change.
+- **Unchecked, still.** That the record lists every candidate the catalogue allows: the suite recomputes the
+  choice among the candidates listed, and the cases' expected routes catch a missing one on the suite's own inputs
+  only. A candidate with an unserved operation mid-route (a net above its price's last level, followed by
+  another operation) can't be recorded at all, since what enters the next operation must be positive. That a
+  confirming answer was made after the shortlist round, and the `quote_voided` conditions that rest on facts
+  outside the record, are as T-004-01 left them.

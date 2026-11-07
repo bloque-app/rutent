@@ -396,7 +396,7 @@
             }
           },
           "then": {
-            "description": "It arrives with nothing (REQ-QTE-13).",
+            "description": "One of its parts arrives with nothing (REQ-QTE-13).",
             "type": "object",
             "additionalProperties": false,
             "required": [

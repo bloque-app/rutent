@@ -51,7 +51,7 @@
       }
     },
     "provider_ceilings": {
-      "description": "Ceilings on value in flight at one provider. A candidate's value at a provider is the sum of amount_in over every operation of every part at that provider whose from asset is the ceiling's (id and decimals), so a split's parts count together; to it is added the snapshot's exposure for that provider and asset, or zero. At a publisher, the same is summed over every provider whose figures name that publisher. Above the ceiling's amount, the candidate is dropped as over_ceiling (REQ-ORD-8, THR-136).",
+      "description": "Ceilings on value in flight at one provider. A candidate's value at a provider is the sum, over every operation of every part at that provider, of its amount_in where its from asset is the ceiling's (id and decimals), or else its amount_out where its to asset is, so a split's parts count together and value an exchange produces counts too; to it is added the snapshot's exposure for that provider and asset, or zero. At a publisher, the same is summed over every provider whose figures name that publisher. Above the ceiling's amount, the candidate is dropped as over_ceiling (REQ-ORD-8, THR-136).",
       "type": "array",
       "items": {
         "type": "object",

@@ -26,7 +26,7 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 85] = [
+const RUST_RULES: [(&str, &str); 94] = [
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -329,7 +329,7 @@ const RUST_RULES: [(&str, &str); 85] = [
     ),
     (
         "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
-        "a no-positive-outcome reason names a candidate that arrives with nothing",
+        "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
     ),
     (
         "decision-record-over-a-ceiling-it-stays-under",
@@ -366,6 +366,42 @@ const RUST_RULES: [(&str, &str); 85] = [
     (
         "decision-record-over-a-ceiling-the-bounds-lack",
         "every ceiling a drop reason names is in the bounds",
+    ),
+    (
+        "decision-record-shortlisted-candidate-with-a-part-arriving-with-nothing",
+        "a kept candidate arrives with something in every part",
+    ),
+    (
+        "decision-record-chosen-candidate-over-a-ceiling-on-what-it-produces",
+        "a kept candidate passes no ceiling",
+    ),
+    (
+        "decision-record-unconfirmed-leaving-its-quote-uncited",
+        "every operation cites every usable answer and judgement about its tuple at its amount in",
+    ),
+    (
+        "decision-record-choice-leaving-a-judgement-of-no-uncited",
+        "every operation cites every usable answer and judgement about its tuple at its amount in",
+    ),
+    (
+        "decision-record-operation-citing-a-quote-at-another-amount",
+        "a fresh quote an operation cites is for its amount in",
+    ),
+    (
+        "decision-record-usable-answers-for-one-amount-disagreeing",
+        "usable accepted answers for one tuple and amount agree on their fee and amount out",
+    ),
+    (
+        "decision-record-stale-reason-on-an-operation-a-usable-answer-covers",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-quote-voided-on-an-operation-a-usable-answer-covers",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-quote-voided-citing-a-second-quote-at-another-amount",
+        "a fresh quote an operation cites is for its amount in",
     ),
 ];
 

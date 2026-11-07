@@ -1,7 +1,8 @@
 # rutent conformance suites
 
 The shared conformance suites of `DEC-5`: each contract's implementations are scored by the same suite. This crate
-depends on `rutent-contracts` alone.
+depends on no crate of ours but `rutent-contracts` (`DEC-2`); its other dependencies are `num-bigint`, `serde` and
+`serde_json`.
 
 ## Role suite (`role`)
 
@@ -106,3 +107,49 @@ another process.
 
 The suite's own tests (`tests/host_suite.rs`) run it against an in-memory test double (`tests/support/`), correct
 and with one flaw at a time, to show each cell can fail.
+
+## Router suite (`router`)
+
+`T-004-02`'s suite for the router API (`contracts/router-api/`): the choice is recomputed from the decision record
+alone, the same inputs give the same output, and a changed objective can change the choice (`AC-2`, `REQ-AUD-4`,
+`REQ-QTE-11`, `DEC-5`). It uses whole numbers only, through `num-bigint`, and no floating point.
+
+- `recompute(&record)` takes a decision record and nothing else, so whatever it confirms was recomputed with no
+  provider call. It runs the contract's `DecisionRecord::check`, then each check below, and returns every
+  finding with the check it fails, and the recomputed choice.
+- `run::<R: Router>()` routes the suite's own `cases()` through a router and reports each cell.
+
+| Check | What a record must show |
+|---|---|
+| `contract` | It passes `DecisionRecord::check`; when it doesn't, nothing else runs |
+| `shortlist-reads-advertised-figures` | A shortlist round's snapshot holds no fresh quote, dry run or judgement (`REQ-CAT-5`) |
+| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + floor(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`) |
+| `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
+| `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
+| `ranking-follows-the-objective` | Kept candidates rank ahead of every outranked one by the objective, then by `candidate_id` bytes; each outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate chooses one |
+
+| Cell | Over every case |
+|---|---|
+| `same-inputs-give-the-same-record` | Two calls give byte-identical records |
+| `keeps-its-inputs` | The record holds its request, snapshot and bounds unchanged |
+| `passes-the-contract` | Its bytes deserialise, which runs the contract's check |
+| `recomputes-from-the-record-alone` | `recompute` finds nothing |
+| `chooses-the-expected-route` | It chooses the case's route, or none, and that is its recomputed choice |
+| `replays-from-its-own-inputs` | Routing the record's own request, snapshot and bounds gives it again, byte for byte |
+| `objective-changes-the-choice` | The AC-2 pair, one snapshot under both objectives, choose different routes |
+
+The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
+exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
+rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
+by what an exchange produces, a band, a deposit that keeps everything and a floor; and a tie.
+
+The suite can't see a candidate a router left out; the cases' expected routes catch that on its own inputs only. A candidate
+with an unserved operation mid-route can't be recorded at all (see the router-api README). The suite reads each
+operation's figures as the contract binds them: since router-api 0.6.0 an operation must cite every usable
+statement about its tuple at its amount in, and a fresh quote only at its amount, so leaving a confirming answer,
+a refusal or a judgement of no out is the contract's to refuse.
+
+The suite's own tests (`tests/router_suite.rs`) run it against a test-only reference double
+(`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
+record passes the contract and fails exactly one check. They also recompute every valid decision record among the
+contract's fixtures.

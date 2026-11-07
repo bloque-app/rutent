@@ -1,5 +1,27 @@
 # router-api changelog
 
+## 0.6.0
+- A candidate's outcome is judged per part: a kept candidate arrives with something in every part, and
+  `no_positive_outcome` holds when any one part arrives with nothing, so a split with one empty part has a reason
+  that fits it. (DEC-4, T-004-02)
+- A ceiling counts the value an operation produces as well as what it takes in: an operation puts its
+  `amount_in` in its from asset and, where its to asset is another, its `amount_out` in its to asset, each
+  operation once per ceiling. (DEC-4, T-004-02)
+- What this contract leaves unchecked, the amounts recomputed from prices and the ranking, is checked by the
+  router suite (`rutent-conformance`'s `router`, `DEC-5`). The split fixtures drop their unconfirmed alternative
+  as `unconfirmed`, not `outranked`, so every valid decision record also passes the suite; new fixtures cover a
+  split with one empty part and a ceiling passed by what an exchange produces. (DEC-4, DEC-5, T-004-02)
+- Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every usable
+  judgement about its tuple, so a confirming answer, a refusal or a judgement of no can't be left out; a fresh
+  quote it cites is for its amount in, unless a `quote_voided` reason for `amount_changes` names it; usable
+  accepted answers for one tuple and amount agree on their terms. The fixtures cite accordingly: the shared
+  judgement of no for `f-ex-a` is kept only where a candidate uses it, and `c2` of the one-part split is outranked
+  again. (DEC-4, T-004-02)
+- A `stale_figure`, `void_statement` or `quote_voided` reason that names a statement holds only where no
+  operation citing it also cites a usable accepted answer for its tuple at its amount in, so an extra bad
+  statement can't drop a confirmed route. The fixtures that dropped a route that way take it split 70,000,000
+  and 30,000,000, where the bad statement is the only answer. (DEC-4, T-004-02)
+
 ## 0.5.0
 - A snapshot holds one tuple figure per provider and ends, and at most one price per tuple, so a copy can't dodge
   the agreement rules or the levels; all judgements in one snapshot about one relying

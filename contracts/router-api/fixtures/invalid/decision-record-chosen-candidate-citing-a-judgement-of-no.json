@@ -724,6 +724,61 @@
           }
         },
         {
+          "figure_id": "f-ex-a-quote-elsewhere-70m",
+          "origin": {
+            "kind": "provider",
+            "provider": "exchange-a",
+            "publisher": "acme",
+            "provider_version": "3.0.0",
+            "module_version": "3.0.2"
+          },
+          "age_seconds": 5,
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "tuple": "f-ex-a",
+            "quote": {
+              "deployment": {
+                "name": "rutent-elsewhere",
+                "operator_key": "DB_q1ZR5r420fqOGugtrpUfD7jVigeJU4wYKXVT-JtA"
+              },
+              "protocol_version": "0.3.0",
+              "shape": "urn:rutent:provider-role:result",
+              "maker": "exchange-a",
+              "made_at": "2026-11-06T14:59:55Z",
+              "signature": {
+                "scheme": "ed25519",
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "transaction": "tx-quote",
+                "outcome": {
+                  "status": "dry_run_accepted",
+                  "amount_in": "69930000",
+                  "amount_out": "174475350",
+                  "rate": "0.00025",
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "fee": {
+                    "asset": "COP",
+                    "amount": "139860"
+                  },
+                  "direction": "exact_in",
+                  "valid_until": "2026-11-06T15:01:55Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ],
+                  "settlement_seconds": 60
+                }
+              }
+            }
+          }
+        },
+        {
           "figure_id": "f-ex-a-quote-50m",
           "origin": {
             "kind": "provider",
@@ -1849,7 +1904,8 @@
                 "amount_out": "99900000",
                 "figures": [
                   "f-w",
-                  "f-w-price"
+                  "f-w-price",
+                  "f-confirm-w-100000000"
                 ]
               },
               {
@@ -1877,7 +1933,10 @@
                 "amount_out": "249250500",
                 "figures": [
                   "f-ex-a",
-                  "f-ex-a-price"
+                  "f-ex-a-price",
+                  "f-ex-a-quote",
+                  "f-ex-a-ineligible",
+                  "f-confirm-ex-a-99900000"
                 ]
               },
               {
@@ -1907,7 +1966,8 @@
                 "amount_out": "248250500",
                 "figures": [
                   "f-dep-in",
-                  "f-dep-in-price"
+                  "f-dep-in-price",
+                  "f-confirm-dep-in-249250500"
                 ]
               }
             ]
@@ -1947,12 +2007,12 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "100000000",
+                "amount_in": "70000000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "100000"
+                  "amount": "70000"
                 },
-                "amount_out": "99900000",
+                "amount_out": "69930000",
                 "figures": [
                   "f-w",
                   "f-w-price"
@@ -1975,16 +2035,17 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "99900000",
+                "amount_in": "69930000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "199800"
+                  "amount": "139860"
                 },
-                "amount_out": "249250500",
+                "amount_out": "174475350",
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
-                  "f-ex-a-quote-50m"
+                  "f-ex-a-quote-50m",
+                  "f-ex-a-ineligible"
                 ]
               },
               {
@@ -2006,12 +2067,106 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "249250500",
+                "amount_in": "174475350",
                 "fee": {
                   "asset": "USDC",
                   "amount": "1000000"
                 },
-                "amount_out": "248250500",
+                "amount_out": "173475350",
+                "figures": [
+                  "f-dep-in",
+                  "f-dep-in-price"
+                ]
+              }
+            ]
+          },
+          {
+            "operations": [
+              {
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "from": {
+                  "node": {
+                    "network": "co-ach"
+                  },
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "amount_in": "30000000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "30000"
+                },
+                "amount_out": "29970000",
+                "figures": [
+                  "f-w",
+                  "f-w-price",
+                  "f-confirm-w-30000000"
+                ]
+              },
+              {
+                "kind": "exchange",
+                "provider": "exchange-a",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "29970000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "59940"
+                },
+                "amount_out": "74775150",
+                "figures": [
+                  "f-ex-a",
+                  "f-ex-a-price",
+                  "f-ex-a-ineligible"
+                ]
+              },
+              {
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "to": {
+                  "node": {
+                    "network": "polygon"
+                  },
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "74775150",
+                "fee": {
+                  "asset": "USDC",
+                  "amount": "1000000"
+                },
+                "amount_out": "73775150",
                 "figures": [
                   "f-dep-in",
                   "f-dep-in-price"
@@ -2087,7 +2242,8 @@
                 "amount_out": "99700200",
                 "figures": [
                   "f-ex-a",
-                  "f-ex-a-price"
+                  "f-ex-a-price",
+                  "f-ex-a-ineligible"
                 ]
               },
               {
@@ -2179,7 +2335,8 @@
                 "amount_out": "149550300",
                 "figures": [
                   "f-ex-a",
-                  "f-ex-a-price"
+                  "f-ex-a-price",
+                  "f-ex-a-ineligible"
                 ]
               },
               {
@@ -2252,7 +2409,8 @@
                 "amount_out": "99900000",
                 "figures": [
                   "f-w",
-                  "f-w-price"
+                  "f-w-price",
+                  "f-confirm-w-100000000"
                 ]
               },
               {
@@ -2281,7 +2439,9 @@
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
-                  "f-ex-a-ineligible"
+                  "f-ex-a-ineligible",
+                  "f-ex-a-quote",
+                  "f-confirm-ex-a-99900000"
                 ]
               },
               {
@@ -2311,7 +2471,8 @@
                 "amount_out": "248250500",
                 "figures": [
                   "f-dep-in",
-                  "f-dep-in-price"
+                  "f-dep-in-price",
+                  "f-confirm-dep-in-249250500"
                 ]
               }
             ]
@@ -2346,12 +2507,12 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "100000000",
+                "amount_in": "70000000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "100000"
+                  "amount": "70000"
                 },
-                "amount_out": "99900000",
+                "amount_out": "69930000",
                 "figures": [
                   "f-w",
                   "f-w-price"
@@ -2374,16 +2535,17 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "99900000",
+                "amount_in": "69930000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "199800"
+                  "amount": "139860"
                 },
-                "amount_out": "249250500",
+                "amount_out": "174475350",
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
-                  "f-ex-a-quote-elsewhere"
+                  "f-ex-a-quote-elsewhere-70m",
+                  "f-ex-a-ineligible"
                 ]
               },
               {
@@ -2405,12 +2567,106 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "249250500",
+                "amount_in": "174475350",
                 "fee": {
                   "asset": "USDC",
                   "amount": "1000000"
                 },
-                "amount_out": "248250500",
+                "amount_out": "173475350",
+                "figures": [
+                  "f-dep-in",
+                  "f-dep-in-price"
+                ]
+              }
+            ]
+          },
+          {
+            "operations": [
+              {
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "from": {
+                  "node": {
+                    "network": "co-ach"
+                  },
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "amount_in": "30000000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "30000"
+                },
+                "amount_out": "29970000",
+                "figures": [
+                  "f-w",
+                  "f-w-price",
+                  "f-confirm-w-30000000"
+                ]
+              },
+              {
+                "kind": "exchange",
+                "provider": "exchange-a",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "29970000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "59940"
+                },
+                "amount_out": "74775150",
+                "figures": [
+                  "f-ex-a",
+                  "f-ex-a-price",
+                  "f-ex-a-ineligible"
+                ]
+              },
+              {
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "to": {
+                  "node": {
+                    "network": "polygon"
+                  },
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "74775150",
+                "fee": {
+                  "asset": "USDC",
+                  "amount": "1000000"
+                },
+                "amount_out": "73775150",
                 "figures": [
                   "f-dep-in",
                   "f-dep-in-price"
@@ -2421,7 +2677,7 @@
         ],
         "dropped": {
           "reason": "void_statement",
-          "figure": "f-ex-a-quote-elsewhere"
+          "figure": "f-ex-a-quote-elsewhere-70m"
         }
       },
       {
@@ -2448,12 +2704,12 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "100000000",
+                "amount_in": "70000000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "100000"
+                  "amount": "70000"
                 },
-                "amount_out": "99900000",
+                "amount_out": "69930000",
                 "figures": [
                   "f-w",
                   "f-w-price"
@@ -2476,16 +2732,15 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "99900000",
+                "amount_in": "69930000",
                 "fee": {
                   "asset": "COP",
                   "amount": "5000"
                 },
-                "amount_out": "99895000",
+                "amount_out": "69925000",
                 "figures": [
                   "f-ramp",
-                  "f-ramp-price",
-                  "f-ramp-dry-run"
+                  "f-ramp-price"
                 ]
               },
               {
@@ -2505,12 +2760,12 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "99895000",
+                "amount_in": "69925000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "99895"
+                  "amount": "69925"
                 },
-                "amount_out": "244508252",
+                "amount_out": "172652180",
                 "figures": [
                   "f-ex-b",
                   "f-ex-b-price",
@@ -2536,15 +2791,140 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "244508252",
+                "amount_in": "172652180",
                 "fee": {
                   "asset": "USDC",
                   "amount": "1000000"
                 },
-                "amount_out": "243508252",
+                "amount_out": "171652180",
                 "figures": [
                   "f-dep-b",
                   "f-dep-b-price"
+                ]
+              }
+            ]
+          },
+          {
+            "operations": [
+              {
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "from": {
+                  "node": {
+                    "network": "co-ach"
+                  },
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "amount_in": "30000000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "30000"
+                },
+                "amount_out": "29970000",
+                "figures": [
+                  "f-w",
+                  "f-w-price",
+                  "f-confirm-w-30000000"
+                ]
+              },
+              {
+                "kind": "route",
+                "provider": "ramp-x",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "amount_in": "29970000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "5000"
+                },
+                "amount_out": "29965000",
+                "figures": [
+                  "f-ramp",
+                  "f-ramp-price",
+                  "f-confirm-ramp-29970000"
+                ]
+              },
+              {
+                "kind": "exchange",
+                "provider": "exchange-b",
+                "from": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "29965000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "29965"
+                },
+                "amount_out": "74837587",
+                "figures": [
+                  "f-ex-b",
+                  "f-ex-b-price",
+                  "f-ex-b-eligibility",
+                  "f-confirm-ex-b-29965000"
+                ]
+              },
+              {
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "from": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "to": {
+                  "node": {
+                    "network": "polygon"
+                  },
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "74837587",
+                "fee": {
+                  "asset": "USDC",
+                  "amount": "1000000"
+                },
+                "amount_out": "73837587",
+                "figures": [
+                  "f-dep-b",
+                  "f-dep-b-price",
+                  "f-confirm-dep-b-74837587"
                 ]
               }
             ]

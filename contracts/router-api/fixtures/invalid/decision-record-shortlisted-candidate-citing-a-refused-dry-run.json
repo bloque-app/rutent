@@ -633,7 +633,8 @@
                 "amount_out": "99900000",
                 "figures": [
                   "f-w",
-                  "f-w-price"
+                  "f-w-price",
+                  "f-w-dry-run-refused-early"
                 ]
               },
               {

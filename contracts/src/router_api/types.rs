@@ -120,8 +120,8 @@ pub enum Objective {
     /// `amount_out`. The default.
     LowestTotalCost {},
     /// The shortest settlement: a part's time is the sum of its operations' declared settlement seconds, each
-    /// from the fresh quote the operation cites or else its price; a split's is its slowest part's. The smallest
-    /// wins.
+    /// from the usable fresh quote the operation cites for its amount in, or else its price; a split's is its
+    /// slowest part's. The smallest wins.
     FastestSettlement {},
 }
 
@@ -388,10 +388,10 @@ pub struct TupleKey {
 
 /// A ceiling on value in flight at one provider, in one asset (`REQ-ORD-8`).
 ///
-/// A candidate's value at the provider is the sum of `amount_in` over every operation of every part at that
-/// provider whose `from` asset is this one (id and decimals), so a split's parts count together; to it is added the
-/// snapshot's exposure for the provider and asset, or zero. Above `amount`, the candidate is dropped as
-/// `over_ceiling`.
+/// A candidate's value at the provider is the sum, over every operation of every part at that provider, of its
+/// `amount_in` where its `from` asset is this one (id and decimals), or else its `amount_out` where its `to` asset
+/// is, so a split's parts count together and value an exchange produces counts too; to it is added the snapshot's
+/// exposure for the provider and asset, or zero. Above `amount`, the candidate is dropped as `over_ceiling`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderCeiling {
@@ -541,7 +541,7 @@ pub enum DropReason {
     ExcludedByPolicy {},
     /// It would arrive below the customer's floor (`REQ-ORD-27`).
     BelowFloor {},
-    /// It arrives with nothing (`REQ-QTE-13`).
+    /// One of its parts arrives with nothing (`REQ-QTE-13`).
     NoPositiveOutcome {},
     /// It follows a rate cycle that implies free profit, possibly stale or false (ADR-0006).
     SuspectRateCycle {},

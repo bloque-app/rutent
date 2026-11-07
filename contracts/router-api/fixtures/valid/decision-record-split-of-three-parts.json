@@ -779,43 +779,6 @@
           }
         },
         {
-          "figure_id": "f-ex-a-ineligible",
-          "origin": {
-            "kind": "provider",
-            "provider": "verifier-kyc",
-            "publisher": "kyc-co",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 4,
-          "valid_for_seconds": 604800,
-          "value": {
-            "kind": "eligibility",
-            "tuple": "f-ex-a",
-            "judgement": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "0.3.0",
-              "shape": "urn:rutent:provider-role:judgement",
-              "maker": "verifier-kyc",
-              "made_at": "2026-11-06T14:59:56Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "subject": "subj-77",
-                "class": "kyc.enhanced",
-                "answer": "no",
-                "valid_until": "2026-11-13T14:59:56Z"
-              }
-            }
-          }
-        },
-        {
           "figure_id": "f-confirm-w-100000000",
           "origin": {
             "kind": "provider",
@@ -910,57 +873,6 @@
                     "amount": "199800"
                   },
                   "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-in-249250500",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-in",
-            "amount_in": "249250500",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "0.3.0",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-in-249250500",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "249250500",
-                  "amount_out": "248250500",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
                   "valid_until": "2026-11-06T15:01:58Z",
                   "voided_by": [
                     "validity_passes",
@@ -1748,7 +1660,8 @@
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
-                  "f-confirm-ex-a-49950000"
+                  "f-confirm-ex-a-49950000",
+                  "f-ex-a-quote-50m"
                 ]
               },
               {
@@ -1872,7 +1785,8 @@
                 "figures": [
                   "f-ex-b",
                   "f-ex-b-price",
-                  "f-confirm-ex-b-29965000"
+                  "f-confirm-ex-b-29965000",
+                  "f-ex-b-eligibility"
                 ]
               },
               {
@@ -2037,7 +1951,8 @@
                 "amount_out": "99900000",
                 "figures": [
                   "f-w",
-                  "f-w-price"
+                  "f-w-price",
+                  "f-confirm-w-100000000"
                 ]
               },
               {
@@ -2066,7 +1981,8 @@
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
-                  "f-ex-a-quote"
+                  "f-ex-a-quote",
+                  "f-confirm-ex-a-99900000"
                 ]
               },
               {
@@ -2103,8 +2019,9 @@
           }
         ],
         "dropped": {
-          "reason": "outranked",
-          "by": "split-3"
+          "reason": "unconfirmed",
+          "part": 0,
+          "operation": 2
         }
       }
     ],

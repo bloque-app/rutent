@@ -583,23 +583,32 @@ impl DecisionRecord {
     ///   candidate dropped as `unconfirmed` names an operation that isn't.
     /// - Every operation cites one tuple figure, and every other figure it cites names that tuple.
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
-    ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something;
-    ///   passes no ceiling; uses no excluded provider or tuple; keeps within the part and hop limits; and has every
-    ///   operation within its tuple's bands and its price's levels.
+    ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
+    ///   every part; passes no ceiling, counting the value its operations produce as well as what they take in;
+    ///   uses no excluded provider or tuple; keeps within the part and hop limits; and has every operation within
+    ///   its tuple's bands and its price's levels.
     /// - A drop reason that names a figure names one its candidate cites, and the figure supports the drop: a
     ///   stale figure is past its validity, a void statement is void, a voided quote names the condition, a
     ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor`,
     ///   `no_positive_outcome`, `over_ceiling`, `excluded_by_policy` and `outside_band` are recomputed from the
     ///   candidate's stated amounts and fees, the floor, the bounds and the exposures: they show the stated
-    ///   amounts consistent with the drops, not with the prices cited, which `T-004-02` recomputes.
-    ///   `outranked` and `suspect_rate_cycle` are the router's judgement: only that the outranking candidate
-    ///   exists is checked, and recomputing the ranking is `T-004-02`'s.
+    ///   amounts consistent with the drops, not with the prices cited, which the router suite recomputes
+    ///   (`rutent-conformance`'s `router`, `T-004-02`). `no_positive_outcome` holds when any one part arrives with
+    ///   nothing. `outranked` and `suspect_rate_cycle` rest on the ranking: here only that the outranking
+    ///   candidate exists is checked, and the router suite recomputes the rest.
     /// - A confirming answer equals its operation's amount in, fee and amount out.
+    /// - Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every
+    ///   usable judgement about its tuple; a fresh quote it cites is for its amount in, unless a `quote_voided`
+    ///   reason for `amount_changes` names it; usable accepted answers for one tuple and amount agree on their
+    ///   fee and amount out.
+    /// - A `stale_figure`, `void_statement` or `quote_voided` reason that names a statement holds only where no
+    ///   operation citing it also cites a usable accepted answer for its tuple at its amount in.
     /// - Every figure an operation or a drop reason names is in the snapshot, every ceiling a drop reason names
     ///   is in the bounds, and an outranking candidate is in the record (`REQ-AUD-4`).
     pub fn check(&self) -> Result<(), Violation> {
         self.snapshot.check()?;
         self.bounds.check()?;
+        self.check_usable_answers_agree()?;
         for (i, candidate) in self.candidates.iter().enumerate() {
             candidate.check()?;
             if self.candidates[..i]
@@ -657,6 +666,143 @@ impl DecisionRecord {
 
     fn figure(&self, id: &Id) -> Option<&Figure> {
         self.snapshot.figures.iter().find(|f| &f.figure_id == id)
+    }
+
+    /// Whether a statement figure may be used here: within its validity and not void at the bounds' deployment and
+    /// protocol version. `false` for a figure that isn't a statement.
+    fn is_usable(&self, figure: &Figure) -> bool {
+        figure.is_within_validity() && self.is_void(&figure.figure_id) == Some(false)
+    }
+
+    /// The accepted answers in the snapshot, fresh quotes included: each figure with its tuple and its terms.
+    fn accepted_answers(&self) -> impl Iterator<Item = (&Figure, &Id, &str, &Fee, &str)> {
+        self.snapshot.figures.iter().filter_map(|f| {
+            let (tuple, body) = match &f.value {
+                FigureValue::FreshQuote { tuple, quote } => (tuple, &quote.statement),
+                FigureValue::DryRun { tuple, result, .. } => (tuple, &result.statement),
+                _ => return None,
+            };
+            match dry_run_view(body) {
+                Some((
+                    _,
+                    DryRun::Accepted {
+                        amount_in,
+                        fee,
+                        amount_out,
+                        ..
+                    },
+                )) => Some((f, tuple, amount_in, fee, amount_out)),
+                _ => None,
+            }
+        })
+    }
+
+    /// Usable accepted answers for one tuple and amount agree on their fee and amount out, so an operation that
+    /// cites them all can state their terms (`T-004-02`). Answers past their validity or void may differ: no
+    /// operation needs to cite them.
+    fn check_usable_answers_agree(&self) -> Result<(), Violation> {
+        let usable: Vec<_> = self
+            .accepted_answers()
+            .filter(|(f, ..)| self.is_usable(f))
+            .collect();
+        for (i, (_, tuple, amount_in, fee, amount_out)) in usable.iter().enumerate() {
+            if usable[..i].iter().any(|(_, t, a, f, o)| {
+                t == tuple && a == amount_in && (f != fee || o != amount_out)
+            }) {
+                return Err(Violation(
+                    "usable accepted answers for one tuple and amount agree on their fee and amount out",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether an operation of the candidate that cites `figure` also cites a usable accepted answer for its tuple
+    /// at its amount in. Then the figure isn't what the operation stands on, and a router could have left it out
+    /// (it is a statement, past its validity or void, or a quote at another amount), so it can't drop the
+    /// candidate: otherwise an extra bad statement could drop a confirmed route (`T-004-02`, ruled by the
+    /// orchestrator, 2026-11-07).
+    fn covered_elsewhere(&self, candidate: &Candidate, figure: &Id) -> bool {
+        candidate
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .filter(|o| o.figures.contains(figure))
+            .any(|o| {
+                let Ok(tuple) = self.tuple_of(o) else {
+                    return false;
+                };
+                self.accepted_answers().any(|(f, t, amount_in, ..)| {
+                    t == &tuple.figure_id
+                        && amount_in == o.amount_in.amount().as_str()
+                        && o.figures.contains(&f.figure_id)
+                        && self.is_usable(f)
+                })
+            })
+    }
+
+    /// What an operation must cite beyond its tuple and price (`T-004-02`).
+    ///
+    /// - Every usable statement about its tuple that bears on it: each fresh quote and dry run for its amount in,
+    ///   and each eligibility judgement. A router can't then drop a candidate as `unconfirmed` by leaving its
+    ///   confirming answer out, nor choose one by leaving a refusal or a judgement of no out.
+    /// - A fresh quote only for its amount in, as a dry run must be, so a quote at another amount can't lend the
+    ///   operation its settlement time; the one exception is the quote a `quote_voided` reason for
+    ///   `amount_changes` names, which shows that very mismatch.
+    fn check_citations(
+        &self,
+        candidate: &Candidate,
+        operation: &Operation,
+        tuple: &Id,
+    ) -> Result<(), Violation> {
+        let amount = operation.amount_in.amount().as_str();
+        for id in operation.figures.iter() {
+            let Some(FigureValue::FreshQuote { quote, .. }) = self.figure(id).map(|f| &f.value)
+            else {
+                continue;
+            };
+            let at = matches!(
+                dry_run_view(&quote.statement),
+                Some((_, DryRun::Accepted { amount_in, .. })) if amount_in == amount
+            );
+            let voided_for_it = matches!(
+                &candidate.dropped,
+                Some(DropReason::QuoteVoided {
+                    figure,
+                    condition: VoidedBy::AmountChanges,
+                }) if figure == id
+            );
+            if !at && !voided_for_it {
+                return Err(Violation(
+                    "a fresh quote an operation cites is for its amount in",
+                ));
+            }
+        }
+        let bears_on_it = |f: &Figure| match &f.value {
+            FigureValue::FreshQuote { tuple: t, quote } => {
+                t == tuple
+                    && matches!(
+                        dry_run_view(&quote.statement),
+                        Some((_, DryRun::Accepted { amount_in, .. })) if amount_in == amount
+                    )
+            }
+            FigureValue::DryRun {
+                tuple: t,
+                amount_in,
+                ..
+            } => t == tuple && amount_in == &operation.amount_in,
+            FigureValue::Eligibility { tuple: t, .. } => t == tuple,
+            _ => false,
+        };
+        let left_out = self.snapshot.figures.iter().any(|f| {
+            bears_on_it(f) && self.is_usable(f) && !operation.figures.contains(&f.figure_id)
+        });
+        if left_out {
+            return Err(Violation(
+                "every operation cites every usable answer and judgement about its tuple at its amount in",
+            ));
+        }
+        Ok(())
     }
 
     /// The one tuple figure an operation cites. It must be its own provider's, with the operation's two ends in
@@ -753,6 +899,7 @@ impl DecisionRecord {
         let choice = matches!(request.round, Round::Choice { .. });
         let mut total = super::Amount::zero();
         let mut arriving = super::Amount::zero();
+        let mut a_part_arrives_with_nothing = false;
         let mut unconfirmed = Vec::new();
         let mut outside_band = Vec::new();
         let mut placed = Vec::new();
@@ -770,6 +917,7 @@ impl DecisionRecord {
             arriving = arriving
                 .checked_add(&last.amount_out)
                 .ok_or(Violation("a candidate's amounts add up within 78 digits"))?;
+            a_part_arrives_with_nothing |= last.amount_out.is_zero();
             for (o, operation) in part.operations.iter().enumerate() {
                 if !operation
                     .figures
@@ -781,6 +929,7 @@ impl DecisionRecord {
                     ));
                 }
                 let tuple = self.tuple_of(operation)?;
+                self.check_citations(candidate, operation, &tuple.figure_id)?;
                 if !self.is_confirmed(operation, &tuple.figure_id) {
                     unconfirmed.push((p, o));
                 }
@@ -832,8 +981,10 @@ impl DecisionRecord {
             if below_floor {
                 return Err(Violation("a kept candidate arrives at or above the floor"));
             }
-            if arriving.is_zero() {
-                return Err(Violation("a kept candidate arrives with something"));
+            if a_part_arrives_with_nothing {
+                return Err(Violation(
+                    "a kept candidate arrives with something in every part",
+                ));
             }
             if !over.is_empty() {
                 return Err(Violation("a kept candidate passes no ceiling"));
@@ -883,6 +1034,18 @@ impl DecisionRecord {
                 if !self.supports(candidate, dropped, found) {
                     return Err(Violation("a drop reason's figure supports the drop"));
                 }
+                if matches!(
+                    dropped,
+                    DropReason::StaleFigure { .. }
+                        | DropReason::VoidStatement { .. }
+                        | DropReason::QuoteVoided { .. }
+                ) && self.is_void(figure).is_some()
+                    && self.covered_elsewhere(candidate, figure)
+                {
+                    return Err(Violation(
+                        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+                    ));
+                }
                 Ok(())
             }
             DropReason::Unconfirmed { part, operation } => {
@@ -921,8 +1084,8 @@ impl DecisionRecord {
             DropReason::BelowFloor {} if !below_floor => Err(Violation(
                 "a below-floor reason names a candidate that arrives below the floor",
             )),
-            DropReason::NoPositiveOutcome {} if !arriving.is_zero() => Err(Violation(
-                "a no-positive-outcome reason names a candidate that arrives with nothing",
+            DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => Err(Violation(
+                "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
             )),
             DropReason::ExcludedByPolicy {} if !excluded => Err(Violation(
                 "an excluded-by-policy reason names a candidate that uses an excluded provider or tuple",
@@ -978,17 +1141,29 @@ impl DecisionRecord {
     /// The ceilings a candidate passes: each where it puts value, in the ceiling's asset, at the provider or across
     /// the publisher's providers, its parts counted together, and that value plus the snapshot's exposure there is
     /// above the ceiling (`REQ-ORD-8`).
+    ///
+    /// An operation puts its `amount_in` in its from asset there, and, where its to asset is another (an exchange,
+    /// or a change of unit), its `amount_out` in its to asset: value it produces is in flight there too. Each
+    /// operation counts once per ceiling, so a route keeping its asset isn't counted twice.
     fn ceilings_passed<'a>(
         &'a self,
         placed: &[(&Operation, Option<&Id>)],
     ) -> Vec<(CeilingScope, &'a Id, &'a Denomination)> {
-        let sum = |pick: &dyn Fn(&Operation, Option<&Id>) -> bool| {
+        let value_in = |o: &Operation, asset: &Denomination| -> Option<Amount> {
+            if &o.from.asset == asset {
+                Some(o.amount_in.amount().clone())
+            } else if &o.to.asset == asset {
+                Some(o.amount_out.clone())
+            } else {
+                None
+            }
+        };
+        let sum = |pick: &dyn Fn(&Operation, Option<&Id>) -> bool, asset: &Denomination| {
             placed
                 .iter()
                 .filter(|(o, publisher)| pick(o, *publisher))
-                .try_fold(Amount::zero(), |acc, (o, _)| {
-                    acc.checked_add(o.amount_in.amount())
-                })
+                .filter_map(|(o, _)| value_in(o, asset))
+                .try_fold(Amount::zero(), |acc, value| acc.checked_add(&value))
         };
         let exposure = |pick: &dyn Fn(&Id, &Id, &Denomination) -> bool| {
             self.snapshot
@@ -1017,15 +1192,14 @@ impl DecisionRecord {
             };
         let mut out = Vec::new();
         for c in &self.bounds.provider_ceilings {
-            let value = sum(&|o, _| o.provider == c.provider && o.from.asset == c.asset);
+            let value = sum(&|o, _| o.provider == c.provider, &c.asset);
             let held = exposure(&|provider, _, asset| provider == &c.provider && asset == &c.asset);
             if passes(value, held, &c.amount) {
                 out.push((CeilingScope::Provider, &c.provider, &c.asset));
             }
         }
         for c in &self.bounds.publisher_ceilings {
-            let value =
-                sum(&|o, publisher| publisher == Some(&c.publisher) && o.from.asset == c.asset);
+            let value = sum(&|_, publisher| publisher == Some(&c.publisher), &c.asset);
             let held =
                 exposure(&|_, publisher, asset| publisher == &c.publisher && asset == &c.asset);
             if passes(value, held, &c.amount) {

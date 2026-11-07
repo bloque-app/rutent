@@ -57,10 +57,19 @@ So that anyone can recompute a fee and a choice (`REQ-QTE-5`, `THR-10`):
 - **Confirmation.** The choice round chooses only a candidate whose every operation cites an accepted dry-run
   answer of its provider for its tuple, at its amount, within its validity and not void: the fresh quote for a
   route or exchange, the reserve's accepted dry run for a withdrawal or deposit. Any other is `unconfirmed`.
+- **Citations.** Every operation cites every usable statement (within its validity, not void) about its tuple
+  that bears on it: each fresh quote and dry run for its amount in, and each eligibility judgement. So no
+  confirming answer, refusal or judgement of no can be left out. A fresh quote it cites is for its amount in,
+  except the quote a `quote_voided` reason for `amount_changes` names; and usable accepted answers for one tuple
+  and amount agree on their fee and amount out. A `stale_figure`, `void_statement` or `quote_voided` reason that
+  names a statement holds only where no operation citing it also cites a usable accepted answer for its tuple at
+  its amount in, so a bad statement added beside a good answer can't drop a route.
 - **Ceilings.** A ceiling matches on provider or publisher and on asset id and decimals. A candidate's value at a
-  provider, in a ceiling's asset, is the sum of `amount_in` of its
-  operations there across all parts, plus the snapshot's exposure there; at a publisher, the same over its
-  providers.
+  provider, in a ceiling's asset, is the sum over its operations there, across all parts, of each one's
+  `amount_in` where its from asset is the ceiling's, or else its `amount_out` where its to asset is, so value an
+  exchange produces counts too; plus the snapshot's exposure there. At a publisher, the same over its providers.
+- **Outcome.** A candidate arrives with something only if every part does: `no_positive_outcome` holds when any
+  one part arrives with nothing (`REQ-QTE-13`).
 - **Objective.** `lowest_total_cost` wants the largest sum of the parts' last `amount_out`; `fastest_settlement`
   the smallest slowest-part time, a part's time being the sum of its operations' declared settlement seconds.
   Ties go to the lowest `candidate_id`, comparing bytes.
@@ -108,11 +117,14 @@ only records that pass theirs, so a stored record recomputes.
 | A fresh quote's fee is in its tuple's input asset and at most its amount in; it names each void condition once | `uniqueItems` for the last | `CatalogueSnapshot::check` |
 | Every operation cites one tuple, of its own provider with its two ends, and every other figure it cites (price, fresh quote, dry run, judgement) names that tuple | can't be stated | `DecisionRecord::check` |
 | A kept candidate (chosen, or on the shortlist) cites no void statement (by `check_context`), no figure past its validity, no refused dry run and no judgement of no | can't be stated | `DecisionRecord::check` |
-| A kept candidate arrives at or above the floor and with something, passes no ceiling, uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
+| A kept candidate arrives at or above the floor and with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
 | The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in, fee and amount out; an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
 | A drop reason that names a figure names one its candidate cites, and the figure supports the drop: stale past its validity, void by `check_context`, a refused dry run, a judgement of no; `quote_voided` names a quote that lists the condition, past its validity for `validity_passes` and at another amount for `amount_changes`, and is accepted on the listed condition alone for the others, which rest on facts outside the record | can't be stated | `DecisionRecord::check` |
-| `below_floor`, `no_positive_outcome`, `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
+| `below_floor`, `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
 | Every operation cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
+| Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every usable judgement about its tuple; a fresh quote it cites is for its amount in, unless a `quote_voided` reason for `amount_changes` names it | can't be stated | `DecisionRecord::check` |
+| Usable accepted answers (fresh quotes included) for one tuple and amount agree on their fee and amount out | can't be stated | `DecisionRecord::check` |
+| A `stale_figure`, `void_statement` or `quote_voided` reason that names a statement holds only where no operation citing it also cites a usable accepted answer for its tuple at its amount in | can't be stated | `DecisionRecord::check` |
 | Every provider has one publisher across the snapshot, exposures included | can't be stated | `CatalogueSnapshot::check` |
 | One tuple figure per provider and ends, and at most one price per tuple figure, so a copy can't dodge the agreement rules or the levels | can't be stated | `CatalogueSnapshot::check` |
 | All judgements in one snapshot about one relying provider's tuples are about one subject: the subject reference is the relying provider's (ADR-0012), and the relying provider is the provider of the tuple a judgement names, not the verifier | can't be stated | `CatalogueSnapshot::check` |
@@ -122,18 +134,27 @@ only records that pass theirs, so a stored record recomputes.
 | A shortlist round chooses nothing; a choice round names the round it refines | `not`, `required` | `Round`, `DecisionRecord::check` |
 | Integers are plain JSON integers, such as `2`, not `2.0`, and at most 2^53 - 1 | `maximum`; JSON Schema's `integer` accepts `2.0` | `SafeInteger`, `u32`, `NonZeroU8` |
 
-Rules this contract doesn't check. It checks a decision record's structure and cross-references; recomputing
-amounts from prices and recomputing the ranking are `T-004-02`'s (ruled by the orchestrator, 2026-11-06):
+Rules this contract doesn't check. It checks a decision record's structure and cross-references (ruled by the
+orchestrator, 2026-11-06). The router suite, `rutent-conformance`'s `router` (`T-004-02`, `DEC-5`), recomputes
+the rest from the record alone; see `conformance/README.md`:
 
-- That operation amounts match their price: each operation's fee and `amount_out` are taken as stated, never
-  recomputed from the price or quote it cites.
+- That operation amounts match their figures: here each operation's fee and `amount_out` are taken as stated. The
+  suite recomputes them from every usable accepted answer the operation cites for its amount in, or else from its price.
+- That the objective is served: here `outranked` is checked only for naming a candidate of the record, and
+  `suspect_rate_cycle` not at all. The suite recomputes the ranking, checks that each outranked candidate could
+  have been the choice, and that `suspect_rate_cycle` names a candidate that comes back somewhere with more.
+- That a shortlist round's snapshot holds advertised figures only. The suite checks it.
 
-- That the objective is served: `outranked` is checked only for naming a candidate of the record, and
-  `suspect_rate_cycle` not at all. Recomputing the ranking from the record is `T-004-02`'s.
+Unchecked by either:
+
 - That a confirming answer was made after the shortlist round: the shortlist round's record isn't in the choice
   round's, so only `refines` names it.
 - That the conditions of `quote_voided` other than `validity_passes` and `amount_changes` hold: they rest on facts
   outside the record.
+- That the record lists every candidate: a router that leaves out a better route isn't caught by its record.
+- A candidate with an unserved operation mid-route (a net above its price's last level, followed by another
+  operation) can't be recorded: the price gives it no output, and what enters the next operation must be
+  positive.
 
 ## Tests
 
