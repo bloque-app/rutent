@@ -24,7 +24,7 @@ decision log, draft changes, outcome and promotion record.
 | Scope | [Scope](#scope), with the [candidates](#candidates) and the [scoring sheet](scoring.md) |
 | Decision log | [`decisions.json`](decisions.json) |
 | Draft changes | [`drafts/`](drafts/) |
-| Outcome | [`outcome.md`](outcome.md), a placeholder until `T-007-04` |
+| Outcome | [`outcome.md`](outcome.md), written by `T-007-04` |
 | Promotion record | [Promotion record](#promotion-record) |
 
 ## Id
@@ -109,15 +109,19 @@ owner's explicit answer, and it reaches the owner's form with the adoption item 
 [`drafts/`](drafts/) holds the experiment's spec and plan changes, as drafts only (Narthex `REQ-EXP-3`):
 
 - [`drafts/adr-0002-amendment.md`](drafts/adr-0002-amendment.md): the amendment to ADR-0002, `Status: experimental`;
-- [`drafts/plan-decision.md`](drafts/plan-decision.md): the plan decision it would bring, `proposed`.
+- [`drafts/plan-decision.md`](drafts/plan-decision.md): the plan decision it would bring, `proposed`;
+- [`drafts/adoption-item.json`](drafts/adoption-item.json): the adoption item `exp1-adopt-runtime`, in the decision
+  form's item format, for the owner's form (Narthex `REQ-EXP-7`);
+- [`drafts/licence-item.json`](drafts/licence-item.json): the licence item `licence-vos-agpl`, to publish only if
+  the owner leans to VOS on the adoption item.
 
-Both are placeholders until `T-007-04` drafts them from the outcome. The drafts sit here, not in `adr/` or
-`PLAN.md`, so nothing reads them as accepted.
+`T-007-04` drafted all four from the outcome. The drafts sit here, not in `adr/`, `PLAN.md` or the owner's form, so
+nothing reads them as accepted.
 
 ## Outcome
 
 [`outcome.md`](outcome.md): one page, adopt, adapt or drop, with the numbers behind it, each naming a run (Narthex
-`REQ-EXP-4`, Narthex `REQ-CHN-17`). A placeholder until `T-007-04`.
+`REQ-EXP-4`, Narthex `REQ-CHN-17`). Written by `T-007-04`: VOS dropped for v0, the purpose-built store adapted.
 
 ## Runs
 
@@ -139,9 +143,12 @@ pre-freeze development run. Its id is `EXP-1-<candidate code>-dev-<yyyymmdd>-<n>
 
 ## Promotion record
 
-Not promoted. The experiment is open.
+Not promoted. The experiment is open until the owner answers the adoption item.
 
-When `T-007-04` writes the outcome, this section records one of:
+`T-007-04` wrote the outcome on 2026-11-07, recommending that VOS be dropped for v0 and the purpose-built store
+adapted, and drafted the adoption item `exp1-adopt-runtime` in [`drafts/adoption-item.json`](drafts/adoption-item.json),
+with [`outcome.md`](outcome.md) as its ref. It is on the owner's form once published there. When the owner answers,
+this section records one of:
 
 - **adopted or adapted:** the adoption item on the owner's form, with [`outcome.md`](outcome.md) as its ref (Narthex
   `REQ-EXP-7`); once the owner answers, the one amendment, the one plan decision and the questions that still need the
