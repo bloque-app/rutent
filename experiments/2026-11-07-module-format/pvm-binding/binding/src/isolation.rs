@@ -150,7 +150,10 @@ where
             c
         }
         Isolation::Required if cfg!(target_os = "linux") => {
-            let mut c = Command::new("unshare");
+            // The child's environment is cleared, so `unshare` is found on the platform's `PATH` first.
+            let mut c = Command::new(on_path("unshare").ok_or_else(|| {
+                std::io::Error::other("no unshare on PATH; it comes with util-linux")
+            })?);
             c.args(UNSHARE).arg(exe).args(["--jailed", role.name()]);
             if let Some(home) = std::env::var_os("HOME") {
                 c.arg("--hide").arg(home);
@@ -231,6 +234,13 @@ pub fn close_inherited() -> std::io::Result<()> {
         unsafe { libc::close(fd as libc::c_int) };
     }
     Ok(())
+}
+
+/// The first executable `name` on this process's `PATH`.
+fn on_path(name: &str) -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 /// The `--jailed <role>` and `--hide <path>` arguments a program was started with, and the rest.
