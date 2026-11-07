@@ -37,7 +37,8 @@ Measured in one job on one runner (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20
   a client of its own over the node API. At 64 submitters `pb`'s median was far lower (p50 0.2 ms against 20.4 and
   29.0 ms) and its tail higher (p99 166 ms against 27.7 and 64.7 ms).
 - **Recovery time.** A halted export and import of 100k records (100,352) takes `pb` 3.0 s, and VOS 59.1 s on one
-  node and 81.8 s on three (`R-08`). On VOS that is the total-loss recovery path, a scheduled halted export. Both
+  node and 81.8 s on three (`R-08`). The setups differ: `pb` imports the stream in-process in one call, VOS in
+  pages of 8 entries or 48 KiB over the node API. On VOS that is the total-loss recovery path, a scheduled halted export. Both
   grow with the history the export carries (`pb` 0.06, 0.31 and 3.0 s at 1k, 10k and 100k records), VOS's from a
   larger base.
 - **A step.** A synced submit costs `pb` 222 µs, its sync included. VOS's `refine` stage, the program's step,
@@ -92,7 +93,8 @@ The `R-05` and `R-08` numbers compare the candidates on one noisy disk in one jo
    on one node and in `R-04b` nothing shows it reached an acknowledged batch, so those cells read not reached. The
    three-node `R-04a` pass shows only replication again, a damaged follower catching up from the leader, which
    `pb`, with no follower, could not be asked to show; it is counted with `R-01` to `R-03`, not as a damage result. `G-54` is therefore open for both candidates: shown on `pb`, untested on VOS, and fjall still discards a
-   corrupt tail without an error. No watermark patch exists at the pin, so that leg is n/a.
+   corrupt tail without an error (its `TolerateCorruptTail` recovery, read in fjall's code for
+   `EXP-1-vos-20261107-1`'s `G-54` row; these runs saw the cut, not the absence of an error). No watermark patch exists at the pin, so that leg is n/a.
 4. **Upgrades and formats.** Both survive an upgrade with an input in flight (`R-06a`; for `pb`, as the criterion
    says, a redeploy: its process killed mid-submit and the same binary reopened), and both refuse a changed format
    (`R-06b`). On VOS the refusal is the program's own format check: `Admin::Install` checks nothing at the

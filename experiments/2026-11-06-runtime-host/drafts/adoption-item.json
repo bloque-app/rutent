@@ -8,7 +8,7 @@
   "bullets": [
     "Replication, counted once (R-01 to R-03): VOS on three nodes, on one runner, lost no acknowledged record across 21 leader kills, each with a submit in flight as last seen, a replica replaced, and a replica's disk lost; losing the host was not tested.",
     "The cost in throughput: at 64 submitters the store writes about 4.5k records/s in-process behind a mutex, VOS 3.0k on one node and 2.0k on three through separate clients; the store's median is far lower (p50 0.2 ms against 20.4 and 29.0 ms) and its tail higher (p99 166 ms against 27.7 and 64.7 ms) (EXP-1-vos-rt1/rt3-20261107-2, EXP-1-pb-20261107-5).",
-    "The cost in recovery: a 100k-record halted export and import takes the store 3.0 s, VOS 59.1 s on one node and 81.8 s on three; on VOS that is the total-loss path, and both grow with history.",
+    "The cost in recovery: a 100k-record halted export and import takes the store 3.0 s in-process in one call, VOS 59.1 s on one node and 81.8 s on three in pages of 8 entries over the node API; on VOS that is the total-loss path, and both grow with history.",
     "The cost a step: a synced submit costs the store 222 µs; VOS's step costs 841 µs on the JIT and a whole single-input batch 1,348 µs. The JIT is only about 1.8 times the interpreter, so the guest's own work dominates.",
     "Before v0: pin and mirror VOS's forks, port contracts/ to no_std under DEC-4, test damage to the frame holding the last acknowledged append and fix or accept G-54 for both, and check the JIT on the production host."
   ],
