@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:common",
+  "title": "Shared atoms of the router-api contract",
+  "description": "Referenced by the other router-api schemas; validates nothing on its own. Identifiers, versions, amounts, timestamps, nodes and denominations are the provider-role contract's, by reference.",
+  "$defs": {
+    "endpoint": {
+      "description": "A node and an asset, with the unit the asset is counted in there: one whole asset is 10^decimals units (REQ-CAT-11). The node is an inner node by identifier, or an outer node by its network (REQ-CAT-17).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "asset"
+      ],
+      "properties": {
+        "node": {
+          "oneOf": [
+            {
+              "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+            },
+            {
+              "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+            }
+          ]
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    },
+    "ratio": {
+      "description": "A rational number, numerator / denominator, in whole numbers so that no figure is rounded on the way in.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "denominator": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    }
+  }
+}

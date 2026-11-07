@@ -1,0 +1,35 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "acme-co",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "conversion",
+    "transaction": "tx-009",
+    "outcome": {
+      "status": "succeeded",
+      "amount_in": "25000000",
+      "amount_out": "61250000",
+      "fee": {
+        "asset": "COP",
+        "amount": "100000"
+      },
+      "evidence": [
+        {
+          "grade": 3,
+          "reference": "acme-receipt-7781",
+          "by": "acme-co"
+        }
+      ]
+    }
+  }
+}

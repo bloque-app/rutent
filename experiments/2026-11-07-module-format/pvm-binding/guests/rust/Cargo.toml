@@ -1,0 +1,75 @@
+# EXP-2's Rust stand-ins for PolkaVM (T-008-03): one sandboxed and one outside program per provider category.
+# Built only by ../../build.sh, for the PolkaVM target, with a pinned nightly and build-std. Its own workspace
+# and lock, apart from the binding's.
+[package]
+name = "rutent-pvm-guest"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "EXP-2's Rust stand-ins for PolkaVM: a step interpreter for the module-boundary suite's ModuleSpec"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+polkavm-derive = "=0.38.0"
+
+[[example]]
+name = "sandboxed-reserve"
+path = "examples/sandboxed_reserve.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "sandboxed-exchange"
+path = "examples/sandboxed_exchange.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "sandboxed-ramp"
+path = "examples/sandboxed_ramp.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "sandboxed-verifier"
+path = "examples/sandboxed_verifier.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "outside-reserve"
+path = "examples/outside_reserve.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "outside-exchange"
+path = "examples/outside_exchange.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "outside-ramp"
+path = "examples/outside_ramp.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "outside-verifier"
+path = "examples/outside_verifier.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "hostile-secret"
+path = "examples/hostile_secret.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "hostile-clock"
+path = "examples/hostile_clock.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+debug = false
+
+[workspace]

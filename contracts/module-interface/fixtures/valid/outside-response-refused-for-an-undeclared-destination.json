@@ -1,0 +1,8 @@
+{
+  "transaction": "tx-003",
+  "operation": "payouts.create",
+  "outcome": {
+    "status": "refused",
+    "reason": "redirect_to_undeclared_destination"
+  }
+}

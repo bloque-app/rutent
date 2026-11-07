@@ -1,0 +1,26 @@
+{
+  "transaction": "tx-011",
+  "caller": "acme-reserve",
+  "caller_version": "3.0.0",
+  "route": {
+    "decision_record": "dr-0042",
+    "segment": "seg-2"
+  },
+  "operation": {
+    "kind": "transfer",
+    "transaction": "tx-011",
+    "provider": "bridge-pay",
+    "origin": "acme-ledger",
+    "destination": "polygon",
+    "asset": "USDC",
+    "direction": "exact_in",
+    "amount": "1000000",
+    "dry_run": false,
+    "inputs": {}
+  },
+  "outcome": {
+    "status": "refused",
+    "callee": "bridge-pay",
+    "kind": "transfer"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "transaction": "tx-003",
+  "operation": "payouts.create",
+  "arguments": {
+    "amount": "1000000",
+    "asset": "USDC",
+    "beneficiary": {
+      "network": "polygon",
+      "address": "0x5a1e"
+    }
+  }
+}

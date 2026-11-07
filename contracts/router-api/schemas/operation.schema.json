@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:operation",
+  "title": "Priced operation",
+  "description": "One operation of a route, as the router prices it: the typed operation (#/$defs/operation) at one provider, with the amounts evaluated at the actual amount after the fees before it (REQ-QTE-12) and the figures it was evaluated with. That a withdrawal, route or deposit keeps its asset, that a route's nodes differ, that an exchange stays at one node and that the fee is in from's asset and at most the amount in are checked by the contract's Rust types.",
+  "$ref": "#/$defs/operation",
+  "required": [
+    "provider",
+    "amount_in",
+    "fee",
+    "amount_out",
+    "figures"
+  ],
+  "properties": {
+    "provider": {
+      "description": "The provider the operation runs at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "amount_in": {
+      "description": "What enters, in from's unit.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+    },
+    "fee": {
+      "description": "The provider's fee, in from's asset and unit, out of amount_in.",
+      "$ref": "urn:rutent:provider-role:result#/$defs/fee"
+    },
+    "amount_out": {
+      "description": "What arrives, in to's unit.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+    },
+    "figures": {
+      "description": "The snapshot figures the operation was evaluated with, by id, each once (REQ-QTE-4): one tuple, of its own provider with its two ends, and one price for it; any fresh quote, dry run (for the operation's amount in) or judgement it cites names that tuple. Checked by the contract's Rust types.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+      },
+      "uniqueItems": true
+    }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "kind": {
+      "description": "The kind of a typed operation: withdrawal, route, exchange or deposit, and no other; another needs a protocol change (REQ-ORD-37, REQ-PRT-5).",
+      "enum": [
+        "withdrawal",
+        "route",
+        "exchange",
+        "deposit"
+      ]
+    },
+    "operation": {
+      "description": "The typed operation of REQ-ORD-37, which this contract owns (ruled by the orchestrator, 2026-11-06): its kind and its two ends, each a provider-role node and denomination. A withdrawal goes from an outer node into an inner one and a deposit the other way; a route and an exchange run at inner nodes. Open, so that a schema embedding it, such as the state machine's segment plan, adds its own fields and closes it with unevaluatedProperties: false.",
+      "type": "object",
+      "required": [
+        "kind",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "from": {
+          "description": "Where the value starts, in that unit.",
+          "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+        },
+        "to": {
+          "description": "Where the value ends, in that unit.",
+          "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "withdrawal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/outer"
+                  }
+                }
+              },
+              "to": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/inner"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "deposit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/inner"
+                  }
+                }
+              },
+              "to": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/outer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "route",
+                  "exchange"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/inner"
+                  }
+                }
+              },
+              "to": {
+                "properties": {
+                  "node": {
+                    "$ref": "#/$defs/inner"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "inner": {
+      "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+    },
+    "outer": {
+      "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+    }
+  }
+}

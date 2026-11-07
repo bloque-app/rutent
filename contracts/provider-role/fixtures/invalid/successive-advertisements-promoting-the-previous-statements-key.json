@@ -1,0 +1,94 @@
+{
+  "previous": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:advertisement",
+    "maker": "id-check",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "provider": "id-check",
+      "publisher": "acme",
+      "version": "0.1.0",
+      "keys": [
+        {
+          "scheme": "ed25519",
+          "public_key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+          "purpose": "advertising"
+        },
+        {
+          "scheme": "ed25519",
+          "public_key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+          "purpose": "statements"
+        }
+      ],
+      "offers": {
+        "verifier": {
+          "classes": [
+            "kyc.natural_person",
+            "aml.sanctions_screening"
+          ]
+        }
+      },
+      "declarations": {
+        "tracking": [
+          "identifier"
+        ]
+      },
+      "private_nodes": []
+    }
+  },
+  "next": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:advertisement",
+    "maker": "id-check",
+    "made_at": "2026-11-07T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "provider": "id-check",
+      "publisher": "acme",
+      "version": "0.2.0",
+      "keys": [
+        {
+          "scheme": "ed25519",
+          "public_key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+          "purpose": "advertising"
+        },
+        {
+          "scheme": "ed25519",
+          "public_key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+          "purpose": "advertising"
+        }
+      ],
+      "offers": {
+        "verifier": {
+          "classes": [
+            "kyc.natural_person",
+            "aml.sanctions_screening"
+          ]
+        }
+      },
+      "declarations": {
+        "tracking": [
+          "identifier"
+        ]
+      },
+      "private_nodes": []
+    }
+  }
+}

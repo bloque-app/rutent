@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:reserve-declaration",
+  "title": "Reserve declaration",
+  "description": "What a reserve declares at publishing, attributable to its maker. A later version that changes either answer is a new declaration, with a new declared_in_version. REQ-CAT-6, REQ-ORD-13, REQ-AUZ-9.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "can_require_user_initiated_withdrawal",
+    "starts_routes_on_automatic_deposits",
+    "maker",
+    "declared_in_version"
+  ],
+  "properties": {
+    "can_require_user_initiated_withdrawal": {
+      "description": "Whether the reserve can require that the user initiate the withdrawal themselves. Where false, the operator may act for the user (REQ-AUZ-9).",
+      "type": "boolean"
+    },
+    "starts_routes_on_automatic_deposits": {
+      "description": "Whether the reserve starts routes on automatic deposits (REQ-ORD-13).",
+      "type": "boolean"
+    },
+    "maker": {
+      "description": "The party the declaration is attributable to: the maker of the advertisement statement it sits in, which the Rust validation checks.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "declared_in_version": {
+      "description": "The provider version in which this declaration was made.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/version"
+    }
+  }
+}

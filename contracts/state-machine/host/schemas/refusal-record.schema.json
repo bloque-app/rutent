@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:host:refusal-record",
+  "title": "Refusal record",
+  "description": "A refused input, recorded whole in the host's refusal log (REQ-AUD-1: refusals are recorded; guarantee exactly-once). That the record it points to holds the same record id is checked over a whole snapshot stream by the Rust types, since JSON Schema can't compare values.",
+  "type": "object",
+  "required": ["seq", "input", "reason", "existing"],
+  "properties": {
+    "seq": {
+      "description": "Its place in the host's refusal log, from 1, with no gap, and at most 2^53 - 1.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "input": { "$ref": "urn:rutent:state-machine:recorded-input" },
+    "reason": {
+      "description": "record_id_reused: the record id is already recorded with other content.",
+      "enum": ["record_id_reused"]
+    },
+    "existing": {
+      "description": "The record that already holds the input's record id.",
+      "type": "object",
+      "required": ["order_id", "seq"],
+      "properties": {
+        "order_id": { "type": "string", "minLength": 1 },
+        "seq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

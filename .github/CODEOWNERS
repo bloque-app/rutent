@@ -1,0 +1,9 @@
+# DEC-20: changes to these paths wait for the owner's review, after a separate security review.
+# Enforced only once main's protection requires code-owner review (an owner action, not this file).
+/contracts/                @pandres95
+/tools/contract-guard/     @pandres95
+/tools/licence-check/      @pandres95
+/licences/                 @pandres95
+/.github/                  @pandres95
+/experiments/2026-11-07-module-format/wasm-binding/  @pandres95
+/experiments/2026-11-07-module-format/pvm-binding/   @pandres95

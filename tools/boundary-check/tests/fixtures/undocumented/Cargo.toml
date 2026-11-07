@@ -1,0 +1,16 @@
+# A crate outside the workspace, with one public function that has no documentation. The
+# documentation check must fail on it. It has its own workspace root so that it gets its lints the
+# same way the real crates do, through `[workspace.lints]` and `lints.workspace = true`.
+[package]
+name = "undocumented-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[lints]
+workspace = true

@@ -1,0 +1,131 @@
+name: EXP-2 wasm
+
+# EXP-2's Wasm binding on the scoring platform, x86_64-unknown-linux-gnu (item exp2-run-platform): run.sh, the
+# binding's own tests with its isolation probes, and the module-boundary suite. The PolkaVM binding has its own
+# workflow, exp2-pvm.yml, on exp2/pvm-** branches.
+#
+# A run's id: the `run_id` input of a manual run; else a line `Run-Id: EXP-2-wasm-<yyyymmdd>-<n>` in the pushed head
+# commit's message, for a scored run; else `EXP-2-wasm-ci-<run number>`, which is no run of the record's.
+on:
+  push:
+    branches:
+      - "exp2/wasm-**"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "The run id the reports carry, for a scored run EXP-2-wasm-<yyyymmdd>-<n>"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  STABLE: 1.98.0
+
+jobs:
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: The run's id and directories
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          from_message=$(printf '%s\n' "$HEAD_MESSAGE" | sed -n 's/^Run-Id: *//p' | head -1)
+          run_id="${INPUT_RUN_ID:-${from_message:-EXP-2-wasm-ci-$RUN_NUMBER}}"
+          if ! [[ "$run_id" =~ ^EXP-2-wasm-(ci-[0-9]+|[0-9]{8}-[0-9]+)$ ]]; then
+            echo "not a run id of the Wasm binding: $run_id" >&2
+            exit 1
+          fi
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "REPORTS=$RUNNER_TEMP/reports" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/reports"
+
+      - name: The runner
+        run: |
+          {
+            echo "run id: $RUN_ID"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -a)"
+            grep -m1 'model name' /proc/cpuinfo
+            nproc
+            cat /etc/os-release
+            unshare --version
+            echo "LSMs: $(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
+            for s in kernel.unprivileged_userns_clone user.max_user_namespaces \
+                kernel.apparmor_restrict_unprivileged_userns kernel.yama.ptrace_scope; do
+              sysctl "$s" 2>/dev/null || echo "$s: not present"
+            done
+          } | tee "$REPORTS/runner.txt"
+
+      # A runner setting, not part of the binding: Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, and the binding starts every child in user namespaces of its own (`unshare --user`).
+      - name: Allow unprivileged user namespaces on this runner
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 | tee -a "$REPORTS/runner.txt"
+
+      - name: Toolchains
+        run: |
+          rustup toolchain install "$STABLE" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$STABLE"
+          clang=$(command -v clang-18 || command -v clang || true)
+          if [[ -z "$clang" ]] || ! "$clang" -print-targets | grep -qw wasm32; then
+            sudo apt-get update
+            sudo apt-get install -y clang lld
+            clang=$(command -v clang)
+          fi
+          echo "CLANG=$clang" >> "$GITHUB_ENV"
+          sysroot=$(rustc --print sysroot)
+          {
+            rustc --version --verbose
+            cargo --version
+            rustup target list --installed
+            "$clang" --version | head -1
+            "$clang" -print-targets | grep wasm32
+            "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" -flavor wasm --version
+          } | tee "$REPORTS/toolchains.txt"
+
+      - name: run.sh, the binding's own tests and the suite
+        run: |
+          set -o pipefail
+          RUTENT_TESTS=1 experiments/2026-11-07-module-format/wasm-binding/run.sh \
+            "$RUN_ID" "$REPORTS/report.json" 2>&1 | tee "$REPORTS/run.log"
+
+      - name: The isolation probes and the twice-compiled digests, verbose
+        if: always()
+        run: |
+          set -o pipefail
+          export RUTENT_WASM_STANDINS="$CARGO_TARGET_DIR/rutent-wasm-standins"
+          cargo test --release --locked --manifest-path experiments/2026-11-07-module-format/wasm-binding/Cargo.toml \
+            --test admission -- --test-threads=1 --nocapture \
+            the_compiler_and_every_provider_process compiling_the_same_binary_twice 2>&1 | tee "$REPORTS/probes.log"
+
+      # Only after a failure: which system calls a child was refused, from strace, for the next fix.
+      - name: Refused system calls, if anything failed
+        if: failure()
+        run: |
+          sudo apt-get install -y strace
+          export RUTENT_WASM_STANDINS="$CARGO_TARGET_DIR/rutent-wasm-standins"
+          strace -f -qq -e status=failed -o "$REPORTS/strace.txt" \
+            cargo test --release --locked --manifest-path experiments/2026-11-07-module-format/wasm-binding/Cargo.toml \
+            -- --test-threads=1 > "$REPORTS/strace-tests.log" 2>&1 || true
+          grep -E '= -1 (EPERM|EACCES)' "$REPORTS/strace.txt" | sed -E 's/^[0-9]+ +//; s/\(.*//' | sort | uniq -c \
+            | sort -rn | tee "$REPORTS/refused.txt" || true
+
+      - name: Upload the reports and the full log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp2-wasm-${{ env.RUN_ID }}
+          path: ${{ env.REPORTS }}
+          if-no-files-found: error

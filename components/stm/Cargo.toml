@@ -1,0 +1,21 @@
+[package]
+name = "rutent-stm"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# EXP-1's purpose-built store (T-007-02), a host of the host contract on real disk. Off by default.
+purpose-built-store = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+rutent-contracts = { path = "../../contracts" }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
+
+[dev-dependencies]
+rutent-conformance = { path = "../../conformance" }

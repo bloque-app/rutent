@@ -1,0 +1,177 @@
+name: EXP-2 PolkaVM
+
+# EXP-2's PolkaVM binding on the scoring platform, x86_64-unknown-linux-gnu (item exp2-run-platform). The Wasm
+# binding has its own workflow, exp2-wasm.yml, on exp2/wasm-** branches.
+on:
+  push:
+    branches:
+      - "exp2/pvm-**"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "The run id the reports carry, for a scored run EXP-2-pvm-<yyyymmdd>-<n>"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NIGHTLY: nightly-2026-09-20
+  STABLE: 1.98.0
+
+jobs:
+  pvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      run_id: ${{ steps.ids.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: The run's id and directories
+        id: ids
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          run_id="${INPUT_RUN_ID:-EXP-2-pvm-ci-$RUN_NUMBER}"
+          if ! [[ "$run_id" =~ ^EXP-2-pvm-(ci-[0-9]+|[0-9]{8}-[0-9]+)$ ]]; then
+            echo "not a run id of the PolkaVM binding: $run_id" >&2
+            exit 1
+          fi
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "REPORTS=$RUNNER_TEMP/reports" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/reports"
+
+      - name: The runner
+        run: |
+          {
+            echo "run id: $RUN_ID"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -a)"
+            grep -m1 'model name' /proc/cpuinfo
+            nproc
+            grep -m1 -o -w bmi2 /proc/cpuinfo || echo "no bmi2"
+            grep -m1 -o -w avx2 /proc/cpuinfo || echo "no avx2"
+            cat /etc/os-release
+            unshare --version
+            for s in kernel.unprivileged_userns_clone user.max_user_namespaces vm.unprivileged_userfaultfd \
+                kernel.apparmor_restrict_unprivileged_userns kernel.yama.ptrace_scope; do
+              sysctl "$s" 2>/dev/null || echo "$s: not present"
+            done
+          } | tee "$REPORTS/runner.txt"
+
+      # A runner setting, not part of the binding: Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, which both the binding's own isolation and PolkaVM's Linux sandbox need.
+      - name: Allow unprivileged user namespaces on this runner
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 | tee -a "$REPORTS/runner.txt"
+
+      - name: Toolchains
+        run: |
+          rustup toolchain install "$STABLE" --profile minimal --component clippy --component rustfmt
+          rustup default "$STABLE"
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+          clang=$(command -v clang-18 || command -v clang)
+          echo "CLANG=$clang" >> "$GITHUB_ENV"
+          {
+            rustc --version
+            rustup run "$NIGHTLY" rustc --version
+            "$clang" --version | head -1
+            "$clang" -print-targets | grep riscv64
+          } | tee "$REPORTS/toolchains.txt"
+
+      - name: run.sh, the isolation tests and the suite
+        run: |
+          set -o pipefail
+          experiments/2026-11-07-module-format/pvm-binding/run.sh "$RUN_ID" --digests "$REPORTS/digests.txt" 2>&1 \
+            | tee "$REPORTS/run.log"
+          cp -R "$CARGO_TARGET_DIR/pvm-guests" "$REPORTS/guests"
+
+      - name: Upload the reports and the full log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp2-pvm-${{ env.RUN_ID }}
+          path: ${{ env.REPORTS }}
+          if-no-files-found: error
+
+  # B-11: a second runner compiles the first runner's stand-ins with the same platform version, in its own
+  # admitting-compiler processes, and compares the machine-code digests.
+  pvm-rederive:
+    needs: pvm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUN_ID: ${{ needs.pvm.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Directories
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "REPORTS=$RUNNER_TEMP/rederive" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/rederive" "$RUNNER_TEMP/first"
+
+      - name: The first runner's reports and stand-ins
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: exp2-pvm-${{ needs.pvm.outputs.run_id }}
+          path: ${{ runner.temp }}/first
+
+      - name: The runner
+        run: |
+          {
+            echo "run id: $RUN_ID"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -a)"
+            grep -m1 'model name' /proc/cpuinfo
+            grep -m1 -o -w bmi2 /proc/cpuinfo || echo "no bmi2"
+            grep -m1 -o -w avx2 /proc/cpuinfo || echo "no avx2"
+          } | tee "$REPORTS/runner.txt"
+          echo "first runner: $(grep -m1 'model name' "$RUNNER_TEMP/first/runner.txt")" | tee -a "$REPORTS/runner.txt"
+
+      # A runner setting, not part of the binding, as in the `pvm` job.
+      - name: Allow unprivileged user namespaces on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 | tee -a "$REPORTS/runner.txt"
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$STABLE" --profile minimal
+          rustup default "$STABLE"
+
+      - name: Re-derive the first runner's machine code and compare
+        run: |
+          set -o pipefail
+          b=experiments/2026-11-07-module-format/pvm-binding
+          cargo build --release --locked --manifest-path "$b/Cargo.toml" --bins
+          "$CARGO_TARGET_DIR/release/rutent-pvm-suite" --run-id "$RUN_ID" --guests "$RUNNER_TEMP/first/guests" \
+            --digests-only --digests "$REPORTS/digests.txt" 2>&1 | tee "$REPORTS/rederive.log"
+          {
+            echo "first runner's digests:  $(wc -l < "$RUNNER_TEMP/first/digests.txt") parts"
+            echo "this runner's digests:   $(wc -l < "$REPORTS/digests.txt") parts"
+            if diff <(sort "$RUNNER_TEMP/first/digests.txt") <(sort "$REPORTS/digests.txt"); then
+              echo "every part's machine code is the same on both runners"
+            else
+              echo "the machine code DIFFERS between the runners"
+              exit 1
+            fi
+          } 2>&1 | tee "$REPORTS/compare.txt"
+
+      - name: Upload the comparison
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp2-pvm-rederive-${{ needs.pvm.outputs.run_id }}
+          path: ${{ env.REPORTS }}
+          if-no-files-found: error

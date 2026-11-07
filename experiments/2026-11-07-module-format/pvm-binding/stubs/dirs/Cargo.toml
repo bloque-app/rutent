@@ -1,0 +1,12 @@
+[package]
+name = "dirs"
+# The version polkavm-linker 0.38.0 asks for (`^5.0.1`), so the patch applies. This is rutent's own stub, not the
+# upstream crate: it has no dependency, and holds only the function the linker calls.
+version = "5.0.1"
+description = "rutent's stand-in for the dirs crate in EXP-2's PolkaVM binding: cache_dir only, set explicitly"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

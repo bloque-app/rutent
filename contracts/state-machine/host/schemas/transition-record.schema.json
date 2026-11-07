@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:host:transition-record",
+  "title": "Transition record",
+  "description": "One input as the host recorded it: the input whole, its place in its order's sequence, and the state it reached (guarantees durable and replay). The record's order, its input's subject order and its state's order are the same, and its state names its input as the last; JSON Schema can't compare values, so the Rust types check those.",
+  "type": "object",
+  "required": ["order_id", "seq", "input"],
+  "properties": {
+    "order_id": { "type": "string", "minLength": 1 },
+    "seq": {
+      "description": "Its place in the order's sequence, from 1, with no gap (guarantee per-order-sequence), and at most 2^53 - 1, so it survives RFC 8785 canonical JSON.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "input": { "$ref": "urn:rutent:state-machine:recorded-input" },
+    "state_after": {
+      "description": "The state the input reached. Absent only for an input that opened no order and came before any that did.",
+      "$ref": "urn:rutent:state-machine:order"
+    }
+  },
+  "additionalProperties": false
+}

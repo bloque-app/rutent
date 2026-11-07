@@ -1,0 +1,28 @@
+# The Wasm binding of the module-boundary suite (`EXP-2`, `T-008-02`). Its own workspace, with its own Cargo.lock,
+# outside the root workspace: nothing it brings reaches the root `Cargo.lock` or `licences/RECORD` until adoption
+# decides (`T-008-04`). This manifest is the binding's flag: it is built only from here.
+[workspace]
+resolver = "3"
+members = ["sandbox", "binding"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.dependencies]
+rutent-contracts = { path = "../../../contracts" }
+rutent-conformance = { path = "../../../conformance" }
+rutent-wasm-sandbox = { path = "sandbox" }
+wasmtime = { version = "=48.0.8", default-features = false, features = ["cranelift", "runtime", "component-model", "std", "anyhow"] }
+wit-component = "=0.254.2"
+wit-bindgen-c = "=0.61.1"
+wit-bindgen-core = "=0.61.1"
+wit-parser = "=0.258.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10"
+libc = "0.2"

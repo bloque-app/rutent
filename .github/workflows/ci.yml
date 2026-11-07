@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "m*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test (includes the boundary check)
+        run: cargo test --workspace
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Documentation check
+        # Every crate denies `missing_docs` through `[workspace.lints]`; rustdoc enforces it here.
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # EXP-1's purpose-built store (T-007-02) is behind a feature, off by default, so the steps above don't build
+      # it. These build, lint, document and test it with the feature on, real-kill and torn-tail tests included.
+      - name: Lint, purpose-built store
+        run: cargo clippy --workspace --all-targets --features rutent-stm/purpose-built-store -- -D warnings
+      - name: Documentation check, purpose-built store
+        run: cargo doc --workspace --no-deps --features rutent-stm/purpose-built-store
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Test, purpose-built store
+        run: cargo test -p rutent-stm --features rutent-stm/purpose-built-store

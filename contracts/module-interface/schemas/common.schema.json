@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:common",
+  "title": "Shared atoms of the module-interface contract",
+  "description": "Referenced by the other module-interface schemas; validates nothing on its own. Identifiers, versions and times come from urn:rutent:provider-role:common.",
+  "$defs": {
+    "name": {
+      "description": "A name the module declares for one of its outside operations, destinations or secrets: dotted lower-case words, such as payouts.create.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "maxLength": 128
+    },
+    "scheme": {
+      "description": "How a destination is reached: over TLS only, so a connection is to the endpoint the name certifies (THR-79).",
+      "enum": [
+        "https",
+        "wss"
+      ]
+    },
+    "host": {
+      "description": "An exact DNS host name in lower case, with no wildcard, no trailing dot and no address literal: its last label starts with a letter.",
+      "type": "string",
+      "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "maxLength": 253
+    },
+    "port": {
+      "description": "A TCP port.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "address": {
+      "description": "An IP address: IPv4 in dotted decimal, or IPv6 in lower-case hexadecimal groups with at most one '::'. The schema checks that shape only. The Rust type also requires the one RFC 5952 text form (no leading zeros, the longest run of zero groups compressed, a single zero group not compressed) and refuses an IPv4-mapped IPv6 address.",
+      "type": "string",
+      "anyOf": [
+        {
+          "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$"
+        },
+        {
+          "pattern": "^(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}|:(?:(?::[0-9a-f]{1,4}){1,7}|:))$"
+        }
+      ],
+      "maxLength": 39
+    },
+    "address_block": {
+      "description": "A block of IP addresses as address/prefix length, such as 185.12.64.0/24: at most 32 bits for IPv4 and 128 for IPv6, with the address in the address form above and no leading zero in the length. Checked in Rust, not by this schema: the address's RFC 5952 form, and, in a declaration, that the block overlaps no special-purpose range.",
+      "type": "string",
+      "anyOf": [
+        {
+          "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(?:3[0-2]|[12]?[0-9])$"
+        },
+        {
+          "pattern": "^(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}|:(?:(?::[0-9a-f]{1,4}){1,7}|:))/(?:12[0-8]|1[01][0-9]|[1-9]?[0-9])$"
+        }
+      ],
+      "maxLength": 43
+    },
+    "refusal_reason": {
+      "description": "Why the platform refused an outside call before or while making it: an operation, destination or secret the module didn't declare (REQ-MDL-7, REQ-MDL-8); a connected address outside the destination's declared addresses, the first connection's or a redirect's (ADR-0004); a redirect to a destination the operation doesn't declare; or a limit reached (REQ-MDL-11).",
+      "enum": [
+        "undeclared_operation",
+        "undeclared_destination",
+        "undeclared_secret",
+        "address_not_allowed",
+        "redirect_to_undeclared_destination",
+        "limit_reached"
+      ]
+    },
+    "digest": {
+      "description": "A SHA-256 digest (FIPS 180-4) of the bytes it names, as 64 lower-case hexadecimal characters, its one text form. The contract states digests; computing and comparing them against bytes is the platform's (CMP-PROV).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "sha-256"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "part_digests": {
+      "description": "One digest for each of a module's two parts.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sandboxed",
+        "outside"
+      ],
+      "properties": {
+        "sandboxed": {
+          "$ref": "#/$defs/digest"
+        },
+        "outside": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "call_refusal_reason": {
+      "description": "Why the platform refused a cross-module call, in the order it checks: the caller doesn't declare the callee; it declares the callee but not the kind asked; the route doesn't name the call (REQ-MDL-21, THR-86); or the callee's module isn't running.",
+      "enum": [
+        "undeclared_callee",
+        "undeclared_kind",
+        "not_named_by_route",
+        "callee_unavailable"
+      ]
+    }
+  }
+}

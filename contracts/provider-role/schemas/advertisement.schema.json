@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:advertisement",
+  "title": "Provider advertisement",
+  "description": "A provider's advertisement, as a party statement in the envelope (REQ-PRT-1, REQ-CAT-6). Rules a schema can't express are checked by the contract's Rust validation; see the contract's README.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:advertisement"
+    },
+    "statement": {
+      "$ref": "#/$defs/advertisement"
+    }
+  },
+  "$defs": {
+    "advertisement": {
+      "description": "The advertisement itself: what one provider advertises in the catalogue: its offers by category (REQ-CAT-8), each tuple with its terms (REQ-CAT-11, REQ-CAT-12, REQ-CAT-13), its declarations (REQ-CAT-10, REQ-CAT-16, REQ-ORD-39), a reserve's declaration (REQ-CAT-6), and the private nodes it publishes (REQ-CAT-20, REQ-CAT-22). A provider that advertises a reserve, exchange or ramp declares evidence and safe retry; a verifier-only provider may leave them out. Rules a schema can't express are checked by the contract's Rust validation; see the contract's README.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "publisher",
+        "version",
+        "keys",
+        "offers",
+        "declarations",
+        "private_nodes"
+      ],
+      "properties": {
+        "provider": {
+          "description": "The provider's identifier in the catalogue.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "publisher": {
+          "description": "The publisher behind the provider, and behind every private node it declares (REQ-CAT-20).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "version": {
+          "description": "The provider version this advertisement belongs to.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "keys": {
+          "description": "The provider's public signing keys, each with its purpose (THR-4). The operator's grant (REQ-CAT-2) makes them authoritative; a statement the provider makes names one of them as its signature key. An advertisement and a release assertion are signed with an advertising key; every other statement with a statements key. A key is listed once, by its bytes, which the Rust validation checks.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scheme",
+              "public_key",
+              "purpose"
+            ],
+            "properties": {
+              "scheme": {
+                "enum": [
+                  "ed25519"
+                ]
+              },
+              "public_key": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+              },
+              "purpose": {
+                "description": "advertising: signs the provider's advertisements and its modules' release assertions, and is never resolvable by a running module. statements: signs the provider's other statements (results, quotes, judgements, reversal confirmations); a module's outside part resolves it as its statement_key, so it never signs an advertisement or a release assertion.",
+                "enum": [
+                  "advertising",
+                  "statements"
+                ]
+              }
+            }
+          }
+        },
+        "offers": {
+          "description": "What the provider advertises, keyed by category. A category attaches to what is advertised, so one provider may advertise under several (REQ-CAT-8).",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "reserve": {
+              "$ref": "#/$defs/reserve_offer"
+            },
+            "exchange": {
+              "$ref": "#/$defs/exchange_offer"
+            },
+            "ramp": {
+              "$ref": "#/$defs/ramp_offer"
+            },
+            "verifier": {
+              "$ref": "#/$defs/verifier_offer"
+            }
+          }
+        },
+        "declarations": {
+          "$ref": "urn:rutent:provider-role:declarations"
+        },
+        "private_nodes": {
+          "description": "The identifiers of the private nodes this provider declares and publishes, each once (REQ-CAT-22). Their publisher is the advertisement's publisher. Empty if none.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "offers"
+        ],
+        "properties": {
+          "offers": {
+            "anyOf": [
+              {
+                "required": [
+                  "reserve"
+                ]
+              },
+              {
+                "required": [
+                  "exchange"
+                ]
+              },
+              {
+                "required": [
+                  "ramp"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "declarations": {
+            "required": [
+              "evidence",
+              "safe_retry"
+            ]
+          }
+        }
+      }
+    },
+    "inner_node": {
+      "description": "An inner node, by identifier: one on the operator's public list, or a declared private node.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outer_node": {
+      "description": "An outer node, outside the book, named for its network and its reserve (REQ-CAT-17). The reserve is the advertising provider, so only the network is written.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network"
+      ],
+      "properties": {
+        "network": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "denomination": {
+      "description": "An asset, and the unit the provider counts it in: one whole asset is 10^decimals units (REQ-CAT-11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "decimals"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decimals": {
+          "$ref": "#/$defs/decimals"
+        }
+      }
+    },
+    "decimals": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 36
+    },
+    "end_units": {
+      "description": "The unit the one asset is counted in at each end: one whole asset is 10^decimals units. The ends may differ, as one asset can have different decimals on different networks (REQ-CAT-11). Bands and increment are in the origin unit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "destination"
+      ],
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/decimals"
+        },
+        "destination": {
+          "$ref": "#/$defs/decimals"
+        }
+      }
+    },
+    "terms": {
+      "description": "A tuple's terms. Amounts are whole numbers of the tuple's input unit (REQ-CAT-11, REQ-CAT-12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bands",
+        "reporting",
+        "required_inputs"
+      ],
+      "properties": {
+        "bands": {
+          "description": "The inclusive amount bands served; at least one.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "min",
+              "max"
+            ],
+            "properties": {
+              "min": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+              },
+              "max": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+              }
+            }
+          }
+        },
+        "increment": {
+          "description": "The fill increment, present only if the provider fills in increments.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "reporting": {
+          "description": "Whether the provider's reports are gross or net of its charge.",
+          "enum": [
+            "gross",
+            "net"
+          ]
+        },
+        "required_inputs": {
+          "description": "The inputs a segment through this tuple needs from the customer. Empty if none; never left out (REQ-CAT-12).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "reserve_tuple": {
+      "description": "One asset the reserve accepts for deposits or redeems, between an outer node and an inner node, in either direction: outer to inner is a withdrawal, inner to outer a deposit (REQ-CAT-13, REQ-CAT-17). A holding account is not advertised here: it is registered by the operator or reached through a private node's publisher (REQ-CAT-23), and stands as origin reserve only for a route handed on (REQ-ORD-16, REQ-ORD-43).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "destination",
+        "asset",
+        "decimals",
+        "terms"
+      ],
+      "properties": {
+        "origin": true,
+        "destination": true,
+        "asset": {
+          "description": "The one asset's identifier.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decimals": {
+          "$ref": "#/$defs/end_units"
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "origin": {
+              "$ref": "#/$defs/outer_node"
+            },
+            "destination": {
+              "$ref": "#/$defs/inner_node"
+            }
+          }
+        },
+        {
+          "properties": {
+            "origin": {
+              "$ref": "#/$defs/inner_node"
+            },
+            "destination": {
+              "$ref": "#/$defs/outer_node"
+            }
+          }
+        }
+      ]
+    },
+    "exchange_tuple": {
+      "description": "A from asset and a to asset at one inner node: the origin and destination are one node by construction (REQ-CAT-13). Amounts in terms are in the from unit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "from",
+        "to",
+        "terms"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/inner_node"
+        },
+        "from": {
+          "$ref": "#/$defs/denomination"
+        },
+        "to": {
+          "$ref": "#/$defs/denomination"
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        }
+      }
+    },
+    "ramp_tuple": {
+      "description": "One asset, kept by construction, between two inner nodes. That the two nodes differ is checked by the Rust validation (REQ-CAT-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "destination",
+        "asset",
+        "decimals",
+        "terms"
+      ],
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/inner_node"
+        },
+        "destination": {
+          "$ref": "#/$defs/inner_node"
+        },
+        "asset": {
+          "description": "The one asset's identifier.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decimals": {
+          "$ref": "#/$defs/end_units"
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        }
+      }
+    },
+    "reserve_offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tuples",
+        "declaration"
+      ],
+      "properties": {
+        "tuples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/reserve_tuple"
+          }
+        },
+        "declaration": {
+          "$ref": "urn:rutent:provider-role:reserve-declaration"
+        }
+      }
+    },
+    "exchange_offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tuples"
+      ],
+      "properties": {
+        "tuples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/exchange_tuple"
+          }
+        }
+      }
+    },
+    "ramp_offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tuples"
+      ],
+      "properties": {
+        "tuples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ramp_tuple"
+          }
+        }
+      }
+    },
+    "verifier_offer": {
+      "description": "A verifier advertises classes, not tuples, and moves no value (REQ-CAT-13, DEC-16).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classes"
+      ],
+      "properties": {
+        "classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:operation",
+  "maker": "rutent-operator",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "withdrawal",
+    "transaction": "tx-012",
+    "provider": "acme-co",
+    "session": "session-42",
+    "origin": {
+      "network": "co-bank-transfer"
+    },
+    "destination": "acme-ledger",
+    "asset": "COP",
+    "amount": "25000000",
+    "dry_run": true,
+    "inputs": {
+      "payer.bank_account": "0123456789"
+    }
+  }
+}

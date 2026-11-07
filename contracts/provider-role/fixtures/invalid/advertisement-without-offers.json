@@ -1,0 +1,44 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "acme-co",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "acme-co",
+    "publisher": "acme",
+    "version": "1.4.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+        "purpose": "advertising"
+      }
+    ],
+    "offers": {},
+    "declarations": {
+      "tracking": [
+        "identifier",
+        "status_query"
+      ],
+      "evidence": {
+        "grade": 3,
+        "availability": {
+          "seconds": 7776000
+        }
+      },
+      "safe_retry": true
+    },
+    "private_nodes": [
+      "acme-ledger"
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+# The Rust stand-ins of the Wasm binding (`T-008-02`). One crate builds every stand-in: a part (`sandboxed` or
+# `outside`) and a provider category (`reserve`, `exchange`, `ramp` or `verifier`) are chosen by features, and
+# `run.sh` builds each of the eight combinations for `wasm32-unknown-unknown`. Its own workspace, so the host
+# workspace's lints and clippy never see a guest crate.
+[workspace]
+
+[package]
+name = "rutent-wasm-standin"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[features]
+sandboxed = []
+outside = []
+reserve = []
+exchange = []
+ramp = []
+verifier = []
+
+[dependencies]
+wit-bindgen = { version = "=0.61.1", default-features = false, features = ["macros", "realloc", "std"] }
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true

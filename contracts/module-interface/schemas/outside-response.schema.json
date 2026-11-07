@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:outside-response",
+  "title": "Outside response",
+  "description": "What crosses back from the outside part to the sandboxed part: the outcome of one outside request. The sandboxed part treats it as untrusted input (REQ-MDL-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "transaction",
+    "operation",
+    "outcome"
+  ],
+  "properties": {
+    "transaction": {
+      "description": "The request's transaction.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "operation": {
+      "description": "The request's outside operation.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/name"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "description": "By status: completed, with what the destination answered; failed, with what it answered; unknown, when no answer came and the call's effect is not known; or refused by the platform, with the reason.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "unknown",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "completed",
+                  "failed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "answered": {
+      "description": "The destination answered, as the outside part reads it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "body"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "body": {
+          "description": "The answer, as an object.",
+          "type": "object"
+        }
+      }
+    },
+    "unknown": {
+      "description": "No answer came; whether the call took effect is not known. It carries nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "unknown"
+        }
+      }
+    },
+    "refused": {
+      "description": "The platform refused the call, and says why.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "reason": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/refusal_reason"
+        }
+      }
+    }
+  }
+}

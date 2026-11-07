@@ -1,0 +1,27 @@
+{
+  "id": "exp1-adopt-runtime",
+  "kind": "decide",
+  "section": "decide",
+  "group": "construction",
+  "title": "Which runtime does M2 build the state machine on?",
+  "lead": "Both candidates pass all 17 host-contract rows. Outside module rows, VOS fails every gap row the purpose-built store fails, and nine more.",
+  "bullets": [
+    "The store's gaps close in rutent's own code; VOS's close upstream, with one maintainer.",
+    "Before production, the store must refuse a damaged acknowledged entry and bound its memory.",
+    "The recommended option adds no package and needs no licence ruling.",
+    "Choosing VOS needs its AGPL-3.0-or-later licence ruled first, then 246 more licence lines."
+  ],
+  "rec": "the purpose-built store, because its gaps are VOS's too and close in rutent's own code.",
+  "options": [
+    "Purpose-built store for M2; drop VOS for v0 (recommended)",
+    "VOS for M2, once its licence is ruled",
+    "Discuss first"
+  ],
+  "spec": ["DEC-6", "ADR-0002", "REQ-OPS-3", "NFR-6", "REQ-MOD-5", "PS-66", "DEC-19"],
+  "reserved": true,
+  "blocks": true,
+  "refs": [
+    {"label": "EXP-1 outcome", "url": "../experiments/2026-11-06-runtime-host/outcome.md"}
+  ],
+  "origin": "T-007-04, 2026-11-07"
+}

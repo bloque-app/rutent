@@ -1,0 +1,69 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:advertisement",
+  "maker": "acme-internal-rail",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "tba3uLm6u7y9vr_AwcLDxMXGx8jJysvMzc7P0NHS09Q",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "provider": "acme-internal-rail",
+    "publisher": "acme",
+    "version": "0.1.0",
+    "keys": [
+      {
+        "scheme": "ed25519",
+        "public_key": "tba3uLm6u7y9vr_AwcLDxMXGx8jJysvMzc7P0NHS09Q",
+        "purpose": "advertising"
+      }
+    ],
+    "offers": {
+      "ramp": {
+        "tuples": [
+          {
+            "origin": "acme-ledger",
+            "destination": "acme-card-book",
+            "asset": "USDC",
+            "decimals": {
+              "origin": 6,
+              "destination": 2
+            },
+            "terms": {
+              "bands": [
+                {
+                  "min": "1",
+                  "max": "100000000000"
+                }
+              ],
+              "reporting": "net",
+              "required_inputs": []
+            }
+          }
+        ]
+      }
+    },
+    "declarations": {
+      "tracking": [
+        "identifier",
+        "status_query"
+      ],
+      "evidence": {
+        "grade": 4,
+        "availability": {
+          "seconds": 31536000
+        }
+      },
+      "safe_retry": true
+    },
+    "private_nodes": [
+      "acme-ledger",
+      "acme-card-book"
+    ]
+  }
+}

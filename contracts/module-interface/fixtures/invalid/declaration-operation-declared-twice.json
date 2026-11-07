@@ -1,0 +1,46 @@
+{
+  "provider": "bridge-pay",
+  "version": "2.1.0",
+  "interface": "2.0.1",
+  "sandboxed": {
+    "handles": [
+      "transfer"
+    ]
+  },
+  "outside": {
+    "operations": [
+      {
+        "name": "payouts.create",
+        "destinations": [
+          "bridge_api"
+        ],
+        "secrets": [
+          "bridge.api_key"
+        ]
+      },
+      {
+        "name": "payouts.create",
+        "destinations": [
+          "bridge_api"
+        ],
+        "secrets": [
+          "bridge.api_key"
+        ]
+      }
+    ],
+    "destinations": [
+      {
+        "name": "bridge_api",
+        "scheme": "https",
+        "host": "api.bridge-pay.example",
+        "port": 443,
+        "addresses": "public"
+      }
+    ],
+    "secrets": [
+      "bridge.api_key"
+    ],
+    "calls": [],
+    "statement_key": "xMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3-Dh4uM"
+  }
+}
