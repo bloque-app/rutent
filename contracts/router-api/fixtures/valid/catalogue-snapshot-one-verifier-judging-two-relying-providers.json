@@ -1,0 +1,150 @@
+{
+  "snapshot_id": "snap-0008",
+  "taken_at": "2026-11-06T15:00:00Z",
+  "figures": [
+    {
+      "figure_id": "f-ex-a",
+      "origin": {
+        "kind": "provider",
+        "provider": "exchange-a",
+        "publisher": "acme",
+        "provider_version": "3.0.0",
+        "module_version": "3.0.2"
+      },
+      "age_seconds": 900,
+      "value": {
+        "kind": "exchange_tuple",
+        "tuple": {
+          "node": "ledger-in",
+          "from": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "to": {
+            "id": "USDC",
+            "decimals": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100",
+                "max": "100000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": []
+          }
+        }
+      }
+    },
+    {
+      "figure_id": "f-ex-b",
+      "origin": {
+        "kind": "provider",
+        "provider": "exchange-b",
+        "publisher": "acme",
+        "provider_version": "1.4.0",
+        "module_version": "1.4.0"
+      },
+      "age_seconds": 900,
+      "value": {
+        "kind": "exchange_tuple",
+        "tuple": {
+          "node": "ledger-b",
+          "from": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "to": {
+            "id": "USDC",
+            "decimals": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100",
+                "max": "100000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": []
+          }
+        }
+      }
+    },
+    {
+      "figure_id": "f-ex-a-judged",
+      "origin": {
+        "kind": "provider",
+        "provider": "verifier-kyc",
+        "publisher": "kyc-co",
+        "provider_version": "1.0.0",
+        "module_version": "1.0.0"
+      },
+      "age_seconds": 4,
+      "valid_for_seconds": 604800,
+      "value": {
+        "kind": "eligibility",
+        "tuple": "f-ex-a",
+        "judgement": {
+          "deployment": {
+            "name": "rutent-test",
+            "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+          },
+          "protocol_version": "0.3.0",
+          "shape": "urn:rutent:provider-role:judgement",
+          "maker": "verifier-kyc",
+          "made_at": "2026-11-06T14:59:56Z",
+          "signature": {
+            "scheme": "ed25519",
+            "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
+            "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+          },
+          "statement": {
+            "subject": "subj-77",
+            "class": "kyc.natural_person",
+            "answer": "yes",
+            "valid_until": "2026-11-13T14:59:56Z"
+          }
+        }
+      }
+    },
+    {
+      "figure_id": "f-ex-b-judged",
+      "origin": {
+        "kind": "provider",
+        "provider": "verifier-kyc",
+        "publisher": "kyc-co",
+        "provider_version": "1.0.0",
+        "module_version": "1.0.0"
+      },
+      "age_seconds": 4,
+      "valid_for_seconds": 604800,
+      "value": {
+        "kind": "eligibility",
+        "tuple": "f-ex-b",
+        "judgement": {
+          "deployment": {
+            "name": "rutent-test",
+            "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+          },
+          "protocol_version": "0.3.0",
+          "shape": "urn:rutent:provider-role:judgement",
+          "maker": "verifier-kyc",
+          "made_at": "2026-11-06T14:59:56Z",
+          "signature": {
+            "scheme": "ed25519",
+            "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
+            "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+          },
+          "statement": {
+            "subject": "subj-42",
+            "class": "kyc.natural_person",
+            "answer": "yes",
+            "valid_until": "2026-11-13T14:59:56Z"
+          }
+        }
+      }
+    }
+  ]
+}

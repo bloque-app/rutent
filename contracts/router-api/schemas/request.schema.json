@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:request",
+  "title": "Route request",
+  "description": "What the customer asks the router for, in one round: from where, to where, how much, for which objective, and the worst outcome accepted (REQ-QTE-11, REQ-ORD-27). The amount is what leaves the origin, and the direction is origin to destination. The request's id is also its decision record's id: one routing per request, so each round has its own id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "round",
+    "from",
+    "to",
+    "amount",
+    "objective"
+  ],
+  "properties": {
+    "request_id": {
+      "description": "The request's id, and so its decision record's.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "round": {
+      "$ref": "#/$defs/round"
+    },
+    "from": {
+      "description": "Where the value starts.",
+      "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+    },
+    "to": {
+      "description": "Where the value must arrive: the one destination and to asset (REQ-AUZ-3).",
+      "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+    },
+    "amount": {
+      "description": "The amount that leaves the origin, in its unit.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+    },
+    "objective": {
+      "$ref": "#/$defs/objective"
+    },
+    "floor": {
+      "description": "The worst acceptable outcome: the least the customer accepts at the destination, in its unit (REQ-ORD-27). Absent if the customer set none.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+    },
+    "follows": {
+      "description": "At a recalculation, the choice-round request whose decision record this one follows for the same order (SAD section 3).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    }
+  },
+  "$defs": {
+    "round": {
+      "description": "Which round this routing is (REQ-CAT-5, DEC-8). A shortlist round runs over advertised figures and chooses nothing: the candidates it doesn't drop are the shortlist. A choice round runs over a snapshot that adds fresh quotes, dry-run and eligibility answers for the shortlisted providers only, and names the shortlist round it refines, so both are recorded (REQ-AUD-4). The choice round chooses only a candidate whose every operation is confirmed: it cites an accepted dry-run answer of its provider for its tuple, at its amount, within its validity and not void, which for a route or exchange is the provider's fresh quote and for a withdrawal or deposit the reserve's accepted dry run. Any other is dropped as unconfirmed. Checked by the contract's Rust types.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "shortlist",
+            "choice"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "shortlist"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "shortlist"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "choice"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "refines"
+            ],
+            "properties": {
+              "kind": {
+                "const": "choice"
+              },
+              "refines": {
+                "description": "The shortlist round's request id.",
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "objective": {
+      "description": "What the router optimises for (REQ-QTE-11); a tagged object, so more can be added. lowest_total_cost, the default, wants the largest sum over the candidate's parts of the last operation's amount_out. fastest_settlement wants the smallest settlement time: a part's is the sum of its operations' declared settlement seconds, each from the fresh quote the operation cites or else its price, and a split's is its slowest part's. Candidates equal by the objective are ordered by candidate_id ascending, comparing bytes, and the first is chosen. Whoever builds the request writes the default when the customer chose none.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "lowest_total_cost",
+            "fastest_settlement"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "lowest_total_cost"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "lowest_total_cost"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "fastest_settlement"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "fastest_settlement"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

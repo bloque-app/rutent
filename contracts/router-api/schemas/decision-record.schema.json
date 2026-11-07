@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:decision-record",
+  "title": "Decision record",
+  "description": "The router's record of one routing round, as the deployment's statement in the envelope (REQ-AUD-4, REQ-QTE-16, REQ-PRT-1). The statement holds the request, the catalogue snapshot and the policy bounds verbatim, with the objective, every figure's age and origin and every provider and policy version they hold; the router's version; every candidate and why each was dropped; and the chosen one: never in a shortlist round, whose kept candidates are the shortlist, and absent in a choice round with no route. Routing the statement's own request, snapshot and bounds again gives the same statement, with no provider call (AC-2). Its id is its request's. The router returns the statement; the deployment signs it when it records it. Every operation cites a tuple of its own provider with its two ends; the choice round chooses only a confirmed candidate; a drop reason that names a figure names one its candidate cites, which supports the drop. These and other rules a schema can't express are checked by the contract's Rust types; see the contract's README.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:router-api:decision-record"
+    },
+    "statement": {
+      "$ref": "#/$defs/decision_record"
+    }
+  },
+  "$defs": {
+    "decision_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "router_version",
+        "request",
+        "snapshot",
+        "bounds",
+        "candidates"
+      ],
+      "properties": {
+        "router_version": {
+          "description": "The router implementation's version.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "request": {
+          "$ref": "urn:rutent:router-api:request"
+        },
+        "snapshot": {
+          "$ref": "urn:rutent:router-api:catalogue-snapshot"
+        },
+        "bounds": {
+          "$ref": "urn:rutent:router-api:policy-bounds"
+        },
+        "candidates": {
+          "description": "Every candidate considered, each with an id unique in the record.",
+          "type": "array",
+          "items": {
+            "$ref": "urn:rutent:router-api:candidate"
+          }
+        },
+        "chosen": {
+          "description": "The chosen candidate, by id: in a choice round, the only one without a drop reason. Its parts are the chosen split. Never in a shortlist round; absent in a choice round with no route.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      },
+      "if": {
+        "required": [
+          "request"
+        ],
+        "properties": {
+          "request": {
+            "required": [
+              "round"
+            ],
+            "properties": {
+              "round": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "shortlist"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "chosen"
+          ]
+        }
+      }
+    }
+  }
+}

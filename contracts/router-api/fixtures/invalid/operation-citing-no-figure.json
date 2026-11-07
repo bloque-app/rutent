@@ -1,0 +1,25 @@
+{
+  "kind": "exchange",
+  "provider": "exchange-b",
+  "from": {
+    "node": "ledger-b",
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
+  },
+  "to": {
+    "node": "ledger-b",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
+  },
+  "amount_in": "99895000",
+  "fee": {
+    "asset": "COP",
+    "amount": "99895"
+  },
+  "amount_out": "244508252",
+  "figures": []
+}

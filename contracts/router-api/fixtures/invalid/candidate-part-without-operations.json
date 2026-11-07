@@ -1,0 +1,13 @@
+{
+  "candidate_id": "c9",
+  "parts": [
+    {
+      "operations": []
+    }
+  ],
+  "dropped": {
+    "reason": "outside_band",
+    "part": 0,
+    "operation": 2
+  }
+}
