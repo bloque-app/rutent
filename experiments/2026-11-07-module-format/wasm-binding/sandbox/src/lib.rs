@@ -629,7 +629,9 @@ mod linux {
     /// The system calls `role` may make once confined, with their numbers. What both children need: their pipes,
     /// memory (Wasmtime's code and linear memories, and the allocator), signal handling (Wasmtime's trap handlers
     /// and their alternate stack), locks, randomness for hash maps, clocks, their own ids, and exiting. A provider
-    /// also makes memory images of its modules' data segments (`memfd_create`, `ftruncate`).
+    /// also makes memory images of its modules' data segments (`memfd_create`, `ftruncate`). Written from what the
+    /// standard library, glibc and Wasmtime call on these paths, not pruned by tracing the calls that succeed, so
+    /// an entry may go unused.
     #[cfg(target_arch = "x86_64")]
     pub(super) fn allowed(role: Role) -> Vec<(&'static str, libc::c_long)> {
         let mut calls = vec![
