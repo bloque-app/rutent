@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{RwLock, RwLockReadGuard};
 
 use rutent_conformance::host::probe::{self, Probe};
 use rutent_conformance::host::{CellOutcome, Report, RunConfig, Verdict, run_with_fault_seam};
@@ -21,6 +22,24 @@ use rutent_stm::purpose_built_store::{
 use rutent_stm::reference_host::ReferenceHarness;
 
 type Pb = PurposeBuiltHost<Probe>;
+
+/// Keeps a process spawn from overlapping a store being closed and opened again in another test.
+///
+/// A spawned process briefly holds copies of every descriptor its parent has open, until it executes (they are all
+/// close-on-exec). An `flock` belongs to the open file description, not the descriptor, so while a copy exists a
+/// dropped host's lock is still held, and the reopen in another test thread fails with "the store is open in
+/// another host". Every test that opens a store holds the gate shared for its whole body; the one place that spawns
+/// holds it exclusive for the spawn.
+static SPAWN_GATE: RwLock<()> = RwLock::new(());
+
+fn stores_in_use() -> RwLockReadGuard<'static, ()> {
+    SPAWN_GATE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn spawn_writer(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let _exclusive = SPAWN_GATE.write().unwrap_or_else(|e| e.into_inner());
+    command.spawn()
+}
 
 /// The run these tests report under: the scored `EXP-1` run after the contract freeze `C1`
 /// (`experiments/2026-11-06-runtime-host/README.md`, Runs).
@@ -55,6 +74,7 @@ fn assert_passes(report: &Report) {
 // verifies: REQ-OPS-3, NFR-6, DEC-6, DEC-5
 #[test]
 fn the_purpose_built_store_passes_the_host_contract_suite_swapping_into_the_reference_host() {
+    let _gate = stores_in_use();
     assert_passes(&run_with_fault_seam(
         config("purpose-built-store", "reference-host"),
         &mut PurposeBuiltHarness::<Probe>::new(),
@@ -65,6 +85,7 @@ fn the_purpose_built_store_passes_the_host_contract_suite_swapping_into_the_refe
 // verifies: REQ-OPS-3, NFR-6, DEC-6, DEC-5
 #[test]
 fn the_purpose_built_store_passes_the_host_contract_suite_swapping_into_itself() {
+    let _gate = stores_in_use();
     assert_passes(&run_with_fault_seam(
         config("purpose-built-store", "purpose-built-store"),
         &mut PurposeBuiltHarness::<Probe>::new(),
@@ -75,6 +96,7 @@ fn the_purpose_built_store_passes_the_host_contract_suite_swapping_into_itself()
 // verifies: REQ-OPS-3, NFR-6, DEC-6, DEC-5
 #[test]
 fn the_reference_host_swaps_into_the_purpose_built_store_under_the_host_contract_suite() {
+    let _gate = stores_in_use();
     assert_passes(&run_with_fault_seam(
         config("reference-host", "purpose-built-store"),
         &mut ReferenceHarness::<Probe>::new(),
@@ -173,6 +195,7 @@ fn crash_between_record_and_effect_leaves_no_effect_when_the_process_is_killed_m
     if let Some(dir) = std::env::var_os(WRITER_STORE) {
         run_writer(Path::new(&dir));
     }
+    let mut gate = stores_in_use();
     let inputs = writer_inputs();
     let by_id: BTreeMap<&str, &RecordedInput> =
         inputs.iter().map(|i| (i.record_id.as_str(), i)).collect();
@@ -199,13 +222,18 @@ fn crash_between_record_and_effect_leaves_no_effect_when_the_process_is_killed_m
         (17, 3_300),
     ];
     for (round, (new, delay)) in rounds.into_iter().enumerate() {
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([KILL_TEST, "--exact", "--nocapture", "--test-threads=1"])
-            .env(WRITER_STORE, store.dir())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the writer starts");
+        // The spawn takes the gate exclusive, so this test lets go of its shared hold for it.
+        drop(gate);
+        let spawned = spawn_writer(
+            Command::new(std::env::current_exe().unwrap())
+                .args([KILL_TEST, "--exact", "--nocapture", "--test-threads=1"])
+                .env(WRITER_STORE, store.dir())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+        .expect("the writer starts");
+        gate = stores_in_use();
+        let mut child = spawned;
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut fresh = 0;
         while fresh < new {
@@ -331,6 +359,7 @@ fn written_store(harness: &mut PurposeBuiltHarness<Probe>) -> (Vec<RecordedInput
 // verifies: NFR-5, INV-7, REQ-STM-4, REQ-OPS-3
 #[test]
 fn a_log_torn_mid_record_reopens_at_its_last_whole_record() {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let (inputs, log, start) = written_store(&mut harness);
     let last = inputs.last().unwrap();
@@ -385,6 +414,7 @@ fn a_log_torn_mid_record_reopens_at_its_last_whole_record() {
 // verifies: NFR-5, INV-7, REQ-AUD-1
 #[test]
 fn damage_to_more_than_the_last_append_refuses_the_store_and_cuts_nothing() {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let (_, log, starts) = written_store_frames(&mut harness);
     let last_three = starts[starts.len() - 3];
@@ -434,6 +464,7 @@ fn damage_to_more_than_the_last_append_refuses_the_store_and_cuts_nothing() {
 // verifies: NFR-5, INV-7, REQ-AUD-1
 #[test]
 fn a_corrupt_entry_inside_synced_history_refuses_the_store_and_cuts_nothing() {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let (_, mut log, start) = written_store(&mut harness);
     log[start / 2] ^= 0x01;
@@ -453,6 +484,7 @@ fn a_corrupt_entry_inside_synced_history_refuses_the_store_and_cuts_nothing() {
 #[test]
 fn damage_inside_a_finished_import_is_corruption_and_inside_an_unfinished_one_is_an_incomplete_import()
  {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let mut inputs = probe::order_inputs("ord-1", 0);
     inputs.extend(probe::order_inputs("ord-2", 100));
@@ -515,6 +547,7 @@ fn damage_inside_a_finished_import_is_corruption_and_inside_an_unfinished_one_is
 // verifies: REQ-OPS-3, NFR-6, NFR-5
 #[test]
 fn an_import_stopped_right_after_its_first_frame_is_incomplete_and_a_torn_first_frame_is_refused() {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let mut source = Pb::open(harness.fresh_store().unwrap()).unwrap();
     for input in probe::order_inputs("ord-1", 0) {
@@ -560,6 +593,7 @@ fn an_import_stopped_right_after_its_first_frame_is_incomplete_and_a_torn_first_
 // verifies: NFR-5, REQ-STM-4
 #[test]
 fn a_store_opens_in_one_host_at_a_time() {
+    let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let store = harness.fresh_store().unwrap();
     let first = Pb::open(store.clone()).unwrap();
@@ -569,4 +603,38 @@ fn a_store_opens_in_one_host_at_a_time() {
     ));
     drop(first);
     Pb::open(store).unwrap();
+}
+
+/// A regression test for the gate: process spawns running beside a store that is closed and opened again must
+/// never make the reopen fail. With `Command::spawn` called directly instead of `spawn_writer` it failed within
+/// a few hundred iterations, with the "the store is open in another host" the suite's tests flaked with.
+#[test]
+fn a_process_spawned_beside_a_closing_store_never_keeps_its_lock() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let store = harness.fresh_store().unwrap();
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Relaxed) {
+                spawn_writer(Command::new("true").stdout(Stdio::null()))
+                    .and_then(|mut child| child.wait())
+                    .unwrap();
+            }
+        });
+        let mut failure = None;
+        for i in 0..2_000 {
+            // Shared for one close and reopen, so the spawner gets its turn between iterations.
+            let _gate = stores_in_use();
+            match Pb::open(store.clone()) {
+                Ok(host) => drop(host),
+                Err(e) => {
+                    failure = Some(format!("iteration {i}: {e:?}"));
+                    break;
+                }
+            }
+        }
+        done.store(true, Ordering::Relaxed);
+        assert_eq!(failure, None);
+    });
 }

@@ -44,3 +44,14 @@ experiment's own questions and defaults are in `experiments/2026-11-06-runtime-h
     can be lost that way. A torn last frame whose length is unreadable is refused, not cut. Both are a gap for
     `EXP-1` to score (the run note's "A gap for `EXP-1` to score"), not defects fixed in `T-007-02`.
   - The lock is advisory `flock`, emulated on NFS; Windows is not supported.
+
+## A flaky store test (2026-11-07)
+
+- **What failed.** Two of sixty runs of the feature tests refused a reopen with "the store is open in another
+  host". The cause is in the tests: the real-kill test spawns a child while other tests drop and reopen stores, and
+  a spawned child holds copies of the parent's descriptors until it execs. A `flock` belongs to the open file
+  description, so a just-dropped store stays locked for that window. The tests now serialise spawns with a gate, and
+  `a_process_spawned_beside_a_closing_store_never_keeps_its_lock` fails without it.
+- **For `F-010`.** The same window exists in production for any process that spawns children (module workers, for
+  one) while it reopens a store. The store fails closed, refusing the reopen, so no record is at risk, but the
+  platform must not count on reopening a store while it spawns, or `F-010` must retry such a refusal.
