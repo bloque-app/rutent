@@ -238,6 +238,14 @@ development run. Its id is `EXP-2-<candidate code>-dev-<yyyymmdd>-<n>`, for exam
 can't be taken for a scored run. Its note and every cell it fills say `pre-freeze`, and the scored run after `C1`
 gets an id of the form above.
 
+Any run on the scoring platform (GitHub's `ubuntu-24.04`, `x86_64-unknown-linux-gnu`) after `C1` takes a scored id,
+`EXP-2-<candidate code>-<yyyymmdd>-<n>`, whether a person started it or a push did, and has its own note at
+`runs/<run id>.md`. The label a workflow gives a run (its `run_id` input, or the default a push gives it, such as
+`EXP-2-pvm-ci-7`) is not an id. A workflow run made on the platform only to develop a binding, which no cell cites and
+which carries no scored claim, is a development run: the note of the scored run it led to lists it in one line, by its
+Actions run number, and it has no id of its own. Those runs are listed in that note, not in the sheet's section 5, which lists the
+pre-freeze development runs.
+
 ## Promotion record
 
 Not promoted. The experiment is open.

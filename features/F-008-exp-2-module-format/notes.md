@@ -120,3 +120,33 @@ readings are in its README, "Readings taken in opening it".
   review it adds explicit `process-info*` and `iokit-get-properties` denials with probes, and refuses re-admitting a
   version already admitted, with a test that a pending release leaves the running one in force across a restart.
   Run 1's note is kept, marked superseded.
+
+## Audit corrections to the EXP-2 scores (T-008-02, T-008-03)
+
+Applied from an independent audit of the two scored runs, to the sheet, the record's README and the run notes. No code
+and no binding source changed.
+
+- **Run ids on the platform.** The README's Runs section now says any run on the scoring platform after `C1` takes a
+  scored id and its own note. Actions run 42359164555, the push run that re-derived PolkaVM's machine code on an EPYC
+  9V74, is `EXP-2-pvm-20261107-2`, with a note written from its logs and artifacts; `B-11` and `G-19` cite it with `-1`.
+  Two readings: a workflow's own label (`EXP-2-pvm-ci-7`, `EXP-2-wasm-ci-3`) is not an id; and the workflow runs that
+  only developed a binding, citing no cell and carrying no scored claim, are listed in one line each in the scored
+  run's note and take no id of their own.
+- **Scores.** pvm `B-01`, `B-14` and `B-19` are `fail`; `B-02` is `pass (binding)` for both formats; wasm `B-15` is
+  `pass (binding)`; `G-10` and `G-22` share one criterion, C stand-ins written for this task with upstream tooling,
+  and are `pass`.
+- **`G-14`.** Its criterion is the compiler backend and the non-experimental Linux sandbox existing, and the pvm
+  result is `pass`. The sentence that `G-14`, `G-15`, `G-16` and `G-30` are settings inside a project upstream calls
+  unfit for production is in that result cell, as the other notes on a result are in theirs.
+- **`L-01` and `L-04` for pvm.** `regalloc2` 0.9.3 is licensed only as `Apache-2.0 WITH LLVM-exception` and has no
+  line in `licences/RECORD`. Of the binding's 41 external packages, 24 have a line at the same version and 17 have
+  none; of the guests' 9, 4 have one and 5 have none. The counts exclude path packages (the `dirs` stub among them,
+  which reuses upstream's version number 5.0.1); the wasm column's counts exclude them too. Checked by comparing each
+  `Cargo.lock` with `licences/RECORD`.
+- **`B-06`.** Wasm's spawn-to-exit compile (about 262 ms) is set beside PolkaVM's admission round trip (6.4 ms). The
+  in-process 0.40 ms is kept but marked not comparable. PolkaVM's resident memory and machine-code size are not
+  measured: the scored-run artifacts hold only the machine code's digests.
+- **`B-08` for pvm, in the note only.** The `/proc` read was refused by `seccomp`, not the empty root; the layers were
+  probed together; the admitting compiler drops no capabilities and has no Landlock.
+- **Tree at `dfeb1c2`.** The Wasm binding's tree there differs from the scored run's (`eab957c`) by one comment.
+
