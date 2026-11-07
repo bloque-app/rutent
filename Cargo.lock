@@ -583,6 +583,7 @@ dependencies = [
 name = "rutent-stm"
 version = "0.0.0"
 dependencies = [
+ "rutent-conformance",
  "rutent-contracts",
 ]
 

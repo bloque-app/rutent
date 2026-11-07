@@ -10,3 +10,6 @@ workspace = true
 
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
+
+[dev-dependencies]
+rutent-conformance = { path = "../../conformance" }

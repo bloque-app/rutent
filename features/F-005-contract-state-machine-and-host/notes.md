@@ -280,3 +280,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   maps them to `H-06`.
 - Two more doubles show the in-flight input check and the redone-import refusal check can fail, each on its own
   cell alone.
+
+## T-005-04
+
+- The reference host lives in `rutent-stm` (`components/stm`), as `rutent_stm::reference_host`, not in
+  `conformance`: it is the baseline `EXP-1` compares both candidates with, and the floor if neither passes
+  (PLAN §6.2, risk 2), so it may run, not only test. The boundary check lets `rutent-stm` depend on
+  `rutent-contracts` alone, and take `rutent-conformance` as a dev-dependency, which its test of the suite uses.
+- It is generic over the state machine, as the host contract's `Host<M>` is, and runs the suite with the probe.
+- The store, `MemoryStore`, is a log of records and refusals plus a halted flag and an unfinished-import flag.
+  Each write is one push onto the log, so an entry is whole or absent. The host's indexes (journals, record ids,
+  orders, the refusal log) are rebuilt from the log every time a store is opened, so what it answers can't differ
+  from what the log holds.
+- "Same input" is `RecordedInput` equality. For these types that is the same as equal canonical JSON under RFC
+  8785: each field serialises one way, and no string is normalised either way.
+- It accepts an import only of its own contract versions, exactly, onto an empty store, checked by `StreamCheck`
+  entry by entry, and marks the store complete only after the end.
+- What memory can't give: the store outlives the host value, not the process. In the suite's terms a kill is
+  `Harness::kill`, which drops the host's indexes and keeps its store, and against that every guarantee holds; the
+  suite passes all sixteen cells with `FaultSeam`, and every runnable cell black-box. Against a real process kill,
+  power loss or a torn write nothing survives, since nothing is on disk; `EXP-1` scores durability across a real
+  kill on the candidates only.
