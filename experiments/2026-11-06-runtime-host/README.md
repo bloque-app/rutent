@@ -120,7 +120,9 @@ owner's explicit answer, and it reaches the owner's form with the adoption item 
 - [`drafts/licence-item.json`](drafts/licence-item.json): the licence item `licence-vos-agpl`, to publish only if
   the owner leans to VOS on the adoption item.
 
-`T-007-04` drafted all four from the outcome. The drafts sit here, not in `adr/`, `PLAN.md` or the owner's form, so
+`T-007-04` drafted all four from the first outcome, and redrafted the adoption item after the re-score. The ADR-0002
+amendment and the plan decision still reflect the first outcome (the store adapted); promotion rewrites them from the
+owner's answer. The drafts sit here, not in `adr/`, `PLAN.md` or the owner's form, so
 nothing reads them as accepted.
 
 ## Outcome
