@@ -25,7 +25,7 @@ decision log, draft changes, outcome and promotion record.
 | Scope | [Scope](#scope), with the [candidates](#candidates) and the [scoring sheet](scoring.md) |
 | Decision log | [`decisions.json`](decisions.json) |
 | Draft changes | [`drafts/`](drafts/) |
-| Outcome | [`outcome.md`](outcome.md), a placeholder until `T-008-04` |
+| Outcome | [`outcome.md`](outcome.md), written by `T-008-04` |
 | Promotion record | [Promotion record](#promotion-record) |
 
 ## Id
@@ -206,13 +206,15 @@ needs the owner's explicit answer, and it reaches the owner's form with the adop
 - [`drafts/thr-85-recheck.md`](drafts/thr-85-recheck.md): the re-check of `THR-85`'s row in `ARCHITECTURE.md` §6,
   `proposed`.
 
-All three are placeholders until `T-008-04` drafts them from the outcome. The drafts sit here, not in `adr/`,
-`ARCHITECTURE.md` or `PLAN.md`, so nothing reads them as accepted.
+`T-008-04` drafted all three from the outcome, with the adoption item,
+[`drafts/adoption-item.json`](drafts/adoption-item.json), and the licence item it needs,
+[`drafts/licence-item.json`](drafts/licence-item.json). The drafts sit here, not in `adr/`, `ARCHITECTURE.md` or
+`PLAN.md`, so nothing reads them as accepted.
 
 ## Outcome
 
 [`outcome.md`](outcome.md): one page, which format or formats are admitted, with the numbers behind it, each naming
-a run (Narthex `REQ-EXP-4`, Narthex `REQ-CHN-17`). A placeholder until `T-008-04`.
+a run (Narthex `REQ-EXP-4`, Narthex `REQ-CHN-17`). Written by `T-008-04`: Wasm adapted, PolkaVM dropped for v0.
 
 ## Runs
 
@@ -248,9 +250,14 @@ pre-freeze development runs.
 
 ## Promotion record
 
-Not promoted. The experiment is open.
+Not promoted. The experiment is open until the owner answers the adoption item.
 
-When `T-008-04` writes the outcome, this section records one of:
+`T-008-04` wrote the outcome on 2026-11-07, recommending that Wasm be adapted for `M2` (`F-013`) and PolkaVM dropped
+for v0, with no second format kept. It drafted the adoption item `exp2-adopt-format` in
+[`drafts/adoption-item.json`](drafts/adoption-item.json), with [`outcome.md`](outcome.md) as its ref, and the licence
+item its recommended option needs first, `licence-llvm-exception`, in
+[`drafts/licence-item.json`](drafts/licence-item.json). Both are on the owner's form once published there. When the
+owner answers, this section records one of:
 
 - **adopted:** the adoption item on the owner's form, with [`outcome.md`](outcome.md) as its ref (Narthex
   `REQ-EXP-7`), naming the format or formats; once the owner answers, the one amendment to ADR-0003, the one plan

@@ -1,0 +1,29 @@
+{
+  "id": "exp2-adopt-format",
+  "kind": "decide",
+  "section": "decide",
+  "group": "construction",
+  "title": "Which module format do M2's admission and runtime build on?",
+  "lead": "Both formats pass all 16 module-boundary rows in Rust and C. PolkaVM's upstream says not to use it in production; Wasm's open gaps close in rutent's own code.",
+  "bullets": [
+    "Wasm alone claims AC-20 in Rust and C; PolkaVM adds no language Wasm lacks.",
+    "A second format means a second binding, jail, security review and licence closure, for nothing v0 needs.",
+    "Before production, F-013 adds per-module limits, schema checks, a process memory bound and cross-machine re-derivation.",
+    "The recommended option needs item licence-llvm-exception ruled first: 29 Wasmtime crates carry only that licence.",
+    "Speed decides nothing: PolkaVM admits faster, Wasm starts a provider faster; neither is a target."
+  ],
+  "rec": "Wasm only, because both pass the suite and PolkaVM's upstream calls it unfit for production.",
+  "options": [
+    "Wasm only for M2; drop PolkaVM for v0 (recommended)",
+    "Both formats, each with its own binding",
+    "PolkaVM only, despite upstream's production warning",
+    "Discuss first"
+  ],
+  "spec": ["DEC-7", "ADR-0003", "REQ-MDL-15", "REQ-MDL-18", "AC-20", "THR-85", "REQ-MOD-5", "DEC-19"],
+  "reserved": true,
+  "blocks": true,
+  "refs": [
+    {"label": "EXP-2 outcome", "url": "../experiments/2026-11-07-module-format/outcome.md"}
+  ],
+  "origin": "T-008-04, 2026-11-07"
+}

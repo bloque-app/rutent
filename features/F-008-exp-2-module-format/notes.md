@@ -150,3 +150,17 @@ and no binding source changed.
   probed together; the admitting compiler drops no capabilities and has no Landlock.
 - **Tree at `dfeb1c2`.** The Wasm binding's tree there differs from the scored run's (`eab957c`) by one comment.
 
+
+## T-008-04
+
+- **"Adapt", not "adopt", for Wasm.** As `T-007-04` read it for `EXP-1`'s store: the format is taken for `M2`, and
+  the gaps the outcome lists close before v0 reaches production, each owned by a plan feature.
+- **Two items, not one.** The recommended option needs a licence ruling first: Wasmtime's runtime and compiler are 29
+  crates whose only expression is `Apache-2.0 WITH LLVM-exception`. `licences/RECORD`'s standing permission names
+  Apache-2.0 but not the exception. The orchestrator read it as covered; the owner hasn't confirmed it. So the
+  question is its own reserved item, `licence-llvm-exception`, with no recommendation, beside `exp2-adopt-format`.
+- **`regalloc2` and PolkaVM.** PolkaVM's only crate with that expression enters through `polkavm-linker`, which the
+  binding's manifest says is for building stand-ins, never on admission's path. Read as: a PolkaVM platform need
+  not carry it. Nothing was built to show it.
+- **macOS evidence.** The macOS probes come from development runs only, and the re-check of `THR-85` rests no
+  status on them.

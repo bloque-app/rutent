@@ -1,0 +1,29 @@
+{
+  "id": "licence-llvm-exception",
+  "kind": "decide",
+  "section": "decide",
+  "group": "construction",
+  "title": "Does the standing permission cover Apache-2.0 WITH LLVM-exception?",
+  "lead": "The standing permission names Apache-2.0 but not its LLVM exception. Wasmtime's 29 runtime and compiler crates carry only that expression, so adopting Wasm needs your decision in licences/RECORD (REQ-MOD-5).",
+  "bullets": [
+    "The orchestrator read the exception as covered by the standing permission; you have not confirmed that.",
+    "No RECORD line carries it alone; wasip2 and wit-bindgen carry it as one choice of an OR.",
+    "PolkaVM's binding brings one such crate, regalloc2, only through its stand-in linker, off admission's path.",
+    "Declining it keeps Wasmtime off main at this pin, and leaves no format fit for production.",
+    "Until you rule, the licence check keeps Wasmtime off main and F-013 waits."
+  ],
+  "options": [
+    "Confirm: the standing permission covers it",
+    "Reject as standing; rule each such crate one by one",
+    "Decline it; Wasmtime stays off main",
+    "Discuss first"
+  ],
+  "spec": ["REQ-MOD-5", "DEC-7", "ADR-0003", "REQ-MDL-15"],
+  "reserved": true,
+  "blocks": true,
+  "refs": [
+    {"label": "EXP-2 outcome, the legal question", "url": "../experiments/2026-11-07-module-format/outcome.md#the-legal-question"},
+    {"label": "EXP-2 licence rows", "url": "../experiments/2026-11-07-module-format/scoring.md#4-the-licence-question"}
+  ],
+  "origin": "T-008-04, 2026-11-07"
+}
