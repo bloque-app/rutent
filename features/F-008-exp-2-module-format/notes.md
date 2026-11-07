@@ -127,8 +127,8 @@ readings are in its README, "Readings taken in opening it".
 
 - **After the security review of `EXP-2-wasm-20261107-1`** (`EXP-2-wasm-20261107-2` supersedes `-1`):
   - **The kind of a cross-module call** (M4) is the kind of the operation forwarded, as pvm-binding judges it.
-    A guest naming another kind is refused as `undeclared_kind`, and so is a guest naming a kind the contract
-    doesn't know. The record names the forwarded kind. One case doesn't fit the contract's checks: the forwarded
+    A guest naming another kind is refused as `undeclared_kind`. So is a guest naming a kind the contract
+    doesn't know, but no test tries that: the suite's `Step::CallModule` can't carry one. The record names the forwarded kind. One case doesn't fit the contract's checks: the forwarded
     kind is declared, but the guest names another. The binding refuses it as `undeclared_kind`, as pvm-binding
     does, and `validate_call_against` reads no refusal for it. The brief's scenario names the callee "declared
     for `quote`". The contract has no `quote` kind, so the test uses `conversion`, the exchange's kind, whose dry
