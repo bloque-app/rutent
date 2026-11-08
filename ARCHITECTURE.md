@@ -169,8 +169,8 @@ flowchart LR
   class rutent system
 ```
 
-Read with the bullets below: the durable store's runtime is a milestone-1 experiment (ADR-0002); the module format
-is another (ADR-0003); the shared proxy is v0's, per-provider proxies come before v1 (ADR-0004); the log is kept
+Read with the bullets below: the durable store's runtime is VOS, as the whole runtime on three replicas (ADR-0002 as
+amended by `EXP-1`); the module format is Wasm components on Wasmtime (ADR-0003 as amended by `EXP-2`); the shared proxy is v0's, per-provider proxies come before v1 (ADR-0004); the log is kept
 apart from the execution store (ADR-0005); the evidence checker is operator-run, apart from provider modules
 (ADR-0007).
 
@@ -181,9 +181,11 @@ apart from the execution store (ADR-0005); the evidence checker is operator-run,
   in its own isolation, since it parses hostile input.
 - **Durable-store / host contract** (ADR-0002): `CMP-STM` is written against a host-agnostic contract — an
   interface for durable transition storage and recorded-input delivery — so the execution environment can be
-  replaced without losing in-flight orders (`REQ-OPS-3`). Which concrete runtime implements that contract (VOS,
-  or a purpose-built store) is a milestone-1 experiment, not a STEP-2 commitment (Pablo, 2026-11-06, decision
-  form item `runtime-host-seam`).
+  replaced without losing in-flight orders (`REQ-OPS-3`). Which concrete runtime implements that contract was
+  left to a milestone-1 experiment (Pablo, 2026-11-06, decision form item `runtime-host-seam`). `EXP-1` chose
+  VOS: `CMP-STM` runs as a VOS program on three replicas, at a pinned and mirrored `vos-core` commit, with the
+  purpose-built store as the ruled fallback (Pablo, 2026-11-08, `exp1-adopt-runtime`; ADR-0002 as amended). Its
+  costs were measured on one host only; `F-033` measures them again over a network (`G-42`).
 - **`CMP-EVIDENCE`'s placement**: operator-run, apart from provider modules. Requiring an *outside* party to run it
   would conflict with `REQ-OPS-4`'s independent-operation requirement, so it is explicitly operator-run — weaker
   than third-party verification, and stated as such in §6.
@@ -299,8 +301,8 @@ The rest of v0's scope, and how it splits into milestones, belongs in `PLAN.md`,
 | ADR | Decision | Status |
 |---|---|---|
 | `adr/0001-core-decomposition.md` | Core's internal shape: `CMP-CORE-ORCH`/`CMP-CORE-AUTHZ`/`CMP-CORE-AUDIT` | **Accepted** (Pablo, 2026-11-06, `core-decomposition`) |
-| `adr/0002-runtime-host-seam.md` | State-machine host contract; VOS as a milestone-1 experiment | **Accepted** (Pablo, 2026-11-06, `runtime-host-seam`) |
-| `adr/0003-module-format-sandbox.md` | Process-per-provider boundary; format (Wasm/PVM) as experiment | **Accepted** (Pablo, 2026-11-06, `module-sandbox-boundary`) |
+| `adr/0002-runtime-host-seam.md` | State-machine host contract; amended by `EXP-1`: VOS as the whole runtime, three replicas | **Accepted** (Pablo, 2026-11-06, `runtime-host-seam`); amended (Pablo, 2026-11-08, `exp1-adopt-runtime`) |
+| `adr/0003-module-format-sandbox.md` | Process-per-provider boundary; amended by `EXP-2`: Wasm components on Wasmtime | **Accepted** (Pablo, 2026-11-06, `module-sandbox-boundary`); amended (Pablo, 2026-11-07, `exp2-adopt-format`) |
 | `adr/0004-outside-part-credential-proxy.md` | Shared credential proxy now, per-provider before outside providers; resolver interface | **Accepted** (Pablo, 2026-11-06, `credential-proxy-model` and `credential-proxy-scope`) |
 | `adr/0005-authenticated-log-checkpoints.md` | Merkle log + salted, size-hiding checkpoints | **Accepted** (Pablo, 2026-11-06, `log-checkpoints-mechanism`) |
 | `adr/0006-route-search-quoting.md` | Hop-limited search over a snapshot; simple threshold splitting, in v1 and not v0 | **Accepted** (Pablo, 2026-11-06, `route-search-algorithm` and `v0-before-v1`) |

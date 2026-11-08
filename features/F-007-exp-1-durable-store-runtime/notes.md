@@ -73,3 +73,20 @@ experiment's own questions and defaults are in `experiments/2026-11-06-runtime-h
   `RecordedInput` values, not bytes, so no row depends on the form. The port of `contracts/` to `no_std` (`DEC-4`,
   `DEC-20`) should either give the hosts an RFC 8785 writer or change the guarantee's wording to the canonical form
   they write. `contracts/` is a `DEC-20` path, so this note does not change it.
+
+## Promotion (2026-11-08)
+
+- **The ruling.** The owner answered `exp1-adopt-runtime` with "VOS as the whole runtime, three replicas".
+- **What was promoted** (Narthex `REQ-EXP-5`):
+  - the amendment, as a new section of `adr/0002-runtime-host-seam.md`, with its purpose-built-store variant
+    dropped; ADR-0002's three counsel sentences now point at it;
+  - `ARCHITECTURE.md` §5's runtime bullet and reading note, and §10's ADR index (ADR-0003's row with them, which
+    `EXP-2`'s promotion had left as "format as experiment").
+- **The owner's caveat on the costs** (2026-11-08): every scored run had all three VOS replicas on one host, over
+  loopback, so `R-05`, `R-08` and `R-09` compare the candidates on one host only. The amendment routes a benchmark
+  over a synthetic network, with latency, loss and partitions, to `F-033` (`G-42`), before any claim rests on them.
+- **Still the owner's:**
+  - recording VOS's licence for adoption (the `vos` line stays `not-adopted ... pending`), a precondition before v0;
+  - the plan decision's `DEC` number and row in `PLAN.md` §2.1, with `EXP-2`'s;
+  - the RFC 8785 finding above, at the `DEC-4` port's `DEC-20` click.
+- **The drafts stay** as the experiment's record, each marked promoted.

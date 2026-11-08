@@ -1,6 +1,6 @@
 ---
 experiment: EXP-1
-status: revised by T-007-04, 2026-11-07, from the re-score; awaiting the owner's answer to item exp1-adopt-runtime
+status: revised by T-007-04, 2026-11-07, from the re-score; adopted by the owner on 2026-11-08 (exp1-adopt-runtime, VOS as the whole runtime on three replicas); promoted into ADR-0002 and ARCHITECTURE.md §5 and §10
 ---
 
 # EXP-1 outcome
@@ -31,7 +31,10 @@ over a running instance, `pb` by the redeploy its criterion names, the same bina
 
 ### What adopting VOS costs
 
-Measured in one job on one runner (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`, `EXP-1-pb-20261107-5`):
+Measured in one job on one runner (`EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`, `EXP-1-pb-20261107-5`).
+The three VOS nodes shared that host and replicated over loopback, with no network latency, loss or partition
+between them, so these costs compare the candidates on one host only (`G-42`). `F-033` measures them again over a
+synthetic network before any claim rests on them (ADR-0002, as amended).
 
 - **Throughput.** At 64 submitters `pb` writes about 4.5k records/s (4,544); VOS 3.0k on one node (2,979) and 2.0k
   on three (1,957) (`R-05`). The setups differ: `pb` ran in-process, one host behind a mutex; each VOS submitter was
@@ -135,13 +138,15 @@ Things to follow, not preconditions: a tag (`G-46`), the forks upstreamed (`G-48
 
 ## The legal question
 
-The owner approved recording VOS's AGPL crates as permitted for this experiment, under `counsel-licences`. The
-adoption is the separate ruling this item asks; until then `licences/RECORD` keeps `vos not-adopted ... pending`.
-This page draws no legal conclusion. `drafts/licence-item.json` stays the item to publish if the owner wants the
-licence ruled apart from the adoption.
+The owner approved recording VOS's AGPL crates as permitted for this experiment, under `counsel-licences`, and chose
+VOS as v0's runtime on 2026-11-08 (`exp1-adopt-runtime`). Recording the licence for the adoption is a precondition
+of ADR-0002's amendment, not part of that answer: until the owner records it, `licences/RECORD` keeps
+`vos not-adopted ... pending`. This page draws no legal conclusion. `drafts/licence-item.json` stays the item to
+publish if the owner wants the licence ruled on the form.
 
 ## The drafts
 
-`drafts/adr-0002-amendment.md` (`Status: experimental`) and `drafts/plan-decision.md` (`proposed`) are written for
-this recommendation: VOS adapted as the whole runtime, the purpose-built store as the fallback, and the
-preconditions above. Promotion rewrites them from the owner's answer.
+Promoted on 2026-11-08 (Narthex `REQ-EXP-5`). `drafts/adr-0002-amendment.md` is now a section of
+`adr/0002-runtime-host-seam.md`, with its purpose-built-store variant dropped and the one-host caveat added.
+`drafts/plan-decision.md` is accepted but waits for its `DEC` number and row in `PLAN.md` §2.1, which only the
+owner edits. The drafts stay as the experiment's record, each marked promoted.

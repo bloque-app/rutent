@@ -113,8 +113,8 @@ owner's explicit answer, and it reaches the owner's form with the adoption item 
 
 [`drafts/`](drafts/) holds the experiment's spec and plan changes, as drafts only (Narthex `REQ-EXP-3`):
 
-- [`drafts/adr-0002-amendment.md`](drafts/adr-0002-amendment.md): the amendment to ADR-0002, `Status: experimental`;
-- [`drafts/plan-decision.md`](drafts/plan-decision.md): the plan decision it would bring, `proposed`;
+- [`drafts/adr-0002-amendment.md`](drafts/adr-0002-amendment.md): the amendment to ADR-0002, `Status: experimental` until promoted on 2026-11-08;
+- [`drafts/plan-decision.md`](drafts/plan-decision.md): the plan decision it brings, `proposed` until accepted on 2026-11-08;
 - [`drafts/adoption-item.json`](drafts/adoption-item.json): the adoption item `exp1-adopt-runtime`, in the decision
   form's item format, for the owner's form (Narthex `REQ-EXP-7`);
 - [`drafts/licence-item.json`](drafts/licence-item.json): the licence item `licence-vos-agpl`, to publish only if
@@ -150,7 +150,18 @@ pre-freeze development run. Its id is `EXP-1-<candidate code>-dev-<yyyymmdd>-<n>
 
 ## Promotion record
 
-Not promoted. The experiment is open until the owner answers the adoption item.
+**Adapted, and promoted on 2026-11-08** (Narthex `REQ-EXP-5`). The owner answered `exp1-adopt-runtime` with "VOS as
+the whole runtime, three replicas". Where each piece landed:
+
+- **The amendment:** a new section of `adr/0002-runtime-host-seam.md`, with its purpose-built-store variant dropped
+  and the owner's caveat added: the costs were measured on one host, and `F-033` measures them again over a
+  synthetic network (`G-42`).
+- **`ARCHITECTURE.md`:** §5's runtime bullet and reading note, and §10's ADR index.
+- **The plan decision:** accepted; it waits in [`drafts/plan-decision.md`](drafts/plan-decision.md) for its `DEC`
+  number and row in `PLAN.md` §2.1, which only the owner edits.
+- **Still the owner's:** recording VOS's licence for adoption, a precondition before v0; the plan row.
+
+The history before the answer:
 
 `T-007-04` wrote the outcome on 2026-11-07, recommending that VOS be dropped for v0 and the purpose-built store
 adapted. After the re-score of the same day, it revised the outcome to recommend VOS, adapted as the whole runtime,

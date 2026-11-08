@@ -2,8 +2,9 @@
 
 > **VOS's licence.** The code in this directory links VOS, whose crates are AGPL-3.0-or-later. On 2026-11-07 the
 > owner approved recording them as permitted for this experiment (`licences/RECORD`, `DEC-6,counsel-licences`),
-> under the `counsel-licences` ruling. Adopting VOS is a separate ruling, the adoption item `exp1-adopt-runtime`:
-> until then `licences/RECORD` keeps `vos not-adopted ... pending`.
+> under the `counsel-licences` ruling. The owner chose VOS as v0's runtime on 2026-11-08
+> (`exp1-adopt-runtime`). Until the owner records the licence for that adoption, `licences/RECORD` keeps
+> `vos not-adopted ... pending`.
 
 `EXP-1`'s VOS candidate, two ways:
 

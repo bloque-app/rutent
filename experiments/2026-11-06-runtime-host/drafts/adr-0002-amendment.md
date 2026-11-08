@@ -1,8 +1,8 @@
 ---
-Status: experimental
+Status: promoted into adr/0002-runtime-host-seam.md, 2026-11-08
 amends: adr/0002-runtime-host-seam.md
 experiment: EXP-1
-decision_item: exp1-adopt-runtime (pending)
+decision_item: exp1-adopt-runtime (answered 2026-11-08, VOS as the whole runtime on three replicas)
 ---
 
 # Draft: amendment to ADR-0002, the runtime that implements the host contract
