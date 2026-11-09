@@ -62,3 +62,104 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   in clear text. `T-014-02`'s production transport enforces this and tests it: a plain-HTTP address off loopback is
   refused before anything is sent.
 - **`DEC-20`.** The credential proxy and its resolvers are a `DEC-20` path; the commit body says so.
+
+## T-014-02
+
+- **The proxy.** `proxy::CredentialProxy` is v0's one shared credential proxy (`DEC-9`). Each lookup comes with a
+  `Caller`, the provider whose process sent it, which the platform knows from the process's channel and never reads
+  from the lookup. The lookup's contract shape, `SecretLookup`, names no provider. The proxy resolves only from the
+  caller's own provider's keys, in its role's bucket. The platform tells the proxy three things: which release each
+  provider runs (`admit`), which operation its module is handling (`begin_operation`/`end_operation`), and which
+  outside request is in flight (`begin_request`/`end_request`). A lookup resolves only for the transaction and
+  operation of that request, and only a secret its operation declares (`validate_lookup`). Admitting a new release
+  replaces the provider's running one and ends whatever it was handling.
+- **One rule, applied by the platform too.** `proxy::judge` is the lookup rule on its own: the request in flight is
+  the caller's, the release is the caller's, the lookup names that request's transaction and operation, and the
+  operation declares the secret. `module/platform.rs`'s `lookup` now calls `judge` instead of its inline check. The
+  edit is minimal: about 25 lines inside that one function, and its imports. `World`, `wire.rs` and the test world are unchanged. So the
+  module-boundary suite's secret probes, which run on the platform, go through the proxy's rule. Making
+  `CredentialProxy` the platform's production `World`, with the platform calling `begin_*`/`end_*` from its own
+  context, belongs to the work that builds the production world (`T-013-02` and `T-013-03` have `module/` now). The
+  `World::secret` hook needs no change for it.
+- **Admission.** `admit` takes the accepted `AdmissionArtefact` and the advertisement the catalogue accepted for its
+  provider. It refuses an artefact that isn't accepted yet, an advertisement of another provider, and a provider the
+  settings give no role. It does not re-run `validate_artefact`, which admission (`F-013`) already runs. Its own
+  checks are acceptance and what its paths need.
+- **The 255-byte cap.** The carried item is held at admission, not only at call time. `admit` refuses
+  (`UnaddressableName`) a release whose provider, or any secret name it declares, isn't one plain path segment of at
+  most 255 bytes. The contract's `Name` allows any non-empty text, so without this a release could pass admission
+  and then fail every lookup. The resolver keeps its own check as well. A property test drives generated names of 1
+  to 300 bytes through admission and lookup.
+- **Refusals on the wire.** The contract has two reasons, `undeclared_secret` and `not_found`, and `contracts/` is
+  `F-010`'s, so no reason is added. `Refusal::wire_reason` maps `NotFound` to `not_found`, and every other refusal
+  to `undeclared_secret`: no role, no release, no request in flight, a request of another provider, another
+  transaction or operation, an undeclared operation or secret. That matches what the platform already answered, and
+  it tells a module nothing about another provider or the deployment. A store failure (denied token, unavailable
+  store, transport) has no reason in the contract. `wire_reason` gives `None` and `proxy::answer` no answer, so the
+  outside part learns no answer came. The record keeps the true cause in each case. Reading: a contract reason for
+  a store failure is an item for `F-010`, if one is wanted.
+- **Every use recorded.** Each `lookup` and `statement_key` call, resolved or refused, leaves one `Use`: the
+  provider, its running module version, the transaction, the outside operation (`None` for the statement key), what
+  was asked for, and the outcome. A `Use` never holds the value, and neither does its `Debug` (`THR-50`). The
+  transaction is the one the lookup names. A resolved use's transaction is always the one in flight, since the
+  lookup is refused otherwise. `take_uses` drains them, so the audit layer can take them. Where they are kept is
+  `CMP-CORE-AUDIT`'s, not this task's.
+- **Buckets by process role.** `proxy::ProxySettings`, read as JSON from the deployment, maps each process role to
+  its bucket: server, store address, CA file, mount, a `secrets` prefix and a `keys` prefix, and an optional
+  namespace. It maps each provider to one role. No SPEC or ARCHITECTURE text names the roles, so their names are the
+  deployment's own. The tests use `internal` and `integrations`, after ADR-0004's wording. A provider with no role
+  is refused. The settings are refused unless:
+  - every role, provider, mount, prefix and namespace is plain segments;
+  - every provider's role exists;
+  - no two buckets nest in one store, namespace and mount, compared segment by segment, a role's own secrets and
+    keys included.
+
+  Without the last rule, prefix `a` with provider `b` would read the same paths as prefix `a/b`. Tokens are not in
+  the settings. `kv_bucket` builds a role's two resolvers from its settings, a token and a transport. The deployment
+  supplies the token the way it supplies other secrets. `CredentialProxy::new` runs the same check itself, so settings
+  built some other way than `from_json` can't skip it.
+- **The statement key.** `statement_key(caller, transaction)` resolves the private half of the key the caller's
+  admitted release declares as `statement_key`. It does so only while the caller's module handles an operation for
+  that transaction. Signing a result follows the sandboxed part's answer, not an outside request, so no outside
+  request need be in flight. It refuses, before asking the store, a key the provider's accepted advertisement
+  doesn't list, a key it lists for `advertising` (`THR-4`), and the deployment's operator key. The key is read from
+  the role's `keys` prefix, never its `secrets` one, at `{keys}/{provider}/{public key text}`. A declared secret
+  therefore can never reach a key, even one named like the key. The base64url text is already one plain segment.
+  Reading of "by the deployment's name" in the secret-lookup schema: the key sits where the deployment's settings
+  put it (the role's `keys` prefix), under its provider. It is named by the public key the release declares, so
+  only the declared key can be addressed. The contract gives this lookup no wire shape, and `wire.rs` has no
+  message for it, so the platform doesn't call it yet. That wiring belongs to the work that signs results on the
+  outside part.
+- **The production transport.** `proxy::HttpsTransport` sends one HTTP/1.0 `GET` per connection, so no answer is
+  chunked. It speaks TLS through rustls 0.23, a pure-Rust TLS implementation, over ring's primitives
+  (`Apache-2.0 AND ISC`). It uses no OpenSSL, and no aws-lc, whose C build needs cmake. The handshake, and so the
+  certificate and name check, finishes before a byte of the request is written. It trusts no built-in roots. The
+  deployment's settings name the CA file its store's certificate must chain to, since the store is the operator's
+  own. So `webpki-roots`, and the licence question the T-014-01 notes raised about it, never enter the build.
+  `HttpsTransport::for_role` builds a role's transport from its settings: the store's address, and the CA read from
+  its `ca_file`. Plain HTTP is allowed only to an address that is literally loopback (`127.0.0.0/8`, `::1`). It is refused when
+  the transport is built, before anything is resolved or sent, and so is any host name, `localhost` included. The
+  transport has a timeout for connecting, sending and reading (10 s by default) and a cap on the answer (1 MiB by
+  default). It never follows a redirect: the status goes back to the resolver, which reports it as `Unexpected`.
+  Its tests run against a local rustls server. That server's test-only certificates are under
+  `components/prov/tests/fixtures/proxy/tls/`, valid until 2126, and no deployment trusts them.
+- **Gap: the transport against a real store.** The HTTPS transport's HTTP/1.0 exchange is tested against a local
+  rustls server, not against OpenBao or Vault. The CI live test (`live_servers_resolve_and_rotate_a_secret_when_configured`)
+  still reads through its own plain-HTTP transport. Switching its reads to `HttpsTransport` over plain HTTP to
+  `127.0.0.1` would close the gap. This task left it alone, since it couldn't run the live servers here; a later
+  change to the live test can do it.
+- **Dependencies.** `rustls` (with `ring`, `std` and `tls12`, no default features) and `rustls-pki-types` become
+  normal dependencies of `rutent-prov`. `Cargo.lock` gains `ring`, `rustls`, `rustls-pki-types`, `rustls-webpki`,
+  `subtle`, `untrusted`, `zeroize`, `getrandom` 0.2, `wasi` 0.11 and the `windows-*` 0.52 family. No locked
+  version changes. Most of those versions were already in `licences/RECORD` from the experiments' locks.
+  `licences/RECORD` gains three lines, all permissive standing: `rustls 0.23.46`, `rustls-webpki 0.103.16`,
+  `zeroize 1.9.1`.
+- **Property tests (`DEC-18`).** `proxy_properties.rs` checks four invariants:
+  - over random sequences of operations, requests and lookups by four callers, a lookup resolves exactly when the
+    caller's own request in flight matches and the secret is declared, and it asks only the caller's role's bucket
+    for the caller's own path;
+  - only a declared statement key listed for `statements`, and not the operator key, is ever asked for, and never
+    one listed for `advertising`;
+  - every lookup leaves one record with its caller's transaction, and no record prints a value;
+  - a declared name reaches the store only as one plain segment of at most 255 bytes.
+- **`DEC-20`.** This task touches the credential proxy and its resolvers. Its commit says so.

@@ -14,13 +14,31 @@
 //! Rotating a secret takes no new release (`REQ-MDL-6`): every lookup asks the store for the current version, and
 //! nothing is cached.
 //!
-//! The proxy itself, which answers only for the calling process's own provider and an outside request in flight,
-//! is `T-014-02`.
+//! `T-014-02` gives the proxy itself:
+//!
+//! - [`CredentialProxy`]: answers each lookup only for the calling process's own provider ([`Caller`]), only for
+//!   the transaction and operation of the outside request in flight for that provider's module, and only a secret
+//!   that operation of the admitted release declares. It resolves the statement key only as the admitted release
+//!   declares it, and never a key the provider's advertisement lists for `advertising`. Every use, refused ones
+//!   included, is recorded with its transaction ([`Use`]).
+//! - [`judge`]: the lookup rule on its own, which the module platform applies to every lookup it serves.
+//! - [`ProxySettings`]: vault buckets by process role, read from deployment settings; each provider's lookups
+//!   reach only its role's [`Bucket`].
+//! - [`HttpsTransport`]: the production [`Transport`], HTTPS with the store's certificate verified against the
+//!   deployment's CA (rustls), and plain HTTP only to a loopback address, for development.
 
+mod https;
 mod kv;
 mod resolver;
+mod settings;
+mod shared;
 mod transport;
 
+pub use https::HttpsTransport;
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};
 pub use resolver::{ResolveError, Resolver};
+pub use settings::{
+    Bucket, InvalidSettings, ProxySettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,
+};
+pub use shared::{Caller, CredentialProxy, InFlight, Refusal, Use, UseOf, answer, judge};
 pub use transport::{Header, Request, Response, Transport, TransportError};
