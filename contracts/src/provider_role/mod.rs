@@ -29,4 +29,4 @@ pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "2.1.0";
+pub const VERSION: &str = "2.2.0";

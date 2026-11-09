@@ -2,6 +2,7 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
+use alloc::{borrow::ToOwned, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::atoms::{seconds_down, seconds_up};

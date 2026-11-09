@@ -3,6 +3,7 @@
 //! (`urn:rutent:provider-role:judgement`), and the reserve's reversal confirmation
 //! (`urn:rutent:provider-role:reversal-confirmation`, ADR-0008). On the wire each is its maker's [`Statement`].
 
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{

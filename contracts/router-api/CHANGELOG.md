@@ -1,5 +1,12 @@
 # router-api changelog
 
+## 2.1.0
+- The Rust code behind this contract (`contracts/src/router_api`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.0.0
 - Breaking, after review round 1 of the M1 pull request: a fee formula's proportion rounds up, so the fee is
   `flat + ceil(a × numerator / denominator)`, and the output still rounds down. Before, it rounded down, which ranked

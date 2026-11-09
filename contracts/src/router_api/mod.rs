@@ -71,19 +71,19 @@ pub use atoms::{
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/router-api/CHANGELOG.md`.
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation(pub &'static str);
 
-impl std::fmt::Display for Violation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Violation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.0)
     }
 }
 
-impl std::error::Error for Violation {}
+impl core::error::Error for Violation {}
 
 /// The router's API: `route(request, catalogueSnapshot, policyBounds) → {candidates, chosen, decisionRecord}`
 /// (SAD §3, ADR-0006).

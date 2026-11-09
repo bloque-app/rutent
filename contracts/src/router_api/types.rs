@@ -1,7 +1,8 @@
 //! Types mirroring the `urn:rutent:router-api:*` schemas. Field names match the schemas, and every struct and
 //! tagged kind denies unknown fields, as the schemas set `additionalProperties: false`.
 
-use std::num::NonZeroU8;
+use alloc::{boxed::Box, vec::Vec};
+use core::num::NonZeroU8;
 
 use serde::{Deserialize, Serialize};
 

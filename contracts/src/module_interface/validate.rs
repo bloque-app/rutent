@@ -1,7 +1,8 @@
 //! The rules JSON Schema can't express: they compare a name across lists or entries, or two fields. A value is
 //! valid when it passes its schema and its check here returns `Ok`.
 
-use std::net::IpAddr;
+use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use core::net::IpAddr;
 
 use super::admission::PartName;
 use super::types::{

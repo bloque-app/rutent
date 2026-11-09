@@ -1,6 +1,6 @@
 //! rutent's host on VOS as one VOS program (`EXP-1`'s re-score, `T-007-03`): one actor holding both the journal and
-//! the state machine. The state machine is the host-contract suite's probe, built from the generated no_std copies
-//! of `contracts/` and conformance's probe (`../contracts-nostd`, `../probe-nostd`, made by `../nostd.sh`).
+//! the state machine. The state machine is the host-contract suite's probe, built from `contracts/` itself, which is
+//! `no_std`, and from the generated no_std copy of conformance's probe (`../probe-nostd`, made by `../nostd.sh`).
 //!
 //! # One handler step a submit
 //!

@@ -33,8 +33,8 @@
 | Path | What it is |
 |---|---|
 | `program/` | The re-score's VOS program: one actor holding the journal and the state machine (`src/lib.rs`), built for the PVM with VOS's guest toolchain; features `next` and `next-format` build `R-06a`'s and `R-06b`'s versions |
-| `program/contracts-nostd/`, `program/probe-nostd/` | Generated no_std copies of `contracts/src` and of conformance's probe, and the patches that make them; `program/SEPARATE` lists the files beside them |
-| `nostd.sh` | `generate` writes the copies from the originals and the patches; `check` fails unless they are equal, every patch hunk is plumbing only, and the separate files are exactly the listed ones |
+| `program/probe-nostd/` | The generated no_std copy of conformance's probe, and the patch that makes it; `program/SEPARATE` lists the files beside it. The program builds `contracts/` itself, with `default-features = false`, since the crate is `no_std` (`DEC-26`, `T-010-01`) |
+| `nostd.sh` | `generate` writes the probe's copy from the original and the patch; `check` fails unless they are equal, every patch hunk is plumbing only, and the separate files are exactly the listed ones |
 | `rt/` | `rutent-vos-rt`: the thin `Host` client (`host.rs`), the node processes (`cluster.rs`), the platform assertion (`platform.rs`), and `exp1-rt`, which runs the passes (`passes.rs`, `rows.rs`, and `pb.rs` for the purpose-built store) |
 | `build-rt.sh`, `run-rt.sh`, `note-rt.sh` | Build the re-score on the machine that runs it, run its passes, write a run's note |
 | `journal/`, `adapter/` | The first run's journal actor and adapter, at VOS `1aadf44`; `exp1-vos export-file` exports the stream and leaves the data directory `R-07` crosses |

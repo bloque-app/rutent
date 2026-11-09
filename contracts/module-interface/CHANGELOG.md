@@ -1,5 +1,12 @@
 # module-interface changelog
 
+## 2.1.0
+- The Rust code behind this contract (`contracts/src/module_interface`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.0.1
 - No change to this contract's shapes or types: its fixtures name provider-role 2.0.1 as their `protocol_version` and
   this version as their `interface`, after provider-role's fix to its newer-than check. (DEC-4, DEC-20, T-002-03)

@@ -19,3 +19,6 @@ directory (see `README.md`).
 - After the M1 security review: versions follow semver from 1.0.0, not "1.x.y", since provider-role,
   module-interface and host are now at 2.0.0; a breaking change bumps the major, and every change waits for the
   owner's click. (DEC-4, DEC-20, T-002-03)
+- The crate is `no_std` with `alloc`, behind a default-on `std` feature; `serde` and `serde_json` build without their
+  default features, with `alloc`. Every contract's source changed, so each takes a minor bump: provider-role 2.2.0,
+  module-interface 2.1.0, router-api 2.1.0, state-machine 2.1.0 and host 2.1.0. (DEC-4, DEC-20, DEC-26, T-010-01)

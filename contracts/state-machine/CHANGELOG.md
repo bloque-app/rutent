@@ -1,5 +1,12 @@
 # state-machine changelog
 
+## 2.1.0
+- The Rust code behind this contract (`contracts/src/state_machine`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.0.0
 - Breaking, after round 1 of M1's external review: a route starts with a withdrawal from an outer node, and a route
   handed on starts instead at an inner node, where the value sits, with no withdrawal (`REQ-ORD-16`,

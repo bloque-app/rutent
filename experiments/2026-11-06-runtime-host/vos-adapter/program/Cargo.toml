@@ -1,7 +1,8 @@
 # rutent's host as one VOS program, for EXP-1's re-score (T-007-03): a VOS guest built with VOS's guest toolchain,
-# in a workspace of its own outside rutent's, with the generated no_std copies of contracts/ and of conformance's
-# probe as its other members. It links VOS's AGPL-3.0-or-later SDK, which the owner permitted for this experiment
-# (DEC-6, counsel-licences); rutent's own Cargo.lock never sees it. ../build-rt.sh builds it:
+# in a workspace of its own outside rutent's, with the generated no_std copy of conformance's probe as its other
+# member, and `contracts/` itself (no_std, `default-features = false`) as a path dependency. It links VOS's
+# AGPL-3.0-or-later SDK, which the owner permitted for this experiment (DEC-6, counsel-licences); rutent's own
+# Cargo.lock never sees it. ../build-rt.sh builds it:
 #     cargo build --release --target <vos>/pvm/guest/riscv64em-vos.json
 # with the linker script and build-std given on the command line, since cargo's config can't name the checkout.
 [package]
@@ -29,7 +30,7 @@ next = []
 next-format = []
 
 [dependencies]
-rutent-contracts = { package = "rutent-contracts-nostd", path = "contracts-nostd" }
+rutent-contracts = { path = "../../../../contracts", default-features = false }
 rutent-probe = { package = "rutent-probe-nostd", path = "probe-nostd" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
@@ -38,7 +39,7 @@ vos-sdk = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea9
 
 [workspace]
 resolver = "3"
-members = [".", "contracts-nostd", "probe-nostd"]
+members = [".", "probe-nostd"]
 
 [profile.release]
 opt-level = 3
