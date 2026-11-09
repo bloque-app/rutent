@@ -139,6 +139,9 @@ pub enum Reply {
         /// `delivered` or `refused`.
         outcome: String,
     },
+    /// The request hit a bound (`REQ-MDL-11`), or came after one was hit during this operation: the part that
+    /// made it is stopped, and the operation is refused as a limit.
+    Limit,
 }
 
 /// The platform to the admitting compiler: two raw frames follow, the sandboxed part's binary and the outside

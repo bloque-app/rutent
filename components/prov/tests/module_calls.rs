@@ -4,12 +4,17 @@
 #[path = "module_support/mod.rs"]
 mod common;
 
-use common::{binding, declaration, install, languages, withdrawal};
-use rutent_conformance::boundary::{BoundaryHarness, ModuleBinding, ModuleSpec, Output, Step};
+use std::time::Duration;
+
+use common::{Probe, answers_as, binding, declaration, install, languages, spec, withdrawal};
+use rutent_conformance::boundary::{
+    BoundaryHarness, Handled, ModuleBinding, ModuleSpec, Output, PlatformRefusal, Step,
+};
 use rutent_contracts::module_interface::{
     CallRefusalReason, CrossModuleOutcome, Declaration, OperationKind, validate_call,
     validate_call_against,
 };
+use rutent_prov::module::platform::OPERATION_DEADLINE;
 use serde_json::json;
 
 /// `provider`'s declaration, handling withdrawals, that may call `callee` for `kinds`.
@@ -127,5 +132,169 @@ fn a_cross_module_call_is_judged_by_the_kind_of_the_operation_forwarded_not_the_
                 );
             }
         }
+    }
+}
+
+/// A caller that may call `callee` for withdrawals, and a spec whose one step does.
+fn caller_of(caller: &str, callee: &str) -> ModuleSpec {
+    ModuleSpec {
+        declaration: calling(caller, callee, &["withdrawal"]),
+        steps: vec![Step::CallModule {
+            callee: callee.to_owned(),
+            kind: OperationKind::Withdrawal,
+        }],
+        output: Output::Honest,
+        starts: true,
+    }
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn call_with_too_little_deadline_left_is_refused() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        let module = caller_of(&caller, &callee);
+        install(&mut binding, &module, &language, "reserve", &[]);
+        // The caller's whole deadline, 1.5 seconds, is less than the 3 seconds a callee needs: whatever has
+        // passed since the operation began, less than that is left.
+        binding.set_deadline(Duration::from_millis(1500));
+        binding.set_call_budget(Duration::from_secs(3));
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert!(
+            matches!(handled, Handled::Answered(_)),
+            "{language}: a refused call ended the caller's own operation: {handled:?}"
+        );
+        let events = binding.take_events();
+        let call = events.calls.first().expect("a record of the call");
+        assert!(
+            matches!(
+                &call.outcome,
+                CrossModuleOutcome::Refused(r) if r.reason == CallRefusalReason::CalleeUnavailable
+            ),
+            "{language}: the call wasn't refused: {:?}",
+            call.outcome
+        );
+        assert_eq!(validate_call(call), Ok(()));
+        assert_eq!(validate_call_against(&module.declaration, call), Ok(()));
+        assert_eq!(
+            binding.operations_received(&callee),
+            0,
+            "{language}: the callee was handed an operation"
+        );
+        assert!(
+            binding.take_limits().is_empty(),
+            "a refused call is no limit hit of the caller"
+        );
+        // The control: with the whole deadline and little needed, the same call is delivered.
+        binding.set_deadline(OPERATION_DEADLINE);
+        binding.set_call_budget(Duration::from_millis(1));
+        binding.handle(&caller, &withdrawal(&caller, 2));
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Delivered(_))
+            ),
+            "{language}: the control's call wasn't delivered"
+        );
+        assert_eq!(binding.operations_received(&callee), 1);
+    }
+}
+
+// verifies: REQ-MDL-21
+#[test]
+fn binding_records_a_call_its_callee_never_answered_as_undelivered() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let callees: [(String, Vec<Probe>, Output); 2] = [
+            (
+                format!("trapping-{language}"),
+                vec![Probe::Trap],
+                Output::Honest,
+            ),
+            (
+                format!("garbling-{language}"),
+                Vec::new(),
+                Output::Unparseable,
+            ),
+        ];
+        for (callee, probes, output) in callees {
+            let module = ModuleSpec {
+                declaration: declaration(&callee, "1.0.0", &["withdrawal"]),
+                steps: Vec::new(),
+                output,
+                starts: true,
+            };
+            install(&mut binding, &module, &language, "reserve", &probes);
+            let caller = format!("caller-{callee}");
+            let caller_module = caller_of(&caller, &callee);
+            install(&mut binding, &caller_module, &language, "reserve", &[]);
+            binding.take_events();
+            let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+            assert!(
+                matches!(handled, Handled::Answered(_)),
+                "{callee}: the callee's silence ended the caller's operation: {handled:?}"
+            );
+            let events = binding.take_events();
+            let call = events.calls.first().expect("a record of the call");
+            assert!(
+                matches!(call.outcome, CrossModuleOutcome::Unanswered(_)),
+                "{callee}: a call its callee never answered wasn't recorded as unanswered: {:?}",
+                call.outcome
+            );
+            assert_eq!(validate_call(call), Ok(()), "{callee}");
+            assert_eq!(
+                validate_call_against(&caller_module.declaration, call),
+                Ok(()),
+                "{callee}"
+            );
+            // The callee was handed the operation: only an answer would have made it delivered.
+            assert_eq!(binding.operations_received(&callee), 1, "{callee}");
+            // And it did not answer.
+            let direct = binding.handle(&callee, &withdrawal(&callee, 2));
+            assert!(
+                matches!(
+                    direct,
+                    Handled::Refused(
+                        PlatformRefusal::Unavailable | PlatformRefusal::MalformedOutput
+                    )
+                ),
+                "{callee}: it answered when asked directly: {direct:?}"
+            );
+        }
+        // The control: a callee that answers is delivered.
+        let callee = format!("answering-{language}");
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        let caller = format!("caller-{callee}");
+        install(
+            &mut binding,
+            &caller_of(&caller, &callee),
+            &language,
+            "reserve",
+            &[],
+        );
+        binding.take_events();
+        binding.handle(&caller, &withdrawal(&caller, 1));
+        let events = binding.take_events();
+        assert!(matches!(
+            events.calls.first().map(|c| &c.outcome),
+            Some(CrossModuleOutcome::Delivered(_))
+        ));
+        assert!(answers_as(&mut binding, &callee, "1.0.0", 3));
     }
 }

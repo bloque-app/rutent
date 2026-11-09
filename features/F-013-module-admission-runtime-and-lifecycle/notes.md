@@ -175,3 +175,87 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `module-guests/Cargo.lock`, and `tools/licence-check/` is untouched here.
 - **CI.** The `ci` job also checks the guests' format and lints (the host tool, and the stand-ins for wasm32), and no
   longer installs `lld`: the guests link with the toolchain's `rust-lld`.
+
+## T-013-02
+
+- **What it adds.** `module/limits.rs`: the bounds on what a module's parts may ask of the platform, and the pure
+  checks the platform makes against them (`B-14`). Nothing in it runs a part, so the invariants are property-tested
+  with a seeded generator (`DEC-18`): no sequence of charges takes more than either budget allows, and a charge that
+  doesn't fit is refused whole.
+- **Two scopes, read from "per module and per provider".** `REQ-MDL-11` says "limited per module and per provider".
+  Read as: a **module's operation** is one operation handed to one provider's module, which a module reached by a
+  cross-module call has of its own; a **provider** is bounded across all its operations inside one top-level
+  operation (the one the platform handed out and the calls it set off). A provider called eight times in one tree has
+  the sum of its operations bounded, not only each one. Both budgets end with the top-level operation: nothing is
+  carried from one operation to the next, since the platform has no clock of its own to expire a count by. A rate over
+  time is the operator's, `F-014`'s and `F-030`'s. The numbers (`Bounds::DEFAULT`) are this task's choice, settable
+  per platform for tests, and sit well above what the stand-ins and the role stand-ins use.
+- **What is counted.** Outbound calls and the bytes of their bodies, refused ones included; state reads (a denied
+  read of a sandboxed part included) and the bytes of the values returned; outside requests (the pending work a
+  sandboxed part leaves with its outside part); cross-module calls that passed the declaration's checks; the depth of
+  a chain of operations. Lengths: a state key (256 bytes), a name (128), a host (253), one body and one outside
+  message (64 KiB). The platform judges a request where it arrives, before it copies a string into an event, asks the
+  world or writes a record, and the provider's reader refuses a frame longer than 4 MiB from its length prefix, before
+  it allocates for it (`read_frame_up_to`). The process's own copy of an oversized key, which Wasmtime lifts out of
+  guest memory, is bounded by the part's memory limit.
+- **What a limit hit does ("a known state").** The operation is refused as `PlatformRefusal::LimitReached`: the
+  platform answers `Reply::Limit` to the request that went over and to every later one of that operation (no world
+  asked, nothing recorded), the imports trap, the process sets the parts up again in the same process, and the
+  platform ends the operation as a limit **from its own state**, whatever the process went on to say. The module stays
+  admitted and its process keeps running; other providers are untouched. Every call made before the limit is on record
+  and what the endpoint received is what completed. A call over the limit is recorded too, one hop, refused as
+  `LimitReached` (`RefusalReason` has it). Each hit is a `LimitEvent` (provider, transaction, which bound and which
+  budget), which the suite's events have no place for, so the tests' binding keeps them apart.
+- **Gap: the contract has no limit reason for a cross-module call.** `CallRefusalReason` is `undeclared_callee`,
+  `undeclared_kind`, `not_named_by_route`, `callee_unavailable`, and the contract is frozen at 3.0.0. A call refused
+  because the caller hit a count or depth bound, and a call refused because too little of the caller's deadline was
+  left, are both recorded as `callee_unavailable`, which `validate_call_against` accepts for a declared callee. A
+  deadline refusal leaves the caller's operation going (the guest sees `refused`); a count or depth bound ends it as a
+  limit. Raised for a later contract version: a reason for a call not started because of a limit.
+- **The caller's deadline.** A cross-module call needs `MIN_CALL_BUDGET` (1 second, settable) of the caller's
+  deadline left, else the callee isn't started. The number is this task's reading: the callee would be killed at the
+  caller's deadline before it answered, and the caller's own answer lost with it.
+- **A call is delivered only when its callee answered.** `T-013-01` made it so; this task carries the test of a callee
+  that traps and one that answers garbage. Both leave the call `Unanswered` and the callee's received count up by one.
+- **Memory limit reporting.** `T-013-01` left a part that was refused memory growth and then trapped as
+  `Unavailable`. The store's limiter now records a refused growth, and the process says `limit reached` in its own
+  words when the part then traps, which the platform maps to `LimitReached`. The outside part's limits are not
+  reported that way: its fuel or memory running out leaves the outside call's outcome `unknown`, as before, and the
+  operation goes on, which is a known state of its own.
+- **The process's whole memory (`G-05`).** Two settings, both in the settings `T-013-01` kept line for line, so this
+  note changes the claim: the engine reserves for a linear memory only what a part may hold
+  (`memory_reservation` 16 MiB, no growth reservation, no guard region: Wasmtime's default is 4 GiB per memory, which
+  bounds nothing a process may map), so the process's address space is its parts' memory and the runtime's; and on
+  Linux the provider's jail sets `RLIMIT_AS` to 4 GiB (the compiler keeps 8 GiB), room for four memories while the
+  process builds a part's instances again before it drops the old ones. The probe reports the limit and whether a
+  mapping past it was refused. **Not run on Linux here: the dev host is macOS, where `RLIMIT_AS` isn't enforced and
+  the probe reports `null`, and the container runtime was down. The Linux assertions, and the 4 GiB being enough for a
+  provider under the seccomp and Landlock jail, are checked first by CI.** Explicit bounds checks make a part slower
+  than with guard pages; not measured. The cgroup that bounds what a process may use is `F-030`'s.
+- **A wall-time deadline on the admitting compiler.** `COMPILE_DEADLINE`, 120 seconds, settable. The exchange with the
+  compiler runs on threads and the platform waits for its verdicts until the deadline, then kills it (on Linux the
+  module's process first, then `unshare`) and reaps it. A compilation past it is refused as `UnreadableBinary`, as any
+  admission with no verdict is, and nothing of it is kept: the same release is admitted again afterwards. Read: the
+  contract's `AdmissionRefusal` has no timeout reason either.
+- **Restarts and the platform's memory.** The list of children's standard errors was one entry for each child ever
+  started, and `measurements.starts`, `compiles` and the overdue-compiler list one entry for each start. The standard
+  errors are now the newest 64 (a log with a number for each entry, so a child's thread writing to an entry already
+  dropped has its bytes read and dropped), and each measurement list the newest 256. Events are not capped: the
+  caller drains them, and dropping an outbound call record would break `REQ-MDL-8`. A quiet child adds no standard
+  error entry, so the test of the list drives noisy `/bin/sh` children; the platform test counts the starts and the
+  working directories left.
+- **Left as it is.** `B-11`, `G-04`, `G-09`, `B-09`, `B-19` and the rest of the follow-up table belong to the other
+  rows of the feature. This task touches module admission and the credential proxy's path (`lookup`, `World::secret`),
+  both `DEC-20` paths: the click comes with the release into `main`.
+- **The platform version changes.** The memory reservation and the absent guard region change the machine code
+  the compiler makes, so `BINDING_VERSION` is `0.2.0` (it was `0.1.0`), and `build.platform_version` with it
+  (`REQ-MDL-2`): machine code made under the old settings is refused by Wasmtime anyway, and nothing persists across
+  the two yet. The WIT world (`0.1.0`, the binding's interface) is unchanged.
+- **A provider's frame is capped at 4 MiB, so an output over about 2 MiB ends as a dead process.** `Done` carries the
+  output hex-encoded, and the platform's reader refuses a longer frame from its prefix. An output over the platform's
+  own `set_output_limit` and under 2 MiB is still `OversizedOutput`; one over 2 MiB makes the process look gone, is
+  `Unavailable` and the process starts again. The output limit in use (the suite's is 4 KiB) is far below it.
+- **How the tests were run.** The tests were written first and failed to compile against the missing API, which is the
+  red step; the first green attempt then failed on assertions of the tests' own (an event order in the binding's
+  helper, a probe that grew a memory twice in one instance). Not run on Linux, so the probe's `RLIMIT_AS` and
+  `ENOMEM` assertions, the 4 GiB, and the jail's seccomp list with the new limit are CI's to show.
