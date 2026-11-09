@@ -473,7 +473,7 @@ fn provider_with_neither_identifier_nor_status_query_cannot_join() {
     let mut catalogue = catalogue_with_grant(10_000);
     let mut ad = ramp_advertisement();
     ad.declarations.tracking.clear();
-    assert_eq!(catalogue.join(&ad, NOW), Err(JoinRefusal::NoTracking));
+    assert_eq!(join(&mut catalogue, &ad, NOW), Err(JoinRefusal::NoTracking));
     assert!(
         catalogue
             .publishers()
@@ -482,7 +482,7 @@ fn provider_with_neither_identifier_nor_status_query_cannot_join() {
     );
 
     let ad = ramp_advertisement();
-    assert!(catalogue.join(&ad, NOW).is_ok());
+    assert!(join(&mut catalogue, &ad, NOW).is_ok());
 }
 
 // verifies: REQ-CAT-2
@@ -490,12 +490,12 @@ fn provider_with_neither_identifier_nor_status_query_cannot_join() {
 fn provider_without_a_grant_in_force_cannot_join() {
     let mut catalogue = catalogue_with_grant(3_000);
     assert_eq!(
-        catalogue.join(&ramp_advertisement(), Instant(3_000)),
+        join(&mut catalogue, &ramp_advertisement(), Instant(3_000)),
         Err(JoinRefusal::NoGrantInForce)
     );
     let mut other = Catalogue::new();
     assert_eq!(
-        other.join(&ramp_advertisement(), NOW),
+        join(&mut other, &ramp_advertisement(), NOW),
         Err(JoinRefusal::NoGrantInForce)
     );
 }
@@ -511,8 +511,8 @@ fn publisher_is_recorded_behind_each_provider_and_private_node() {
     catalogue
         .grant(grant("g-2", "polygon-wallet-reserve", reserve_keys, 10_000))
         .unwrap();
-    catalogue.join(&ramp_advertisement(), NOW).unwrap();
-    catalogue.join(&reserve_advertisement(), NOW).unwrap();
+    join(&mut catalogue, &ramp_advertisement(), NOW).unwrap();
+    join(&mut catalogue, &reserve_advertisement(), NOW).unwrap();
 
     let publishers = catalogue.publishers();
     assert_eq!(publishers.publisher_of_provider("bridge-pay"), Some("acme"));
@@ -535,12 +535,12 @@ fn provider_and_node_cannot_change_publisher_unseen() {
     catalogue
         .grant(grant("g-1", "bridge-pay", ramp_keys(), 10_000))
         .unwrap();
-    catalogue.join(&ramp_advertisement(), NOW).unwrap();
+    join(&mut catalogue, &ramp_advertisement(), NOW).unwrap();
 
     let mut moved = ramp_advertisement();
     moved.publisher = "mallory".into();
     assert_eq!(
-        catalogue.join(&moved, NOW),
+        join(&mut catalogue, &moved, NOW),
         Err(JoinRefusal::Publisher(
             PublisherError::ProviderChangedPublisher {
                 provider: "bridge-pay".into(),
@@ -557,7 +557,7 @@ fn provider_and_node_cannot_change_publisher_unseen() {
         .grant(grant("g-3", "other-pay", ramp_keys(), 10_000))
         .unwrap();
     assert_eq!(
-        catalogue.join(&other, NOW),
+        join(&mut catalogue, &other, NOW),
         Err(JoinRefusal::Publisher(
             PublisherError::NodeDeclaredByAnotherPublisher {
                 node: "acme-ledger".into(),

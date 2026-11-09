@@ -17,6 +17,7 @@ name = "rutent-wasm-provider"
 path = "src/module/bin/provider.rs"
 
 [dependencies]
+ed25519-dalek = { version = "2.2.0", default-features = false }
 rutent-contracts = { path = "../../contracts" }
 # Wasmtime, the LTS release (`DEC-27`): the compiler and the runtime, components, no WASI, no cache, no threads.
 wasmtime = { version = "=48.0.8", default-features = false, features = ["cranelift", "runtime", "component-model", "std", "anyhow"] }
@@ -29,3 +30,4 @@ libc = "0.2"
 rutent-conformance = { path = "../../conformance" }
 serde_json = "1.0.154"
 jsonschema = { version = "0.60.2", default-features = false }
+ed25519-dalek = "2.2.0"

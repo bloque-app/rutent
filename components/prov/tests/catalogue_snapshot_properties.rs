@@ -42,7 +42,7 @@ fn random_catalogue(rng: &mut Rng) -> Catalogue {
             ))
             .unwrap();
         // `acme-co` and `bridge-pay` both declare `acme-ledger`: a second join is a repeat of the same publisher.
-        let _ = catalogue.join(ad, JOINED_AT);
+        let _ = join(&mut catalogue, ad, JOINED_AT);
         if !rng.chance(5) {
             catalogue.set_module_version(&ad.provider, Version::new("1.0.0").unwrap());
         }
