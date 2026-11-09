@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use rutent_prov::module::engine;
 use rutent_prov::module::host::{Loaded, Pipe, Shared};
-use rutent_prov::module::wire::{FromProvider, ToProvider, hex, sha256};
+use rutent_prov::module::limits::MAX_PROVIDER_FRAME;
+use rutent_prov::module::wire::{FromProvider, OUTPUT_TOO_LARGE, ToProvider, hex, sha256};
 use wasmtime::component::Component;
 
 type StdPipe = Pipe<StdinLock<'static>, StdoutLock<'static>>;
@@ -92,6 +93,11 @@ fn serve(pipe: &Rc<RefCell<StdPipe>>) -> Result<(), String> {
             return Err("a message other than an operation".to_owned());
         };
         let reply = match running.handle(&operation) {
+            // Hex doubles it: an output the frame can't carry is refused before it is encoded, in a sentence of
+            // our own, and the process goes on.
+            Ok(output) if output.len() * 2 + 64 > MAX_PROVIDER_FRAME => FromProvider::Trapped {
+                message: OUTPUT_TOO_LARGE.to_owned(),
+            },
             Ok(output) => FromProvider::Done {
                 output: hex(&output),
             },

@@ -139,6 +139,9 @@ pub enum Reply {
         /// `delivered` or `refused`.
         outcome: String,
     },
+    /// The request hit a bound (`REQ-MDL-11`), or came after one was hit during this operation: the part that
+    /// made it is stopped, and the operation is refused as a limit.
+    Limit,
 }
 
 /// The platform to the admitting compiler: two raw frames follow, the sandboxed part's binary and the outside
@@ -164,6 +167,10 @@ pub struct Compiled {
     /// Every export it names.
     pub exports: Vec<String>,
 }
+
+/// What a provider's process says when the sandboxed part's output is too large for a frame to carry: a fixed
+/// sentence, never the guest's, which the platform gives as `PlatformRefusal::OversizedOutput`.
+pub const OUTPUT_TOO_LARGE: &str = "the output is too large for a frame";
 
 /// Lower-case hexadecimal of `bytes`.
 pub fn hex(bytes: &[u8]) -> String {

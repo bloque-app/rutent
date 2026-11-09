@@ -7,6 +7,8 @@ use rutent_contracts::module_interface::{
 };
 use rutent_contracts::provider_role::{Deployment, ResultBody, Statement};
 
+pub use crate::module::limits::{LimitHit, LimitKind, Metered, Scope};
+
 /// An endpoint a module's outside part may try to reach: a scheme, an exact host and a port.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Endpoint {
@@ -87,6 +89,18 @@ pub struct StateEvent {
     pub found: bool,
 }
 
+/// One bound a module hit (`REQ-MDL-11`): the operation it was handling was refused as
+/// [`PlatformRefusal::LimitReached`], and every later request of that operation was refused too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitEvent {
+    /// The provider whose module hit it.
+    pub provider: String,
+    /// The transaction of the operation it was handling.
+    pub transaction: String,
+    /// Which bound, and which budget of it where it was a count or a total.
+    pub hit: LimitHit,
+}
+
 /// What the platform saw since it was last asked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Events {
@@ -98,6 +112,8 @@ pub struct Events {
     pub state_reads: Vec<StateEvent>,
     /// The records of the cross-module calls modules made, delivered or refused, as the contract shapes them.
     pub calls: Vec<CrossModuleCall>,
+    /// The bounds modules hit.
+    pub limits: Vec<LimitEvent>,
 }
 
 /// An operating-system process, as the platform names it.

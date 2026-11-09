@@ -4,7 +4,10 @@ name: STM on VOS
 # and the leader killed mid-submit). The nodes run on the runner host, never in a container or a Docker step, whose
 # default seccomp profile blocks userfaultfd. Every binary is built on the runner that runs it, with no cache.
 # It never runs on a pull request. A push starts it on this task's branch, a milestone branch or develop, when the
-# program, the contracts or the suite it runs change. The default build and `cargo test --workspace` never need VOS;
+# program, the contracts or the suite it runs change.
+# T-010-08 adds, as steps of the vos job: the production-host check (G-37, host-check.sh) on the runner, its tests, a
+# node built without native codegen with the host-contract suite run on it, and the recovery drill (a test of
+# vos_node.rs, so the full-suite step runs it). The default build and `cargo test --workspace` never need VOS;
 # this workflow is the only place the package under components/stm/vos-program is built and run. A change to this file is a DEC-20 path.
 # GitHub runs a workflow_dispatch only for a workflow file on the default branch, so until this file reaches main
 # the run is the push of this task's branch; the run id goes in F-010's notes.
@@ -12,6 +15,7 @@ on:
   push:
     branches:
       - "f-010/t-010-05-vos-program"
+      - "f-010/t-010-08-production-host-check"
       - "m*"
       - "develop"
     paths:
@@ -99,6 +103,34 @@ jobs:
           set -o pipefail
           RUN_ID="T-010-05-$GITHUB_RUN_ID" $PROGRAM/test.sh "$BUILD" --test vos_node 2>&1 | tee "$OUT/vos-tests.txt"
 
+      - name: The production-host check passes on this runner, and fails on its fixture
+        run: |
+          set -o pipefail
+          {
+            VOS_DIR="$VOS_DIR" $PROGRAM/host-check.sh "$BUILD"
+            # The fixture: the same script on a host that lacks userfaultfd write-protect must fail.
+            if HOST_CHECK_UFFD=false VOS_DIR="$VOS_DIR" $PROGRAM/host-check.sh "$BUILD"; then
+              echo "host-check passed on its fixture, a host without userfaultfd write-protect" >&2
+              exit 1
+            fi
+            echo "host-check failed on its fixture, as it must"
+          } 2>&1 | tee "$OUT/host-check.txt"
+
+      - name: The host check's own tests
+        run: |
+          set -o pipefail
+          $PROGRAM/test.sh "$BUILD" --test host_check 2>&1 | tee "$OUT/host-check-tests.txt"
+
+      - name: The node without native codegen, and the suite on it
+        run: |
+          set -o pipefail
+          PORTABLE=1 STEP=node $PROGRAM/build.sh "$BUILD-portable"
+          mkdir -p "$BUILD-portable/elf"
+          cp "$BUILD"/elf/*.elf "$BUILD-portable/elf/"
+          ln -s "$BUILD/client-target" "$BUILD-portable/client-target"
+          cp "$BUILD-portable/node-build.log" "$OUT/node-build-portable.log" || true
+          RUN_ID="T-010-08-$GITHUB_RUN_ID" $PROGRAM/test.sh "$BUILD-portable" --test vos_node the_host_contract_suite 2>&1 | tee "$OUT/vos-tests-portable.txt"
+
       - name: Upload the notes
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -108,4 +140,5 @@ jobs:
             ${{ runner.temp }}/out/*.txt
             ${{ runner.temp }}/b/build-times.txt
             ${{ runner.temp }}/b/digests.txt
+            ${{ runner.temp }}/b-portable/build-times.txt
           if-no-files-found: error

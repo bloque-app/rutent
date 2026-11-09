@@ -4,11 +4,14 @@
 #[path = "module_support/mod.rs"]
 mod common;
 
+use std::time::{Duration, Instant};
+
 use common::{alive, answers_as, assertion, binding, install, languages, spec};
 use rutent_conformance::boundary::{AdmissionRefusal, Admitted, ModuleBinding};
 use rutent_contracts::module_interface::{PartName, Parts, validate_artefact};
 use rutent_prov::module::children::compile;
 use rutent_prov::module::engine;
+use rutent_prov::module::platform::COMPILE_DEADLINE;
 use rutent_prov::module::wire::sha256;
 
 fn workdir(name: &str) -> std::path::PathBuf {
@@ -81,6 +84,7 @@ fn compiling_the_same_binary_twice_in_two_compiler_processes_gives_the_same_mach
                 &sandboxed,
                 &outside,
                 &Default::default(),
+                COMPILE_DEADLINE,
             )
             .expect("it compiles");
             let second = compile(
@@ -89,6 +93,7 @@ fn compiling_the_same_binary_twice_in_two_compiler_processes_gives_the_same_mach
                 &sandboxed,
                 &outside,
                 &Default::default(),
+                COMPILE_DEADLINE,
             )
             .expect("it compiles");
             assert_eq!(
@@ -445,4 +450,103 @@ fn a_version_already_admitted_is_refused_as_such_and_changes_nothing() {
         "the running process changed"
     );
     assert!(answers_as(&mut binding, &provider, "1.0.0", 1));
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn admitting_compiler_past_its_wall_time_deadline_is_stopped() {
+    for language in languages().into_iter().take(1) {
+        let mut binding = binding("reserve");
+        let provider = format!("slow-{language}");
+        let module = spec(&provider, "1.0.0", Vec::new(), true);
+        let binaries = binding
+            .build_with(&module, &language, "reserve", &[])
+            .expect("a stand-in");
+        // No compiler finishes in a millisecond, its start included, so the deadline stops this one.
+        binding.set_compile_deadline(Duration::from_millis(1));
+        let started = Instant::now();
+        let admitted = binding.admit(&assertion(&module.declaration, &binaries), &binaries);
+        let took = started.elapsed();
+        assert_eq!(
+            admitted,
+            Admitted::Refused(AdmissionRefusal::UnreadableBinary),
+            "a compilation past its deadline was admitted, or refused for another reason"
+        );
+        assert!(
+            took < Duration::from_secs(20),
+            "the stop took {took:?}, not near the deadline"
+        );
+        assert_eq!(binding.measurements.overdue_compilers.len(), 1);
+        let pid = binding.measurements.overdue_compilers[0];
+        assert!(
+            !alive(u64::from(pid)),
+            "the compiler's process is still there"
+        );
+        assert_eq!(binding.active_version(&provider), None);
+        // Nothing of it is kept: the same release is admitted afterwards, as a first admission.
+        binding.set_compile_deadline(COMPILE_DEADLINE);
+        let again = binding.admit(&assertion(&module.declaration, &binaries), &binaries);
+        assert!(
+            matches!(again, Admitted::Artefact(_)),
+            "the release wasn't admitted afterwards: {again:?}"
+        );
+    }
+}
+
+// verifies: REQ-MDL-11, NFR-3
+#[test]
+fn provider_process_memory_is_bounded_as_a_whole() {
+    use rutent_prov::module::engine::{MEMORY_PER_PART, MEMORY_RESERVATION};
+    use rutent_prov::module::sandbox::{COMPILER_ADDRESS_SPACE, Limits, PROVIDER_ADDRESS_SPACE};
+    // Each part's linear memory is reserved no larger than the part may hold, so what the process maps is
+    // what its parts may use, and the address space it may map can be bounded without refusing a part.
+    assert_eq!(MEMORY_RESERVATION, MEMORY_PER_PART as u64);
+    assert!(PROVIDER_ADDRESS_SPACE >= 8 * 2 * MEMORY_PER_PART as u64);
+    let dir = workdir("memory");
+    let paths = common::paths();
+    let readable = dir.join("unused");
+    let socket = dir.join("unused.sock");
+    for (executable, limits, bound) in [
+        (&paths.provider, Limits::PROVIDER, PROVIDER_ADDRESS_SPACE),
+        (&paths.compiler, Limits::COMPILER, COMPILER_ADDRESS_SPACE),
+    ] {
+        let own = dir.join(executable.file_name().expect("a name"));
+        std::fs::create_dir_all(&own).expect("a work directory");
+        let report = probe(executable, &own, limits, &readable, &socket);
+        eprintln!("{}: {report}", executable.display());
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                report["address_space_limit"],
+                bound,
+                "{}: the address space isn't bounded as it should be",
+                executable.display()
+            );
+            assert_eq!(
+                report["address_space_denied"],
+                true,
+                "{}: a mapping past the bound was made",
+                executable.display()
+            );
+        } else {
+            // `RLIMIT_AS` isn't enforced here: the engine's reservation and the stores' limits bound the
+            // parts, and the operator's cgroup (`F-030`) bounds the process.
+            assert!(report["address_space_limit"].is_null());
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    // A provider keeps answering inside the bound, its memory grown by a quarter of the part's limit on each of two
+    // operations: the memory stays between them.
+    let mut binding = binding("reserve");
+    for language in languages() {
+        let provider = format!("bounded-{language}");
+        install(
+            &mut binding,
+            &spec(&provider, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[common::Probe::Grow((MEMORY_PER_PART / 65536 / 4) as u32)],
+        );
+        assert!(answers_as(&mut binding, &provider, "1.0.0", 1));
+        assert!(answers_as(&mut binding, &provider, "1.0.0", 2));
+    }
 }

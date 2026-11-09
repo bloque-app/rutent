@@ -9,12 +9,14 @@ use super::resolver::{ResolveError, Resolver, plain_path, plain_segment};
 use super::transport::{Header, Request, Transport};
 
 /// Which store a [`KvResolver`] talks to. Both speak the same KV version 2 API; the server is kept so a deployment
-/// and its records can say which one answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// and its records can say which one answered. In deployment settings it is written `openbao` or `vault`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum Server {
     /// OpenBao, the Linux Foundation's fork of Vault, under MPL-2.0.
+    #[serde(rename = "openbao")]
     OpenBao,
     /// HashiCorp Vault, under BUSL-1.1, run by the operator apart from rutent.
+    #[serde(rename = "vault")]
     Vault,
 }
 

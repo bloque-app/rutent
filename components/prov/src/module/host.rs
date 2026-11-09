@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::rc::Rc;
 
 use wasmtime::component::{Component, HasSelf, Linker};
-use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Engine, ResourceLimiter, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::module::engine::{FUEL_PER_PART, MEMORIES_PER_PART, MEMORY_PER_PART, TABLE_ELEMENTS};
 use crate::module::output::trap_reason;
@@ -17,13 +17,21 @@ use crate::module::wire::{FromProvider, Reply};
 /// The sandboxed part's world, as `bindgen!` generates it.
 #[allow(missing_docs)]
 pub mod sandboxed {
-    wasmtime::component::bindgen!({ world: "sandboxed", path: "src/module/wit" });
+    wasmtime::component::bindgen!({
+        world: "sandboxed",
+        path: "src/module/wit",
+        imports: { default: trappable },
+    });
 }
 
 /// The outside part's world, as `bindgen!` generates it.
 #[allow(missing_docs)]
 pub mod outside {
-    wasmtime::component::bindgen!({ world: "outside", path: "src/module/wit" });
+    wasmtime::component::bindgen!({
+        world: "outside",
+        path: "src/module/wit",
+        imports: { default: trappable },
+    });
 }
 
 /// The imports each part may name, and nothing else (`REQ-MDL-16`, `B-02`).
@@ -86,16 +94,83 @@ impl<R: Read, W: Write> Platform for Pipe<R, W> {
 /// The platform shared by both parts' stores in one process.
 pub type Shared = Rc<RefCell<dyn Platform>>;
 
+/// The stop a request that hit a bound gives the part that made it: the platform answered [`Reply::Limit`], and
+/// the call traps (`REQ-MDL-11`). The platform has already judged the operation refused as a limit.
+fn limit_trap(what: &str) -> wasmtime::Error {
+    wasmtime::Error::msg(format!("limit reached: {what}"))
+}
+
+/// A store's limits, and whether any growth of a memory or a table was refused: the platform is told when a part
+/// that was refused growth then trapped, so that the operation is refused as a limit and not as a failure.
+pub struct Bounded {
+    inner: StoreLimits,
+    /// Whether a memory or table growth was refused.
+    pub denied: bool,
+}
+
+impl Bounded {
+    /// Forgets a refusal of an earlier operation: only one in this operation may make a trap a limit.
+    pub fn begin_operation(&mut self) {
+        self.denied = false;
+    }
+}
+
+impl ResourceLimiter for Bounded {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let allowed = self.inner.memory_growing(current, desired, maximum)?;
+        self.denied |= !allowed;
+        Ok(allowed)
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.inner.memory_grow_failed(error)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let allowed = self.inner.table_growing(current, desired, maximum)?;
+        self.denied |= !allowed;
+        Ok(allowed)
+    }
+
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.inner.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.inner.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.inner.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.inner.memories()
+    }
+}
+
 /// The outside part's store data.
 pub struct OutsideState {
     platform: Shared,
-    limits: StoreLimits,
+    limits: Bounded,
+    /// Set when the platform answered a request of this part with [`Reply::Limit`].
+    limited: bool,
 }
 
 /// The sandboxed part's store data: it reaches the outside part only through the platform's check of each request.
 pub struct SandboxedState {
     platform: Shared,
-    limits: StoreLimits,
+    limits: Bounded,
     outside: OutsideSlot,
     /// The outside part's fuel left for the operation in hand: one budget across all its outside requests.
     outside_fuel: u64,
@@ -109,19 +184,23 @@ pub struct OutsideSlot {
     pub poisoned: bool,
 }
 
-fn limits() -> StoreLimits {
-    StoreLimitsBuilder::new()
+fn limits() -> Bounded {
+    let inner = StoreLimitsBuilder::new()
         .memory_size(MEMORY_PER_PART)
         .table_elements(TABLE_ELEMENTS)
         .instances(16)
         .tables(4)
         .memories(MEMORIES_PER_PART)
         .trap_on_grow_failure(false)
-        .build()
+        .build();
+    Bounded {
+        inner,
+        denied: false,
+    }
 }
 
 impl sandboxed::rutent::binding::outside_requests::Host for SandboxedState {
-    fn request(&mut self, outside_request: String) -> String {
+    fn request(&mut self, outside_request: String) -> wasmtime::Result<String> {
         let reply = self
             .platform
             .borrow_mut()
@@ -129,38 +208,45 @@ impl sandboxed::rutent::binding::outside_requests::Host for SandboxedState {
                 json: outside_request.clone(),
             });
         let response = match reply {
-            Reply::Answer { json } => return json,
-            Reply::Perform => self.perform(&outside_request),
-            _ => return unknown_response(&outside_request),
+            Reply::Answer { json } => return Ok(json),
+            Reply::Perform => self.perform(&outside_request)?,
+            Reply::Limit => return Err(limit_trap("an outside request")),
+            _ => return Ok(unknown_response(&outside_request)),
         };
         match self
             .platform
             .borrow_mut()
             .ask(FromProvider::OutsideResponse { json: response })
         {
-            Reply::Answer { json } => json,
-            _ => unknown_response(&outside_request),
+            Reply::Answer { json } => Ok(json),
+            Reply::Limit => Err(limit_trap("an outside response")),
+            _ => Ok(unknown_response(&outside_request)),
         }
     }
 }
 
 impl SandboxedState {
-    /// Calls the outside part on what is left of the operation's outside budget, and keeps what it didn't use.
-    fn perform(&mut self, request: &str) -> String {
+    /// Calls the outside part on what is left of the operation's outside budget, and keeps what it didn't use. An
+    /// error is a bound the platform enforced on the outside part's request, which stops this part too.
+    fn perform(&mut self, request: &str) -> wasmtime::Result<String> {
         let slot = &mut self.outside;
         if slot.poisoned
             || self.outside_fuel == 0
             || slot.store.set_fuel(self.outside_fuel).is_err()
         {
-            return unknown_response(request);
+            return Ok(unknown_response(request));
         }
         let result = slot.bindings.call_perform(&mut slot.store, request);
         self.outside_fuel = slot.store.get_fuel().unwrap_or(0);
         match result {
-            Ok(response) => response,
+            Ok(response) => Ok(response),
+            Err(_) if slot.store.data().limited => {
+                slot.poisoned = true;
+                Err(limit_trap("a request of the outside part"))
+            }
             Err(_) => {
                 slot.poisoned = true;
-                unknown_response(request)
+                Ok(unknown_response(request))
             }
         }
     }
@@ -178,20 +264,42 @@ fn unknown_response(request: &str) -> String {
 }
 
 impl sandboxed::rutent::binding::denied::Host for SandboxedState {
-    fn look_up_secret(&mut self, name: String) {
-        self.platform
+    fn look_up_secret(&mut self, name: String) -> wasmtime::Result<()> {
+        match self
+            .platform
             .borrow_mut()
-            .ask(FromProvider::DeniedSecret { name });
+            .ask(FromProvider::DeniedSecret { name })
+        {
+            Reply::Limit => Err(limit_trap("a secret lookup")),
+            _ => Ok(()),
+        }
     }
 
-    fn read_state(&mut self, key: String) {
-        self.platform
+    fn read_state(&mut self, key: String) -> wasmtime::Result<()> {
+        match self
+            .platform
             .borrow_mut()
-            .ask(FromProvider::DeniedState { key });
+            .ask(FromProvider::DeniedState { key })
+        {
+            Reply::Limit => Err(limit_trap("a state read")),
+            _ => Ok(()),
+        }
     }
 }
 
 use outside::rutent::binding::{egress, modules, proxy, state};
+
+impl OutsideState {
+    /// Asks the platform, and stops this part if the answer is that a bound was hit.
+    fn ask(&mut self, request: FromProvider, what: &str) -> wasmtime::Result<Reply> {
+        let reply = self.platform.borrow_mut().ask(request);
+        if matches!(reply, Reply::Limit) {
+            self.limited = true;
+            return Err(limit_trap(what));
+        }
+        Ok(reply)
+    }
+}
 
 impl proxy::Host for OutsideState {
     fn look_up(
@@ -199,27 +307,33 @@ impl proxy::Host for OutsideState {
         transaction: String,
         operation: String,
         name: String,
-    ) -> Result<String, proxy::SecretRefusal> {
-        match self.platform.borrow_mut().ask(FromProvider::Lookup {
-            transaction,
-            operation,
-            name,
-        }) {
+    ) -> wasmtime::Result<Result<String, proxy::SecretRefusal>> {
+        let reply = self.ask(
+            FromProvider::Lookup {
+                transaction,
+                operation,
+                name,
+            },
+            "a secret lookup",
+        )?;
+        Ok(match reply {
             Reply::Secret { value } => Ok(value),
             Reply::SecretRefused { reason } if reason == "not_found" => {
                 Err(proxy::SecretRefusal::NotFound)
             }
             _ => Err(proxy::SecretRefusal::UndeclaredSecret),
-        }
+        })
     }
 }
 
 impl state::Host for OutsideState {
-    fn read(&mut self, key: String) -> Option<String> {
-        match self.platform.borrow_mut().ask(FromProvider::State { key }) {
-            Reply::State { value } => value,
-            _ => None,
-        }
+    fn read(&mut self, key: String) -> wasmtime::Result<Option<String>> {
+        Ok(
+            match self.ask(FromProvider::State { key }, "a state read")? {
+                Reply::State { value } => value,
+                _ => None,
+            },
+        )
     }
 }
 
@@ -231,18 +345,22 @@ impl egress::Host for OutsideState {
         host: String,
         port: u16,
         body: String,
-    ) -> egress::Outcome {
+    ) -> wasmtime::Result<egress::Outcome> {
         let scheme = match scheme {
             egress::Scheme::Https => "https",
             egress::Scheme::Wss => "wss",
         };
-        match self.platform.borrow_mut().ask(FromProvider::Egress {
-            operation,
-            scheme: scheme.to_owned(),
-            host,
-            port,
-            body,
-        }) {
+        let reply = self.ask(
+            FromProvider::Egress {
+                operation,
+                scheme: scheme.to_owned(),
+                host,
+                port,
+                body,
+            },
+            "an outbound call",
+        )?;
+        Ok(match reply {
             Reply::Egress { outcome } => match outcome.as_str() {
                 "completed" => egress::Outcome::Completed,
                 "failed" => egress::Outcome::Failed,
@@ -250,20 +368,17 @@ impl egress::Host for OutsideState {
                 _ => egress::Outcome::Refused,
             },
             _ => egress::Outcome::Refused,
-        }
+        })
     }
 }
 
 impl modules::Host for OutsideState {
-    fn call(&mut self, callee: String, kind: String) -> modules::CallOutcome {
-        match self
-            .platform
-            .borrow_mut()
-            .ask(FromProvider::Module { callee, kind })
-        {
+    fn call(&mut self, callee: String, kind: String) -> wasmtime::Result<modules::CallOutcome> {
+        let reply = self.ask(FromProvider::Module { callee, kind }, "a call of a module")?;
+        Ok(match reply {
             Reply::Module { outcome } if outcome == "delivered" => modules::CallOutcome::Delivered,
             _ => modules::CallOutcome::Refused,
-        }
+        })
     }
 }
 
@@ -306,6 +421,7 @@ impl Loaded {
             OutsideState {
                 platform: platform.clone(),
                 limits: limits(),
+                limited: false,
             },
         );
         outside_store.limiter(|s| &mut s.limits);
@@ -355,13 +471,22 @@ impl Running {
     /// Hands one operation to the sandboxed part: its output, or why it gave none. After an error the instances
     /// can't be used again.
     pub fn handle(&mut self, operation: &str) -> Result<Vec<u8>, String> {
+        self.store.data_mut().limits.begin_operation();
         self.store.data_mut().outside_fuel = FUEL_PER_PART;
         self.store
             .set_fuel(FUEL_PER_PART)
             .map_err(|e| e.to_string())?;
         self.bindings
             .call_handle(&mut self.store, operation)
-            .map_err(|e| trap_reason(&e))
+            .map_err(|e| {
+                // A part refused growth of a memory or a table, and then trapped: it ran into a limit, which the
+                // platform is told in words of the process's own, never the guest's.
+                if self.store.data().limits.denied {
+                    "limit reached: memory or table growth refused".to_owned()
+                } else {
+                    trap_reason(&e)
+                }
+            })
     }
 
     /// Whether the outside part trapped during the last operation.
@@ -436,4 +561,27 @@ fn check_part_why(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn a_refused_growth_is_remembered_only_until_the_next_operation_begins() {
+        let mut limits = limits();
+        assert!(!limits.denied);
+        let refused = limits
+            .memory_growing(0, MEMORY_PER_PART + 65536, None)
+            .expect("an answer");
+        assert!(!refused && limits.denied);
+        limits.begin_operation();
+        assert!(
+            !limits.denied,
+            "a later, unrelated trap would read as a limit"
+        );
+        assert!(limits.memory_growing(0, 65536, None).expect("an answer"));
+        assert!(!limits.denied);
+    }
 }
