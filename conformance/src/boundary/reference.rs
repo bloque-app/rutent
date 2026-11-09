@@ -99,6 +99,7 @@ pub struct ReferenceDouble {
     languages: Vec<String>,
     output_limit: usize,
     step_limit: Option<usize>,
+    callees_answer: bool,
     built: Vec<ModuleSpec>,
     secrets: BTreeMap<(String, String), String>,
     delivered: BTreeMap<String, Vec<String>>,
@@ -138,6 +139,7 @@ impl ReferenceDouble {
             languages: vec!["reference-a".to_owned(), "reference-b".to_owned()],
             output_limit: 0,
             step_limit: None,
+            callees_answer: true,
             built: Vec::new(),
             secrets: BTreeMap::new(),
             delivered: BTreeMap::new(),
@@ -156,6 +158,13 @@ impl ReferenceDouble {
     /// Offers one language only.
     pub fn with_one_language(mut self) -> Self {
         self.languages.truncate(1);
+        self
+    }
+
+    /// Its callees never answer: every cross-module call it passes on is recorded `unanswered`, as a platform
+    /// whose callees stop or miss their deadline records them (`REQ-MDL-21`). Not a flaw.
+    pub fn with_callees_that_never_answer(mut self) -> Self {
+        self.callees_answer = false;
         self
     }
 
@@ -569,7 +578,8 @@ impl ReferenceDouble {
                     reason
                 },
             }),
-            _ => CrossModuleOutcome::Delivered(Nothing {}),
+            _ if self.callees_answer => CrossModuleOutcome::Delivered(Nothing {}),
+            _ => CrossModuleOutcome::Unanswered(Nothing {}),
         };
         self.events.calls.push(CrossModuleCall {
             transaction: Identifier::new(op["transaction"].as_str().unwrap_or_default())
@@ -1202,8 +1212,7 @@ mod tests {
             limited.handle(PROVIDER, &withdrawal()),
             Handled::Refused(PlatformRefusal::LimitReached)
         );
-        // Not the stand-in the bindings used before: the module is still admitted and running.
-        assert_ne!(PlatformRefusal::LimitReached, PlatformRefusal::Unavailable);
+        // Not `Unavailable`, the stand-in the bindings used before: the module is still admitted and running.
         assert_eq!(limited.active_version(PROVIDER).as_deref(), Some("1.0.0"));
         assert_eq!(limited.process(PROVIDER), process);
         // Within the limit, the same module answers.

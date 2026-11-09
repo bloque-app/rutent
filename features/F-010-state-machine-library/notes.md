@@ -175,3 +175,19 @@ AGPL-3.0-or-later applies only to the package that links `vos-sdk`, the VOS prog
 binaries built from it. That package declares `license = "AGPL-3.0-or-later"`. `components/stm` and every other
 package stay MIT and runtime-neutral behind the host contract, so the purpose-built store stays a drop-in fallback.
 `licences/RECORD`'s `vos` line reads permitted under `DEC-26` and `vos-licence-v0`.
+
+## T-010-03: answering the review of `e1c7cf2`
+
+- **The tie check's cost.** Expanding a double's exact value (`{:.780e}`) for every shortest form ending in an odd
+  digit made a megabyte of `[1,1,…]` cost seconds inside `signing_input`, on untrusted text. The expansion now runs
+  only where an even neighbour of the shortest digits reads back as the same double, which needs many digits; a
+  unit test counts expansions and finds none over a megabyte of short numbers and one for Appendix B's tie.
+- **Non-finite values.** `to_canonical` now refuses NaN and the infinities (`NonFiniteNumber`) with a serialiser
+  that writes nothing and checks every float before `serde_json` writes the value. Folded into provider-role 2.3.0,
+  which no release carries yet; the guard compares with `m2`, where provider-role is 2.2.0.
+- **Noncharacters.** The parser refuses U+FDD0 to U+FDEF and the last two code points of every plane, written or
+  escaped (RFC 7493 §2.1), so the "I-JSON" claim holds as written. Also folded into 2.3.0.
+- **An unanswered call to a widened callee.** The module-boundary suite took it as unclear; it now counts as reached
+  when the callee received it, since being passed on is what lends the widening. The reference double gains
+  `with_callees_that_never_answer`, which records every call it passes on as `unanswered`, for the suite's test. No
+  contract changes with it.

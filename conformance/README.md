@@ -12,8 +12,8 @@ every probe from the provider's advertisement and returns a `Report`.
 
 - **What it drives.** A provider implements `RoleProvider`: its advertisement, `handle` for one operation
   statement, a `state` fingerprint, and an optional status query. Each statement it gives is a `Received`: the JSON
-  it sent, and the statement read from those bytes, so the suite checks what was sent. The test hooks that provoke what can't be
-  provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
+  it sent, and the statement read from those bytes, so the suite checks what was sent. The test hooks that
+  provoke what can't be provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
   separate `RoleHarness` trait, so a production adapter can't fabricate a reserve's word. `WithoutHooks` runs a
   provider with none.
 - **What it probes.** Per value-moving tuple: a dry run, an execution compared with its quote, a repeat where
@@ -76,8 +76,8 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     artefact;
   - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
   - `handle`, for one provider-role operation, and `take_events`, for the outbound call records, the secret lookups
-    by outcome status only, the state reads, and the cross-module call records, delivered or refused, as the
-    contract shapes them.
+    by outcome status only, the state reads, and the cross-module call records, delivered, unanswered or refused,
+    as the contract shapes them. A call to a widened callee that received it counts as reached, answered or not.
   - A refusal at admission (`AdmissionRefusal`) or of an answer (`PlatformRefusal`) is the module-interface
     contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
     and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit

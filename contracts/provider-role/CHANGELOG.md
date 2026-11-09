@@ -10,17 +10,18 @@
   (DEC-4, DEC-20, T-010-03)
 
 ## 2.3.0
-- One canonical JSON encoder, `provider_role::canonical`, written to RFC 8785, the scheme the signing rule and
-  the host contract's `exactly-once` name: `canonicalize(json)` and `to_canonical(value)`; the latter writes a
-  non-finite float as `null`, where RFC 8785 makes it an error, since `serde_json` does so first, and no contract
-  type holds a float. Members sort by their
-  names' UTF-16 code units; numbers are written as the doubles they denote, as ECMAScript writes them, ties to
-  even; strings escape only `"`, `\` and the C0 controls. Its own parser refuses duplicate member names, lone
-  surrogates, numbers beyond a double and nesting past 128, where `serde_json::Value` would keep the last of two
-  members silently. It passes RFC 8785's §3.2.2, §3.2.3 and Appendix B vectors. Before, both rules named RFC 8785
-  and no code in `contracts/` wrote it; the VOS program's dedup and the native client wrote `serde_json`'s own form
-  (`EXP-1` outcome, finding 7). Minor: added, no schema, type or rule changes, and the host contract's wording now
-  has the encoder it names. (DEC-4, DEC-20, DEC-26, T-010-03)
+- One canonical JSON encoder, `provider_role::canonical`, written to RFC 8785, the scheme the signing rule and the
+  host contract's `exactly-once` name: `canonicalize(json)` and `to_canonical(value)`, which refuses a value holding
+  NaN or an infinity (`NonFiniteNumber`) before `serde_json` could write it as `null`. Members sort by their names'
+  UTF-16 code units; numbers are written as the doubles they denote, as ECMAScript writes them, ties to even; strings
+  escape only `"`, `\` and the C0 controls. Its own parser refuses duplicate member names, lone surrogates,
+  noncharacters (RFC 7493 §2.1), numbers beyond a double and nesting past 128, where `serde_json::Value` would keep
+  the last of two members silently. It passes RFC 8785's §3.2.2, §3.2.3 and Appendix B vectors, the NaN and Infinity
+  rows included, and expands a number's exact value only where an even neighbour of its shortest digits reads back, so
+  a long array of short numbers costs no expansion. Before, both rules named RFC 8785 and no code in `contracts/`
+  wrote it; the VOS program's dedup and the native client wrote `serde_json`'s own form (`EXP-1` outcome, finding 7).
+  Minor: added, no schema, type or rule changes, and the host contract's wording now has the encoder it names. (DEC-4,
+  DEC-20, DEC-26, T-010-03)
 
 ## 2.2.0
 - The Rust code behind this contract (`contracts/src/provider_role`) is `no_std` with `alloc`:

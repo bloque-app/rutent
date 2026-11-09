@@ -1167,7 +1167,12 @@ impl Run<'_> {
                     {
                         Reach::Refused
                     }
-                    Some(CrossModuleOutcome::Delivered(_)) if received => Reach::Reached,
+                    // Passed on, answered or not: the callee received it, so the widening was lent.
+                    Some(CrossModuleOutcome::Delivered(_) | CrossModuleOutcome::Unanswered(_))
+                        if received =>
+                    {
+                        Reach::Reached
+                    }
                     _ => Reach::Unclear,
                 }
             }

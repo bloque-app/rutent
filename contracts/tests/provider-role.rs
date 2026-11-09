@@ -1478,6 +1478,29 @@ fn canonical_encoding_matches_the_rfc_8785_test_vectors() {
             let canonical = canonical.trim_start_matches('[').trim_end_matches(']');
             assert_eq!(canonical, expected, "{bits:016x} written as {written:.40}");
         }
+        assert_eq!(
+            provider_role::to_canonical(&value).map(|b| String::from_utf8(b).expect("UTF-8")),
+            Ok(expected.to_owned()),
+            "{bits:016x} as a value"
+        );
+    }
+    // Appendix B's NaN and Infinity rows: no JSON form, so an error (§3.2.2.3), never `null`.
+    for bits in [
+        0x7fffffffffffffff_u64,
+        0x7ff0000000000000,
+        0xfff0000000000000,
+    ] {
+        let value = f64::from_bits(bits);
+        assert_eq!(
+            provider_role::to_canonical(&value),
+            Err(provider_role::CanonicalError::NonFiniteNumber),
+            "{bits:016x}"
+        );
+        assert_eq!(
+            provider_role::to_canonical(&[(String::from("x"), vec![value])]),
+            Err(provider_role::CanonicalError::NonFiniteNumber),
+            "{bits:016x} nested in a value"
+        );
     }
 }
 
@@ -1506,6 +1529,20 @@ fn text_with_no_canonical_form_is_refused() {
         refused("[1e400]"),
         CanonicalError::NumberOutOfRange { at: 1 }
     );
+    // RFC 7493 §2.1: no noncharacter, written or escaped.
+    assert_eq!(
+        refused("[\"a\u{ffff}\"]"),
+        CanonicalError::Noncharacter { at: 3 }
+    );
+    assert_eq!(
+        refused(r#"["ab\ufdd0"]"#),
+        CanonicalError::Noncharacter { at: 4 }
+    );
+    assert_eq!(
+        refused(r#"{"\ud83f\udffe":1}"#),
+        CanonicalError::Noncharacter { at: 2 }
+    );
+    assert!(provider_role::canonicalize("[\"\u{fffd}\u{fdcf}\u{fdf0}\"]".as_bytes()).is_ok());
     assert_eq!(refused("[01]"), CanonicalError::Syntax { at: 2 });
     assert_eq!(refused("[1,]"), CanonicalError::Syntax { at: 3 });
     assert_eq!(refused("{} {}"), CanonicalError::Syntax { at: 3 });

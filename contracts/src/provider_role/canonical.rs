@@ -7,7 +7,8 @@
 //!
 //! - **Input** is I-JSON (RFC 7493), read here by its own parser rather than through `serde_json::Value`: UTF-8,
 //!   no duplicate member names (the value model would keep the last one silently, so two parties could read one
-//!   signed text two ways), no lone surrogate in an escape, and no number outside the IEEE 754 double range.
+//!   signed text two ways), no lone surrogate in an escape, no noncharacter written or escaped (§2.1), and no
+//!   number outside the IEEE 754 double range.
 //!   Each is refused with a [`CanonicalError`], never repaired.
 //! - **Output** is RFC 8785 §3.2: no whitespace; members sorted by their names' UTF-16 code units, recursively;
 //!   strings with only `"`, `\`, and U+0000 to U+001F escaped, the five with short forms as `\b`, `\t`, `\n`, `\f`,
@@ -51,6 +52,13 @@ pub enum CanonicalError {
         /// Where the second name starts.
         at: usize,
     },
+    /// A noncharacter, such as U+FFFF or U+FDD0, written or escaped (RFC 7493 §2.1).
+    Noncharacter {
+        /// Where the character, or its escape, starts.
+        at: usize,
+    },
+    /// A value holding NaN or an infinity, which has no JSON form (RFC 8785 §3.2.2.3).
+    NonFiniteNumber,
     /// A number beyond the largest finite double (RFC 8785 §3.2.2.3).
     NumberOutOfRange {
         /// Where the number starts.
@@ -77,9 +85,13 @@ pub fn canonicalize(json: &[u8]) -> Result<Vec<u8>, CanonicalError> {
 
 /// The RFC 8785 canonical form of a value, through its `serde` JSON form.
 ///
-/// Unlike RFC 8785 §3.2.2.3, which makes a non-finite number an error, this writes one as `null`: it has no JSON
-/// form, and `serde_json` writes it so before the encoder sees it. A caller holding floats must refuse them first. No type of the contracts holds one: integers are at most 2^53 - 1 or carried as strings.
+/// A value holding NaN or an infinity is refused ([`CanonicalError::NonFiniteNumber`], RFC 8785 §3.2.2.3): it is
+/// checked before `serde_json` writes the value, since `serde_json` would write it as `null`.
 pub fn to_canonical<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CanonicalError> {
+    value.serialize(finite::Check).map_err(|e| match e {
+        finite::Refusal::NonFinite => CanonicalError::NonFiniteNumber,
+        finite::Refusal::Custom => CanonicalError::Unserialisable,
+    })?;
     let json = serde_json::to_vec(value).map_err(|_| CanonicalError::Unserialisable)?;
     canonicalize(&json)
 }
@@ -303,7 +315,11 @@ impl Parser<'_> {
                 self.at += 1;
             }
             // The run ends on an ASCII byte or the end, so it is a whole UTF-8 slice.
-            out.push_str(&self.text[run..self.at]);
+            let text = &self.text[run..self.at];
+            if let Some((offset, _)) = text.char_indices().find(|(_, c)| is_noncharacter(*c)) {
+                return Err(CanonicalError::Noncharacter { at: run + offset });
+            }
+            out.push_str(text);
             match self.peek() {
                 Some(b'"') => {
                     self.at += 1;
@@ -325,7 +341,13 @@ impl Parser<'_> {
                         b'n' => out.push('\n'),
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
-                        b'u' => out.push(self.unicode_escape(escape)?),
+                        b'u' => {
+                            let c = self.unicode_escape(escape)?;
+                            if is_noncharacter(c) {
+                                return Err(CanonicalError::Noncharacter { at: escape });
+                            }
+                            out.push(c);
+                        }
                         _ => return Err(CanonicalError::Syntax { at: escape }),
                     }
                 }
@@ -402,6 +424,13 @@ impl Parser<'_> {
             Err(CanonicalError::NumberOutOfRange { at: start })
         }
     }
+}
+
+/// Whether `c` is one of Unicode's 66 noncharacters: U+FDD0 to U+FDEF, and the last two code points of every
+/// plane, which I-JSON forbids (RFC 7493 §2.1).
+fn is_noncharacter(c: char) -> bool {
+    let code = u32::from(c);
+    (0xFDD0..=0xFDEF).contains(&code) || code & 0xFFFE == 0xFFFE
 }
 
 fn write_value(value: &Value, out: &mut String) {
@@ -503,7 +532,19 @@ fn shortest_digits(value: f64) -> (String, i32) {
     let last = digits.as_bytes()[digits.len() - 1] - b'0';
     if last % 2 == 1 {
         // A tie needs the exact value to sit halfway between two candidates: the digits, or the digits less one
-        // in the last place, followed by a 5 and nothing more.
+        // in the last place, followed by a 5 and nothing more. It matters only where an even neighbour reads back
+        // too, which is rare and needs many digits, so the exact value is expanded only then.
+        let mut lower = digits.clone();
+        lower.pop();
+        lower.push(char::from(b'0' + last - 1));
+        let upper = increment(&digits, n);
+        let lower_reads_back = reads_back(&lower, n, value);
+        let upper_reads_back = reads_back(&upper.0, upper.1, value);
+        if !lower_reads_back && !upper_reads_back {
+            return (trim(digits), n);
+        }
+        #[cfg(test)]
+        EXPANSIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let exact = format!("{value:.780e}");
         let (exact_mantissa, exact_exponent) = exact.split_once('e').expect("an exponent");
         let exact_digits: String = exact_mantissa
@@ -514,25 +555,20 @@ fn shortest_digits(value: f64) -> (String, i32) {
             .to_string();
         let same_magnitude = exact_exponent.parse::<i32>().ok() == Some(exponent);
         let above = format!("{digits}5");
-        let mut lower = digits.clone();
-        lower.pop();
-        lower.push(char::from(b'0' + last - 1));
         let below = format!("{lower}5");
-        let candidate = if same_magnitude && exact_digits == above {
-            Some(increment(&digits, n))
-        } else if same_magnitude && exact_digits == below {
-            Some((lower, n))
-        } else {
-            None
-        };
-        if let Some((even, even_n)) = candidate
-            && reads_back(&even, even_n, value)
-        {
-            return (trim(even), even_n);
+        if same_magnitude && exact_digits == above && upper_reads_back {
+            return (trim(upper.0), upper.1);
+        }
+        if same_magnitude && exact_digits == below && lower_reads_back {
+            return (trim(lower), n);
         }
     }
     (trim(digits), n)
 }
+
+/// How many exact expansions the tie check has made, so a test can bound them.
+#[cfg(test)]
+static EXPANSIONS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// The digits plus one in the last place, with `n` raised by one where a carry passes the first digit.
 fn increment(digits: &str, n: i32) -> (String, i32) {
@@ -567,4 +603,289 @@ fn trim(digits: String) -> String {
 /// Whether `0.digits × 10^n` reads back as `value`.
 fn reads_back(digits: &str, n: i32, value: f64) -> bool {
     format!("0.{digits}e{n}").parse::<f64>() == Ok(value)
+}
+
+/// A `serde` serialiser that writes nothing and refuses a non-finite float anywhere in a value.
+mod finite {
+    use core::fmt;
+
+    use serde::ser::{self, Serialize};
+
+    /// Why a value has no JSON form.
+    #[derive(Debug)]
+    pub(super) enum Refusal {
+        /// It holds NaN or an infinity.
+        NonFinite,
+        /// Its `Serialize` failed of itself.
+        Custom,
+    }
+
+    impl fmt::Display for Refusal {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(match self {
+                Self::NonFinite => "a non-finite number",
+                Self::Custom => "a value that fails to serialise",
+            })
+        }
+    }
+
+    impl core::error::Error for Refusal {}
+
+    impl ser::Error for Refusal {
+        fn custom<T: fmt::Display>(_msg: T) -> Self {
+            Self::Custom
+        }
+    }
+
+    /// The check, a serialiser with no output.
+    pub(super) struct Check;
+
+    type Done = Result<(), Refusal>;
+
+    fn finite(value: f64) -> Done {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(Refusal::NonFinite)
+        }
+    }
+
+    impl ser::Serializer for Check {
+        type Ok = ();
+        type Error = Refusal;
+        type SerializeSeq = Self;
+        type SerializeTuple = Self;
+        type SerializeTupleStruct = Self;
+        type SerializeTupleVariant = Self;
+        type SerializeMap = Self;
+        type SerializeStruct = Self;
+        type SerializeStructVariant = Self;
+
+        fn serialize_bool(self, _: bool) -> Done {
+            Ok(())
+        }
+        fn serialize_i8(self, _: i8) -> Done {
+            Ok(())
+        }
+        fn serialize_i16(self, _: i16) -> Done {
+            Ok(())
+        }
+        fn serialize_i32(self, _: i32) -> Done {
+            Ok(())
+        }
+        fn serialize_i64(self, _: i64) -> Done {
+            Ok(())
+        }
+        fn serialize_i128(self, _: i128) -> Done {
+            Ok(())
+        }
+        fn serialize_u8(self, _: u8) -> Done {
+            Ok(())
+        }
+        fn serialize_u16(self, _: u16) -> Done {
+            Ok(())
+        }
+        fn serialize_u32(self, _: u32) -> Done {
+            Ok(())
+        }
+        fn serialize_u64(self, _: u64) -> Done {
+            Ok(())
+        }
+        fn serialize_u128(self, _: u128) -> Done {
+            Ok(())
+        }
+        fn serialize_f32(self, v: f32) -> Done {
+            finite(f64::from(v))
+        }
+        fn serialize_f64(self, v: f64) -> Done {
+            finite(v)
+        }
+        fn serialize_char(self, _: char) -> Done {
+            Ok(())
+        }
+        fn serialize_str(self, _: &str) -> Done {
+            Ok(())
+        }
+        fn serialize_bytes(self, _: &[u8]) -> Done {
+            Ok(())
+        }
+        fn serialize_none(self) -> Done {
+            Ok(())
+        }
+        fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Done {
+            value.serialize(self)
+        }
+        fn serialize_unit(self) -> Done {
+            Ok(())
+        }
+        fn serialize_unit_struct(self, _: &'static str) -> Done {
+            Ok(())
+        }
+        fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Done {
+            Ok(())
+        }
+        fn serialize_newtype_struct<T: Serialize + ?Sized>(
+            self,
+            _: &'static str,
+            value: &T,
+        ) -> Done {
+            value.serialize(self)
+        }
+        fn serialize_newtype_variant<T: Serialize + ?Sized>(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            value: &T,
+        ) -> Done {
+            value.serialize(self)
+        }
+        fn serialize_seq(self, _: Option<usize>) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_tuple(self, _: usize) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_tuple_variant(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            _: usize,
+        ) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_map(self, _: Option<usize>) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+        fn serialize_struct_variant(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            _: usize,
+        ) -> Result<Self, Refusal> {
+            Ok(self)
+        }
+    }
+
+    impl ser::SerializeSeq for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeTuple for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeTupleStruct for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeTupleVariant for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeMap for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Done {
+            key.serialize(Check)
+        }
+        fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeStruct for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, _: &'static str, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+
+    impl ser::SerializeStructVariant for Check {
+        type Ok = ();
+        type Error = Refusal;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, _: &'static str, value: &T) -> Done {
+            value.serialize(Check)
+        }
+        fn end(self) -> Done {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    // verifies: REQ-PRT-1
+    #[test]
+    fn a_megabyte_of_odd_integers_expands_no_exact_value() {
+        // One tie of RFC 8785 Appendix B needs its exact value; a long array of short odd numbers needs none.
+        let before = EXPANSIONS.load(Ordering::Relaxed);
+        let tie = canonicalize(b"[1424953923781206.25]").expect("canonical");
+        assert_eq!(tie, b"[1424953923781206.2]");
+        assert_eq!(EXPANSIONS.load(Ordering::Relaxed) - before, 1);
+
+        let mut text = String::from("[");
+        for i in 0..(1 << 19) {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(["1", "3", "7", "9999999", "-5", "0.5", "2.5e-7"][i % 7]);
+        }
+        text.push(']');
+        assert!(text.len() > 1 << 20);
+        let before = EXPANSIONS.load(Ordering::Relaxed);
+        let canonical = canonicalize(text.as_bytes()).expect("canonical");
+        assert_eq!(
+            EXPANSIONS.load(Ordering::Relaxed),
+            before,
+            "an exact value was expanded"
+        );
+        assert!(canonical.starts_with(b"[1,3,7,9999999,-5,0.5,2.5e-7,1,"));
+    }
 }

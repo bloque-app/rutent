@@ -57,12 +57,11 @@ decision records. All its fields are required:
   with a duplicate member name is rejected.
 - **The encoder** (2.3.0, 2.4.0): `provider_role::canonical` is the contracts' one RFC 8785 encoder, the one the
   host contract's `exactly-once` means too. `signing_input(received)` gives the signed bytes of a statement's text;
-  `canonicalize` and `to_canonical` give any text's or value's canonical form, except that `to_canonical` writes a
-  non-finite float as `null` where RFC 8785 makes it an error, since `serde_json` does so first (no contract type
-  holds a float); `member(json, path)` gives a nested
-  statement's own text as it sits in the outer one. Its parser refuses what has no canonical form: text that isn't
-  UTF-8, a member named twice, a lone surrogate, a number beyond a double, nesting past 128. It is tested on RFC
-  8785's §3.2.2, §3.2.3 and Appendix B vectors.
+  `canonicalize` and `to_canonical` give any text's or value's canonical form, `to_canonical` refusing NaN and
+  the infinities as RFC 8785 does; `member(json, path)` gives a nested statement's own text as it sits in the
+  outer one. Its parser refuses what has no canonical form: text that isn't UTF-8, a member named twice, a lone
+  surrogate, a noncharacter, a number beyond a double, nesting past 128. It is tested on RFC 8785's §3.2.2, §3.2.3
+  and Appendix B vectors.
 - **Scheme:** `ed25519` (RFC 8032), the only one allowed, verified strictly.
 - **Key:** `key` is the signing public key. For a provider, it is one of the keys its advertisement publishes, made
   authoritative by the operator's grant (`REQ-CAT-2`), with the purpose the statement needs: `advertising` for an

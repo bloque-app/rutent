@@ -30,9 +30,10 @@
 //!
 //! **Statements arrive as bytes.** A provider hands each statement over as the JSON it sent ([`Received`]), and the
 //! suite reads the envelope from those bytes itself. It checks that every envelope is well formed, that its text
-//! has a signing input under the contract's rule ([`signing_input`](rutent_contracts::provider_role::signing_input): I-JSON, no member named
-//! twice), and hands each signature to a [`SignatureVerifier`] with the statement's bytes as received; a statement
-//! nested in a result is handed over as its own text within the result's. The default, [`DeferredVerifier`],
+//! has a signing input under the contract's rule
+//! ([`signing_input`](rutent_contracts::provider_role::signing_input): I-JSON, no member named twice), and hands
+//! each signature to a [`SignatureVerifier`] with the statement's bytes as received; a statement nested in a result
+//! is handed over as its own text within the result's. The default, [`DeferredVerifier`],
 //! verifies nothing and says so in the report, where [`Check::SignatureVerifies`] stays deferred and the report
 //! doesn't pass. The Ed25519 verifier is the catalogue's (`T-012-02`).
 
@@ -395,8 +396,9 @@ pub enum Verification {
 
 /// The hook where signature verification plugs in. It sees the maker, the signature as the suite read it, and the
 /// statement's bytes as received: for a statement nested in another, its own text within the outer one's
-/// ([`member`](rutent_contracts::provider_role::member)). The bytes the maker signed are [`signing_input`](rutent_contracts::provider_role::signing_input) of `received`:
-/// its RFC 8785 canonical form with only the top-level `signature.value` removed. A verifier works from
+/// ([`member`](rutent_contracts::provider_role::member)). The bytes the maker signed are
+/// [`signing_input`](rutent_contracts::provider_role::signing_input) of `received`: its RFC 8785 canonical form
+/// with only the top-level `signature.value` removed. A verifier works from
 /// `received`, never from a re-serialisation of the parsed statement, so a field the suite's types don't model is
 /// still covered by the signature.
 pub trait SignatureVerifier {
