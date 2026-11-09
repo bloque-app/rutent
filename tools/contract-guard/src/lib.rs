@@ -13,10 +13,13 @@
 //!   defined in `PLAN.md`'s decisions table.
 //! - A change to a shared file (under `contracts/`, owned by no contract) needs a new bullet naming a `DEC-<n>` in
 //!   `contracts/CHANGELOG.md`. A contract's version bump does not stand in for it.
-//! - A change to the root `Cargo.lock` that moves a package the contracts crate reaches (the crate itself, its
-//!   dependencies and theirs, dev-dependencies included) touches every contract, since they ship as one crate.
+//! - A change to the root `Cargo.lock` that changes the name, version, source or checksum of a package the contracts
+//!   crate reaches (the crate itself, its dependencies and theirs, dev-dependencies included), or adds or drops one,
+//!   touches every contract, since they ship as one crate.
+//! - A change that only adds or drops dependency edges of such packages (a feature another crate turns on) needs the
+//!   shared changelog's entry naming a `DEC-<n>`, like a shared file, and no contract's bump.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const CONTRACTS_PATH: &str = "contracts/CONTRACTS";
 const SHARED: &str = "shared";
@@ -256,8 +259,11 @@ fn check_decisions(bullet: &str, defined: &BTreeSet<String>) -> Result<(), Strin
 struct LockPackage {
     name: String,
     version: String,
-    /// Name, version, source, checksum and dependency entries, joined: equal exactly when nothing moved.
-    identity: String,
+    /// Every line but the dependency list (name, version, source, checksum): equal exactly when the package itself
+    /// did not move.
+    core: String,
+    /// The dependency list's lines: equal exactly when no edge was added or dropped.
+    edges: String,
     /// Dependency entries: a name, or a name and a version.
     dependencies: Vec<(String, Option<String>)>,
 }
@@ -288,9 +294,17 @@ fn lock_packages(text: &str) -> Vec<LockPackage> {
         let mut version = String::new();
         let mut dependencies: Vec<(String, Option<String>)> = Vec::new();
         let mut in_dependencies = false;
-        let mut identity = String::new();
+        let mut core = String::new();
+        let mut edges = String::new();
         for line in block.lines() {
             let line = line.trim();
+            if in_dependencies || line.starts_with("dependencies = [") {
+                edges.push_str(line);
+                edges.push('\n');
+            } else if !line.is_empty() {
+                core.push_str(line);
+                core.push('\n');
+            }
             if in_dependencies {
                 if line == "]" {
                     in_dependencies = false;
@@ -307,16 +321,13 @@ fn lock_packages(text: &str) -> Vec<LockPackage> {
             } else if let Some(value) = line.strip_prefix("version = ") {
                 version = value.trim_matches('"').to_string();
             }
-            if !line.is_empty() && !line.starts_with('[') {
-                identity.push_str(line);
-                identity.push('\n');
-            }
         }
         if !name.is_empty() {
             out.push(LockPackage {
                 name,
                 version,
-                identity,
+                core,
+                edges,
                 dependencies,
             });
         }
@@ -324,8 +335,9 @@ fn lock_packages(text: &str) -> Vec<LockPackage> {
     out
 }
 
-/// The identities of every package the contracts crate reaches in a lockfile, itself included.
-fn contracts_closure(text: &str) -> BTreeSet<String> {
+/// Every package the contracts crate reaches in a lockfile, itself included: what the package is (`core`) mapped to
+/// its dependency list (`edges`).
+fn contracts_closure(text: &str) -> BTreeMap<String, String> {
     let packages = lock_packages(text);
     let mut reached: BTreeSet<usize> = BTreeSet::new();
     let mut queue: Vec<usize> = packages
@@ -350,23 +362,50 @@ fn contracts_closure(text: &str) -> BTreeSet<String> {
     }
     reached
         .into_iter()
-        .map(|i| {
-            format!(
-                "{} {}\n{}",
-                packages[i].name, packages[i].version, packages[i].identity
-            )
-        })
+        .map(|i| (packages[i].core.clone(), packages[i].edges.clone()))
         .collect()
 }
 
-/// The names of the packages the contracts crate reaches that differ between two lockfiles.
-fn moved_dependencies(base: Option<&str>, head: Option<&str>) -> BTreeSet<String> {
+/// The name and version a package's `core` text starts with.
+fn core_label(core: &str) -> String {
+    let field = |key: &str| {
+        core.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string()
+    };
+    format!("{} {}", field("name = "), field("version = "))
+}
+
+/// What differs between two lockfiles among the packages the contracts crate reaches.
+#[derive(Debug, Default)]
+struct LockMoves {
+    /// Packages that appear, vanish or change their name, version, source or checksum.
+    moved: BTreeSet<String>,
+    /// Packages that stay as they are and only gain or lose dependency edges.
+    edges_only: BTreeSet<String>,
+}
+
+fn lock_moves(base: Option<&str>, head: Option<&str>) -> LockMoves {
     let before = base.map(contracts_closure).unwrap_or_default();
     let after = head.map(contracts_closure).unwrap_or_default();
-    before
-        .symmetric_difference(&after)
-        .map(|entry| entry.lines().next().unwrap_or_default().to_string())
-        .collect()
+    let mut moves = LockMoves::default();
+    for (core, edges) in &before {
+        match after.get(core) {
+            None => {
+                moves.moved.insert(core_label(core));
+            }
+            Some(head_edges) if head_edges != edges => {
+                moves.edges_only.insert(core_label(core));
+            }
+            Some(_) => {}
+        }
+    }
+    for core in after.keys().filter(|core| !before.contains_key(*core)) {
+        moves.moved.insert(core_label(core));
+    }
+    moves
 }
 
 /// Bullets present in the head changelog but not the base one.
@@ -413,7 +452,7 @@ pub fn check(
     }
 
     // The contracts ship as one crate, so a moved dependency of it touches every contract.
-    let moved = moved_dependencies(
+    let LockMoves { moved, edges_only } = lock_moves(
         files.base(LOCK_PATH).as_deref(),
         files.head(LOCK_PATH).as_deref(),
     );
@@ -551,6 +590,15 @@ pub fn check(
             format!(
                 "{} changed without a new {SHARED_CHANGELOG} entry naming a DEC-<n> that {PLAN_PATH} defines; a contract's version bump does not stand in for it",
                 shared_paths.join(", ")
+            ),
+        ));
+    }
+    if !edges_only.is_empty() && !shared_decided {
+        violations.push(violation(
+            SHARED,
+            format!(
+                "{LOCK_PATH} changes only the dependency edges of {}, which the contracts crate reaches, without a new {SHARED_CHANGELOG} entry naming a DEC-<n> that {PLAN_PATH} defines",
+                edges_only.iter().cloned().collect::<Vec<_>>().join(", ")
             ),
         ));
     }
