@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:outbound-call-record",
+  "title": "Outbound call record",
+  "description": "The platform's record of one outbound call an outside part made or tried to make, with its destination, the module version and the transaction (REQ-MDL-8). The platform's egress layer writes it, not the module, since the outside part is the provider's own code (THR-83). Each connection is a hop: the first, then one per redirect, each with the name asked for and the address connected to, so the record shows ADR-0004's checks were made at every hop. A refused call is recorded too.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "transaction",
+    "provider",
+    "module_version",
+    "operation",
+    "secrets",
+    "started_at",
+    "hops",
+    "outcome"
+  ],
+  "properties": {
+    "transaction": {
+      "description": "The transaction the call was made for (REQ-MDL-8, REQ-MDL-10).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "provider": {
+      "description": "The provider whose outside part made the call.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "module_version": {
+      "description": "The version of the module that made it (REQ-MDL-8).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/version"
+    },
+    "operation": {
+      "description": "The outside operation the call was made under.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/name"
+    },
+    "secrets": {
+      "description": "The names of the secrets resolved for the call, so each use is attributable to the transaction (REQ-MDL-6). Names only, never values. Empty if none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:module-interface:common#/$defs/name"
+      }
+    },
+    "started_at": {
+      "description": "When the call started.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "hops": {
+      "description": "The connections in order: the first, then one per redirect. At least one.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/hop"
+      }
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    }
+  },
+  "$defs": {
+    "hop": {
+      "description": "One connection: where it was asked to go, the declared destination that matched by name, and the address actually connected to. A hop refused before connecting has no address, and one whose name matched no declared destination has no destination; either is the last hop of a refused call.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "host",
+        "port"
+      ],
+      "properties": {
+        "scheme": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/scheme"
+        },
+        "host": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/host"
+        },
+        "port": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/port"
+        },
+        "destination": {
+          "description": "The name of the declared destination the hop matched.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/name"
+        },
+        "address": {
+          "description": "The address connected to.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/address"
+        }
+      }
+    },
+    "outcome": {
+      "description": "By status: completed or failed, as the destination answered; unknown, when no answer came; or refused by the platform, with the reason.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "unknown",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "status": true,
+              "reason": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/refusal_reason"
+              }
+            }
+          },
+          "else": {
+            "additionalProperties": false,
+            "properties": {
+              "status": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

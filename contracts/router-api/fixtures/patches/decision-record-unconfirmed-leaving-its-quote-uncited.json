@@ -1,0 +1,31 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/candidates/0/parts/0/operations/1/figures/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/0/parts/0/operations/1/figures/2"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/0/dropped",
+      "value": {
+        "reason": "unconfirmed",
+        "part": 0,
+        "operation": 1
+      }
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/chosen",
+      "value": "c2"
+    }
+  ]
+}

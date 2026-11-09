@@ -1,0 +1,53 @@
+{
+  "provider": "acme-bank",
+  "version": "1.4.2",
+  "interface": "2.0.1",
+  "sandboxed": {
+    "handles": [
+      "withdrawal",
+      "deposit",
+      "balance_verification"
+    ]
+  },
+  "outside": {
+    "operations": [
+      {
+        "name": "statements.fetch",
+        "destinations": [
+          "bank_api",
+          "bank_files"
+        ],
+        "secrets": [
+          "bank.client_certificate",
+          "bank.client_key"
+        ]
+      }
+    ],
+    "destinations": [
+      {
+        "name": "bank_api",
+        "scheme": "https",
+        "host": "api.acme-bank.example",
+        "port": 8443,
+        "addresses": [
+          "api.acme-bank.example"
+        ]
+      },
+      {
+        "name": "bank_files",
+        "scheme": "https",
+        "host": "files.acme-bank.example",
+        "port": 443,
+        "addresses": [
+          "185.12.65.16/28"
+        ]
+      }
+    ],
+    "secrets": [
+      "bank.client_certificate",
+      "bank.client_key"
+    ],
+    "calls": [],
+    "statement_key": "HvS3CmRGklgGj3dx11GPDEIaYTqzPwUZ1R4wUIPKul8"
+  }
+}

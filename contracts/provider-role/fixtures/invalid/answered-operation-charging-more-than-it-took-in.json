@@ -1,0 +1,79 @@
+{
+  "operation": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:operation",
+    "maker": "rutent-operator",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "withdrawal",
+      "transaction": "tx-001",
+      "provider": "acme-co",
+      "origin": {
+        "network": "co-bank-transfer"
+      },
+      "destination": "acme-ledger",
+      "asset": "COP",
+      "amount": "20000",
+      "dry_run": false,
+      "inputs": {
+        "payer.bank_account": "0123456789"
+      }
+    }
+  },
+  "result": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:result",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "withdrawal",
+      "transaction": "tx-001",
+      "outcome": {
+        "status": "succeeded",
+        "amount_in": "20000",
+        "amount_out": "0",
+        "fee": {
+          "asset": "COP",
+          "amount": "25000"
+        },
+        "evidence": [
+          {
+            "grade": 3,
+            "reference": "acme-receipt-7781",
+            "by": "acme-co"
+          }
+        ]
+      }
+    }
+  },
+  "terms": {
+    "bands": [
+      {
+        "min": "1",
+        "max": "100000000000"
+      }
+    ],
+    "reporting": "gross",
+    "required_inputs": [
+      "payer.bank_account"
+    ]
+  }
+}

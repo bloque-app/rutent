@@ -1,0 +1,20 @@
+{
+  "base": "decision-record-with-no-route",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/reason",
+      "value": "outside_band"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped/part",
+      "value": 0
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped/operation",
+      "value": 1
+    }
+  ]
+}

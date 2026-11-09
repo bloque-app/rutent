@@ -1,0 +1,99 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/request/request_id",
+      "value": "req-0001"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/snapshot/figures/19"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/snapshot/figures/20"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/bounds/max_parts",
+      "value": 1
+    },
+    {
+      "op": "replace",
+      "path": "/statement/bounds/provider_ceilings/0/amount",
+      "value": "500000000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/0/candidate_id",
+      "value": "c2"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/candidate_id",
+      "value": "c3"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/parts/0/operations/1/figures/2",
+      "value": "f-ex-a-quote-50m"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/1/figures/4"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped/scope"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped/party"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped/asset"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/reason",
+      "value": "quote_voided"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped/figure",
+      "value": "f-ex-a-quote-50m"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped/condition",
+      "value": "amount_changes"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/chosen",
+      "value": "c2"
+    }
+  ]
+}

@@ -1,0 +1,569 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:module-interface:admission-artefact",
+  "title": "Admission artefact",
+  "description": "The platform's record of one admitted module release (REQ-MDL-1, REQ-MDL-2, REQ-MDL-3): the provider's signed assertion, the digests the platform computed of what it received, the platform build that made the machine code, the module's version history, how its capabilities changed since the release it follows, and its acceptance. It binds what was approved to what runs. The platform writes it (CMP-PROV), not the module. Staging, stale marks and re-derivation results (REQ-MDL-4, REQ-MDL-5, ADR-0014) are not shaped here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "assertion",
+    "assertion_digest",
+    "received",
+    "build",
+    "history",
+    "capabilities",
+    "acceptance"
+  ],
+  "properties": {
+    "assertion": {
+      "description": "The provider's signed release assertion, as received. An artefact without one, or with one carrying no signature, is invalid (REQ-MDL-1).",
+      "$ref": "urn:rutent:module-interface:release-assertion"
+    },
+    "assertion_digest": {
+      "description": "The platform's digest of the assertion as received: the RFC 8785 canonical JSON of the whole envelope, signature included. A later release's history names this release by it.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+    },
+    "received": {
+      "description": "The digests the platform computed of the two binaries it received. Each must equal the digest the assertion states, or the part was altered; that comparison is checked in Rust, not by this schema (REQ-MDL-1).",
+      "$ref": "urn:rutent:module-interface:common#/$defs/part_digests"
+    },
+    "build": {
+      "description": "The platform build that made the machine code, so what runs is traceable to the admitted binary and to the platform version that compiled it, and can be re-derived and compared after a flaw is found (REQ-MDL-2, REQ-MDL-15, THR-18).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform_version",
+        "machine_code"
+      ],
+      "properties": {
+        "platform_version": {
+          "description": "The exact version of the platform build, its compiler included, that made the machine code.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "machine_code": {
+          "description": "The digest of the machine code made for each part. By design it is tied to nothing this contract can check: only re-deriving the machine code from the admitted binary with the same platform version, and comparing, tests it (REQ-MDL-2).",
+          "$ref": "urn:rutent:module-interface:common#/$defs/part_digests"
+        }
+      }
+    },
+    "history": {
+      "description": "The module's earlier admitted releases, oldest first, each named by version and assertion digest. Empty for a first release. It never names this release's version.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/history_entry"
+      }
+    },
+    "capabilities": {
+      "description": "How the release's capabilities changed since the release it follows (REQ-MDL-3). A first release, with no history, names none to compare with and lists no widening; it takes a fresh acceptance by its own rule.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "widenings"
+      ],
+      "properties": {
+        "compared_with": {
+          "description": "The version of the release it follows: the last entry of history, which is checked in Rust, not by this schema. Absent exactly when history is empty, for a first release.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "widenings": {
+          "description": "Every way the release's declaration widens the previous one's, in the order of the new declaration's lists: operation kinds the sandboxed part newly handles, operations (new ones, then destinations and secrets an existing one gains), secrets, destinations (new ones, then broader addresses), calls (new callees, then new kinds), then a changed statement-signing key. Narrowing is never listed. The list is computed from the two declarations, and checked against them in Rust.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/widening"
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "description": "Which acceptance the release requires, and whether it has been given. A release that widens its capabilities, and a first release, require a fresh acceptance, even where acceptance is otherwise automated (REQ-MDL-3, AC-21).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required"
+      ],
+      "properties": {
+        "required": {
+          "description": "automatic, where nothing widened; fresh, where something did or the release is the first.",
+          "enum": [
+            "automatic",
+            "fresh"
+          ]
+        },
+        "accepted": {
+          "description": "Absent until the release is accepted. A fresh acceptance names who gave it.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "at"
+          ],
+          "properties": {
+            "by": {
+              "description": "Who accepted the release.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "at": {
+              "description": "When.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "A release that widens its capabilities requires a fresh acceptance.",
+      "if": {
+        "required": [
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "required": [
+              "widenings"
+            ],
+            "properties": {
+              "widenings": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "acceptance": {
+            "properties": {
+              "required": {
+                "const": "fresh"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "A first release, with no history, compares with nothing, lists no widening and requires a fresh acceptance.",
+      "if": {
+        "required": [
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "not": {
+              "required": [
+                "compared_with"
+              ]
+            },
+            "properties": {
+              "widenings": {
+                "maxItems": 0
+              }
+            }
+          },
+          "acceptance": {
+            "properties": {
+              "required": {
+                "const": "fresh"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "A release with a history compares with a version; that it is the last entry's is checked in Rust.",
+      "if": {
+        "required": [
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "minItems": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "required": [
+              "compared_with"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "description": "A fresh acceptance, once given, names who gave it.",
+      "if": {
+        "required": [
+          "acceptance"
+        ],
+        "properties": {
+          "acceptance": {
+            "required": [
+              "required",
+              "accepted"
+            ],
+            "properties": {
+              "required": {
+                "const": "fresh"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "acceptance": {
+            "properties": {
+              "accepted": {
+                "required": [
+                  "by"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "history_entry": {
+      "description": "One earlier admitted release: its version, the platform's digest of its assertion, when it was admitted, and the statement-signing key it declared.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "assertion_digest",
+        "admitted_at",
+        "statement_key"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "assertion_digest": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "admitted_at": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "statement_key": {
+          "description": "The statement-signing key the release declared. Its outside part could resolve that key, so no later release's assertion may be signed with it; that is checked in Rust, not by this schema.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "widening": {
+      "description": "One way a release widens the previous one's capabilities, by kind: an operation kind the sandboxed part newly handles; a new outside operation; a destination or secret an existing operation gains; a new secret; a new destination, or one of the same name at another scheme, host or port; a destination's addresses grown, from blocks to public or by a block no old block contains; a new callee; a new kind asked of an existing callee; a changed statement-signing key.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "handles",
+            "operation",
+            "operation_destination",
+            "operation_secret",
+            "secret",
+            "destination",
+            "addresses",
+            "call",
+            "call_kind",
+            "statement_key"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "handles"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "operation_kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "handles"
+              },
+              "operation_kind": {
+                "$ref": "urn:rutent:module-interface:declaration#/$defs/operation_kind"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "operation"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation"
+              },
+              "operation": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation_destination"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "operation",
+              "destination"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation_destination"
+              },
+              "operation": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              },
+              "destination": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation_secret"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "operation",
+              "secret"
+            ],
+            "properties": {
+              "kind": {
+                "const": "operation_secret"
+              },
+              "operation": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              },
+              "secret": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "secret"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "secret"
+            ],
+            "properties": {
+              "kind": {
+                "const": "secret"
+              },
+              "secret": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "destination"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "destination"
+            ],
+            "properties": {
+              "kind": {
+                "const": "destination"
+              },
+              "destination": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "addresses"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "destination"
+            ],
+            "properties": {
+              "kind": {
+                "const": "addresses"
+              },
+              "destination": {
+                "$ref": "urn:rutent:module-interface:common#/$defs/name"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "call"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "callee"
+            ],
+            "properties": {
+              "kind": {
+                "const": "call"
+              },
+              "callee": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "call_kind"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "callee",
+              "operation_kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "call_kind"
+              },
+              "callee": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              },
+              "operation_kind": {
+                "$ref": "urn:rutent:module-interface:declaration#/$defs/operation_kind"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "statement_key"
+              }
+            }
+          },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "statement_key"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

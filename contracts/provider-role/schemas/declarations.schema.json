@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:declarations",
+  "title": "Provider declarations",
+  "description": "What a provider declares, whatever its categories: how an outcome can be followed (REQ-CAT-16, every provider). A provider that advertises a reserve, exchange or ramp also declares the evidence it gives and for how long (REQ-CAT-10, REQ-ORD-39, ADR-0007), and whether a repeat is safe (REQ-CAT-10); the advertisement schema requires them there. A verifier-only provider serves no segment and may leave them out (DEC-16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tracking"
+  ],
+  "properties": {
+    "tracking": {
+      "description": "At least one of: each transaction carries an identifier; the provider answers a status query. REQ-CAT-16, no exceptions.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "identifier",
+          "status_query"
+        ]
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grade",
+        "availability"
+      ],
+      "properties": {
+        "grade": {
+          "description": "The grade the provider gives on every outcome, so its weakest, on ADR-0007's scale: 1 checkable by anyone; 2 signed by another party; 3 signed by the provider, with something external to compare later; 4 the provider's bare statement. The operator's per-tuple floor (REQ-ORD-39) compares against it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
+        },
+        "availability": {
+          "description": "How long evidence of an outcome stays available: a number of seconds from the outcome, or \"unbounded\".",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seconds"
+              ],
+              "properties": {
+                "seconds": {
+                  "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer",
+                  "minimum": 1
+                }
+              }
+            },
+            {
+              "const": "unbounded"
+            }
+          ]
+        }
+      }
+    },
+    "safe_retry": {
+      "description": "Whether a repeat is safe. Where false, a retry is never sent (REQ-CAT-10).",
+      "type": "boolean"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/bounds/provider_ceilings/0/amount",
+      "value": "900000000"
+    }
+  ]
+}

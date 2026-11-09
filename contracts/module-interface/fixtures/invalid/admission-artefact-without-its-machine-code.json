@@ -1,0 +1,117 @@
+{
+  "assertion": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:module-interface:release-assertion",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T09:00:00Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+      "value": "_g_FPZQ4P8XwQ9sO4IlMBTMkrJU82ghtBi49Kcvwqq0uu1ATiyyjjboEhhS-SQEU5rL0ZL2Bk36cBfNRWQ3VVQ"
+    },
+    "statement": {
+      "declaration": {
+        "provider": "acme-co",
+        "version": "1.4.2",
+        "interface": "2.0.1",
+        "sandboxed": {
+          "handles": [
+            "withdrawal",
+            "deposit",
+            "balance_verification"
+          ]
+        },
+        "outside": {
+          "operations": [
+            {
+              "name": "statements.fetch",
+              "destinations": [
+                "bank_api",
+                "bank_files"
+              ],
+              "secrets": [
+                "bank.client_certificate",
+                "bank.client_key"
+              ]
+            }
+          ],
+          "destinations": [
+            {
+              "name": "bank_api",
+              "scheme": "https",
+              "host": "api.acme-bank.example",
+              "port": 8443,
+              "addresses": [
+                "185.12.64.0/24",
+                "2a0a:4cc0::/32"
+              ]
+            },
+            {
+              "name": "bank_files",
+              "scheme": "https",
+              "host": "files.acme-bank.example",
+              "port": 443,
+              "addresses": [
+                "185.12.65.16/28"
+              ]
+            }
+          ],
+          "secrets": [
+            "bank.client_certificate",
+            "bank.client_key"
+          ],
+          "calls": [],
+          "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        }
+      },
+      "parts": {
+        "sandboxed": {
+          "format": "example-portable-format",
+          "digest": {
+            "algorithm": "sha-256",
+            "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+          }
+        },
+        "outside": {
+          "format": "example-portable-format",
+          "digest": {
+            "algorithm": "sha-256",
+            "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+          }
+        }
+      }
+    }
+  },
+  "assertion_digest": {
+    "algorithm": "sha-256",
+    "value": "4653da5dcde5b3a9d5e8969d9c1dce4bcecc7b6f3e7f44ba68d924545a5b9271"
+  },
+  "received": {
+    "sandboxed": {
+      "algorithm": "sha-256",
+      "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+    },
+    "outside": {
+      "algorithm": "sha-256",
+      "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+    }
+  },
+  "build": {
+    "platform_version": "0.1.0+compiler.1"
+  },
+  "history": [],
+  "capabilities": {
+    "widenings": []
+  },
+  "acceptance": {
+    "required": "fresh",
+    "accepted": {
+      "by": "release-reviewer",
+      "at": "2026-11-06T10:00:00Z"
+    }
+  }
+}

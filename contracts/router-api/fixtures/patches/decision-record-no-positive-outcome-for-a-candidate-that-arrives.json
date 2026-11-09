@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-with-no-route",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/0/dropped/reason",
+      "value": "no_positive_outcome"
+    }
+  ]
+}

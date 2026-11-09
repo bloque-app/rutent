@@ -1,0 +1,1504 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:result",
+  "title": "Result",
+  "description": "A provider's result for one operation, as its signed statement in the envelope (REQ-PRT-1, REQ-ORD-33).",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:result"
+    },
+    "statement": {
+      "$ref": "#/$defs/result"
+    }
+  },
+  "$defs": {
+    "result": {
+      "description": "A provider's result for one operation, by the operation's kind. The envelope around it is the provider's signed statement, which counts as a reserve's signed statement for its own book (REQ-ORD-33).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "withdrawal",
+            "deposit",
+            "transfer",
+            "conversion",
+            "balance_verification",
+            "judgement",
+            "reversal",
+            "reversal_confirmation"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "withdrawal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reserve_movement_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "deposit"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reserve_movement_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "transfer"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/transfer_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "conversion"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/conversion_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "balance_verification"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/balance_verification_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "judgement"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/judgement_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal_confirmation"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmation_result"
+          }
+        }
+      ]
+    },
+    "reserve_movement_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "withdrawal",
+            "deposit"
+          ]
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/reserve_movement_outcome"
+        }
+      }
+    },
+    "transfer_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "transfer"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/transfer_outcome"
+        }
+      }
+    },
+    "conversion_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "conversion"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/conversion_outcome"
+        }
+      }
+    },
+    "balance_verification_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "balance_verification"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/balance_outcome"
+        }
+      }
+    },
+    "judgement_result": {
+      "description": "A verifier's result. Like the question (REQ-CPL-4), it names no transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "judgement"
+        },
+        "outcome": {
+          "$ref": "#/$defs/judgement_outcome"
+        }
+      }
+    },
+    "reversal_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/reversal_outcome"
+        }
+      }
+    },
+    "reversal_confirmation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal_confirmation"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/reversal_confirmation_outcome"
+        }
+      }
+    },
+    "reserve_movement_outcome": {
+      "description": "A segment has one final outcome: succeeded or failed, each on stated evidence. Outcome unknown is its own result, distinct from both (REQ-ORD-1). A refusal states its class (REQ-CAT-18). A dry run is answered by dry_run_accepted or a refusal (REQ-CAT-14).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown",
+            "refused",
+            "dry_run_accepted"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/movement_succeeded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/failed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "dry_run_accepted"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reserve_dry_run_accepted"
+          }
+        }
+      ]
+    },
+    "transfer_outcome": {
+      "description": "A segment has one final outcome: succeeded or failed, each on stated evidence. Outcome unknown is its own result, distinct from both (REQ-ORD-1). A refusal states its class (REQ-CAT-18). A dry run is answered by dry_run_accepted or a refusal (REQ-CAT-14). A ramp's dry-run answer is its quote, with fees (REQ-CAT-9).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown",
+            "refused",
+            "dry_run_accepted"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/movement_succeeded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/failed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "dry_run_accepted"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/transfer_quote"
+          }
+        }
+      ]
+    },
+    "conversion_outcome": {
+      "description": "A segment has one final outcome: succeeded or failed, each on stated evidence. Outcome unknown is its own result, distinct from both (REQ-ORD-1). A refusal states its class (REQ-CAT-18). A dry run is answered by dry_run_accepted or a refusal (REQ-CAT-14). An exchange's dry-run answer is its detailed quote, with rate and fees (REQ-CAT-9).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown",
+            "refused",
+            "dry_run_accepted"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/conversion_succeeded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/failed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "dry_run_accepted"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/conversion_quote"
+          }
+        }
+      ]
+    },
+    "balance_outcome": {
+      "description": "A balance verification is answered yes or no and nothing else (INV-9), or refused.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "answered",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "answered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/balance_answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/balance_refused"
+          }
+        }
+      ]
+    },
+    "judgement_outcome": {
+      "description": "A verifier's judgement, or its refusal.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "judged",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "judged"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/judged"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "reversal_outcome": {
+      "description": "A reversal is a true undo or nothing: succeeded, with the value back where it left, in full, on evidence; outcome unknown; or refused, with the reversal still owed (REQ-CAT-7, REQ-CAT-15). The provider's own word on its reversal doesn't complete it (REQ-ORD-3).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "unknown",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_succeeded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unknown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "reversal_succeeded": {
+      "description": "The provider says the value is back. Completion still needs another party's statement, such as the origin reserve's confirmation (REQ-ORD-3, ADR-0008).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "node",
+        "asset",
+        "amount",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        },
+        "node": {
+          "description": "Where the value is back: the segment's origin node.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "description": "The asset it is back in: the one it left in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "How much is back, in full, in the origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "evidence": {
+          "$ref": "#/$defs/outcome_evidence"
+        }
+      }
+    },
+    "reversal_confirmation_outcome": {
+      "description": "The origin reserve's answer about one credit, and nothing about sufficiency (ADR-0008, REQ-CAT-4).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "confirmed",
+            "not_confirmed",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "confirmed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_confirmed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_not_confirmed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "reversal_confirmed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "confirmation"
+      ],
+      "properties": {
+        "status": {
+          "const": "confirmed"
+        },
+        "confirmation": {
+          "description": "The reserve's own signed statement that the credit arrived, whole.",
+          "$ref": "urn:rutent:provider-role:reversal-confirmation"
+        }
+      }
+    },
+    "reversal_not_confirmed": {
+      "description": "No credit matching the segment, amount and asset has arrived. It says nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_confirmed"
+        }
+      }
+    },
+    "movement_succeeded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount_in",
+        "amount_out",
+        "fee",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        },
+        "amount_in": {
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "amount_out": {
+          "description": "What it gave out, in the destination unit, gross or net as its tuple declares.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee"
+        },
+        "evidence": {
+          "$ref": "#/$defs/outcome_evidence"
+        }
+      }
+    },
+    "conversion_succeeded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount_in",
+        "amount_out",
+        "rate",
+        "fee",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        },
+        "amount_in": {
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "amount_out": {
+          "description": "What it gave out, in the destination unit, gross or net as its tuple declares.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee"
+        },
+        "evidence": {
+          "$ref": "#/$defs/outcome_evidence"
+        }
+      }
+    },
+    "failed": {
+      "description": "The segment failed, on stated evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "failed"
+        },
+        "evidence": {
+          "$ref": "#/$defs/outcome_evidence"
+        }
+      }
+    },
+    "unknown": {
+      "description": "Outcome unknown: neither success nor failure, and left only on a later result with stated evidence (REQ-ORD-1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "unknown"
+        }
+      }
+    },
+    "refused": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "refusal"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "refusal": {
+          "$ref": "#/$defs/refusal"
+        }
+      }
+    },
+    "balance_refused": {
+      "description": "A refused balance verification. Its refusal never says when it lifts, since that would reveal timing (INV-9).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "refusal"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "refusal": {
+          "$ref": "#/$defs/balance_refusal"
+        }
+      }
+    },
+    "reserve_dry_run_accepted": {
+      "description": "The reserve would serve the withdrawal or deposit, at these amounts and this fee, until it is voided, settling in the time it declares (REQ-QTE-1, REQ-QTE-3). Nothing changed at the provider (REQ-CAT-14).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount_in",
+        "amount_out",
+        "fee",
+        "valid_until",
+        "voided_by",
+        "settlement_seconds"
+      ],
+      "properties": {
+        "status": {
+          "const": "dry_run_accepted"
+        },
+        "amount_in": {
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "amount_out": {
+          "description": "What it gave out, in the destination unit, gross or net as its tuple declares.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee"
+        },
+        "valid_until": {
+          "description": "Until when the answer holds; past it, it is void.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "voided_by": {
+          "$ref": "#/$defs/voided_by"
+        },
+        "settlement_seconds": {
+          "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "transfer_quote": {
+      "description": "A ramp's quote: amounts, fee, direction, validity, what voids it and settlement time, signed by the provider (REQ-CAT-9, REQ-QTE-1, REQ-QTE-3). A ramp sets no rate, so it has no slippage regime. Nothing changed at the provider (REQ-CAT-14).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount_in",
+        "amount_out",
+        "fee",
+        "direction",
+        "valid_until",
+        "voided_by",
+        "settlement_seconds"
+      ],
+      "properties": {
+        "status": {
+          "const": "dry_run_accepted"
+        },
+        "amount_in": {
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "amount_out": {
+          "description": "What it gave out, in the destination unit, gross or net as its tuple declares.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee"
+        },
+        "direction": {
+          "description": "Which amount the quote fixes: exact_in fixes amount_in, exact_out fixes amount_out (REQ-QTE-1).",
+          "enum": [
+            "exact_in",
+            "exact_out"
+          ]
+        },
+        "valid_until": {
+          "description": "Until when the answer holds; past it, it is void.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "voided_by": {
+          "$ref": "#/$defs/voided_by"
+        },
+        "settlement_seconds": {
+          "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "conversion_quote": {
+      "description": "An exchange's detailed quote: amounts, rate and its slippage regime, fee, direction, validity, what voids it and settlement time, signed by the provider (REQ-CAT-9, REQ-QTE-1, REQ-QTE-3). Nothing changed at the provider (REQ-CAT-14).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount_in",
+        "amount_out",
+        "rate",
+        "slippage",
+        "fee",
+        "direction",
+        "valid_until",
+        "voided_by",
+        "settlement_seconds"
+      ],
+      "properties": {
+        "status": {
+          "const": "dry_run_accepted"
+        },
+        "amount_in": {
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "amount_out": {
+          "description": "What it gave out, in the destination unit, gross or net as its tuple declares.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "slippage": {
+          "$ref": "#/$defs/slippage"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee"
+        },
+        "direction": {
+          "description": "Which amount the quote fixes: exact_in fixes amount_in, exact_out fixes amount_out (REQ-QTE-1).",
+          "enum": [
+            "exact_in",
+            "exact_out"
+          ]
+        },
+        "valid_until": {
+          "description": "Until when the answer holds; past it, it is void.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "voided_by": {
+          "$ref": "#/$defs/voided_by"
+        },
+        "settlement_seconds": {
+          "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "voided_by": {
+      "description": "What voids the quote, besides its validity passing (REQ-QTE-1). At least one.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "validity_passes",
+          "amount_changes",
+          "inputs_change",
+          "rate_moves_beyond_slippage",
+          "provider_stops_advertising"
+        ]
+      }
+    },
+    "slippage": {
+      "description": "The rate's slippage regime (REQ-QTE-1): firm, bounded by a maximum, or floating, with no firm rate (REQ-QTE-9, REQ-QTE-10).",
+      "type": "object",
+      "required": [
+        "regime"
+      ],
+      "properties": {
+        "regime": {
+          "enum": [
+            "firm",
+            "bounded",
+            "floating"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "regime"
+            ],
+            "properties": {
+              "regime": {
+                "const": "firm"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/slippage_firm"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "regime"
+            ],
+            "properties": {
+              "regime": {
+                "const": "bounded"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/slippage_bounded"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "regime"
+            ],
+            "properties": {
+              "regime": {
+                "const": "floating"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/slippage_floating"
+          }
+        }
+      ]
+    },
+    "slippage_firm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regime"
+      ],
+      "properties": {
+        "regime": {
+          "const": "firm"
+        }
+      }
+    },
+    "slippage_bounded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regime",
+        "max_bps"
+      ],
+      "properties": {
+        "regime": {
+          "const": "bounded"
+        },
+        "max_bps": {
+          "description": "The largest move of the rate, in basis points.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "slippage_floating": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regime"
+      ],
+      "properties": {
+        "regime": {
+          "const": "floating"
+        }
+      }
+    },
+    "balance_answered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "sufficient"
+      ],
+      "properties": {
+        "status": {
+          "const": "answered"
+        },
+        "sufficient": {
+          "description": "Yes or no: whether funds suffice for the stated amount. Nothing else (INV-9).",
+          "type": "boolean"
+        }
+      }
+    },
+    "judged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "judgement"
+      ],
+      "properties": {
+        "status": {
+          "const": "judged"
+        },
+        "judgement": {
+          "description": "The judgement, whole, as the verifier's own enveloped statement, so it can be handed to its holder (ADR-0012).",
+          "$ref": "urn:rutent:provider-role:judgement"
+        }
+      }
+    },
+    "fee": {
+      "description": "A fee, in the asset the segment takes in (a withdrawal's, deposit's or transfer's asset, a conversion's from) and in the origin unit, at most amount_in (REQ-CAT-9, REQ-QTE-5). check_amounts holds it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "rate": {
+      "description": "Whole to-assets given per whole from-asset, before the fee.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/decimal"
+    },
+    "outcome_evidence": {
+      "description": "The evidence for an outcome: one or more pieces, each graded and naming whose evidence it is, so a public record and a reserve's signed statement can both close an order (REQ-ORD-33, REQ-ORD-39, ADR-0007).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "grade",
+          "reference",
+          "by"
+        ],
+        "properties": {
+          "grade": {
+            "description": "The grade of this piece (REQ-ORD-39).",
+            "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
+          },
+          "reference": {
+            "description": "Where the evidence is: a transaction hash, a receipt identifier, a statement reference.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "by": {
+            "description": "Whose evidence it is: the provider, the next provider, a network's public record, or a node's publisher (REQ-ORD-33).",
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "refusal": {
+      "description": "Why the provider refused: it lifts at a known time, it waits on the person, or it is final (REQ-CAT-18).",
+      "type": "object",
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "enum": [
+            "lifts_at_known_time",
+            "waits_on_person",
+            "final"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "class"
+            ],
+            "properties": {
+              "class": {
+                "const": "lifts_at_known_time"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refusal_lifts_at_known_time"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "class"
+            ],
+            "properties": {
+              "class": {
+                "const": "waits_on_person"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refusal_waits_on_person"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "class"
+            ],
+            "properties": {
+              "class": {
+                "const": "final"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refusal_final"
+          }
+        }
+      ]
+    },
+    "balance_refusal": {
+      "description": "Why a reserve refused a balance verification: it waits on the person, or it is final. It never says when it lifts (INV-9).",
+      "type": "object",
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "enum": [
+            "waits_on_person",
+            "final"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "class"
+            ],
+            "properties": {
+              "class": {
+                "const": "waits_on_person"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refusal_waits_on_person"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "class"
+            ],
+            "properties": {
+              "class": {
+                "const": "final"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refusal_final"
+          }
+        }
+      ]
+    },
+    "refusal_lifts_at_known_time": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "lifts_at"
+      ],
+      "properties": {
+        "class": {
+          "const": "lifts_at_known_time"
+        },
+        "lifts_at": {
+          "description": "When the refusal lifts.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "refusal_waits_on_person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "const": "waits_on_person"
+        }
+      }
+    },
+    "refusal_final": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "const": "final"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "base": "decision-record-split-of-three-parts",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/request/amount",
+      "value": "100000001"
+    },
+    {
+      "op": "add",
+      "path": "/statement/snapshot/figures/22",
+      "value": {
+        "figure_id": "f-confirm-dep-in-249250500",
+        "origin": {
+          "kind": "provider",
+          "provider": "reserve-wallet",
+          "publisher": "wallet-co",
+          "provider_version": "1.2.0",
+          "module_version": "1.2.1"
+        },
+        "age_seconds": 2,
+        "valid_for_seconds": 120,
+        "value": {
+          "kind": "dry_run",
+          "tuple": "f-dep-in",
+          "amount_in": "249250500",
+          "result": {
+            "deployment": {
+              "name": "rutent-test",
+              "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": "urn:rutent:provider-role:result",
+            "maker": "reserve-wallet",
+            "made_at": "2026-11-06T14:59:58Z",
+            "signature": {
+              "scheme": "ed25519",
+              "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+              "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+            },
+            "statement": {
+              "kind": "deposit",
+              "transaction": "tx-confirm-dep-in-249250500",
+              "outcome": {
+                "status": "dry_run_accepted",
+                "amount_in": "249250500",
+                "amount_out": "248250500",
+                "fee": {
+                  "asset": "USDC",
+                  "amount": "1000000"
+                },
+                "valid_until": "2026-11-06T15:01:58Z",
+                "voided_by": [
+                  "validity_passes",
+                  "amount_changes"
+                ],
+                "settlement_seconds": 600
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/parts/0/operations/2/figures/2",
+      "value": "f-confirm-dep-in-249250500"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped/part"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/dropped/operation"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/reason",
+      "value": "outranked"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped/by",
+      "value": "split-3"
+    }
+  ]
+}

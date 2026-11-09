@@ -1,0 +1,18 @@
+{
+  "record_id": "rec-0006",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "provider",
+    "id": "reserve-bank-co"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-1",
+    "part": "p1",
+    "segment": "p1-s1"
+  },
+  "observed": {
+    "kind": "segment_failed"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "declaration": {
+    "provider": "acme-reserve",
+    "version": "3.0.0",
+    "interface": "2.0.1",
+    "sandboxed": {
+      "handles": [
+        "deposit"
+      ]
+    },
+    "outside": {
+      "operations": [
+        {
+          "name": "chain.submit",
+          "destinations": [
+            "rpc"
+          ],
+          "secrets": [
+            "chain.signing_key"
+          ]
+        }
+      ],
+      "destinations": [
+        {
+          "name": "rpc",
+          "scheme": "wss",
+          "host": "rpc.polygon.example",
+          "port": 443,
+          "addresses": "public"
+        }
+      ],
+      "secrets": [
+        "chain.signing_key"
+      ],
+      "calls": [
+        {
+          "callee": "bridge-pay",
+          "kinds": [
+            "transfer"
+          ]
+        }
+      ],
+      "statement_key": "wFQCr4dszHUWh5CKZdeWqgRqZCPQdIL3KmQm_kkqPrs"
+    }
+  },
+  "call": {
+    "transaction": "tx-011",
+    "caller": "acme-reserve",
+    "caller_version": "3.0.0",
+    "route": {
+      "decision_record": "dr-0042",
+      "segment": "seg-2"
+    },
+    "operation": {
+      "kind": "judgement",
+      "provider": "bridge-pay",
+      "subject": "subj-77",
+      "class": "kyc-basic"
+    },
+    "outcome": {
+      "status": "delivered"
+    }
+  }
+}

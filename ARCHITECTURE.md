@@ -169,8 +169,8 @@ flowchart LR
   class rutent system
 ```
 
-Read with the bullets below: the durable store's runtime is a milestone-1 experiment (ADR-0002); the module format
-is another (ADR-0003); the shared proxy is v0's, per-provider proxies come before v1 (ADR-0004); the log is kept
+Read with the bullets below: the durable store's runtime is VOS, as the whole runtime on three replicas (ADR-0002 as
+amended by `EXP-1`); the module format is Wasm components on Wasmtime (ADR-0003 as amended by `EXP-2`); the shared proxy is v0's, per-provider proxies come before v1 (ADR-0004); the log is kept
 apart from the execution store (ADR-0005); the evidence checker is operator-run, apart from provider modules
 (ADR-0007).
 
@@ -181,9 +181,11 @@ apart from the execution store (ADR-0005); the evidence checker is operator-run,
   in its own isolation, since it parses hostile input.
 - **Durable-store / host contract** (ADR-0002): `CMP-STM` is written against a host-agnostic contract — an
   interface for durable transition storage and recorded-input delivery — so the execution environment can be
-  replaced without losing in-flight orders (`REQ-OPS-3`). Which concrete runtime implements that contract (VOS,
-  or a purpose-built store) is a milestone-1 experiment, not a STEP-2 commitment (Pablo, 2026-11-06, decision
-  form item `runtime-host-seam`).
+  replaced without losing in-flight orders (`REQ-OPS-3`). Which concrete runtime implements that contract was
+  left to a milestone-1 experiment (Pablo, 2026-11-06, decision form item `runtime-host-seam`). `EXP-1` chose
+  VOS: `CMP-STM` runs as a VOS program on three replicas, at a pinned and mirrored `vos-core` commit, with the
+  purpose-built store as the ruled fallback (Pablo, 2026-11-08, `exp1-adopt-runtime`; ADR-0002 as amended). Its
+  costs were measured on one host only; `F-033` measures them again over a network (`G-42`).
 - **`CMP-EVIDENCE`'s placement**: operator-run, apart from provider modules. Requiring an *outside* party to run it
   would conflict with `REQ-OPS-4`'s independent-operation requirement, so it is explicitly operator-run — weaker
   than third-party verification, and stated as such in §6.
@@ -213,7 +215,7 @@ left as a narrative mitigation:
 
 | Threat area | Concrete design here | Status after this design |
 |---|---|---|
-| `THR-85` (sandbox escape), `THR-18` (build tampering) | ADR-0003: process-per-provider boundary firm now; specific sandbox tech (Wasm/PVM/other) deferred to a milestone-1 experiment | **Still open** — this SAD fixes the boundary (process isolation catches what an in-process sandbox escape alone would not), but the sandbox technology's own escape class is unknown until the experiment runs. Re-check again once ADR-0003 is amended with the experiment's result. |
+| `THR-85` (sandbox escape), `THR-18` (build tampering) | ADR-0003 as amended by `EXP-2`: Wasm components on Wasmtime 48.0.8, an LTS release, are the one admitted format. Each provider's module runs in its own OS process. That process is the PID-1 child of `unshare`, in new user, network, IPC, UTS, mount and PID namespaces. Before it reads any input it sets `no_new_privs`, pivots into an empty read-only root, drops every capability, applies Landlock with no rule, and installs a seccomp allow-list for x86_64 only. Inherited descriptors are closed before `exec` and again in the jail. The admitting compiler is a fresh process per admission, in the same jail, with 8 GiB of address space and 60 CPU seconds. It refuses precompiled code, and a provider loads only machine code whose digest matches its artefact's | **Narrowed; the residual stays accepted (`R72`).** An escape from Wasmtime now lands in one provider's jailed process, with no network, no file, no other process, no signal to one and no inherited descriptor. Each was probed on the scoring platform (`EXP-2-wasm-20261107-2`). A provider's process that stops answering is killed at the operation's deadline, and the outside part's fuel is one budget per operation. Going further needs a second flaw, in the kernel, reached through the allowed calls. Not closed: unknown flaws and hardware side channels as a class. Spectre settings are Wasmtime's defaults (`G-09`), the pin isn't checked against 2026's advisories (`G-02`), no fuzzer-made binary was admitted (`B-09`), and the jail's layers were probed only together. On Ubuntu 24.04 the jail needs an operator setting, an operator obligation (`F-033`). `THR-18`: each part's machine code is digested at admission and checked before load (`B-10`), and it was identical across two compiler processes. Re-derived on separate hardware (ADR-0014), it was identical on an AMD EPYC 9V74 and an EPYC 7763 (`B-11`, `G-04`, `EXP-2-wasm-20261107-2` and `-3`); no other vendor was tried. Re-checked by `EXP-2` (ADR-0003 as amended, 2026-11-07); re-check again at `F-025`. |
 | `THR-132`/`THR-130` (checkpoint integrity/traffic analysis) | ADR-0005: fixed-tick, salted, size-hiding commitment; no raw tree size published | **Narrowed**: `AC-37`'s indistinguishability bar is met by construction (salt + no size), not by policy. Residual: a checkpoint still only proves the log is self-consistent, never that recorded segments happened (`THR-131`, unchanged, accepted). |
 | `THR-10`/`THR-135`/`THR-136` (route-computation tampering, split-gaming) | ADR-0006: router is a pure, replayable function of (request, snapshot); decision record is self-contained | **Narrowed to detect-only**, as `SPEC.md` already stated; this design doesn't newly mitigate split-gaming, only makes it detectable via the decision record and `REQ-AUD-7`'s bulk measures. No new mitigation found — restate as accepted residual risk, not a gap this SAD closes. |
 | `THR-79`/`THR-80`/`THR-86` (module egress, credential over-scope, cross-module calls) | ADR-0004: one OS process per provider with caller-scoped secret lookups, a shared credential proxy while every provider is the operator's own (per-provider before an outside one joins), deny-by-default destination allow-list, declared cross-module calls only when the route names them (`REQ-MDL-21`) | **Narrowed, with an accepted concentration risk**: a compromised module still can't reach another provider's secrets, but one exploit of the shared proxy reaches all of them (`THR-79`'s unbounded case). Accepted by the reserved item `credential-proxy-scope` (`REQ-CHN-7`) while the roster is the operator's own; Pablo's mitigation is vault buckets separated by process role at deployment. Residual either way: misuse at an allowed host, or data leaving in a request to one. |
@@ -299,8 +301,8 @@ The rest of v0's scope, and how it splits into milestones, belongs in `PLAN.md`,
 | ADR | Decision | Status |
 |---|---|---|
 | `adr/0001-core-decomposition.md` | Core's internal shape: `CMP-CORE-ORCH`/`CMP-CORE-AUTHZ`/`CMP-CORE-AUDIT` | **Accepted** (Pablo, 2026-11-06, `core-decomposition`) |
-| `adr/0002-runtime-host-seam.md` | State-machine host contract; VOS as a milestone-1 experiment | **Accepted** (Pablo, 2026-11-06, `runtime-host-seam`) |
-| `adr/0003-module-format-sandbox.md` | Process-per-provider boundary; format (Wasm/PVM) as experiment | **Accepted** (Pablo, 2026-11-06, `module-sandbox-boundary`) |
+| `adr/0002-runtime-host-seam.md` | State-machine host contract; amended by `EXP-1`: VOS as the whole runtime, three replicas | **Accepted** (Pablo, 2026-11-06, `runtime-host-seam`); amended (Pablo, 2026-11-08, `exp1-adopt-runtime`) |
+| `adr/0003-module-format-sandbox.md` | Process-per-provider boundary; amended by `EXP-2`: Wasm components on Wasmtime | **Accepted** (Pablo, 2026-11-06, `module-sandbox-boundary`); amended (Pablo, 2026-11-07, `exp2-adopt-format`) |
 | `adr/0004-outside-part-credential-proxy.md` | Shared credential proxy now, per-provider before outside providers; resolver interface | **Accepted** (Pablo, 2026-11-06, `credential-proxy-model` and `credential-proxy-scope`) |
 | `adr/0005-authenticated-log-checkpoints.md` | Merkle log + salted, size-hiding checkpoints | **Accepted** (Pablo, 2026-11-06, `log-checkpoints-mechanism`) |
 | `adr/0006-route-search-quoting.md` | Hop-limited search over a snapshot; simple threshold splitting, in v1 and not v0 | **Accepted** (Pablo, 2026-11-06, `route-search-algorithm` and `v0-before-v1`) |

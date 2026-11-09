@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-shortlist-round",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/chosen",
+      "value": "c1"
+    }
+  ]
+}

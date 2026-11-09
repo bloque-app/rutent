@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:judgement",
+  "title": "Judgement",
+  "description": "A verifier's judgement as its own signed statement, standalone so it can be handed to its holder (ADR-0012, REQ-CPL-1).",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:judgement"
+    },
+    "statement": {
+      "$ref": "#/$defs/judgement"
+    }
+  },
+  "$defs": {
+    "judgement": {
+      "description": "A judgement for one class: subject reference, class, answer and validity. Its maker and time made are the envelope's (REQ-CPL-1). Kept minimal until F-053 (DEC-16).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "class",
+        "answer",
+        "valid_until"
+      ],
+      "properties": {
+        "subject": {
+          "description": "The subject reference the judgement is about, the one given to this relying provider (ADR-0012).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "class": {
+          "description": "The class judged.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "answer": {
+          "description": "Yes or no. Not known and not asked are rutent's own states, never a verifier's answer (REQ-AUZ-5, REQ-CPL-1).",
+          "enum": [
+            "yes",
+            "no"
+          ]
+        },
+        "valid_until": {
+          "description": "The judgement's validity; past it, it is void (REQ-CPL-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "holder_key": {
+          "description": "The holder's public key, when the judgement is handed to its holder to carry (ADR-0012). Optional until F-053 (DEC-16).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/candidates/2/parts/0/operations/1/figures/4",
+      "value": "f-confirm-ex-a-49950000"
+    }
+  ]
+}

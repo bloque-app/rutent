@@ -1,0 +1,9 @@
+{
+  "base": "decision-record-with-no-route",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/request/floor"
+    }
+  ]
+}

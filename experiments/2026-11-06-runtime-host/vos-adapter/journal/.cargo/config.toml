@@ -1,0 +1,7 @@
+# VOS's guest configuration at the pinned commit (its pvm/guest/config.toml), without its target's rustflags: the
+# linker script is the checkout's, which ../build.sh names on the command line, from VOS_PIN.
+
+[unstable]
+json-target-spec = true
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]

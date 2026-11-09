@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:policy-bounds",
+  "title": "Policy bounds",
+  "description": "What the operator allows the router (REQ-QTE-11, REQ-ORD-8, ADR-0006): the hop limit, the most parts a split may have, the providers and tuples never chosen, and the ceilings on value in flight, under a named policy version (REQ-AUD-4); and the deployment and protocol version every statement in the snapshot is judged against: a statement that names another is void here (REQ-PRT-1). At most one ceiling per provider or publisher and asset, an asset being its id and decimals, checked by the contract's Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deployment",
+    "protocol_version",
+    "policy_version",
+    "max_hops",
+    "max_parts",
+    "excluded_providers",
+    "excluded_tuples",
+    "provider_ceilings",
+    "publisher_ceilings"
+  ],
+  "properties": {
+    "deployment": {
+      "$ref": "urn:rutent:provider-role:statement-envelope#/properties/deployment"
+    },
+    "protocol_version": {
+      "$ref": "urn:rutent:provider-role:common#/$defs/protocol_version"
+    },
+    "policy_version": {
+      "$ref": "urn:rutent:provider-role:common#/$defs/version"
+    },
+    "max_hops": {
+      "description": "The most operations a part may have: the search's hop limit.",
+      "$ref": "#/$defs/count"
+    },
+    "max_parts": {
+      "description": "The most parts a split may have; 1 routes without splitting, as v0 does (DEC-8).",
+      "$ref": "#/$defs/count"
+    },
+    "excluded_providers": {
+      "description": "Providers never chosen. Empty if none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+      }
+    },
+    "excluded_tuples": {
+      "description": "Tuples never chosen. Empty if none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/tuple_key"
+      }
+    },
+    "provider_ceilings": {
+      "description": "Ceilings on value in flight at one provider. A candidate's value at a provider is the sum, over every operation of every part at that provider, of its amount_in where its from asset is the ceiling's (id and decimals), or else its amount_out where its to asset is, so a split's parts count together and value an exchange produces counts too; to it is added the snapshot's exposure for that provider and asset, or zero. At a publisher, the same is summed over every provider whose figures name that publisher. Above the ceiling's amount, the candidate is dropped as over_ceiling (REQ-ORD-8, THR-136).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "asset",
+          "amount"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          },
+          "asset": {
+            "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+          },
+          "amount": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+          }
+        }
+      }
+    },
+    "publisher_ceilings": {
+      "description": "Ceilings on value in flight across one publisher's providers.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "publisher",
+          "asset",
+          "amount"
+        ],
+        "properties": {
+          "publisher": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          },
+          "asset": {
+            "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+          },
+          "amount": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255
+    },
+    "tuple_key": {
+      "description": "A tuple, by its provider and its two ends.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "from": {
+          "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+        },
+        "to": {
+          "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+        }
+      }
+    }
+  }
+}

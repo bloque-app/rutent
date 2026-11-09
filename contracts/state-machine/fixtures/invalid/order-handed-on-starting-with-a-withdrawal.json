@@ -1,0 +1,76 @@
+{
+  "order_id": "ord-2",
+  "state": "not_past_first_segment",
+  "last_record": "rec-0041",
+  "last_input": {
+    "record_id": "rec-0041",
+    "outcome": {
+      "outcome": "applied"
+    }
+  },
+  "handed_on_from": "ord-1",
+  "parts": [
+    {
+      "part_id": "p1",
+      "state": "not_past_first_segment",
+      "destination": {
+        "provider": "reserve-wallet-b",
+        "to": {
+          "node": {
+            "network": "base"
+          },
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        }
+      },
+      "segments": [
+        {
+          "segment_id": "p1-s1",
+          "provider": "holding-ledger-in",
+          "kind": "withdrawal",
+          "from": {
+            "node": {
+              "network": "ledger-in"
+            },
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "state": "started"
+        },
+        {
+          "segment_id": "p1-s2",
+          "provider": "reserve-wallet-b",
+          "kind": "deposit",
+          "from": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "to": {
+            "node": {
+              "network": "base"
+            },
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "state": "pending"
+        }
+      ]
+    }
+  ]
+}

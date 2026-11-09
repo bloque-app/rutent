@@ -1,0 +1,21 @@
+# EXP-2's PolkaVM binding of the module-boundary suite (T-008-03). Its own workspace and lock: nothing here is a
+# member of the repository's root workspace, and nothing here enters the root Cargo.lock. Its lock is read by the
+# licence check, and its dependencies are recorded in licences/RECORD.
+[workspace]
+resolver = "3"
+members = ["binding", "stubs/dirs"]
+exclude = ["guests/rust"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+# polkavm-linker 0.38.0 depends on dirs 5.0.1, whose dirs-sys 0.4.1 depends on option-ext 0.2.0, MPL-2.0. The
+# linker calls dirs only to find a cache directory for its target JSON. The binding patches dirs with its own MIT
+# stub, so option-ext is not in this lock (EXP-2 scoring sheet, G-31).
+[patch.crates-io]
+dirs = { path = "stubs/dirs" }

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:state-machine:order-state",
+  "title": "Order state",
+  "description": "The published list of states an order, or one part of an order, can be in (REQ-STM-1, REQ-STM-2). Every state of REQ-STM-2's table is here, the handed-on order included. A part with no route left becomes stuck if its value can't be routed to the node where the destination reserve lives (REQ-ORD-28), and waits for the customer if its value is already at that node after a failed final deposit (REQ-ORD-43); the owner's ruling spec-no-route-left.",
+  "type": "string",
+  "enum": [
+    "not_past_first_segment",
+    "ended_without_completing",
+    "first_segment_settled",
+    "waiting_for_customer",
+    "stuck",
+    "complete",
+    "failed",
+    "handed_on"
+  ]
+}

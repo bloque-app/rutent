@@ -1,0 +1,31 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/figures/0/origin/provider"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/0/origin/publisher"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/0/origin/provider_version"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/0/origin/module_version"
+    },
+    {
+      "op": "replace",
+      "path": "/figures/0/origin/kind",
+      "value": "operator"
+    },
+    {
+      "op": "add",
+      "path": "/figures/0/origin/source",
+      "value": "core-ledger"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "order_id": "ord-1",
+  "state": "first_segment_settled",
+  "last_record": "rec-0002",
+  "parts": [
+    {
+      "part_id": "p1",
+      "state": "first_segment_settled",
+      "destination": {
+        "provider": "reserve-wallet",
+        "to": {
+          "node": {
+            "network": "polygon"
+          },
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        }
+      },
+      "segments": [
+        {
+          "segment_id": "p1-s1",
+          "provider": "reserve-bank-co",
+          "kind": "withdrawal",
+          "from": {
+            "node": {
+              "network": "bank-co"
+            },
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "state": "settled"
+        },
+        {
+          "segment_id": "p1-s2",
+          "provider": "exchange-a",
+          "kind": "exchange",
+          "from": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "state": "started"
+        },
+        {
+          "segment_id": "p1-s3",
+          "provider": "reserve-wallet",
+          "kind": "deposit",
+          "from": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "to": {
+            "node": {
+              "network": "polygon"
+            },
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "state": "pending"
+        }
+      ]
+    }
+  ],
+  "last_input": {
+    "record_id": "rec-0002",
+    "outcome": {
+      "outcome": "applied"
+    }
+  }
+}

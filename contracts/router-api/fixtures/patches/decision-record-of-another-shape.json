@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/shape",
+      "value": "urn:rutent:provider-role:result"
+    }
+  ]
+}

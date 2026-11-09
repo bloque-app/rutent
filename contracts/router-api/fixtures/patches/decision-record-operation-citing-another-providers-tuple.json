@@ -1,0 +1,14 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/parts/0/operations/2/figures/0",
+      "value": "f-ex-a"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/2/figures/3"
+    }
+  ]
+}

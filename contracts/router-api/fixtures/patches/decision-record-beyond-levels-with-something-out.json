@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-shortlist-with-a-route-beyond-a-price-s-levels",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/1/amount_out",
+      "value": "1"
+    }
+  ]
+}

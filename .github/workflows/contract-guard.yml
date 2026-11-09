@@ -1,0 +1,43 @@
+name: Contract guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+      - "m*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contract-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The guard diffs against a base commit, so it needs the full history and every branch.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test the guard on its fixtures
+        run: cargo test -p rutent-contract-guard
+      - name: Run the guard against the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # A pull request is checked against its own base branch.
+          BASE_BRANCH: ${{ github.base_ref }}
+          # A push is checked against the commit it replaces. A new branch has the all-zero commit, so use main.
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="origin/$BASE_BRANCH"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            base="$PUSH_BEFORE"
+          else
+            base="origin/main"
+          fi
+          cargo run -p rutent-contract-guard -- "$base"

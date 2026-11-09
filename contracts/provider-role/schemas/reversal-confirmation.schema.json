@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:reversal-confirmation",
+  "title": "Reversal confirmation",
+  "description": "The origin reserve's own signed statement that a reversed segment's value arrived (ADR-0008, REQ-ORD-3, DEC-14).",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:reversal-confirmation"
+    },
+    "statement": {
+      "$ref": "#/$defs/reversal_confirmation"
+    }
+  },
+  "$defs": {
+    "reversal_confirmation": {
+      "description": "That one credit arrived: the segment's transaction, amount and asset, and nothing else. Never a claim about sufficiency in general (ADR-0008, REQ-CAT-4). Its maker and time are the envelope's; it is recorded as the reserve's word (REQ-ORD-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "segment": {
+          "description": "The transaction of the reversed segment.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset the credit arrived in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount that arrived.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    }
+  }
+}

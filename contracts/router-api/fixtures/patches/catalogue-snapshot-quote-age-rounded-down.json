@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-quote-to-fractions-of-a-second",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/1/age_seconds",
+      "value": 4
+    }
+  ]
+}

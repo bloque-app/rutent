@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:host:snapshot-entry",
+  "title": "Snapshot entry",
+  "description": "One entry of a snapshot stream, the runtime-neutral form a swap carries, one JSON value per line (guarantee swap; REQ-OPS-3, NFR-6). A stream is a header, then every record and refusal (each order's records in sequence order, the refusals in log order), then an end with the counts. The order of a stream, gapless sequences, unique record ids and the end's counts are checked over the whole stream by the Rust types, since JSON Schema sees one entry at a time.",
+  "type": "object",
+  "required": ["entry", "body"],
+  "oneOf": [
+    {
+      "properties": {
+        "entry": { "const": "header" },
+        "body": {
+          "type": "object",
+          "required": ["host_version", "state_machine_version"],
+          "properties": {
+            "host_version": { "$ref": "#/$defs/version" },
+            "state_machine_version": { "$ref": "#/$defs/version" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "entry": { "const": "record" },
+        "body": { "$ref": "urn:rutent:host:transition-record" }
+      }
+    },
+    {
+      "properties": {
+        "entry": { "const": "refusal" },
+        "body": { "$ref": "urn:rutent:host:refusal-record" }
+      }
+    },
+    {
+      "properties": {
+        "entry": { "const": "end" },
+        "body": {
+          "type": "object",
+          "required": ["records", "refusals"],
+          "properties": {
+            "records": { "type": "integer", "minimum": 0 },
+            "refusals": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "properties": {
+    "entry": { "enum": ["header", "record", "refusal", "end"] },
+    "body": true
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "version": {
+      "description": "A contract version, MAJOR.MINOR.PATCH.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    }
+  }
+}

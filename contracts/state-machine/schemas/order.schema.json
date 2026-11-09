@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:state-machine:order",
+  "title": "Order",
+  "description": "The state the state machine's transition takes and returns: an order with exactly one current state, as one or more parts (REQ-ORD-42, DEC-8), each part a route with its own state, each segment with exactly one current state (REQ-STM-1). v0 always has one part.",
+  "type": "object",
+  "required": [
+    "order_id",
+    "state",
+    "last_record",
+    "last_input",
+    "parts"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "$ref": "urn:rutent:state-machine:order-state"
+    },
+    "last_record": {
+      "description": "The record id of the input that reached this state (REQ-STM-3): the pointer into the order's history.",
+      "type": "string",
+      "minLength": 1
+    },
+    "last_input": {
+      "description": "The last input delivered to the order, applied or not, and what it did (REQ-AUD-1).",
+      "$ref": "#/$defs/last_input"
+    },
+    "handed_on_from": {
+      "description": "The order whose value this order was handed (REQ-ORD-43); that order's part points back here.",
+      "type": "string",
+      "minLength": 1
+    },
+    "parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/part"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "A handed-on order has a part whose value was handed on.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "handed_on"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "parts": {
+            "contains": {
+              "properties": {
+                "state": {
+                  "const": "handed_on"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Where a route starts (REQ-ORD-16): each part's first segment is a withdrawal, from an outer node; in an order handed on (REQ-ORD-43), it starts at an inner node, where the value sits and whose holding account counts as the origin reserve (REQ-CAT-17), with no withdrawal, since a withdrawal starts at an outer node.",
+      "if": {
+        "properties": {
+          "handed_on_from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "handed_on_from"
+        ]
+      },
+      "then": {
+        "properties": {
+          "parts": {
+            "items": {
+              "properties": {
+                "segments": {
+                  "prefixItems": [
+                    {
+                      "properties": {
+                        "from": {
+                          "properties": {
+                            "node": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "parts": {
+            "items": {
+              "properties": {
+                "segments": {
+                  "prefixItems": [
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "withdrawal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "part": {
+      "description": "One route of the order. Every rule about a route's ending applies to it, and it ends by itself (REQ-ORD-42), so it carries a state from the order-state list.",
+      "type": "object",
+      "required": [
+        "part_id",
+        "state",
+        "destination",
+        "segments"
+      ],
+      "properties": {
+        "part_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "$ref": "urn:rutent:state-machine:order-state"
+        },
+        "linked_order": {
+          "description": "The order this part's value was handed on to (REQ-ORD-43).",
+          "type": "string",
+          "minLength": 1
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/segment"
+          }
+        },
+        "retired_segments": {
+          "description": "The ids of segments a recalculation replaced. No segment id is reused in the order's life, retired ones included, so a late report about one matches nothing current; that uniqueness across parts and current segments is checked by the Rust types, which JSON Schema can't state.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deposit_failed_at": {
+          "description": "The inner node where the part's last failed final deposit left its value: where the destination reserve lives (REQ-ORD-43). Each failed final deposit overwrites it, destination_changed clears it, and a recalculation keeps it (the published update rule). While the part's last segment is a failed deposit it is that deposit's from node, which the Rust types check. Never an outer node: value never sits outside the book.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "destination": {
+          "description": "The part's destination (INV-10): its route's last deposit, that is the destination reserve (provider), the outer node it deposits to and the asset with its decimals. Set when the route is chosen, kept by every recalculation, replaced only by the customer's accepted destination_changed. That the route ends with a deposit at it can't be stated here; the Rust types check it.",
+          "type": "object",
+          "required": [
+            "provider",
+            "to"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "to": {
+              "allOf": [
+                {
+                  "$ref": "urn:rutent:router-api:common#/$defs/endpoint"
+                }
+              ],
+              "properties": {
+                "node": {
+                  "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "A handed-on part names the order its value went to, and only a handed-on part does.",
+          "if": {
+            "properties": {
+              "state": {
+                "const": "handed_on"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "required": [
+              "linked_order"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "linked_order"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "segment": {
+      "description": "A segment plan with its one current state.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "urn:rutent:state-machine:segment-plan"
+        }
+      ],
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "urn:rutent:state-machine:segment-state"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "last_input": {
+      "type": "object",
+      "required": [
+        "record_id",
+        "outcome"
+      ],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        }
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "description": "What the last input did. A repeat has a record id already applied or seen; a late input names a retired segment; a not-applicable one changed nothing, for a reason.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "applied"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "repeat"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "late"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "outcome",
+            "reason"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "not_applicable"
+            },
+            "reason": {
+              "enum": [
+                "other_order",
+                "unknown_subject",
+                "ended",
+                "not_from_this_state",
+                "changes_destination",
+                "keeps_destination",
+                "reuses_segment_id",
+                "value_not_at_start"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

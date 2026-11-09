@@ -1,0 +1,34 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "bridge-pay",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "xMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3-Dh4uM",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "transfer",
+    "transaction": "tx-010",
+    "outcome": {
+      "status": "dry_run_accepted",
+      "amount_in": "1000000",
+      "amount_out": "999000",
+      "fee": {
+        "asset": "USDC",
+        "amount": "1000"
+      },
+      "direction": "exact_in",
+      "valid_until": "2026-11-06T15:05:05Z",
+      "voided_by": [
+        "validity_passes",
+        "amount_changes"
+      ]
+    }
+  }
+}

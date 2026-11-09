@@ -1,0 +1,79 @@
+{
+  "operation": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:operation",
+    "maker": "rutent-operator",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "conversion",
+      "transaction": "tx-004",
+      "provider": "acme-co",
+      "node": "acme-ledger",
+      "from": "COP",
+      "to": "USDC",
+      "direction": "exact_in",
+      "amount": "25000000",
+      "dry_run": true,
+      "inputs": {}
+    }
+  },
+  "result": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:result",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "conversion",
+      "transaction": "tx-004",
+      "outcome": {
+        "status": "dry_run_accepted",
+        "amount_in": "25000000",
+        "amount_out": "61250000",
+        "rate": "0.000245",
+        "slippage": {
+          "regime": "bounded",
+          "max_bps": 50
+        },
+        "fee": {
+          "asset": "USDC",
+          "amount": "24"
+        },
+        "direction": "exact_in",
+        "valid_until": "2026-11-06T15:05:05Z",
+        "voided_by": [
+          "validity_passes",
+          "rate_moves_beyond_slippage"
+        ],
+        "settlement_seconds": 60
+      }
+    }
+  },
+  "terms": {
+    "bands": [
+      {
+        "min": "1",
+        "max": "100000000000"
+      }
+    ],
+    "reporting": "gross",
+    "required_inputs": []
+  }
+}

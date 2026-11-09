@@ -1,0 +1,50 @@
+{
+  "provider": "acme-reserve",
+  "version": "3.0.0",
+  "interface": "2.0.1",
+  "sandboxed": {
+    "handles": [
+      "deposit"
+    ]
+  },
+  "outside": {
+    "operations": [
+      {
+        "name": "chain.submit",
+        "destinations": [
+          "rpc"
+        ],
+        "secrets": [
+          "chain.signing_key"
+        ]
+      }
+    ],
+    "destinations": [
+      {
+        "name": "rpc",
+        "scheme": "wss",
+        "host": "rpc.polygon.example",
+        "port": 443,
+        "addresses": "public"
+      }
+    ],
+    "secrets": [
+      "chain.signing_key"
+    ],
+    "calls": [
+      {
+        "callee": "bridge-pay",
+        "kinds": [
+          "transfer"
+        ]
+      },
+      {
+        "callee": "bridge-pay",
+        "kinds": [
+          "transfer"
+        ]
+      }
+    ],
+    "statement_key": "wFQCr4dszHUWh5CKZdeWqgRqZCPQdIL3KmQm_kkqPrs"
+  }
+}

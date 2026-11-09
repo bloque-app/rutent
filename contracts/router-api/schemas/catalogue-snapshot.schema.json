@@ -1,0 +1,695 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:catalogue-snapshot",
+  "title": "Catalogue snapshot",
+  "description": "The catalogue as the router reads it, at one time: every figure it may use, each with its age at that time and its origin (REQ-QTE-4). A figure is an advertised tuple (the provider-role shapes, by reference), an advertised price, a fresh quote or dry run (the provider's signed result, urn:rutent:provider-role:result), an eligibility judgement (a verifier's, urn:rutent:provider-role:judgement), or in-flight exposure from the operator's records (REQ-ORD-8). Ages are whole seconds rounded up and validities whole seconds rounded down, so a figure whose age is at most its validity is never past its valid_until. Every provider has one publisher across the snapshot, exposures included; one tuple figure per provider and ends, and at most one price per tuple; all judgements about one relying provider's tuples are about one subject (ADR-0012); dry-run answers (fresh quotes included) for one tuple and amount agree, as do judgements of one subject for one tuple. These and other rules a schema can't express are checked by the contract's Rust types; see the contract's README.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_id",
+    "taken_at",
+    "figures"
+  ],
+  "properties": {
+    "snapshot_id": {
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "taken_at": {
+      "description": "When the snapshot was taken: every figure's age is counted to this time.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp",
+      "format": "date-time"
+    },
+    "figures": {
+      "description": "The figures, each with an id unique in the snapshot.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/figure"
+      }
+    }
+  },
+  "$defs": {
+    "figure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "figure_id",
+        "origin",
+        "age_seconds",
+        "value"
+      ],
+      "properties": {
+        "figure_id": {
+          "description": "Unique in its snapshot; operations and drop reasons name a figure by this id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "provider",
+                "operator"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "provider"
+                  }
+                }
+              },
+              "then": {
+                "description": "A provider: every figure but exposure.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "provider",
+                  "publisher",
+                  "provider_version",
+                  "module_version"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "provider"
+                  },
+                  "provider": {
+                    "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+                  },
+                  "publisher": {
+                    "description": "Its publisher, for ceilings across one publisher's providers (REQ-ORD-8).",
+                    "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+                  },
+                  "provider_version": {
+                    "description": "The provider version the figure belongs to.",
+                    "$ref": "urn:rutent:provider-role:common#/$defs/version"
+                  },
+                  "module_version": {
+                    "description": "The version of the admitted module that gave the figure: its admission artefact's version (F-003).",
+                    "$ref": "urn:rutent:provider-role:common#/$defs/version"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "operator"
+                  }
+                }
+              },
+              "then": {
+                "description": "The operator's own records: in-flight exposure.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "source"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "operator"
+                  },
+                  "source": {
+                    "description": "Which record or ledger it was read from.",
+                    "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "age_seconds": {
+          "description": "How old the figure is at taken_at, in seconds since its origin stated it, rounded up. For a statement, counted from its made_at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "valid_for_seconds": {
+          "description": "The figure's stated validity, in seconds since its origin stated it, rounded down. Absent when the origin states none, as for an advertisement, which holds until replaced, or a refused dry run. For a statement with a valid_until, counted from its made_at to it, and always present. A figure whose age is past it must not be used (REQ-QTE-4).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "value": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "reserve_tuple",
+                "exchange_tuple",
+                "ramp_tuple",
+                "price",
+                "fresh_quote",
+                "dry_run",
+                "eligibility",
+                "exposure"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "reserve_tuple"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/reserve_tuple"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "exchange_tuple"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/exchange_tuple"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "ramp_tuple"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/ramp_tuple"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "price"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/price"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "fresh_quote"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/fresh_quote"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "dry_run"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/dry_run"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "eligibility"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/eligibility"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "exposure"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/exposure"
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "fresh_quote",
+                      "eligibility"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "valid_for_seconds"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "exposure"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "origin": {
+                "properties": {
+                  "kind": {
+                    "const": "operator"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "origin": {
+                "properties": {
+                  "kind": {
+                    "const": "provider"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reserve_tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reserve_tuple"
+        },
+        "tuple": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/reserve_tuple"
+        }
+      }
+    },
+    "exchange_tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple"
+      ],
+      "properties": {
+        "kind": {
+          "const": "exchange_tuple"
+        },
+        "tuple": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/exchange_tuple"
+        }
+      }
+    },
+    "ramp_tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple"
+      ],
+      "properties": {
+        "kind": {
+          "const": "ramp_tuple"
+        },
+        "tuple": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/ramp_tuple"
+        }
+      }
+    },
+    "price": {
+      "description": "A tuple's advertised price, from the tuple's provider: its fee formula (REQ-QTE-5), its rate, present exactly when the tuple is an exchange's, and its declared settlement time (REQ-QTE-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple",
+        "fee",
+        "settlement_seconds"
+      ],
+      "properties": {
+        "kind": {
+          "const": "price"
+        },
+        "tuple": {
+          "description": "The tuple figure it is about, by id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee_formula"
+        },
+        "rate": {
+          "$ref": "#/$defs/pricing"
+        },
+        "settlement_seconds": {
+          "description": "The declared settlement time (REQ-QTE-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "fresh_quote": {
+      "description": "A shortlisted provider's detailed quote, for the tuple named: a ramp's for a transfer, an exchange's for a conversion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple",
+        "quote"
+      ],
+      "properties": {
+        "kind": {
+          "const": "fresh_quote"
+        },
+        "tuple": {
+          "description": "The tuple figure it is about, by id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "quote": {
+          "description": "The provider's signed result for a dry-run transfer or conversion, carried whole and unchanged so its signature still verifies: its outcome is a transfer_quote or conversion_quote (REQ-QTE-1).",
+          "$ref": "urn:rutent:provider-role:result",
+          "properties": {
+            "statement": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transfer",
+                    "conversion"
+                  ]
+                },
+                "outcome": {
+                  "properties": {
+                    "status": {
+                      "const": "dry_run_accepted"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "dry_run": {
+      "description": "A shortlisted provider's dry-run answer or refusal, for the tuple named.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple",
+        "amount_in",
+        "result"
+      ],
+      "properties": {
+        "kind": {
+          "const": "dry_run"
+        },
+        "tuple": {
+          "description": "The tuple figure it is about, by id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount_in": {
+          "description": "The amount the dry run asked about, in the tuple's input unit. A refusal doesn't restate it, so the snapshot records it; an accepted answer states the same amount_in, checked by the contract's Rust types.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "result": {
+          "description": "The provider's signed result for a dry run, carried whole: dry_run_accepted or refused (REQ-CAT-14).",
+          "$ref": "urn:rutent:provider-role:result",
+          "properties": {
+            "statement": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "withdrawal",
+                    "deposit",
+                    "transfer",
+                    "conversion"
+                  ]
+                },
+                "outcome": {
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "dry_run_accepted",
+                        "refused"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "eligibility": {
+      "description": "A verifier's judgement of the customer for a class the tuple named needs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tuple",
+        "judgement"
+      ],
+      "properties": {
+        "kind": {
+          "const": "eligibility"
+        },
+        "tuple": {
+          "description": "The tuple figure it is about, by id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "judgement": {
+          "description": "A verifier's signed judgement of the customer, carried whole; the verifier is the figure's provider.",
+          "$ref": "urn:rutent:provider-role:judgement"
+        }
+      }
+    },
+    "exposure": {
+      "description": "Value already in flight at one provider, in one asset, from the operator's records (REQ-ORD-8). At most one per provider and asset.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "publisher",
+        "asset",
+        "in_flight"
+      ],
+      "properties": {
+        "kind": {
+          "const": "exposure"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "publisher": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "in_flight": {
+          "description": "The value in flight, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "fee_formula": {
+      "description": "Flat and proportional parts, depending only on amount and tuple (REQ-QTE-5). The fee on an amount a entering the tuple is flat + ceil(a * numerator / denominator), in the tuple's input unit: the proportion rounds up, so a provider rounding its charge either way stays within its formula. Where a maximum is given, the charge is known only after execution and may come to it, so route evaluation counts the fee at the maximum.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flat",
+        "proportional"
+      ],
+      "properties": {
+        "flat": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "proportional": {
+          "$ref": "urn:rutent:router-api:common#/$defs/ratio"
+        },
+        "maximum": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "pricing": {
+      "description": "How an amount converts, in whole to-assets per whole from-asset (the provider-role rate, by reference), after the fee is taken out. The net amount n = a - fee fills the levels in order: level i takes the part of n above the previous level's up_to (zero for the first) and at most its own. The output, in the to unit, is floor(sum of take_i * rate_i * 10^to.decimals / 10^from.decimals), rounded down once, at the end. A fixed rate is one level with no bound. A net amount above the last level's up_to isn't served: the price gives no output, and a candidate that needs it is dropped as outside_band. A tuple with no rate (a reserve or ramp) outputs floor(n * 10^destination.decimals / 10^origin.decimals). Levels let the rate depend on the amount, as an order book's depth does (REQ-EXT-2, REQ-QTE-12).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "fixed",
+            "levels"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "fixed"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "rate"
+            ],
+            "properties": {
+              "kind": {
+                "const": "fixed"
+              },
+              "rate": {
+                "$ref": "urn:rutent:provider-role:result#/$defs/rate"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "levels"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "levels"
+            ],
+            "properties": {
+              "kind": {
+                "const": "levels"
+              },
+              "levels": {
+                "description": "The bounds strictly increase.",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "up_to",
+                    "rate"
+                  ],
+                  "properties": {
+                    "up_to": {
+                      "description": "The cumulative net amount this level fills up to, inclusive, in the from unit.",
+                      "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+                    },
+                    "rate": {
+                      "$ref": "urn:rutent:provider-role:result#/$defs/rate"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

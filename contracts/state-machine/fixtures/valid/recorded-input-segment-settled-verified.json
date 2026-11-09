@@ -1,0 +1,19 @@
+{
+  "record_id": "rec-0002",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "evidence_checker",
+    "id": "evidence"
+  },
+  "standing": "verified",
+  "subject": {
+    "order": "ord-1",
+    "part": "p1",
+    "segment": "p1-s1"
+  },
+  "observed": {
+    "kind": "segment_settled",
+    "evidence": "ev-0007"
+  }
+}

@@ -1,0 +1,49 @@
+# EXP-1's re-score (T-007-03): the thin Host client of the VOS program (../program), the node processes it runs on
+# one node or three, the platform assertions, and exp1-rt, which runs the suite and the new rows on VOS and on the
+# purpose-built store. Its own workspace, outside rutent's: it links VOS's AGPL-3.0-or-later crates, which the
+# owner permitted for this experiment (DEC-6, counsel-licences); rutent's own Cargo.lock never sees them.
+[package]
+name = "rutent-vos-rt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "exp1-rt"
+path = "src/main.rs"
+required-features = ["vos"]
+
+# The flag that enables the candidate. Without it the library is empty and nothing of VOS is compiled or linked.
+[features]
+vos = [
+    "dep:ed25519-dalek",
+    "dep:libc",
+    "dep:rutent-vos-program",
+    "dep:vos-node",
+    "dep:vos-pvm",
+    "dep:vos-pvm-compiler",
+    "dep:vos-wire",
+]
+
+[dependencies]
+ed25519-dalek = { version = "2", optional = true }
+libc = { version = "0.2", optional = true }
+serde = "1"
+serde_json = "1"
+rutent-contracts = { path = "../../../../contracts" }
+rutent-conformance = { path = "../../../../conformance" }
+rutent-stm = { path = "../../../../components/stm", features = ["purpose-built-store"] }
+rutent-vos-program = { path = "../program", optional = true }
+# VOS at the re-score's commit, vos-core 5c78975 (item exp1-rescore-commit).
+vos-node = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-pvm = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-pvm-compiler = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-wire = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+
+[workspace]
+resolver = "3"
+
+# VOS's own patch at the commit (its Cargo.toml): fjall's lsm-tree with its fixes, on a fork. A patch does not reach
+# a workspace that depends on VOS, so it is repeated here to link what VOS links.
+[patch.crates-io]
+lsm-tree = { git = "https://github.com/olanod/lsm-tree", rev = "d0791931a96ff2be9b23af4e0d1ef17a330ed9f2" }

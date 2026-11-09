@@ -1,0 +1,13 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/3/value/rate",
+      "value": {
+        "kind": "fixed",
+        "rate": "0.00025"
+      }
+    }
+  ]
+}

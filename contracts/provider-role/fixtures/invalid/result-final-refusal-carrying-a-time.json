@@ -1,0 +1,26 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:result",
+  "maker": "polygon-wallet-reserve",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "T1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW4",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "kind": "deposit",
+    "transaction": "tx-002",
+    "outcome": {
+      "status": "refused",
+      "refusal": {
+        "class": "final",
+        "lifts_at": "2026-11-07T00:00:00Z"
+      }
+    }
+  }
+}

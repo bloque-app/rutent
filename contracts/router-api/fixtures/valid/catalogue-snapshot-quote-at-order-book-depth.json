@@ -1,0 +1,98 @@
+{
+  "snapshot_id": "snap-0005",
+  "taken_at": "2026-11-06T15:00:00Z",
+  "figures": [
+    {
+      "figure_id": "f-ex-b",
+      "origin": {
+        "kind": "provider",
+        "provider": "exchange-b",
+        "publisher": "acme",
+        "provider_version": "1.4.0",
+        "module_version": "1.4.0"
+      },
+      "age_seconds": 900,
+      "value": {
+        "kind": "exchange_tuple",
+        "tuple": {
+          "node": "ledger-b",
+          "from": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "to": {
+            "id": "USDC",
+            "decimals": 6
+          },
+          "terms": {
+            "bands": [
+              {
+                "min": "100",
+                "max": "100000000000"
+              }
+            ],
+            "reporting": "net",
+            "required_inputs": []
+          }
+        }
+      }
+    },
+    {
+      "figure_id": "f-ex-b-quote",
+      "origin": {
+        "kind": "provider",
+        "provider": "exchange-b",
+        "publisher": "acme",
+        "provider_version": "1.4.0",
+        "module_version": "1.4.0"
+      },
+      "age_seconds": 2,
+      "valid_for_seconds": 30,
+      "value": {
+        "kind": "fresh_quote",
+        "tuple": "f-ex-b",
+        "quote": {
+          "deployment": {
+            "name": "rutent-test",
+            "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+          },
+          "protocol_version": "2.0.1",
+          "shape": "urn:rutent:provider-role:result",
+          "maker": "exchange-b",
+          "made_at": "2026-11-06T14:59:58Z",
+          "signature": {
+            "scheme": "ed25519",
+            "key": "DVP_bDfejjFXRBdFhgllHZTDfHjinnJbVFhJlkppLdE",
+            "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+          },
+          "statement": {
+            "kind": "conversion",
+            "transaction": "tx-quote",
+            "outcome": {
+              "status": "dry_run_accepted",
+              "amount_in": "99895000",
+              "amount_out": "244508252",
+              "rate": "0.000244774",
+              "slippage": {
+                "regime": "bounded",
+                "max_bps": 50
+              },
+              "fee": {
+                "asset": "COP",
+                "amount": "99895"
+              },
+              "direction": "exact_in",
+              "valid_until": "2026-11-06T15:00:28Z",
+              "voided_by": [
+                "validity_passes",
+                "rate_moves_beyond_slippage",
+                "amount_changes"
+              ],
+              "settlement_seconds": 120
+            }
+          }
+        }
+      }
+    }
+  ]
+}

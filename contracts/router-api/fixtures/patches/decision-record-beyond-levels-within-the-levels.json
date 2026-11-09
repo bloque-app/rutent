@@ -1,0 +1,82 @@
+{
+  "base": "decision-record-shortlist-with-a-route-beyond-a-price-s-levels",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/snapshot/figures/13"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/snapshot/figures/13"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/1",
+      "value": {
+        "kind": "route",
+        "provider": "ramp-x",
+        "from": {
+          "node": "ledger-in",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        },
+        "to": {
+          "node": "ledger-b",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        },
+        "amount_in": "99900000",
+        "fee": {
+          "asset": "COP",
+          "amount": "5000"
+        },
+        "amount_out": "99895000",
+        "figures": [
+          "f-ramp",
+          "f-ramp-price"
+        ]
+      }
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/2/parts/0/operations/2",
+      "value": {
+        "kind": "exchange",
+        "provider": "exchange-b",
+        "from": {
+          "node": "ledger-b",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        },
+        "to": {
+          "node": "ledger-b",
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        },
+        "amount_in": "99895000",
+        "fee": {
+          "asset": "COP",
+          "amount": "99895"
+        },
+        "amount_out": "0",
+        "figures": [
+          "f-ex-b",
+          "f-ex-b-price"
+        ]
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/dropped/operation",
+      "value": 2
+    }
+  ]
+}

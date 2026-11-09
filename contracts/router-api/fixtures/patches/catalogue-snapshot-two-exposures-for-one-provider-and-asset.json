@@ -1,0 +1,27 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/37",
+      "value": {
+        "figure_id": "f-exposure-again",
+        "origin": {
+          "kind": "operator",
+          "source": "core-ledger"
+        },
+        "age_seconds": 0,
+        "value": {
+          "kind": "exposure",
+          "provider": "exchange-a",
+          "publisher": "acme",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "in_flight": "40000000"
+        }
+      }
+    }
+  ]
+}

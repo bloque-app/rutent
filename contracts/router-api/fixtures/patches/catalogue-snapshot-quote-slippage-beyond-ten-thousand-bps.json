@@ -1,0 +1,15 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/6/value/quote/statement/outcome/slippage/regime",
+      "value": "bounded"
+    },
+    {
+      "op": "add",
+      "path": "/figures/6/value/quote/statement/outcome/slippage/max_bps",
+      "value": 10001
+    }
+  ]
+}

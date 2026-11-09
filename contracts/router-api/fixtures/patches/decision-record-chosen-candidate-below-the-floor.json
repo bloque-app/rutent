@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/request/floor",
+      "value": "300000000"
+    }
+  ]
+}

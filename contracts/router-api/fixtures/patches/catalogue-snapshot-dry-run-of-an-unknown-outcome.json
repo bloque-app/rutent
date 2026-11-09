@@ -1,0 +1,38 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/amount_in"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/amount_out"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/fee"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/direction"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/valid_until"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/voided_by"
+    },
+    {
+      "op": "remove",
+      "path": "/figures/15/value/result/statement/outcome/settlement_seconds"
+    },
+    {
+      "op": "replace",
+      "path": "/figures/15/value/result/statement/outcome/status",
+      "value": "unknown"
+    }
+  ]
+}

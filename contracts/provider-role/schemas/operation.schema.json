@@ -1,0 +1,555 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:operation",
+  "title": "Operation",
+  "description": "An operation the operator asks of a provider, as the operator's statement in the envelope, so it too names its deployment and protocol version (REQ-PRT-1).",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:operation"
+    },
+    "statement": {
+      "$ref": "#/$defs/operation"
+    }
+  },
+  "$defs": {
+    "operation": {
+      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "withdrawal",
+            "deposit",
+            "transfer",
+            "conversion",
+            "balance_verification",
+            "judgement",
+            "reversal",
+            "reversal_confirmation"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "withdrawal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/withdrawal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "deposit"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/deposit"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "transfer"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/transfer"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "conversion"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/conversion"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "balance_verification"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/balance_verification"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "judgement"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/judgement"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reversal_confirmation"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reversal_confirmation"
+          }
+        }
+      ]
+    },
+    "inputs": {
+      "description": "The inputs the tuple declared it needs, by name, sent only to the provider chosen (REQ-CAT-12). Empty if none.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "withdrawal": {
+      "description": "A reserve's withdrawal, from its outer node into an inner node. A dry run reveals whether funds suffice (REQ-CAT-4), so it names the session of the account holder or their delegate (REQ-CAT-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "origin",
+        "destination",
+        "asset",
+        "amount",
+        "dry_run",
+        "inputs"
+      ],
+      "properties": {
+        "kind": {
+          "const": "withdrawal"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "destination": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount, in the tuple's origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "dry_run": {
+          "description": "True asks what would happen and changes nothing at the provider (REQ-CAT-14).",
+          "type": "boolean"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        },
+        "session": {
+          "description": "The session of the account holder or their delegate (REQ-CAT-3). Required on a dry run; a withdrawal a reserve starts on an automatic deposit may have none (REQ-ORD-13).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      },
+      "if": {
+        "required": [
+          "dry_run"
+        ],
+        "properties": {
+          "dry_run": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "session"
+        ]
+      }
+    },
+    "deposit": {
+      "description": "A reserve's deposit, from an inner node out to its outer node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "origin",
+        "destination",
+        "asset",
+        "amount",
+        "dry_run",
+        "inputs"
+      ],
+      "properties": {
+        "kind": {
+          "const": "deposit"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "destination": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount, in the tuple's origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "dry_run": {
+          "description": "True asks what would happen and changes nothing at the provider (REQ-CAT-14).",
+          "type": "boolean"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        }
+      }
+    },
+    "transfer": {
+      "description": "A ramp's transfer of one asset between two inner nodes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "origin",
+        "destination",
+        "asset",
+        "direction",
+        "amount",
+        "dry_run",
+        "inputs"
+      ],
+      "properties": {
+        "kind": {
+          "const": "transfer"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "destination": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "direction": {
+          "description": "Which amount is stated: exact_in fixes what the provider takes in, in the origin unit; exact_out fixes what it gives out, in the destination unit (REQ-QTE-1, DEC-8).",
+          "enum": [
+            "exact_in",
+            "exact_out"
+          ]
+        },
+        "amount": {
+          "description": "The stated amount, in the unit its direction names.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "dry_run": {
+          "description": "True asks what would happen and changes nothing at the provider (REQ-CAT-14).",
+          "type": "boolean"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        }
+      }
+    },
+    "conversion": {
+      "description": "An exchange's conversion from one asset to another, within one node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "node",
+        "from",
+        "to",
+        "direction",
+        "amount",
+        "dry_run",
+        "inputs"
+      ],
+      "properties": {
+        "kind": {
+          "const": "conversion"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "from": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "direction": {
+          "description": "Which amount is stated: exact_in fixes what the exchange takes in, in the from unit; exact_out fixes what it gives out, in the to unit (REQ-QTE-1, DEC-8).",
+          "enum": [
+            "exact_in",
+            "exact_out"
+          ]
+        },
+        "amount": {
+          "description": "The stated amount, in the unit its direction names.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "dry_run": {
+          "description": "True asks what would happen and changes nothing at the provider (REQ-CAT-14).",
+          "type": "boolean"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        }
+      }
+    },
+    "balance_verification": {
+      "description": "A reserve's balance verification: whether what can be withdrawn covers a stated amount. Never a dry run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "session",
+        "account",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "balance_verification"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "session": {
+          "description": "The session of the account holder or their delegate the check happens in (REQ-CAT-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "account": {
+          "description": "The account at the reserve.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The stated amount the answer is about (INV-9).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    },
+    "judgement": {
+      "description": "A question to a verifier: a person, by subject reference, and a class only (REQ-CPL-4, ADR-0012). No transaction, amount, route or order (DEC-16).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "subject",
+        "class"
+      ],
+      "properties": {
+        "kind": {
+          "const": "judgement"
+        },
+        "provider": {
+          "description": "The verifier asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "subject": {
+          "description": "The subject reference, one per relying provider, so the verifier can't join checks across providers (ADR-0012).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "class": {
+          "description": "The class asked about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reversal": {
+      "description": "An exchange's or ramp's true undo of a segment: the value back at the segment's origin node, in full and in the asset it left, at the provider's cost (REQ-CAT-15, REQ-ORD-3). A reserve doesn't reverse. Never a dry run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "reverses",
+        "node",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reverses": {
+          "description": "The transaction of the segment to undo.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The segment's origin node, where the value goes back.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "asset": {
+          "description": "The asset the value left in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount that left, in full, in the origin unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    },
+    "reversal_confirmation": {
+      "description": "A question to the reserve at a reversed segment's origin node: has this credit arrived? It names only the segment's transaction, amount and asset, never sufficiency in general (ADR-0008, REQ-CAT-4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "segment",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reversal_confirmation"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The transaction of the reversed segment.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset the value should be back in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount that should be back, in full.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    }
+  }
+}

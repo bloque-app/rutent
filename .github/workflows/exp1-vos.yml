@@ -1,0 +1,285 @@
+name: EXP-1 VOS
+
+# EXP-1's re-score: VOS as the whole runtime, at vos-core 5c78975, on Linux x86_64 with the JIT (item
+# exp1-rescore-platform). The nodes run on the runner host, never in a container or a Docker step, whose default
+# seccomp profile blocks userfaultfd. Every binary is built on the runner that runs it, with no cache. The run notes
+# are uploaded as artifacts.
+# It never runs on a pull request, and a push starts it only on this task's own branch: squashed into a milestone
+# branch, the multi-hour experiment does not start there. A scored run is a dispatch.
+on:
+  push:
+    branches:
+      - "f-007/t-007-03-vos-behind-the-host-contract-fault-injected-t"
+    paths:
+      - "experiments/2026-11-06-runtime-host/vos-adapter/**"
+  workflow_dispatch:
+    inputs:
+      run_date:
+        description: "A scored run's date, yyyymmdd (the runner's UTC date); empty for a ci-N run, never scored"
+        required: false
+        default: ""
+      vos_n:
+        description: "The n of EXP-1-vos-rt1-<date>-<n> and EXP-1-vos-rt3-<date>-<n>"
+        required: false
+        default: "1"
+      pb_n:
+        description: "The n of EXP-1-pb-<date>-<n>"
+        required: false
+        default: "1"
+      scope:
+        description: "smoke (the platform, one submit and the corpus) or full (every row)"
+        required: false
+        default: "smoke"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_TOOLCHAIN: nightly-2025-07-14
+  GUEST_TOOLCHAIN: nightly-2026-03-20
+  ADAPTER: experiments/2026-11-06-runtime-host/vos-adapter
+
+jobs:
+  # The no_std copies equal contracts/ and the probe plus their patches, every hunk is plumbing only, and the
+  # separate files are exactly the listed ones (re-score brief, section 3.1).
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The drift, plumbing and separate-file checks
+        run: $ADAPTER/nostd.sh check
+
+  ids:
+    runs-on: ubuntu-latest
+    outputs:
+      rt1: ${{ steps.ids.outputs.rt1 }}
+      rt3: ${{ steps.ids.outputs.rt3 }}
+      pb: ${{ steps.ids.outputs.pb }}
+      scope: ${{ steps.ids.outputs.scope }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The run ids
+        id: ids
+        env:
+          RUN_DATE: ${{ inputs.run_date }}
+          VOS_N: ${{ inputs.vos_n }}
+          PB_N: ${{ inputs.pb_n }}
+          SCOPE: ${{ inputs.scope }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # A scored run comes from a dispatch naming its date, or from a push carrying vos-adapter/RUN; any other
+          # run's ids are ci-N, never scored.
+          if [ -z "$RUN_DATE" ] && [ -f "$ADAPTER/RUN" ]; then
+            RUN_DATE=$(sed -n 's/^date //p' "$ADAPTER/RUN")
+            VOS_N=$(sed -n 's/^vos_n //p' "$ADAPTER/RUN")
+            PB_N=$(sed -n 's/^pb_n //p' "$ADAPTER/RUN")
+            SCOPE=$(sed -n 's/^scope //p' "$ADAPTER/RUN")
+          fi
+          if [ -n "$RUN_DATE" ]; then
+            today=$(date -u +%Y%m%d)
+            if [ "$RUN_DATE" != "$today" ]; then
+              echo "a scored run's date is the runner's UTC date, $today, not $RUN_DATE" >&2
+              exit 1
+            fi
+            if ! [[ "$VOS_N" =~ ^[0-9]+$ && "$PB_N" =~ ^[0-9]+$ ]]; then
+              echo "the run numbers are integers" >&2
+              exit 1
+            fi
+            rt1="EXP-1-vos-rt1-$RUN_DATE-$VOS_N"
+            rt3="EXP-1-vos-rt3-$RUN_DATE-$VOS_N"
+            pb="EXP-1-pb-$RUN_DATE-$PB_N"
+          else
+            rt1="EXP-1-vos-rt1-ci-$RUN_NUMBER"
+            rt3="EXP-1-vos-rt3-ci-$RUN_NUMBER"
+            pb="EXP-1-pb-ci-$RUN_NUMBER"
+          fi
+          scope=${SCOPE:-smoke}
+          if [ "$scope" != smoke ] && [ "$scope" != full ]; then
+            echo "scope is smoke or full, not $scope" >&2
+            exit 1
+          fi
+          { echo "rt1=$rt1"; echo "rt3=$rt3"; echo "pb=$pb"; echo "scope=$scope"; } | tee -a "$GITHUB_OUTPUT"
+
+  vos:
+    needs: [checks, ids]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      RT1: ${{ needs.ids.outputs.rt1 }}
+      RT3: ${{ needs.ids.outputs.rt3 }}
+      PB: ${{ needs.ids.outputs.pb }}
+      SCOPE: ${{ needs.ids.outputs.scope }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Directories
+        run: |
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+          echo "BUILD=$RUNNER_TEMP/b" >> "$GITHUB_ENV"
+          echo "VOS_TIP=$RUNNER_TEMP/vos-tip" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/out/notes"
+
+      - name: The runner
+        run: |
+          {
+            echo "ids: $RT1 $RT3 $PB, scope $SCOPE"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -r)"
+            echo "uname: $(uname -sm)"
+            grep -m1 'model name' /proc/cpuinfo
+            echo "vCPUs: $(nproc)"
+            grep MemTotal /proc/meminfo
+            df -h "$RUNNER_TEMP" | tail -1
+            sysctl vm.unprivileged_userfaultfd 2>/dev/null || echo "vm.unprivileged_userfaultfd: not present"
+          } | tee "$OUT/runner.txt"
+
+      - name: Toolchains and strace
+        run: |
+          rustup toolchain install "$NODE_TOOLCHAIN" --profile minimal --component rust-src --target wasm32-unknown-unknown
+          rustup toolchain install "$GUEST_TOOLCHAIN" --profile minimal --component rust-src
+          sudo apt-get update -q && sudo apt-get install -y -q strace
+          {
+            rustup run "$NODE_TOOLCHAIN" rustc --version
+            rustup run "$GUEST_TOOLCHAIN" rustc --version
+            strace -V | head -1
+          } | tee "$OUT/toolchains.txt"
+
+      - name: VOS at the re-score's commit
+        run: $ADAPTER/fetch-vos.sh tip "$VOS_TIP"
+
+      - name: Build on this runner
+        run: $ADAPTER/build-rt.sh "$BUILD"
+
+      - name: The client's own tests
+        run: |
+          cd "$ADAPTER/rt"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$VOS_TIP.insteadOf" \
+            GIT_CONFIG_VALUE_0="https://github.com/virto-network/vos" CARGO_NET_GIT_FETCH_WITH_CLI=true \
+            CARGO_TARGET_DIR="$BUILD/rt-target" cargo test --release --locked --features vos 2>&1 \
+            | grep -E "^test |test result" | tee "$OUT/unit-tests.txt"
+
+      - name: The runs
+        run: |
+          set +e
+          failed=0
+          if [ "$SCOPE" = smoke ]; then
+            rt1_passes="platform smoke corpus"
+            rt3_passes=""
+            pb_passes=""
+          else
+            rt1_passes="platform smoke corpus suite-1 suite-1-faults swap-in-1 r04a-1 r05-1 r05-1-fsyncs r06a-1 r06b-1 r08-1 r09-1"
+            rt3_passes="platform suite-3 suite-3-faults swap-in-3 r01 r02 r03 r04a-3 r04b r05-3 r05-3-fsyncs r06a-3 r06b-3 r08-3 r09-3"
+            pb_passes="platform pb-suite pb-r01 pb-r03 pb-r04a pb-r05 pb-r05-fsyncs pb-r06a pb-r06b pb-r08 pb-r09"
+          fi
+          run() {
+            id=$1
+            candidate=$2
+            shift 2
+            [ "$#" -eq 0 ] && return 0
+            $ADAPTER/run-rt.sh "$id" "$BUILD" "$OUT/$id" "$@" || failed=1
+            $ADAPTER/note-rt.sh "$id" "$candidate" "$BUILD" "$OUT/$id" "$OUT/notes" "$@"
+            grep -h -E "Verdict|did not|failed" "$OUT/$id"/*.md | head -60
+          }
+          run "$RT1" vos-rt1 $rt1_passes
+          run "$RT3" vos-rt3 $rt3_passes
+          run "$PB" pb $pb_passes
+          cp "$BUILD/build-times.txt" "$BUILD/digests.txt" "$OUT/"
+          exit "$failed"
+
+      - name: Upload the notes and the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp1-vos-${{ needs.ids.outputs.rt1 }}
+          path: |
+            ${{ runner.temp }}/out/**/*.md
+            ${{ runner.temp }}/out/**/*.err
+            ${{ runner.temp }}/out/*.txt
+          if-no-files-found: error
+
+  # R-07a and R-07b cross the first run's commit and the re-score's: the first run's adapter, built at 1aadf44 on
+  # this runner, exports a stream and leaves its data directory; the tip's program imports the one, and the tip's
+  # node opens the other. The cells are vos-rt1's, and this job's runner facts are its own.
+  r07:
+    needs: [checks, ids]
+    if: needs.ids.outputs.scope == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      RT1: ${{ needs.ids.outputs.rt1 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Directories
+        run: |
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+          echo "VOS_PIN=$RUNNER_TEMP/vos-pin" >> "$GITHUB_ENV"
+          echo "VOS_TIP=$RUNNER_TEMP/vos-tip" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/out/notes"
+
+      - name: The runner
+        run: |
+          {
+            echo "id: $RT1, the R-07 job"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: $ImageOS $ImageVersion"
+            echo "kernel: $(uname -r)"
+            grep -m1 'model name' /proc/cpuinfo
+            echo "vCPUs: $(nproc)"
+            grep MemTotal /proc/meminfo
+          } | tee "$OUT/runner.txt"
+
+      - name: Toolchains
+        run: |
+          rustup toolchain install "$NODE_TOOLCHAIN" --profile minimal --component rust-src --target wasm32-unknown-unknown
+          rustup toolchain install "$GUEST_TOOLCHAIN" --profile minimal --component rust-src
+          {
+            rustup run "$NODE_TOOLCHAIN" rustc --version
+            rustup run "$GUEST_TOOLCHAIN" rustc --version
+          } | tee "$OUT/toolchains.txt"
+
+      - name: VOS at both commits
+        run: |
+          $ADAPTER/fetch-vos.sh pin "$VOS_PIN"
+          $ADAPTER/fetch-vos.sh tip "$VOS_TIP"
+
+      - name: Build the first run's adapter at 1aadf44, and the tip
+        run: |
+          $ADAPTER/build.sh "$RUNNER_TEMP/pin"
+          $ADAPTER/build-rt.sh "$RUNNER_TEMP/b"
+
+      - name: Export from 1aadf44, then R-07a and R-07b at the tip
+        run: |
+          set -o pipefail
+          export VOS_BIN="$RUNNER_TEMP/pin/vos-target/release/vos"
+          export VOS_AGENT_ELF="$RUNNER_TEMP/pin/agent-target/riscv64em-vos/release/vos-agent.elf"
+          export JOURNAL_ELF="$RUNNER_TEMP/pin/journal-target/riscv64em-vos/release/rutent-vos-journal.elf"
+          "$RUNNER_TEMP/pin/adapter-target/release/exp1-vos" "$RT1" export-file "$RUNNER_TEMP/x" | tee "$OUT/export-file.md"
+          unset VOS_BIN VOS_AGENT_ELF JOURNAL_ELF
+          export R07_STREAM="$RUNNER_TEMP/x/stream.jsonl"
+          export R07_DATA="$RUNNER_TEMP/x/x1"
+          $ADAPTER/run-rt.sh "$RT1" "$RUNNER_TEMP/b" "$OUT/$RT1-r07" platform r07a r07b
+          $ADAPTER/note-rt.sh "$RT1-r07" vos-rt1 "$RUNNER_TEMP/b" "$OUT/$RT1-r07" "$OUT/notes" platform r07a r07b
+          grep -h -E "Verdict" "$OUT/$RT1-r07"/*.md
+
+      - name: Upload the notes and the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exp1-vos-r07-${{ needs.ids.outputs.rt1 }}
+          path: |
+            ${{ runner.temp }}/out/**/*.md
+            ${{ runner.temp }}/out/**/*.err
+            ${{ runner.temp }}/out/*.txt
+          if-no-files-found: error

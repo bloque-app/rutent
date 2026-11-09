@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/snapshot/figures/0/value/tuple/terms/bands/0/max",
+      "value": "1000"
+    }
+  ]
+}

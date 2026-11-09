@@ -1,0 +1,13 @@
+Vendored from PolkaVM, https://github.com/paritytech/polkavm, at tag v0.38.0, commit
+471a5b68f9dfa41e49b5d2fe80c394c1a8d68a3d, unchanged. PolkaVM is licensed under either of the Apache License,
+Version 2.0 (LICENSE-APACHE) or the MIT licence (LICENSE-MIT), at your option, as its README states; both files
+are copied here from the same commit.
+
+| File            | Upstream path      | Git blob id                              | SHA-256                                                          |
+|-----------------|--------------------|------------------------------------------|------------------------------------------------------------------|
+| polkavm_guest.h | capi/polkavm_guest.h | fd190d47dd09b5278d1d2f1d82ba4347b89954d2 | 1b1f198f05cc51b5e82228282f7ec019608fcda21591fc57f8ab9f79e2cb9e9b |
+| LICENSE-MIT     | LICENSE-MIT        | 31aa79387f27e730e33d871925e152e35e428031 | 23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3 |
+| LICENSE-APACHE  | LICENSE-APACHE     | 16fe87b06e802f094b3fbb0894b137bca2b16ef1 | a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2 |
+
+The blob ids are the ones GitHub's contents API gives for each path at that commit. build.sh checks the header's
+SHA-256 and downloads nothing.

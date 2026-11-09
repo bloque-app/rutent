@@ -1,0 +1,17 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/9/value/rate/levels/0",
+      "value": {
+        "up_to": "1000000000",
+        "rate": "0.00024"
+      }
+    },
+    {
+      "op": "remove",
+      "path": "/figures/9/value/rate/levels/2"
+    }
+  ]
+}

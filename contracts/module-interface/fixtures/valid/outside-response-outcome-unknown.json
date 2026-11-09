@@ -1,0 +1,7 @@
+{
+  "transaction": "tx-003",
+  "operation": "payouts.create",
+  "outcome": {
+    "status": "unknown"
+  }
+}

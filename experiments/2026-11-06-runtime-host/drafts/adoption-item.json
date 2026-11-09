@@ -1,0 +1,44 @@
+{
+  "id": "exp1-adopt-runtime",
+  "kind": "decide",
+  "section": "decide",
+  "group": "construction",
+  "title": "Which runtime does M2 build the state machine on?",
+  "lead": "Re-scored with the state machine inside VOS, at vos-core 5c78975 on Linux with the JIT, both candidates pass all 17 host-contract rows (VOS's three after-computed rows on its faults build, which can hold commits). They differ in one property, replication: on three nodes VOS lost no acknowledged record when a leader, a replica or a replica's disk was lost; the purpose-built store has one node, and when its disk was lost its restore lost the records acknowledged after the copy. Losing every VOS copy was not run; VOS's path for it, a halted export, has the same shape of loss. Damage to the last batch (G-54) was not delivered alike and decides nothing: it is open for both.",
+  "bullets": [
+    "Replication, counted once (R-01 to R-03): VOS on three nodes, on one runner, lost no acknowledged record across 21 leader kills, each with a submit in flight as last seen, a replica replaced, and a replica's disk lost; losing the host was not tested.",
+    "The cost in throughput: at 64 submitters the store writes about 4.5k records/s in-process behind a mutex, VOS 3.0k on one node and 2.0k on three through separate clients; the store's median is far lower (p50 0.2 ms against 20.4 and 29.0 ms) and its tail higher (p99 166 ms against 27.7 and 64.7 ms) (EXP-1-vos-rt1/rt3-20261107-2, EXP-1-pb-20261107-5).",
+    "The cost in recovery: a 100k-record halted export and import takes the store 3.0 s in-process in one call, VOS 59.1 s on one node and 81.8 s on three in pages of 8 entries over the node API; on VOS that is the total-loss path, and both grow with history.",
+    "The cost a step: a synced submit costs the store 222 µs; VOS's step costs 841 µs on the JIT and a whole single-input batch 1,348 µs. The JIT is only about 1.8 times the interpreter, so the guest's own work dominates.",
+    "Before v0: pin and mirror VOS's forks, port contracts/ to no_std under DEC-4, test damage to the frame holding the last acknowledged append and fix or accept G-54 for both, and check the JIT on the production host."
+  ],
+  "rec": "VOS as the whole runtime, because it is the only candidate with replication, at the cost of throughput and recovery time stated above.",
+  "options": [
+    "VOS as the whole runtime for M2, three replicas, at a pinned and mirrored commit (recommended)",
+    "Purpose-built store for M2; drop VOS for v0",
+    "Discuss first"
+  ],
+  "spec": [
+    "DEC-6",
+    "ADR-0002",
+    "REQ-OPS-3",
+    "NFR-6",
+    "REQ-MOD-5",
+    "PS-66",
+    "DEC-19",
+    "DEC-4"
+  ],
+  "reserved": true,
+  "blocks": true,
+  "refs": [
+    {
+      "label": "EXP-1 outcome",
+      "url": "../experiments/2026-11-06-runtime-host/outcome.md"
+    },
+    {
+      "label": "EXP-1 re-score",
+      "url": "../experiments/2026-11-06-runtime-host/scoring.md#5-the-re-score-vos-as-the-whole-runtime"
+    }
+  ],
+  "origin": "T-007-04, 2026-11-07, revised from the re-score"
+}

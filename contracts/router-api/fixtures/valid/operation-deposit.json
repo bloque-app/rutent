@@ -1,0 +1,30 @@
+{
+  "kind": "deposit",
+  "provider": "reserve-wallet",
+  "from": {
+    "node": "ledger-b",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
+  },
+  "to": {
+    "node": {
+      "network": "polygon"
+    },
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
+  },
+  "amount_in": "244508252",
+  "fee": {
+    "asset": "USDC",
+    "amount": "1000000"
+  },
+  "amount_out": "243508252",
+  "figures": [
+    "f-dep-b",
+    "f-dep-b-price"
+  ]
+}

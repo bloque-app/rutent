@@ -1,0 +1,293 @@
+{
+  "previous": {
+    "assertion": {
+      "deployment": {
+        "name": "rutent-test",
+        "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "protocol_version": "2.0.1",
+      "shape": "urn:rutent:module-interface:release-assertion",
+      "maker": "acme-co",
+      "made_at": "2026-11-06T09:00:00Z",
+      "signature": {
+        "scheme": "ed25519",
+        "key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+        "value": "_g_FPZQ4P8XwQ9sO4IlMBTMkrJU82ghtBi49Kcvwqq0uu1ATiyyjjboEhhS-SQEU5rL0ZL2Bk36cBfNRWQ3VVQ"
+      },
+      "statement": {
+        "declaration": {
+          "provider": "acme-co",
+          "version": "1.4.2",
+          "interface": "2.0.1",
+          "sandboxed": {
+            "handles": [
+              "withdrawal",
+              "deposit",
+              "balance_verification"
+            ]
+          },
+          "outside": {
+            "operations": [
+              {
+                "name": "statements.fetch",
+                "destinations": [
+                  "bank_api",
+                  "bank_files"
+                ],
+                "secrets": [
+                  "bank.client_certificate",
+                  "bank.client_key"
+                ]
+              }
+            ],
+            "destinations": [
+              {
+                "name": "bank_api",
+                "scheme": "https",
+                "host": "api.acme-bank.example",
+                "port": 8443,
+                "addresses": [
+                  "185.12.64.0/24",
+                  "2a0a:4cc0::/32"
+                ]
+              },
+              {
+                "name": "bank_files",
+                "scheme": "https",
+                "host": "files.acme-bank.example",
+                "port": 443,
+                "addresses": [
+                  "185.12.65.16/28"
+                ]
+              }
+            ],
+            "secrets": [
+              "bank.client_certificate",
+              "bank.client_key"
+            ],
+            "calls": [],
+            "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+          }
+        },
+        "parts": {
+          "sandboxed": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+            }
+          },
+          "outside": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+            }
+          }
+        }
+      }
+    },
+    "assertion_digest": {
+      "algorithm": "sha-256",
+      "value": "4653da5dcde5b3a9d5e8969d9c1dce4bcecc7b6f3e7f44ba68d924545a5b9271"
+    },
+    "received": {
+      "sandboxed": {
+        "algorithm": "sha-256",
+        "value": "03b2d7e396e59c7bad4f270e34ceb189938e016b7539a390917fac9ea1e130d8"
+      },
+      "outside": {
+        "algorithm": "sha-256",
+        "value": "2f5eb57ee0f8b46afa366b5b17bfd5ba8bdf3f7ef4535e761f915e216551d6b8"
+      }
+    },
+    "build": {
+      "platform_version": "0.1.0+compiler.1",
+      "machine_code": {
+        "sandboxed": {
+          "algorithm": "sha-256",
+          "value": "9b164aeb1ca8ecfb396b594c50a704193d20aa10bdadcdd6f46d12f9381facda"
+        },
+        "outside": {
+          "algorithm": "sha-256",
+          "value": "ac9a90225f89619fdd904319721cfcf38201be5b3d177ee7a20a7e350de7c1ab"
+        }
+      }
+    },
+    "history": [],
+    "capabilities": {
+      "widenings": []
+    },
+    "acceptance": {
+      "required": "fresh",
+      "accepted": {
+        "by": "release-reviewer",
+        "at": "2026-11-06T10:00:00Z"
+      }
+    }
+  },
+  "next": {
+    "assertion": {
+      "deployment": {
+        "name": "rutent-test",
+        "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "protocol_version": "2.0.1",
+      "shape": "urn:rutent:module-interface:release-assertion",
+      "maker": "acme-co",
+      "made_at": "2026-11-06T09:00:00Z",
+      "signature": {
+        "scheme": "ed25519",
+        "key": "jE6S_8w7b1zcqEMqDpW7jzZ3WLzylA7ZWZgKEj-_OHg",
+        "value": "Y77pRnxUFgg4TJ2oT-dSnWwlsHYX7AtMUNyc8NgQSRewJ_D8Nz5jiSqwyY69EZoZGsuE81Q13zIxfygIpuU3Dw"
+      },
+      "statement": {
+        "declaration": {
+          "provider": "acme-co",
+          "version": "1.5.0",
+          "interface": "2.0.1",
+          "sandboxed": {
+            "handles": [
+              "withdrawal",
+              "deposit",
+              "balance_verification"
+            ]
+          },
+          "outside": {
+            "operations": [
+              {
+                "name": "statements.fetch",
+                "destinations": [
+                  "bank_api",
+                  "bank_files"
+                ],
+                "secrets": [
+                  "bank.client_certificate",
+                  "bank.client_key"
+                ]
+              },
+              {
+                "name": "statements.archive",
+                "destinations": [
+                  "bank_archive"
+                ],
+                "secrets": [
+                  "bank.archive_key"
+                ]
+              }
+            ],
+            "destinations": [
+              {
+                "name": "bank_api",
+                "scheme": "https",
+                "host": "api.acme-bank.example",
+                "port": 8443,
+                "addresses": [
+                  "185.12.64.0/24",
+                  "2a0a:4cc0::/32"
+                ]
+              },
+              {
+                "name": "bank_files",
+                "scheme": "https",
+                "host": "files.acme-bank.example",
+                "port": 443,
+                "addresses": [
+                  "185.12.65.16/28"
+                ]
+              },
+              {
+                "name": "bank_archive",
+                "scheme": "https",
+                "host": "archive.acme-bank.example",
+                "port": 443,
+                "addresses": "public"
+              }
+            ],
+            "secrets": [
+              "bank.client_certificate",
+              "bank.client_key",
+              "bank.archive_key"
+            ],
+            "calls": [],
+            "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+          }
+        },
+        "parts": {
+          "sandboxed": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "ef13d05229292cc438fd1c7fd4edba6bdcca36c47fe04a6ffab741d8d04c0d3c"
+            }
+          },
+          "outside": {
+            "format": "example-portable-format",
+            "digest": {
+              "algorithm": "sha-256",
+              "value": "381a73727135dc3645a49818e660120f2b72b7f0f2fd5372751425da7b102ca0"
+            }
+          }
+        }
+      }
+    },
+    "assertion_digest": {
+      "algorithm": "sha-256",
+      "value": "f3807831c0ab4777b688c9d3e7a78f09e8c6bddd8e106baa97d8ddf4429a93ef"
+    },
+    "received": {
+      "sandboxed": {
+        "algorithm": "sha-256",
+        "value": "ef13d05229292cc438fd1c7fd4edba6bdcca36c47fe04a6ffab741d8d04c0d3c"
+      },
+      "outside": {
+        "algorithm": "sha-256",
+        "value": "381a73727135dc3645a49818e660120f2b72b7f0f2fd5372751425da7b102ca0"
+      }
+    },
+    "build": {
+      "platform_version": "0.1.0+compiler.1",
+      "machine_code": {
+        "sandboxed": {
+          "algorithm": "sha-256",
+          "value": "2116fdf6ee7d6c5a563973090f96642359f58bf2c864b30966d61a1fdefcf4b6"
+        },
+        "outside": {
+          "algorithm": "sha-256",
+          "value": "0d632184990cd8cae859dd24cbe652546d9074e4f57672a2f49a5791ce5dc322"
+        }
+      }
+    },
+    "history": [
+      {
+        "version": "1.4.2",
+        "assertion_digest": {
+          "algorithm": "sha-256",
+          "value": "4653da5dcde5b3a9d5e8969d9c1dce4bcecc7b6f3e7f44ba68d924545a5b9271"
+        },
+        "admitted_at": "2026-11-06T10:00:00Z",
+        "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+      }
+    ],
+    "capabilities": {
+      "compared_with": "1.4.2",
+      "widenings": [
+        {
+          "kind": "operation",
+          "operation": "statements.archive"
+        },
+        {
+          "kind": "secret",
+          "secret": "bank.archive_key"
+        },
+        {
+          "kind": "destination",
+          "destination": "bank_archive"
+        }
+      ]
+    },
+    "acceptance": {
+      "required": "fresh"
+    }
+  }
+}
