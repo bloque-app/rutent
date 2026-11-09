@@ -7,6 +7,7 @@
 mod grade;
 mod network;
 mod route;
+mod simnet;
 
 pub use grade::{
     Check, Claim, GradeExt, Graded, GradedPiece, PublisherId, Refusal, distinct_movements,
@@ -17,3 +18,4 @@ pub use network::{
     Unmatched, public_record_check, verify_movement,
 };
 pub use route::{DestinationViolation, one_destination};
+pub use simnet::{RecordRefused, SimulatedNetwork};
