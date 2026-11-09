@@ -7,9 +7,9 @@ mod common;
 use common::*;
 use rutent_contracts::provider_role::{Operation, ResultBody};
 use rutent_prov::catalogue::{
-    Catalogue, CheckBound, CheckRefusal, DryRunAssessment, Eligibility, Instant, RefusalClass,
-    SegmentDecline, SegmentEffect, TupleKey, UndoVerdict, Unusable, Verdict, judge_reversal,
-    reveals_sufficiency, segment_effect, tuples_of,
+    Catalogue, CheckBound, CheckRefusal, DryRunAssessment, DryRunError, EffectError, Eligibility,
+    Instant, RefusalClass, SegmentDecline, SegmentEffect, TupleKey, UndoVerdict, Unusable, Verdict,
+    judge_reversal, reveals_sufficiency, segment_effect, tuples_of,
 };
 use serde_json::{Value, json};
 
@@ -302,11 +302,15 @@ fn silent_reserve_is_marked_ineligible_and_an_alert_is_raised() {
 #[test]
 fn reserve_answering_a_later_check_in_time_is_eligible_again() {
     let mut catalogue = world();
-    catalogue
+    let first = catalogue
         .begin_check(&balance_op("t1", "sess-1", "acct-1", "50"), None, T0)
         .unwrap();
     catalogue.sweep_silent(Instant(2_010));
     // A late answer is still delivered, but doesn't lift the mark.
+    assert_eq!(
+        catalogue.answer_check(&first, &answer("t1", true), Instant(2_050)),
+        Verdict::Yes
+    );
     let ticket = catalogue_ticket(&mut catalogue, "t1x");
     let late = catalogue.answer_check(&ticket, &answer("t1x", true), Instant(2_100));
     assert_eq!(late, Verdict::Yes);
@@ -385,15 +389,15 @@ fn each_kind_of_refusal_is_told_apart() {
 #[test]
 fn rejected_dry_run_removes_that_option_and_an_accepted_one_keeps_it() {
     let catalogue = Catalogue::new();
-    let dry = dry_withdrawal("tx-012", Some("sess-1"));
+    let dry = dry_deposit("tx-012");
     let accepted = result(json!({
-        "kind": "withdrawal", "transaction": "tx-012",
+        "kind": "deposit", "transaction": "tx-012",
         "outcome": {"status": "dry_run_accepted", "amount_in": "100", "amount_out": "99",
             "fee": {"asset": "USDC", "amount": "1"}, "valid_until": "2026-11-06T15:05:05Z",
             "voided_by": ["validity_passes"], "settlement_seconds": 60},
     }));
     let refused = result(json!({
-        "kind": "withdrawal", "transaction": "tx-012",
+        "kind": "deposit", "transaction": "tx-012",
         "outcome": {"status": "refused", "refusal": {"class": "final"}},
     }));
 
@@ -415,12 +419,12 @@ fn dry_run_changes_nothing_in_the_catalogue_or_at_the_origin() {
         "from": "USDC", "to": "COPM", "direction": "exact_in", "amount": "100", "dry_run": false, "inputs": {},
     }));
     let accepted_withdrawal = result(json!({
-        "kind": "withdrawal", "transaction": "tx-2",
+        "kind": "deposit", "transaction": "tx-2",
         "outcome": {"status": "dry_run_accepted", "amount_in": "100", "amount_out": "99",
             "fee": {"asset": "USDC", "amount": "1"}, "valid_until": "2026-11-06T15:05:05Z",
             "voided_by": ["validity_passes"], "settlement_seconds": 60},
     }));
-    let withdrawal = dry_withdrawal("tx-2", Some("sess-1"));
+    let withdrawal = dry_deposit("tx-2");
 
     let assessed = catalogue.assess_dry_run(&withdrawal, &accepted_withdrawal);
     let effect = segment_effect(&withdrawal, &accepted_withdrawal).unwrap();
@@ -534,5 +538,97 @@ fn failed_segment_leaves_its_value_at_its_origin_in_full_for_each_kind_of_segmen
     assert_eq!(
         segment_effect(&withdrawal, &unknown).unwrap(),
         SegmentEffect::Unresolved
+    );
+}
+
+fn dry_deposit(tx: &str) -> Operation {
+    op(json!({
+        "kind": "deposit", "transaction": tx, "provider": RESERVE, "origin": "acme-ledger",
+        "destination": {"network": "polygon"}, "asset": "USDC", "amount": "100",
+        "dry_run": true, "inputs": {},
+    }))
+}
+
+// verifies: REQ-CAT-4, AC-15
+#[test]
+fn withdrawal_dry_run_is_never_read_outside_the_check_path() {
+    let catalogue = world();
+    let dry = dry_withdrawal("t1", Some("sess-1"));
+    for outcome in [
+        json!({"status": "refused", "refusal": {"class": "lifts_at_known_time", "lifts_at": "2026-11-07T10:00:00Z"}}),
+        json!({"status": "refused", "refusal": {"class": "final"}}),
+    ] {
+        let r = result(json!({"kind": "withdrawal", "transaction": "t1", "outcome": outcome}));
+        assert_eq!(
+            catalogue.assess_dry_run(&dry, &r).unwrap_err(),
+            DryRunError::RevealsSufficiency
+        );
+    }
+    assert_eq!(catalogue.counted_checks("acct-1", T0), 0);
+}
+
+// verifies: REQ-CAT-19, NFR-8
+#[test]
+fn reserve_that_stays_silent_is_out_at_its_due_time_even_with_no_sweep() {
+    let mut catalogue = world();
+    let key = tuples_of(&reserve_advertisement()).remove(0);
+    catalogue
+        .begin_check(&balance_op("t1", "sess-1", "acct-1", "50"), None, T0)
+        .unwrap();
+
+    assert_eq!(catalogue.usable(RESERVE, &key, Instant(2_009)), Ok(()));
+    assert_eq!(
+        catalogue.usable(RESERVE, &key, Instant(2_010)),
+        Err(Unusable::TemporarilyUnavailable {
+            since: Instant(2_010)
+        })
+    );
+    assert_eq!(
+        catalogue.reserve_eligibility(RESERVE, Instant(2_500)),
+        Eligibility::TemporarilyUnavailable {
+            since: Instant(2_010)
+        }
+    );
+}
+
+// verifies: REQ-CAT-19
+#[test]
+fn answer_in_time_to_one_check_does_not_lift_the_mark_while_another_is_silent() {
+    let mut catalogue = world();
+    catalogue
+        .begin_check(&balance_op("a", "sess-1", "acct-1", "50"), Some("o"), T0)
+        .unwrap();
+    let b = catalogue
+        .begin_check(
+            &balance_op("b", "sess-1", "acct-1", "50"),
+            Some("o"),
+            Instant(2_015),
+        )
+        .unwrap();
+    catalogue.sweep_silent(Instant(2_012));
+
+    assert_eq!(
+        catalogue.answer_check(&b, &answer("b", true), Instant(2_016)),
+        Verdict::Yes
+    );
+    assert!(matches!(
+        catalogue.reserve_eligibility(RESERVE, Instant(2_016)),
+        Eligibility::TemporarilyUnavailable { .. }
+    ));
+}
+
+// verifies: INV-2, REQ-CAT-14
+#[test]
+fn dry_run_answered_as_if_carried_out_is_not_read_as_value_taken() {
+    let dry = dry_deposit("t");
+    let done = result(json!({
+        "kind": "deposit", "transaction": "t",
+        "outcome": {"status": "succeeded", "amount_in": "100", "amount_out": "99",
+            "fee": {"asset": "USDC", "amount": "1"},
+            "evidence": [{"grade": 1, "reference": "0x1", "by": "polygon"}]},
+    }));
+    assert_eq!(
+        segment_effect(&dry, &done).unwrap_err(),
+        EffectError::NotADryRunAnswer
     );
 }

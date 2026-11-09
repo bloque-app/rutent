@@ -68,6 +68,9 @@ pub enum DryRunError {
     AnswersAnotherOperation,
     /// A dry run was answered as if it had been carried out.
     NotADryRunAnswer,
+    /// A withdrawal dry run reveals whether funds suffice, so it is a balance check and goes through
+    /// `begin_check` and `answer_check` (`REQ-CAT-4`).
+    RevealsSufficiency,
 }
 
 /// What a segment's result did to the value at the segment's origin.
@@ -100,6 +103,8 @@ pub enum EffectError {
     NotAMovement,
     /// The result is of another kind or names another transaction.
     AnswersAnotherOperation,
+    /// A dry run was answered as if it had been carried out.
+    NotADryRunAnswer,
 }
 
 /// How one outcome reads, whatever the kind of operation.
@@ -206,6 +211,9 @@ pub fn segment_effect(
     if transaction != segment.transaction {
         return Err(EffectError::AnswersAnotherOperation);
     }
+    if segment.dry_run && matches!(outcome, Read::Taken(_)) {
+        return Err(EffectError::NotADryRunAnswer);
+    }
     Ok(match outcome {
         Read::Taken(amount) => SegmentEffect::Taken {
             node: segment.origin,
@@ -267,6 +275,9 @@ impl Catalogue {
         operation: &Operation,
         result: &ResultBody,
     ) -> Result<DryRunAssessment, DryRunError> {
+        if matches!(operation, Operation::Withdrawal(w) if w.dry_run) {
+            return Err(DryRunError::RevealsSufficiency);
+        }
         let segment = moved(operation)
             .filter(|s| s.dry_run)
             .ok_or(DryRunError::NotADryRun)?;

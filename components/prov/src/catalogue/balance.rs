@@ -159,8 +159,29 @@ pub(super) struct BalanceChecks {
 
 impl BalanceChecks {
     /// Whether `provider` is marked silent at `at`.
+    ///
+    /// A check unanswered past its due time counts as silence without waiting for a sweep, so the mark never
+    /// depends on someone running one (`REQ-CAT-19`).
     pub(super) fn unavailable_since(&self, provider: &str, at: Instant) -> Option<Instant> {
-        self.unavailable.get(provider).copied().filter(|s| *s <= at)
+        let marked = self.unavailable.get(provider).copied().filter(|s| *s <= at);
+        let due = self.due_pending(provider, at, None).min();
+        marked.into_iter().chain(due).min()
+    }
+
+    /// The due times, at `at`, of the provider's pending checks, leaving out `except`.
+    fn due_pending(
+        &self,
+        provider: &str,
+        at: Instant,
+        except: Option<u64>,
+    ) -> impl Iterator<Item = Instant> + '_ {
+        let within = self.answer_within;
+        let provider = provider.to_owned();
+        self.pending
+            .iter()
+            .filter(move |(id, p)| p.provider == provider && Some(**id) != except)
+            .filter_map(move |(_, p)| within.map(|w| Instant(p.asked_at.0.saturating_add(w))))
+            .filter(move |due| *due <= at)
     }
 
     fn counted(&self, account: &str, at: Instant) -> u32 {
@@ -354,7 +375,14 @@ impl Catalogue {
             .get(&ticket.id)
             .is_some_and(|p| p.marked);
         self.checks.pending.remove(&ticket.id);
-        if !late {
+        // Another check of the same reserve still unanswered past its time keeps the mark.
+        if !late
+            && self
+                .checks
+                .due_pending(&ticket.provider, at, None)
+                .next()
+                .is_none()
+        {
             self.checks.unavailable.remove(&ticket.provider);
         }
         verdict

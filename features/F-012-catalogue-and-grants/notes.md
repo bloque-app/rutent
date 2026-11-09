@@ -122,3 +122,16 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `amount_in`; unknown gives `Unresolved`, never "at the origin".
 - **Test-first.** Both test files were written against this API before any code and failed to build; the code was
   then written to them. Property tests use the seeded generator of `T-012-01`.
+
+### T-012-04, review answers
+
+- **Withdrawal dry run is a check.** `assess_dry_run` refuses a withdrawal dry run (`DryRunError::RevealsSufficiency`):
+  it goes through `begin_check` and `answer_check`, so it has a session, a bound and a log, and its refusal's lift
+  time never leaves. The other dry runs (deposit, transfer, conversion) keep `assess_dry_run`.
+- **Silence needs no sweep.** A reserve with a check unanswered past `sent + answer time` is unusable and ineligible
+  from that moment; `sweep_silent` only raises the alert and records the mark.
+- **Lifting the mark.** An in-time answer lifts it only when no other check of that reserve is unanswered past its
+  time. A check never answered therefore keeps the reserve out until it is answered, late or not.
+- **Dry run answered as done.** `segment_effect` refuses a dry-run operation whose result states a settlement
+  (`EffectError::NotADryRunAnswer`).
+- **`own_order`** stays as it is: the guard is `F-020`'s.
