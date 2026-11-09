@@ -28,16 +28,21 @@ use rutent_contracts::provider_role::{
 };
 use serde_json::Value;
 
+pub use crate::module::children::COMPILE_DEADLINE;
 use crate::module::children::{
     CompileError, Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
 };
 use crate::module::engine::{self, FORMAT, MAX_BINARY};
+use crate::module::limits::{
+    Bounds, LimitHit, LimitKind, MAX_BODY, MAX_HOST, MAX_KEY, MAX_MEASUREMENTS, MAX_NAME,
+    MAX_OUTSIDE_MESSAGE, Metered, Usage, charge, depth_allows, keep_last, within as within_bound,
+};
 use crate::module::output;
 use crate::module::types::{
-    AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LookupEvent, LookupOutcome,
-    PlatformRefusal, ProcessId, StateEvent,
+    AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
+    LookupOutcome, PlatformRefusal, ProcessId, StateEvent,
 };
-use crate::module::wire::{FromProvider, Reply, ToProvider, sha256, unhex};
+use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
 use crate::proxy::{self, Caller, InFlight};
 
 /// The most hops an outbound call follows, redirects included.
@@ -52,6 +57,11 @@ pub const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The most a provider's process may take to start, both parts started, before the platform kills it.
 pub const START_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The least of the calling operation's deadline that must be left for the platform to hand an operation to
+/// another provider's module (`REQ-MDL-11`, `REQ-MDL-21`). A callee started with less would be killed at the
+/// caller's deadline before it could answer, and the caller's own answer would be lost with it.
+pub const MIN_CALL_BUDGET: Duration = Duration::from_secs(1);
 
 /// One provider's releases and its running process.
 #[derive(Default)]
@@ -74,6 +84,11 @@ struct Context {
     resolved: BTreeMap<String, Vec<Name>>,
     /// When the operation's deadline passes: its own, or the operation that called it's, whichever is first.
     due: Instant,
+    /// What this module's operation has used of its budget.
+    usage: Usage,
+    /// The first bound the operation hit. From then on every request of it is refused, and the operation is
+    /// refused as a limit whatever its process says.
+    limited: Option<LimitHit>,
 }
 
 /// What the binding measured, for `B-06`.
@@ -82,13 +97,16 @@ pub struct Measurements {
     /// Each admission's compilation, start of the compiler's process to its exit, with both parts' portable and
     /// machine-code sizes in bytes.
     pub compiles: Vec<(Duration, [usize; 2], [usize; 2])>,
-    /// Each provider process's start, spawn to both parts started.
+    /// Each provider process's start, spawn to both parts started. Like `compiles`, only the newest are kept
+    /// ([`Platform::set_measurement_cap`]).
     pub starts: Vec<Duration>,
     /// Why the last operation a sandboxed part didn't finish stopped, as its process reported it, or
     /// `deadline: ...` if the platform killed the process at the operation's deadline.
     pub last_trap: Option<String>,
     /// Operations whose provider's process missed the deadline and was killed.
     pub overdue: usize,
+    /// The process ids of the admitting compilers that passed their wall-time deadline, and were killed.
+    pub overdue_compilers: Vec<u32>,
 }
 
 /// What the platform reaches beyond the provider's process: the credential proxy's secrets, each provider's
@@ -127,6 +145,12 @@ pub struct Platform<W: World> {
     events: Events,
     deadline: Duration,
     stderrs: Stderrs,
+    bounds: Bounds,
+    /// What each provider has used inside the top-level operation in flight, which ends with it.
+    tree: BTreeMap<String, Usage>,
+    call_budget: Duration,
+    compile_deadline: Duration,
+    measurement_cap: usize,
     /// What it measured.
     pub measurements: Measurements,
 }
@@ -154,8 +178,47 @@ impl<W: World> Platform<W> {
             events: Events::default(),
             deadline: OPERATION_DEADLINE,
             stderrs: Stderrs::default(),
+            bounds: Bounds::DEFAULT,
+            tree: BTreeMap::new(),
+            call_budget: MIN_CALL_BUDGET,
+            compile_deadline: COMPILE_DEADLINE,
+            measurement_cap: MAX_MEASUREMENTS,
             measurements: Measurements::default(),
         })
+    }
+
+    /// The directory the platform keeps its children's working directories in: one for each child running, none
+    /// for one that ended.
+    pub fn workdir(&self) -> &std::path::Path {
+        &self.workdir
+    }
+
+    /// Sets the bounds on what a module may ask of the platform, [`Bounds::DEFAULT`] by default.
+    pub fn set_bounds(&mut self, bounds: Bounds) {
+        self.bounds = bounds;
+    }
+
+    /// Sets the least of a caller's deadline that must be left for it to call another module,
+    /// [`MIN_CALL_BUDGET`] by default.
+    pub fn set_call_budget(&mut self, least: Duration) {
+        self.call_budget = least;
+    }
+
+    /// Sets how long the admitting compiler has, wall time, [`COMPILE_DEADLINE`] by default.
+    pub fn set_compile_deadline(&mut self, deadline: Duration) {
+        self.compile_deadline = deadline;
+    }
+
+    /// Sets how many of each measurement the platform keeps, the newest, [`MAX_MEASUREMENTS`] by default.
+    pub fn set_measurement_cap(&mut self, cap: usize) {
+        self.measurement_cap = cap;
+    }
+
+    /// Sets how many children's standard errors the platform keeps, the newest.
+    pub fn set_stderr_capacity(&mut self, capacity: usize) {
+        if let Ok(mut log) = self.stderrs.lock() {
+            log.set_capacity(capacity);
+        }
     }
 
     /// Sets the operation deadline, [`OPERATION_DEADLINE`] by default.
@@ -165,7 +228,7 @@ impl<W: World> Platform<W> {
 
     /// What every child, compiler or provider, wrote to its standard error, each capped and labelled.
     pub fn stderrs(&self) -> Vec<Stderr> {
-        self.stderrs.lock().map(|s| s.clone()).unwrap_or_default()
+        self.stderrs.lock().map(|s| s.entries()).unwrap_or_default()
     }
 
     /// The machine code admitted for a provider's version.
@@ -238,7 +301,11 @@ impl<W: World> Platform<W> {
             &self.stderrs,
             START_DEADLINE,
         ) {
-            self.measurements.starts.push(process.took);
+            keep_last(
+                &mut self.measurements.starts,
+                process.took,
+                self.measurement_cap,
+            );
             let slot = self.providers.entry(provider.to_owned()).or_default();
             slot.active = Some(version.to_owned());
             slot.process = Some(process);
@@ -258,12 +325,80 @@ impl<W: World> Platform<W> {
         Some((declaration, version))
     }
 
+    /// The operation on top of the stack hit `hit`: it is refused as a limit, and so is every later request of it
+    /// (`REQ-MDL-11`). Recorded once, for the first bound it hit.
+    fn limit(&mut self, hit: LimitHit) -> Reply {
+        let context = self.stack.last_mut().expect("a context");
+        if context.limited.is_none() {
+            context.limited = Some(hit);
+            self.events.limits.push(LimitEvent {
+                provider: context.provider.clone(),
+                transaction: context.transaction.clone(),
+                hit,
+            });
+        }
+        Reply::Limit
+    }
+
+    /// Charges `amount` of `what` to the operation on top of the stack and to its provider, or hits the bound.
+    fn charge(&mut self, what: Metered, amount: u64) -> Result<(), LimitHit> {
+        let context = self.stack.last_mut().expect("a context");
+        let provider = self.tree.entry(context.provider.clone()).or_default();
+        charge(&self.bounds, &mut context.usage, provider, what, amount)
+    }
+
+    /// Judges what a request carries before anything of it is copied, recorded or looked up: each length within
+    /// its bound, in order, and then the metered counts. Hitting one ends the operation (`REQ-MDL-11`, `THR-57`).
+    fn admit_request(
+        &mut self,
+        lengths: &[(LimitKind, usize, usize)],
+        metered: &[(Metered, u64)],
+    ) -> Result<(), Reply> {
+        for (kind, length, max) in lengths {
+            within_bound(*kind, *length, *max).map_err(|hit| self.limit(hit))?;
+        }
+        for (what, amount) in metered {
+            self.charge(*what, *amount).map_err(|hit| self.limit(hit))?;
+        }
+        Ok(())
+    }
+
     /// Answers one request a provider's process made while handling the operation on top of the stack.
     fn serve(&mut self, request: FromProvider) -> Reply {
+        // Once an operation hit a bound nothing more of it is served: no world is asked, nothing is recorded.
+        if self
+            .stack
+            .last()
+            .is_some_and(|context| context.limited.is_some())
+        {
+            return Reply::Limit;
+        }
         match request {
-            FromProvider::OutsideRequest { json } => self.outside_request(&json),
-            FromProvider::OutsideResponse { json } => self.outside_response(&json),
+            FromProvider::OutsideRequest { json } => {
+                match self.admit_request(
+                    &[(LimitKind::MessageSize, json.len(), MAX_OUTSIDE_MESSAGE)],
+                    &[(Metered::OutsideRequests, 1)],
+                ) {
+                    Ok(()) => self.outside_request(&json),
+                    Err(reply) => reply,
+                }
+            }
+            FromProvider::OutsideResponse { json } => {
+                match self.admit_request(
+                    &[(LimitKind::MessageSize, json.len(), MAX_OUTSIDE_MESSAGE)],
+                    &[],
+                ) {
+                    Ok(()) => self.outside_response(&json),
+                    Err(reply) => reply,
+                }
+            }
             FromProvider::DeniedSecret { name } => {
+                if let Err(reply) = self.admit_request(
+                    &[(LimitKind::NameLength, name.len(), MAX_NAME)],
+                    &[(Metered::SecretLookups, 1)],
+                ) {
+                    return reply;
+                }
                 // The attempt names no operation; it is recorded under the running declaration's first outside
                 // operation, which the platform knows itself, and the transaction being handled.
                 let context = self.stack.last().expect("a context");
@@ -293,6 +428,12 @@ impl<W: World> Platform<W> {
                 Reply::Noted
             }
             FromProvider::DeniedState { key } => {
+                if let Err(reply) = self.admit_request(
+                    &[(LimitKind::KeyLength, key.len(), MAX_KEY)],
+                    &[(Metered::StateReads, 1)],
+                ) {
+                    return reply;
+                }
                 let provider = self.stack.last().expect("a context").provider.clone();
                 self.events.state_reads.push(StateEvent {
                     provider,
@@ -306,8 +447,22 @@ impl<W: World> Platform<W> {
                 transaction,
                 operation,
                 name,
-            } => self.lookup(transaction, operation, name),
+            } => {
+                let lengths = [transaction.len(), operation.len(), name.len()]
+                    .map(|length| (LimitKind::NameLength, length, MAX_NAME));
+                match self.admit_request(&lengths, &[(Metered::SecretLookups, 1)]) {
+                    Ok(()) => self.lookup(transaction, operation, name),
+                    Err(reply) => reply,
+                }
+            }
             FromProvider::State { key } => {
+                // The key is judged where it arrived, before it is copied into an event or handed to the world.
+                if let Err(reply) = self.admit_request(
+                    &[(LimitKind::KeyLength, key.len(), MAX_KEY)],
+                    &[(Metered::StateReads, 1)],
+                ) {
+                    return reply;
+                }
                 // Only while an outside request is in flight: outside one, the outside part has nothing to serve.
                 let context = self.stack.last().expect("a context");
                 let (provider, serving) = (context.provider.clone(), context.serving.is_some());
@@ -316,6 +471,13 @@ impl<W: World> Platform<W> {
                 } else {
                     None
                 };
+                // What the read returns counts against the budget too: a value past it is not handed over.
+                if let Some(value) = &value
+                    && let Err(reply) =
+                        self.admit_request(&[], &[(Metered::StateBytes, value.len() as u64)])
+                {
+                    return reply;
+                }
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Outside,
@@ -492,6 +654,23 @@ impl<W: World> Platform<W> {
         port: u16,
         body: &str,
     ) -> Reply {
+        // The call, its size and its names are judged before anything else, so that a module past its bound is
+        // refused and its call recorded as refused for it, never delivered (`REQ-MDL-11`).
+        if let Err(reply) = self.admit_request(
+            &[
+                (LimitKind::NameLength, operation.len(), MAX_NAME),
+                (LimitKind::NameLength, host.len(), MAX_HOST),
+                (LimitKind::NameLength, scheme.len(), 8),
+                (LimitKind::MessageSize, body.len(), MAX_BODY),
+            ],
+            &[
+                (Metered::OutboundCalls, 1),
+                (Metered::OutboundBytes, body.len() as u64),
+            ],
+        ) {
+            self.record_limited_call(scheme, &host, port);
+            return reply;
+        }
         let context = self.stack.last().expect("a context");
         let (provider, version, transaction) = (
             context.provider.clone(),
@@ -629,6 +808,53 @@ impl<W: World> Platform<W> {
         }
     }
 
+    /// Writes the outbound call record of a call refused because its module hit a bound: one hop, the endpoint it
+    /// asked for, and the refusal `limit_reached` (`REQ-MDL-8`). Nothing is written where no outside request is in
+    /// flight, or the endpoint isn't one a record can name.
+    fn record_limited_call(&mut self, scheme: &str, host: &str, port: u16) {
+        let context = self.stack.last().expect("a context");
+        let Some(operation) = context.serving.as_ref().map(|s| s.operation.clone()) else {
+            return;
+        };
+        let (Some(host), Some(port), Some(transaction), Some(provider), Some(module_version)) = (
+            Host::new(host.to_owned()),
+            NonZeroU16::new(port),
+            Identifier::new(context.transaction.clone()),
+            Identifier::new(context.provider.clone()),
+            Identifier::new(context.version.clone()),
+        ) else {
+            return;
+        };
+        let secrets = context
+            .resolved
+            .get(operation.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let scheme = match scheme {
+            "wss" => Scheme::Wss,
+            _ => Scheme::Https,
+        };
+        let started_at = self.now();
+        self.events.records.push(OutboundCallRecord {
+            transaction,
+            provider,
+            module_version,
+            operation,
+            secrets,
+            started_at,
+            hops: vec![Hop {
+                scheme,
+                host,
+                port,
+                destination: None,
+                address: None,
+            }],
+            outcome: CallOutcome::Refused(Refused {
+                reason: RefusalReason::LimitReached,
+            }),
+        });
+    }
+
     /// The cross-module router: a call is made only if the caller's running declaration declares the callee and
     /// the kind of the operation actually forwarded, and the callee's module runs; it is recorded either way
     /// (`REQ-MDL-21`). The kind is judged by `OperationKind::of` the forwarded operation, the one the caller is
@@ -636,6 +862,17 @@ impl<W: World> Platform<W> {
     /// refused as `undeclared_kind`, and the record names the forwarded kind. The route is the suite's
     /// placeholder, `conformance-route` and `segment-1`: the suite has no routes, so this binding checks none.
     fn cross_module(&mut self, callee: &str, claimed: &str) -> Reply {
+        if let Err(reply) = self.admit_request(
+            &[
+                (LimitKind::NameLength, callee.len(), MAX_NAME),
+                (LimitKind::NameLength, claimed.len(), MAX_NAME),
+            ],
+            &[],
+        ) {
+            return reply;
+        }
+        // Counted first, so that no way out below leaves a call uncounted.
+        let counted = self.charge(Metered::ModuleCalls, 1);
         let context = self.stack.last().expect("a context");
         let (caller, version, transaction) = (
             context.provider.clone(),
@@ -646,8 +883,11 @@ impl<W: World> Platform<W> {
         let declaration = context.declaration.clone();
         let in_flight = context.serving.is_some();
         let Some(asked) = with_provider(&envelope, callee) else {
-            return Reply::Module {
-                outcome: "refused".to_owned(),
+            return match counted {
+                Err(hit) => self.limit(hit),
+                Ok(()) => Reply::Module {
+                    outcome: "refused".to_owned(),
+                },
             };
         };
         let kind = OperationKind::of(&asked.statement);
@@ -666,12 +906,35 @@ impl<W: World> Platform<W> {
             Some(_) if !in_flight => Some(CallRefusalReason::NotNamedByRoute),
             Some(_) => None,
         };
+        // Every call is counted, refused ones too, and a call that passed the declaration's checks is bounded in depth.
+        // The contract has no refusal reason for a limit (`T-010-09` adds one), so a call over a bound keeps the
+        // reason it already has, or is recorded as `callee_unavailable`; the caller's operation ends as a limit,
+        // which is where the bound is recorded (`LimitEvent`).
+        let mut limited = false;
+        let hit = counted.and_then(|()| {
+            if refusal.is_none() {
+                depth_allows(&self.bounds, self.stack.len())
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(hit) = hit {
+            self.limit(hit);
+            limited = true;
+            refusal = refusal.or(Some(CallRefusalReason::CalleeUnavailable));
+        }
         if refusal.is_none() {
             let running = self
                 .providers
                 .get(callee)
                 .is_some_and(|s| s.active.is_some() && s.process.is_some());
-            if !running || callee == caller {
+            // The callee runs inside the caller's deadline: with less than it needs left, it is not started
+            // (`REQ-MDL-11`). It is refused as unavailable, as the contract has no reason for time, and the
+            // caller's operation goes on.
+            let left = self.stack.last().map_or(Duration::ZERO, |c| {
+                c.due.saturating_duration_since(Instant::now())
+            });
+            if !running || callee == caller || left < self.call_budget {
                 refusal = Some(CallRefusalReason::CalleeUnavailable);
             }
         }
@@ -687,8 +950,13 @@ impl<W: World> Platform<W> {
             Identifier::new(version),
             Identifier::new(callee),
         ) else {
-            return Reply::Module {
-                outcome: "refused".to_owned(),
+            // Already counted above; over the bound, the operation ends as a limit.
+            return if limited {
+                Reply::Limit
+            } else {
+                Reply::Module {
+                    outcome: "refused".to_owned(),
+                }
             };
         };
         let outcome = match refusal {
@@ -712,6 +980,9 @@ impl<W: World> Platform<W> {
             operation: asked.statement,
             outcome,
         });
+        if limited {
+            return Reply::Limit;
+        }
         Reply::Module {
             outcome: if delivered { "delivered" } else { "refused" }.to_owned(),
         }
@@ -747,6 +1018,8 @@ impl<W: World> Platform<W> {
             serving: None,
             resolved: BTreeMap::new(),
             due,
+            usage: Usage::default(),
+            limited: None,
         });
         let json = serde_json::to_string(operation).unwrap_or_default();
         let mut outcome = Err(PlatformRefusal::Unavailable);
@@ -771,8 +1044,14 @@ impl<W: World> Platform<W> {
                     break;
                 }
                 Received::Message(FromProvider::Trapped { message }) => {
-                    // Fuel running out is a limit; any other trap is the guest's own failure.
-                    if message.contains("all fuel consumed") {
+                    // Fuel running out, and a part trapping after the process refused it growth, are limits; any other
+                    // trap is the guest's own failure. A bound the platform enforced is judged below, from its own
+                    // state.
+                    if message == OUTPUT_TOO_LARGE {
+                        outcome = Err(PlatformRefusal::OversizedOutput);
+                    } else if message.contains("all fuel consumed")
+                        || message.starts_with("limit reached")
+                    {
                         outcome = Err(PlatformRefusal::LimitReached);
                     }
                     self.measurements.last_trap = Some(message);
@@ -785,6 +1064,16 @@ impl<W: World> Platform<W> {
             }
         }
         let context = self.stack.pop();
+        if self.stack.is_empty() {
+            // The top-level operation ended, and with it every provider's budget inside it.
+            self.tree.clear();
+        }
+        // A bound the platform enforced decides the operation, whatever the process went on to say: the module's
+        // answer, if any, is dropped (`REQ-MDL-11`).
+        if let Some(hit) = context.as_ref().and_then(|c| c.limited) {
+            self.measurements.last_trap = Some(format!("limit reached: {:?}", hit.kind));
+            outcome = Err(PlatformRefusal::LimitReached);
+        }
         if alive && process.alive() {
             if let Some(slot) = self.providers.get_mut(provider) {
                 slot.process = Some(process);
@@ -941,8 +1230,18 @@ impl<W: World> Platform<W> {
             &binaries.sandboxed,
             &binaries.outside,
             &self.stderrs,
+            self.compile_deadline,
         ) {
             Ok(machine) => Rc::new(machine),
+            Err(CompileError::Overdue(pid)) => {
+                // Killed and reaped: nothing of this admission is kept, and the same release may be admitted again.
+                keep_last(
+                    &mut self.measurements.overdue_compilers,
+                    pid,
+                    self.measurement_cap,
+                );
+                return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+            }
             Err(CompileError::Refused {
                 part,
                 disallowed_import: true,
@@ -957,11 +1256,15 @@ impl<W: World> Platform<W> {
             }
             Err(_) => return Admitted::Refused(AdmissionRefusal::UnreadableBinary),
         };
-        self.measurements.compiles.push((
-            machine.took,
-            [binaries.sandboxed.len(), binaries.outside.len()],
-            [machine.sandboxed.len(), machine.outside.len()],
-        ));
+        keep_last(
+            &mut self.measurements.compiles,
+            (
+                machine.took,
+                [binaries.sandboxed.len(), binaries.outside.len()],
+                [machine.sandboxed.len(), machine.outside.len()],
+            ),
+            self.measurement_cap,
+        );
         let declaration = assertion.statement.declaration.clone();
         let provider = declaration.provider.as_str().to_owned();
         let version = declaration.version.as_str().to_owned();

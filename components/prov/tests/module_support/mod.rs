@@ -153,6 +153,8 @@ pub struct TestWorld {
     state: BTreeMap<(String, String), String>,
     endpoints: HashMap<types::Endpoint, (IpAddr, Option<types::Endpoint>)>,
     received: HashMap<types::Endpoint, Vec<String>>,
+    /// Every state key the platform asked the world for, in order.
+    pub state_asked: Vec<String>,
 }
 
 impl World for TestWorld {
@@ -169,6 +171,7 @@ impl World for TestWorld {
     }
 
     fn state(&mut self, provider: &str, key: &str) -> Option<String> {
+        self.state_asked.push(key.to_owned());
         self.state
             .get(&(provider.to_owned(), key.to_owned()))
             .cloned()
@@ -193,6 +196,7 @@ pub struct WasmBinding {
     languages: Vec<String>,
     category: String,
     standins: PathBuf,
+    limits: Vec<types::LimitEvent>,
 }
 
 impl Deref for WasmBinding {
@@ -225,7 +229,13 @@ impl WasmBinding {
             languages: languages.iter().map(|l| (*l).to_owned()).collect(),
             category: category.to_owned(),
             standins: standins(),
+            limits: Vec::new(),
         })
+    }
+
+    /// The limits modules hit since this was last asked, which the suite's events have no place for.
+    pub fn take_limits(&mut self) -> Vec<types::LimitEvent> {
+        std::mem::take(&mut self.limits)
     }
 
     /// The directory the stand-ins are read from.
@@ -311,6 +321,7 @@ impl ModuleBinding for WasmBinding {
 
     fn take_events(&mut self) -> suite::Events {
         let events = self.platform.take_events();
+        self.limits.extend(events.limits);
         suite::Events {
             records: events.records,
             lookups: events

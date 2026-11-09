@@ -384,3 +384,90 @@ fn killing_the_leader_mid_submit_loses_no_acknowledged_record() {
     );
     prove_backend("STM_PROGRAM_ELF");
 }
+
+// verifies: REQ-OPS-3
+#[test]
+fn a_vos_node_on_the_jit_names_the_program_in_its_perf_map() {
+    // What `../host-check.sh` runs on a host: one node, one record, and the backend's proof (`T-010-08`, `G-37`).
+    let base = Base::new("perf");
+    let mut harness = VosHarness::<Stm>::new(config(1, "STM_PROGRAM_ELF"), base.0.clone(), "p");
+    let store = harness.fresh_store().unwrap();
+    let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
+    for input in probe::order_inputs("ord-perf", 0).into_iter().take(1) {
+        let delivered = Host::<Stm>::submit(&mut host, input);
+        assert!(
+            matches!(delivered, Ok(Delivery::Recorded(_))),
+            "{delivered:?}"
+        );
+    }
+    Host::<Stm>::journal(&host, &Id::new("ord-perf").unwrap()).unwrap();
+    prove_backend("STM_PROGRAM_ELF");
+}
+
+// The recovery drill for total loss (`T-010-08`, `R-08`): the scheduled halted export, imported onto nodes that have
+// none of the lost cluster's data.
+// verifies: NFR-6, INV-7
+#[test]
+fn halted_export_imported_onto_fresh_nodes_keeps_every_record_acknowledged_before_it() {
+    let base = Base::new("drill");
+    let mut harness = VosHarness::<Stm>::new(config(3, "STM_PROGRAM_ELF"), base.0.clone(), "d");
+    let store = harness.fresh_store().unwrap();
+    let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
+
+    // Records acknowledged before the export: an order to completion and one whose final deposit fails.
+    let mut acknowledged = Acknowledged::new();
+    let orders = [
+        ("ord-a", probe::order_inputs("ord-a", 0)),
+        (
+            "ord-b",
+            probe::order_inputs_with_a_failed_final_deposit("ord-b", 100),
+        ),
+    ];
+    for (_, inputs) in &orders {
+        for input in inputs {
+            let delivered = Host::<Stm>::submit(&mut host, input.clone());
+            assert!(
+                matches!(delivered, Ok(Delivery::Recorded(_))),
+                "{delivered:?}"
+            );
+            acknowledge(&mut acknowledged, &delivered);
+        }
+    }
+    assert!(!acknowledged.is_empty());
+    let before: Vec<_> = orders
+        .iter()
+        .map(|(order, _)| Host::<Stm>::journal(&host, &Id::new(*order).unwrap()).unwrap())
+        .collect();
+
+    // The scheduled export: halt, read the stream out whole.
+    Host::<Stm>::halt(&mut host).unwrap();
+    let entries: Vec<_> = Host::<Stm>::export(&host)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    // Total loss: every node of the cluster is gone, and its data with it.
+    let lost = <VosHarness<Stm> as Harness<Stm>>::kill(&mut harness, host).unwrap();
+    std::fs::remove_dir_all(&lost.dir).unwrap();
+    assert!(!lost.dir.exists());
+
+    // Fresh nodes, empty, take the import.
+    let fresh = harness.fresh_store().unwrap();
+    assert_ne!(fresh.dir, lost.dir);
+    let imported: VosHost =
+        <VosHost as Host<Stm>>::import(fresh, Box::new(entries.into_iter().map(Ok))).unwrap();
+    for (record_id, (order, seq)) in &acknowledged {
+        let journal = Host::<Stm>::journal(&imported, order).unwrap();
+        let held: Vec<_> = journal
+            .iter()
+            .filter(|r| r.input.record_id.as_str() == record_id)
+            .collect();
+        assert_eq!(held.len(), 1, "{record_id} is held {} times", held.len());
+        assert_eq!(held[0].seq, *seq, "{record_id} moved");
+    }
+    for ((order, _), journal) in orders.iter().zip(&before) {
+        let after = Host::<Stm>::journal(&imported, &Id::new(*order).unwrap()).unwrap();
+        assert_eq!(&after, journal, "{order}: the journal is not what it was");
+    }
+    prove_backend("STM_PROGRAM_ELF");
+}
