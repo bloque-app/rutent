@@ -580,7 +580,7 @@
       }
     },
     "fee_formula": {
-      "description": "Flat and proportional parts, depending only on amount and tuple (REQ-QTE-5). The fee on an amount a entering the tuple is flat + floor(a * numerator / denominator), in the tuple's input unit. Where a maximum is given, the charge is known only after execution and may come to it, so route evaluation counts the fee at the maximum.",
+      "description": "Flat and proportional parts, depending only on amount and tuple (REQ-QTE-5). The fee on an amount a entering the tuple is flat + ceil(a * numerator / denominator), in the tuple's input unit: the proportion rounds up, so a provider rounding its charge either way stays within its formula. Where a maximum is given, the charge is known only after execution and may come to it, so route evaluation counts the fee at the maximum.",
       "type": "object",
       "additionalProperties": false,
       "required": [

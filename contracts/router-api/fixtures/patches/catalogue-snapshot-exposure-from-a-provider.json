@@ -1,0 +1,30 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/14",
+      "value": {
+        "figure_id": "f-exposure-ex-a",
+        "origin": {
+          "kind": "provider",
+          "provider": "exchange-a",
+          "publisher": "acme",
+          "provider_version": "3.0.0",
+          "module_version": "3.0.2"
+        },
+        "age_seconds": 0,
+        "value": {
+          "kind": "exposure",
+          "provider": "exchange-a",
+          "publisher": "acme",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "in_flight": "40000000"
+        }
+      }
+    }
+  ]
+}

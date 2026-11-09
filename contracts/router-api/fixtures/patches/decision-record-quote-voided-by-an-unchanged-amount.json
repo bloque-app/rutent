@@ -1,0 +1,116 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2",
+      "value": {
+        "candidate_id": "c3",
+        "parts": [
+          {
+            "operations": [
+              {
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "from": {
+                  "node": {
+                    "network": "co-ach"
+                  },
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "amount_in": "100000000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "100000"
+                },
+                "amount_out": "99900000",
+                "figures": [
+                  "f-w",
+                  "f-w-price",
+                  "f-confirm-w-100000000"
+                ]
+              },
+              {
+                "kind": "exchange",
+                "provider": "exchange-a",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "99900000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "199800"
+                },
+                "amount_out": "249250500",
+                "figures": [
+                  "f-ex-a",
+                  "f-ex-a-price",
+                  "f-ex-a-quote",
+                  "f-ex-a-ineligible",
+                  "f-confirm-ex-a-99900000"
+                ]
+              },
+              {
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "from": {
+                  "node": "ledger-in",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "to": {
+                  "node": {
+                    "network": "polygon"
+                  },
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "249250500",
+                "fee": {
+                  "asset": "USDC",
+                  "amount": "1000000"
+                },
+                "amount_out": "248250500",
+                "figures": [
+                  "f-dep-in",
+                  "f-dep-in-price",
+                  "f-confirm-dep-in-249250500"
+                ]
+              }
+            ]
+          }
+        ],
+        "dropped": {
+          "reason": "quote_voided",
+          "figure": "f-ex-a-quote",
+          "condition": "amount_changes"
+        }
+      }
+    }
+  ]
+}

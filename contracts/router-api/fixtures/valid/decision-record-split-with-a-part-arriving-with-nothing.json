@@ -2051,12 +2051,12 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "99598798",
+                "amount_in": "99598796",
                 "fee": {
                   "asset": "COP",
-                  "amount": "99598"
+                  "amount": "99599"
                 },
-                "amount_out": "99499200",
+                "amount_out": "99499197",
                 "figures": [
                   "f-w",
                   "f-w-price"
@@ -2079,12 +2079,12 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "99499200",
+                "amount_in": "99499197",
                 "fee": {
                   "asset": "COP",
-                  "amount": "198998"
+                  "amount": "198999"
                 },
-                "amount_out": "248250505",
+                "amount_out": "248250495",
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price"
@@ -2109,12 +2109,12 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "248250505",
+                "amount_in": "248250495",
                 "fee": {
                   "asset": "USDC",
                   "amount": "1000000"
                 },
-                "amount_out": "247250505",
+                "amount_out": "247250495",
                 "figures": [
                   "f-dep-in",
                   "f-dep-in-price"
@@ -2143,12 +2143,12 @@
                     "decimals": 2
                   }
                 },
-                "amount_in": "401202",
+                "amount_in": "401204",
                 "fee": {
                   "asset": "COP",
-                  "amount": "401"
+                  "amount": "402"
                 },
-                "amount_out": "400801",
+                "amount_out": "400802",
                 "figures": [
                   "f-w",
                   "f-w-price"
@@ -2171,10 +2171,10 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "400801",
+                "amount_in": "400802",
                 "fee": {
                   "asset": "COP",
-                  "amount": "801"
+                  "amount": "802"
                 },
                 "amount_out": "1000000",
                 "figures": [

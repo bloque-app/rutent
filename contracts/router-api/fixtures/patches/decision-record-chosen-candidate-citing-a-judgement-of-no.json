@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/snapshot/figures/17/value/judgement/statement/answer",
+      "value": "no"
+    }
+  ]
+}

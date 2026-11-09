@@ -1,0 +1,25 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/1/origin/provider",
+      "value": "ramp-x"
+    },
+    {
+      "op": "replace",
+      "path": "/figures/1/origin/publisher",
+      "value": "ramp-x"
+    },
+    {
+      "op": "replace",
+      "path": "/figures/1/origin/provider_version",
+      "value": "1.0.0"
+    },
+    {
+      "op": "replace",
+      "path": "/figures/1/origin/module_version",
+      "value": "1.0.0"
+    }
+  ]
+}

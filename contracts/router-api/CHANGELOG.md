@@ -1,5 +1,17 @@
 # router-api changelog
 
+## 2.0.0
+- Breaking, after review round 1 of the M1 pull request: a fee formula's proportion rounds up, so the fee is
+  `flat + ceil(a × numerator / denominator)`, and the output still rounds down. Before, it rounded down, which ranked
+  a route up to one unit per operation better than its providers may make it, and put a provider rounding up over
+  its own formula. A router computing 1.x's fee fails the router suite wherever the proportion doesn't divide
+  evenly. `split-2-thin`, in `decision-record-split-with-a-part-arriving-with-nothing` and in the invalid shortlist
+  that keeps it, is re-solved so its thin part still arrives with exactly 0; the router suite's double rounds up,
+  and a flaw rounding down is refused. (REQ-QTE-5, DEC-4, DEC-5, DEC-20, T-004-02)
+- The invalid catalogue-snapshot and decision-record fixtures are made: each is a valid fixture of its shape with an
+  RFC 6902 patch in `fixtures/patches/`, and a test refuses any that isn't, or has no patch. Every fixture's
+  content is unchanged. (DEC-4, DEC-20, T-004-02)
+
 ## 1.0.2
 - No change to this contract's shapes or types: its fixtures name provider-role 2.0.1 as their `protocol_version`,
   after provider-role's fix to its newer-than check. (DEC-4, DEC-20, T-002-03)

@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/14/value/publisher",
+      "value": "other-publisher"
+    }
+  ]
+}

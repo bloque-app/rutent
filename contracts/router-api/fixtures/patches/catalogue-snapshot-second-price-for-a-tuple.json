@@ -1,0 +1,45 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/37",
+      "value": {
+        "figure_id": "f-ex-b-price-2",
+        "origin": {
+          "kind": "provider",
+          "provider": "exchange-b",
+          "publisher": "acme",
+          "provider_version": "1.4.0",
+          "module_version": "1.4.0"
+        },
+        "age_seconds": 900,
+        "value": {
+          "kind": "price",
+          "tuple": "f-ex-b",
+          "fee": {
+            "flat": "0",
+            "proportional": {
+              "numerator": "1",
+              "denominator": "1000"
+            }
+          },
+          "rate": {
+            "kind": "levels",
+            "levels": [
+              {
+                "up_to": "50000000",
+                "rate": "0.00025"
+              },
+              {
+                "up_to": "1000000000",
+                "rate": "0.00024"
+              }
+            ]
+          },
+          "settlement_seconds": 120
+        }
+      }
+    }
+  ]
+}

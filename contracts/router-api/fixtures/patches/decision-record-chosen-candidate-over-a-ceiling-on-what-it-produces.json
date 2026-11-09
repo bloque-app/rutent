@@ -1,0 +1,17 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/bounds/provider_ceilings/1",
+      "value": {
+        "provider": "exchange-a",
+        "asset": {
+          "id": "USDC",
+          "decimals": 6
+        },
+        "amount": "200000000"
+      }
+    }
+  ]
+}

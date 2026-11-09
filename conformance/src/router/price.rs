@@ -1,5 +1,6 @@
 //! Exact pricing, as `contracts/router-api/README.md` ("Computing, exactly") states it: whole numbers only, no
-//! floating point, one rounding down at the end of a conversion (`REQ-QTE-5`, `REQ-QTE-12`, `THR-10`).
+//! floating point, a fee's proportion rounded up and one rounding down at the end of a conversion (`REQ-QTE-5`,
+//! `REQ-QTE-12`, `THR-10`).
 //!
 //! Amounts are up to 78 decimal digits, so products and powers of ten are carried as arbitrary-precision whole
 //! numbers. Nothing here is serialised, so the 2^53 − 1 limit on safe integers doesn't bind these values.
@@ -42,8 +43,9 @@ pub(crate) struct Terms {
     pub(crate) amount_out: BigUint,
 }
 
-/// The fee a formula charges on `amount_in`: `flat + floor(amount_in × numerator / denominator)`, or its
-/// `maximum` where one is given, since route evaluation counts the fee at the maximum (`REQ-QTE-5`).
+/// The fee a formula charges on `amount_in`: `flat + ceil(amount_in × numerator / denominator)`, or its
+/// `maximum` where one is given, since route evaluation counts the fee at the maximum (`REQ-QTE-5`). The fee
+/// rounds up and the output down, so a route is never evaluated as better than its providers may make it.
 pub(crate) fn fee(formula: &FeeFormula, amount_in: &BigUint) -> BigUint {
     if let Some(maximum) = &formula.maximum {
         return whole(maximum.as_str()).expect("an amount");
@@ -51,7 +53,8 @@ pub(crate) fn fee(formula: &FeeFormula, amount_in: &BigUint) -> BigUint {
     let flat = whole(formula.flat.as_str()).expect("an amount");
     let numerator = whole(formula.proportional.numerator.as_str()).expect("an amount");
     let denominator = whole(formula.proportional.denominator.amount().as_str()).expect("an amount");
-    flat + amount_in * numerator / denominator
+    // Rounded up: a remainder, however small, costs one more unit.
+    flat + (amount_in * numerator + &denominator - 1u8) / denominator
 }
 
 /// What a net amount converts to, from `from`'s unit to `to`'s.
@@ -171,21 +174,37 @@ mod tests {
 
     // verifies: REQ-QTE-5
     #[test]
-    fn a_fee_is_flat_plus_the_proportion_rounded_down_or_its_maximum() {
-        // 1,000,000.00 COP at 3/1000: floor(99,900,000 × 3 / 1000) = 299,700.
+    fn a_fee_is_flat_plus_the_proportion_rounded_up_or_its_maximum() {
+        // 1,000,000.00 COP at 3/1000: ceil(99,900,000 × 3 / 1000) = 299,700, which divides evenly.
         assert_eq!(
             fee(&formula("0", "3", "1000", None), &n("99900000")),
             n("299700")
         );
-        // A flat 1 USDC plus 1/3 of 10 units: 1,000,000 + floor(10/3) = 1,000,003.
+        // A flat 1 USDC plus 1/3 of 10 units: 1,000,000 + ceil(10/3) = 1,000,004.
         assert_eq!(
             fee(&formula("1000000", "1", "3", None), &n("10")),
-            n("1000003")
+            n("1000004")
         );
-        // With a maximum, route evaluation counts the fee at the maximum, not at the formula's 2,490,007.
+        // With a maximum, route evaluation counts the fee at the maximum, not at the formula's 2,490,008.
         assert_eq!(
             fee(&formula("0", "1", "100", Some("2000000")), &n("249000750")),
             n("2000000")
+        );
+    }
+
+    // verifies: REQ-QTE-5
+    #[test]
+    fn a_fee_that_does_not_divide_evenly_rounds_up_so_a_charge_rounded_either_way_is_within_it() {
+        // 401,204 COP units at 1/1000 is 401.204: the formula gives 402, so a provider charging 401 or 402 is
+        // within it, and a route is never ranked on a fee lower than its provider may charge.
+        assert_eq!(
+            fee(&formula("0", "1", "1000", None), &n("401204")),
+            n("402")
+        );
+        // Where the proportion divides evenly, nothing is rounded.
+        assert_eq!(
+            fee(&formula("0", "1", "1000", None), &n("401000")),
+            n("401")
         );
     }
 

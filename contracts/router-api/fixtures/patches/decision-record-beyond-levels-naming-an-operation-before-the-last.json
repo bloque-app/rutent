@@ -1,0 +1,44 @@
+{
+  "base": "decision-record-shortlist-with-a-route-beyond-a-price-s-levels",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/1/amount_out",
+      "value": "125000000"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/2/parts/0/operations/2",
+      "value": {
+        "kind": "deposit",
+        "provider": "reserve-wallet",
+        "from": {
+          "node": "ledger-in",
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        },
+        "to": {
+          "node": {
+            "network": "polygon"
+          },
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        },
+        "amount_in": "125000000",
+        "fee": {
+          "asset": "USDC",
+          "amount": "1000000"
+        },
+        "amount_out": "124000000",
+        "figures": [
+          "f-dep-in",
+          "f-dep-in-price"
+        ]
+      }
+    }
+  ]
+}

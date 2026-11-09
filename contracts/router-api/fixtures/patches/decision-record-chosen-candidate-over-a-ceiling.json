@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/bounds/provider_ceilings/0/amount",
+      "value": "100000000"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/37",
+      "value": {
+        "figure_id": "f-ex-b-no",
+        "origin": {
+          "kind": "provider",
+          "provider": "verifier-kyc",
+          "publisher": "kyc-co",
+          "provider_version": "1.0.0",
+          "module_version": "1.0.0"
+        },
+        "age_seconds": 4,
+        "valid_for_seconds": 604800,
+        "value": {
+          "kind": "eligibility",
+          "tuple": "f-ex-b",
+          "judgement": {
+            "deployment": {
+              "name": "rutent-test",
+              "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": "urn:rutent:provider-role:judgement",
+            "maker": "verifier-kyc",
+            "made_at": "2026-11-06T14:59:56Z",
+            "signature": {
+              "scheme": "ed25519",
+              "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
+              "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+            },
+            "statement": {
+              "subject": "subj-42",
+              "class": "kyc.natural_person",
+              "answer": "no",
+              "valid_until": "2026-11-13T14:59:56Z"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

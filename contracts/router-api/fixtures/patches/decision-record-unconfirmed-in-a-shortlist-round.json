@@ -1,0 +1,14 @@
+{
+  "base": "decision-record-shortlist-round",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/candidates/1/dropped",
+      "value": {
+        "reason": "unconfirmed",
+        "part": 0,
+        "operation": 0
+      }
+    }
+  ]
+}

@@ -48,8 +48,9 @@ binds whenever it was made, so no choice of `taken_at` hides bad news.
 
 So that anyone can recompute a fee and a choice (`REQ-QTE-5`, `THR-10`):
 
-- **Fee.** On an amount `a`, `flat + floor(a × numerator / denominator)`; where a `maximum` is given, route
-  evaluation counts the fee at the maximum.
+- **Fee.** On an amount `a`, `flat + ceil(a × numerator / denominator)`; where a `maximum` is given, route
+  evaluation counts the fee at the maximum. The fee rounds up and the output down, so a route is never evaluated
+  as better than its providers may make it, and a charge rounded either way is within its formula.
 - **Conversion.** The net `n = a − fee` fills the levels in order; the output is
   `floor(Σ take_i × rate_i × 10^to.decimals / 10^from.decimals)`, rounded once. A fixed rate is one unbounded
   level; a net amount above the last level isn't served (`outside_band`); with no rate,
@@ -182,4 +183,19 @@ value only.
 unchanged; that every invalid fixture its `SCHEMA_RULES` table lists is rejected by the schemas with exactly the
 (location, keyword) errors named there, and every one its `RUST_RULES` table lists is accepted by the schemas and
 refused by Rust with the named rule; that a record built in Rust is checked whole; that Rust refuses every invalid fixture, with an
-empty allow-list; and that `VERSION` matches the changelog.
+empty allow-list; that every patched invalid fixture is its base with its patch, as below; and that `VERSION` matches
+the changelog.
+
+## Made fixtures
+
+The invalid catalogue snapshots and decision records are made, not copied. Each has a source,
+`fixtures/patches/<name>.json`, holding `base`, the name of a valid fixture of the same shape, and `patch`, an RFC 6902
+patch of `add`, `remove` and `replace` operations; `fixtures/invalid/<name>.json` is that base with that patch. The patch
+shows what sets the fixture apart from a valid record, the rule it breaks and any setup that rule needs, so a reviewer
+reads it rather than the whole record.
+
+- The test refuses an invalid fixture of those shapes with no patch, a patch with no fixture or a missing base, a patch
+  that changes nothing, and a committed fixture that isn't its base with its patch, compared as JSON values.
+- To change one, edit its patch, or its base, and run the router-api tests with `RUTENT_WRITE_FIXTURES=1`. That rewrites
+  each made fixture that differs, with its keys sorted, and leaves the others byte for byte.
+- The other invalid fixtures (requests, policy bounds, operations, candidates) are a few lines each and hand-written.

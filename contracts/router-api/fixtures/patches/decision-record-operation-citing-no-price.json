@@ -1,0 +1,9 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/1/figures/1"
+    }
+  ]
+}

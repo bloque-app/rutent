@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/by",
+      "value": "c8"
+    }
+  ]
+}

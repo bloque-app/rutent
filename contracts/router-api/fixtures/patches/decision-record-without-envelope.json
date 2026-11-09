@@ -1,0 +1,29 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/deployment"
+    },
+    {
+      "op": "remove",
+      "path": "/protocol_version"
+    },
+    {
+      "op": "remove",
+      "path": "/shape"
+    },
+    {
+      "op": "remove",
+      "path": "/maker"
+    },
+    {
+      "op": "remove",
+      "path": "/made_at"
+    },
+    {
+      "op": "remove",
+      "path": "/signature"
+    }
+  ]
+}

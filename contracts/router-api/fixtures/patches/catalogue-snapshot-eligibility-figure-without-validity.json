@@ -1,0 +1,9 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/figures/17/valid_for_seconds"
+    }
+  ]
+}

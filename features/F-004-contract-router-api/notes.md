@@ -88,8 +88,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
     is per asset.
 - **Validity rounding (`REQ-QTE-4`; review fix).** Ages round up and validities round down, so a figure whose age
   is at most its validity is never past its `valid_until`. It may drop a figure in its last second, a safe loss.
-- **Rounding of fees and rates (`REQ-QTE-5`; review fix).** The fee is `flat + floor(a × n / d)`, counted at
-  `maximum` where one is given. The conversion rounds down once, after summing the levels. A net amount above the
+- **Rounding of fees and rates (`REQ-QTE-5`; review fix).** The fee is `flat + ceil(a × n / d)` since 2.0.0
+  (`floor` before; see "Review round 1 of the M1 pull request" below), counted at `maximum` where one is given. The conversion rounds down once, after summing the levels. A net amount above the
   last level isn't served (`outside_band`).
 - **Integers.** Every integer a signed statement carries is at most 2^53 - 1, following provider-role's signing
   rule (RFC 8785), so seconds are a `Seconds` newtype.
@@ -398,3 +398,42 @@ owner's click. They are done as a follow-up to `T-004-02`.
   is checked in its own deployment and protocol version, so its tests passed before the rewrite and after.
 - **After the delta review, still 1.0.1:** the precondition names which advertisement applies, the provider's
   accepted one current at the statement's `made_at`, not one accepted later, and covers nested statements.
+
+## Review round 1 of the M1 pull request (router-api 2.0.0, `T-004-02`)
+
+- **The fee rounds up (finding 1, `REQ-QTE-5`).** The fee is `flat + ceil(a × n / d)`, and the conversion still
+  rounds down once. Rounding the fee down was the unsafe direction, against this contract's own rule for time (ages
+  up, validities down): the shortlist ranking read a route up to one unit per operation better than its providers
+  may make it, and a provider rounding up was one unit over its advertised formula on any charge that doesn't
+  divide evenly. The choice round wasn't affected, since it chooses only on the providers' own confirmed terms.
+  - My reading of `REQ-QTE-5`'s "check a charged fee against it": the formula is now the most a charge may come
+    to, so the check is charge ≤ formula (or ≤ `maximum` where one is given, as `AC-14` flags), and it holds
+    whichever way a provider rounds. Which check flags what belongs to the feature that checks charges; this
+    contract only fixes the formula's value.
+  - A declared rounding per formula, the review's other option, was not taken. A rounding-up formula is an upper
+    bound for a provider rounding either way, so the field would add a choice and no safety.
+  - Why 2.0.0: no schema shape, Rust type or `check` changed, but the formula's value did, and the router suite
+    (`DEC-5`) enforces it. A router correct at 1.0.2 fails the suite wherever the proportion doesn't divide
+    evenly, so by the README's semver rule this is breaking.
+  - Fixtures: only `split-2-thin`, in `decision-record-split-with-a-part-arriving-with-nothing`, has a fee that
+    doesn't divide evenly on an operation priced from its price. Under rounding up its thin part would have
+    stopped at an exchange giving 999,997 USDC units, below the deposit's 1 USDC flat fee, so it couldn't be
+    stated at all. The split is re-solved: 401,204 COP units withdrawn (fee 402), 400,802 into exchange-a (fee
+    802), exactly 1,000,000 out, and 0 after the deposit; the other part takes 99,598,796. The invalid shortlist
+    that keeps `split-2-thin` carries the same amounts, so it still breaks only its one rule.
+  - The double rounds up, and a new flaw, `FEE_ROUNDS_DOWN`, is refused by `amounts-follow-their-figures` alone on
+    the shortlist case, which has a fee that doesn't divide evenly. The old unit test's 1/3 example now expects
+    1,000,004, not 1,000,003: a deliberate flip, since the value it pinned is the one the finding shows unsafe.
+- **Made fixtures (finding 11).** The 127 invalid catalogue-snapshot and decision-record fixtures are each a valid
+  fixture of their shape with an RFC 6902 patch, in `fixtures/patches/`: 4,006 lines of patches beside about
+  237,000 of fixtures. `contracts/tests/router-api.rs` applies each patch and compares the result with the
+  committed fixture as JSON values, and refuses an invalid fixture of those shapes with no patch. It runs with the
+  contract's other tests, so CI needs no new step.
+  - Values, not bytes: `serde_json` here has no `preserve_order`, so a remade file comes out with its keys sorted.
+    Turning `preserve_order` on would unify across the workspace and could change provider-role's canonical
+    form, so it is left off. The committed fixtures keep their formatting; a fixture remade with
+    `RUTENT_WRITE_FIXTURES=1` is written sorted, and only where it differs.
+  - Each patch's base is the valid fixture of its shape nearest to it, found when the patches were first drawn
+    up from the committed files; from now on the patch is the source.
+  - The small hand-written families (requests, policy bounds, operations, candidates) aren't made: each is a few
+    lines, and a patch would be no shorter.

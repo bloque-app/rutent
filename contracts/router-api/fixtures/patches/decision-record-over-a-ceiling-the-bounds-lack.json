@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-with-every-drop-reason-of-the-choice-round",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/party",
+      "value": "ramp-x"
+    }
+  ]
+}

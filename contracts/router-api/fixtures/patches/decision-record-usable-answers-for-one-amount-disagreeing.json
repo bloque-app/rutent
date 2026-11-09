@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/snapshot/figures/22/value/quote/statement/outcome/amount_out",
+      "value": "249250501"
+    }
+  ]
+}

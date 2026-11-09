@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-quote-to-fractions-of-a-second",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/1/valid_for_seconds",
+      "value": 120
+    }
+  ]
+}

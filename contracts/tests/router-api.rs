@@ -659,6 +659,13 @@ const SCHEMA_RULES: [(&str, &[(&str, &str)]); 61] = [
 /// is also held by a Rust field type or a `check` that deserialising runs (`DEC-4`).
 const ACCEPTED_BY_RUST_ON_PURPOSE: [&str; 0] = [];
 
+/// The shapes whose invalid fixtures are made, not copied: each is a valid fixture of its shape with a patch,
+/// `fixtures/patches/<name>.json`, so the one rule it breaks is the patch. The others are small and hand-written.
+const PATCHED_SHAPES: [&str; 2] = ["catalogue-snapshot", "decision-record"];
+
+/// Set to rewrite each patched invalid fixture from its base and patch, where it differs, instead of comparing.
+const WRITE_FIXTURES: &str = "RUTENT_WRITE_FIXTURES";
+
 fn contracts_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -969,6 +976,154 @@ fn a_record_built_in_rust_is_checked_whole() {
 
     record.snapshot.figures[1].figure_id = Id::new("f-w").unwrap();
     assert!(record.check().is_err(), "the snapshot is checked");
+}
+
+/// The index a JSON Pointer token names in an array of `len` items, or the position after the last one (`-`)
+/// when `append` is allowed (RFC 6901, RFC 6902).
+fn array_index(token: &str, len: usize, append: bool) -> Result<usize, String> {
+    if append && token == "-" {
+        return Ok(len);
+    }
+    match token.parse::<usize>() {
+        Ok(at) if at.to_string() == token && (at < len || (append && at == len)) => Ok(at),
+        _ => Err(format!("{token} is not an index of an array of {len}")),
+    }
+}
+
+/// Applies an RFC 6902 patch of `add`, `remove` and `replace` operations, in order, to `doc`.
+fn apply_patch(doc: &mut Value, patch: &Value) -> Result<(), String> {
+    let operations = patch
+        .as_array()
+        .filter(|ops| !ops.is_empty())
+        .ok_or("a patch is a non-empty array of operations")?;
+    for (i, operation) in operations.iter().enumerate() {
+        let fail = |why: String| format!("operation {i}: {why}");
+        let fields = operation
+            .as_object()
+            .ok_or_else(|| fail("not an object".into()))?;
+        let kind = fields.get("op").and_then(Value::as_str).unwrap_or("");
+        let path = fields.get("path").and_then(Value::as_str).unwrap_or("");
+        let expected: &[&str] = match kind {
+            "add" | "replace" => &["op", "path", "value"],
+            "remove" => &["op", "path"],
+            _ => return Err(fail(format!("unsupported op {kind:?}"))),
+        };
+        if fields.len() != expected.len() || !expected.iter().all(|k| fields.contains_key(*k)) {
+            return Err(fail(format!("{kind} takes exactly {expected:?}")));
+        }
+        let (parent, token) = path
+            .rsplit_once('/')
+            .ok_or_else(|| fail(format!("{path:?} names no member")))?;
+        let token = token.replace("~1", "/").replace("~0", "~");
+        let value = fields.get("value").cloned();
+        let target = doc
+            .pointer_mut(parent)
+            .ok_or_else(|| fail(format!("nothing at {parent:?}")))?;
+        match (kind, target) {
+            ("add", Value::Object(map)) => {
+                map.insert(token, value.unwrap());
+            }
+            ("add", Value::Array(items)) => {
+                let at = array_index(&token, items.len(), true).map_err(fail)?;
+                items.insert(at, value.unwrap());
+            }
+            ("remove", Value::Object(map)) => {
+                map.remove(&token)
+                    .ok_or_else(|| fail(format!("no member at {path}")))?;
+            }
+            ("remove", Value::Array(items)) => {
+                let at = array_index(&token, items.len(), false).map_err(fail)?;
+                items.remove(at);
+            }
+            ("replace", Value::Object(map)) => {
+                let slot = map
+                    .get_mut(&token)
+                    .ok_or_else(|| fail(format!("no member at {path}")))?;
+                *slot = value.unwrap();
+            }
+            ("replace", Value::Array(items)) => {
+                let at = array_index(&token, items.len(), false).map_err(fail)?;
+                items[at] = value.unwrap();
+            }
+            _ => {
+                return Err(fail(format!(
+                    "{parent:?} is neither an object nor an array"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+// verifies: DEC-4
+#[test]
+fn every_patched_invalid_fixture_is_its_valid_base_with_its_patch() {
+    let write = std::env::var_os(WRITE_FIXTURES).is_some();
+    let patches = fixtures("patches");
+    let invalid = fixtures("invalid");
+    assert!(patches.len() >= 100, "only {} patches found", patches.len());
+
+    let mut failures = Vec::new();
+    for (name, _) in &invalid {
+        if PATCHED_SHAPES.contains(&shape_of(name)) && !patches.iter().any(|(n, _)| n == name) {
+            failures.push(format!(
+                "{name} has no patch: make it from a valid fixture of its shape and a patch"
+            ));
+        }
+    }
+    for (name, source) in &patches {
+        let fields = source.as_object();
+        let base = source["base"].as_str();
+        let (Some(fields), Some(base)) = (fields, base) else {
+            failures.push(format!("{name}: a patch file is {{\"base\", \"patch\"}}"));
+            continue;
+        };
+        if fields.len() != 2 || !fields.contains_key("patch") {
+            failures.push(format!("{name}: a patch file is {{\"base\", \"patch\"}}"));
+            continue;
+        }
+        if !PATCHED_SHAPES.contains(&shape_of(name)) || shape_of(base) != shape_of(name) {
+            failures.push(format!(
+                "{name}: patched from {base}, which is not a valid fixture of its shape"
+            ));
+            continue;
+        }
+        let base_path = contract_dir()
+            .join("fixtures/valid")
+            .join(format!("{base}.json"));
+        if !base_path.is_file() {
+            failures.push(format!("{name}: its base {base} is not a valid fixture"));
+            continue;
+        }
+        let base_value = read_json(&base_path);
+        let mut made = base_value.clone();
+        if let Err(e) = apply_patch(&mut made, &source["patch"]) {
+            failures.push(format!("{name}: {e}"));
+            continue;
+        }
+        if made == base_value {
+            failures.push(format!("{name}: its patch changes nothing"));
+        }
+        let committed = invalid.iter().find(|(n, _)| n == name).map(|(_, v)| v);
+        if write {
+            if committed != Some(&made) {
+                let text = serde_json::to_string_pretty(&made).unwrap() + "\n";
+                let path = contract_dir()
+                    .join("fixtures/invalid")
+                    .join(format!("{name}.json"));
+                fs::write(&path, text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            }
+            continue;
+        }
+        match committed {
+            None => failures.push(format!("{name}: a patch for no invalid fixture")),
+            Some(committed) if committed != &made => failures.push(format!(
+                "{name} is not {base} with its patch; run with {WRITE_FIXTURES}=1 to remake it"
+            )),
+            Some(_) => {}
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // verifies: DEC-4

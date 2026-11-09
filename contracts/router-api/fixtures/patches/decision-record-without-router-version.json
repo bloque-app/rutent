@@ -1,0 +1,9 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/router_version"
+    }
+  ]
+}

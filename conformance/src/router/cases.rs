@@ -15,12 +15,13 @@
 //!
 //! Worked by hand, for 1,000,000.00 COP (`100000000`):
 //!
-//! - `f-w`: fee floor(100,000,000 / 1000) = 100,000, so 99,900,000 arrives.
+//! - `f-w`: fee ceil(100,000,000 / 1000) = 100,000, so 99,900,000 arrives.
 //! - `f-ex-slow`: fee 99,900, net 99,800,100; 33,333,333 × 2.63 + 66,466,767 × 2.517 = 254,963,518.329, rounded
 //!   down once to 254,963,518 USDC units (each level rounded first would give 254,963,517).
 //! - `f-ex-fast`: fee 299,700, net 99,600,300 × 2.5 = 249,000,750.
 //! - `f-ramp-x` on 254,963,518: fee 1,000,000, so 253,963,518 × 10^12 arrives.
-//! - `f-ramp-y` on 249,000,750: fee 2,000,000 (the formula alone would say 2,490,007), so 247,000,750 × 10^12.
+//! - `f-ramp-y` on 249,000,750: fee 2,000,000 (the formula alone would say ceil(2,490,007.5) = 2,490,008), so
+//!   247,000,750 × 10^12.
 //! - `f-dep` on 253,963,518 × 10^12: fee 126,981,759 × 10^9, so floor(253,836,536.241) = 253,836,536 arrives;
 //!   on 247,000,750 × 10^12: fee 123,500,375 × 10^9, so floor(246,877,249.625) = 246,877,249.
 //!

@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/16/valid_for_seconds",
+      "value": 10
+    }
+  ]
+}

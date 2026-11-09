@@ -4,8 +4,8 @@
 mod router_double;
 
 use router_double::{
-    BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FOLLOWS_RATE_CYCLES, IGNORES_DECIMALS,
-    IGNORES_OBJECTIVE, OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL, Reference,
+    BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FOLLOWS_RATE_CYCLES,
+    IGNORES_DECIMALS, IGNORES_OBJECTIVE, OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL, Reference,
 };
 use rutent_conformance::router::{Case, Cell, Check, cases, path, recompute, run};
 use rutent_contracts::router_api::{
@@ -179,6 +179,15 @@ fn a_refused_dry_run_drops_its_option_and_another_provider_serves_the_tuple() {
 fn a_fee_counted_by_its_formula_where_a_maximum_is_set_is_refused() {
     assert_fails_only(
         &routed_case::<Reference<FEE_IGNORES_MAXIMUM>>("ac2-shortlist"),
+        Check::AmountsFollowTheirFigures,
+    );
+}
+
+// verifies: REQ-QTE-5
+#[test]
+fn a_fee_rounded_down_is_refused() {
+    assert_fails_only(
+        &routed_case::<Reference<FEE_ROUNDS_DOWN>>("ac2-shortlist"),
         Check::AmountsFollowTheirFigures,
     );
 }
@@ -412,6 +421,7 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<BREAKS_TIES_DESCENDING>>()));
     assert!(fails(run::<Reference<FOLLOWS_RATE_CYCLES>>()));
     assert!(fails(run::<Reference<OUTRANKS_UNCONFIRMED>>()));
+    assert!(fails(run::<Reference<FEE_ROUNDS_DOWN>>()));
 }
 
 // verifies: REQ-AUD-4, DEC-5

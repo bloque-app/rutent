@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/16/value/result/statement/kind",
+      "value": "deposit"
+    }
+  ]
+}

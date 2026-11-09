@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/0/parts/0/operations/2/figures/0",
+      "value": "f-dep-b"
+    }
+  ]
+}

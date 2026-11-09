@@ -1,0 +1,50 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/6",
+      "value": {
+        "figure_id": "f-ex-a-quote",
+        "origin": {
+          "kind": "provider",
+          "provider": "exchange-a",
+          "publisher": "acme",
+          "provider_version": "3.0.0",
+          "module_version": "3.0.2"
+        },
+        "age_seconds": 5,
+        "valid_for_seconds": 120,
+        "value": {
+          "kind": "fresh_quote",
+          "tuple": "f-ex-a",
+          "quote": {
+            "deployment": {
+              "name": "rutent-test",
+              "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": "urn:rutent:provider-role:result",
+            "maker": "exchange-a",
+            "made_at": "2026-11-06T14:59:55Z",
+            "signature": {
+              "scheme": "ed25519",
+              "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+              "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+            },
+            "statement": {
+              "kind": "conversion",
+              "transaction": "tx-quote",
+              "outcome": {
+                "status": "refused",
+                "refusal": {
+                  "class": "final"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/37",
+      "value": {
+        "figure_id": "f-ex-a-aml",
+        "origin": {
+          "kind": "provider",
+          "provider": "verifier-aml",
+          "publisher": "aml-co",
+          "provider_version": "2.0.0",
+          "module_version": "2.0.0"
+        },
+        "age_seconds": 4,
+        "valid_for_seconds": 604800,
+        "value": {
+          "kind": "eligibility",
+          "tuple": "f-ex-a",
+          "judgement": {
+            "deployment": {
+              "name": "rutent-test",
+              "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": "urn:rutent:provider-role:judgement",
+            "maker": "verifier-aml",
+            "made_at": "2026-11-06T14:59:56Z",
+            "signature": {
+              "scheme": "ed25519",
+              "key": "6Q4G-gR5jc9DWsUia8tV_4ZfyIw-2YJxbU17OkMaS0E",
+              "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+            },
+            "statement": {
+              "subject": "subj-99",
+              "class": "aml.screened",
+              "answer": "yes",
+              "valid_until": "2026-11-13T14:59:56Z"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/15/value/amount_in",
+      "value": "1"
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/snapshot"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/bounds/max_parts",
+      "value": 1
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/0/figures/2"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/1/figures/3"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/2/figures/3"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/1/parts/0/operations/3/figures/2"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/0/amount_in",
+      "value": "100000000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/0/fee/amount",
+      "value": "100000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/0/amount_out",
+      "value": "99900000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/1",
+      "value": {
+        "kind": "exchange",
+        "provider": "exchange-a",
+        "from": {
+          "node": "ledger-in",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        },
+        "to": {
+          "node": "ledger-in",
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
+          }
+        },
+        "amount_in": "99900000",
+        "fee": {
+          "asset": "COP",
+          "amount": "199800"
+        },
+        "amount_out": "249250500",
+        "figures": [
+          "f-ex-a",
+          "f-ex-a-price",
+          "f-ex-a-quote-old"
+        ]
+      }
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/2/amount_in",
+      "value": "249250500"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/parts/0/operations/2/amount_out",
+      "value": "248250500"
+    },
+    {
+      "op": "remove",
+      "path": "/statement/candidates/2/parts/1"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/2/dropped/figure",
+      "value": "f-ex-a-quote-old"
+    }
+  ]
+}

@@ -47,6 +47,8 @@ pub const BREAKS_TIES_DESCENDING: u8 = 5;
 pub const FOLLOWS_RATE_CYCLES: u8 = 6;
 /// Ranks unconfirmed candidates with the rest, choosing the first confirmed one and outranking the others by it.
 pub const OUTRANKS_UNCONFIRMED: u8 = 7;
+/// Rounds a fee's proportion down, so a route is evaluated as up to one unit cheaper per operation.
+pub const FEE_ROUNDS_DOWN: u8 = 8;
 
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
@@ -231,14 +233,19 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             .expect("the double cites only snapshot figures")
     }
 
-    /// The fee a price charges on `a`, counted at its maximum where it gives one.
+    /// The fee a price charges on `a`, its proportion rounded up, counted at its maximum where it gives one.
     fn fee(&self, formula: &FeeFormula, a: &BigUint) -> BigUint {
         match &formula.maximum {
             Some(maximum) if FLAW != FEE_IGNORES_MAXIMUM => big(maximum.as_str()),
             _ => {
-                big(formula.flat.as_str())
-                    + a * big(formula.proportional.numerator.as_str())
-                        / big(formula.proportional.denominator.amount().as_str())
+                let part = a * big(formula.proportional.numerator.as_str());
+                let denominator = big(formula.proportional.denominator.amount().as_str());
+                let rounding_up = if FLAW == FEE_ROUNDS_DOWN {
+                    BigUint::ZERO
+                } else {
+                    &denominator - 1u8
+                };
+                big(formula.flat.as_str()) + (part + rounding_up) / denominator
             }
         }
     }

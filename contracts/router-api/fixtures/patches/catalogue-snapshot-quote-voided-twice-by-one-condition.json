@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/6/value/quote/statement/outcome/voided_by/0",
+      "value": "amount_changes"
+    }
+  ]
+}
