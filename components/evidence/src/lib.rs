@@ -6,6 +6,7 @@
 
 mod grade;
 mod network;
+pub mod replay;
 mod route;
 
 pub use grade::{
