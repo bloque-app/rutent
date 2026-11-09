@@ -160,6 +160,7 @@ pub struct Dialled {
     pub to: SocketAddr,
     pub method: Method,
     pub target: String,
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -190,6 +191,11 @@ impl Connector for ScriptedConnector {
             to: dial.to,
             method: request.method(),
             target: request.target().to_owned(),
+            headers: request
+                .headers()
+                .iter()
+                .map(|h| (h.name().to_owned(), h.value().to_owned()))
+                .collect(),
             body: request.body().to_vec(),
         });
         self.script

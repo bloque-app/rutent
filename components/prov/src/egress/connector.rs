@@ -35,12 +35,19 @@ pub struct Dial<'a> {
 ///   untrusted or expired chain, or a version below the minimum fails as [`ConnectError::NotVerified`], before
 ///   any byte of the request is sent. It never falls back to plain text or a lower version, and never retries
 ///   on another address (`B-18`);
+/// - send no TLS 1.3 early data (0-RTT): early data can be replayed, and is sent before the handshake has
+///   verified the peer;
 /// - not reuse a connection or a TLS session made for another name or address;
 /// - send the `Host` header itself, from [`Dial::name`] (with the port when it isn't the scheme's default). A
 ///   [`Request`] never carries one;
 /// - never follow a redirect: a `3xx` comes back as a [`Response`] with its `Location`, and the egress layer
 ///   decides whether to follow it;
 /// - bound the time and the size of what it reads, and give [`ConnectError::NoAnswer`] when a bound is reached.
+///
+/// One exchange is one HTTP request and one answer. A WebSocket session is not, so `wss` is not supported
+/// through a connector: a `wss` dial is checked like any other (destination, address, TLS), and then the
+/// connector refuses it before connecting, as [`ConnectError::Unreachable`]. No outside operation of `M2` uses
+/// `wss`; serving it needs a session interface of its own.
 pub trait Connector {
     /// Sends `request` over a connection to `dial`, and returns the answer.
     fn exchange(&self, dial: &Dial<'_>, request: &Request) -> Result<Response, ConnectError>;
@@ -278,13 +285,20 @@ impl Request {
     }
 
     /// The same request at another target, as a redirect asks: `307` and `308` keep the method and the body,
-    /// the others turn it into a `GET` with none.
-    pub(super) fn redirected(&self, status: u16, target: String) -> Request {
+    /// the others turn it into a `GET` with none. Unless the redirect stays on the same scheme, host and port,
+    /// every sensitive header is dropped, so a credential meant for one destination never reaches another (the
+    /// curl CVE-2018-1000007 class); plain headers follow.
+    pub(super) fn redirected(&self, status: u16, target: String, same_endpoint: bool) -> Request {
         let keep = matches!(status, 307 | 308);
         Request {
             method: if keep { self.method } else { Method::Get },
             target,
-            headers: self.headers.clone(),
+            headers: self
+                .headers
+                .iter()
+                .filter(|h| same_endpoint || !h.sensitive)
+                .cloned()
+                .collect(),
             body: if keep { self.body.clone() } else { Vec::new() },
         }
     }

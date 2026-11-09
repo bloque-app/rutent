@@ -157,3 +157,30 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Tags.** `B-17` and `B-18` are rows of `EXP-2`'s scoring sheet, not identifiers `SPEC.md`, the ADRs or `PLAN.md`
   define, so the tests tag `REQ-MDL-7`, `REQ-MDL-8` and `THR-79` and name the rows in their doc comments.
 - **`DEC-20`.** The credential proxy's egress is a `DEC-20` path; the commit body says so.
+
+## T-014-03, review round
+
+- **Merged `m2`** before answering the review.
+- **Credentials don't follow a redirect to another endpoint.** `Request::redirected` dropped nothing, so a `302`
+  from `api` to `files` carried `api`'s `Authorization` to `files` (the curl CVE-2018-1000007 class). Now every
+  header built with `Header::sensitive` is dropped whenever the redirect changes the scheme, host or port. A
+  redirect within the same endpoint keeps it. Plain headers follow either way. This replaces the earlier
+  reading that a declared destination of the same operation may receive them. Test:
+  `redirect_to_another_host_drops_the_credentials_meant_for_the_first`.
+- **Pinned blocks get the special-purpose check too.** `allows` trusted that the declaration had passed
+  `validate_declaration`, and nothing under `components/prov/src` calls it. The special-purpose ranges
+  (`SPECIAL_PURPOSE`: loopback, link-local and the metadata address `169.254.169.254`, private, unique-local and
+  the rest) are now refused for `Blocks` as for `public`. A block over one of them reaches none of it. Test:
+  `pinned_block_over_a_special_purpose_range_reaches_none_of_it`. The property tests' model follows.
+- **Connector contract.** It now forbids TLS 1.3 early data (0-RTT), which can be replayed and is sent before the
+  peer is verified. It also states that `wss` isn't supported through one exchange: a `wss` dial is checked like
+  any other, then the connector refuses it before connecting, as `Unreachable`. Serving WebSocket needs a session
+  interface of its own; no `M2` operation uses `wss`.
+- **The record test reaches a dial.** `every_outbound_call_is_recorded_with_destination_version_and_transaction`
+  claimed more than it ran: `status` is refused before any dial. It now also makes a call that is dialled and gets
+  no answer, and its comment says which calls are refused before a dial.
+- **Moved to `T-014-05`, the orchestrator's new row.** Two pieces of work above are no longer this task's:
+  - wiring `Egress` into `module/platform.rs` in place of `World::route` and `World::deliver`, together with
+    running `tls_probe` against `T-014-02`'s `rustls` connector, which closes `B-18` end to end;
+  - the `DEC-4` bump of `module-interface`: a refusal reason for a failed TLS check, and a valid shape for an
+    unconnected last hop of a call that isn't refused. The two "Gap in the contract" items above are carried there.

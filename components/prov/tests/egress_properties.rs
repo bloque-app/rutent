@@ -238,7 +238,7 @@ fn case(rng: &mut Rng) -> Case {
     }
 }
 
-/// Whether `address` lies within `addresses`, as ADR-0004 states it: for `public`, in no special-purpose range.
+/// Whether `address` lies within `addresses`, as ADR-0004 states it, and in no special-purpose range.
 fn allowed(addresses: &Addresses, address: IpAddr) -> bool {
     let within = |ip: IpAddr, block: IpAddr, len: u8| match (ip, block) {
         (IpAddr::V4(a), IpAddr::V4(b)) => {
@@ -249,15 +249,17 @@ fn allowed(addresses: &Addresses, address: IpAddr) -> bool {
         }
         _ => false,
     };
-    match addresses {
-        Addresses::Public(_) => !SPECIAL_PURPOSE
-            .iter()
-            .any(|(range, len)| within(address, range.parse().unwrap(), *len)),
-        Addresses::Blocks(blocks) => blocks.iter().any(|b| {
-            let (ip, len) = b.parts();
-            within(address, ip, len)
-        }),
-    }
+    let special = SPECIAL_PURPOSE
+        .iter()
+        .any(|(range, len)| within(address, range.parse().unwrap(), *len));
+    !special
+        && match addresses {
+            Addresses::Public(_) => true,
+            Addresses::Blocks(blocks) => blocks.iter().any(|b| {
+                let (ip, len) = b.parts();
+                within(address, ip, len)
+            }),
+        }
 }
 
 fn name(text: &str) -> Name {

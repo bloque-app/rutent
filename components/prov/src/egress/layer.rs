@@ -239,7 +239,7 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
                     Outcome::Refused(Refusal::RedirectToUndeclaredDestination),
                 );
             };
-            request = request.redirected(response.status, target);
+            request = request.redirected(response.status, target, next == current);
             current = next;
         }
     }
@@ -303,19 +303,24 @@ fn follow(current: &Endpoint, location: &str) -> Option<(Endpoint, String)> {
     })
 }
 
-/// Whether `address` is within `addresses`: for `public`, globally routable, in no special-purpose range.
+/// Whether `address` is within `addresses`, and in no special-purpose range ([`SPECIAL_PURPOSE`]). The
+/// special-purpose test holds for pinned blocks too: the egress layer doesn't rely on the declaration having
+/// passed `validate_declaration`, so a block over loopback, link-local or a private range still reaches none of
+/// it.
 fn allows(addresses: &Addresses, address: IpAddr) -> bool {
-    match addresses {
-        Addresses::Public(_) => !SPECIAL_PURPOSE.iter().any(|(range, len)| {
-            range
-                .parse::<IpAddr>()
-                .is_ok_and(|range| within(address, range, *len))
-        }),
-        Addresses::Blocks(blocks) => blocks.iter().any(|block| {
-            let (ip, len) = block.parts();
-            within(address, ip, len)
-        }),
-    }
+    let special = SPECIAL_PURPOSE.iter().any(|(range, len)| {
+        range
+            .parse::<IpAddr>()
+            .is_ok_and(|range| within(address, range, *len))
+    });
+    !special
+        && match addresses {
+            Addresses::Public(_) => true,
+            Addresses::Blocks(blocks) => blocks.iter().any(|block| {
+                let (ip, len) = block.parts();
+                within(address, ip, len)
+            }),
+        }
 }
 
 /// Whether `ip` lies within the block `outer/outer_len`. An IPv4 address and an IPv6 block never match, so an

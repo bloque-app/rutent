@@ -609,9 +609,9 @@ fn failed_tls_check_to_a_declared_destination_is_refused() {
     assert_eq!((impostor.accepted(), bare.accepted()), (1, 1));
 }
 
-/// `REQ-MDL-8`: every call leaves exactly one record, completed, failed, unreachable or refused, naming the
-/// transaction, provider, module version and operation, the secrets' names, and each hop's destination and
-/// address.
+/// `REQ-MDL-8`: every call leaves exactly one record, whether it completed, failed, got no answer or was refused
+/// before any dial (another operation's destination, an undeclared host), naming the transaction, provider,
+/// module version and operation, the secrets' names, and each hop's destination and address.
 // verifies: REQ-MDL-8
 #[test]
 fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
@@ -619,6 +619,7 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
     resolver
         .then("api.acme.example", &[API])
         .then("files.acme.example", &[FILES])
+        .then("files.acme.example", &["93.184.216.81"])
         .then("status.acme.example", &["93.184.216.99"]);
     let connector = ScriptedConnector::default();
     connector
@@ -631,7 +632,8 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
                 body: Vec::new(),
             }),
         )
-        .answer("93.184.216.99", Err(ConnectError::NoAnswer));
+        .answer("93.184.216.81", Err(ConnectError::NoAnswer))
+        .answer("93.184.216.99", ok());
     let egress = Egress::new(&resolver, &connector);
     let flight = Flight::payout("tx-11");
     let mut log = Vec::new();
@@ -661,6 +663,12 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
             post("/d"),
             &mut log,
         ),
+        egress.send(
+            &flight.call(),
+            https("files.acme.example"),
+            post("/e"),
+            &mut log,
+        ),
     ];
 
     assert!(matches!(outcomes[0], Outcome::Completed(_)));
@@ -673,6 +681,7 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
         outcomes[3],
         Outcome::Refused(Refusal::UndeclaredDestination)
     );
+    assert_eq!(outcomes[4], Outcome::NoAnswer);
     assert_eq!(log.len(), outcomes.len(), "one record per call");
     for record in &log {
         assert_eq!(record.transaction.as_str(), "tx-11");
@@ -695,7 +704,14 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
         "status is another operation's"
     );
     assert_eq!(log[3].hops[0].host.as_str(), "unknown.example");
-    assert_eq!(connector.dials().len(), 2);
+    assert_eq!(log[4].outcome, CallOutcome::Unknown(Nothing {}));
+    assert_eq!(log[4].hops[0].destination, Some(name("files")));
+    assert_eq!(log[4].hops[0].address, address("93.184.216.81"));
+    assert_eq!(
+        connector.dials().len(),
+        3,
+        "status and unknown are never dialled"
+    );
 }
 
 /// A connection that drops after the request may have left is recorded as unknown, and one that can't be made at
@@ -818,4 +834,102 @@ fn request_naming_its_own_host_or_framing_is_not_built() {
         !printed.contains("s3cr3t") && !printed.contains("secret body"),
         "{printed}"
     );
+}
+
+/// A redirect to another host never carries the credentials meant for the first: sensitive headers are dropped
+/// when the scheme, host or port changes, and kept on a redirect within the same endpoint. Plain headers follow
+/// either way (the curl CVE-2018-1000007 class).
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn redirect_to_another_host_drops_the_credentials_meant_for_the_first() {
+    let resolver = TableResolver::default();
+    resolver
+        .then("api.acme.example", &[API])
+        .then("files.acme.example", &[FILES]);
+    let connector = ScriptedConnector::default();
+    connector
+        .answer(API, redirect(307, "https://files.acme.example/upload"))
+        .answer(FILES, redirect(307, "/upload/again"));
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-14");
+    let request = Request::new(
+        Method::Post,
+        "/p",
+        vec![
+            Header::sensitive("Authorization", "Bearer api-only"),
+            Header::plain("X-Request-Id", "r-1"),
+        ],
+        Vec::new(),
+    )
+    .expect("a request");
+    let mut log = Vec::new();
+
+    egress.send(&flight.call(), https("api.acme.example"), request, &mut log);
+
+    let dials = connector.dials();
+    assert_eq!(dials.len(), MAX_HOPS);
+    let names =
+        |dial: &Dialled| -> Vec<String> { dial.headers.iter().map(|(n, _)| n.clone()).collect() };
+    assert_eq!(
+        names(&dials[0]),
+        ["Authorization", "X-Request-Id"],
+        "the first host gets it"
+    );
+    for (i, dial) in dials.iter().enumerate().skip(1) {
+        assert_eq!(dial.name, "files.acme.example");
+        assert_eq!(
+            names(dial),
+            ["X-Request-Id"],
+            "dial {i}: never to another host"
+        );
+    }
+}
+
+/// A pinned block is held to the same special-purpose ranges as `public`, whether or not the declaration was
+/// validated on its way in: a block covering loopback, link-local (the cloud metadata address), private or
+/// unique-local addresses reaches none of them.
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn pinned_block_over_a_special_purpose_range_reaches_none_of_it() {
+    for (block, resolved) in [
+        ("169.254.169.254/32", METADATA),
+        ("127.0.0.0/8", "127.0.0.1"),
+        ("10.0.0.0/8", "10.0.0.7"),
+        ("0.0.0.0/0", "192.168.1.1"),
+        ("::/0", "::1"),
+        ("fc00::/7", "fd00::1"),
+    ] {
+        let mut declaration = declaration();
+        let files = declaration
+            .outside
+            .destinations
+            .iter_mut()
+            .find(|d| d.name.as_str() == "files")
+            .expect("files");
+        files.addresses = serde_json::from_value(serde_json::json!([block])).expect("a block");
+        let resolver = TableResolver::default();
+        resolver.then("files.acme.example", &[resolved]);
+        let connector = ScriptedConnector::default();
+        connector.answer(resolved, ok());
+        let egress = Egress::new(&resolver, &connector);
+        let flight = Flight {
+            declaration,
+            ..Flight::payout("tx-15")
+        };
+        let mut log = Vec::new();
+
+        let outcome = egress.send(
+            &flight.call(),
+            https("files.acme.example"),
+            post("/f"),
+            &mut log,
+        );
+
+        assert_eq!(
+            outcome,
+            Outcome::Refused(Refusal::AddressNotAllowed),
+            "{block}"
+        );
+        assert!(connector.dials().is_empty(), "{block}");
+    }
 }
