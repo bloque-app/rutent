@@ -138,7 +138,7 @@ pub const KEY_B: &str = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
 pub const KEY_C: &str = "CAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJic";
 pub const OPERATOR_KEY: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
-fn fixture(contract: &str, name: &str) -> Value {
+pub fn fixture(contract: &str, name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../contracts")
         .join(contract)

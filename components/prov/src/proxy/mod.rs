@@ -26,7 +26,14 @@
 //!   reach only its role's [`Bucket`].
 //! - [`HttpsTransport`]: the production [`Transport`], HTTPS with the store's certificate verified against the
 //!   deployment's CA (rustls), and plain HTTP only to a loopback address, for development.
+//!
+//! `T-014-04` gives cross-module calls on each module's own credentials:
+//!
+//! - [`judge_call`]: a call only where the caller's release declares it and the route names it ([`RouteCalls`]),
+//!   in the contract's order of checks, which the module platform applies to every call it routes. The callee's
+//!   lookups are its own process's, so it resolves only its own secrets.
 
+mod calls;
 mod https;
 mod kv;
 mod resolver;
@@ -37,6 +44,7 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
+pub use calls::{CallAsked, CallJudgement, NamedCall, RouteCalls, judge_call, no_route};
 pub use https::HttpsTransport;
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};
 pub use resolver::{ResolveError, Resolver};

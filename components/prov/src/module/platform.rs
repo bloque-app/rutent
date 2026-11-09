@@ -20,8 +20,8 @@ use rutent_contracts::module_interface::{
     CallOutcome, CallRefusalReason, CallRefused, Capabilities, CrossModuleCall, CrossModuleOutcome,
     Declaration, Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name,
     Nothing, OperationKind, OutboundCallRecord, OutsideOutcome, OutsideRequest, OutsideResponse,
-    PartName, Parts, RefusalReason, Refused, ReleaseAssertion, RouteReference, SPECIAL_PURPOSE,
-    Scheme, SecretLookup, SecretRefusalReason, Time, widening,
+    PartName, Parts, RefusalReason, Refused, ReleaseAssertion, SPECIAL_PURPOSE, Scheme,
+    SecretLookup, SecretRefusalReason, Time, widening,
 };
 use rutent_contracts::provider_role::{
     Operation, RESULT_SHAPE, ResultBody, Signature, SignatureScheme, Statement,
@@ -43,7 +43,7 @@ use crate::module::types::{
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent,
 };
 use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
-use crate::proxy::{self, Caller, InFlight};
+use crate::proxy::{self, CallAsked, Caller, InFlight, RouteCalls};
 
 /// The most hops an outbound call follows, redirects included.
 const MAX_HOPS: usize = 5;
@@ -138,6 +138,9 @@ pub struct Platform<W: World> {
     envelope: Envelope,
     /// What the platform reaches beyond its providers' processes.
     pub world: W,
+    /// The calls the routes in flight name, by transaction: a cross-module call is made only where one does
+    /// (`REQ-MDL-21`). Whoever hands the platform a route segment's operation names its calls here, and ends them.
+    pub routes: RouteCalls,
     operations_received: BTreeMap<String, usize>,
     providers: BTreeMap<String, Slot>,
     stack: Vec<Context>,
@@ -171,6 +174,7 @@ impl<W: World> Platform<W> {
             output_limit: 0,
             envelope,
             world,
+            routes: RouteCalls::default(),
             operations_received: BTreeMap::new(),
             providers: BTreeMap::new(),
             stack: Vec::new(),
@@ -859,8 +863,8 @@ impl<W: World> Platform<W> {
     /// the kind of the operation actually forwarded, and the callee's module runs; it is recorded either way
     /// (`REQ-MDL-21`). The kind is judged by `OperationKind::of` the forwarded operation, the one the caller is
     /// handling, never by the kind the guest names: a guest naming another kind, or none the contract knows, is
-    /// refused as `undeclared_kind`, and the record names the forwarded kind. The route is the suite's
-    /// placeholder, `conformance-route` and `segment-1`: the suite has no routes, so this binding checks none.
+    /// refused as `undeclared_kind`, and the record names the forwarded kind. The route is judged against
+    /// [`Platform::routes`] (`proxy::judge_call`), and the record names the segment that names the call.
     fn cross_module(&mut self, callee: &str, claimed: &str) -> Reply {
         if let Err(reply) = self.admit_request(
             &[
@@ -892,20 +896,20 @@ impl<W: World> Platform<W> {
         };
         let kind = OperationKind::of(&asked.statement);
         let claimed = serde_json::from_value::<OperationKind>(Value::from(claimed)).ok();
-        let mut refusal = match declaration
-            .outside
-            .calls
-            .iter()
-            .find(|c| c.callee.as_str() == callee)
-        {
-            None => Some(CallRefusalReason::UndeclaredCallee),
-            Some(c) if !c.kinds.contains(&kind) || claimed != Some(kind) => {
-                Some(CallRefusalReason::UndeclaredKind)
-            }
-            // Outside an outside request, no route segment can name the call: the contract's third check.
-            Some(_) if !in_flight => Some(CallRefusalReason::NotNamedByRoute),
-            Some(_) => None,
-        };
+        // The declaration's and the route's checks, the contract's first three, are the proxy's rule (`F-014`).
+        let judged = proxy::judge_call(
+            &declaration,
+            &self.routes,
+            &CallAsked {
+                caller: &caller,
+                transaction: &transaction,
+                callee,
+                kind,
+                claimed,
+                in_flight,
+            },
+        );
+        let mut refusal = judged.refusal;
         // Every call is counted, refused ones too, and a call that passed the declaration's checks is bounded in depth.
         // The contract has no refusal reason for a limit (`T-010-09` adds one), so a call over a bound keeps the
         // reason it already has, or is recorded as `callee_unavailable`; the caller's operation ends as a limit,
@@ -973,10 +977,7 @@ impl<W: World> Platform<W> {
             transaction,
             caller,
             caller_version,
-            route: RouteReference {
-                decision_record: Identifier::new("conformance-route").expect("an id"),
-                segment: Identifier::new("segment-1").expect("an id"),
-            },
+            route: judged.route,
             operation: asked.statement,
             outcome,
         });
