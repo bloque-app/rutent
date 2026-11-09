@@ -11,8 +11,9 @@ checked against, Bloque's own included (`DEC-5`, `DEC-23`). `run_role_suite(harn
 every probe from the provider's advertisement and returns a `Report`.
 
 - **What it drives.** A provider implements `RoleProvider`: its advertisement, `handle` for one operation
-  statement, a `state` fingerprint, and an optional status query. The test hooks that provoke what can't be
-  provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
+  statement, a `state` fingerprint, and an optional status query. Each statement it gives is a `Received`: the JSON
+  it sent, and the statement read from those bytes, so the suite checks what was sent. The test hooks that
+  provoke what can't be provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
   separate `RoleHarness` trait, so a production adapter can't fabricate a reserve's word. `WithoutHooks` runs a
   provider with none.
 - **What it probes.** Per value-moving tuple: a dry run, an execution compared with its quote, a repeat where
@@ -32,8 +33,14 @@ every probe from the provider's advertisement and returns a `Report`.
   deployment's name; naming another operator key while signed with the operator's; under a higher major, a
   higher patch and a lower protocol version; and signed with a key other than the operator's. Each must be refused finally and change nothing. Where an honest answer would be yes, a
   provider that served the foreign question would really give one.
+- **Signatures.** Each statement's text must have a signing input under the contract's rule
+  (`provider_role::signing_input`: I-JSON, no member named twice, a `signature.value`), or `EnvelopeWellFormed` is
+  flagged. The `SignatureVerifier` is handed the maker, the signature and the statement's bytes as received; a
+  statement nested in a result, a judgement or a reserve's confirmation, as its own text within the result's
+  (`provider_role::member`). The stand-ins send what `serde_json` writes of their statements (`Received::sent`).
+  The Ed25519 verifier itself is the catalogue's (`T-012-02`).
 - **The report.** `findings` lists every broken rule under one of 21 `Check`s. `uncovered` lists the answers the
-  advertisement requires that the suite didn't see. `deferred` lists checks it couldn't conclude: until `M2`,
+  advertisement requires that the suite didn't see. `deferred` lists checks it couldn't conclude:
   `SignatureVerifies` with `DeferredVerifier`. `passed()` means no finding, nothing uncovered and nothing
   deferred; `passed_but_for_deferred()` leaves the deferred checks aside.
 - **Certification takes two reports on the same adapter build** (ruled by the orchestrator, for `F-031` to
@@ -69,8 +76,12 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     artefact;
   - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
   - `handle`, for one provider-role operation, and `take_events`, for the outbound call records, the secret lookups
-    by outcome status only, the state reads, and the cross-module call records, delivered or refused, as the
-    contract shapes them.
+    by outcome status only, the state reads, and the cross-module call records, delivered, unanswered or refused,
+    as the contract shapes them. A call to a widened callee that received it counts as reached, answered or not.
+  - A refusal at admission (`AdmissionRefusal`) or of an answer (`PlatformRefusal`) is the module-interface
+    contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
+    and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit
+    (`with_step_limit`), a module that passes it, with those reasons.
 - **The test hooks.** `BoundaryHarness`, a separate test-only trait, holds what a production runtime must not offer:
   - `build`, the binding's module for a format-neutral `ModuleSpec`: a module-interface declaration, the `Step`s its
     parts take (look up a secret, read state, call an endpoint, call another module) and the `Output` its sandboxed

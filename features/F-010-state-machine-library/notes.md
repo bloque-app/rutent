@@ -24,6 +24,52 @@
   `serde_json`) changes that package's dependency list and forces every contract's bump and a `DEC-20` click for work
   that is not contract work. If it bites, narrow the identity to name, version and checksum.
 
+## T-010-03: the contract changes `M1` routed to `M2`
+
+- **One bump each.** Read as one version per change, not one per contract: provider-role 2.3.0 (the encoder) and
+  2.4.0 (bytes as received for the verifier); module-interface 2.2.0 (`validate_call_against`), 2.3.0 (refusal
+  reasons) and 3.0.0 (`delivered` only when answered), each its own `##` section, minors first so one major covers
+  the breaking one. The guard reads only the top section, so one commit carries all five. Router-api,
+  state-machine and host are unchanged: no file of theirs moved and no dependency of the crate moved.
+- **Where the encoder lives.** In provider-role (`provider_role::canonical`), beside the signing rule, so the host
+  contract's `exactly-once` wording ("the same canonical JSON under RFC 8785") is now true without a host bump; the
+  host's README still names RFC 8785 and not the module. The VOS program and the native client still write
+  `serde_json`'s form for their own dedup; moving them onto `to_canonical` is `T-010-05`'s, with the program.
+- **Its own parser.** `serde_json::Value` keeps the last of two equal member names, and `serde_json`'s default float
+  parsing is not always correctly rounded without `float_roundtrip`. Turning on a feature of `serde_json` from
+  `contracts/` would move the root lock and force every contract's bump (T-010-02's note above), so the encoder
+  parses I-JSON itself and reads numbers with `core`'s correctly rounded parser. No dependency added.
+- **Numbers.** `core`'s `{:e}` gives the shortest digits that read back but does not break an exact tie to even, as
+  ECMA-262's Note 2 asks (RFC 8785 Appendix B's `1424953923781206.25`, which `core` writes as `...206.3`). The
+  encoder checks the exact expansion for a tie and takes the even neighbour where it reads back.
+- **`to_canonical` and non-finite floats.** It goes through `serde_json::to_vec`, which writes NaN and infinities as
+  `null`. No contract type holds a float, so this is documented on the function rather than guarded.
+- **Refusal reasons.** `AdmissionRefusal` and `PlatformRefusal` were the module-boundary suite's, not the
+  contract's. The plan calls them module-interface's, so they move into `contracts/src/module_interface/refusal.rs`
+  and the suite re-exports them under the same paths. Added: `DisallowedImport(PartName)`,
+  `VersionAlreadyAdmitted`, `LimitReached`, the last named after the outbound call's existing `limit_reached`.
+  `UnreadableBinary` and `Unavailable` stay, for what they say. Rust-only types, no schema: nothing records them yet
+  (`T-013-*` may). The reference double refuses a re-admitted version, and, given `with_step_limit`, a module past
+  it; the suite has no probe for either, which stays `F-024`'s with the suite's next version.
+- **`undeclared_kind`.** Accepted only where the callee and the forwarded kind are both declared; an
+  `undeclared_callee` refusal of a declared callee stays untrue, since the record's callee is the one judged. The
+  record the wasm binding's `tests/calls.rs` writes for that case meets this rule as written; the binding was not
+  rebuilt here.
+- **`unanswered`.** A new outcome, not a refusal: the platform passed the call on, so the callee may have acted.
+  `validate_call_against` treats it as passed on (`UndeclaredCallDelivered`, name kept, docs widened). The reference
+  double still records `delivered`, since its callee is a counter that always "answers"; a binding-side test of a
+  callee that never answers is `T-013-02`'s. Major, since a 2.x `delivered` for an unanswered call is untrue now and
+  the Rust enum gained a variant. Fixtures keep naming interface 2.0.1, as `T-010-01` left them; nothing compares it.
+- **Bytes as received.** `RoleProvider` now returns `Received<T>`, the JSON a provider sent and the statement read
+  from it, so the suite never re-serialises. `SignatureVerifier::verify` takes `received`; a nested judgement or
+  confirmation is handed over as its own text inside the result's (`provider_role::member`), so a verifier can
+  canonicalise it as received. The suite also flags `EnvelopeWellFormed` when a statement's text has no signing
+  input. The stand-ins implement a private typed trait and send through `Received::sent`.
+- **Not run here.** The `EXP-2` bindings and the VOS adapter depend on `conformance/` and `contracts/` by path,
+  outside the workspace, and were not rebuilt: the bindings implement `ModuleBinding`, whose refusal types keep their
+  paths but gain variants, and implement no `RoleProvider`. Their workflows run only on their own branches.
+- **DEC-20 path touched:** `contracts/`.
+
 ## T-010-04: the state machine library (`rutent-stm`)
 
 Built against the contracts as they stand at `138281d` (state-machine 2.1.0, host 2.1.0). Nothing in `contracts/` was
@@ -222,3 +268,19 @@ Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed o
 - **Read before build.** The fetched VOS tree was skimmed, not audited: its five `build.rs` files (they read
   environment variables and write to `OUT_DIR`, and the phone tool's embeds two ELFs), its `.cargo/config.toml` files
   and `blobs.lock`. It sits under `target/` and its lockfiles stay out of the tracked tree.
+
+## T-010-03: answering the review of `e1c7cf2`
+
+- **The tie check's cost.** Expanding a double's exact value (`{:.780e}`) for every shortest form ending in an odd
+  digit made a megabyte of `[1,1,…]` cost seconds inside `signing_input`, on untrusted text. The expansion now runs
+  only where an even neighbour of the shortest digits reads back as the same double, which needs many digits; a
+  unit test counts expansions and finds none over a megabyte of short numbers and one for Appendix B's tie.
+- **Non-finite values.** `to_canonical` now refuses NaN and the infinities (`NonFiniteNumber`) with a serialiser
+  that writes nothing and checks every float before `serde_json` writes the value. Folded into provider-role 2.3.0,
+  which no release carries yet; the guard compares with `m2`, where provider-role is 2.2.0.
+- **Noncharacters.** The parser refuses U+FDD0 to U+FDEF and the last two code points of every plane, written or
+  escaped (RFC 7493 §2.1), so the "I-JSON" claim holds as written. Also folded into 2.3.0.
+- **An unanswered call to a widened callee.** The module-boundary suite took it as unclear; it now counts as reached
+  when the callee received it, since being passed on is what lends the widening. The reference double gains
+  `with_callees_that_never_answer`, which records every call it passes on as `unanswered`, for the suite's test. No
+  contract changes with it.

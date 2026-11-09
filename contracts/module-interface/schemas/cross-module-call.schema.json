@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:module-interface:cross-module-call",
   "title": "Cross-module call",
-  "description": "One module's call to another provider's module, through the platform, and the platform's record of it (REQ-MDL-21, THR-86). It names the route segment that declares the call; the platform makes it only when that route names it and the caller declares it. The callee receives a provider-role operation, answers it as any other, and acts on its own credentials: the call carries none. Its outcome says whether the platform delivered it or refused it, so a refused call is recorded too.",
+  "description": "One module's call to another provider's module, through the platform, and the platform's record of it (REQ-MDL-21, THR-86). It names the route segment that declares the call; the platform makes it only when that route names it and the caller declares it. The callee receives a provider-role operation, answers it as any other, and acts on its own credentials: the call carries none. Its outcome says whether the callee answered it (delivered), the platform passed it on and no answer came (unanswered), or the platform refused it, so a refused or unanswered call is recorded too. A call is recorded as delivered only when its callee answered.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -56,7 +56,7 @@
       }
     },
     "outcome": {
-      "description": "Delivered to the callee, or refused by the platform, naming the callee, the kind asked and why.",
+      "description": "Delivered to the callee, which answered; passed on with no answer; or refused by the platform, naming the callee, the kind asked and why.",
       "type": "object",
       "required": [
         "status"
@@ -65,6 +65,7 @@
         "status": {
           "enum": [
             "delivered",
+            "unanswered",
             "refused"
           ]
         }
@@ -92,6 +93,21 @@
             ],
             "properties": {
               "status": {
+                "const": "unanswered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/unanswered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
                 "const": "refused"
               }
             }
@@ -103,6 +119,7 @@
       ]
     },
     "delivered": {
+      "description": "The platform passed the call on and the callee answered it.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -114,8 +131,21 @@
         }
       }
     },
+    "unanswered": {
+      "description": "The platform passed the call on and no answer came: the callee stopped, was stopped by a limit or a deadline, or gave no answer the platform could read. What the callee did is not known, so it is not recorded as delivered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "unanswered"
+        }
+      }
+    },
     "refused": {
-      "description": "A refused call. Its callee and kind are the operation's; that is checked in Rust, not by this schema. Whether the reason is true of the caller's declaration is checked in Rust against that declaration.",
+      "description": "A refused call: the platform passed nothing on. Its callee and kind are the operation's; that is checked in Rust, not by this schema. Whether the reason is true of the caller's declaration is checked in Rust against that declaration.",
       "type": "object",
       "additionalProperties": false,
       "required": [

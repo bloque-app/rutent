@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use common::{Net, WIDE, bounds, endpoint, fee, outer, parse, request, routed, shortlist};
 use rutent_conformance::router::recompute;
-use rutent_contracts::router_api::{DecisionRecord, PolicyBounds, Request, Router};
+use rutent_contracts::router_api::{DecisionRecord, OperationKind, PolicyBounds, Request, Router};
 use rutent_router::RouteFinder;
+use rutent_router::shortlist::{Question, Refusal, Wanted, asks};
 use serde_json::{Value, json};
 
 /// splitmix64: a small, fixed generator, so the draws are the same on every machine.
@@ -475,4 +476,280 @@ fn every_destination_the_tuples_reach_within_the_hop_limit_gets_a_route() {
         }
     }
     assert!(routes > 100, "only {routes} routes found");
+}
+
+// The shortlist (`T-011-02`).
+
+/// The answer to one question, made at the shortlist round's `taken_at` and valid for five minutes: accepted on
+/// the terms the shortlist round evaluated, or refused.
+fn answer(id: &str, question: &Question, (fee, out): (&str, &str), refuse: bool) -> Value {
+    let provider = format!("p-{}", question.tuple.as_str());
+    let amount_in = question.amount_in.amount().as_str();
+    let kind = match question.kind {
+        OperationKind::Withdrawal => "withdrawal",
+        OperationKind::Deposit => "deposit",
+        OperationKind::Route => "transfer",
+        OperationKind::Exchange => "conversion",
+    };
+    let mut outcome = json!({ "status": "refused", "refusal": { "class": "final" } });
+    if !refuse {
+        outcome = json!({
+            "status": "dry_run_accepted",
+            "amount_in": amount_in,
+            "amount_out": out,
+            "fee": { "asset": question.from.asset.id, "amount": fee },
+            "valid_until": "2026-11-06T15:05:00Z",
+            "voided_by": ["validity_passes", "amount_changes"],
+            "settlement_seconds": 30,
+        });
+        if question.wants == Wanted::FreshQuote {
+            outcome["direction"] = json!("exact_in");
+        }
+    }
+    let body = json!({ "kind": kind, "transaction": format!("tx-{id}"), "outcome": outcome });
+    let statement = Net::envelope(&provider, TAKEN_AT, "urn:rutent:provider-role:result", body);
+    let value = if refuse || question.wants == Wanted::DryRun {
+        json!({ "kind": "dry_run", "tuple": question.tuple, "amount_in": amount_in, "result": statement })
+    } else {
+        json!({ "kind": "fresh_quote", "tuple": question.tuple, "quote": statement })
+    };
+    let mut figure = json!({
+        "figure_id": id,
+        "origin": Net::origin(&provider),
+        "age_seconds": 0,
+        "value": value,
+    });
+    if !refuse {
+        figure["valid_for_seconds"] = json!(300);
+    }
+    figure
+}
+
+/// Each kept operation's provider, tuple and amount in.
+fn kept_operations(record: &DecisionRecord) -> BTreeSet<(String, String, String)> {
+    record
+        .shortlist()
+        .iter()
+        .flat_map(|c| c.parts[0].operations.iter())
+        .map(|o| {
+            (
+                o.provider.as_str().to_owned(),
+                o.figures.first().as_str().to_owned(),
+                o.amount_in.amount().as_str().to_owned(),
+            )
+        })
+        .collect()
+}
+
+// verifies: REQ-CAT-5, REQ-QTE-13, DEC-18
+#[test]
+fn only_providers_of_kept_candidates_are_asked_each_about_its_own_tuples_at_one_amount() {
+    let mut refused = 0;
+    for (seed, network, request, bounds) in generated(300, ANY) {
+        let record = routed(&request, &network.snapshot, &bounds);
+        let asked = match asks(&record) {
+            Ok(asked) => asked,
+            Err(refusal) => {
+                assert_eq!(refusal, Refusal::NoRoute, "seed {seed}");
+                assert!(record.shortlist().is_empty(), "seed {seed}");
+                refused += 1;
+                continue;
+            }
+        };
+        let mut questions = BTreeSet::new();
+        for provider in asked.providers() {
+            let of = asked.of(provider);
+            assert!(
+                !of.is_empty(),
+                "seed {seed}: {provider:?} is listed with nothing to ask"
+            );
+            for question in of {
+                assert_eq!(
+                    format!("p-{}", question.tuple.as_str()),
+                    provider.as_str(),
+                    "seed {seed}: a provider is asked about another's tuple"
+                );
+                assert_eq!(
+                    question.wants,
+                    Wanted::for_kind(question.kind),
+                    "seed {seed}"
+                );
+                questions.insert((
+                    provider.as_str().to_owned(),
+                    question.tuple.as_str().to_owned(),
+                    question.amount_in.amount().as_str().to_owned(),
+                ));
+            }
+        }
+        // Each tuple a kept operation takes is asked about once, at one of the amounts that reach it.
+        let kept = kept_operations(&record);
+        assert!(questions.is_subset(&kept), "seed {seed}");
+        let tuples = |set: &BTreeSet<(String, String, String)>| -> Vec<(String, String)> {
+            set.iter().map(|(p, t, _)| (p.clone(), t.clone())).collect()
+        };
+        let asked_tuples = tuples(&questions);
+        let mut kept_tuples = tuples(&kept);
+        kept_tuples.dedup();
+        assert_eq!(
+            asked_tuples, kept_tuples,
+            "seed {seed}: a tuple is asked at two amounts or none"
+        );
+        for provider in &network.providers {
+            let on_shortlist = questions.iter().any(|(p, ..)| p == provider);
+            let provider = rutent_contracts::router_api::Id::new(provider.as_str()).unwrap();
+            assert_eq!(!asked.of(&provider).is_empty(), on_shortlist, "seed {seed}");
+        }
+        let mut reversed = network.snapshot.clone();
+        reversed.figures.reverse();
+        let again = routed(&request, &reversed, &bounds);
+        assert_eq!(asks(&again).ok(), Some(asked), "seed {seed}");
+    }
+    assert!(
+        refused > 0,
+        "the draws should hold some routings with nothing kept"
+    );
+}
+
+// verifies: AC-3, REQ-CAT-14, REQ-QTE-13, DEC-18
+#[test]
+fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_choice() {
+    let shape = Shape {
+        priced: true,
+        exchanges: false,
+        faults: true,
+    };
+    let (mut chosen, mut refusals, mut unasked) = (0, 0, 0);
+    for (seed, network, request, bounds) in generated(600, shape) {
+        let record = routed(&request, &network.snapshot, &bounds);
+        let Ok(asked) = asks(&record) else {
+            continue;
+        };
+        let mut draw = Draw(seed ^ 0xA5A5);
+        let terms: BTreeMap<(String, String), (String, String)> = record
+            .shortlist()
+            .iter()
+            .flat_map(|c| c.parts[0].operations.iter())
+            .map(|o| {
+                (
+                    (
+                        o.figures.first().as_str().to_owned(),
+                        o.amount_in.amount().as_str().to_owned(),
+                    ),
+                    (o.fee.amount.clone(), o.amount_out.as_str().to_owned()),
+                )
+            })
+            .collect();
+        let mut snapshot = serde_json::to_value(&network.snapshot).unwrap();
+        snapshot["snapshot_id"] = json!("snap-gen-choice");
+        let mut refused_tuples = BTreeSet::new();
+        let figures = snapshot["figures"].as_array_mut().unwrap();
+        for provider in asked.providers() {
+            for (n, question) in asked.of(provider).iter().enumerate() {
+                let key = (
+                    question.tuple.as_str().to_owned(),
+                    question.amount_in.amount().as_str().to_owned(),
+                );
+                let (fee, out) = &terms[&key];
+                let refuse = draw.one_in(2);
+                if refuse {
+                    refused_tuples.insert(key.clone());
+                    refusals += 1;
+                }
+                figures.push(answer(
+                    &format!("a-{}-{n}", key.0),
+                    question,
+                    (fee, out),
+                    refuse,
+                ));
+            }
+        }
+        // An answer from a provider no one asked never enters the choice round.
+        for candidate in record.candidates.iter().filter(|c| c.dropped.is_some()) {
+            let operation = candidate.parts[0].operations.first();
+            if !asked.of(&operation.provider).is_empty() {
+                continue;
+            }
+            let question = Question {
+                tuple: operation.figures.first().clone(),
+                kind: operation.kind,
+                from: operation.from.clone(),
+                to: operation.to.clone(),
+                amount_in: operation.amount_in.clone(),
+                wants: Wanted::for_kind(operation.kind),
+            };
+            let figure = answer(
+                &format!("u-{}", candidate.candidate_id.as_str()),
+                &question,
+                (&operation.fee.amount, operation.amount_out.as_str()),
+                false,
+            );
+            let parsed: rutent_contracts::router_api::Figure = parse("figure", figure);
+            assert!(
+                !asked.admits(&parsed),
+                "seed {seed}: an unasked answer is admitted"
+            );
+            unasked += 1;
+        }
+        let snapshot: rutent_contracts::router_api::CatalogueSnapshot =
+            parse("choice snapshot", snapshot);
+        assert!(
+            snapshot.figures.iter().all(|f| asked.admits(f)),
+            "seed {seed}"
+        );
+        let mut choice = serde_json::to_value(&request).unwrap();
+        choice["request_id"] = json!(format!("r-{seed}-choice"));
+        choice["round"] = json!({
+            "kind": "choice",
+            "refines": { "request_id": request.request_id, "taken_at": TAKEN_AT },
+        });
+        let choice: Request = parse("choice request", choice);
+        let decided = routed(&choice, &snapshot, &bounds);
+        let recomputed = recompute(&decided);
+        assert!(
+            recomputed.passes(),
+            "seed {seed}: {:#?}",
+            recomputed.findings
+        );
+        let refused_in = |c: &rutent_contracts::router_api::Candidate| {
+            c.parts[0].operations.iter().any(|o| {
+                refused_tuples.contains(&(
+                    o.figures.first().as_str().to_owned(),
+                    o.amount_in.amount().as_str().to_owned(),
+                ))
+            })
+        };
+        // A shortlisted route each of whose operations was asked at its amount and accepted.
+        let confirmable = record.shortlist().into_iter().any(|c| {
+            !refused_in(c)
+                && c.parts[0].operations.iter().all(|o| {
+                    asked
+                        .of(&o.provider)
+                        .iter()
+                        .any(|q| &q.tuple == o.figures.first() && q.amount_in == o.amount_in)
+                })
+        });
+        match decided.chosen() {
+            Some(route) => {
+                chosen += 1;
+                assert!(
+                    !refused_in(route),
+                    "seed {seed}: a refused option is chosen"
+                );
+                assert!(
+                    number(route.parts[0].operations.last().amount_out.as_str()) > 0,
+                    "seed {seed}: the choice arrives with nothing"
+                );
+            }
+            None => assert!(
+                !confirmable,
+                "seed {seed}: a confirmed shortlisted route is not chosen"
+            ),
+        }
+    }
+    assert!(chosen > 50, "only {chosen} choices");
+    assert!(refusals > 50, "only {refusals} refusals");
+    assert!(
+        unasked > 0,
+        "the draws should hold some providers off the shortlist"
+    );
 }

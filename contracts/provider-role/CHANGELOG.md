@@ -1,5 +1,28 @@
 # provider-role changelog
 
+## 2.4.0
+- A verifier gets the statement's bytes as received: `signing_input(received)` gives the bytes a maker signs under
+  the signing rule, the RFC 8785 canonical form of the statement's text with only the top-level `signature.value`
+  removed, refusing text that isn't an envelope (`NotAnEnvelope`) or isn't I-JSON. `member(json, path)` gives a
+  nested statement's own text exactly as it sits in the outer one, such as a judgement in a verifier's result.
+  The role suite's `SignatureVerifier` is handed those bytes (`T-010-03`; F-002's notes: the verifier canonicalises
+  the JSON as received, never a re-serialisation). Minor: two functions added, no schema, type or rule changes.
+  (DEC-4, DEC-20, T-010-03)
+
+## 2.3.0
+- One canonical JSON encoder, `provider_role::canonical`, written to RFC 8785, the scheme the signing rule and the
+  host contract's `exactly-once` name: `canonicalize(json)` and `to_canonical(value)`, which refuses a value holding
+  NaN or an infinity (`NonFiniteNumber`) before `serde_json` could write it as `null`. Members sort by their names'
+  UTF-16 code units; numbers are written as the doubles they denote, as ECMAScript writes them, ties to even; strings
+  escape only `"`, `\` and the C0 controls. Its own parser refuses duplicate member names, lone surrogates,
+  noncharacters (RFC 7493 §2.1), numbers beyond a double and nesting past 128, where `serde_json::Value` would keep
+  the last of two members silently. It passes RFC 8785's §3.2.2, §3.2.3 and Appendix B vectors, the NaN and Infinity
+  rows included, and expands a number's exact value only where an even neighbour of its shortest digits reads back, so
+  a long array of short numbers costs no expansion. Before, both rules named RFC 8785 and no code in `contracts/`
+  wrote it; the VOS program's dedup and the native client wrote `serde_json`'s own form (`EXP-1` outcome, finding 7).
+  Minor: added, no schema, type or rule changes, and the host contract's wording now has the encoder it names. (DEC-4,
+  DEC-20, DEC-26, T-010-03)
+
 ## 2.2.0
 - The Rust code behind this contract (`contracts/src/provider_role`) is `no_std` with `alloc`:
   it uses `core` and `alloc` paths, and the crate's

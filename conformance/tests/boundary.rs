@@ -455,3 +455,21 @@ fn every_fixture_and_control_is_listed_once() {
         );
     }
 }
+
+// verifies: REQ-MDL-21, AC-21
+#[test]
+fn widened_callee_reached_but_never_answered_counts_as_reached() {
+    // A callee that never answers still received the call, so an accepted callee widening was applied.
+    let report = run(ReferenceDouble::new().with_callees_that_never_answer());
+    assert!(
+        exercised_in_every_language(&report, Exercised::WideningByCalleeHeld),
+        "the callee widening wasn't seen through an unanswered call: {report:?}"
+    );
+    assert!(
+        !report
+            .flagged()
+            .contains(&Check::WideningNeedsFreshAcceptance),
+        "an unanswered call to a widened callee was judged: {:?}",
+        report.findings
+    );
+}

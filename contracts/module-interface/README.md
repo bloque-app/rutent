@@ -315,18 +315,42 @@ The platform's egress layer writes it, not the module, since the outside part is
 - **What the platform does.** It makes the call only when the caller declares it and the route names it
   (`REQ-MDL-21`, `THR-86`). The callee answers the operation as any other, on its own credentials. The call carries
   none.
-- **Its outcome** (added in 0.4.0, `DEC-4`, `T-003-03`). Every call's record says whether the platform delivered
-  it or refused it, so a refused call is recorded too, for audit and so that a format binding writes a contract
-  shape. A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
+- **Its outcome** (added in 0.4.0, `DEC-4`, `T-003-03`; `unanswered` since 3.0.0). Every call's record says what
+  became of it, so a refused or unanswered call is recorded too, for audit and so that a format binding writes a
+  contract shape:
+  - `delivered`: the platform passed it on and the callee answered. A call is recorded as delivered only then;
+  - `unanswered`: the platform passed it on and no answer came, the callee stopped, killed at a deadline or
+    answering unreadably. What the callee did is not known;
+  - `refused`: the platform passed nothing on.
+
+  A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
   - `undeclared_callee`: the caller doesn't declare the callee;
   - `undeclared_kind`: it declares the callee but not the kind;
   - `not_named_by_route`: the route doesn't name the call;
   - `callee_unavailable`: the callee's module isn't running.
 
   `validate_call` checks that a refusal's callee and kind are the operation's. `validate_call_against(declaration,
-  call)` checks the outcome against the caller's declaration: a delivered call's callee and kind are declared, and
-  an undeclared callee or kind is refused for that reason. The route and the callee's running are the platform's to
-  hold at run time.
+  call)` checks the outcome against the caller's declaration: a call passed on, delivered or unanswered, has its
+  callee and kind declared, and an undeclared callee or kind is refused for that reason. Since 2.2.0 a call whose
+  callee and forwarded kind are declared may still be refused as `undeclared_kind`: the caller's code named another
+  kind, and the record names the kind forwarded, so the declaration can't contradict it. An `undeclared_callee`
+  refusal of a declared callee stays untrue. The route and the callee's running are the platform's to hold at run
+  time.
+
+## Refusals at admission and at run time
+
+Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no format (`DEC-4`):
+
+- `AdmissionRefusal`: a part altered from its asserted digest (`PartAltered`), binaries the binding can't read
+  (`UnreadableBinary`), a part importing what the binding doesn't offer it (`DisallowedImport`), a version the
+  provider already has admitted or waiting (`VersionAlreadyAdmitted`), or a module judged unable to start
+  (`WontStart`).
+- `PlatformRefusal`, for an operation's answer: malformed or oversized output (`REQ-MDL-12`), a part stopped by a
+  limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running
+  (`Unavailable`), or a kind the module doesn't handle (`NotHandled`).
+
+The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
+the three reasons added.
 
 ## Which rule lives where
 
@@ -377,9 +401,9 @@ governs.
 | Every hop matched a declared destination and connected, except the last hop of a refused call | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop` |
 | A cross-module call names its transaction and its route segment, and carries no credentials | schema | `cross-module-call-without-a-transaction`, `cross-module-call-without-a-route`, `cross-module-call-route-without-its-segment`, `cross-module-call-carrying-credentials` |
 | A cross-module call's callee isn't its caller, and its operation names the call's transaction | Rust, `CallToOwnProvider`, `TransactionMismatch` | `cross-module-call-to-its-own-provider`, `cross-module-call-for-another-transaction` |
-| A cross-module call records its outcome; a refusal names the callee, the kind and a known reason | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason` |
+| A cross-module call records its outcome; a refusal names the callee, the kind and a known reason; an unanswered call carries nothing | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason`, `cross-module-call-unanswered-carrying-a-reason` |
 | A refusal's callee and kind are the call's | Rust, `RefusalNamesAnotherCall` | `cross-module-call-refusal-naming-another-callee` |
-| A delivered call is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
+| A call passed on, delivered or unanswered, is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-unanswered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
 | A signed result's `signature.key` is the declared `statement_key` | Rust, `ResultNotSignedWithStatementKey` | `signed-result-signed-with-another-advertised-key` |
 | The `statement_key` is one of the provider's advertised `keys`, listed for `statements`, and isn't the deployment's `operator_key` | Rust, `StatementKeyNotAdvertised`, `StatementKeyNotForStatements`, `StatementKeyIsOperatorKey` | `signed-result-statement-key-not-advertised`, `signed-result-statement-key-listed-for-advertising`, `signed-result-statement-key-is-the-operator-key` |
 | The advertisement checked is the declaring provider's own | Rust, `AdvertisementOfAnotherProvider` | `signed-result-checked-against-another-providers-advertisement` |
