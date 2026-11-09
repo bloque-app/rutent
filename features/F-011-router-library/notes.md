@@ -71,3 +71,71 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   appear as candidates, because the router API has no drop reason for them. `REQ-AUD-4` ("every candidate
   considered") then holds only for operations the contract can state. Open for `T-011-04` (the decision record) to
   settle, either by a drop reason under a `DEC-4` bump or by recording this reading as the contract's.
+
+## T-011-03
+
+- **Where the rules live.** The quote rules are pure functions in `components/router/src/quote.rs`, public as
+  `rutent_router::quote`. None reads a clock, a provider or anything but its arguments; a time enters as a
+  `Timestamp` the caller passes. `route` itself is unchanged: the router API's record has no place for an
+  operator's fee, a firmness, a commitment or a hold, so these are checks Core runs on a record, not drops.
+- **Inputs the contract doesn't carry, an item to raise.** The router API holds no operator's fee formula
+  (`REQ-QTE-2`), no per-tuple slippage the operator sets (`REQ-QTE-9`), no history of a provider's stated terms
+  with their times (`REQ-QTE-6`), no actual settlement times (`REQ-QTE-3`) and no held quote (`REQ-QTE-15`). The
+  module defines each as its own argument type (`FeeFormula` for the operator, `SlippageLimit`, `StatedTerms`,
+  `Timestamp` pairs, `HeldQuote`) rather than changing `contracts/`, a `DEC-20` path needing a `DEC-4` bump. Whether
+  `PolicyBounds` should carry the operator's fee and the slippage limits, so a decision record names them
+  (`REQ-AUD-4`), is open. So is how Core reaches these types: `DEC-2` has Core reach the libraries only through
+  their public contracts, and these types are the router crate's, not `contracts/`'s.
+- **A quote's fields (`REQ-QTE-1`).** The contract's types already require every element, so `quote_fields`
+  refuses what the types can't: an amount in that isn't a positive whole number, an amount out or fee that isn't a
+  whole number, a fee with no asset, a `valid_until` that isn't a timestamp or a figure with no validity, an empty
+  `voided_by`, a conversion's rate that isn't a decimal, a figure from no provider, and a statement made by another
+  party than the figure's provider. "A forged one is detected" needs the signature verified against the provider's
+  keys, which the snapshot doesn't carry: that stays Core's precondition (router-api README, "Unchecked by
+  either"), and no signature crate was added.
+- **The price shown (`REQ-QTE-2`), read as composition.** Per the owner's ruling `spec-route-price-composition`,
+  the providers' terms compose: what they deliver is the last operation's `amount_out`, summed over parts. The
+  operator's fee is taken from that, at the destination, in its unit, by its formula (at its maximum where it gives
+  one, as route evaluation counts a fee). It is taken there, not from the origin's amount, because taking it first
+  would change every segment's amount and so void each quote asked at that amount (`amount_changes`). The only
+  difference between the providers' terms and what is shown is then the operator's fee; `check_shown` refuses a
+  shown amount with any other difference.
+- **Quote and price (`REQ-QTE-7`).** `quoted_price` labels what it shows a quote. `executed_price` labels it the
+  price, and only once every operation has an executed result; until then it is refused and what is shown stays
+  the quote. The executed amounts are taken as given, from each provider's result.
+- **Three calendar days (`REQ-QTE-9`, `REQ-QTE-10`).** A provider declares settlement in seconds from segment
+  start, and the start's date isn't known when the route is quoted, so three calendar days are read as
+  `3 × 86 400 = 259 200` seconds, inclusive: 259 200 is within three days, 259 201 is over. A segment's declared
+  time is the slowest usable fresh quote it cites, or else its price, as `fastest_settlement` counts it
+  (router-api `Objective`); a dry run's time isn't counted, as the contract counts only fresh quotes.
+- **Slippage within three days (`REQ-QTE-9`).** Within three days, an exchange's rate may move against the
+  customer by at most the tighter of its quote's own regime (firm is 0, bounded is its bound) and the operator's
+  limit for the tuple. A floating regime, or no quote, leaves the operator's limit. Within three days, an exchange
+  on a tuple with no operator limit is named (`NoSlippageLimit`), not passed. A reserve or ramp sets no rate, so
+  only its fees are committed. A move in the customer's favour is always within. Rates compare exactly, by
+  cross-multiplication.
+- **No firm rate (`REQ-QTE-10`, `AC-13`).** A route with any segment over three days has no firm rate.
+  `firmness` names each such segment by part, operation and tuple, and `may_start` refuses it until the customer
+  has accepted. Recording the acceptance is Core's (`REQ-ORD-10`).
+- **Binding from segment start (`REQ-QTE-6`).** The terms bound are the last stated at or before the segment
+  started, ties going to the one listed last; before the start, everything is a quote. Core keeps the history of a
+  tuple's stated terms with their times; a snapshot's price figure states only its age at `taken_at`.
+- **Held quotes (`REQ-QTE-15`).** A hold is a choice round's record that chose a candidate, with a validity at or
+  after the record's snapshot. It is usable up to and at its validity, refused after it, and always labelled a
+  quote. It binds no provider, whose terms bind only from segment start, so a hold that lapses or whose quotes
+  expire has no effect beyond itself. Using a hold doesn't re-check its quotes' own validity; Core routes again
+  when it starts the route.
+- **Formula against charge (`REQ-QTE-5`, `AC-14`).** `formula_fee` computes `flat + ceil(a × n / d)`, its maximum
+  aside, so anyone with the inputs can compute the fee before use. `check_charge` flags a charge above the maximum
+  where one is given, the charge being known only after execution, and else above the formula's fee. A charge
+  below either is within. The search's own fee (`price::fee`) is unchanged: it counts the maximum, which is right
+  for evaluating a route but not for checking a charge.
+- **`quote_voided` is not here.** The `T-011-01` notes left `quote_voided` open beside these rules. It is a drop
+  reason in `route`, so it belongs with the search and the shortlist, which `T-011-02` is changing now. This task
+  doesn't touch it.
+- **Property tests (`DEC-18`), in `tests/quote.rs`, with no new dependency.** They use the same fixed-seed
+  splitmix64 as `T-011-01`. They check that a charge at its bound is never flagged and one unit more always is;
+  that a route is firm exactly when no segment is over three days, naming each that is; that no terms stated after
+  a segment starts ever bind it; that what is shown differs from the providers' terms by the operator's fee alone;
+  that a hold is refused exactly past its validity; and that a rate at its committed slippage is within while one
+  just past it is not.
