@@ -482,6 +482,7 @@ since one package can't build for two targets.
 | `T-016-01` | The holding-account interface: the balance, as the sum held for the orders at that node, attributed per order, for `CMP-CORE-AUDIT` to read | `T-012-01` | `REQ-CAT-23`, `INV-1`, `REQ-AUD-15` | `holding account balance equals the sum held for its orders` [`INV-1`, `REQ-CAT-23`] | this property test passes |
 | `T-016-02` | The plain wallet, a Wasm component in Rust, admitted through `T-013-04` like any module and registered by the operator for a public node | `T-016-01`, `T-013-04` | `REQ-CAT-23`, `INV-5`, `REQ-MDL-1` | `operator registers a plain wallet as a node's holding account` [`REQ-CAT-23`]; `value between segments rests only in a node's holding account` [`INV-5`] | these tests pass in CI |
 | `T-016-03` | A route handed on: the holding account's own record proves its withdrawal, and the holding account counts as the route's starting reserve | `T-016-02` | `REQ-ORD-40`, `INV-5` | `handed on route's withdrawal is proven by the holding account's record` [`REQ-ORD-40`, `INV-5`] | this test passes |
+| `T-016-04` | Operator-published holding modules: a holding-account module the operator publishes is admitted on the operator's own signed release, without a provider advertisement, and only such a module can be registered as a node's holding account; a provider's module can't (`T-016-02`'s review). The catalogue records the operator as its publisher | `T-016-02` | `REQ-CAT-23`, `REQ-MDL-1`, `INV-5` | `operator published holding module is admitted on the operators own release` [`REQ-MDL-1`]; `provider module cannot be registered as a holding account` [`REQ-CAT-23`] | both tests pass with real signing, and no test registers a provider's module as a holding account |
 
 ---
 
@@ -591,7 +592,7 @@ flowchart LR
 | 13 | `T-010-05`, `T-011-04`, `T-012-02`, `T-012-04`, `T-013-02`, `T-013-03`, `T-014-02`, `T-014-03` |
 | 14 | `T-010-06`, `T-010-07`, `T-010-08`, `T-010-09`, `T-013-04`, `T-014-04` |
 | 15 | `T-010-10`, `T-011-05`, `T-013-05`, `T-013-06`, `T-014-05`, `T-016-02` |
-| 16 | `T-011-06`, `T-016-03` |
+| 16 | `T-011-06`, `T-016-03`, `T-016-04` |
 
 **Critical path:** `T-010-01` → `T-010-03` → `T-012-02` → `T-013-04` → `T-016-02` → `T-016-03`: six tasks. The
 contract changes carry the Ed25519 verifier's canonical bytes, which admission and the holding account's
