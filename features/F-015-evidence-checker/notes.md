@@ -25,3 +25,21 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - One destination per route (`one_destination`): exactly one segment ends at an outer node, and it is the last, a
   deposit. Anything else is reported as a named violation, not panicked on and not guessed around.
 - `proptest` is a dev-dependency (`DEC-18`); its lock additions have `licences/RECORD` lines, all permissive.
+
+## T-015-02
+
+- The simulated network is `SimulatedNetwork`, in its own module (`simnet`). It is a hand-driven chain: `record`
+  puts a movement in the tip block, `advance` adds blocks, `checkpoint` covers every block to the tip, `reorg(depth)`
+  undoes the newest `depth` blocks' movements. It imports nothing but the interface (`DEC-2`).
+- Confirmations count the including block as the first, so `Confirmations(n)` is final when the tip is `n - 1`
+  blocks past the including block. `Confirmations(0)` is read as `Confirmations(1)`. `Instant` is final on record.
+  `Checkpoint` is final once a checkpoint taken at or after the including block's height exists.
+- A reorg undoes a movement only when it is not final and the reorg rule allows it: `Never` protects every movement,
+  `DepthBound(d)` protects one with more than `d` confirmations, `UntilFinal` protects only final ones. A final
+  movement is never undone, whatever depth a reorg asks for. Reorgs do not lower the tip height.
+- Recording a movement id the network already holds (not reorged out) is refused, as `T-015-01` reads a movement id
+  as unreusable. A reorged-out id may be recorded again, in a new block, because a reorg puts the transaction back in
+  the pool.
+- A checkpoint covers the movements recorded before it, by order of recording, not by block: a movement recorded
+  after a checkpoint, even into the same tip block, is not final until the next checkpoint. A reorged-out id may come
+  back only with the movement it first named, since a transaction id fixes its content (`ContentChanged` otherwise).
