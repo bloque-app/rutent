@@ -543,7 +543,7 @@ fn kept_operations(record: &DecisionRecord) -> BTreeSet<(String, String, String)
 
 // verifies: REQ-CAT-5, REQ-QTE-13, DEC-18
 #[test]
-fn only_providers_of_kept_candidates_are_asked_and_only_about_their_own_tuples() {
+fn only_providers_of_kept_candidates_are_asked_each_about_its_own_tuples_at_one_amount() {
     let mut refused = 0;
     for (seed, network, request, bounds) in generated(300, ANY) {
         let record = routed(&request, &network.snapshot, &bounds);
@@ -581,7 +581,19 @@ fn only_providers_of_kept_candidates_are_asked_and_only_about_their_own_tuples()
                 ));
             }
         }
-        assert_eq!(questions, kept_operations(&record), "seed {seed}");
+        // Each tuple a kept operation takes is asked about once, at one of the amounts that reach it.
+        let kept = kept_operations(&record);
+        assert!(questions.is_subset(&kept), "seed {seed}");
+        let tuples = |set: &BTreeSet<(String, String, String)>| -> Vec<(String, String)> {
+            set.iter().map(|(p, t, _)| (p.clone(), t.clone())).collect()
+        };
+        let asked_tuples = tuples(&questions);
+        let mut kept_tuples = tuples(&kept);
+        kept_tuples.dedup();
+        assert_eq!(
+            asked_tuples, kept_tuples,
+            "seed {seed}: a tuple is asked at two amounts or none"
+        );
         for provider in &network.providers {
             let on_shortlist = questions.iter().any(|(p, ..)| p == provider);
             let provider = rutent_contracts::router_api::Id::new(provider.as_str()).unwrap();
@@ -706,7 +718,16 @@ fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_ch
                 ))
             })
         };
-        let confirmable = record.shortlist().into_iter().any(|c| !refused_in(c));
+        // A shortlisted route each of whose operations was asked at its amount and accepted.
+        let confirmable = record.shortlist().into_iter().any(|c| {
+            !refused_in(c)
+                && c.parts[0].operations.iter().all(|o| {
+                    asked
+                        .of(&o.provider)
+                        .iter()
+                        .any(|q| &q.tuple == o.figures.first() && q.amount_in == o.amount_in)
+                })
+        });
         match decided.chosen() {
             Some(route) => {
                 chosen += 1;

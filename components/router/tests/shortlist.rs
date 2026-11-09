@@ -437,3 +437,214 @@ fn route_with_no_positive_arrival_is_refused() {
     );
     assert_eq!(common::tuples(second.chosen().unwrap()), vec!["f-alt"]);
 }
+
+// verifies: REQ-CAT-5
+#[test]
+fn provider_reached_at_two_amounts_is_asked_at_one_only() {
+    // Two reserves bring USDC from chain-a into the hub, and one ramp takes it on. Through the free reserve 100
+    // USDC reach the ramp; through the dearer one, 99. Asked at both, the ramp would learn that a rival came before
+    // it, and their fees' difference.
+    let mut net = Net::new("snap-two-amounts", SHORTLIST_AT, 60);
+    let ends = || (outer("chain-a"), json!("hub"));
+    // The dearer reserve's tuple id sorts first, so it is `c001`; the search ranks the other route first.
+    net.reserve(
+        "f-r1",
+        ends(),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        priced("0", "1", "100"),
+    );
+    net.reserve(
+        "f-r2",
+        ends(),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        priced("0", "0", "1"),
+    );
+    net.ramp(
+        "f-ramp",
+        ("hub", "hub-b"),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        priced("0", "0", "1"),
+    );
+    let from = endpoint(outer("chain-a"), "USDC", 6);
+    let to = endpoint(json!("hub-b"), "USDC", 6);
+    let record = routed(
+        &request(
+            "r-short",
+            shortlist(),
+            from.clone(),
+            to.clone(),
+            "100000000",
+        ),
+        &net.build(),
+        &bounds(2),
+    );
+    passes(&record);
+    assert_eq!(record.shortlist().len(), 2);
+    let asked = asks(&record).expect("both routes are shortlisted");
+    let questions = asked.of(&id(&provider_of("f-ramp")));
+    assert_eq!(questions.len(), 1, "the ramp is asked once: {questions:#?}");
+    // At the amount of the route the search ranks first.
+    assert_eq!(questions[0].amount_in.amount().as_str(), "100000000");
+
+    // The other route's ramp stays unconfirmed until Core asks again.
+    let mut answers = Net::new("answers", CHOICE_AT, 0);
+    let (r1, r2) = (
+        ("100000000", "USDC", "1000000", "99000000"),
+        ("100000000", "USDC", "0", "100000000"),
+    );
+    accepted(&mut answers, "d-r1", ("withdrawal", "f-r1"), r1);
+    accepted(&mut answers, "d-r2", ("withdrawal", "f-r2"), r2);
+    accepted(&mut answers, "q-ramp", ("transfer", "f-ramp"), r2);
+    let (_, choice) = route_both(&net, answers, (from, to, "100000000"), &bounds(2));
+    assert_eq!(
+        on(&choice, &["f-r1", "f-ramp"]).dropped,
+        Some(DropReason::Unconfirmed {
+            part: 0,
+            operation: 1
+        })
+    );
+    assert_eq!(
+        common::tuples(choice.chosen().unwrap()),
+        vec!["f-r2", "f-ramp"]
+    );
+}
+
+/// The figure `id` of `answers`, read alone.
+fn figure(answers: &Net, id: &str) -> rutent_contracts::router_api::Figure {
+    let found = answers
+        .figures
+        .iter()
+        .find(|f| f["figure_id"] == id)
+        .unwrap()
+        .clone();
+    parse("figure", found)
+}
+
+// verifies: REQ-CAT-14, REQ-CAT-5
+#[test]
+fn ramp_that_refuses_its_quote_is_dropped_as_refused_not_unconfirmed() {
+    let mut net = Net::new("snap-ramp-refusal", SHORTLIST_AT, 60);
+    let free = || priced("0", "0", "1");
+    net.ramp(
+        "f-ramp",
+        ("hub", "hub-b"),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        free(),
+    );
+    let from = endpoint(json!("hub"), "USDC", 6);
+    let to = endpoint(json!("hub-b"), "USDC", 6);
+    let record = routed(
+        &request(
+            "r-short",
+            shortlist(),
+            from.clone(),
+            to.clone(),
+            "100000000",
+        ),
+        &net.build(),
+        &bounds(1),
+    );
+    let asked = asks(&record).unwrap();
+    assert_eq!(asked.of(&id("p-f-ramp"))[0].wants, Wanted::FreshQuote);
+
+    // A ramp's refusal of a quote is its refused transfer dry run, and is admitted.
+    let mut answers = Net::new("answers", CHOICE_AT, 0);
+    refused(&mut answers, "d-ramp", ("transfer", "f-ramp"), "100000000");
+    assert!(asked.admits(&figure(&answers, "d-ramp")));
+    // A fresh quote whose result refuses is no quote: the contract keeps it out of every snapshot.
+    let mut quote = answers.figures[0].clone();
+    quote["figure_id"] = json!("q-ramp-refused");
+    quote["value"] = json!({
+        "kind": "fresh_quote",
+        "tuple": "f-ramp",
+        "quote": quote["value"]["result"].clone(),
+    });
+    let mut with_quote = Net::new("answers", CHOICE_AT, 0);
+    with_quote.figures.push(quote);
+    assert!(!asked.admits(&figure(&with_quote, "q-ramp-refused")));
+    let mut snapshot =
+        serde_json::to_value(choice_snapshot(&net, Net::new("a", CHOICE_AT, 0))).unwrap();
+    snapshot["figures"]
+        .as_array_mut()
+        .unwrap()
+        .push(with_quote.figures[0].clone());
+    assert!(serde_json::from_value::<CatalogueSnapshot>(snapshot).is_err());
+
+    let (_, choice) = route_both(&net, answers, (from, to, "100000000"), &bounds(1));
+    assert_eq!(
+        on(&choice, &["f-ramp"]).dropped,
+        Some(DropReason::DryRunRefused {
+            figure: id("d-ramp")
+        })
+    );
+}
+
+// verifies: REQ-CAT-5
+#[test]
+fn answer_of_another_kind_than_asked_is_not_admitted() {
+    let mut net = Net::new("snap-kinds", SHORTLIST_AT, 60);
+    let free = || priced("0", "0", "1");
+    net.reserve(
+        "f-in",
+        (outer("chain-a"), json!("hub")),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        free(),
+    );
+    net.ramp(
+        "f-ramp",
+        ("hub", "hub-b"),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        free(),
+    );
+    let record = routed(
+        &request(
+            "r-short",
+            shortlist(),
+            endpoint(outer("chain-a"), "USDC", 6),
+            endpoint(json!("hub-b"), "USDC", 6),
+            "100000000",
+        ),
+        &net.build(),
+        &bounds(2),
+    );
+    let asked = asks(&record).unwrap();
+    let terms = ("100000000", "USDC", "0", "100000000");
+    let mut answers = Net::new("answers", CHOICE_AT, 0);
+    accepted(&mut answers, "d-in", ("withdrawal", "f-in"), terms);
+    accepted(&mut answers, "q-ramp", ("transfer", "f-ramp"), terms);
+    assert!(asked.admits(&figure(&answers, "d-in")));
+    assert!(asked.admits(&figure(&answers, "q-ramp")));
+
+    // The reserve was asked for a dry run, the ramp for a fresh quote: each answer in the other's form stays out.
+    let mut swapped = Net::new("answers", CHOICE_AT, 0);
+    let mut as_quote = answers.figures[0].clone();
+    as_quote["figure_id"] = json!("q-in");
+    as_quote["value"] = json!({
+        "kind": "fresh_quote",
+        "tuple": "f-in",
+        "quote": as_quote["value"]["result"].clone(),
+    });
+    let mut as_dry_run = answers.figures[1].clone();
+    as_dry_run["figure_id"] = json!("d-ramp");
+    as_dry_run["value"] = json!({
+        "kind": "dry_run",
+        "tuple": "f-ramp",
+        "amount_in": "100000000",
+        "result": as_dry_run["value"]["quote"].clone(),
+    });
+    swapped.figures.extend([as_quote, as_dry_run]);
+    assert!(!asked.admits(&figure(&swapped, "q-in")));
+    assert!(!asked.admits(&figure(&swapped, "d-ramp")));
+}

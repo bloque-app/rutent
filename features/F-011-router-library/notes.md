@@ -123,3 +123,32 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Seeing the properties fail.** Each was run once against a mutated `asks`, then `shortlist.rs` was restored. Asking
   every candidate's operations, not only the kept ones', trips the first property (seed 9). Asking only each kept
   candidate's first operation trips the second (seed 61: a confirmed shortlisted route is not chosen).
+
+## Review of T-011-02 (fresh reviewer, 2026-11-09)
+
+- **One amount per tuple, the default applied for item `cat5-single-amount-asks`.** The reviewer confirmed the gap
+  above, so it is closed on the safe default, which the owner can overrule on the form. Each provider is asked
+  about each of its tuples once, at one amount. Where kept paths reach a tuple at different amounts, the question
+  is at the amount on the kept candidate ranked first: by the request's objective, as the choice round ranks, then
+  by `candidate_id`. For fastest settlement, the shortlist round holds no fresh quote, so each operation's seconds
+  are its price's. The other paths' operations at that tuple stay `unconfirmed` in the choice round until Core asks
+  again at their amounts (`F-020`). This trades away the fallback through those paths in one choice round. `AC-3`'s
+  fallback to another provider of the same tuple still holds, since that provider is asked about its own tuple.
+  Keeping questions unlinkable across calls, with no shared session, transaction or identity between them, is
+  `F-020`'s. The test `provider_reached_at_two_amounts_is_asked_at_one_only` failed first, with two questions to
+  the ramp. The first property now checks one question per kept tuple. Against the old per-amount keying it fails
+  at seed 60.
+- **A refused fresh quote, read differently from the review.** The review asked to admit a refused `FreshQuote` and
+  read it as a refusal. The contract refuses such a figure in any snapshot (`CatalogueSnapshot::check`: "a fresh
+  quote is a provider's dry-run quote", accepted only). So a ramp or exchange refuses as a `DryRun` figure holding
+  its refused transfer or conversion, and `judge.rs` already drops on that as `dry_run_refused`. `Asks::admits`
+  keeps a refused `FreshQuote` out and admits the refused `DryRun` for a fresh-quote question. `judge.rs` is
+  unchanged. The test `ramp_that_refuses_its_quote_is_dropped_as_refused_not_unconfirmed` shows all three: the
+  admission, the contract's refusal of the other form, and the drop. It passed on first run, since it pins down
+  existing behaviour.
+- **The form asked.** `Asks::admits` now also matches the question's `wants`. A fresh-quote question admits the
+  accepted quote or a refused dry run. A dry-run question admits a dry run, accepted or refused. The test
+  `answer_of_another_kind_than_asked_is_not_admitted` failed first, admitting a reserve's answer dressed as a fresh
+  quote.
+- **`Question`'s doc** now says that a question names no rival per question, and that the set a provider receives
+  is kept clean by the one-amount rule.
