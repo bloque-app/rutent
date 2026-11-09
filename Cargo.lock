@@ -792,6 +792,7 @@ version = "0.0.0"
 name = "rutent-prov"
 version = "0.0.0"
 dependencies = [
+ "jsonschema",
  "rutent-contracts",
  "serde_json",
 ]

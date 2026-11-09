@@ -94,3 +94,74 @@ impl Rng {
 
 /// How many seeded cases each property runs.
 pub const CASES: u64 = 400;
+
+use rutent_contracts::provider_role::EvidenceGrade;
+use rutent_contracts::router_api::Version;
+use rutent_prov::catalogue::{Catalogue, tuples_of};
+
+/// The exchange provider `dex-pool`, publisher `acme`.
+pub fn exchange_advertisement() -> Advertisement {
+    advertisement("advertisement-exchange-within-one-node")
+}
+
+/// The ramp between two private nodes of `acme`.
+pub fn internal_rail_advertisement() -> Advertisement {
+    advertisement("advertisement-ramp-between-two-private-nodes-of-one-publisher")
+}
+
+/// When the fixtures' catalogues join their advertisements.
+pub const JOINED_AT: Instant = Instant(1_500);
+
+/// A catalogue of `acme`'s advertisements, each with a grant, a module version, an evidence floor of grade 4 (the
+/// weakest) on every tuple, `polygon` on the public list with a holding account, and `acme-ledger` with the
+/// publisher's. Only what the caller leaves out of this is missing.
+pub fn acme_catalogue(ads: &[Advertisement]) -> Catalogue {
+    let mut catalogue = Catalogue::new();
+    catalogue.add_public_node("polygon").unwrap();
+    catalogue
+        .register_public_holding("polygon", "wallet-module")
+        .unwrap();
+    for (i, ad) in ads.iter().enumerate() {
+        let keys = tuples_of(ad);
+        catalogue
+            .grant(grant(
+                &format!("g-{i}"),
+                &ad.provider,
+                keys.clone(),
+                100_000,
+            ))
+            .unwrap();
+        catalogue.join(ad, JOINED_AT).unwrap();
+        catalogue.set_module_version(&ad.provider, Version::new("1.0.0").unwrap());
+        for key in keys {
+            catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+        }
+    }
+    for node in ["acme-ledger", "acme-card-book"] {
+        if catalogue.publishers().publisher_of_node(node).is_some() {
+            catalogue
+                .register_private_holding(node, "acme", "acme-record-interface")
+                .unwrap();
+        }
+    }
+    catalogue
+}
+
+/// The snapshot's figure origins as (provider, publisher).
+pub fn origins(
+    snapshot: &rutent_contracts::router_api::CatalogueSnapshot,
+) -> Vec<(String, String)> {
+    use rutent_contracts::router_api::Origin;
+    snapshot
+        .figures
+        .iter()
+        .filter_map(|f| match &f.origin {
+            Origin::Provider {
+                provider,
+                publisher,
+                ..
+            } => Some((provider.to_string(), publisher.to_string())),
+            Origin::Operator { .. } => None,
+        })
+        .collect()
+}
