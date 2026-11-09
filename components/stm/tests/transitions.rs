@@ -725,3 +725,50 @@ fn only_a_route_chosen_input_opens_an_order() {
     );
     assert_eq!(run.feed(&again), na(Why::NotFromThisState));
 }
+
+// verifies: REQ-STM-6, AC-8
+#[test]
+fn a_part_that_has_not_completed_is_not_failed_by_its_starting_segment_being_undone() {
+    let mut run = Run::opened("ord-open-undo");
+    run.run_segments("p1", 1, 1);
+    assert_eq!(run.bind("p1", "p1-s2"), Outcome::Applied {});
+    let before = run.order().clone();
+    assert_eq!(run.undo("p1", "p1-s1"), na(Why::NotFromThisState));
+    assert!(same_but_last_input(&before, run.order()));
+    assert_eq!(run.part_state("p1"), OrderState::FirstSegmentSettled);
+    assert_eq!(run.segment_state("p1", "p1-s1"), SegmentState::Settled);
+
+    let mut stuck = Run::opened("ord-stuck-undo");
+    stuck.run_segments("p1", 1, 1);
+    stuck.bind("p1", "p1-s2");
+    stuck.about_part(
+        "p1",
+        Observed::StuckDeclared {
+            reason: StuckReason::Dispute,
+        },
+    );
+    assert_eq!(stuck.undo("p1", "p1-s1"), na(Why::NotFromThisState));
+    assert_eq!(stuck.part_state("p1"), OrderState::Stuck);
+}
+
+// verifies: REQ-STM-6
+#[test]
+fn a_handed_on_order_does_not_change_when_a_complete_sibling_part_is_undone() {
+    let mut run = Run::new("ord-handed-split");
+    run.choose(vec![part("a", route("a")), part("b", route("b"))], None);
+    run.run_segments("a", 1, 3);
+    run.run_segments("b", 1, 2);
+    run.bind("b", "b-s3");
+    run.fail("b", "b-s3");
+    run.about_part("b", no_route());
+    let hand = Observed::HandedOn {
+        linked_order: id("ord-next"),
+        acceptance: id("acc"),
+    };
+    assert_eq!(run.about_part("b", hand), Outcome::Applied {});
+    assert_eq!(run.order().state, OrderState::HandedOn);
+    let before = run.order().clone();
+    assert_eq!(run.undo("a", "a-s1"), na(Why::Ended));
+    assert!(same_but_last_input(&before, run.order()));
+    assert_eq!(run.order().state, OrderState::HandedOn);
+}

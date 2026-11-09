@@ -68,9 +68,10 @@ refusal reasons, the call-recording rules) names nothing the library reads. The 
   segment, else not past it. An order of one part is in its part's state. It is `order_state_of`.
 - **What counts as ended (`REQ-STM-6`).** Per part: complete, failed, handed on, ended without completing. Stuck and
   waiting for the customer are not endings. An ended part takes no input and the input is recorded as `ended`. The one
-  exception: a `reversal_completed` on the starting segment (the part's first) of a part that is complete. That
-  segment goes settled to reversal complete, and the part and so the order fail. The exception is read per part, so
-  in a split order one complete part can fail while another is still open, and an order that ended can fail later.
+  exception, after review: a `reversal_completed` on the starting segment (the part's first) of a complete part, in
+  an order that is itself complete. That segment goes settled to reversal complete, and the part and so the order
+  fail (`AC-8`). A part that has not completed, a handed-on or failed order, and an order still open do not change:
+  the same input is `not_from_this_state` or `ended`.
 - **A part's segments move forward only,** along the edges in `machine.rs`'s header. This, not the host's dedup alone,
   is why a repeat of an older input finds nothing to move: the state machine remembers only its last input.
   `provider_bound` also needs every earlier segment of the part settled, so no segment starts while the value is

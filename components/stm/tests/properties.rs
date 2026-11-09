@@ -435,6 +435,7 @@ fn an_ended_order_changes_only_by_a_complete_part_failing_when_its_starting_segm
             for before in prev.parts.iter().filter(|p| is_ended(p.state)) {
                 let after = part_after(next, before);
                 let undone = applied(step)
+                    && prev.state == OrderState::Complete
                     && before.state == OrderState::Complete
                     && matches!(step.input.observed, Observed::ReversalCompleted { .. })
                     && step.input.subject.part.as_ref() == Some(&before.part_id)

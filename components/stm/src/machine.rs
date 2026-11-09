@@ -124,7 +124,8 @@ impl StateMachine for Stm {
 }
 
 /// Whether the input is a complete part's starting segment proven undone, the one change an ended part takes
-/// (`REQ-STM-6`).
+/// (`REQ-STM-6`), and only in an order that is complete: a handed-on or failed order, or one still open, does not
+/// change. The caller checks the order.
 fn undoes_a_complete_part(part: &Part, input: &RecordedInput) -> bool {
     part.state == OrderState::Complete && undoes_starting_segment(part, input)
 }
@@ -155,7 +156,8 @@ fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
         .part
         .as_ref()
         .and_then(|id| order.parts.iter().position(|p| &p.part_id == id));
-    let exception = part_index.is_some_and(|i| undoes_a_complete_part(&order.parts[i], input));
+    let exception = order.state == OrderState::Complete
+        && part_index.is_some_and(|i| undoes_a_complete_part(&order.parts[i], input));
 
     match input.observed.scope() {
         Scope::Order => {
@@ -339,7 +341,7 @@ fn apply_to_segment(part: &mut Part, input: &RecordedInput) -> Outcome {
             SegmentState::FailedReversalOwed | SegmentState::OutcomeUnknown,
         ) if kind != OperationKind::Deposit => SegmentState::ReversalComplete,
         (Observed::ReversalCompleted { .. }, SegmentState::Settled)
-            if undoes_starting_segment(part, input) =>
+            if undoes_a_complete_part(part, input) =>
         {
             // The starting segment is proven undone: the part fails, and so the order.
             part.segments[index].state = SegmentState::ReversalComplete;
