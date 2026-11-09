@@ -327,6 +327,48 @@ fn lockfile_change_adding_only_dependency_edges_with_the_crate_changelog_passes(
 
 // verifies: DEC-4
 #[test]
+fn dependency_edge_change_with_a_version_change_still_needs_every_bump() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency moved. (DEC-4)\n");
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.2"));
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations.iter().any(|v| v.subject == "router-api"),
+        "a version change needs every bump whatever its edges do, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn new_edge_to_a_package_not_reached_before_needs_every_bump() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency gained an edge. (DEC-4)\n");
+    let head_lock = lock("1.0.1", "1.0.0").replace(
+        "checksum = \"c\"\n",
+        "checksum = \"c\"\ndependencies = [\n \"other\",\n]\n",
+    );
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &head_lock);
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "router-api" || v.message.contains("other")),
+        "a newly reached package needs every bump, got {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.subject == "router-api"),
+        "every contract needs its bump, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
 fn lockfile_change_to_an_unrelated_package_passes() {
     let fixture = Fixture::default()
         .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
