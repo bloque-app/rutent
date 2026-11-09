@@ -8,7 +8,9 @@
 //! anything but its answers, and nothing iterates a hash map.
 //!
 //! A path that meets an operation whose net is beyond its price's levels is recorded up to that operation, which
-//! arrives with nothing, and dropped as `beyond_levels`; it can't go further. It drops any other candidate for
+//! arrives with nothing, and dropped as `beyond_levels`; it can't go further. So is a path through a tuple with no
+//! price (`no_price`, stating a fee of 0) or an operation whose price's fee is above what reaches it
+//! (`fee_above_amount`, stating its amount in as its fee), as router-api 3.0.0 has them. It drops any other candidate for
 //! the first of these that holds: excluded by policy, a void statement, a stale figure,
 //! a refused dry run, an ineligible judgement, outside a band, over a ceiling, a part arriving with nothing,
 //! below the floor, a profitable rate cycle, unconfirmed (choice round). Among the rest, the choice round chooses
@@ -49,6 +51,9 @@ pub const FOLLOWS_RATE_CYCLES: u8 = 6;
 pub const OUTRANKS_UNCONFIRMED: u8 = 7;
 /// Rounds a fee's proportion down, so a route is evaluated as up to one unit cheaper per operation.
 pub const FEE_ROUNDS_DOWN: u8 = 8;
+/// Leaves out the paths no operation can state, as router-api 2.x had routers do: through a tuple with no price,
+/// or an operation whose fee is above what reaches it.
+pub const OMITS_UNSTATABLE: u8 = 9;
 
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
@@ -80,10 +85,10 @@ fn amount(value: &BigUint) -> Amount {
     Amount::new(value.to_string()).expect("at most 78 digits")
 }
 
-/// A tuple the double can route through: its figure, its one price, and its two ends.
+/// A tuple the double can route through: its figure, its one price if it has one, and its two ends.
 struct Hop<'a> {
     tuple: &'a Figure,
-    price: &'a Figure,
+    price: Option<&'a Figure>,
     provider: Id,
     kind: OperationKind,
     from: Endpoint,
@@ -131,7 +136,7 @@ fn hops(snapshot: &CatalogueSnapshot) -> Vec<Hop<'_>> {
             };
             let price = snapshot.figures.iter().find(
                 |f| matches!(&f.value, FigureValue::Price { tuple: t, .. } if t == &tuple.figure_id),
-            )?;
+            );
             Some(Hop {
                 tuple,
                 price,
@@ -199,18 +204,30 @@ fn fraction(rate: &Decimal) -> (BigUint, BigUint) {
     )
 }
 
-/// One operation as evaluated, and whether a provider's answer confirmed its terms.
+/// Why a path stops at an operation that can't be followed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// Its net is beyond its price's levels.
+    BeyondLevels,
+    /// Its tuple has no price.
+    NoPrice,
+    /// Its price's fee is above what reaches it.
+    FeeAboveAmount,
+}
+
+/// One operation as evaluated, whether a provider's answer confirmed its terms, and whether it can't be stated.
 struct Step {
     operation: Operation,
     confirmed: bool,
+    unstatable: Option<Cut>,
 }
 
 /// A path found, before it is named and judged.
 struct Found {
     tuples: Vec<String>,
     steps: Vec<Step>,
-    /// Cut short at its last operation, whose net is beyond its price's levels.
-    beyond_levels: bool,
+    /// Cut short at its last operation.
+    cut: Option<Cut>,
 }
 
 struct Search<'a, const FLAW: u8> {
@@ -336,35 +353,50 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             .iter()
             .filter(|f| self.usable(f))
             .find_map(answer);
-        let (fee, amount_out, is_confirmed) = match confirmed {
-            Some((fee, out)) => (fee, out, true),
-            None => {
-                let FigureValue::Price { fee, rate, .. } = &hop.price.value else {
+        let fee_of = |text: String| Fee {
+            asset: hop.from.asset.id.clone(),
+            amount: text,
+        };
+        let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, hop.price) {
+            // No price: never statable, whatever answers there are.
+            (_, None) => (
+                fee_of("0".to_owned()),
+                Amount::zero(),
+                false,
+                Some(Cut::NoPrice),
+            ),
+            (Some((fee, out)), Some(_)) => (fee, out, true, None),
+            (None, Some(price)) => {
+                let FigureValue::Price { fee, rate, .. } = &price.value else {
                     unreachable!("a price figure");
                 };
                 let charged = self.fee(fee, a);
                 if &charged > a {
-                    return None;
+                    (
+                        fee_of(a.to_string()),
+                        Amount::zero(),
+                        false,
+                        Some(Cut::FeeAboveAmount),
+                    )
+                } else {
+                    let out = self.convert(rate.as_ref(), &(a - &charged), hop);
+                    (fee_of(charged.to_string()), amount(&out), false, None)
                 }
-                let out = self.convert(rate.as_ref(), &(a - &charged), hop);
-                (
-                    Fee {
-                        asset: hop.from.asset.id.clone(),
-                        amount: charged.to_string(),
-                    },
-                    amount(&out),
-                    false,
-                )
             }
         };
+        if unstatable.is_some() && FLAW == OMITS_UNSTATABLE {
+            return None;
+        }
         // Cite every usable statement, as the contract asks. A statement past its validity or void is cited only
         // where no usable answer covers the operation: there it is what the operation stands on, and drops it;
-        // beside a usable answer it may not drop the candidate, so it is left out.
-        let mut figures = vec![hop.tuple.figure_id.clone(), hop.price.figure_id.clone()];
+        // beside a usable answer it may not drop the candidate, so it is left out. An operation that can't be
+        // stated is dropped for that, so it cites only the usable ones.
+        let mut figures = vec![hop.tuple.figure_id.clone()];
+        figures.extend(hop.price.map(|p| p.figure_id.clone()));
         figures.extend(
             statements
                 .iter()
-                .filter(|f| !is_confirmed || self.usable(f))
+                .filter(|f| (!is_confirmed && unstatable.is_none()) || self.usable(f))
                 .map(|f| f.figure_id.clone()),
         );
         Some(Step {
@@ -376,9 +408,10 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
                 amount_in,
                 fee,
                 amount_out,
-                figures: NonEmpty::new(figures).expect("a tuple and its price"),
+                figures: NonEmpty::new(figures).expect("a tuple"),
             },
             confirmed: is_confirmed,
+            unstatable,
         })
     }
 
@@ -400,11 +433,14 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             let out = big(step.operation.amount_out.as_str());
             path.push(i);
             steps.push(step);
-            let beyond =
-                hop.to != self.request.to && self.beyond_levels(hop, &steps[steps.len() - 1]);
-            if hop.to == self.request.to || beyond {
+            let last = &steps[steps.len() - 1];
+            let cut = last.unstatable.or_else(|| {
+                (hop.to != self.request.to && self.beyond_levels(hop, last))
+                    .then_some(Cut::BeyondLevels)
+            });
+            if hop.to == self.request.to || cut.is_some() {
                 found.push(Found {
-                    beyond_levels: beyond,
+                    cut,
                     tuples: path
                         .iter()
                         .map(|&j| self.hops[j].tuple.figure_id.as_str().to_owned())
@@ -414,11 +450,15 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
                         .map(|s| Step {
                             operation: s.operation.clone(),
                             confirmed: s.confirmed,
+                            unstatable: s.unstatable,
                         })
                         .collect(),
                 });
             }
-            if steps.len() < usize::from(self.bounds.max_hops.get()) && out > BigUint::ZERO {
+            if cut.is_none()
+                && steps.len() < usize::from(self.bounds.max_hops.get())
+                && out > BigUint::ZERO
+            {
                 self.extend(&hop.to, &out, path, steps, found);
             }
             steps.pop();
@@ -452,11 +492,11 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             .iter()
             .any(|b| big(&b.min) <= a && a <= big(&b.max));
         let net = &a - big(&operation.fee.amount);
-        let in_levels = match &hop_of.price.value {
-            FigureValue::Price {
+        let in_levels = match hop_of.price.map(|p| &p.value) {
+            Some(FigureValue::Price {
                 rate: Some(Pricing::Levels { levels }),
                 ..
-            } => net <= big(levels.last().up_to.amount().as_str()),
+            }) => net <= big(levels.last().up_to.amount().as_str()),
             _ => true,
         };
         in_band && in_levels
@@ -575,10 +615,10 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         if step.confirmed {
             return false;
         }
-        let FigureValue::Price {
+        let Some(FigureValue::Price {
             rate: Some(Pricing::Levels { levels }),
             ..
-        } = &hop.price.value
+        }) = hop.price.map(|p| &p.value)
         else {
             return false;
         };
@@ -589,11 +629,27 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
 
     /// Why a path is dropped, before ranking, or `None`.
     fn fault(&self, found: &Found) -> Option<DropReason> {
-        if found.beyond_levels {
-            return Some(DropReason::BeyondLevels {
-                part: 0,
-                operation: (found.steps.len() - 1) as u32,
-            });
+        let last = (found.steps.len() - 1) as u32;
+        match found.cut {
+            Some(Cut::BeyondLevels) => {
+                return Some(DropReason::BeyondLevels {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::NoPrice) => {
+                return Some(DropReason::NoPrice {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::FeeAboveAmount) => {
+                return Some(DropReason::FeeAboveAmount {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            None => {}
         }
         let operations: Vec<&Operation> = found.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations

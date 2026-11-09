@@ -48,6 +48,9 @@ pub struct Case {
     pub expected: Expected,
     /// Whether the case is one of the AC-2 pair: the same snapshot and bounds under the two objectives.
     pub objective_pair: bool,
+    /// Candidates the record must name, by the tuple figures they take, with the drop reason each must carry
+    /// (`REQ-AUD-4`).
+    pub drops: Vec<(Vec<&'static str>, &'static str)>,
 }
 
 /// What a router must choose on a case.
@@ -571,7 +574,8 @@ const SLOW_ROUTE: [&str; 4] = ["f-w", "f-ex-slow", "f-ramp-x", "f-dep"];
 const FAST_ROUTE: [&str; 4] = ["f-w", "f-ex-fast", "f-ramp-y", "f-dep"];
 
 /// The policy network, a shortlist round over advertised figures: an excluded exchange, an exchange whose USDC
-/// output passes a ceiling at it, a ramp whose band stops short, a deposit that keeps everything, and a floor.
+/// output passes a ceiling at it, a ramp whose band stops short, a deposit that keeps everything, a floor, an
+/// exchange with no price and a ramp whose fee is above what reaches it.
 fn policy_case() -> Case {
     let mut s = Snapshot::new("snap-policy", SHORTLIST_AT, 3540);
     withdrawal(&mut s);
@@ -644,6 +648,25 @@ fn policy_case() -> Case {
         ("reserve-greedy", "greedy-co"),
         json!({ "fee": fee("0", "1", "1"), "settlement_seconds": 120 }),
     );
+    // Two tuples no operation can state, which the record still names (`REQ-AUD-4`, router-api 3.0.0): an
+    // exchange advertised with no price, and a ramp whose flat 300 USDC fee is above the about 249 USDC that
+    // reaches it.
+    let unpriced = ("exchange-unpriced", "unpriced-co");
+    s.advertised(
+        "f-ex-unpriced",
+        unpriced,
+        json!({
+            "kind": "exchange_tuple",
+            "tuple": { "node": "ledger-co", "from": unit("COP", 2), "to": unit("USDC", 6), "terms": terms(WIDE) },
+        }),
+    );
+    ramp(
+        &mut s,
+        "f-ramp-dear",
+        ("ramp-dear", "ramp-dear"),
+        WIDE,
+        json!({ "fee": fee("300000000", "0", "1"), "settlement_seconds": 60 }),
+    );
     // The capped exchange would produce about 278.88 USDC; its ceiling is 200 USDC in flight there.
     let ceilings =
         json!([{ "provider": "exchange-capped", "asset": unit("USDC", 6), "amount": "200000000" }]);
@@ -660,6 +683,10 @@ fn policy_case() -> Case {
         bounds: bounds(4, ceilings, json!(["exchange-banned"])),
         expected: Expected::Shortlist,
         objective_pair: false,
+        drops: vec![
+            (vec!["f-w", "f-ex-unpriced"], "no_price"),
+            (vec!["f-w", "f-ex-fast", "f-ramp-dear"], "fee_above_amount"),
+        ],
     }
 }
 
@@ -720,6 +747,7 @@ fn tie_case() -> Case {
         bounds: bounds(2, json!([]), json!([])),
         expected: Expected::Route(vec!["f-w", "f-ex-t1"]),
         objective_pair: false,
+        drops: Vec::new(),
     }
 }
 
@@ -741,6 +769,7 @@ pub fn cases() -> Vec<Case> {
             bounds: ac2_bounds(),
             expected,
             objective_pair: pair,
+            drops: Vec::new(),
         };
     vec![
         Case {
@@ -756,6 +785,7 @@ pub fn cases() -> Vec<Case> {
             bounds: ac2_bounds(),
             expected: Expected::Shortlist,
             objective_pair: false,
+            drops: Vec::new(),
         },
         ac2_choice(
             "ac2-choice-lowest-total-cost",

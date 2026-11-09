@@ -111,6 +111,8 @@ only records that pass theirs, so a stored record recomputes.
 | An operation's fee is in its from asset and at most its amount in | can't be stated | `Operation::check` |
 | Each operation of a part starts where the one before ended, with what it delivered | can't be stated | `Part::check` |
 | A drop reason's indices name an operation; no candidate is outranked by itself | can't be stated | `Candidate::check` |
+| A `no_price` or `fee_above_amount` reason names its part's last operation, which arrives with 0, stating a fee of 0 (`no_price`) or its amount in (`fee_above_amount`); that part alone needn't reach the destination | can't be stated | `Candidate::check`, `DecisionRecord::check` |
+| A `no_price` operation cites its tuple and no price, and the snapshot holds no price for that tuple; a `fee_above_amount` operation cites no usable accepted answer at its amount in | can't be stated | `DecisionRecord::check` |
 | Figure ids are unique; a price or quote names a tuple figure from the same provider, and states a rate exactly when the tuple is an exchange's; levels increase | can't be stated | `CatalogueSnapshot::check` |
 | Candidate ids are unique; only the chosen candidate lacks a drop reason; every part runs from the request's origin to its destination; parts add up to the request's amount; every figure and candidate named is in the record | can't be stated | `DecisionRecord::check` |
 | Every figure's origin names provider, publisher, provider version and module version, or the operator's source; exposure alone comes from the operator | `required`, `if`/`then` | `Origin`, `CatalogueSnapshot::check` |
@@ -124,7 +126,7 @@ only records that pass theirs, so a stored record recomputes.
 | The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in, fee and amount out; an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
 | A drop reason that names a figure names one its candidate cites, and the figure supports the drop: stale past its validity, void by `check_context`, a refused dry run, a judgement of no; `quote_voided` names a quote that lists the condition, past its validity for `validity_passes` and at another amount for `amount_changes`, and is accepted on the listed condition alone for the others, which rest on facts outside the record | can't be stated | `DecisionRecord::check` |
 | `below_floor`, `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
-| Every operation cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
+| Every operation but the one a `no_price` reason names cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
 | Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every usable judgement about its tuple; a fresh quote it cites is for its amount in, unless a `quote_voided` reason for `amount_changes` names it | can't be stated | `DecisionRecord::check` |
 | Usable accepted answers (fresh quotes included) for one tuple and amount agree on their fee and amount out | can't be stated | `DecisionRecord::check` |
 | A `stale_figure`, `void_statement` or `quote_voided` reason that names a statement holds only where no operation citing it also cites a usable accepted answer for its tuple at its amount in | can't be stated | `DecisionRecord::check` |
@@ -146,6 +148,8 @@ the rest from the record alone; see `conformance/README.md`:
 
 - That operation amounts match their figures: here each operation's fee and `amount_out` are taken as stated. The
   suite recomputes them from every usable accepted answer the operation cites for its amount in, or else from its price.
+  For the operation a `fee_above_amount` reason names, it checks that the price's fee on the amount in is above
+  it; the operation a `no_price` reason names has no price to recompute from.
 - That the objective is served: here `outranked` is checked only for naming a candidate of the record, and
   `suspect_rate_cycle` not at all. The suite recomputes the ranking, checks that each outranked candidate could
   have been the choice, and that `suspect_rate_cycle` names a candidate that comes back somewhere with more.
@@ -155,7 +159,11 @@ Unchecked by either:
 
 - That the conditions of `quote_voided` other than `validity_passes` and `amount_changes` hold: they rest on facts
   outside the record.
-- That the record lists every candidate: a router that leaves out a better route isn't caught by its record.
+- That the record lists every candidate: a router that leaves out a better route isn't caught by its record. Since
+  3.0.0 the contract can state the paths through a tuple with no price or an operation whose fee is above what
+  reaches it, so a router has no reason to leave those out; the router suite's cases name the ones a router must
+  list on its own inputs. A path that delivers exactly 0 before the destination, other than beyond a price's
+  levels, still can't be stated.
 - That `refines.taken_at` is the shortlist round's real time. The contract checks answers against the stated
   value, and that it is at or before the choice round's own snapshot; a backdated or postdated value can't be
   seen from the choice record. Core ties `refines` to the shortlist record it keeps (`REQ-AUD-4`).
@@ -176,6 +184,12 @@ above its price's last levels mid-route is listed up to that operation, which ar
 `beyond_levels`; the contract checks the net is beyond the levels, and the suite recomputes the operation. A
 confirming answer is checked to be made at or after the `taken_at` that `refines` states, against that stated
 value only.
+
+Recorded since 3.0.0 (ruled by the owner, 2026-11-09, item `aud4-unstateable-candidates`): a path through a tuple
+with no price is listed up to that operation and dropped as `no_price`, and one through an operation whose fee is
+above what reaches it, as `fee_above_amount`, each shaped as `beyond_levels`, so a decision record names those
+candidates too (`REQ-AUD-4`). `DropReason` is `#[non_exhaustive]` from 3.0.0: a reason added later
+breaks no match outside the crate, but it still widens the schema and needs its own bump.
 
 ## Tests
 

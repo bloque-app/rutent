@@ -1,0 +1,69 @@
+{
+  "base": "decision-record-shortlist-with-a-tuple-of-no-price-and-a-fee-above-its-amount",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/snapshot/figures/-",
+      "value": {
+        "figure_id": "f-ex-e-quote",
+        "origin": {
+          "kind": "provider",
+          "provider": "exchange-e",
+          "publisher": "exchange-e",
+          "provider_version": "1.0.0",
+          "module_version": "1.0.0"
+        },
+        "age_seconds": 5,
+        "valid_for_seconds": 120,
+        "value": {
+          "kind": "fresh_quote",
+          "tuple": "f-ex-e",
+          "quote": {
+            "deployment": {
+              "name": "rutent-test",
+              "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": "urn:rutent:provider-role:result",
+            "maker": "exchange-e",
+            "made_at": "2026-11-06T14:59:45Z",
+            "signature": {
+              "scheme": "ed25519",
+              "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+              "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+            },
+            "statement": {
+              "kind": "conversion",
+              "transaction": "tx-quote",
+              "outcome": {
+                "status": "dry_run_accepted",
+                "amount_in": "99900000",
+                "amount_out": "249250500",
+                "rate": "0.00025",
+                "slippage": {
+                  "regime": "firm"
+                },
+                "fee": {
+                  "asset": "COP",
+                  "amount": "199800"
+                },
+                "direction": "exact_in",
+                "valid_until": "2026-11-06T15:01:45Z",
+                "voided_by": [
+                  "validity_passes",
+                  "amount_changes"
+                ],
+                "settlement_seconds": 60
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/4/parts/0/operations/1/figures/-",
+      "value": "f-ex-e-quote"
+    }
+  ]
+}

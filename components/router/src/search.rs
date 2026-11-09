@@ -96,19 +96,31 @@ pub(crate) fn answer_of(figure: &Figure) -> Option<Answer<'_>> {
     }
 }
 
-/// One operation as evaluated, and whether an answer of its provider confirmed its terms.
+/// One operation as evaluated, whether an answer of its provider confirmed its terms, and whether it can't be
+/// stated.
 pub(crate) struct Step {
     pub(crate) operation: Operation,
     pub(crate) confirmed: bool,
+    pub(crate) unstatable: Option<Cut>,
+}
+
+/// Why a path ends at its last operation, nothing after it being statable (router-api's cut-short reasons).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// Its net is above its price's last level, which serves it nothing (`beyond_levels`).
+    BeyondLevels,
+    /// Its tuple has no price in the snapshot (`no_price`).
+    NoPrice,
+    /// Its price's fee is above the amount that reaches it (`fee_above_amount`).
+    FeeAboveAmount,
 }
 
 /// A path the search found: the segments it takes, by index, and their operations.
 pub(crate) struct Path {
     pub(crate) segments: Vec<usize>,
     pub(crate) steps: Vec<Step>,
-    /// Cut short at its last operation, whose net is above its price's last level, so nothing after it can be
-    /// stated.
-    pub(crate) beyond_levels: bool,
+    /// Cut short at its last operation, which can't be followed.
+    pub(crate) cut: Option<Cut>,
 }
 
 /// What the router reads, indexed once.
@@ -229,8 +241,10 @@ impl<'a> Search<'a> {
             .collect()
     }
 
-    /// The operation through `segment` on `amount` entering it, or `None` where none can be stated: its fee would
-    /// be above what enters.
+    /// The operation through `segment` on `amount` entering it. Where none can be stated, because its tuple has no
+    /// price or its price's fee is above what enters (and no usable answer binds it), the step is marked so, with
+    /// the shape router-api 3.0.0 gives it: a fee of `0` with no price cited, or a fee of all that enters; either
+    /// way it delivers `0`. `None` only for an amount that isn't positive, which no path reaches.
     fn step(&self, segment: &Segment<'_>, amount: &BigUint) -> Option<Step> {
         let amount_in = PositiveAmount::new(amount.to_string())?;
         let asked = amount_in.amount().as_str();
@@ -246,33 +260,49 @@ impl<'a> Search<'a> {
                 (answer.fee.asset == segment.from.asset.id && &fee <= amount).then_some(())?;
                 Some((answer.fee.clone(), Amount::new(answer.amount_out)?))
             });
-        let (fee, amount_out, is_confirmed) = match confirmed {
-            Some((fee, out)) => (fee, out, true),
-            None => {
-                let priced = evaluate(
-                    segment.fee,
-                    segment.rate,
-                    amount,
-                    &segment.from.asset,
-                    &segment.to.asset,
-                )?;
-                let fee = Fee {
-                    asset: segment.from.asset.id.clone(),
-                    amount: priced.fee.to_string(),
-                };
-                (fee, Amount::new(priced.amount_out.to_string())?, false)
-            }
+        let fee_of = |amount: String| Fee {
+            asset: segment.from.asset.id.clone(),
+            amount,
+        };
+        let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, segment.price) {
+            // An operation cites one price: with none, it can't be stated, whatever answers there are.
+            (_, None) => (
+                fee_of("0".to_owned()),
+                Amount::zero(),
+                false,
+                Some(Cut::NoPrice),
+            ),
+            (Some((fee, out)), Some(_)) => (fee, out, true, None),
+            (None, Some((_, formula))) => match evaluate(
+                formula,
+                segment.rate,
+                amount,
+                &segment.from.asset,
+                &segment.to.asset,
+            ) {
+                Some(priced) => (
+                    fee_of(priced.fee.to_string()),
+                    Amount::new(priced.amount_out.to_string())?,
+                    false,
+                    None,
+                ),
+                None => (
+                    fee_of(amount.to_string()),
+                    Amount::zero(),
+                    false,
+                    Some(Cut::FeeAboveAmount),
+                ),
+            },
         };
         // Cite every usable statement, as the contract asks. One that is past its validity or void is cited only
-        // where no usable answer covers the operation: there the operation stands on it and is dropped for it.
-        let mut figures = vec![
-            segment.tuple.figure_id.clone(),
-            segment.price.figure_id.clone(),
-        ];
+        // where no usable answer covers the operation: there the operation stands on it and is dropped for it. An
+        // operation that can't be stated is dropped for that, so it cites the usable ones only.
+        let mut figures = vec![segment.tuple.figure_id.clone()];
+        figures.extend(segment.price.map(|(price, _)| price.figure_id.clone()));
         figures.extend(
             statements
                 .iter()
-                .filter(|f| !is_confirmed || self.is_usable(f))
+                .filter(|f| (!is_confirmed && unstatable.is_none()) || self.is_usable(f))
                 .map(|f| f.figure_id.clone()),
         );
         Some(Step {
@@ -287,6 +317,7 @@ impl<'a> Search<'a> {
                 figures: NonEmpty::new(figures)?,
             },
             confirmed: is_confirmed,
+            unstatable,
         })
     }
 
@@ -331,10 +362,15 @@ impl<'a> Search<'a> {
             };
             let arrives = whole(step.operation.amount_out.as_str()).unwrap_or_default();
             let at_destination = segment.to == self.request.to;
-            let cut_short = !at_destination && Self::beyond_levels(segment, &step);
+            // A step that can't be stated ends its path wherever it is: nothing after it can be stated, so it
+            // adds one candidate per prefix the search already walks, and never chains.
+            let cut = step.unstatable.or_else(|| {
+                (!at_destination && Self::beyond_levels(segment, &step))
+                    .then_some(Cut::BeyondLevels)
+            });
             taken.push(i);
             steps.push(step);
-            if at_destination || cut_short {
+            if at_destination || cut.is_some() {
                 found.push(Path {
                     segments: taken.clone(),
                     steps: steps
@@ -342,12 +378,16 @@ impl<'a> Search<'a> {
                         .map(|s| Step {
                             operation: s.operation.clone(),
                             confirmed: s.confirmed,
+                            unstatable: s.unstatable,
                         })
                         .collect(),
-                    beyond_levels: cut_short,
+                    cut,
                 });
             }
-            if steps.len() < usize::from(self.bounds.max_hops.get()) && arrives > BigUint::ZERO {
+            if cut.is_none()
+                && steps.len() < usize::from(self.bounds.max_hops.get())
+                && arrives > BigUint::ZERO
+            {
                 self.extend(&segment.to, &arrives, taken, steps, found);
             }
             steps.pop();

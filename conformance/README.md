@@ -220,7 +220,7 @@ alone, the same inputs give the same output, and a changed objective can change 
 |---|---|
 | `contract` | It passes `DecisionRecord::check`; when it doesn't, nothing else runs |
 | `shortlist-reads-advertised-figures` | A shortlist round's snapshot holds no fresh quote, dry run or judgement (`REQ-CAT-5`) |
-| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`) |
+| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`). The operation a `no_price` reason names has no price and is skipped; the one a `fee_above_amount` reason names cites no usable answer, and its price's fee on its amount in is above that amount |
 | `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
 | `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
 | `ranking-follows-the-objective` | Kept candidates rank ahead of every outranked one by the objective, then by `candidate_id` bytes; each outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate chooses one |
@@ -232,15 +232,20 @@ alone, the same inputs give the same output, and a changed objective can change 
 | `passes-the-contract` | Its bytes deserialise, which runs the contract's check |
 | `recomputes-from-the-record-alone` | `recompute` finds nothing |
 | `chooses-the-expected-route` | It chooses the case's route, or none, and that is its recomputed choice |
+| `names-the-expected-drops` | It names each candidate the case expects, by the tuples it takes, with the expected drop reason: the policy case's path through an exchange with no price (`no_price`) and through a ramp whose fee is above what reaches it (`fee_above_amount`) (`REQ-AUD-4`, router-api 3.0.0) |
 | `replays-from-its-own-inputs` | Routing the record's own request, snapshot and bounds gives it again, byte for byte |
 | `objective-changes-the-choice` | The AC-2 pair, one snapshot under both objectives, choose different routes |
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
 rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
-by what an exchange produces, a band, a deposit that keeps everything and a floor; and a tie.
+by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price and a
+ramp whose fee is above what reaches it; and a tie.
 
-The suite can't see a candidate a router left out; the cases' expected routes catch that on its own inputs only. A candidate
+The suite can't see a candidate a router left out; the cases' expected routes and expected drops catch that on its
+own inputs only. `DROP_REASONS` lists the drop reasons the suite knows, router-api 3.0.0's; `DropReason` is
+`#[non_exhaustive]` from 3.0.0, so a test holds the list to the contract's schema, and a reason added later fails
+it until the suite is reviewed for it. A candidate
 cut short at an operation beyond its price's levels (`beyond_levels`) is recomputed like any other: its fee from
 the price, and nothing out. In a choice round, an accepted answer made before the shortlist round's `taken_at`
 binds nothing, as one past its validity; a refusal or a judgement binds whenever made. The suite reads each
@@ -250,5 +255,6 @@ a refusal or a judgement of no out is the contract's to refuse.
 
 The suite's own tests (`tests/router_suite.rs`) run it against a test-only reference double
 (`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
-record passes the contract and fails exactly one check. They also recompute every valid decision record among the
+record passes the contract and fails exactly one check. The double that leaves out the paths it can't state, as
+router-api 2.x had routers do, fails `names-the-expected-drops` alone. They also recompute every valid decision record among the
 contract's fixtures.

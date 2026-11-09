@@ -1,0 +1,130 @@
+{
+  "candidate_id": "c9",
+  "parts": [
+    {
+      "operations": [
+        {
+          "kind": "withdrawal",
+          "provider": "reserve-bank-co",
+          "from": {
+            "node": {
+              "network": "co-ach"
+            },
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "amount_in": "100000000",
+          "fee": {
+            "asset": "COP",
+            "amount": "100000"
+          },
+          "amount_out": "99900000",
+          "figures": [
+            "f-w",
+            "f-w-price"
+          ]
+        },
+        {
+          "kind": "route",
+          "provider": "ramp-x",
+          "from": {
+            "node": "ledger-in",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "ledger-b",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "amount_in": "99900000",
+          "fee": {
+            "asset": "COP",
+            "amount": "5000"
+          },
+          "amount_out": "99895000",
+          "figures": [
+            "f-ramp",
+            "f-ramp-price"
+          ]
+        },
+        {
+          "kind": "exchange",
+          "provider": "exchange-b",
+          "from": {
+            "node": "ledger-b",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "ledger-b",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "amount_in": "99895000",
+          "fee": {
+            "asset": "COP",
+            "amount": "99895"
+          },
+          "amount_out": "244508252",
+          "figures": [
+            "f-ex-b",
+            "f-ex-b-price"
+          ]
+        },
+        {
+          "kind": "deposit",
+          "provider": "reserve-wallet",
+          "from": {
+            "node": "ledger-b",
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "to": {
+            "node": {
+              "network": "polygon"
+            },
+            "asset": {
+              "id": "USDC",
+              "decimals": 6
+            }
+          },
+          "amount_in": "244508252",
+          "fee": {
+            "asset": "USDC",
+            "amount": "1000000"
+          },
+          "amount_out": "243508252",
+          "figures": [
+            "f-dep-b",
+            "f-dep-b-price"
+          ]
+        }
+      ]
+    }
+  ],
+  "dropped": {
+    "reason": "fee_above_amount",
+    "part": 0,
+    "operation": 4
+  }
+}
