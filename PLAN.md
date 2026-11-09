@@ -77,6 +77,9 @@ Until v0.2.0, `HOUSE-RULES.md` carried them over this plan; from v0.2.0 the plan
 | `protect-main` | The agent protects `main`: the four required checks and a pull request with code-owner review | `DEC-20` |
 | `branch-model` | Develop against `develop`, through `REVIEW-WORKFLOW.md`; `main` takes only releases, merged by the owner. Amended in chat the same day: a merge into `develop` needs no human, and `DEC-20`'s click moves to the release into `main` | `DEC-20`, `DEC-25`, `DEC-6`, `T-006-01`, `T-007-03`, `M1` exit |
 | `default-branch` | Keep `main` as the repository's default branch, so each milestone pull request sets its base to `develop` | `DEC-20` |
+| `exp2-adopt-format` | Wasm only for `M2`; PolkaVM dropped for v0 | `DEC-27`, §6.2 risk 3, §7.2 |
+| `licence-llvm-exception` | The standing permission covers `Apache-2.0 WITH LLVM-exception` | `DEC-27` |
+| `exp1-adopt-runtime` | VOS as the whole runtime, three replicas | `DEC-26`, §7.2 |
 
 ### Status of plan decisions
 
@@ -116,6 +119,8 @@ tag check reads (`DEC-21`).
 | `DEC-14` | Built as their ADRs decide: the origin reserve's own signed statement confirms a reversal (ADR-0008); cross-report comparison is a pure, detection-only function in `CMP-CORE-AUDIT` (ADR-0009); stuck orders need separate decide and move permissions, compared at the accountable party (ADR-0011); module releases are staged on a traffic share and machine code is re-derived after compiler fixes (ADR-0014) | ADR-0008, ADR-0009, ADR-0011, ADR-0014 | accepted |
 | `DEC-15` | The balance-check allowance of ADR-0013 is the design of record and gets no task in this plan | ADR-0013 | accepted |
 | `DEC-16` | **Verifiers and judgements wait for v1** (`F-053`, `M5`), built then as ADR-0012 decides. The verifier role is in the frozen provider role contract at `C1`, so v1 changes no contract. v0 keeps what doesn't need a verifier: each shortlisted provider checks eligibility itself (`REQ-CPL-6`), for the parties its rules name; who may ask about a person is identified and bounded (`REQ-CPL-2`, `REQ-CPL-5`); policy can refuse a provider's yes (`REQ-CPL-3`); a reserve's proof about its users and its presence rule (`REQ-CPL-8`, `REQ-CPL-9`); a third-party payer's details stay at the provider (`REQ-CPL-11`); the loss from a reserve's false judgement falls on the provider that relied on it (the reserve half of `REQ-CPL-12`); a missing input is a refusal (`REQ-AUZ-5`). Deferred: `REQ-CPL-1`, `REQ-CPL-4`, `REQ-CPL-7`, `REQ-CPL-10`, and the verifier half of `REQ-CPL-12`. This split is the plan's reading of the ruling | item `plan-v0-verifiers`, ADR-0012, `REQ-CAT-8` | accepted (Pablo); the split accepted with the plan |
+| `DEC-26` | **VOS, as the whole runtime, is v0's runtime.** `CMP-STM` runs as a VOS program on three replicas, at a `vos-core` commit pinned by SHA and mirrored with its forks (`EXP-1` outcome: VOS adapted, the purpose-built store the fallback; `EXP-1-vos-rt1-20261107-2`, `EXP-1-vos-rt3-20261107-2`, `EXP-1-pb-20261107-5`). `F-010` builds it, after `contracts/` is ported to `no_std` + `alloc` under a `DEC-4` bump and the owner's click (`DEC-20`). The purpose-built store stays ADR-0002's ruled fallback behind its flag, and the host contract stays runtime-neutral. Before v0 ships on VOS: the licence ruled for a state machine that links `vos-sdk`; `G-54` tested by damaging the frame that holds the last acknowledged append, then fixed upstream or its residual accepted for both candidates; a total-loss recovery story (scheduled halted exports with their downtime and RPO written down, or upstream `vos node restore`); the JIT verified on the production host and a build without native codegen (`G-37`); journal growth bounded (`G-33`). `F-033` takes metrics (`G-41`) and load figures (`G-42`), measuring `R-05`, `R-08` and `R-09` again, and replaying `R-01` to `R-03`, over a synthetic network, since every scored run had all three replicas on one host; `F-022` the audit rows (`G-04`, `G-05`, `G-09` to `G-11`; ADR-0005); `F-025` `G-26`; `F-034` the release (`G-46`) | ADR-0002 as amended; `DEC-6`; `DEC-4`; `REQ-OPS-3`, `NFR-6`, `REQ-MOD-5`, `PS-66`, `DEC-19`; item `exp1-adopt-runtime` | accepted (Pablo, 2026-11-08) |
+| `DEC-27` | **Wasm components are v0's one module format.** `F-013` builds module admission and runtime on Wasmtime 48.0.8, the LTS release, from `T-008-02`'s binding, out of its experimental workspace. The binding brings components with its WIT world, the format name `wasm-component`, an explicit compile target, no WASI interface, fuel and a memory limit per part. Rust and C are `AC-20`'s two languages. One OS process per provider and the admitting compiler in its own isolation stand, as `DEC-7` has them. PolkaVM is not adopted for v0 (`EXP-2` outcome: PolkaVM dropped, Wasm adapted), and no second format is kept. The module interface stays format-neutral (`DEC-4`), so a later `EXP-n` may score another format. Wasmtime's licence, `Apache-2.0 WITH LLVM-exception`, is covered by the standing permission (item `licence-llvm-exception`) and recorded in `licences/RECORD`. Before v0 reaches production, `F-013` closes `B-14`, `B-19`, `G-05`, `G-09`, `B-09`, `B-01`, and re-derivation on a CPU of another vendor (`B-11`, `G-04`, shown on two AMD models), and reads the pin against the advisories when it sets it (`G-02`). `F-014` closes `B-17` and `B-18`, `F-025` reads `G-02` again and probes each jail layer alone, and `F-030` and `F-033` take the AppArmor obligation | ADR-0003 as amended; `DEC-7`; `REQ-MDL-15`, `REQ-MDL-18`, `AC-20`, `THR-85`, `REQ-MOD-5`, `DEC-19`; items `exp2-adopt-format`, `licence-llvm-exception` | accepted (Pablo, 2026-11-07) |
 
 ### 2.2 Plan-only decisions
 
@@ -432,8 +437,8 @@ Two points the accepted ADRs place after v0 are kept, as the owner ruled them th
 |---|---|---|
 | 1 | **The freeze collides with the format experiment.** A Wasm or PVM finding needs a contract change | The module contract is format-neutral (`DEC-4`); bindings stay outside it; a change after `C1` is a `DEC-*`, a version bump and the owner's click |
 | 2 | **Neither runtime candidate passes the host-contract suite** | The reference host of `T-005-04` is the floor; the purpose-built store is the ruled fallback (ADR-0002) |
-| 3 | **PVM has one guest language**, against `AC-20`'s two | `T-008-03` finds or builds a second, or records the gap; Wasm can stay as the second format (ADR-0003) |
-| 4 | **A sandbox escape** (`THR-85`) is still open | One process per provider bounds it; `T-008-04` and `F-025` re-run the check |
+| 3 | **Retired in v0.2.0.** ~~PVM has one guest language, against `AC-20`'s two~~ | Both formats ran Rust and C guests, and Wasm, the format kept (`DEC-27`), claims `AC-20` in both (`EXP-2`: `G-10`, `G-22`, `M-16`) |
+| 4 | **A sandbox escape** (`THR-85`) is still open | One process per provider bounds it; `T-008-04` re-checked the `THR-85` row with `EXP-2`'s outcome (`experiments/2026-11-07-module-format/drafts/thr-85-recheck.md`), and `F-025` re-runs it |
 | 5 | **The shared proxy concentrates every provider's secrets** (`THR-79`) | Accepted while the roster is Bloque's own (`credential-proxy-scope`); vault buckets by process role; `DEC-10` gates outside providers on `F-051` |
 | 6 | **Split-shaped contracts drift from v1's needs** before splitting is built | `T-004-01` validates a split of three parts at `C1`; `F-050` changes the rule, not the contract |
 | 7 | **Low-volume providers never fill a staging window** (ADR-0014) | `F-013` adds a minimum observation volume next to the time window |
@@ -479,8 +484,8 @@ behaviour arrives in `M5`.
 | ADR | Plan decisions | Features |
 |---|---|---|
 | ADR-0001 | `DEC-2` | `F-001`, `F-020` to `F-022` |
-| ADR-0002 | `DEC-3`, `DEC-6` | `F-005`, `F-007`, `F-010` |
-| ADR-0003 | `DEC-7` | `F-003`, `F-008`, `F-013` |
+| ADR-0002 | `DEC-3`, `DEC-6`, `DEC-26` | `F-005`, `F-007`, `F-010` |
+| ADR-0003 | `DEC-7`, `DEC-27` | `F-003`, `F-008`, `F-013` |
 | ADR-0004 | `DEC-9`, `DEC-10` | `F-014`, `F-051` |
 | ADR-0005 | `DEC-12` | `F-022` |
 | ADR-0006 | `DEC-8` | `F-004`, `F-011`, `F-050` |

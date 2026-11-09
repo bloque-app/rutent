@@ -1,5 +1,5 @@
 ---
-status: accepted (exp1-adopt-runtime, 2026-11-08); waits for its row in PLAN.md §2.1, owner-only
+status: promoted into PLAN.md 0.2.0 §2.1 as DEC-26 (2026-11-09)
 experiment: EXP-1
 decision_item: exp1-adopt-runtime (answered 2026-11-08)
 ---
