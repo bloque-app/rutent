@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::module_interface::{
-    self, Address, AddressBlock, AdmissionArtefact, CrossModuleCall, Declaration, DeclaredList,
-    OutboundCallRecord, OutsideRequest, OutsideResponse, ReleaseAssertion, RuleViolation,
-    SecretAnswer, SecretLookup, SecretOutcome, Widening,
+    self, Address, AddressBlock, AdmissionArtefact, CallRefusalReason, CrossModuleCall,
+    CrossModuleOutcome, Declaration, DeclaredList, Nothing, OutboundCallRecord, OutsideRequest,
+    OutsideResponse, ReleaseAssertion, RuleViolation, SecretAnswer, SecretLookup, SecretOutcome,
+    Widening,
 };
 use rutent_contracts::provider_role::{self, Advertisement, ResultBody, Statement};
 use serde::de::DeserializeOwned;
@@ -333,6 +334,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/outcome", "required")],
         ),
         (
+            "cross-module-call-unanswered-carrying-a-reason",
+            vec![("/outcome", "additionalProperties")],
+        ),
+        (
             "admission-artefact-without-a-signed-assertion",
             vec![("", "required")],
         ),
@@ -501,6 +506,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee",
             one(RuleViolation::RefusalReasonUntrue),
+        ),
+        (
+            "declared-cross-module-call-unanswered-of-an-undeclared-kind",
+            one(RuleViolation::UndeclaredCallDelivered),
         ),
         (
             "signed-result-signed-with-another-advertised-key",
@@ -1655,6 +1664,67 @@ fn refused_cross_module_call_is_recorded_with_its_reason() {
         "declared-cross-module-call-delivered-to-an-undeclared-callee",
         "declared-cross-module-call-refused-as-undeclared-though-declared",
     ]);
+}
+
+/// A `declared-cross-module-call` fixture, read into the contract's types.
+fn declared_call(kind: &str, name: &str) -> (Declaration, CrossModuleCall) {
+    let bundle: DeclaredCrossModuleCall =
+        serde_json::from_value(fixture(kind, name)).expect("a declared cross-module call");
+    (bundle.declaration, bundle.call)
+}
+
+// verifies: REQ-MDL-21
+#[test]
+fn call_refused_as_an_undeclared_kind_passes_validate_call_against() {
+    // The forwarded kind is declared, but the caller's code named another: the platform refuses it as
+    // `undeclared_kind`, and the record names the kind forwarded.
+    let name = "declared-cross-module-call-refused-as-an-undeclared-kind-its-caller-named";
+    let (declaration, call) = declared_call("valid", name);
+    let CrossModuleOutcome::Refused(refused) = &call.outcome else {
+        panic!("{name} is a refused call");
+    };
+    assert_eq!(refused.reason, CallRefusalReason::UndeclaredKind);
+    let declared = declaration
+        .outside
+        .calls
+        .iter()
+        .find(|c| c.callee.as_str() == call.callee())
+        .expect("the callee is declared");
+    assert!(
+        declared.kinds.contains(&refused.kind),
+        "the forwarded kind is declared"
+    );
+    assert_eq!(module_interface::validate_call(&call), Ok(()));
+    assert_eq!(
+        module_interface::validate_call_against(&declaration, &call),
+        Ok(())
+    );
+    // A declared callee refused as undeclared is still untrue, and so is an undeclared kind of an undeclared
+    // callee.
+    assert_rules_reject(&[
+        "declared-cross-module-call-refused-as-undeclared-though-declared",
+        "declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee",
+    ]);
+}
+
+// verifies: REQ-MDL-21
+#[test]
+fn call_its_callee_never_answered_is_not_recorded_as_delivered() {
+    let name = "declared-cross-module-call-its-callee-never-answered";
+    let (declaration, call) = declared_call("valid", name);
+    assert_eq!(call.outcome, CrossModuleOutcome::Unanswered(Nothing {}));
+    assert_ne!(
+        serde_json::to_value(&call.outcome).expect("json")["status"],
+        "delivered"
+    );
+    assert_eq!(module_interface::validate_call(&call), Ok(()));
+    assert_eq!(
+        module_interface::validate_call_against(&declaration, &call),
+        Ok(())
+    );
+    // Passed on unanswered is still passed on: its callee and kind must be declared, and it carries nothing.
+    assert_rules_reject(&["declared-cross-module-call-unanswered-of-an-undeclared-kind"]);
+    assert_schema_rejects("cross-module-call-unanswered-carrying-a-reason");
 }
 
 // verifies: DEC-4

@@ -10,6 +10,7 @@
 //! [`check_amounts`] ties a result's amounts to the operation it answers and names the segment's [`Remainder`].
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
+pub mod canonical;
 mod envelope;
 mod operation;
 mod outcome;
@@ -17,6 +18,7 @@ mod settlement;
 mod types;
 mod validate;
 
+pub use canonical::{CanonicalError, canonicalize, member, signing_input, to_canonical};
 pub use envelope::{
     ADVERTISEMENT_SHAPE, ContextMismatch, Deployment, JUDGEMENT_SHAPE, NotSignedByOperator,
     OPERATION_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature,
@@ -29,4 +31,4 @@ pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "2.2.0";
+pub const VERSION: &str = "2.4.0";

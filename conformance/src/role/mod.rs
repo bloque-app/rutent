@@ -28,16 +28,21 @@
 //! The suite sees only segments. A provider may take internal steps to serve one (`REQ-CAT-21`), and that
 //! changes nothing here.
 //!
-//! **Signatures are not verified yet.** The suite checks that every envelope is well formed, and hands each
-//! signature to a [`SignatureVerifier`]. The default, [`DeferredVerifier`], verifies nothing and says so in the
-//! report, where [`Check::SignatureVerifies`] stays deferred and the report doesn't pass. Verification arrives in
-//! `M2`. It will need the statement's bytes as received, so this hook's signature will change then.
+//! **Statements arrive as bytes.** A provider hands each statement over as the JSON it sent ([`Received`]), and the
+//! suite reads the envelope from those bytes itself. It checks that every envelope is well formed, that its text
+//! has a signing input under the contract's rule
+//! ([`signing_input`](rutent_contracts::provider_role::signing_input): I-JSON, no member named twice), and hands
+//! each signature to a [`SignatureVerifier`] with the statement's bytes as received; a statement nested in a result
+//! is handed over as its own text within the result's. The default, [`DeferredVerifier`],
+//! verifies nothing and says so in the report, where [`Check::SignatureVerifies`] stays deferred and the report
+//! doesn't pass. The Ed25519 verifier is the catalogue's (`T-012-02`).
 
 use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
     Advertisement, Deployment, Operation, PublicKey, ResultBody, Signature, Statement, VERSION,
 };
+use serde::{Serialize, de::DeserializeOwned};
 
 mod encoding;
 pub mod stand_in;
@@ -48,13 +53,55 @@ pub use encoding::{
 };
 pub use suite::run_role_suite;
 
-/// A provider implementation, as the role suite sees it.
+/// A statement as a provider sent it: its JSON text, and the statement the suite reads from that text.
+///
+/// The statement is always the one the bytes deserialise to, so the suite checks the envelope it was sent and a
+/// verifier gets the bytes that were signed, never a re-serialisation of parsed types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Received<T> {
+    bytes: Vec<u8>,
+    statement: Statement<T>,
+}
+
+impl<T: Serialize + DeserializeOwned> Received<T> {
+    /// The statement in `bytes`, as a provider sent them, or the error reading them as one.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, serde_json::Error> {
+        let statement = serde_json::from_slice(&bytes)?;
+        Ok(Self { bytes, statement })
+    }
+
+    /// A statement sent as `serde_json` writes it: what a provider built on the contract's own types sends.
+    pub fn sent(statement: &Statement<T>) -> Self {
+        let bytes = serde_json::to_vec(statement).expect("a statement serialises");
+        Self::from_bytes(bytes).expect("a serialised statement reads back")
+    }
+}
+
+impl<T> Received<T> {
+    /// The bytes as received.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The statement read from them.
+    pub fn statement(&self) -> &Statement<T> {
+        &self.statement
+    }
+
+    /// The statement read from them, without the bytes.
+    pub fn into_statement(self) -> Statement<T> {
+        self.statement
+    }
+}
+
+/// A provider implementation, as the role suite sees it. Each statement it gives is the JSON it sends
+/// ([`Received`]).
 pub trait RoleProvider {
     /// The provider's advertisement, as its own signed statement.
-    fn advertisement(&self) -> Statement<Advertisement>;
+    fn advertisement(&self) -> Received<Advertisement>;
 
     /// Answers one operation, an operator's statement, with the provider's result statement.
-    fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody>;
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody>;
 
     /// An opaque fingerprint of the value the provider has moved and holds on its books. The suite compares it
     /// around each probe: a dry run, balance check, refusal, failure or repeat changes nothing, a success changes
@@ -62,7 +109,7 @@ pub trait RoleProvider {
     fn state(&self) -> String;
 
     /// The provider's answer to a status query for a transaction, if it offers status queries (`REQ-CAT-16`).
-    fn status(&mut self, _transaction: &str) -> Option<Statement<ResultBody>> {
+    fn status(&mut self, _transaction: &str) -> Option<Received<ResultBody>> {
         None
     }
 }
@@ -101,11 +148,11 @@ pub trait RoleHarness: RoleProvider {
 pub struct WithoutHooks<P>(pub P);
 
 impl<P: RoleProvider> RoleProvider for WithoutHooks<P> {
-    fn advertisement(&self) -> Statement<Advertisement> {
+    fn advertisement(&self) -> Received<Advertisement> {
         self.0.advertisement()
     }
 
-    fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody> {
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         self.0.handle(operation)
     }
 
@@ -113,7 +160,7 @@ impl<P: RoleProvider> RoleProvider for WithoutHooks<P> {
         self.0.state()
     }
 
-    fn status(&mut self, transaction: &str) -> Option<Statement<ResultBody>> {
+    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
     }
 }
@@ -343,16 +390,20 @@ pub enum Verification {
     Verified,
     /// The signature doesn't verify.
     Failed(String),
-    /// Verification is not implemented yet (`M2`).
+    /// The verifier plugged in verifies nothing ([`DeferredVerifier`]).
     Deferred,
 }
 
-/// The hook where signature verification plugs in (`M2`). It sees the maker and the signature. It will need the
-/// statement's bytes as received, canonicalised under the contract's signing rule, so its signature changes when
-/// verification lands.
+/// The hook where signature verification plugs in. It sees the maker, the signature as the suite read it, and the
+/// statement's bytes as received: for a statement nested in another, its own text within the outer one's
+/// ([`member`](rutent_contracts::provider_role::member)). The bytes the maker signed are
+/// [`signing_input`](rutent_contracts::provider_role::signing_input) of `received`: its RFC 8785 canonical form
+/// with only the top-level `signature.value` removed. A verifier works from
+/// `received`, never from a re-serialisation of the parsed statement, so a field the suite's types don't model is
+/// still covered by the signature.
 pub trait SignatureVerifier {
-    /// Verifies the signature a maker put on a statement.
-    fn verify(&self, maker: &str, signature: &Signature) -> Verification;
+    /// Verifies the signature a maker put on a statement received as `received`.
+    fn verify(&self, maker: &str, signature: &Signature, received: &[u8]) -> Verification;
 }
 
 /// A verifier that verifies nothing and says so: every signature is [`Verification::Deferred`].
@@ -360,7 +411,7 @@ pub trait SignatureVerifier {
 pub struct DeferredVerifier;
 
 impl SignatureVerifier for DeferredVerifier {
-    fn verify(&self, _maker: &str, _signature: &Signature) -> Verification {
+    fn verify(&self, _maker: &str, _signature: &Signature, _received: &[u8]) -> Verification {
         Verification::Deferred
     }
 }

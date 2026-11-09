@@ -98,6 +98,8 @@ struct Slot {
 pub struct ReferenceDouble {
     languages: Vec<String>,
     output_limit: usize,
+    step_limit: Option<usize>,
+    callees_answer: bool,
     built: Vec<ModuleSpec>,
     secrets: BTreeMap<(String, String), String>,
     delivered: BTreeMap<String, Vec<String>>,
@@ -136,6 +138,8 @@ impl ReferenceDouble {
         Self {
             languages: vec!["reference-a".to_owned(), "reference-b".to_owned()],
             output_limit: 0,
+            step_limit: None,
+            callees_answer: true,
             built: Vec::new(),
             secrets: BTreeMap::new(),
             delivered: BTreeMap::new(),
@@ -154,6 +158,21 @@ impl ReferenceDouble {
     /// Offers one language only.
     pub fn with_one_language(mut self) -> Self {
         self.languages.truncate(1);
+        self
+    }
+
+    /// Its callees never answer: every cross-module call it passes on is recorded `unanswered`, as a platform
+    /// whose callees stop or miss their deadline records them (`REQ-MDL-21`). Not a flaw.
+    pub fn with_callees_that_never_answer(mut self) -> Self {
+        self.callees_answer = false;
+        self
+    }
+
+    /// Stops a module after `steps` of its steps in one operation, as a binding's per-operation limit on host
+    /// calls would, and refuses its answer as [`PlatformRefusal::LimitReached`] (`REQ-MDL-11`). The double
+    /// has no such limit unless given one.
+    pub fn with_step_limit(mut self, steps: usize) -> Self {
+        self.step_limit = Some(steps);
         self
     }
 
@@ -559,7 +578,8 @@ impl ReferenceDouble {
                     reason
                 },
             }),
-            _ => CrossModuleOutcome::Delivered(Nothing {}),
+            _ if self.callees_answer => CrossModuleOutcome::Delivered(Nothing {}),
+            _ => CrossModuleOutcome::Unanswered(Nothing {}),
         };
         self.events.calls.push(CrossModuleCall {
             transaction: Identifier::new(op["transaction"].as_str().unwrap_or_default())
@@ -752,6 +772,21 @@ impl ModuleBinding for ReferenceDouble {
         let Some(index) = index else {
             return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
         };
+        // A version names one release: one admitted, or waiting for its acceptance, isn't admitted again.
+        let asserted_version = assertion.statement.declaration.version.as_str();
+        if let Some(slot) = self
+            .providers
+            .get(assertion.statement.declaration.provider.as_str())
+        {
+            let taken = slot
+                .accepted
+                .iter()
+                .chain(slot.pending.iter().map(|(artefact, _)| artefact))
+                .any(|artefact| artefact.declaration().version.as_str() == asserted_version);
+            if taken {
+                return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted);
+            }
+        }
         if self.breaks.refuses_releases_that_cannot_start && !self.built[index].starts {
             return Admitted::Refused(AdmissionRefusal::WontStart);
         }
@@ -893,7 +928,10 @@ impl ModuleBinding for ReferenceDouble {
         } else {
             spec.steps.clone()
         };
-        for step in steps {
+        for (taken, step) in steps.into_iter().enumerate() {
+            if self.step_limit.is_some_and(|limit| taken >= limit) {
+                return Handled::Refused(PlatformRefusal::LimitReached);
+            }
             match step {
                 Step::LookUpSecret {
                     part,
@@ -1054,5 +1092,156 @@ impl BoundaryHarness for ReferenceDouble {
             .get(provider)
             .copied()
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::role::{SuiteContext, placeholder_key};
+    use rutent_contracts::module_interface::{BinaryFormat, BinaryPart, RELEASE_ASSERTION_SHAPE};
+    use rutent_contracts::provider_role::OPERATION_SHAPE;
+
+    const PROVIDER: &str = "limited-reserve";
+
+    fn spec(version: &str, steps: usize) -> ModuleSpec {
+        let declaration: Declaration = serde_json::from_value(json!({
+            "provider": PROVIDER,
+            "version": version,
+            "interface": rutent_contracts::module_interface::VERSION,
+            "sandboxed": { "handles": ["withdrawal"] },
+            "outside": {
+                "operations": [],
+                "destinations": [],
+                "secrets": [],
+                "calls": [],
+                "statement_key": placeholder_key(1),
+            },
+        }))
+        .expect("a declaration");
+        ModuleSpec {
+            declaration,
+            steps: (0..steps)
+                .map(|i| Step::ReadState {
+                    part: PartName::Outside,
+                    key: format!("entry-{i}"),
+                })
+                .collect(),
+            output: Output::Honest,
+            starts: true,
+        }
+    }
+
+    /// Builds `spec` in the double and asks for its admission.
+    fn admit(double: &mut ReferenceDouble, spec: &ModuleSpec) -> Admitted {
+        let binaries = double.build(spec, "reference-a").expect("built");
+        let part = |bytes: &[u8]| BinaryPart {
+            format: BinaryFormat::new(double.format()).expect("a format"),
+            digest: Digest {
+                algorithm: DigestAlgorithm::Sha256,
+                value: DigestValue::new(hex_digest(bytes)).expect("a digest"),
+            },
+        };
+        let context = SuiteContext::default();
+        let assertion = Statement {
+            deployment: context.deployment.clone(),
+            protocol_version: context.protocol_version.clone(),
+            shape: RELEASE_ASSERTION_SHAPE.to_owned(),
+            maker: PROVIDER.to_owned(),
+            made_at: "2026-11-09T00:00:00Z".to_owned(),
+            signature: Signature {
+                scheme: SignatureScheme::Ed25519,
+                key: placeholder_key(2),
+                value: placeholder_signature(),
+            },
+            statement: ReleaseAssertion {
+                declaration: spec.declaration.clone(),
+                parts: Parts {
+                    sandboxed: part(&binaries.sandboxed),
+                    outside: part(&binaries.outside),
+                },
+            },
+        };
+        double.admit(&assertion, &binaries)
+    }
+
+    fn withdrawal() -> Statement<Operation> {
+        let context = SuiteContext::default();
+        serde_json::from_value(json!({
+            "deployment": context.deployment,
+            "protocol_version": context.protocol_version,
+            "shape": OPERATION_SHAPE,
+            "maker": context.operator,
+            "made_at": "2026-11-09T00:00:00Z",
+            "signature": {
+                "scheme": "ed25519",
+                "key": context.deployment.operator_key,
+                "value": placeholder_signature(),
+            },
+            "statement": {
+                "kind": "withdrawal",
+                "transaction": "tx-limit-1",
+                "provider": PROVIDER,
+                "origin": { "network": "conformance-network" },
+                "destination": "conformance-ledger",
+                "asset": "COP",
+                "amount": "1000",
+                "dry_run": false,
+                "inputs": {},
+            },
+        }))
+        .expect("an operation")
+    }
+
+    fn installed(double: &mut ReferenceDouble, steps: usize) {
+        double.set_output_limit(1 << 16);
+        assert!(matches!(
+            admit(double, &spec("1.0.0", steps)),
+            Admitted::Artefact(_)
+        ));
+        assert!(double.accept(PROVIDER, "1.0.0", "a-reviewer").is_some());
+    }
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn limit_hit_is_refused_with_its_own_reason() {
+        let mut limited = ReferenceDouble::new().with_step_limit(2);
+        installed(&mut limited, 3);
+        let process = limited.process(PROVIDER);
+        assert_eq!(
+            limited.handle(PROVIDER, &withdrawal()),
+            Handled::Refused(PlatformRefusal::LimitReached)
+        );
+        // Not `Unavailable`, the stand-in the bindings used before: the module is still admitted and running.
+        assert_eq!(limited.active_version(PROVIDER).as_deref(), Some("1.0.0"));
+        assert_eq!(limited.process(PROVIDER), process);
+        // Within the limit, the same module answers.
+        let mut within = ReferenceDouble::new().with_step_limit(3);
+        installed(&mut within, 3);
+        assert!(matches!(
+            within.handle(PROVIDER, &withdrawal()),
+            Handled::Answered(_)
+        ));
+    }
+
+    // verifies: REQ-MDL-1
+    #[test]
+    fn re_admitted_version_is_refused_with_its_own_reason() {
+        let mut double = ReferenceDouble::new();
+        installed(&mut double, 0);
+        assert_eq!(
+            admit(&mut double, &spec("1.0.0", 1)),
+            Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+        );
+        // One waiting for its acceptance names its version too.
+        let mut waiting = ReferenceDouble::new();
+        assert!(matches!(
+            admit(&mut waiting, &spec("1.0.0", 0)),
+            Admitted::Artefact(_)
+        ));
+        assert_eq!(
+            admit(&mut waiting, &spec("1.0.0", 0)),
+            Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+        );
     }
 }

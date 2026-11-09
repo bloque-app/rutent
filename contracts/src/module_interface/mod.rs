@@ -35,14 +35,19 @@
 //!   release, and a first release, require a fresh acceptance. [`validate_artefact`], [`validate_assertion_key`]
 //!   and [`validate_release`] check them; an assertion is signed with a key the accepted advertisement lists for
 //!   `advertising`.
+//! - **Refusals** (`REQ-MDL-1`, `REQ-MDL-11`, `REQ-MDL-12`). A platform refuses a release at admission with an
+//!   [`AdmissionRefusal`], and an operation's answer with a [`PlatformRefusal`], each naming its own reason: a
+//!   limit hit, a disallowed import and a re-admitted version among them.
 //!
 //! `contracts/module-interface/README.md` lists which rule lives where.
 
 mod admission;
+mod refusal;
 mod types;
 mod validate;
 
 pub use admission::*;
+pub use refusal::{AdmissionRefusal, PlatformRefusal};
 
 pub use types::*;
 pub use validate::{
@@ -52,4 +57,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "2.1.0";
+pub const VERSION: &str = "3.0.0";
