@@ -217,3 +217,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **"In any deployment"**: tested as above, through `record_statement_key` and a refused advertisement of another
   deployment; the catalogue still serves one deployment.
 - **Trusted keys** count as advertising keys at `trust_advertising_key`.
+
+## For T-013-04: nested statements (re-review of T-012-02, 2026-11-09)
+
+`verify_statement` checks the deployment and protocol version of the outer envelope only. A statement nested inside
+another (for example a release assertion inside a result) still verifies on its own key, so a caller that reads a
+nested statement must run `check_context` on it too. Admission (`T-013-04`) does this for every nested statement it
+accepts.
