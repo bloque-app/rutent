@@ -61,3 +61,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Property tests (`DEC-18`) without a new dependency.** The properties are plain `#[test]` functions over
   networks drawn from a fixed-seed splitmix64 generator. A failure names the seed that reproduces it. `proptest`
   would bring several new crates into `Cargo.lock`, each needing a `licences/RECORD` line.
+
+## Review of T-011-01 (fresh reviewer, 2026-11-09)
+
+- **The search's cost.** The exhaustive search is bounded only by `max_hops` (a `NonZeroU8`, so up to 255). It is
+  exponential in a dense catalogue, and each found path clones its steps. ADR-0006 lets policy set the hop limit, so
+  this stands for now; a node budget is a candidate for a later task if catalogues grow.
+- **Candidates the contract can't state.** Unpriced tuples and operations whose fee exceeds what enters them never
+  appear as candidates, because the router API has no drop reason for them. `REQ-AUD-4` ("every candidate
+  considered") then holds only for operations the contract can state. Open for `T-011-04` (the decision record) to
+  settle, either by a drop reason under a `DEC-4` bump or by recording this reading as the contract's.
