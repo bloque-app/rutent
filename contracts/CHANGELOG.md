@@ -22,3 +22,6 @@ directory (see `README.md`).
 - The crate is `no_std` with `alloc`, behind a default-on `std` feature; `serde` and `serde_json` build without their
   default features, with `alloc`. Every contract's source changed, so each takes a minor bump: provider-role 2.2.0,
   module-interface 2.1.0, router-api 2.1.0, state-machine 2.1.0 and host 2.1.0. (DEC-4, DEC-20, DEC-26, T-010-01)
+- Guard rules from the `M1` security review: a shared file needs this changelog's entry, not a contract's bump; a root
+  `Cargo.lock` change that moves a package the crate reaches needs every contract's bump; a changelog entry naming a
+  `DEC-*` that `PLAN.md` does not define fails. (DEC-4, DEC-20, T-010-02)
