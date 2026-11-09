@@ -168,6 +168,10 @@ pub struct Compiled {
     pub exports: Vec<String>,
 }
 
+/// What a provider's process says when the sandboxed part's output is too large for a frame to carry: a fixed
+/// sentence, never the guest's, which the platform gives as `PlatformRefusal::OversizedOutput`.
+pub const OUTPUT_TOO_LARGE: &str = "the output is too large for a frame";
+
 /// Lower-case hexadecimal of `bytes`.
 pub fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";

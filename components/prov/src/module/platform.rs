@@ -42,7 +42,7 @@ use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent,
 };
-use crate::module::wire::{FromProvider, Reply, ToProvider, sha256, unhex};
+use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
 
 /// The most hops an outbound call follows, redirects included.
 const MAX_HOPS: usize = 5;
@@ -392,9 +392,10 @@ impl<W: World> Platform<W> {
                 }
             }
             FromProvider::DeniedSecret { name } => {
-                if let Err(reply) =
-                    self.admit_request(&[(LimitKind::NameLength, name.len(), MAX_NAME)], &[])
-                {
+                if let Err(reply) = self.admit_request(
+                    &[(LimitKind::NameLength, name.len(), MAX_NAME)],
+                    &[(Metered::SecretLookups, 1)],
+                ) {
                     return reply;
                 }
                 // The attempt names no operation; it is recorded under the running declaration's first outside
@@ -448,7 +449,7 @@ impl<W: World> Platform<W> {
             } => {
                 let lengths = [transaction.len(), operation.len(), name.len()]
                     .map(|length| (LimitKind::NameLength, length, MAX_NAME));
-                match self.admit_request(&lengths, &[]) {
+                match self.admit_request(&lengths, &[(Metered::SecretLookups, 1)]) {
                     Ok(()) => self.lookup(transaction, operation, name),
                     Err(reply) => reply,
                 }
@@ -878,18 +879,22 @@ impl<W: World> Platform<W> {
             Some(_) if !in_flight => Some(CallRefusalReason::NotNamedByRoute),
             Some(_) => None,
         };
-        // A call that passed the declaration's checks is counted, and bounded in number and in depth. The contract has
-        // no refusal reason for a limit, so a call refused for one is recorded as `callee_unavailable`; the caller's
-        // operation ends as a limit, which is where the bound is recorded (`LimitEvent`).
+        // Every call is counted, refused ones too, and a call that passed the declaration's checks is bounded in depth.
+        // The contract has no refusal reason for a limit (`T-010-09` adds one), so a call over a bound keeps the
+        // reason it already has, or is recorded as `callee_unavailable`; the caller's operation ends as a limit,
+        // which is where the bound is recorded (`LimitEvent`).
         let mut limited = false;
-        if refusal.is_none() {
-            let hit = depth_allows(&self.bounds, self.stack.len())
-                .and_then(|()| self.charge(Metered::ModuleCalls, 1));
-            if let Err(hit) = hit {
-                self.limit(hit);
-                limited = true;
-                refusal = Some(CallRefusalReason::CalleeUnavailable);
+        let hit = self.charge(Metered::ModuleCalls, 1).and_then(|()| {
+            if refusal.is_none() {
+                depth_allows(&self.bounds, self.stack.len())
+            } else {
+                Ok(())
             }
+        });
+        if let Err(hit) = hit {
+            self.limit(hit);
+            limited = true;
+            refusal = refusal.or(Some(CallRefusalReason::CalleeUnavailable));
         }
         if refusal.is_none() {
             let running = self
@@ -1010,7 +1015,10 @@ impl<W: World> Platform<W> {
                     // Fuel running out, and a part trapping after the process refused it growth, are limits; any other
                     // trap is the guest's own failure. A bound the platform enforced is judged below, from its own
                     // state.
-                    if message.contains("all fuel consumed") || message.starts_with("limit reached")
+                    if message == OUTPUT_TOO_LARGE {
+                        outcome = Err(PlatformRefusal::OversizedOutput);
+                    } else if message.contains("all fuel consumed")
+                        || message.starts_with("limit reached")
                     {
                         outcome = Err(PlatformRefusal::LimitReached);
                     }

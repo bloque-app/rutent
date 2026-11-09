@@ -49,18 +49,21 @@ pub enum Metered {
     StateBytes,
     /// Outside requests: the work a sandboxed part leaves pending with its outside part.
     OutsideRequests,
-    /// Cross-module calls that passed the declaration's checks.
+    /// Cross-module calls, refused ones included.
     ModuleCalls,
+    /// Secret lookups, of the outside part and the denied ones of the sandboxed part.
+    SecretLookups,
 }
 
 /// Every metered thing.
-pub const METERED: [Metered; 6] = [
+pub const METERED: [Metered; 7] = [
     Metered::OutboundCalls,
     Metered::OutboundBytes,
     Metered::StateReads,
     Metered::StateBytes,
     Metered::OutsideRequests,
     Metered::ModuleCalls,
+    Metered::SecretLookups,
 ];
 
 /// Which bound was hit.
@@ -111,6 +114,8 @@ pub struct Budget {
     pub outside_requests: u64,
     /// Cross-module calls.
     pub module_calls: u64,
+    /// Secret lookups.
+    pub secret_lookups: u64,
 }
 
 impl Budget {
@@ -123,6 +128,7 @@ impl Budget {
             Metered::StateBytes => self.state_bytes,
             Metered::OutsideRequests => self.outside_requests,
             Metered::ModuleCalls => self.module_calls,
+            Metered::SecretLookups => self.secret_lookups,
         }
     }
 }
@@ -142,6 +148,8 @@ pub struct Usage {
     pub outside_requests: u64,
     /// Cross-module calls.
     pub module_calls: u64,
+    /// Secret lookups.
+    pub secret_lookups: u64,
 }
 
 impl Usage {
@@ -154,6 +162,7 @@ impl Usage {
             Metered::StateBytes => self.state_bytes,
             Metered::OutsideRequests => self.outside_requests,
             Metered::ModuleCalls => self.module_calls,
+            Metered::SecretLookups => self.secret_lookups,
         }
     }
 
@@ -165,6 +174,7 @@ impl Usage {
             Metered::StateBytes => &mut self.state_bytes,
             Metered::OutsideRequests => &mut self.outside_requests,
             Metered::ModuleCalls => &mut self.module_calls,
+            Metered::SecretLookups => &mut self.secret_lookups,
         }
     }
 
@@ -199,6 +209,7 @@ impl Bounds {
             state_bytes: 1024 * 1024,
             outside_requests: 64,
             module_calls: 8,
+            secret_lookups: 32,
         },
         per_provider: Budget {
             outbound_calls: 64,
@@ -207,6 +218,7 @@ impl Bounds {
             state_bytes: 2 * 1024 * 1024,
             outside_requests: 128,
             module_calls: 16,
+            secret_lookups: 64,
         },
         depth: 4,
     };
@@ -305,6 +317,7 @@ mod tests {
             state_bytes: 1 + rng.below(200),
             outside_requests: 1 + rng.below(8),
             module_calls: 1 + rng.below(4),
+            secret_lookups: 1 + rng.below(8),
         };
         let provider = Budget {
             outbound_calls: operation.outbound_calls + rng.below(16),
@@ -313,6 +326,7 @@ mod tests {
             state_bytes: operation.state_bytes + rng.below(400),
             outside_requests: operation.outside_requests + rng.below(16),
             module_calls: operation.module_calls + rng.below(8),
+            secret_lookups: operation.secret_lookups + rng.below(16),
         };
         Bounds {
             per_operation: operation,
@@ -329,7 +343,7 @@ mod tests {
             let bounds = small(&mut rng);
             let (mut operation, mut provider) = (Usage::default(), Usage::default());
             for _ in 0..200 {
-                let what = METERED[rng.below(6) as usize];
+                let what = METERED[rng.below(METERED.len() as u64) as usize];
                 let amount = rng.below(60);
                 let before = (operation, provider);
                 match charge(&bounds, &mut operation, &mut provider, what, amount) {

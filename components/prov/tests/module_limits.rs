@@ -723,3 +723,117 @@ fn a_frame_longer_than_the_bound_is_refused_from_its_length_prefix_without_readi
     let read = read_frame_up_to(&mut std::io::Cursor::new(frame), bound).expect("a frame");
     assert_eq!(read.map(|b| b.len()), Some(bound));
 }
+
+// verifies: REQ-MDL-11, THR-57
+#[test]
+fn module_repeating_secret_lookups_or_refused_calls_hits_the_limit() {
+    let lookup = |part| Step::LookUpSecret {
+        part,
+        operation: OPERATION.to_owned(),
+        name: "own.key".to_owned(),
+    };
+    for language in languages() {
+        // Lookups, of the outside part and of the sandboxed part that has no route to the proxy.
+        for part in [PartName::Outside, PartName::Sandboxed] {
+            let mut binding = binding("reserve");
+            let provider = format!("looker-{language}-{part:?}").to_lowercase();
+            install(
+                &mut binding,
+                &module(
+                    declaration(&provider, "1.0.0", &["withdrawal"]),
+                    (0..4).map(|_| lookup(part)).collect(),
+                ),
+                &language,
+                "reserve",
+                &[],
+            );
+            binding.set_bounds(tight(|b| b.per_operation.secret_lookups = 2));
+            let pid = binding.process(&provider);
+            binding.take_events();
+            let handled = binding.handle(&provider, &withdrawal(&provider, 1));
+            assert_eq!(
+                handled,
+                Handled::Refused(PlatformRefusal::LimitReached),
+                "{language} {part:?}: lookups went uncounted"
+            );
+            binding.take_events();
+            let limits = binding.take_limits();
+            assert_eq!(limits.len(), 1, "{limits:?}");
+            assert_eq!(limits[0].hit, operation(Metered::SecretLookups));
+            assert_eq!(binding.process(&provider), pid);
+        }
+        // Calls the platform refuses for what the caller declares count like any other.
+        let mut binding = binding("reserve");
+        let caller = format!("refused-{language}");
+        let steps = (0..4)
+            .map(|_| Step::CallModule {
+                callee: format!("nobody-{language}"),
+                kind: OperationKind::Withdrawal,
+            })
+            .collect();
+        install(
+            &mut binding,
+            &module(calling(&caller, None), steps),
+            &language,
+            "reserve",
+            &[],
+        );
+        binding.set_bounds(tight(|b| b.per_operation.module_calls = 2));
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::LimitReached),
+            "{language}: refused calls went uncounted"
+        );
+        let events = binding.take_events();
+        let limits = binding.take_limits();
+        assert_eq!(limits.len(), 1, "{limits:?}");
+        assert_eq!(limits[0].hit, operation(Metered::ModuleCalls));
+        assert_eq!(
+            events.calls.len(),
+            3,
+            "two refused and the one over the limit"
+        );
+        assert!(events.calls.iter().all(|c| matches!(
+            &c.outcome,
+            CrossModuleOutcome::Refused(r) if r.reason == CallRefusalReason::UndeclaredCallee
+        )));
+    }
+}
+
+// verifies: REQ-MDL-11, REQ-MDL-12
+#[test]
+fn an_output_too_large_for_the_frame_is_refused_as_oversized_and_the_process_keeps_running() {
+    // The C stand-in builds a padded output by reallocating in 512-byte steps, never freeing, so it runs out of
+    // its memory long before 2 MB; only the Rust stand-in can make an output this size.
+    for language in languages().into_iter().filter(|l| l == "rs") {
+        let mut binding = binding("reserve");
+        let (big, steady) = (format!("big-{language}"), format!("steady-{language}"));
+        install(
+            &mut binding,
+            &spec(&steady, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        let module = ModuleSpec {
+            declaration: declaration(&big, "1.0.0", &["withdrawal"]),
+            steps: Vec::new(),
+            output: Output::PaddedTo(2_200_000),
+            starts: true,
+        };
+        install(&mut binding, &module, &language, "reserve", &[]);
+        // The platform's own limit is above the output: the frame, not the limit, is what it doesn't fit.
+        binding.set_output_limit(8 * 1024 * 1024);
+        let pid = binding.process(&big);
+        let handled = binding.handle(&big, &withdrawal(&big, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::OversizedOutput),
+            "{language}: an output of 2.2 MB"
+        );
+        assert_eq!(binding.process(&big), pid, "{language}: the process ended");
+        assert!(answers_as(&mut binding, &steady, "1.0.0", 2));
+    }
+}

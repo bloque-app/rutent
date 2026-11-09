@@ -262,7 +262,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   because the caller hit a count or depth bound, and a call refused because too little of the caller's deadline was
   left, are both recorded as `callee_unavailable`, which `validate_call_against` accepts for a declared callee. A
   deadline refusal leaves the caller's operation going (the guest sees `refused`); a count or depth bound ends it as a
-  limit. Raised for a later contract version: a reason for a call not started because of a limit.
+  limit. `T-010-09` adds the reason to the contract; this placeholder stays until it lands.
 - **The caller's deadline.** A cross-module call needs `MIN_CALL_BUDGET` (1 second, settable) of the caller's
   deadline left, else the callee isn't started. The number is this task's reading: the callee would be killed at the
   caller's deadline before it answered, and the caller's own answer lost with it.
@@ -302,11 +302,15 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   the compiler makes, so `BINDING_VERSION` is `0.2.0` (it was `0.1.0`), and `build.platform_version` with it
   (`REQ-MDL-2`): machine code made under the old settings is refused by Wasmtime anyway, and nothing persists across
   the two yet. The WIT world (`0.1.0`, the binding's interface) is unchanged.
-- **A provider's frame is capped at 4 MiB, so an output over about 2 MiB ends as a dead process.** `Done` carries the
+- **A provider's frame is capped at 4 MiB.** `Done` carries the
   output hex-encoded, and the platform's reader refuses a longer frame from its prefix. An output over the platform's
-  own `set_output_limit` and under 2 MiB is still `OversizedOutput`; one over 2 MiB makes the process look gone, is
-  `Unavailable` and the process starts again. The output limit in use (the suite's is 4 KiB) is far below it.
+  own `set_output_limit` and under 2 MiB is still `OversizedOutput`; one over 2 MiB the process refuses before encoding it, with a fixed sentence the platform gives as `OversizedOutput`; the
+  process goes on (answer to review). The output limit in use (the suite's is 4 KiB) is far below it.
 - **How the tests were run.** The tests were written first and failed to compile against the missing API, which is the
   red step; the first green attempt then failed on assertions of the tests' own (an event order in the binding's
   helper, a probe that grew a memory twice in one instance). Not run on Linux, so the probe's `RLIMIT_AS` and
   `ENOMEM` assertions, the 4 GiB, and the jail's seccomp list with the new limit are CI's to show.
+- **Answer to review.** Secret lookups (of either part) are counted (`Metered::SecretLookups`) and so are cross-module
+  calls the platform refuses for what the caller declares, which keep their reason. The provider's frame queue holds one
+  frame, so a flooding process is stopped by its full pipe. A refused growth is forgotten when the next operation
+  begins.

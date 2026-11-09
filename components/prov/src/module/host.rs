@@ -108,6 +108,13 @@ pub struct Bounded {
     pub denied: bool,
 }
 
+impl Bounded {
+    /// Forgets a refusal of an earlier operation: only one in this operation may make a trap a limit.
+    pub fn begin_operation(&mut self) {
+        self.denied = false;
+    }
+}
+
 impl ResourceLimiter for Bounded {
     fn memory_growing(
         &mut self,
@@ -464,6 +471,7 @@ impl Running {
     /// Hands one operation to the sandboxed part: its output, or why it gave none. After an error the instances
     /// can't be used again.
     pub fn handle(&mut self, operation: &str) -> Result<Vec<u8>, String> {
+        self.store.data_mut().limits.begin_operation();
         self.store.data_mut().outside_fuel = FUEL_PER_PART;
         self.store
             .set_fuel(FUEL_PER_PART)
@@ -553,4 +561,27 @@ fn check_part_why(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn a_refused_growth_is_remembered_only_until_the_next_operation_begins() {
+        let mut limits = limits();
+        assert!(!limits.denied);
+        let refused = limits
+            .memory_growing(0, MEMORY_PER_PART + 65536, None)
+            .expect("an answer");
+        assert!(!refused && limits.denied);
+        limits.begin_operation();
+        assert!(
+            !limits.denied,
+            "a later, unrelated trap would read as a limit"
+        );
+        assert!(limits.memory_growing(0, 65536, None).expect("an answer"));
+        assert!(!limits.denied);
+    }
 }

@@ -373,6 +373,29 @@ fn read_verdicts(stdout: &mut impl Read) -> Result<Vec<(Compiled, Vec<u8>)>, Str
     Ok(parts)
 }
 
+/// Reads a provider's process's frames on a thread of its own, into a queue that holds one: a process that sends
+/// faster than the platform takes is stopped by its full pipe, so what the platform holds of it is bounded
+/// (`REQ-MDL-11`, `THR-57`). The thread ends at the end of the stream, a frame past [`MAX_PROVIDER_FRAME`], or
+/// when the receiver is dropped.
+fn pump(stdout: impl Read + Send + 'static) -> Receiver<Option<Vec<u8>>> {
+    let (incoming, from) = mpsc::sync_channel::<Option<Vec<u8>>>(1);
+    let _ = std::thread::Builder::new()
+        .name("provider-stdout".to_owned())
+        .spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let frame = read_frame_up_to(&mut stdout, MAX_PROVIDER_FRAME)
+                    .ok()
+                    .flatten();
+                let end = frame.is_none();
+                if incoming.send(frame).is_err() || end {
+                    break;
+                }
+            }
+        });
+    from
+}
+
 /// What waiting for a provider's process gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Received {
@@ -426,7 +449,6 @@ impl ProviderProcess {
             return Err("the provider's process has no pipes".to_owned());
         };
         let (to, outgoing) = mpsc::channel::<Vec<u8>>();
-        let (incoming, from) = mpsc::channel::<Option<Vec<u8>>>();
         // A write that fails ends the writer: a process that stops reading, or refuses its code and says why,
         // is then heard out by the reader.
         let _ = std::thread::Builder::new()
@@ -439,20 +461,7 @@ impl ProviderProcess {
                     }
                 }
             });
-        let _ = std::thread::Builder::new()
-            .name("provider-stdout".to_owned())
-            .spawn(move || {
-                let mut stdout = BufReader::new(stdout);
-                loop {
-                    let frame = read_frame_up_to(&mut stdout, MAX_PROVIDER_FRAME)
-                        .ok()
-                        .flatten();
-                    let end = frame.is_none();
-                    if incoming.send(frame).is_err() || end {
-                        break;
-                    }
-                }
-            });
+        let from = pump(stdout);
         let mut process = Self {
             child,
             _workdir: own,
@@ -594,5 +603,44 @@ mod tests {
         let labels: Vec<_> = all.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(labels, ["child 7", "child 8", "child 9"]);
         assert_eq!(all[2].bytes, b"child-9\n");
+    }
+
+    /// Frames of 1 KiB without end, counting the bytes taken from it.
+    struct Flood(Arc<std::sync::atomic::AtomicUsize>, Vec<u8>, usize);
+
+    impl Read for Flood {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.1.is_empty() {
+                let mut frame = 1024u32.to_le_bytes().to_vec();
+                frame.extend(std::iter::repeat_n(b'x', 1024));
+                self.1 = frame;
+                self.2 = 0;
+            }
+            let n = buf.len().min(self.1.len() - self.2);
+            buf[..n].copy_from_slice(&self.1[self.2..self.2 + n]);
+            self.2 += n;
+            if self.2 == self.1.len() {
+                self.1.clear();
+            }
+            self.0.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    // verifies: REQ-MDL-11, THR-57
+    #[test]
+    fn a_process_flooding_the_platform_with_frames_cannot_grow_what_the_platform_holds() {
+        let taken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let from = pump(Flood(Arc::clone(&taken), Vec::new(), 0));
+        // The platform reads none of it for a while: what is taken from the process stops at a few frames.
+        std::thread::sleep(Duration::from_millis(500));
+        let first = taken.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(500));
+        let second = taken.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(first, second, "the reader kept reading with nobody taking");
+        assert!(first <= 32 * 1024, "{first} bytes were held");
+        // Taking one lets the reader go on, by one.
+        assert!(matches!(from.recv(), Ok(Some(_))));
+        drop(from);
     }
 }
