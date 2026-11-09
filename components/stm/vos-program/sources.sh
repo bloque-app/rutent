@@ -33,19 +33,33 @@ sources_git_config() {
     export CARGO_NET_GIT_FETCH_WITH_CLI=true
 }
 
-# Every `rev = "..."` the manifests pin, and every `?rev=...` the lockfiles lock, for a source's upstream URL.
+# The files that pin each source: VOS in every manifest and lockfile, the forks where the client's workspace names
+# them (s4 is only in VOS's own lockfile, which build.sh checks). A pin of a source in any of its files that differs
+# from the list's, or a missing one in a file that must hold it, is a failure.
+sources_pinned_in() {
+    case "$1" in
+    vos) echo "Cargo.toml client/Cargo.toml Cargo.lock client/Cargo.lock" ;;
+    lsm-tree) echo "client/Cargo.toml client/Cargo.lock" ;;
+    stwo) echo "client/Cargo.lock" ;;
+    s4) echo "" ;;
+    esac
+}
+
 sources_check() {
     ok=0
     for name in vos lsm-tree stwo s4; do
         want=$(source_field "$name" 2)
         upstream=$(source_field "$name" 3)
-        for file in "$sources_sha_root/Cargo.toml" "$sources_sha_root/client/Cargo.toml" \
-            "$sources_sha_root/Cargo.lock" "$sources_sha_root/client/Cargo.lock"; do
-            # A pinned revision of this source in the file that differs from the list's.
+        for rel in $(sources_pinned_in "$name"); do
+            file="$sources_sha_root/$rel"
             found=$(grep -F "$upstream" "$file" | grep -oE "rev(=| = \")[0-9a-f]{40}" | grep -oE '[0-9a-f]{40}' | sort -u || true)
+            if [ -z "$found" ]; then
+                echo "sources.sh: $rel does not pin $name, which the list says it must" >&2
+                ok=1
+            fi
             for rev in $found; do
                 if [ "$rev" != "$want" ]; then
-                    echo "sources.sh: $file pins $name at $rev, the list at $want" >&2
+                    echo "sources.sh: $rel pins $name at $rev, the list at $want" >&2
                     ok=1
                 fi
             done

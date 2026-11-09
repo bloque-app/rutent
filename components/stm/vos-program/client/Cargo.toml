@@ -19,6 +19,8 @@ vos = [
     "dep:libc",
     "dep:rutent-stm-vos-program",
     "dep:vos-node",
+    "dep:vos-pvm",
+    "dep:vos-pvm-compiler",
     "dep:vos-wire",
 ]
 
@@ -32,6 +34,8 @@ serde = "1"
 serde_json = "1"
 # VOS at vos-core 5c78975 (DEC-26).
 vos-node = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-pvm = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-pvm-compiler = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
 vos-wire = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
 
 [dev-dependencies]

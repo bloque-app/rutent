@@ -27,7 +27,7 @@ use rutent_stm::Stm;
 use rutent_stm::reference_host::ReferenceHarness;
 use rutent_stm_vos::cluster::{ClusterConfig, INSTANCE, NodeBuild};
 use rutent_stm_vos::host::{self, VosHarness, VosHost};
-use rutent_stm_vos::platform::{Backend, Facts};
+use rutent_stm_vos::platform::{Backend, Facts, backend_proof};
 use rutent_stm_vos_program::Submitted;
 
 fn var(name: &str) -> PathBuf {
@@ -78,8 +78,7 @@ struct Base(PathBuf);
 
 impl Base {
     fn new(name: &str) -> Base {
-        let dir =
-            std::env::temp_dir().join(format!("rutent-stm-vos-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rsv-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Base(dir)
@@ -93,18 +92,48 @@ impl Drop for Base {
 }
 
 fn assert_passes(report: &Report) {
-    println!("{}", report.to_markdown());
-    let failed: Vec<String> = report
-        .cells
-        .iter()
-        .filter(|(_, o)| !matches!(o, CellOutcome::Pass))
-        .map(|(c, o)| format!("{}: {o:?}", c.id))
-        .collect();
-    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    assert_passes_but(report, &[]);
     assert_eq!(report.verdict(), Verdict::Pass);
 }
 
-fn suite_on(replicas: usize, name: &str) {
+/// Every cell passes but the `excused` ones, which must be cells of the suite.
+fn assert_passes_but(report: &Report, excused: &[&str]) {
+    println!("{}", report.to_markdown());
+    for id in excused {
+        assert!(
+            report.cells.iter().any(|(c, _)| c.id == *id),
+            "{id} is not a cell of the suite"
+        );
+    }
+    let failed: Vec<String> = report
+        .cells
+        .iter()
+        .filter(|(c, o)| !matches!(o, CellOutcome::Pass) && !excused.contains(&c.id))
+        .map(|(c, o)| format!("{}: {o:?}", c.id))
+        .collect();
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// The nodes this test started ran the backend asked for: the JIT's perf map names the program, or the interpreter's
+/// is empty.
+fn prove_backend(program: &str) {
+    let backend = if development() {
+        Backend::Interpreter
+    } else {
+        Backend::Jit
+    };
+    backend_proof(backend, &var(program), &[]).unwrap_or_else(|e| panic!("the backend proof: {e}"));
+}
+
+/// The two cells that compare the states a host recorded with the probe's, over shuffled inputs. `Stm` rightly
+/// differs from the probe there (forward-only segments), so a host running `Stm` is excused them; the states test
+/// scores it against `Stm` itself.
+const STATES_OF_THE_PROBE: [&str; 2] = [
+    "reordered-delivery-is-applied-in-submit-order",
+    "replay-reaches-the-same-states",
+];
+
+fn suite_on(replicas: usize, name: &str, program: &str, excused: &[&str]) {
     let base = Base::new(name);
     let report = run_with_fault_seam(
         RunConfig {
@@ -113,22 +142,39 @@ fn suite_on(replicas: usize, name: &str) {
             target: "reference-host".into(),
             seed: 20_261_106,
         },
-        &mut VosHarness::<Probe>::new(config(replicas, "PROBE_PROGRAM_ELF"), base.0.clone(), "v"),
+        &mut VosHarness::<Probe>::new(config(replicas, program), base.0.clone(), "v"),
         &mut ReferenceHarness::<Probe>::new(),
     );
-    assert_passes(&report);
+    if excused.is_empty() {
+        assert_passes(&report);
+    } else {
+        assert_passes_but(&report, excused);
+    }
+    prove_backend(program);
 }
 
 // verifies: REQ-OPS-3, NFR-6, DEC-26
 #[test]
 fn the_host_contract_suite_passes_on_one_vos_node() {
-    suite_on(1, "one");
+    suite_on(1, "one", "PROBE_PROGRAM_ELF", &[]);
 }
 
 // verifies: REQ-OPS-3, NFR-6, DEC-26
 #[test]
 fn the_host_contract_suite_passes_on_three_vos_nodes() {
-    suite_on(3, "three");
+    suite_on(3, "three", "PROBE_PROGRAM_ELF", &[]);
+}
+
+// verifies: REQ-OPS-3, NFR-6, DEC-26
+#[test]
+fn the_host_contract_suite_passes_on_one_vos_node_running_the_state_machine_library() {
+    suite_on(1, "o-stm", "STM_PROGRAM_ELF", &STATES_OF_THE_PROBE);
+}
+
+// verifies: REQ-OPS-3, NFR-6, DEC-26
+#[test]
+fn the_host_contract_suite_passes_on_three_vos_nodes_running_the_state_machine_library() {
+    suite_on(3, "t-stm", "STM_PROGRAM_ELF", &STATES_OF_THE_PROBE);
 }
 
 /// The states `Stm` computes over `inputs`, one per input, the way a host folds them over one order.
@@ -149,11 +195,21 @@ fn fold_stm(inputs: &[RecordedInput]) -> Vec<Option<Order>> {
 // verifies: REQ-OPS-3, REQ-STM-4, DEC-26
 #[test]
 fn the_program_records_the_states_the_state_machine_library_computes() {
-    let base = Base::new("states");
-    let mut harness = VosHarness::<Probe>::new(config(1, "STM_PROGRAM_ELF"), base.0.clone(), "s");
+    states_on(1);
+}
+
+// verifies: REQ-OPS-3, REQ-STM-4, DEC-26
+#[test]
+fn three_vos_nodes_record_the_states_the_state_machine_library_computes() {
+    states_on(3);
+}
+
+fn states_on(replicas: usize) {
+    let base = Base::new(&format!("states-{replicas}"));
+    let mut harness =
+        VosHarness::<Stm>::new(config(replicas, "STM_PROGRAM_ELF"), base.0.clone(), "s");
     let store = harness.fresh_store().unwrap();
-    let mut host: VosHost =
-        <VosHarness<Probe> as Harness<Probe>>::start(&mut harness, store).unwrap();
+    let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
     // An order to completion, one whose final deposit fails, and the first order's inputs out of their order, where
     // `Stm` refuses what the probe takes.
     let mut shuffled = probe::order_inputs("ord-c", 300);
@@ -167,26 +223,27 @@ fn the_program_records_the_states_the_state_machine_library_computes() {
         ("ord-c", shuffled),
     ] {
         for input in &inputs {
-            let delivered = Host::<Probe>::submit(&mut host, input.clone());
+            let delivered = Host::<Stm>::submit(&mut host, input.clone());
             assert!(
                 matches!(delivered, Ok(Delivery::Recorded(_))),
                 "{order}: {delivered:?}"
             );
         }
-        let journal = Host::<Probe>::journal(&host, &Id::new(order).unwrap()).unwrap();
+        let journal = Host::<Stm>::journal(&host, &Id::new(order).unwrap()).unwrap();
         let recorded: Vec<Option<Order>> = journal.iter().map(|r| r.state_after.clone()).collect();
         assert_eq!(
             recorded,
             fold_stm(&inputs),
             "{order}: the program's states are not Stm's"
         );
-        let last = Host::<Probe>::state(&host, &Id::new(order).unwrap()).unwrap();
+        let last = Host::<Stm>::state(&host, &Id::new(order).unwrap()).unwrap();
         assert_eq!(
             last,
             recorded.last().cloned().flatten(),
             "{order}: the state it serves"
         );
     }
+    prove_backend("STM_PROGRAM_ELF");
 }
 
 /// What was acknowledged: record id to its order and sequence number.
@@ -217,15 +274,14 @@ fn submit_via(
 #[test]
 fn killing_the_leader_mid_submit_loses_no_acknowledged_record() {
     let base = Base::new("leader");
-    let mut harness = VosHarness::<Probe>::new(config(3, "STM_PROGRAM_ELF"), base.0.clone(), "k");
+    let mut harness = VosHarness::<Stm>::new(config(3, "STM_PROGRAM_ELF"), base.0.clone(), "k");
     let store = harness.fresh_store().unwrap();
-    let mut host: VosHost =
-        <VosHarness<Probe> as Harness<Probe>>::start(&mut harness, store).unwrap();
+    let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
     let mut acknowledged = Acknowledged::new();
 
     // Some records first, so there is something durable before any kill.
     for input in probe::order_inputs("ord-warm", 0) {
-        let delivered = Host::<Probe>::submit(&mut host, input);
+        let delivered = Host::<Stm>::submit(&mut host, input);
         acknowledge(&mut acknowledged, &delivered);
     }
     assert!(!acknowledged.is_empty(), "the warm-up recorded nothing");
@@ -283,9 +339,9 @@ fn killing_the_leader_mid_submit_loses_no_acknowledged_record() {
         let mid_submit = in_flight.lock().unwrap().is_some();
         host.cluster.kill(leader);
         killed_mid_submit += u32::from(mid_submit);
+        stop.store(true, Ordering::SeqCst);
         let left = load.join().expect("the load");
         acknowledged.extend(acked.lock().unwrap().clone());
-        stop.store(true, Ordering::SeqCst);
 
         // The two nodes left elect a leader; what the load did not get acknowledged goes again, in order.
         let survivor = (1..=3).find(|n| *n != leader).unwrap();
@@ -305,7 +361,7 @@ fn killing_the_leader_mid_submit_loses_no_acknowledged_record() {
         // Every acknowledged record is in the journal a surviving node serves, once.
         host.client = host.cluster.client_with([71; 32], survivor);
         for (record_id, (order, seq)) in &acknowledged {
-            let journal = Host::<Probe>::journal(&host, order).unwrap();
+            let journal = Host::<Stm>::journal(&host, order).unwrap();
             let held: Vec<_> = journal
                 .iter()
                 .filter(|r| r.input.record_id.as_str() == record_id)
@@ -326,4 +382,5 @@ fn killing_the_leader_mid_submit_loses_no_acknowledged_record() {
         killed_mid_submit >= 1,
         "no kill landed in a submit that was in flight"
     );
+    prove_backend("STM_PROGRAM_ELF");
 }

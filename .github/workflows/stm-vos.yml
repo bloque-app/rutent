@@ -3,17 +3,21 @@ name: STM on VOS
 # T-010-05: CMP-STM as a VOS program, tested on real VOS nodes, one and three, with the JIT (the host-contract suite
 # and the leader killed mid-submit). The nodes run on the runner host, never in a container or a Docker step, whose
 # default seccomp profile blocks userfaultfd. Every binary is built on the runner that runs it, with no cache.
-# It never runs on a pull request, and a push starts it only on this task's own branch: merged into a milestone
-# branch, it does not start there. The default build and `cargo test --workspace` never need VOS; this workflow is
-# the only place the package under components/stm/vos-program is built and run. A change to this file is a DEC-20 path.
+# It never runs on a pull request. A push starts it on this task's branch, a milestone branch or develop, when the
+# program, the contracts or the suite it runs change. The default build and `cargo test --workspace` never need VOS;
+# this workflow is the only place the package under components/stm/vos-program is built and run. A change to this file is a DEC-20 path.
 # GitHub runs a workflow_dispatch only for a workflow file on the default branch, so until this file reaches main
 # the run is the push of this task's branch; the run id goes in F-010's notes.
 on:
   push:
     branches:
       - "f-010/t-010-05-vos-program"
+      - "m*"
+      - "develop"
     paths:
       - "components/stm/**"
+      - "contracts/**"
+      - "conformance/**"
       - ".github/workflows/stm-vos.yml"
   workflow_dispatch:
 

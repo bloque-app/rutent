@@ -477,8 +477,8 @@ zeroize_derive 1.5.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 zmij 1.0.21 MIT permitted licence-permissive-standing
 zmij 1.0.23 MIT permitted licence-permissive-standing
 # vos: adopted in part for v0 (item vos-licence-v0, 2026-11-09). AGPL-3.0-or-later applies only to the
-# package that links vos-sdk (the VOS program of T-010-05) and to binaries built from it. Every other package
-# stays MIT; the libraries stay runtime-neutral behind the host contract. Mixed licensing, as counsel-licences
+# packages that link VOS code: the VOS program and its client (T-010-05), and to binaries built from them. Every
+# other package stays MIT; the libraries stay runtime-neutral behind the host contract. Mixed licensing, as counsel-licences
 # rules.
 vos not-adopted AGPL-3.0-or-later permitted DEC-26,vos-licence-v0
 vault not-adopted BUSL-1.1 pending DEC-9,ADR-0004

@@ -193,7 +193,7 @@ Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed o
   its own `vos` feature, off by default; a workspace of its own with the node toolchain (`nightly-2025-07-14`).
 - **The retry** (`rutent_stm::open_retry`, MIT, `std`): `retry_open(policy, retryable, open)`, bounded (40 tries 10 ms
   apart, `OpenRetry::SPAWN_WINDOW`). The purpose-built store retries only "the store is open in another host"; the
-  client retries a node that "did not start" when the cluster being opened already exists. Another failure returns at
+  client retries a node that "exited before it started" when the cluster being opened already exists. Another failure returns at
   once, and a store held by a live second host is still refused after about 400 ms.
 - **Sources** (`G-48`): `components/stm/vos-program/sources` lists `name revision upstream-url fetch-url` for `vos-core`
   and its three forks. The scripts read it, derive git's `insteadOf` rewrites from it, and `sources.sh check` fails
@@ -212,8 +212,9 @@ Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed o
   depends on it, (b) put `vos-node`, `vos-wire` and their git sources into rutent's root `Cargo.lock`, even with the
   feature off, which breaks "`cargo test --workspace` never needs VOS" and moves the lock reached from
   `rutent-contracts` (`T-010-02`'s guard), and (c) link AGPL crates into the MIT library, outside the owner's ruling
-  (AGPL covers only the package that links `vos-sdk` and the binaries built from it). The client links `vos-node` and
-  the program's types, so it is AGPL-3.0-or-later with the program. Off by default holds: nothing of VOS builds
+  (AGPL covers only the packages that link VOS code and the binaries built from them). The client links `vos-node` and
+  the program's types, so it is AGPL-3.0-or-later with the program: the owner's partial adoption covers the packages
+  that link VOS code, the VOS program and its client, and the client's manifest declares it. Off by default holds: nothing of VOS builds
   without the flag, and neither package is in rutent's workspace. I did not run the scratch change that would show
   (b); it rests on cargo locking optional git dependencies.
 - **A binary built from the AGPL package is AGPL.** A node or a client binary built here is under the ruling; shipping
@@ -230,7 +231,7 @@ Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed o
   machine as a parameter would remove the second program; that is an edit to `conformance/`, for the owner or a later
   task.
 - **The retry's two predicates.** The store matches its own refusal text, exported as `STORE_OPEN_ELSEWHERE`. The VOS
-  client has no refusal text of VOS's to match, so it retries any "did not start" on a cluster that exists, and
+  client has no refusal text of VOS's to match, so it retries a node that exited before it started (not one whose 60 s wait ran out) on a cluster that exists, and
   never on a fresh one. If a node fails to start for another reason, it costs about 400 ms per node open before the
   error returns.
 - **Tests that need the toolchain.** `killing_the_leader_mid_submit_loses_no_acknowledged_record` is a smaller test than
@@ -284,3 +285,15 @@ Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed o
   when the callee received it, since being passed on is what lends the widening. The reference double gains
   `with_callees_that_never_answer`, which records every call it passes on as `unanswered`, for the suite's test. No
   contract changes with it.
+
+## T-010-05: answering the review of `6b73945`
+
+- The suite also runs on `STM_PROGRAM_ELF`, the real `Stm` program, on one node and on three, excusing only the two
+  cells that compare recorded states with the probe's (`reordered-delivery-is-applied-in-submit-order`,
+  `replay-reaches-the-same-states`); the states test runs on one node and on three. The probe-built program stays for
+  the suite's full pass.
+- `platform.rs` has the adapter's five `assert_jit` unit tests and its perf-map check back, as `backend_proof`, which
+  reads `STARTED` and `PROBED` and ends each node test.
+- The workflow also runs on pushes to `m*` and `develop`, and on `contracts/` and `conformance/`.
+- `sources.sh check` fails on a missing pin. The client declares AGPL-3.0-or-later. Not run for these changes: the
+  Linux/JIT run.

@@ -8,7 +8,8 @@ use rutent_stm_vos::retry::open_retrying;
 
 fn did_not_start() -> HostError {
     HostError::Unavailable {
-        reason: "node 2 did not start; its log ends: [\"the data directory is locked\"]".into(),
+        reason: "node 2 exited before it started; its log ends: [\"the data directory is locked\"]"
+            .into(),
     }
 }
 
@@ -45,5 +46,19 @@ fn the_client_opens_a_new_cluster_once_and_does_not_retry_another_refusal() {
         Err(HostError::ImportIncomplete)
     });
     assert!(matches!(other, Err(HostError::ImportIncomplete)));
+    assert_eq!(tries.get(), 1);
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn a_node_that_did_not_start_within_the_wait_is_not_retried() {
+    let tries = Cell::new(0);
+    let timed_out: Result<(), HostError> = open_retrying(true, || {
+        tries.set(tries.get() + 1);
+        Err(HostError::Unavailable {
+            reason: "node 2 did not start in 60 s; its log ends: []".into(),
+        })
+    });
+    assert!(timed_out.is_err());
     assert_eq!(tries.get(), 1);
 }

@@ -184,3 +184,158 @@ pub fn uffd_probe() -> Result<(), String> {
 pub fn uffd_probe() -> Result<(), String> {
     Err("no userfaultfd off Linux x86_64".into())
 }
+
+/// Proves the nodes this process started ran the backend asked for, as the re-score's `backend_proof` did, from the
+/// processes [`STARTED`](crate::cluster::STARTED) and [`PROBED`](crate::cluster::PROBED) hold (they are emptied by
+/// the call). On the JIT every node's perf map must be non-empty and, for each node that answered a query of the
+/// program on its own replica, name `program_elf`'s program; no node's log may say the map is off. On the
+/// interpreter no perf map may have a line. `named_by` adds pids known to have run the program.
+pub fn backend_proof(
+    backend: Backend,
+    program_elf: &std::path::Path,
+    named_by: &[u32],
+) -> Result<(), String> {
+    let started = std::mem::take(&mut *crate::cluster::STARTED.lock().unwrap());
+    let mut probed = std::mem::take(&mut *crate::cluster::PROBED.lock().unwrap());
+    probed.extend_from_slice(named_by);
+    let program = std::fs::read(program_elf)
+        .map_err(|e| e.to_string())
+        .and_then(|elf| perf_map_name(&elf))
+        .map_err(|e| format!("the program's perf-map name could not be computed: {e}"))?;
+    let mut problems = Vec::new();
+    let (mut empty, mut naming) = (0, 0);
+    for (pid, log) in &started {
+        let (lines, named) = perf_map_lines(*pid, &program);
+        if std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .contains("the PVM's perf map is off")
+        {
+            problems.push(format!("node pid {pid}'s log says its perf map is off"));
+        }
+        match backend {
+            Backend::Jit => {
+                empty += usize::from(lines == 0);
+                naming += usize::from(named > 0);
+                if probed.contains(pid) && named == 0 {
+                    problems.push(format!(
+                        "node pid {pid} ran the program but its perf map does not name it"
+                    ));
+                }
+            }
+            Backend::Interpreter => {
+                if lines > 0 {
+                    problems.push(format!(
+                        "node pid {pid} ran on the interpreter and its perf map has {lines} lines"
+                    ));
+                }
+            }
+        }
+    }
+    if backend == Backend::Jit {
+        if empty > 0 {
+            problems.push(format!(
+                "{empty} of {} nodes have an empty perf map",
+                started.len()
+            ));
+        }
+        if naming == 0 {
+            problems.push("no perf map names the program".into());
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
+/// The name the PVM's perf map gives a program it compiles without registered functions
+/// (`pvm/runtime/src/perf_map.rs`, `program_name`): `pvm:<first 8 bytes of BLAKE2b-256 of its code, hex>:<code
+/// length>`, for the program the node derives from `elf`, as `vos_pvm_compiler::link_elf_spi` links it.
+pub fn perf_map_name(elf: &[u8]) -> Result<String, String> {
+    let blob =
+        vos_pvm_compiler::link_elf_spi(elf).map_err(|e| format!("linking the program: {e:?}"))?;
+    let program = vos_pvm::spi::parse_standard_program(&blob)
+        .ok_or_else(|| "the linked program is not a standard program".to_string())?;
+    let code = &program.code.code;
+    let hash = vos_pvm::precompile::blake2b_256(code);
+    let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("pvm:{hex}:{}", code.len()))
+}
+
+/// What a node's perf map shows: its line count, and how many name the program.
+pub fn perf_map_lines(pid: u32, program: &str) -> (usize, usize) {
+    let path = format!("/tmp/perf-{pid}.map");
+    let text = std::fs::read_to_string(std::path::Path::new(&path)).unwrap_or_default();
+    let lines = text.lines().count();
+    let naming = text.lines().filter(|l| l.contains(program)).count();
+    (lines, naming)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(os: &str, kernel: &str, uffd: Result<(), String>) -> Facts {
+        Facts {
+            os: os.into(),
+            kernel: kernel.into(),
+            cpu: "a CPU".into(),
+            vcpus: 4,
+            memory_mib: 16_000,
+            uffd,
+        }
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn linux_x86_64_on_kernel_6_7_or_later_with_write_protect_passes_the_assertion() {
+        assert_eq!(
+            machine("Linux x86_64", "6.7.0-1-azure", Ok(())).assert_jit(),
+            Ok(())
+        );
+        assert_eq!(
+            machine("Linux x86_64", "7.0.0-1019-azure", Ok(())).assert_jit(),
+            Ok(())
+        );
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_kernel_before_6_7_fails_the_assertion() {
+        let refused = machine("Linux x86_64", "6.6.30-generic", Ok(())).assert_jit();
+        assert!(refused.is_err_and(|e| e.contains("6.7")));
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_machine_off_linux_x86_64_fails_the_assertion() {
+        assert!(
+            machine("Darwin arm64", "25.6.0", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+        assert!(
+            machine("Linux aarch64", "6.8.0", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_failed_userfaultfd_probe_fails_the_assertion() {
+        let refused = machine("Linux x86_64", "6.8.0", Err("EPERM".into())).assert_jit();
+        assert!(refused.is_err_and(|e| e.contains("userfaultfd")));
+    }
+
+    // verifies: DEC-6
+    #[test]
+    fn a_kernel_release_that_does_not_read_as_a_version_fails_the_assertion() {
+        assert!(
+            machine("Linux x86_64", "unknown", Ok(()))
+                .assert_jit()
+                .is_err()
+        );
+    }
+}

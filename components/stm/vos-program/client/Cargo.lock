@@ -1577,6 +1577,8 @@ dependencies = [
  "serde",
  "serde_json",
  "vos-node",
+ "vos-pvm",
+ "vos-pvm-compiler",
  "vos-wire",
 ]
 

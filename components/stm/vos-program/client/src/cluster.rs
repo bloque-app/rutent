@@ -19,7 +19,7 @@ use vos_wire::result::Outcome;
 
 use crate::platform::Backend;
 
-/// Every `vos` process a cluster started in its space, with its log: a pass checks each one's backend at its end.
+/// Every `vos` process a cluster started in its space, with its log: [`backend_proof`](crate::platform::backend_proof) checks each one's backend at the end of a test.
 pub static STARTED: std::sync::Mutex<Vec<(u32, PathBuf)>> = std::sync::Mutex::new(Vec::new());
 
 /// The `vos` processes that answered a query of the program on their own replica: each has run the program, so on
@@ -328,10 +328,20 @@ impl Cluster {
             match read.recv_timeout(left) {
                 Ok(line) if line.starts_with("api on ") => break,
                 Ok(_) => {}
-                Err(_) => {
+                Err(e) => {
                     let log = std::fs::read_to_string(self.log(n)).unwrap_or_default();
                     let tail: Vec<&str> = log.lines().rev().take(8).collect();
-                    return Err(format!("node {n} did not start; its log ends: {:?}", tail));
+                    // A node that exited early (its output closed) is the refusal an open retries; one that was
+                    // merely slow is not, and its wait was long already.
+                    return Err(match e {
+                        mpsc::RecvTimeoutError::Disconnected => {
+                            format!("node {n} exited before it started; its log ends: {tail:?}")
+                        }
+                        mpsc::RecvTimeoutError::Timeout => format!(
+                            "node {n} did not start in {} s; its log ends: {tail:?}",
+                            config.wait.as_secs()
+                        ),
+                    });
                 }
             }
         }
