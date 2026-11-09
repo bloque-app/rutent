@@ -187,7 +187,8 @@ and no binding source changed.
   measured: the scored-run artifacts hold only the machine code's digests.
 - **`B-08` for pvm, in the note only.** The `/proc` read was refused by `seccomp`, not the empty root; the layers were
   probed together; the admitting compiler drops no capabilities and has no Landlock.
-- **Tree at `dfeb1c2`.** The Wasm binding's tree there differs from the scored run's (`eab957c`) by one comment.
+- **Tree at `dfeb1c2`.** The Wasm binding's tree there (`13a79af`) differs from the scored run's (`eab957c`, the
+  `wasm-binding/` directory's tree at `6e57c40`, a tree and not a commit) by one comment.
 
 
 ## T-008-04
@@ -217,3 +218,13 @@ and no binding source changed.
   `drafts/plan-decision.md` for its `DEC` number and row in §2.1.
 - **No questions** were left for the lead.
 - **The drafts stay** as the experiment's record, each marked promoted.
+
+## T-008-04, review round 1 on PR #58
+
+- **Finding 8: the PolkaVM binding.** `adr/0003-module-format-sandbox.md` said PolkaVM's code "does not merge", but
+  `pvm-binding/` is in the milestone. Kept, and the ADR reworded: the owner ruled on `T-001-04`
+  (`licence-experiment-workspaces`) that experiment workspaces merge with their dependencies recorded, and the licence
+  check passes with both lockfiles. The scored runs, `scoring.md` (`G-31`) and `decisions.json` cite the binding by
+  path, and `wasm-binding/` source names it, so removing it would leave those citations dangling. The promoted ADR
+  text is the one that changed; `drafts/adr-0003-amendment.md` keeps the sentence as drafted.
+- **Finding 10: what the cited objects are.** See "Objects the run notes cite" in the experiment's `README.md`.

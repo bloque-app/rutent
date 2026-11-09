@@ -107,8 +107,11 @@ and `M2`'s module admission and runtime (`F-013`) build on it.
   - fuel for CPU, and a memory limit per part;
   - machine code made only by the platform's own compiler, and loaded only after its digest matches the artefact's
     (`B-15`, `G-08`).
-- **PolkaVM is not adopted** at 0.38.0. Its binding and run notes stay as `EXP-2`'s record, and its code does not
-  merge. The module interface stays format-neutral (`DEC-4`), so a later experiment may score a PolkaVM release that
+- **PolkaVM is not adopted** at 0.38.0. Its binding and run notes stay as `EXP-2`'s record. The binding merges as
+  experiment code, in `experiments/2026-11-07-module-format/pvm-binding/`: its own cargo workspace, outside the root
+  one, with its dependencies recorded in `licences/RECORD` (item `licence-experiment-workspaces`). The scores cite it
+  by path. Nothing builds on it, and only the Wasm binding had a security review, so it merges unreviewed and
+  unadopted; a later change to it waits for the owner (`.github/CODEOWNERS`). The module interface stays format-neutral (`DEC-4`), so a later experiment may score a PolkaVM release that
   its upstream holds fit for production, as its own `EXP-n`.
 - **No second format.** Wasm alone claims `AC-20`'s two languages, Rust and C. PolkaVM would bring no language Wasm
   lacks. It would add a second binding, jail, `DEC-20` review, licence closure and pre-1.0 pin, so it doesn't earn

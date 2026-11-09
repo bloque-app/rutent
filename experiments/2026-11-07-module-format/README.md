@@ -248,6 +248,27 @@ which carries no scored claim, is a development run: the note of the scored run 
 Actions run number, and it has no id of its own. Those runs are listed in that note, not in the sheet's section 5, which lists the
 pre-freeze development runs.
 
+## Objects the run notes cite
+
+Some commits and trees the run notes cite are not in the history of `m1` or `develop`, so a merge commit does not
+carry them. Each lives only on the branch named here, and that branch has to be kept.
+
+| Object | Is | Lives on |
+|---|---|---|
+| `554de34` | commit, the PolkaVM scored run's | `exp2/pvm-linux` |
+| `6e57c40` | commit, the Wasm scored run's (`EXP-2-wasm-20261107-1`) | `exp2/wasm-linux` |
+| `bd1cd98` | commit, the push run `-3` (`EXP-2-wasm-20261107-3`) | `exp2/wasm-linux-2` |
+| `eab957c` | **tree**, not a commit: `wasm-binding/` at `6e57c40` | `exp2/wasm-linux`, through `6e57c40` |
+| `e6f8626` | tree: `pvm-binding/` at `554de34` | `exp2/pvm-linux` |
+| `0d43963` | tree: `wasm-binding/` at `bd1cd98` | `exp2/wasm-linux-2`, through `bd1cd98` |
+| `1815c41` | tree: `pvm-binding/` of the third PolkaVM development run, held also by `6e57c40` | `exp2/wasm-linux` |
+| `7af940e`, `9e593c9` | commit and the `wasm-binding/` tree of the Wasm development run | `f-008/t-008-02-wasm-binding-of-the-suite` |
+| `d272c15`, `37b9a97`, `718d3c0`, `f433b03` | PolkaVM development runs' commits and `pvm-binding/` trees | `f-008/t-008-03-pvm-binding-with-the-same-stand-ins` |
+
+The `f-008/*` branches are task branches (`HOUSE-RULES.md`); `exp2/*` are the scored runs' branches, which the
+workflows `exp2-wasm.yml` and `exp2-pvm.yml` build on. The remaining hashes in the notes are commits on `m1`, trees
+of such commits, or upstream commits of Wasmtime, PolkaVM and the toolchains.
+
 ## Promotion record
 
 Not promoted. The experiment is open until the owner answers the adoption item.
