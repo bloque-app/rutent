@@ -81,12 +81,21 @@ impl RouteCalls {
     }
 }
 
-/// The route a call no route segment names is recorded against: the contract's record names a route for every
-/// call, and this one names none of the operator's.
+/// The decision record id of [`no_route`]. It is reserved: no router may issue a decision record by this id, so a
+/// call record naming it never names a real route. A decision record's id is its request's (router-api), and the
+/// `rutent:` prefix keeps it apart from the ids requests carry.
+pub const NO_ROUTE_RECORD: &str = "rutent:no-route";
+
+/// The segment id of [`no_route`], reserved with [`NO_ROUTE_RECORD`].
+pub const NO_ROUTE_SEGMENT: &str = "rutent:no-segment";
+
+/// The placeholder a call is recorded against when the route check fails, or when no segment names anything of
+/// its caller's: the contract's record names a route for every call, and this one names none. Its ids are
+/// reserved ([`NO_ROUTE_RECORD`], [`NO_ROUTE_SEGMENT`]).
 pub fn no_route() -> RouteReference {
     RouteReference {
-        decision_record: Identifier::new("no-route").expect("an identifier"),
-        segment: Identifier::new("no-segment").expect("an identifier"),
+        decision_record: Identifier::new(NO_ROUTE_RECORD).expect("an identifier"),
+        segment: Identifier::new(NO_ROUTE_SEGMENT).expect("an identifier"),
     }
 }
 
@@ -112,7 +121,8 @@ pub struct CallAsked<'a> {
 /// How [`judge_call`] judged a call: the route it is recorded against, and why it is refused, if it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallJudgement {
-    /// The segment that names the call, else the segment the caller is on in that transaction, else
+    /// [`no_route`] when the call fails the route check (`not_named_by_route`), since no segment names it.
+    /// Otherwise the segment that names the call, else the segment the caller is on in that transaction, else
     /// [`no_route`].
     pub route: RouteReference,
     /// The first check the call fails, or `None` if the platform may pass it on.
@@ -149,9 +159,15 @@ pub fn judge_call(
         Some(_) if !asked.in_flight || naming.is_none() => Some(CallRefusalReason::NotNamedByRoute),
         Some(_) => None,
     };
-    let route = naming
-        .or_else(|| routes.segment_of(asked.transaction, asked.caller))
-        .cloned()
-        .unwrap_or_else(no_route);
+    // A call refused by the route check is recorded against no route: no segment names it, and with no request
+    // in flight one that names it doesn't apply.
+    let route = if refusal == Some(CallRefusalReason::NotNamedByRoute) {
+        no_route()
+    } else {
+        naming
+            .or_else(|| routes.segment_of(asked.transaction, asked.caller))
+            .cloned()
+            .unwrap_or_else(no_route)
+    };
     CallJudgement { route, refusal }
 }

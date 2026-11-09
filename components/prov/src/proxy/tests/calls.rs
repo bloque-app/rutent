@@ -187,11 +187,15 @@ fn a_call_is_allowed_exactly_when_declared_and_named_and_a_refusal_names_its_fir
                 Some(_) => None,
             };
             assert_eq!(judged.refusal, expected, "seed {seed}: {asked:?}");
-            match &naming {
+            match (&naming, expected) {
+                // A call refused by the route check is recorded against no route.
+                (_, Some(CallRefusalReason::NotNamedByRoute)) => {
+                    assert_eq!(judged.route, no_route(), "seed {seed}");
+                }
                 // A call a route names is recorded against that route, whatever else it fails.
-                Some(route) => assert_eq!(&judged.route, route, "seed {seed}"),
+                (Some(route), _) => assert_eq!(&judged.route, route, "seed {seed}"),
                 // Otherwise against the segment the caller is on in that transaction, or no route at all.
-                None => assert!(
+                (None, _) => assert!(
                     judged.route == no_route()
                         || model.iter().any(|(t, n)| t == transaction
                             && n.caller.as_str() == caller

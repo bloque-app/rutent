@@ -284,12 +284,13 @@ fn declared_call_runs_on_the_callees_own_credentials() {
         let mut binding = binding("reserve");
         let callee = format!("callee-{language}");
         let caller = format!("caller-{language}");
-        // Hostile callee: it resolves its own key, and then asks for the caller's own secret by its name, which
-        // only the caller declares and holds.
+        // Hostile callee: it resolves its own key, and then asks for the caller's own secret by its name. It
+        // declares that name too, so the lookup passes its own declaration's check and reaches the store, where
+        // only the caller holds it: the callee's lookups are keyed by the callee, never by its caller.
         install(
             &mut binding,
             &module(
-                declaration(&callee, "1.0.0", &["withdrawal"]),
+                calling(&callee, &[], &["caller.only"]),
                 vec![look_up("own.key"), look_up("caller.only")],
             ),
             &language,
@@ -348,8 +349,8 @@ fn declared_call_runs_on_the_callees_own_credentials() {
             vec!["callee-own-value".to_owned()],
             "{language}: the callee was handed another provider's value"
         );
-        // The callee's lookups are its own, for the call's transaction: its key resolved, the caller's secret
-        // refused as undeclared.
+        // The callee's lookups are its own, for the call's transaction: its key resolved, and the name only the
+        // caller holds not found among the callee's own secrets.
         let callee_lookups: Vec<_> = events
             .lookups
             .iter()
@@ -365,9 +366,7 @@ fn declared_call_runs_on_the_callees_own_credentials() {
         assert_eq!(callee_lookups[1].lookup.name.as_str(), "caller.only");
         assert_eq!(
             callee_lookups[1].outcome,
-            Some(LookupOutcome::Refused(
-                SecretRefusalReason::UndeclaredSecret
-            )),
+            Some(LookupOutcome::Refused(SecretRefusalReason::NotFound)),
             "{language}: the callee resolved the caller's secret"
         );
         // And the caller's own lookups are the caller's.
@@ -377,6 +376,87 @@ fn declared_call_runs_on_the_callees_own_credentials() {
                 .iter()
                 .all(|l| l.provider == caller || l.provider == callee),
             "{language}: a lookup of a third provider"
+        );
+        binding.routes.end(&transaction);
+    }
+}
+
+// verifies: REQ-MDL-21, REQ-MDL-9
+#[test]
+fn call_back_into_a_provider_already_running_is_refused_as_unavailable() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (a, b) = (format!("first-{language}"), format!("second-{language}"));
+        // A calls B, and B calls back into A, which is still handling the operation that called B. A looks up its
+        // own key after its call returns, so any lookup of A's inside B's call would show as a second one.
+        let a_declares = calling(&a, &[&b], &[]);
+        let b_declares = calling(&b, &[&a], &[]);
+        install(
+            &mut binding,
+            &module(a_declares.clone(), vec![call(&b), look_up("own.key")]),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &module(b_declares.clone(), vec![call(&a)]),
+            &language,
+            "reserve",
+            &[],
+        );
+        binding.seed_secret(&a, "own.key", "first-own-value");
+        let transaction = id(&format!("tx-{a}-1"));
+        let segment = route("decision-1", "segment-1");
+        // The route names both calls, so only A's running can refuse the call back.
+        for (caller, callee) in [(&a, &b), (&b, &a)] {
+            binding.routes.name(
+                &transaction,
+                named(
+                    segment.clone(),
+                    caller,
+                    callee,
+                    &[OperationKind::Withdrawal],
+                ),
+            );
+        }
+        let a_before = binding.operations_received(&a);
+        let (handled, events) = run(&mut binding, &a, 1);
+        assert!(
+            matches!(handled, Handled::Answered(_)),
+            "{language}: A's operation wasn't answered: {handled:?}"
+        );
+        // B's call back is recorded first, as it ends first, and refused; A's call to B is delivered.
+        assert_eq!(events.calls.len(), 2, "{language}: {:?}", events.calls);
+        let back = &events.calls[0];
+        assert_eq!(back.caller.as_str(), b);
+        assert!(
+            matches!(
+                &back.outcome,
+                CrossModuleOutcome::Refused(r)
+                    if r.reason == CallRefusalReason::CalleeUnavailable && r.callee.as_str() == a
+            ),
+            "{language}: the call back into A wasn't refused as unavailable: {:?}",
+            back.outcome
+        );
+        assert_eq!(validate_call(back), Ok(()));
+        assert_eq!(validate_call_against(&b_declares, back), Ok(()));
+        let forth = &events.calls[1];
+        assert_eq!(forth.caller.as_str(), a);
+        assert!(
+            matches!(forth.outcome, CrossModuleOutcome::Delivered(_)),
+            "{language}: A's call to B wasn't delivered: {:?}",
+            forth.outcome
+        );
+        assert_eq!(validate_call_against(&a_declares, forth), Ok(()));
+        // A was handed only its own operation, and made its one lookup in it, after B's call: none inside it.
+        assert_eq!(binding.operations_received(&a), a_before + 1);
+        let a_lookups: Vec<_> = events.lookups.iter().filter(|l| l.provider == a).collect();
+        assert_eq!(a_lookups.len(), 1, "{language}: {a_lookups:?}");
+        assert_eq!(a_lookups[0].outcome, Some(LookupOutcome::Resolved));
+        assert_eq!(
+            binding.delivered_secrets(&a),
+            vec!["first-own-value".to_owned()]
         );
         binding.routes.end(&transaction);
     }
