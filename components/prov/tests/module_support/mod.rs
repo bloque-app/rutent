@@ -341,7 +341,8 @@ impl ModuleBinding for WasmBinding {
             .filter(|a| a.declaration().version.as_str() == version)?
             .assertion_digest
             .clone();
-        self.platform.accept(provider, &digest, by)
+        self.platform
+            .accept(provider, &digest, by, &TrustsEveryAssertion, SUITE_AT)
     }
 
     fn active_version(&self, provider: &str) -> Option<String> {

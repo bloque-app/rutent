@@ -63,9 +63,7 @@ fn no_digest_but_the_admitted_assertions_accepts_the_release() {
             continue;
         }
         assert!(
-            s.platform
-                .accept(RESERVE, &wrong, "test-reviewer")
-                .is_none(),
+            s.accept(RESERVE, &wrong, "test-reviewer").is_none(),
             "seed {seed}: another digest's acceptance admitted the release"
         );
         assert_eq!(
@@ -79,8 +77,7 @@ fn no_digest_but_the_admitted_assertions_accepts_the_release() {
         );
     }
     assert!(
-        s.platform
-            .accept(RESERVE, &artefact.assertion_digest, "test-reviewer")
+        s.accept(RESERVE, &artefact.assertion_digest, "test-reviewer")
             .is_some()
     );
 }

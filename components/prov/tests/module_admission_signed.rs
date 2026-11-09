@@ -7,8 +7,11 @@ mod common;
 #[path = "module_support/signed.rs"]
 mod signed;
 
-use rutent_contracts::module_interface::{AcceptanceMode, AdmissionRefusal, validate_release};
-use rutent_prov::catalogue::StatementRefusal;
+use rutent_contracts::module_interface::{
+    AcceptanceMode, AdmissionRefusal, RuleViolation, validate_release,
+};
+use rutent_contracts::provider_role::ContextMismatch;
+use rutent_prov::catalogue::{SignatureError, StatementRefusal};
 use rutent_prov::module::admission::Unverified;
 use rutent_prov::module::types::Admitted;
 use rutent_prov::module::wire::sha256;
@@ -46,22 +49,74 @@ fn release_with_an_unverified_assertion_is_refused() {
         &signed::catalogue_support::advertising_key(RAMP),
     );
 
+    // Unsigned: the signature's value is no signature, or there is no signature at all.
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&signed::assertion(&declaration, &binaries, &advertising))
+            .expect("JSON");
+    value["signature"]["value"] = signed::catalogue_support::base64url(&[0u8; 64]).into();
+    let unsigned = serde_json::to_vec(&value).expect("JSON");
+    value
+        .as_object_mut()
+        .expect("an object")
+        .remove("signature");
+    let no_signature = serde_json::to_vec(&value).expect("JSON");
+    let mut another = signed::catalogue_support::deployment();
+    another.name = "another-deployment".to_owned();
+
     let cases = [
-        ("an altered assertion", altered),
         (
-            "an assertion signed with the statements key",
-            by_statements_key,
+            "an altered assertion",
+            altered,
+            Unverified::Signature(StatementRefusal::BadSignature(
+                SignatureError::DoesNotVerify,
+            )),
         ),
-        ("an assertion of another deployment", other_deployment),
-        ("an assertion by an unknown provider", unknown),
-        ("an assertion by another provider", by_another),
+        (
+            "an unsigned assertion",
+            unsigned,
+            Unverified::Signature(StatementRefusal::BadSignature(
+                SignatureError::DoesNotVerify,
+            )),
+        ),
+        (
+            "an assertion with no signature",
+            no_signature,
+            Unverified::Unreadable,
+        ),
+        (
+            "an assertion wrongly signed, with the statements key",
+            by_statements_key,
+            Unverified::Signature(StatementRefusal::KeyNotInForce),
+        ),
+        (
+            "an assertion of another deployment",
+            other_deployment,
+            Unverified::WrongContext(ContextMismatch::Deployment {
+                expected: signed::catalogue_support::deployment(),
+                found: another,
+            }),
+        ),
+        (
+            "an assertion by an unknown provider",
+            unknown,
+            Unverified::Signature(StatementRefusal::NoAdvertisementThen),
+        ),
+        (
+            "an assertion by another provider",
+            by_another,
+            Unverified::AssertionKey(vec![
+                RuleViolation::AssertionOfAnotherMaker,
+                RuleViolation::AssertionKeyNotAdvertised,
+            ]),
+        ),
     ];
-    for (what, bytes) in cases {
+    for (what, bytes, why) in cases {
         let compiles = s.platform.measurements.compiles.len();
         let admitted = s.admit(&bytes, &binaries);
-        assert!(
-            matches!(admitted, Admitted::Unverified(_)),
-            "{what} wasn't refused as unverified: {admitted:?}"
+        assert_eq!(
+            admitted,
+            Admitted::Unverified(why),
+            "{what} wasn't refused for its reason"
         );
         assert_eq!(
             s.platform.measurements.compiles.len(),
@@ -116,7 +171,7 @@ fn acceptance_of_another_assertion_digest_does_not_admit_the_release() {
     ];
     for wrong in &others {
         assert!(
-            s.platform.accept(RESERVE, wrong, "test-reviewer").is_none(),
+            s.accept(RESERVE, wrong, "test-reviewer").is_none(),
             "an acceptance of another digest admitted the release"
         );
         assert_eq!(s.platform.active_version(RESERVE), None, "the release ran");
@@ -128,7 +183,6 @@ fn acceptance_of_another_assertion_digest_does_not_admit_the_release() {
     }
 
     let accepted = s
-        .platform
         .accept(RESERVE, &artefact.assertion_digest, "test-reviewer")
         .expect("the acceptance of its own digest");
     assert_eq!(accepted.assertion_digest, artefact.assertion_digest);
@@ -184,8 +238,7 @@ fn admission_while_one_is_pending_is_refused() {
     );
 
     // Accepted, it runs, and the provider's next release is admitted again.
-    s.platform
-        .accept(RESERVE, &waiting.assertion_digest, "test-reviewer")
+    s.accept(RESERVE, &waiting.assertion_digest, "test-reviewer")
         .expect("the waiting release");
     // 1.1.0 widens (it handles deposits too), so it waits in turn, and 1.2.0 is refused while it does, the
     // running version staying in force.
@@ -225,7 +278,6 @@ fn widened_release_needs_fresh_acceptance() {
         panic!("the first release wasn't admitted");
     };
     let first = s
-        .platform
         .accept(RESERVE, &first.assertion_digest, "test-reviewer")
         .expect("the first release");
 
@@ -248,7 +300,6 @@ fn widened_release_needs_fresh_acceptance() {
     );
 
     let accepted = s
-        .platform
         .accept(RESERVE, &waiting.assertion_digest, "test-reviewer")
         .expect("the widening release");
     assert_eq!(
@@ -280,5 +331,32 @@ fn widened_release_needs_fresh_acceptance() {
     assert!(
         s.answers_as(RESERVE, "1.1.1", 3),
         "the automatic release didn't run"
+    );
+}
+
+// verifies: REQ-MDL-1, THR-4
+#[test]
+fn acceptance_after_the_signing_keys_rotation_is_refused() {
+    let mut s = Signed::new();
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal"]);
+    let Admitted::Artefact(waiting) =
+        s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+    else {
+        panic!("the release wasn't admitted");
+    };
+    // The key that signed it is retired, as a provider does with a key it believes stolen: what it signed is
+    // judged again when it is accepted, and is no longer vouched for.
+    s.rotate_advertising_key(RESERVE);
+    assert!(
+        s.accept(RESERVE, &waiting.assertion_digest, "test-reviewer")
+            .is_none(),
+        "a release signed with a retired key was accepted"
+    );
+    assert_eq!(s.platform.active_version(RESERVE), None, "the release ran");
+    assert_eq!(
+        s.platform.pending(RESERVE).map(|a| &a.assertion_digest),
+        Some(&waiting.assertion_digest),
+        "the refused release stopped waiting"
     );
 }

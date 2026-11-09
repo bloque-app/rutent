@@ -86,6 +86,18 @@ impl Signed {
             .admit(received, binaries, &mut self.catalogue, AT)
     }
 
+    /// Gives the provider's waiting release with this assertion digest its fresh acceptance, judged again at
+    /// [`AT`].
+    pub fn accept(
+        &mut self,
+        provider: &str,
+        assertion_digest: &Digest,
+        by: &str,
+    ) -> Option<rutent_contracts::module_interface::AdmissionArtefact> {
+        self.platform
+            .accept(provider, assertion_digest, by, &self.catalogue, AT)
+    }
+
     /// The provider replaces its advertising key with [`rotated_key`]: a successor advertisement, signed with the
     /// key it retires, lists the new key for advertising and keeps its statements key.
     pub fn rotate_advertising_key(&mut self, provider: &str) {

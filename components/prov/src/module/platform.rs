@@ -58,7 +58,9 @@ pub const START_DEADLINE: Duration = Duration::from_secs(10);
 #[derive(Default)]
 struct Slot {
     accepted: Vec<AdmissionArtefact>,
-    pending: Option<(AdmissionArtefact, Rc<Machine>)>,
+    /// The release waiting for a fresh acceptance, its machine code, and its assertion as received, judged again
+    /// when it is accepted.
+    pending: Option<(AdmissionArtefact, Rc<Machine>, Vec<u8>)>,
     machines: BTreeMap<String, Rc<Machine>>,
     active: Option<String>,
     process: Option<ProviderProcess>,
@@ -175,8 +177,8 @@ impl<W: World> Platform<W> {
         slot.machines.get(version).cloned().or_else(|| {
             slot.pending
                 .as_ref()
-                .filter(|(a, _)| a.declaration().version.as_str() == version)
-                .map(|(_, m)| m.clone())
+                .filter(|(a, _, _)| a.declaration().version.as_str() == version)
+                .map(|(_, m, _)| m.clone())
         })
     }
 
@@ -871,9 +873,11 @@ impl<W: World> Platform<W> {
 
     /// Admits a release: the provider's signed assertion, as the bytes it arrived in, and the binaries it received
     /// (`REQ-MDL-1`). The assertion is read from those bytes and judged by `judge` at the caller's clock `at`; its
-    /// digest is of those bytes. Every refusal but the compiler's is judged before the admitting compiler runs:
-    /// the assertion, the binaries against the digests it states, their format and size, and a release of the
-    /// provider admitted under that version or waiting for an acceptance, under any. Each provider's history is
+    /// digest is of those bytes. The assertion, the binaries against the digests it states, their format and size,
+    /// and a release of the provider admitted under that version or waiting for an acceptance, under any, are
+    /// judged before the admitting compiler runs. After it, only the compiler's refusal and the judge's refusal to
+    /// record the declared statement key remain; the catalogue's can't happen once its judgement passed, since the
+    /// accepted advertisement lists that key for statements. Each provider's history is
     /// kept, and a release that needs only an automatic acceptance is started.
     pub fn admit(
         &mut self,
@@ -1021,7 +1025,7 @@ impl<W: World> Platform<W> {
         }
         let slot = self.providers.entry(provider.clone()).or_default();
         if fresh {
-            slot.pending = Some((artefact.clone(), machine));
+            slot.pending = Some((artefact.clone(), machine, received_assertion.to_vec()));
         } else {
             slot.accepted.push(artefact.clone());
             slot.machines.insert(version.clone(), machine);
@@ -1032,27 +1036,28 @@ impl<W: World> Platform<W> {
 
     /// Gives a fresh acceptance, by `by`, to the provider's release that waits for one, and starts it. The
     /// acceptance is of one assertion: `assertion_digest` must be the waiting artefact's, the digest of its
-    /// assertion as received (`REQ-MDL-1`). The accepted artefact, or `None` if no release waits under that digest
-    /// or `by` names no one; the waiting release then stays as it was.
+    /// assertion as received (`REQ-MDL-1`). That assertion is judged again by `judge` at the caller's clock `at`,
+    /// so a release signed with a key retired since its admission is no longer accepted (`THR-4`). The accepted
+    /// artefact, or `None` if no release waits under that digest, `by` names no one, or the assertion no longer
+    /// passes; the waiting release then stays as it was.
     pub fn accept(
         &mut self,
         provider: &str,
         assertion_digest: &Digest,
         by: &str,
+        judge: &impl ReleaseJudge,
+        at: Clock,
     ) -> Option<AdmissionArtefact> {
         let by = Identifier::new(by)?;
-        let waits = self
-            .providers
-            .get(provider)?
-            .pending
-            .as_ref()
-            .is_some_and(|(a, _)| &a.assertion_digest == assertion_digest);
-        if !waits {
+        let (artefact, _, received) = self.providers.get(provider)?.pending.as_ref()?;
+        if &artefact.assertion_digest != assertion_digest
+            || judge.judge(received, artefact, at).is_err()
+        {
             return None;
         }
         let at = self.now();
         let slot = self.providers.get_mut(provider)?;
-        let (mut artefact, machine) = slot.pending.take()?;
+        let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
         artefact.acceptance.accepted = Some(Accepted { by: Some(by), at });
         slot.accepted.push(artefact.clone());
@@ -1067,7 +1072,7 @@ impl<W: World> Platform<W> {
             .get(provider)?
             .pending
             .as_ref()
-            .map(|(a, _)| a)
+            .map(|(a, _, _)| a)
     }
 
     /// The version of the provider's module now running, if any.

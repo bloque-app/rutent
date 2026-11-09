@@ -270,8 +270,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `TrustsEveryAssertion`, which exists only there, and serialises the suite's statement to bytes; signed admission is
   tested against the catalogue in `module_admission_signed.rs`. Item for `conformance/`'s owner: sign the suite's
   assertions with real keys and give it a signature verifier, as the role suite has.
-- **Not re-judged at acceptance.** A fresh acceptance accepts what was judged at admission. A key retired between the
-  two doesn't stop it; re-judging would need the waiting release to be dropped when it fails, which is `T-013-06`'s.
+- **Re-judged at acceptance** since the review round below.
 - **The platform build version with the machine code** was already recorded (`Build`, `T-013-01`); the artefact's
   build is now filled in after compiling, the rest of the artefact before, so the judge and the contract's rules see
   it as it will be recorded.
@@ -295,3 +294,23 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `accept` and `pending`, and admission's calls into `Catalogue::verify_statement` and
   `Catalogue::record_statement_key`. `platform.rs` is shared with `T-013-02`: the edits are the imports, `admit`
   around the unchanged `compile` match, `accept` and the new `pending`; `host.rs` is untouched.
+
+## T-013-04, review round
+
+- **Acceptance judges the assertion again.** `Platform::accept(provider, assertion_digest, by, judge, at)` keeps the
+  waiting release's assertion as received and runs `judge` on it once more. A release signed with a key retired
+  since its admission, as a provider retires a key it believes stolen, is no longer accepted, and stays waiting:
+  `acceptance_after_the_signing_keys_rotation_is_refused` (failed first, the stub accepting it). A refused release
+  still holds its provider's admissions until it is withdrawn, which `T-013-06` gains.
+- **Exact reasons, and the unsigned cases.** `release_with_an_unverified_assertion_is_refused` now names each case's
+  `Unverified` variant, and adds an assertion whose signature value is no signature (64 zero bytes:
+  `BadSignature(DoesNotVerify)`) and one with no signature at all (`Unreadable`). These passed on first run: the
+  admission code already gave these reasons; the test was only loose.
+- **The statement key after compiling.** `admit`'s documentation now says that the judge's refusal to record the
+  statement key is the one refusal, beside the compiler's, left after compiling, and why the catalogue's can't
+  happen once its judgement passed: the accepted advertisement lists the key for statements, and `join` and
+  `trust_advertising_key` keep a statements key from ever becoming an advertising key.
+- **`ReleaseJudge` is public and unsealed.** Any crate can write a judge, as the tests' trusting one does. Once
+  `conformance/` signs its assertions with real keys and the trusting judge is gone, `T-010-10` seals the trait, or
+  makes `admit` and `accept` take the catalogue itself. Not changed here.
+
