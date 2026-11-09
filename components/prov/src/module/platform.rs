@@ -849,6 +849,8 @@ impl<W: World> Platform<W> {
         ) {
             return reply;
         }
+        // Counted first, so that no way out below leaves a call uncounted.
+        let counted = self.charge(Metered::ModuleCalls, 1);
         let context = self.stack.last().expect("a context");
         let (caller, version, transaction) = (
             context.provider.clone(),
@@ -859,8 +861,11 @@ impl<W: World> Platform<W> {
         let declaration = context.declaration.clone();
         let in_flight = context.serving.is_some();
         let Some(asked) = with_provider(&envelope, callee) else {
-            return Reply::Module {
-                outcome: "refused".to_owned(),
+            return match counted {
+                Err(hit) => self.limit(hit),
+                Ok(()) => Reply::Module {
+                    outcome: "refused".to_owned(),
+                },
             };
         };
         let kind = OperationKind::of(&asked.statement);
@@ -884,7 +889,7 @@ impl<W: World> Platform<W> {
         // reason it already has, or is recorded as `callee_unavailable`; the caller's operation ends as a limit,
         // which is where the bound is recorded (`LimitEvent`).
         let mut limited = false;
-        let hit = self.charge(Metered::ModuleCalls, 1).and_then(|()| {
+        let hit = counted.and_then(|()| {
             if refusal.is_none() {
                 depth_allows(&self.bounds, self.stack.len())
             } else {
@@ -923,8 +928,13 @@ impl<W: World> Platform<W> {
             Identifier::new(version),
             Identifier::new(callee),
         ) else {
-            return Reply::Module {
-                outcome: "refused".to_owned(),
+            // Already counted above; over the bound, the operation ends as a limit.
+            return if limited {
+                Reply::Limit
+            } else {
+                Reply::Module {
+                    outcome: "refused".to_owned(),
+                }
             };
         };
         let outcome = match refusal {

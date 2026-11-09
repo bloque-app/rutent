@@ -837,3 +837,39 @@ fn an_output_too_large_for_the_frame_is_refused_as_oversized_and_the_process_kee
         assert!(answers_as(&mut binding, &steady, "1.0.0", 2));
     }
 }
+
+// verifies: REQ-MDL-11, THR-57
+#[test]
+fn module_repeating_a_call_to_a_callee_that_is_no_identifier_hits_the_limit() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let caller = format!("badcall-{language}");
+        let steps = (0..4)
+            .map(|_| Step::CallModule {
+                callee: "BAD_CALLEE!".to_owned(),
+                kind: OperationKind::Withdrawal,
+            })
+            .collect();
+        install(
+            &mut binding,
+            &module(calling(&caller, None), steps),
+            &language,
+            "reserve",
+            &[],
+        );
+        binding.set_bounds(tight(|b| b.per_operation.module_calls = 2));
+        let pid = binding.process(&caller);
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::LimitReached),
+            "{language}: calls to an invalid callee went uncounted"
+        );
+        binding.take_events();
+        let limits = binding.take_limits();
+        assert_eq!(limits.len(), 1, "{limits:?}");
+        assert_eq!(limits[0].hit, operation(Metered::ModuleCalls));
+        assert_eq!(binding.process(&caller), pid);
+    }
+}
