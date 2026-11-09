@@ -95,8 +95,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   either"), and no signature crate was added.
 - **The price shown (`REQ-QTE-2`), read as composition.** Per the owner's ruling `spec-route-price-composition`,
   the providers' terms compose: what they deliver is the last operation's `amount_out`, summed over parts. The
-  operator's fee is taken from that, at the destination, in its unit, by its formula (at its maximum where it gives
-  one, as route evaluation counts a fee). It is taken there, not from the origin's amount, because taking it first
+  operator's fee is taken from that, at the destination, in its unit, by its formula: `flat + ceil(a × n / d)`,
+  capped by its maximum where it gives one and never raised to it. (Route evaluation counts a provider's fee at its
+  maximum, since the charge may come to it; a fee the operator shows is its own, known before execution, so the
+  maximum only caps it. Changed after review.) It is taken there, not from the origin's amount, because taking it first
   would change every segment's amount and so void each quote asked at that amount (`amount_changes`). The only
   difference between the providers' terms and what is shown is then the operator's fee; `check_shown` refuses a
   shown amount with any other difference.
@@ -108,6 +110,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `3 × 86 400 = 259 200` seconds, inclusive: 259 200 is within three days, 259 201 is over. A segment's declared
   time is the slowest usable fresh quote it cites, or else its price, as `fastest_settlement` counts it
   (router-api `Objective`); a dry run's time isn't counted, as the contract counts only fresh quotes.
+- **An unknown settlement time fails closed.** An operation that cites neither a usable fresh quote nor a price,
+  which no record the contract accepts holds, has its time counted as `u64::MAX`, past any declared one (at most
+  2^53 − 1). `firmness` takes it as over three days, so the route has no firm rate; `commitments` takes it as
+  within them, so the segment is bound, never freed (after review).
 - **Slippage within three days (`REQ-QTE-9`).** Within three days, an exchange's rate may move against the
   customer by at most the tighter of its quote's own regime (firm is 0, bounded is its bound) and the operator's
   limit for the tuple. A floating regime, or no quote, leaves the operator's limit. Within three days, an exchange

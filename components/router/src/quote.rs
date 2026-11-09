@@ -232,7 +232,8 @@ pub struct ShownPrice {
     pub provider_fees: Vec<ProviderFee>,
     /// What the providers' terms deliver at the destination, in its unit.
     pub providers_out: Amount,
-    /// The operator's own fee, by its formula on `providers_out`, in the destination's unit.
+    /// The operator's own fee, by its formula on `providers_out`, in the destination's unit: `flat +
+    /// ceil(providers_out × numerator / denominator)`, or its maximum where that is lower.
     pub operator_fee: Amount,
     /// What the customer receives: `providers_out` less `operator_fee`.
     pub shown_out: Amount,
@@ -374,7 +375,11 @@ fn shown(
         });
     }
     let arrives = number(&providers_out);
-    let operator_fee = charge_bound(operator, &arrives);
+    // The fee its formula gives, capped by its maximum where it gives one, but never raised to it (`REQ-QTE-2`).
+    let mut operator_fee = formula_fee_of(operator, &arrives);
+    if let Some(maximum) = &operator.maximum {
+        operator_fee = operator_fee.min(number(maximum));
+    }
     if operator_fee > arrives {
         return Err(PriceRefused::OperatorFeeAboveArrival {
             operator_fee: Amount::new(operator_fee.to_string())
@@ -654,7 +659,8 @@ pub struct NoSlippageLimit {
 
 /// What each segment's provider is held to, in order, part after part (`REQ-QTE-9`). An exchange's own regime is
 /// read from the usable conversion quote it cites; one it doesn't cite, or a floating regime, leaves the
-/// operator's slippage as its bound.
+/// operator's slippage as its bound. A segment whose time is unknown ([`declared_times`]) is held as one within
+/// three days, never freed.
 pub fn commitments(
     record: &DecisionRecord,
     candidate: &Candidate,
@@ -665,7 +671,10 @@ pub fn commitments(
         .into_iter()
         .zip(indexed(candidate))
         .map(|(time, (_, _, o))| {
-            let commitment = if time.declared_seconds > THREE_DAYS_SECONDS {
+            // An unknown time (`u64::MAX`, past any declared one, at most 2^53 − 1) is taken as bound, so this check
+            // fails closed, as `firmness` does by taking it as over three days.
+            let unknown = time.declared_seconds == u64::MAX;
+            let commitment = if time.declared_seconds > THREE_DAYS_SECONDS && !unknown {
                 Ok(Commitment::Free)
             } else if o.kind != OperationKind::Exchange {
                 Ok(Commitment::Bound { rate_bps: None })

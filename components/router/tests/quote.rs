@@ -538,6 +538,16 @@ fn shown_price_differs_from_the_quotes_by_the_operators_fee_alone() {
             explained: amount("99700199"),
         })
     );
+    // A maximum caps the operator's fee but never raises it: the fee shown is its formula's where that is lower.
+    let above = formula("100", "1", "1000", Some("150000"));
+    assert_eq!(
+        quoted_price(candidate, &above).unwrap().operator_fee,
+        amount("99901")
+    );
+    let below = formula("100", "1", "1000", Some("50000"));
+    let capped = quoted_price(candidate, &below).unwrap();
+    assert_eq!(capped.operator_fee, amount("50000"));
+    assert_eq!(capped.shown_out, amount("99750100"));
     // An operator's fee above what the providers deliver can't be shown.
     assert_eq!(
         quoted_price(candidate, &formula("99800101", "0", "1", None)),
@@ -545,6 +555,33 @@ fn shown_price_differs_from_the_quotes_by_the_operators_fee_alone() {
             operator_fee: amount("99800101"),
             providers_out: amount("99800100"),
         })
+    );
+}
+
+// verifies: REQ-QTE-9, REQ-QTE-10
+#[test]
+fn a_segment_whose_settlement_time_is_unknown_is_neither_firm_nor_free() {
+    // A record whose snapshot lost the price its operations cite: no record the contract accepts, but one a check
+    // may still be handed. Its time is unknown, so it is taken as over three days for firmness and as bound for
+    // commitment: neither check fails open.
+    let (mut record, path) = chain("unknown", &[("0", 60)]);
+    record
+        .snapshot
+        .figures
+        .retain(|f| f.figure_id.as_str() != "r0-price");
+    let candidate = on(&record, &path_of(&path)).clone();
+    assert_eq!(
+        firmness(&record, &candidate),
+        Firmness::NoFirmRate {
+            slow: vec![time(0, 0, "r0", u64::MAX)]
+        }
+    );
+    assert_eq!(
+        commitments(&record, &candidate, &[]),
+        vec![(
+            time(0, 0, "r0", u64::MAX),
+            Ok(Commitment::Bound { rate_bps: None })
+        )]
     );
 }
 
@@ -814,13 +851,16 @@ fn what_is_shown_differs_from_the_providers_terms_by_the_operators_fee_alone() {
             u128::from(draw.below(100)),
             u128::from(1 + draw.below(10_000)),
         );
+        let maximum = (draw.below(3) == 0).then(|| u128::from(draw.below(200_000)));
         let operator = formula(
             &flat.to_string(),
             &numerator.to_string(),
             &denominator.to_string(),
-            None,
+            maximum.map(|m| m.to_string()).as_deref(),
         );
-        let operator_fee = flat + (arrives * numerator).div_ceil(denominator);
+        // The formula's fee, capped by its maximum where it gives one, never raised to it.
+        let by_formula = flat + (arrives * numerator).div_ceil(denominator);
+        let operator_fee = maximum.map_or(by_formula, |m| by_formula.min(m));
         let shown = quoted_price(candidate, &operator);
         if operator_fee > arrives {
             assert!(
