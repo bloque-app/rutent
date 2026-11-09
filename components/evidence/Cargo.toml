@@ -10,3 +10,6 @@ workspace = true
 
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
+
+[dev-dependencies]
+proptest = "1.12.0"
