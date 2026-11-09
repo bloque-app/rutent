@@ -26,7 +26,24 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
           # A target with no `std`, so the no_std build below proves the contracts need only `core` and `alloc`.
-          targets: riscv32imac-unknown-none-elf
+          targets: riscv32imac-unknown-none-elf,wasm32-unknown-unknown
+      # `CMP-PROV`'s module tests build their Rust and C stand-ins (`components/prov/module-guests/build.sh`) and run each
+      # in a jailed child of its own (T-013-01). The C ones need a clang that targets wasm32; the Rust ones use the
+      # toolchain's own `rust-lld`.
+      - name: Toolchain for the module tests' guests
+        run: |
+          clang=$(command -v clang-18 || command -v clang || true)
+          if [[ -z "$clang" ]] || ! "$clang" -print-targets | grep -qw wasm32; then
+            sudo apt-get update
+            sudo apt-get install -y clang lld
+            clang=$(command -v clang)
+          fi
+          echo "CLANG=$clang" >> "$GITHUB_ENV"
+      # A runner setting, not part of the platform: Ubuntu 24.04 restricts unprivileged user namespaces through
+      # AppArmor, and the platform starts every child in user namespaces of its own (`unshare --user`). `F-030`
+      # and `F-033` carry the operator's obligation.
+      - name: Allow unprivileged user namespaces on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build
         run: cargo build --workspace --all-targets
       - name: Build the contracts without std (DEC-26)

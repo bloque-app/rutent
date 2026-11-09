@@ -24,3 +24,30 @@ publish = false
 
 [workspace.lints.rust]
 missing_docs = "deny"
+
+# The module runtime's tests compile and run Wasm components (`T-013-01`). Unoptimised, Cranelift takes seconds per
+# part and the module-boundary suite minutes; the compiler and the runtime are built optimised in the dev profile.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+[profile.dev.package.gimli]
+opt-level = 3
+[profile.dev.package.object]
+opt-level = 3
+[profile.dev.package.wasmtime]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-core]
+opt-level = 3
