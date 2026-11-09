@@ -360,10 +360,11 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.
 
-Since 4.0.0 every reason enum a platform gives is `#[non_exhaustive]`: `AdmissionRefusal`, and the outbound call's
-`RefusalReason`, the secret answer's `SecretRefusalReason` and the cross-module call's `CallRefusalReason`. A Rust
-match on one needs a wildcard arm, so adding a reason later is a minor version, as adding a value to a schema's
-enum is (it accepts what it refused, and refuses nothing it accepted).
+Since 4.0.0 every reason enum a platform gives is `#[non_exhaustive]`: `AdmissionRefusal` and `PlatformRefusal`,
+and the outbound call's `RefusalReason`, the secret answer's `SecretRefusalReason` and the cross-module call's
+`CallRefusalReason`. A Rust match on one needs a wildcard arm, so a reason added later spares Rust callers a
+broken build. It spares no one else: the contract is language-neutral (`DEC-4`), and a reader validating against
+an older schema still rejects a new value, so a new reason on the wire is still a major version.
 
 ## Which rule lives where
 

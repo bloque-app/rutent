@@ -1838,9 +1838,9 @@ fn unknown_call_whose_last_hop_connected_to_nothing_is_a_valid_record() {
     ]);
 }
 
-// verifies: DEC-4, REQ-MDL-1, REQ-MDL-3
+// verifies: DEC-4
 #[test]
-fn admission_refuses_a_pending_release_and_an_unverified_assertion_by_their_own_reasons() {
+fn admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names() {
     let reasons = [
         AdmissionRefusal::AdmissionPending,
         AdmissionRefusal::AssertionUnverified,

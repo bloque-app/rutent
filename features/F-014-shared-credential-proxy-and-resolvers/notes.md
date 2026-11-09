@@ -213,7 +213,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   context, moved to `T-014-05` (below). That work changes the `World::secret` hook as well. The hook returns
   `Option<String>`, so a store failure would reach the module as `not_found`; it needs a result that tells a
   missing secret from a failed store. The contract reason for that, `store_unavailable`, came with `T-010-09`
-  (module-interface 4.0.0); the hook change stays `T-014-05`'s.
+  (module-interface 4.0.0); the hook change stays `T-014-05`'s. When it lands, `module/platform.rs`'s `lookup`
+  must map `store_unavailable` explicitly: its reply's `_ =>` arm turns every reason but `not_found` into
+  `"undeclared_secret"`, so a store failure would go out under the wrong reason (`T-010-09`'s review).
 - **Admission.** `admit` takes the accepted `AdmissionArtefact` and the advertisement the catalogue accepted for its
   provider. It refuses an artefact that isn't accepted yet, an advertisement of another provider, and a provider the
   settings give no role. It does not re-run `validate_artefact`, which admission (`F-013`) already runs. Its own

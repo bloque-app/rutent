@@ -5,8 +5,7 @@
 
 use super::admission::PartName;
 
-/// Why a platform refused a release at admission. A later minor version may add a reason, so a match needs a
-/// wildcard arm.
+/// Why a platform refused a release at admission. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AdmissionRefusal {
@@ -31,8 +30,9 @@ pub enum AdmissionRefusal {
     AssertionUnverified,
 }
 
-/// Why a platform refused to pass a module's answer on.
+/// Why a platform refused to pass a module's answer on. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum PlatformRefusal {
     /// The output isn't a result of the operation's shape: unparseable, of another kind, for another transaction,
     /// or with an unknown field (`REQ-MDL-12`).

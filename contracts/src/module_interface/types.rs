@@ -419,8 +419,7 @@ pub struct Refused {
     pub reason: RefusalReason,
 }
 
-/// Why the platform refused an outside call. A later minor version may add a reason, so a match needs a wildcard
-/// arm.
+/// Why the platform refused an outside call. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -498,7 +497,7 @@ pub struct SecretRefused {
     pub reason: SecretRefusalReason,
 }
 
-/// Why a secret lookup was refused. A later minor version may add a reason, so a match needs a wildcard arm.
+/// Why a secret lookup was refused. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -627,8 +626,7 @@ pub struct CallRefused {
     pub reason: CallRefusalReason,
 }
 
-/// Why the platform refused a cross-module call, in the order it checks. A later minor version may add a reason,
-/// so a match needs a wildcard arm.
+/// Why the platform refused a cross-module call, in the order it checks. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

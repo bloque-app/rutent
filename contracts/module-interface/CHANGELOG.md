@@ -7,13 +7,15 @@
   whose peer didn't prove over TLS that it is the declared host is refused as `peer_not_verified`, where it was
   `undeclared_destination`. A secret lookup the store couldn't answer is refused as `store_unavailable`, never
   `not_found`. `AdmissionRefusal` gains `AdmissionPending` (a new release while another waits for its acceptance)
-  and `AssertionUnverified` (a signed assertion that doesn't verify). Each is in the schema's enum and the Rust
-  type, with valid and invalid fixtures. (DEC-4, DEC-20, T-010-09)
+  and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
+  the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
+  Rust test. (DEC-4, DEC-20, T-010-09)
 - `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
   nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
   ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)
-- `RefusalReason`, `SecretRefusalReason`, `CallRefusalReason` and `AdmissionRefusal` are `#[non_exhaustive]`, so a
-  reason added later is a minor version, as a value added to a schema's enum is. New Rust variants and the
+- `RefusalReason`, `SecretRefusalReason`, `CallRefusalReason`, `AdmissionRefusal` and `PlatformRefusal` are
+  `#[non_exhaustive]`, so a Rust caller's match has a wildcard arm and a later reason doesn't break its build. A new
+  value on the wire is still a major (`DEC-4`): a reader on an older schema rejects it. New Rust variants and the
   attribute both break an exhaustive match, so this is a major. Fixtures keep naming interface 2.0.1: nothing
   compares it. (DEC-4, DEC-20, T-010-09)
 

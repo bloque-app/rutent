@@ -413,10 +413,11 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
 
 ### Readings taken where `PLAN.md` is silent
 
-- **`#[non_exhaustive]` on all four reason enums, in this bump.** A Rust match on one now needs a wildcard arm, so a
-  reason added later is a minor version, as a value added to a schema enum already is (2.2.0: accepts what it
-  refused, refuses nothing it accepted). No workspace crate or experiment matched one exhaustively, so nothing else
-  changed. The outcome enums (`CallOutcome`, `CrossModuleOutcome`, `SecretOutcome`) are left exhaustive: a new
+- **`#[non_exhaustive]` on all five reason enums, in this bump** (`PlatformRefusal` added after review). A Rust
+  match on one now needs a wildcard arm, which spares Rust callers a broken build when a reason is added. It is not
+  a promise that a later reason is minor: the contract is language-neutral (`DEC-4`), a reader on an older schema
+  rejects a new wire value, so that stays a major. No workspace crate or experiment matched one exhaustively, so
+  nothing else changed. The outcome enums (`CallOutcome`, `CrossModuleOutcome`, `SecretOutcome`) are left exhaustive: a new
   outcome changes what a record means, which stays a major.
 - **Two call reasons, not one.** The row names "a limit, or too little of the caller's deadline left". They differ in
   the platform's own state: a count or depth bound ends the caller's operation as a limit (`LimitEvent`), a short
@@ -437,3 +438,15 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   `f-013/t-013-04-admission`, not yet in `m2`), which adopts them when it integrates, in place of
   `VersionAlreadyAdmitted` and its platform-only `Admitted::Unverified`.
 - **No shared file changed,** so `contracts/CHANGELOG.md` has no entry; `T-011-05` edits router-api beside this.
+
+## T-010-09: answering the review of `1689b51`
+
+- `PlatformRefusal` is `#[non_exhaustive]` too, so every reason enum a platform gives is, as the README and the
+  module docs say.
+- The changelog, README and docs no longer claim a later reason is a minor version: `#[non_exhaustive]` spares
+  Rust callers only, and a new wire value is still a major under `DEC-4`.
+- The changelog says the two admission reasons are Rust only, with a Rust test and no fixtures, as 2.3.0's were.
+- The admission test is renamed to what it checks
+  (`admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names`) and tagged `DEC-4`.
+- For `T-014-05`, in the F-014 notes: `platform.rs`'s lookup reply sends every reason but `not_found` as
+  `"undeclared_secret"`, so `store_unavailable` needs its own arm when `World::secret` changes.
