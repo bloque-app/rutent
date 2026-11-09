@@ -62,3 +62,98 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   in clear text. `T-014-02`'s production transport enforces this and tests it: a plain-HTTP address off loopback is
   refused before anything is sent.
 - **`DEC-20`.** The credential proxy and its resolvers are a `DEC-20` path; the commit body says so.
+
+## T-014-03
+
+- **What it is.** `egress::Egress` runs the whole of an outbound call: it matches each hop against the destinations
+  the operation in flight lists, resolves the host, checks the addresses, dials, reads the answer, follows or
+  refuses a redirect, and writes one `OutboundCallRecord` per call to a `CallLog`, refused calls included
+  (`REQ-MDL-7`, `REQ-MDL-8`). It takes the platform's state as a `Call`: the running declaration, the operation in
+  flight, the operation the outside part named, the transaction, the names of the secrets resolved and the start
+  time. A call naming another operation than the one in flight is refused as `undeclared_operation` and recorded
+  under the one in flight, as the platform does today.
+- **Two seams, no TLS stack.** `NameResolver` resolves a host (`SystemResolver` is the operating system's, with
+  nothing cached). `Connector` makes one exchange to a `Dial`: the scheme, the declared host and the checked
+  `SocketAddr`. No crate was added, so `Cargo.lock` and `licences/RECORD` are unchanged.
+- **DNS rebinding (`B-17`).** The host is resolved once per hop, and the connector is handed the address checked;
+  its contract forbids it to resolve the name again. Every address the answer holds must lie within the
+  destination's addresses, or the hop is refused as `address_not_allowed`. Reading: a mixed answer is refused
+  whole rather than filtered, so an attacker's extra record can't become the address connected to, and an answer
+  with no address is refused the same way, since there is no checked address to dial. A `Blocks` destination
+  whose name returns an address outside its blocks is a stale declaration, and failing closed is right for it.
+  An IPv4-mapped IPv6 answer is judged as IPv6, where `::ffff:0:0/96` is special-purpose, as the platform's
+  `allows` does.
+- **Redirects.** Followed only for `301`, `302`, `303`, `307` and `308` with a `Location`, to an endpoint the
+  operation in flight lists, each followed hop checked like the first, at most `MAX_HOPS` (5) connections, after
+  which the call fails, as in the platform. `307` and `308` keep the method and body; the others become a `GET`
+  with none. A location is read as an absolute `https` or `wss` URL, a scheme-relative one or an absolute path;
+  its host is lower-cased and must be letters, digits, `-` and `.`, its fragment dropped. Plain `http`, another
+  scheme, a user name in the authority, an IP literal in brackets, a bad port or anything else is refused as
+  `redirect_to_undeclared_destination`. Such a location has no `Hop` shape (the contract's `Scheme` has no
+  `http`), so no hop is added for it and the record ends at the hop that redirected. That is valid, since that
+  hop connected.
+- **TLS (`B-18`).** The `Connector` contract says TLS 1.2 or later, SNI and certificate checked for the declared
+  host, no plain-text or lower-version fallback, no proxy from the environment, no connection or session reused
+  across names, no redirect followed, and `Host` written by the connector from the declared name. A failed check
+  is `ConnectError::NotVerified`, raised before any byte of the request is sent. Egress refuses it at once,
+  never retries another address and never offers a plain scheme.
+- **Requests can't name a host.** `Request::new` refuses a target that isn't origin form, which closes
+  absolute-form, authority-form, `//` and `*`; this is the class of `GHSA-5qpp-g3j2-8frx`. It also refuses a `Host`
+  header and any framing header (`content-length`, `transfer-encoding`, `connection`, `te`, `upgrade`, `trailer`,
+  `keep-alive`, `proxy-connection`), and a header with a control character in its value. `Debug` never prints a
+  sensitive header's value or a body (`THR-50`).
+- **Gap in the contract, item raised: a TLS refusal reason.** `module-interface`'s `RefusalReason` has no reason
+  for a failed TLS check. Until it has one (a minor bump of `contracts/`, a `DEC-20` path, outside this task),
+  `Refusal::NotVerified` is recorded as `undeclared_destination`. The reading is that a peer which doesn't prove it
+  is the declared host is not shown to be the declared destination. The hop keeps the destination it matched by
+  name and has no address, since no verified connection was made. `Egress` itself returns the precise
+  `Refusal::NotVerified`.
+- **Gap in the contract, item raised: an unanswered hop that isn't refused.** `validate_record` allows an
+  unconnected hop only as the last hop of a refused call, so a call whose dial failed has no valid shape with
+  `address` absent. Reading: `ConnectError::Unreachable` and `ConnectError::NoAnswer` are both recorded as
+  `unknown`, with the hop's `address` the one dialled, so the record says where the call went. `Egress` still tells
+  the two apart (`Outcome::Unreachable` and `Outcome::NoAnswer`). Recording `unknown` and not `failed` errs the
+  safe way for money: the caller checks rather than assuming nothing happened. The platform's current path,
+  `World::route` returning `None`, records `failed` with no address, which `validate_record` refuses. That is
+  noted here and not fixed (`module/` is `F-013`'s).
+- **The platform's hook, not edited.** `module/platform.rs` is untouched. Its `World::route` then `World::deliver`
+  splits the check from the use: against a real network, `deliver` would resolve again, which is the window
+  `B-17` closes, and a redirect is known only after sending, not from a lookup. So the platform's loop can't
+  wrap a real egress unchanged. At integration, the platform's `egress` should build a `Call` from its `Context`
+  (`declaration`, `serving`'s operation, the claimed operation, `transaction`, `resolved`, `now()`). It should
+  hand the call to `Egress::send` with its `Events.records` as the `CallLog` (a `Vec` is one), and map `Outcome`
+  to its reply. Then `World::route` and `World::deliver` give way to the egress, and the platform's `allows`,
+  `within` and `MAX_HOPS` to the egress layer's. The tests' `TestWorld` becomes a `NameResolver` and a `Connector`.
+  `egress::Endpoint` mirrors `module::types::Endpoint`, so that the egress doesn't depend on `module/` while
+  `T-013-02` and `T-013-03` edit it; one of the two can go at integration.
+- **How it meets `T-014-02`'s transport.** `proxy::Transport` fixes the store's address in the transport and
+  sends only a `GET`, so it can't carry a pinned address and a name to verify. Both traits should sit on one
+  primitive of `T-014-02`'s `rustls` code: dial this `SocketAddr`, then handshake and verify as this `ServerName`
+  with the shared `ClientConfig`. That code has to expose it. `Connector::exchange` is that primitive plus writing
+  one HTTP/1.1 request (`Host` from `Dial::name`, `Content-Length` from the body) and reading one answer with its
+  bounds. `proxy::Transport::get` is the same primitive with the store's address and name from configuration.
+  Two cautions for that transport. Its plain-HTTP-on-loopback allowance for development servers must not be
+  reachable through `Connector`, since `Scheme` has no plain variant and a `Dial` is always TLS. Its 3xx must come
+  back as a response, as `proxy::Transport` already requires. `wss` needs the WebSocket upgrade, which the
+  connector writes; no outside operation in `M2` uses `wss`.
+- **What the tests show, and what waits.** `tests/egress.rs` has the row's four tests under their names, and more:
+  a redirect re-resolved within one call, a mixed answer, pinned blocks, another operation's destination,
+  downgrading redirects, a followed redirect, the hop bound, no answer, the operation in flight, and request
+  hygiene. The loopback servers stand for addresses through a test connector that maps each public address to a
+  listener of its own, so a test sees that a refused address received nothing. They announce the name they are
+  certified for, and the connector checks it before sending, standing in for a TLS client. `tls_probe` is generic
+  over the `Connector`. **`B-18` end to end, with a certificate for another name and with none, is not closed
+  here.** It waits on running `tls_probe` with `T-014-02`'s `rustls` connector against loopback servers with real
+  certificates, at integration. `B-17` is closed at the seam: the egress dials only the checked address, and a
+  connector that honours `Dial::to` can't be rebound.
+- **Property tests (`DEC-18`).** `tests/egress_properties.rs`, over seeded random declarations, a resolver whose
+  answer changes on each question and a connector answering each dial with a success, a failure, any redirect, a
+  failed TLS check or no answer. Two properties. Every dial is to a destination the operation in flight lists,
+  right after its name's resolution, at that answer's first address, every address in the answer within the
+  destination's addresses. Every call leaves exactly one record, which `validate_record` and
+  `validate_record_secrets` accept, with one connected hop per dial except a failed TLS check. The second also checks
+  that the cases reach every outcome and some followed redirect, so neither property holds vacuously. No
+  `proptest`; the package's seeded `Rng`.
+- **Tags.** `B-17` and `B-18` are rows of `EXP-2`'s scoring sheet, not identifiers `SPEC.md`, the ADRs or `PLAN.md`
+  define, so the tests tag `REQ-MDL-7`, `REQ-MDL-8` and `THR-79` and name the rows in their doc comments.
+- **`DEC-20`.** The credential proxy's egress is a `DEC-20` path; the commit body says so.
