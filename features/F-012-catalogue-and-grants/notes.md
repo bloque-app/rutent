@@ -75,3 +75,63 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `components/prov` too; no new package, no new `licences/RECORD` line).
 - **Test-first.** The two test files were written against the API before the code and the code written to them.
   Property tests use the same seeded generator as `T-012-01`.
+
+## T-012-04
+
+- **No allowance (`DEC-15`).** ADR-0013's bucket, higher rate and refunds are not built. The bound is a plain count:
+  at most `max_counted` counted checks per account inside a window of `window_secs`, set by the operator. With no
+  bound set, no check is sent (fail closed): `REQ-CAT-3` says the bound MUST exist. Any amount may be asked
+  ("thresholds are free").
+- **What counts as a check (`REQ-CAT-4`).** A balance verification, and a withdrawal dry run (its schema requires a
+  session for that reason). A real withdrawal is the order, and other dry runs (deposit, transfer, conversion) take
+  no session and reveal nothing about the holder's balance, so they are not checks. A check counts when it is sent,
+  so a reserve's refusal of it still counts. A check refused by the catalogue (no session, over the bound) is logged
+  and not counted.
+- **Session register.** Core issues sessions; the catalogue is told `open_session(id, account, expires_at)` and only
+  holds which account a session speaks for. A withdrawal dry run names a session but no account, so its account is
+  the session's. A check with an unknown or expired session, or none, is refused; a session of another account is
+  refused apart. A check refused for want of a session can only be logged against an account when the operation
+  names one (a verification does; a dry-run withdrawal with no session does not).
+- **Own order.** The caller states the holder's own order (`own_order`). Such a check is logged, not counted. The
+  catalogue can't tell a genuine order from a probe passing as one; that is `F-020`'s to guard.
+- **What the asker is told (`INV-9`).** `Verdict` is yes, no, a refusal class without a time, or not known. A
+  verification's refusal keeps its two classes (the contract gives it no `lifts_at`). A dry run's acceptance is a
+  yes whatever its figures. Its refusal with a lift time collapses to not known, since the time would say more than
+  yes or no. An answer for another transaction or kind is not known and leaves the check pending, so silence still
+  applies.
+- **Silent reserve (`REQ-CAT-19`, `NFR-8`).** The operator sets `set_answer_within(seconds)`; with none set, no
+  check is sent. A check due at `sent + seconds` is marked at that moment, by `sweep_silent(at)` or by a late answer,
+  once, with an `Alert`. The mark runs from the due moment, not from when the sweep ran. The reserve's reserve
+  tuples are then `Unusable::TemporarilyUnavailable`, so the snapshot leaves them out. Other categories are not
+  affected. A reserve marked silent can still be asked, since that is how it comes back. An answer in time lifts the
+  mark; a late answer is delivered but doesn't.
+- **True undo (`REQ-CAT-15`).** The advertisement carries no reversibility field, and the catalogue's only
+  reversal data is each grant's ceiling (`DEC-11`). So `admit_segment` declines an exchange or ramp segment with no
+  grant in force having a non-zero ceiling, or an amount over the ceiling when the tuple's asset is the bond's. A
+  ceiling is in the bond's asset, so an amount in another asset can't be compared and passes that check. A reserve
+  is never declined (`ASM-4`). `judge_reversal` counts only a succeeded result with the same node, asset and amount
+  as the reversal asked; anything else stays owed.
+- **Dry runs (`REQ-CAT-14`).** `assess_dry_run(&self, ..)` takes `&self`: it changes nothing. A refusal or a failed
+  or unknown answer removes the option (`removes_option`); a result that states a settlement for a dry run is an
+  error, as is any operation that isn't a dry run.
+- **Refusal classes (`REQ-CAT-18`).** `RefusalClass` is lifts at a known time (with the time as stated), waits on the
+  person, or final. The provider applies the limit by amount; the catalogue only reads the class.
+- **Where value is after a result (`INV-2`).** `segment_effect` gives `NothingTaken` for a failed, refused or
+  dry-run result: nothing leaves the origin, so the value stays in full whatever the direction. This sidesteps
+  `exact_out`, where the operation's amount is not an origin amount. A succeeded result gives `Taken` with its
+  `amount_in`; unknown gives `Unresolved`, never "at the origin".
+- **Test-first.** Both test files were written against this API before any code and failed to build; the code was
+  then written to them. Property tests use the seeded generator of `T-012-01`.
+
+### T-012-04, review answers
+
+- **Withdrawal dry run is a check.** `assess_dry_run` refuses a withdrawal dry run (`DryRunError::RevealsSufficiency`):
+  it goes through `begin_check` and `answer_check`, so it has a session, a bound and a log, and its refusal's lift
+  time never leaves. The other dry runs (deposit, transfer, conversion) keep `assess_dry_run`.
+- **Silence needs no sweep.** A reserve with a check unanswered past `sent + answer time` is unusable and ineligible
+  from that moment; `sweep_silent` only raises the alert and records the mark.
+- **Lifting the mark.** An in-time answer lifts it only when no other check of that reserve is unanswered past its
+  time. A check never answered therefore keeps the reserve out until it is answered, late or not.
+- **Dry run answered as done.** `segment_effect` refuses a dry-run operation whose result states a settlement
+  (`EffectError::NotADryRunAnswer`).
+- **`own_order`** stays as it is: the guard is `F-020`'s.
