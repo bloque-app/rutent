@@ -23,3 +23,11 @@
   dependency list. So another crate enabling a feature of a shared dependency (for example `preserve_order` on
   `serde_json`) changes that package's dependency list and forces every contract's bump and a `DEC-20` click for work
   that is not contract work. If it bites, narrow the identity to name, version and checksum.
+
+## The VOS licence, adopted in part (owner, item `vos-licence-v0`, 2026-11-09)
+
+The owner ruled a partial adoption: "There's nothing ruling that the entire repo must be on a single licence."
+AGPL-3.0-or-later applies only to the package that links `vos-sdk`, the VOS program `T-010-05` builds, and to
+binaries built from it. That package declares `license = "AGPL-3.0-or-later"`. `components/stm` and every other
+package stay MIT and runtime-neutral behind the host contract, so the purpose-built store stays a drop-in fallback.
+`licences/RECORD`'s `vos` line reads permitted under `DEC-26` and `vos-licence-v0`.
