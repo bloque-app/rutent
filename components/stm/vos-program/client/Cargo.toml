@@ -1,0 +1,46 @@
+# The thin `Host` client of the VOS program (T-010-05): it sends each input to the program on a VOS node, reads the
+# answer back with the contract's own types, and drives the nodes the tests run on one machine, one node or three.
+#
+# LICENCE. It links `vos-node` and `vos-wire` and the program's wire types, so it is AGPL-3.0-or-later like the
+# program (vos-licence-v0). It is not `rutent-stm`'s `vos` feature, which would put VOS's crates into rutent's own
+# Cargo.lock and the AGPL into the MIT library; its own `vos` feature, off by default, is the flag here.
+[package]
+name = "rutent-stm-vos"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+# The flag that enables the candidate. Without it the library holds only the retry policy and nothing of VOS is
+# compiled or linked.
+[features]
+vos = [
+    "dep:ed25519-dalek",
+    "dep:libc",
+    "dep:rutent-stm-vos-program",
+    "dep:vos-node",
+    "dep:vos-wire",
+]
+
+[dependencies]
+ed25519-dalek = { version = "2", optional = true }
+libc = { version = "0.2", optional = true }
+rutent-contracts = { path = "../../../../contracts" }
+rutent-stm = { path = "../.." }
+rutent-stm-vos-program = { path = "..", optional = true }
+serde = "1"
+serde_json = "1"
+# VOS at vos-core 5c78975 (DEC-26).
+vos-node = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+vos-wire = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458", optional = true }
+
+[dev-dependencies]
+rutent-conformance = { path = "../../../../conformance" }
+
+[workspace]
+resolver = "3"
+
+# VOS's own patch at the commit (its Cargo.toml): fjall's lsm-tree with its fixes, on a fork. A patch does not reach
+# a workspace that depends on VOS, so it is repeated here, in the workspace root, to link what VOS links.
+[patch.crates-io]
+lsm-tree = { git = "https://github.com/olanod/lsm-tree", rev = "d0791931a96ff2be9b23af4e0d1ef17a330ed9f2" }
