@@ -106,6 +106,8 @@ fn hostile(out: &Path) -> Result<(), String> {
         ("hostile-file.wasm", "import wasi:filesystem/types@0.2.0;"),
         ("hostile-socket.wasm", "import wasi:sockets/tcp@0.2.0;"),
         ("hostile-undeclared.wasm", "import undeclared;"),
+        // Its import's name is a canary: the tests check no reason or log carries it.
+        ("hostile-canary.wasm", "import canary-zq7kx4;"),
     ] {
         let component = hostile_component(import)?;
         std::fs::write(out.join(file), component).map_err(|e| format!("{file}: {e}"))?;
@@ -124,6 +126,7 @@ interface denied {{
     read-state: func(key: string);
 }}
 interface undeclared {{ anything: func(what: string) -> string; }}
+interface canary-zq7kx4 {{ anything: func(what: string) -> string; }}
 
 world sandboxed {{
     import outside-requests;

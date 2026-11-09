@@ -9,8 +9,10 @@
 //!
 //! The program's lines, after the slot's magic line, up to `end`:
 //!
-//! - `provider <id>`, `version <v>`, `starts <0|1>`, `serves <operation>`;
-//! - `output honest | padded <n> | unparseable | another-kind | another-transaction | unknown-field`;
+//! - `provider <id>`, `version <v>`, `starts <0|1> [error text]`, `serves <operation>`;
+//! - `output honest | padded <n> | unparseable | another-kind | another-transaction | unknown-field |
+//!   set <JSON pointer> <JSON value>` (the honest result with one value replaced: the output tests' one way to
+//!   break a pattern or a length; the C stand-ins have no such mode);
 //! - `secret <sandboxed|outside> <operation> <name>`, `state <sandboxed|outside> <key>`,
 //!   `call <operation> <https|wss> <host> <port>`, `module <callee> <kind>`: the suite's steps;
 //! - `spin`, `grow <pages>`, `trap`: the binding's own probes of its limits, run by the sandboxed part;
@@ -129,6 +131,7 @@ struct Program {
     provider: String,
     version: String,
     starts: bool,
+    start_error: Option<String>,
     serves: String,
     output: Vec<String>,
     steps: Vec<Step>,
@@ -140,6 +143,7 @@ fn program() -> Option<Program> {
         provider: String::new(),
         version: String::new(),
         starts: false,
+        start_error: None,
         serves: String::new(),
         output: Vec::new(),
         steps: Vec::new(),
@@ -151,6 +155,10 @@ fn program() -> Option<Program> {
             ["provider", p] => program.provider = (*p).to_owned(),
             ["version", v] => program.version = (*v).to_owned(),
             ["starts", s] => program.starts = *s == "1",
+            ["starts", s, message @ ..] => {
+                program.starts = *s == "1";
+                program.start_error = Some(message.join(" "));
+            }
             ["serves", o] => program.serves = (*o).to_owned(),
             ["output", rest @ ..] => {
                 program.output = rest.iter().map(|w| (*w).to_owned()).collect()
@@ -194,7 +202,9 @@ fn program() -> Option<Program> {
 fn start() -> Result<(), String> {
     match program() {
         None => Err("the program slot holds no program".to_owned()),
-        Some(p) if !p.starts => Err("this release does not start".to_owned()),
+        Some(p) if !p.starts => Err(p
+            .start_error
+            .unwrap_or_else(|| "this release does not start".to_owned())),
         Some(_) => Ok(()),
     }
 }
@@ -283,19 +293,44 @@ mod sandboxed {
     }
 
     /// The honest withdrawal result, compact, as the suite pins it: its one evidence reference is
-    /// `{provider}-{version}`, then `-{value}` for each value obtained.
+    /// `{provider}-{version}`, then `-{value}` for each value obtained. `pad` more bytes of result go in extra
+    /// evidence pieces of at most 512 characters each, as the result schema allows (`B-19`), so a result padded to the
+    /// limit stays one the platform passes on.
     fn honest(program: &Program, statement: &Value, obtained: &[String], pad: usize) -> String {
         let mut reference = format!("{}-{}", program.provider, program.version);
         for value in obtained {
             reference.push('-');
             reference.push_str(value);
         }
-        reference.push_str(&"x".repeat(pad));
         let amount = statement["amount"].as_str().unwrap_or_default();
+        let by = quote(&program.provider);
+        let piece = |length: usize| {
+            format!(
+                ",{{\"grade\":3,\"reference\":{},\"by\":{by}}}",
+                quote(&"x".repeat(length))
+            )
+        };
+        let fixed = piece(0).len();
+        let mut pad = pad;
+        if pad <= fixed {
+            reference.push_str(&"x".repeat(pad));
+            pad = 0;
+        }
+        let mut more = String::new();
+        while pad > 0 {
+            let mut length = (pad - fixed).min(512);
+            let rest = pad - fixed - length;
+            if rest > 0 && rest <= fixed {
+                // Leave a remainder a piece can hold.
+                length -= fixed + 1 - rest;
+            }
+            more.push_str(&piece(length));
+            pad -= fixed + length;
+        }
         format!(
             "{{\"kind\":{},\"transaction\":{},\"outcome\":{{\"status\":\"succeeded\",\"amount_in\":{},\
              \"amount_out\":{},\"fee\":{{\"asset\":{},\"amount\":\"0\"}},\"evidence\":[{{\"grade\":3,\
-             \"reference\":{},\"by\":{}}}]}}}}",
+             \"reference\":{},\"by\":{}}}{}]}}}}",
             quote(statement["kind"].as_str().unwrap_or_default()),
             quote(statement["transaction"].as_str().unwrap_or_default()),
             quote(amount),
@@ -303,6 +338,7 @@ mod sandboxed {
             quote(statement["asset"].as_str().unwrap_or_default()),
             quote(&reference),
             quote(&program.provider),
+            more,
         )
     }
 
@@ -328,6 +364,15 @@ mod sandboxed {
                 );
                 changed["transaction"] = Value::from(transaction);
                 honest(program, &changed, obtained, 0)
+            }
+            ["set", pointer, value @ ..] => {
+                let mut result: Value =
+                    serde_json::from_str(&honest(program, statement, obtained, 0))
+                        .unwrap_or(Value::Null);
+                if let Some(slot) = result.pointer_mut(pointer) {
+                    *slot = serde_json::from_str(&value.join(" ")).unwrap_or(Value::Null);
+                }
+                result.to_string()
             }
             ["unknown-field"] => {
                 let text = honest(program, statement, obtained, 0);
