@@ -70,11 +70,15 @@ impl fmt::Display for ResolveError {
 
 impl core::error::Error for ResolveError {}
 
-/// Whether `text` is one plain path segment: ASCII letters, digits, `-`, `_` and `.`, and not `.` or `..`. Nothing
-/// else is let into a path, so no provider or name can step outside its provider's keys, add a query or need
-/// escaping (`DEC-9`, `REQ-MDL-9`).
+/// The longest path segment let into a request, in bytes.
+pub(super) const MAX_SEGMENT: usize = 255;
+
+/// Whether `text` is one plain path segment: 1 to [`MAX_SEGMENT`] bytes of ASCII letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`. Nothing else is let into a path, so no provider or name can step outside its provider's
+/// keys, add a query or need escaping (`DEC-9`, `REQ-MDL-9`).
 pub(super) fn plain_segment(text: &str) -> bool {
     !text.is_empty()
+        && text.len() <= MAX_SEGMENT
         && text != "."
         && text != ".."
         && text

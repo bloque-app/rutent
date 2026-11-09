@@ -22,8 +22,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   role (`DEC-9`, ADR-0004), with one token per role that the store's policy confines to that role's paths. Reading
   those from deployment settings is `T-014-02`.
 - **Names can't leave their provider's keys.** `Identifier` and `Name` only check that the text is non-empty, so
-  the resolver lets a provider or name into a path only when it is one plain segment: ASCII letters, digits, `-`,
-  `_`, `.`, and not `.` or `..`. Anything else (`/`, `..`, `?`, `#`, `%`, spaces, non-ASCII) is refused as
+  the resolver lets a provider or name into a path only when it is one plain segment: 1 to 255 bytes of ASCII
+  letters, digits, `-`, `_`, `.`, and not `.` or `..`. Anything else (`/`, `..`, `?`, `#`, `%`, spaces, non-ASCII) is refused as
   `InvalidName` before a request is sent, rather than percent-encoded. The mount, prefix and namespace are held to
   the same rule per segment. A property test checks that no generated provider or name reaches a path outside that
   provider's keys.
@@ -43,15 +43,22 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `sha256:597f62847dd382382056a1d6704d50465908c2040038c4611832a23269a67112`. The fixtures are bodies only, with no
   headers, and hold no token. Each answer has the same shape on both servers. Vault adds a `mount_type` field and
   OpenBao doesn't, and the parser reads neither.
-- **Gap: Done-when says "against both servers in CI".** The tests here need no server: they run both resolvers on
-  recorded responses through a fake transport. `live_servers_resolve_and_rotate_a_secret_when_configured` runs
-  against real servers only when `RUTENT_LIVE_OPENBAO_ADDR`/`_TOKEN` or `RUTENT_LIVE_VAULT_ADDR`/`_TOKEN` are set,
-  and skips otherwise. It passed locally against both dev servers above, each run in its own container. CI doesn't
-  start either server yet. That needs a job in `.github/workflows/`, outside this task's files, with each
-  server run apart as a service container, so Vault enters no lockfile. It is left to the orchestrating session.
+- **Against both servers in CI.** The ordinary tests need no server: they run both resolvers on recorded
+  responses through a fake transport. `live_servers_resolve_and_rotate_a_secret_when_configured` runs against real
+  servers when `RUTENT_LIVE_OPENBAO_ADDR`/`_TOKEN` and `RUTENT_LIVE_VAULT_ADDR`/`_TOKEN` are set, and skips
+  otherwise. With `RUTENT_LIVE_REQUIRED` set, a missing server fails the test instead. The `ci` job's step "Live
+  resolver test against OpenBao and Vault" runs it with every variable set. That step starts both servers with
+  `docker run` in dev mode, pinned by tag and digest, inside the existing job. A step adds no new check name to
+  `develop`'s protection, where a separate job would. Each server runs apart in its own container, so neither
+  enters a lockfile or `licences/RECORD`.
 - **Gap: no production transport.** This task ships the `Transport` trait, not an HTTPS client. The live test
   carries its own plain-HTTP transport, for a loopback dev server only. The production transport has to verify
   TLS with a pure-Rust client (`rustls`), and its licence lines go in `licences/RECORD` when it is added. Check the
   root store's licence: `webpki-roots` may sit outside the standing permissive list. That transport is carried to
   `T-014-02`, where the proxy is deployed.
+- **For `T-014-02`: no plain HTTP off loopback.** The `Transport` trait's documentation sets the rule. A transport
+  speaks HTTPS with the server's certificate verified, and refuses plain HTTP to any address but loopback, which is
+  allowed for a development server only. Every request carries the store token, so it must never cross a network
+  in clear text. `T-014-02`'s production transport enforces this and tests it: a plain-HTTP address off loopback is
+  refused before anything is sent.
 - **`DEC-20`.** The credential proxy and its resolvers are a `DEC-20` path; the commit body says so.

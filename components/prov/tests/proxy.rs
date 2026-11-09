@@ -207,6 +207,29 @@ fn name_that_would_leave_the_providers_keys_is_refused_before_any_request() {
     }
 }
 
+// verifies: DEC-9, REQ-MDL-9
+#[test]
+fn name_or_provider_longer_than_255_bytes_is_refused_before_any_request() {
+    let longest = "a".repeat(255);
+    let too_long = "a".repeat(256);
+    for server in SERVERS {
+        let fake = Arc::new(Fake::default());
+        let resolver = resolver(server, Arc::clone(&fake));
+
+        let _ = resolver.resolve(&provider(&longest), &name(&longest));
+        assert_eq!(fake.seen().len(), 1, "{server:?}: 255 bytes is allowed");
+        for (p, n) in [(&too_long, &longest), (&longest, &too_long)] {
+            assert_eq!(
+                resolver.resolve(&provider(p), &name(n)),
+                Err(ResolveError::InvalidName),
+                "{server:?}"
+            );
+        }
+        assert_eq!(fake.seen().len(), 1, "{server:?}: nothing more was sent");
+    }
+    assert!(KvConfig::new(&too_long, "rutent", Token::new(TOKEN).unwrap()).is_err());
+}
+
 /// A small seeded generator, so a failing case replays from its seed (`DEC-18`).
 struct Rng(u64);
 
@@ -482,6 +505,7 @@ fn configuration_that_would_leave_its_mount_is_refused() {
 /// Live servers, only when configured: set `RUTENT_LIVE_OPENBAO_ADDR` or `RUTENT_LIVE_VAULT_ADDR` to a dev server's
 /// `host:port` on loopback, with `RUTENT_LIVE_OPENBAO_TOKEN` or `RUTENT_LIVE_VAULT_TOKEN`. The server needs KV v2
 /// mounted at `secret`, as a dev server has. The transport here is plain HTTP and is for such a dev server only.
+/// With `RUTENT_LIVE_REQUIRED` set, as CI's live step sets it, a server left unconfigured fails the test.
 mod live {
     use super::*;
     use std::io::{Read, Write};
@@ -553,6 +577,11 @@ fn live_servers_resolve_and_rotate_a_secret_when_configured() {
             std::env::var(format!("RUTENT_LIVE_{label}_ADDR")),
             std::env::var(format!("RUTENT_LIVE_{label}_TOKEN")),
         ) else {
+            // CI's live step sets `RUTENT_LIVE_REQUIRED`, so a missing server fails there instead of skipping.
+            assert!(
+                std::env::var_os("RUTENT_LIVE_REQUIRED").is_none(),
+                "{server:?}: RUTENT_LIVE_REQUIRED is set but no live server is configured"
+            );
             eprintln!("{server:?}: no live server configured, skipped");
             continue;
         };

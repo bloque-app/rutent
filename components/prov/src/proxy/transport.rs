@@ -6,6 +6,10 @@ use core::fmt;
 ///
 /// The transport owns the store's address, TLS and timeouts; the resolver gives it only the path and headers. It
 /// must not follow redirects: a redirect comes back as its own status.
+///
+/// It must speak HTTPS with the server's certificate verified, and refuse plain HTTP to any address but loopback,
+/// which is allowed for a development server only. A request carries the store token, so it must never cross a
+/// network in clear text.
 pub trait Transport {
     /// Sends `request` as an HTTP `GET`.
     fn get(&self, request: &Request) -> Result<Response, TransportError>;
