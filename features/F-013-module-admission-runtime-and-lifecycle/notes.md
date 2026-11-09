@@ -402,3 +402,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **`ReleaseJudge` is public and unsealed.** Any crate can write a judge, as the tests' trusting one does. Once
   `conformance/` signs its assertions with real keys and the trusting judge is gone, `T-010-10` seals the trait, or
   makes `admit` and `accept` take the catalogue itself. Not changed here.
+
+## T-010-10: the trusting judge is gone
+
+- **`TrustsEveryAssertion` is removed.** The test binding (`tests/module_support/`) now holds a `Catalogue`: it
+  grants each provider its advertisement's tuples, trusts the key the advertisement is signed with, and joins the
+  advertisement the boundary suite hands it (`BoundaryHarness::list_provider`), then admits and accepts through
+  `Platform::admit` and `Platform::accept` with that catalogue. An `Admitted::Unverified` is reported to the suite as
+  `AdmissionRefusal::AssertionUnverified`, which `T-010-09` added; the platform's own `Unverified` stays richer.
+- **`ReleaseJudge` is sealed** (`admission.rs`): a private-module supertrait, implemented only for `Catalogue`, with a
+  `compile_fail` doctest that a crate's own judge doesn't compile. `admit` and `accept` keep their signatures, as
+  `platform.rs` is shared with `T-013-02`. The tests that admit without the suite (`install`, `module_egress`,
+  `module_admission` and the rest) get the provider's standard signed advertisement when they have not listed one
+  themselves, and sign their assertions with its standard advertising key.
+- **Declarations.** `declaration()` in the support module names the provider's real statements key, and
+  `module_egress.rs` its own declaration likewise; `egress_properties.rs` and `egress_support` keep placeholder keys
+  since they never admit.
+- **Role modules through the platform** (`module_role.rs`) list the stand-in's advertisement, signed for real
+  (`Signing`), and sign the release with the advertising key it lists. Results the platform sends are still
+  placeholders; see F-010's notes for the reading.
+- **Signed admission is still tested apart** (`module_admission_signed.rs`, with its own catalogue and keys); the
+  boundary suite's run now exercises the same verifier for every release, including a forged one.

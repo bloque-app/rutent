@@ -2,7 +2,7 @@
 
 The shared conformance suites of `DEC-5`: each contract's implementations are scored by the same suite. This crate
 depends on no crate of ours but `rutent-contracts` (`DEC-2`); its other dependencies are `num-bigint`, `serde` and
-`serde_json`. It also dev-depends on itself, to enable its `test-support` feature for its own tests.
+`serde_json`, and `ed25519-dalek` behind the `signing` feature (BSD-3-Clause; `T-010-10`). It also dev-depends on itself, to enable its `test-support` feature for its own tests.
 
 ## Role suite (`role`)
 
@@ -82,7 +82,17 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
     and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit
     (`with_step_limit`), a module that passes it, with those reasons.
+- **Signed releases (`T-010-10`).** The suite signs for real, with Ed25519 keys it derives itself (`signing`, behind
+  the `signing` feature, which `test-support` implies). Each provider's declaration names its statements key, its
+  release assertions are signed with its advertising key over the contract's signing input, and the binding is
+  given the provider's signed advertisement (`list_provider`) before its first release, so the binding's own
+  verifier (the catalogue, in a platform) judges every assertion. A release whose assertion is signed by a key no
+  advertisement lists, or altered after it was signed, must be refused as `AssertionUnverified`, and the same
+  release signed right admitted (`ForgedReleaseRefused`). The reference double verifies the same way, and has a
+  breaker that trusts every assertion.
 - **The test hooks.** `BoundaryHarness`, a separate test-only trait, holds what a production runtime must not offer:
+  - `list_provider`, which gives the binding a provider's signed advertisement, as an operator's grant and the
+    provider's accepted advertisement would reach a platform;
   - `build`, the binding's module for a format-neutral `ModuleSpec`: a module-interface declaration, the `Step`s its
     parts take (look up a secret, read state, call an endpoint, call another module) and the `Output` its sandboxed
     part returns. A binding writes these as guest code in each language. The honest output is a `succeeded`

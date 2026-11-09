@@ -13,10 +13,16 @@ rutent-contracts = { path = "../contracts" }
 num-bigint = "0.4.8"
 serde = "1.0.229"
 serde_json = "1.0.154"
+# Real signatures for the suites (`T-010-10`): permissive (BSD-3-Clause), no random source, so it also builds for
+# the guests' target. Behind a feature, so the role stand-ins the guests compile stay free of it.
+ed25519-dalek = { version = "2.2.0", default-features = false, optional = true }
 
 [features]
+# Real Ed25519 keys and signatures for the suites, and the module-boundary suite, which needs them: it signs the
+# advertisements and release assertions it admits.
+signing = ["dep:ed25519-dalek"]
 # The module-boundary suite's in-process reference double: a test stand-in, never a runtime.
-test-support = []
+test-support = ["signing"]
 
 [dev-dependencies]
 rutent-conformance = { path = ".", features = ["test-support"] }

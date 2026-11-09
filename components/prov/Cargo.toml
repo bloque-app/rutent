@@ -33,6 +33,6 @@ rustls-pki-types = { version = "1.12", features = ["std"] }
 jsonschema = { version = "0.60.2", default-features = false }
 
 [dev-dependencies]
-rutent-conformance = { path = "../../conformance" }
+rutent-conformance = { path = "../../conformance", features = ["signing"] }
 serde_json = "1.0.154"
 ed25519-dalek = "2.2.0"

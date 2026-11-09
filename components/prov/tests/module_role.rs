@@ -5,13 +5,14 @@
 #[path = "module_support/mod.rs"]
 mod common;
 
-use common::{CATEGORIES, WasmBinding, assertion, declaration, paths, standins};
+use common::{CATEGORIES, WasmBinding, assertion_signed_by, declaration, paths, standins};
 use rutent_conformance::boundary::{Admitted, Handled, ModuleBinding, ModuleSpec, Output};
 use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
     Check, DeferredVerifier, Exercised, Received, RoleHarness, RoleProvider, SuiteContext,
     WithoutHooks, run_role_suite,
 };
+use rutent_conformance::signing::{Signing, real, signed_inside};
 use rutent_contracts::module_interface::Parts;
 use rutent_contracts::provider_role::{
     Advertisement, KeyPurpose, Operation, ResultBody, Statement,
@@ -37,11 +38,14 @@ struct Through {
     binding: WasmBinding,
     provider: String,
     twin: Box<dyn RoleProvider>,
+    /// The advertisement the catalogue holds: the twin's, signed for real. Its statements key is the one the
+    /// module's declaration names, and the one the platform's results name.
+    signed_advertisement: Received<Advertisement>,
 }
 
 impl RoleProvider for Through {
     fn advertisement(&self) -> Received<Advertisement> {
-        self.twin.advertisement()
+        self.signed_advertisement.clone()
     }
 
     fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
@@ -54,8 +58,10 @@ impl RoleProvider for Through {
             serde_json::to_value(&expected.statement().statement).expect("JSON"),
             "the module answered otherwise than the stand-in does in process"
         );
-        // As the platform sends it: the JSON of the statement it signs.
-        Received::sent(&answered)
+        // As the platform sends it: the JSON of the statement it signs. A judgement the module nested in its answer
+        // is the stand-in's own statement, and carries the signature of the key its placeholder stands for.
+        let sent = Received::sent(&answered);
+        Received::from_bytes(signed_inside(sent.bytes())).expect("reads back")
     }
 
     fn state(&self) -> String {
@@ -105,7 +111,10 @@ fn in_process(category: &str) -> Box<dyn RoleProvider> {
 /// stand-in's outside part, with a declaration that names the advertisement's own provider and statements key.
 fn through(category: &str) -> Through {
     let twin = in_process(category);
-    let advertisement = twin.advertisement().into_statement().statement;
+    let placeholders = twin.advertisement().into_statement().statement;
+    // The stand-in signs with placeholders; its keys, signed for real, are the ones its derived keys stand for.
+    let signed_advertisement = Signing(InProcess(in_process(category))).advertisement();
+    let advertisement = signed_advertisement.statement().statement.clone();
     let statements_key = advertisement
         .keys
         .iter()
@@ -132,7 +141,25 @@ fn through(category: &str) -> Through {
             .expect("the role stand-in"),
         outside: module.outside,
     };
-    let admitted = binding.admit(&assertion(&declaration, &binaries), &binaries);
+    // The catalogue holds the stand-in's advertisement, and its release is signed with the advertising key that
+    // advertisement lists.
+    assert!(
+        binding.list(signed_advertisement.bytes()),
+        "{category}: the catalogue wouldn't take the stand-in's advertisement"
+    );
+    let advertising = placeholders
+        .keys
+        .iter()
+        .find(|k| k.purpose == KeyPurpose::Advertising)
+        .expect("an advertising key");
+    let admitted = binding.admit(
+        &assertion_signed_by(
+            &declaration,
+            &binaries,
+            &real(advertising.public_key.as_str()),
+        ),
+        &binaries,
+    );
     assert!(
         matches!(&admitted, Admitted::Artefact(a) if a.acceptance.accepted.is_none()),
         "{category}: first release wasn't left waiting for its acceptance: {admitted:?}"
@@ -146,6 +173,7 @@ fn through(category: &str) -> Through {
         binding,
         provider: advertisement.provider,
         twin,
+        signed_advertisement,
     }
 }
 

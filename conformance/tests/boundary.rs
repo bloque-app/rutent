@@ -220,6 +220,11 @@ fn every_broken_boundary_is_flagged_by_its_own_check_only() {
             Check::AdmissionRecordsWhatItAdmits,
         ),
         (
+            "trusting every assertion",
+            ReferenceDouble::new().trusting_every_assertion(),
+            Check::AdmissionRecordsWhatItAdmits,
+        ),
+        (
             "accepting widening releases automatically",
             ReferenceDouble::new().accepting_widening_releases_automatically(),
             Check::WideningNeedsFreshAcceptance,
@@ -472,4 +477,45 @@ fn widened_callee_reached_but_never_answered_counts_as_reached() {
         "an unanswered call to a widened callee was judged: {:?}",
         report.findings
     );
+}
+
+// verifies: REQ-MDL-12, DEC-4
+#[test]
+fn boundary_suite_refuses_a_release_whose_assertion_is_signed_by_another_key() {
+    let report = run(ReferenceDouble::new());
+    assert!(
+        report.passed(),
+        "findings {:?}; uncovered {:?}",
+        report.findings,
+        report.uncovered
+    );
+    assert!(exercised_in_every_language(
+        &report,
+        Exercised::ForgedReleaseRefused
+    ));
+    // A binding that trusts every assertion admits the forged release, and fails the suite on that check alone.
+    let trusting = run(ReferenceDouble::new().trusting_every_assertion());
+    assert_eq!(
+        trusting.flagged(),
+        [Check::AdmissionRecordsWhatItAdmits].into(),
+        "a binding trusting every assertion: {:?}",
+        trusting.findings
+    );
+    assert!(
+        trusting
+            .findings
+            .iter()
+            .any(|f| f.detail.contains("signed by a key no advertisement lists")),
+        "{:?}",
+        trusting.findings
+    );
+    assert!(
+        trusting
+            .findings
+            .iter()
+            .any(|f| f.detail.contains("altered after it was signed")),
+        "{:?}",
+        trusting.findings
+    );
+    assert!(!trusting.passed());
 }

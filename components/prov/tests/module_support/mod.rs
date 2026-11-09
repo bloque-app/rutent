@@ -9,7 +9,7 @@
 
 pub mod program;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -19,16 +19,20 @@ use rutent_conformance::boundary as suite;
 use rutent_conformance::boundary::{
     BoundaryHarness, Handled, ModuleBinding, ModuleSpec, Output, Step,
 };
-use rutent_conformance::role::{SuiteContext, placeholder_key, placeholder_signature};
+use rutent_conformance::role::{Received, SuiteContext, placeholder_signature};
+use rutent_conformance::signing::{
+    Ed25519Key, advertisement, advertising_key, public_key, sign_statement, statements_key,
+};
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
     Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
 };
 use rutent_contracts::provider_role::{
-    Operation, PublicKey, Signature, SignatureScheme, Statement,
+    Advertisement, Operation, Signature, SignatureScheme, Statement,
 };
-use rutent_prov::catalogue::Instant;
-use rutent_prov::module::admission::{ReleaseJudge, Unverified};
+use rutent_prov::catalogue::{
+    Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
+};
 use rutent_prov::module::children::Paths;
 use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types;
@@ -197,6 +201,9 @@ impl World for TestWorld {
 /// languages. Everything the platform offers beyond the suite's traits is reached through `Deref`.
 pub struct WasmBinding {
     platform: Platform<TestWorld>,
+    /// Who vouches for releases: the catalogue, holding the advertisement of each provider listed, under a grant.
+    catalogue: Catalogue,
+    listed: BTreeSet<String>,
     languages: Vec<String>,
     category: String,
     standins: PathBuf,
@@ -221,7 +228,11 @@ impl WasmBinding {
     /// A binding whose stand-ins are `category`'s, in `languages` (`rs`, `c`).
     pub fn new(paths: Paths, languages: &[&str], category: &str) -> Result<Self, String> {
         let context = SuiteContext::default();
+        let mut catalogue = Catalogue::new();
+        catalogue.set_context(context.deployment.clone(), &context.protocol_version);
         Ok(Self {
+            catalogue,
+            listed: BTreeSet::new(),
             platform: Platform::new(
                 paths,
                 TestWorld::default(),
@@ -290,25 +301,74 @@ pub fn build_standin(
     })
 }
 
-/// The module-boundary suite's judge of release assertions: it trusts every one.
-///
-/// The suite signs its assertions with placeholders, and its declarations name a placeholder statement key that is
-/// no point of the curve, so no advertisement the catalogue would accept can list it. Signed admission, against
-/// the catalogue, is tested apart (`module_admission_signed.rs`); the platform has no judge of its own, so nothing
-/// but a test can pass this one.
-pub struct TrustsEveryAssertion;
-
-impl ReleaseJudge for TrustsEveryAssertion {
-    fn judge(&self, _: &[u8], _: &AdmissionArtefact, _: Instant) -> Result<(), Unverified> {
-        Ok(())
+impl WasmBinding {
+    /// Takes a provider's signed advertisement into the catalogue, as the operator does: a grant for what it
+    /// offers, with the key it is signed by trusted for advertising, and the advertisement joined. False if the
+    /// catalogue refuses any step. A provider is listed once.
+    pub fn list(&mut self, advertisement: &[u8]) -> bool {
+        let Ok(received) = Received::<Advertisement>::from_bytes(advertisement.to_vec()) else {
+            return false;
+        };
+        let statement = received.statement();
+        let ad = &statement.statement;
+        if !self.listed.insert(ad.provider.clone()) {
+            return false;
+        }
+        let tuples = tuples_of(ad);
+        let categories: Vec<Category> = [
+            (ad.offers.reserve.is_some(), Category::Reserve),
+            (ad.offers.exchange.is_some(), Category::Exchange),
+            (ad.offers.ramp.is_some(), Category::Ramp),
+            (ad.offers.verifier.is_some(), Category::Verifier),
+        ]
+        .into_iter()
+        .filter_map(|(offered, category)| offered.then_some(category))
+        .collect();
+        let id = format!("grant-{}", ad.provider);
+        let capacity = ReversalCapacity::check(
+            Bond {
+                asset: "USDC".into(),
+                amount: 1_000,
+                held_by: "escrow-co".into(),
+            },
+            500,
+            "ops-lead",
+            Instant(1_000),
+        );
+        let granted = capacity.ok().and_then(|reversal_capacity| {
+            Grant::new(GrantTerms {
+                id: id.clone(),
+                provider: ad.provider.clone(),
+                party: "Acme Payments Ltd".into(),
+                granted_by: "operator-admin".into(),
+                granted_at: Instant(1_000),
+                expires_at: Instant(5_000_000_000),
+                categories,
+                tuples,
+                reversal_capacity,
+            })
+            .ok()
+        });
+        granted.is_some_and(|grant| {
+            self.catalogue.grant(grant).is_ok()
+                && self
+                    .catalogue
+                    .trust_advertising_key(&id, statement.signature.key.clone())
+                    .is_ok()
+                && self.catalogue.join(received.bytes(), SUITE_AT).is_ok()
+        })
     }
 
-    fn record_statement_key(&mut self, _: &PublicKey) -> Result<(), Unverified> {
-        Ok(())
+    /// Lists `provider` with its standard advertisement, if the test hasn't listed it itself: the tests that admit
+    /// releases without the suite sign them with the provider's standard keys ([`assertion`]).
+    fn list_if_unlisted(&mut self, provider: &str) {
+        if !self.listed.contains(provider) {
+            self.list(&advertisement(provider, &SuiteContext::default()));
+        }
     }
 }
 
-/// The clock the suite's admissions are judged at, which the judge above ignores.
+/// The clock the suite's admissions are judged at.
 const SUITE_AT: Instant = Instant(1_794_009_600);
 
 impl ModuleBinding for WasmBinding {
@@ -330,15 +390,16 @@ impl ModuleBinding for WasmBinding {
         binaries: &Parts<Vec<u8>>,
     ) -> suite::Admitted {
         // The assertion as a provider sends it: its bytes.
+        self.list_if_unlisted(assertion.statement.declaration.provider.as_str());
         let received = serde_json::to_vec(assertion).expect("the suite's assertion is JSON");
         match self
             .platform
-            .admit(&received, binaries, &mut TrustsEveryAssertion, SUITE_AT)
+            .admit(&received, binaries, &mut self.catalogue, SUITE_AT)
         {
             types::Admitted::Artefact(artefact) => suite::Admitted::Artefact(artefact),
             types::Admitted::Refused(refusal) => suite::Admitted::Refused(refusal),
-            types::Admitted::Unverified(why) => {
-                unreachable!("the suite's judge trusts every assertion, yet: {why:?}")
+            types::Admitted::Unverified(_) => {
+                suite::Admitted::Refused(suite::AdmissionRefusal::AssertionUnverified)
             }
         }
     }
@@ -352,7 +413,7 @@ impl ModuleBinding for WasmBinding {
             .assertion_digest
             .clone();
         self.platform
-            .accept(provider, &digest, by, &TrustsEveryAssertion, SUITE_AT)
+            .accept(provider, &digest, by, &self.catalogue, SUITE_AT)
     }
 
     fn active_version(&self, provider: &str) -> Option<String> {
@@ -410,6 +471,10 @@ impl ModuleBinding for WasmBinding {
 }
 
 impl BoundaryHarness for WasmBinding {
+    fn list_provider(&mut self, advertisement: &[u8]) -> bool {
+        self.list(advertisement)
+    }
+
     fn build(&mut self, spec: &ModuleSpec, language: &str) -> Option<Parts<Vec<u8>>> {
         let category = self.category.clone();
         self.build_with(spec, language, &category, &[])
@@ -491,7 +556,7 @@ pub fn declaration(provider: &str, version: &str, handles: &[&str]) -> Declarati
             }],
             "secrets": ["own.key"],
             "calls": [],
-            "statement_key": placeholder_key(1),
+            "statement_key": public_key(&statements_key(provider)),
         },
     }))
     .expect("a valid declaration")
@@ -507,10 +572,24 @@ pub fn spec(provider: &str, version: &str, steps: Vec<Step>, starts: bool) -> Mo
     }
 }
 
-/// The provider's signed release assertion of `binaries` under `declaration`, as the suite writes one.
+/// The provider's release assertion of `binaries` under `declaration`, signed with its standard advertising key, as
+/// the suite writes one.
 pub fn assertion(
     declaration: &Declaration,
     binaries: &Parts<Vec<u8>>,
+) -> Statement<ReleaseAssertion> {
+    assertion_signed_by(
+        declaration,
+        binaries,
+        &advertising_key(declaration.provider.as_str()),
+    )
+}
+
+/// [`assertion`], signed with `key`.
+pub fn assertion_signed_by(
+    declaration: &Declaration,
+    binaries: &Parts<Vec<u8>>,
+    key: &Ed25519Key,
 ) -> Statement<ReleaseAssertion> {
     let context = SuiteContext::default();
     let part = |bytes: &[u8]| BinaryPart {
@@ -520,7 +599,7 @@ pub fn assertion(
             value: DigestValue::new(sha256(bytes)).expect("a digest"),
         },
     };
-    Statement {
+    let unsigned = Statement {
         deployment: context.deployment.clone(),
         protocol_version: context.protocol_version.clone(),
         shape: RELEASE_ASSERTION_SHAPE.to_owned(),
@@ -528,7 +607,7 @@ pub fn assertion(
         made_at: "2026-11-07T00:00:00Z".to_owned(),
         signature: Signature {
             scheme: SignatureScheme::Ed25519,
-            key: placeholder_key(2),
+            key: public_key(key),
             value: placeholder_signature(),
         },
         statement: ReleaseAssertion {
@@ -538,7 +617,8 @@ pub fn assertion(
                 outside: part(&binaries.outside),
             },
         },
-    }
+    };
+    sign_statement(&unsigned, key)
 }
 
 /// Builds `spec` from `category`'s stand-in in `language` with `probes`, admits it and gives it its fresh
