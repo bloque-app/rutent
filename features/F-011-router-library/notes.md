@@ -145,3 +145,84 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   a segment starts ever bind it; that what is shown differs from the providers' terms by the operator's fee alone;
   that a hold is refused exactly past its validity; and that a rate at its committed slippage is within while one
   just past it is not.
+
+## T-011-02
+
+- **What was already there.** `T-011-01` built the choice round's drops: a refused dry run (`dry_run_refused`), a
+  path arriving with nothing (`no_positive_outcome`) and, in a choice round, an operation no answer confirmed
+  (`unconfirmed`). This task adds the questions between the two rounds, in the module `shortlist`, and its named
+  tests on the existing drops.
+- **Asked only of the shortlist (`REQ-CAT-5`), and pure.** The router calls no provider. `shortlist::asks` reads a
+  shortlist round's record alone and gives, by provider, one question for each operation of a kept candidate: the
+  fresh quote for a route or exchange, the reserve's dry run for a withdrawal or deposit, at the amount that reaches
+  it, each asked once. A provider on dropped candidates only, or on none, is asked nothing. Core puts the questions
+  and records the answers in the choice round's snapshot; `Asks::admits` says which figures may enter it, so an
+  answer nobody asked for stays out. The choice round is then the same pure function of its inputs.
+- **Only what the step needs.** A question names its tuple, the operation's kind and ends, and the amount entering
+  it. It names no candidate, no request and no other provider's tuple.
+- **A rival seen through amounts, a gap (`REQ-CAT-5`).** That holds for one question, not for the set a provider
+  receives. Questions are deduplicated on tuple and amount, so a later tuple reached through two kept earlier paths
+  gets two questions at two amounts: with reserves R1 or R2 before a ramp B, B is asked at both, learns that an
+  alternative before it was considered, and reads the difference of their fees from the gap. Asking only the best
+  path's amount would leave the alternatives unconfirmed and lose the fallback `AC-3` needs, so I left it. Delivering
+  the questions so they can't be linked is Core's (`F-020`), or this is accepted residual risk; raised as an item for
+  the owner.
+- **Eligibility, a gap.** No advertised tuple in the snapshot names the class or the verifier its provider's rules
+  need. So a question names only the tuple eligibility is checked for (`REQ-CPL-6`); which judgement to seek, of
+  which verifier, for which party, is the catalogue's grants (`F-012`), and Core's to put. `Asks::admits` lets in a
+  judgement for an asked tuple whatever its verifier.
+- **A refused dry run (`AC-3`, `REQ-CAT-14`).** Every kept candidate's providers are asked together, so another
+  provider serving the same ends already has its answer when one refuses, and the choice round uses it with no
+  second round. The test makes the refusing reserve the cheaper one, so its drop is what lets the other be chosen.
+- **No positive arrival (`REQ-QTE-13`).** A shortlist round that keeps nothing is refused before anyone is asked:
+  `asks` returns `Refusal::NoRoute`, and the choice round over the same figures chooses nothing. Where the main path
+  arrives with nothing and an alternative with something, only the alternative's provider is asked, and it is
+  chosen. `NoRoute` also covers a shortlist emptied for other reasons, such as the bounds, since none of them leaves
+  a path to offer.
+- **Asks are at the shortlist's amounts, a reading.** A question asks at the amount the shortlist round evaluated
+  from advertised prices. Where an earlier operation's fresh quote then differs from its price, a later operation's
+  amount shifts, the answer it got no longer covers it, and it is `unconfirmed`. Asking again at the new amount is
+  Core's (`F-020`): the provider is still on the shortlist. This task doesn't add it.
+- **Seeing the tests fail.** The questions' tests failed first to compile, with no `shortlist` module. The
+  refusal and no-positive-arrival tests pass on `T-011-01`'s code, so I disabled the two drops in `judge.rs` for one
+  run and saw them fail: the refusal test on its drop reason, the no-positive-arrival test on the contract refusing
+  the record. Then I restored `judge.rs` unchanged.
+- **Property tests (`DEC-18`).** Over the generated networks, the asked providers are exactly those of kept
+  operations, each asked only about its own tuples, and the questions don't change when the snapshot is reversed.
+  In a choice round built from the questions' answers, half of them refused at random, no refused option is chosen,
+  the choice always arrives with something, a shortlisted route whose every answer accepted always leaves a choice,
+  and an answer from a provider off the shortlist is never admitted. The choice-round property runs without
+  exchanges, since its answers carry no rate or slippage; its conversion branch is unused there. These are appended
+  to `tests/properties.rs` to reuse its generator; `tests/common/` is left as it was.
+- **Seeing the properties fail.** Each was run once against a mutated `asks`, then `shortlist.rs` was restored. Asking
+  every candidate's operations, not only the kept ones', trips the first property (seed 9). Asking only each kept
+  candidate's first operation trips the second (seed 61: a confirmed shortlisted route is not chosen).
+
+## Review of T-011-02 (fresh reviewer, 2026-11-09)
+
+- **One amount per tuple, the default applied for item `cat5-single-amount-asks`.** The reviewer confirmed the gap
+  above, so it is closed on the safe default, which the owner can overrule on the form. Each provider is asked
+  about each of its tuples once, at one amount. Where kept paths reach a tuple at different amounts, the question
+  is at the amount on the kept candidate ranked first: by the request's objective, as the choice round ranks, then
+  by `candidate_id`. For fastest settlement, the shortlist round holds no fresh quote, so each operation's seconds
+  are its price's. The other paths' operations at that tuple stay `unconfirmed` in the choice round until Core asks
+  again at their amounts (`F-020`). This trades away the fallback through those paths in one choice round. `AC-3`'s
+  fallback to another provider of the same tuple still holds, since that provider is asked about its own tuple.
+  Keeping questions unlinkable across calls, with no shared session, transaction or identity between them, is
+  `F-020`'s. The test `provider_reached_at_two_amounts_is_asked_at_one_only` failed first, with two questions to
+  the ramp. The first property now checks one question per kept tuple. Against the old per-amount keying it fails
+  at seed 60.
+- **A refused fresh quote, read differently from the review.** The review asked to admit a refused `FreshQuote` and
+  read it as a refusal. The contract refuses such a figure in any snapshot (`CatalogueSnapshot::check`: "a fresh
+  quote is a provider's dry-run quote", accepted only). So a ramp or exchange refuses as a `DryRun` figure holding
+  its refused transfer or conversion, and `judge.rs` already drops on that as `dry_run_refused`. `Asks::admits`
+  keeps a refused `FreshQuote` out and admits the refused `DryRun` for a fresh-quote question. `judge.rs` is
+  unchanged. The test `ramp_that_refuses_its_quote_is_dropped_as_refused_not_unconfirmed` shows all three: the
+  admission, the contract's refusal of the other form, and the drop. It passed on first run, since it pins down
+  existing behaviour.
+- **The form asked.** `Asks::admits` now also matches the question's `wants`. A fresh-quote question admits the
+  accepted quote or a refused dry run. A dry-run question admits a dry run, accepted or refused. The test
+  `answer_of_another_kind_than_asked_is_not_admitted` failed first, admitting a reserve's answer dressed as a fresh
+  quote.
+- **`Question`'s doc** now says that a question names no rival per question, and that the set a provider receives
+  is kept clean by the one-amount rule.
