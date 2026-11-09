@@ -47,7 +47,7 @@ use rutent_contracts::router_api::{
 /// The drop reasons this suite knows, as router-api 3.0.0 names them (`T-011-05`). `DropReason` is
 /// `#[non_exhaustive]` since 3.0.0, so a reason added later breaks no build here; a test holds this list to the
 /// contract's schema, so a new reason fails it until the suite is reviewed for it.
-pub const DROP_REASONS: [&str; 16] = [
+pub const DROP_REASONS: [&str; 17] = [
     "stale_figure",
     "void_statement",
     "quote_voided",
@@ -59,6 +59,7 @@ pub const DROP_REASONS: [&str; 16] = [
     "beyond_levels",
     "no_price",
     "fee_above_amount",
+    "nothing_delivered",
     "excluded_by_policy",
     "below_floor",
     "no_positive_outcome",
@@ -743,7 +744,8 @@ pub enum Cell {
     ChoosesTheExpectedRoute,
     /// The record names each candidate the case expects, by the tuples it takes, with the drop reason the case
     /// expects: among them the paths no operation can state, through a tuple with no price or an operation whose
-    /// fee is above what reaches it (`REQ-AUD-4`, router-api 3.0.0). A router that leaves them out fails here.
+    /// fee is above what reaches it, or that deliver nothing short of the destination (`REQ-AUD-4`, router-api
+    /// 3.0.0). A router that leaves them out fails here.
     NamesTheExpectedDrops,
     /// Routing the record's own request, snapshot and bounds gives the record again, byte for byte.
     ReplaysFromItsOwnInputs,

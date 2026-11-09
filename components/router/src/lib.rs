@@ -28,13 +28,13 @@
 //! outranked by it. Every candidate is one part (`DEC-8`), whatever the bounds' `max_parts` allows.
 //!
 //! Every path the search reaches is a candidate, including one through an operation the contract can't state
-//! (router-api 3.0.0, `REQ-AUD-4`): a tuple with no price, dropped as `no_price`, or an operation whose price's
-//! fee is above what enters it, dropped as `fee_above_amount`. As with `beyond_levels`, such a path is listed up
-//! to that operation, which delivers nothing, and goes no further, and the choice still recomputes from the record
-//! alone. A path that delivers exactly 0 before the destination, other than beyond a price's levels, still has no
-//! reason the contract can state, so it ends unlisted (F-011's notes). Listing them costs at
-//! most one candidate per path prefix the search already walks and per such tuple leaving its end, since each
-//! ends its path; no cap is needed.
+//! (router-api 3.0.0, `REQ-AUD-4`): a tuple with no price, dropped as `no_price`; an operation whose price's fee
+//! is above what enters it, dropped as `fee_above_amount`; or one that delivers nothing short of the destination,
+//! dropped as `nothing_delivered`. As with `beyond_levels`, such a path is listed up to that operation, which
+//! delivers nothing, and goes no further, and the choice still recomputes from the record alone. A path that runs
+//! out of tuples or hops short of the destination, having delivered something, ends nowhere a route could, so it
+//! is no candidate. Listing the others costs at most one candidate per path prefix the search already walks and
+//! per tuple leaving its end, since each ends its path; no cap is needed.
 //!
 //! # The objective
 //!

@@ -111,7 +111,7 @@ only records that pass theirs, so a stored record recomputes.
 | An operation's fee is in its from asset and at most its amount in | can't be stated | `Operation::check` |
 | Each operation of a part starts where the one before ended, with what it delivered | can't be stated | `Part::check` |
 | A drop reason's indices name an operation; no candidate is outranked by itself | can't be stated | `Candidate::check` |
-| A `no_price` or `fee_above_amount` reason names its part's last operation, which arrives with 0, stating a fee of 0 (`no_price`) or its amount in (`fee_above_amount`); that part alone needn't reach the destination | can't be stated | `Candidate::check`, `DecisionRecord::check` |
+| A `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives with 0, stating a fee of 0 (`no_price`) or its amount in (`fee_above_amount`); that part alone needn't reach the destination, and a `nothing_delivered` operation doesn't end there | can't be stated | `Candidate::check`, `DecisionRecord::check` |
 | A `no_price` operation cites its tuple and no price, and the snapshot holds no price for that tuple; a `fee_above_amount` operation cites no usable accepted answer at its amount in | can't be stated | `DecisionRecord::check` |
 | Figure ids are unique; a price or quote names a tuple figure from the same provider, and states a rate exactly when the tuple is an exchange's; levels increase | can't be stated | `CatalogueSnapshot::check` |
 | Candidate ids are unique; only the chosen candidate lacks a drop reason; every part runs from the request's origin to its destination; parts add up to the request's amount; every figure and candidate named is in the record | can't be stated | `DecisionRecord::check` |
@@ -160,10 +160,10 @@ Unchecked by either:
 - That the conditions of `quote_voided` other than `validity_passes` and `amount_changes` hold: they rest on facts
   outside the record.
 - That the record lists every candidate: a router that leaves out a better route isn't caught by its record. Since
-  3.0.0 the contract can state the paths through a tuple with no price or an operation whose fee is above what
-  reaches it, so a router has no reason to leave those out; the router suite's cases name the ones a router must
-  list on its own inputs. A path that delivers exactly 0 before the destination, other than beyond a price's
-  levels, still can't be stated.
+  3.0.0 the contract can state every path a search reaches that ends anywhere: those through a tuple with no
+  price, an operation whose fee is above what reaches it, or one that delivers nothing short of the destination
+  included, so a router has no reason to leave one out; the router suite's cases name the ones a router must list
+  on its own inputs.
 - That `refines.taken_at` is the shortlist round's real time. The contract checks answers against the stated
   value, and that it is at or before the choice round's own snapshot; a backdated or postdated value can't be
   seen from the choice record. Core ties `refines` to the shortlist record it keeps (`REQ-AUD-4`).
@@ -187,8 +187,9 @@ value only.
 
 Recorded since 3.0.0 (ruled by the owner, 2026-11-09, item `aud4-unstateable-candidates`): a path through a tuple
 with no price is listed up to that operation and dropped as `no_price`, and one through an operation whose fee is
-above what reaches it, as `fee_above_amount`, each shaped as `beyond_levels`, so a decision record names those
-candidates too (`REQ-AUD-4`). `DropReason` is `#[non_exhaustive]` from 3.0.0: a reason added later
+above what reaches it, as `fee_above_amount`, and one through an operation that delivers nothing short of the
+destination, as `nothing_delivered`, each shaped as `beyond_levels`, so a decision record names every path the
+search reaches that ends anywhere (`REQ-AUD-4`). `DropReason` is `#[non_exhaustive]` from 3.0.0: a reason added later
 breaks no match outside the crate, but it still widens the schema and needs its own bump.
 
 ## Tests

@@ -411,6 +411,15 @@ fn the_policy_case_drops_by_policy_by_ceilings_on_output_and_by_outcome() {
         dear.dropped.as_ref().map(reason_name).as_deref(),
         Some("fee_above_amount")
     );
+    // A ramp that keeps all that enters, short of the destination: nothing arrives, and the path ends there.
+    let all = on_path(&record, &["f-w", "f-ex-fast", "f-ramp-all"]);
+    assert_eq!(
+        all.dropped,
+        Some(DropReason::NothingDelivered {
+            part: 0,
+            operation: 2
+        })
+    );
     let shortlist: Vec<_> = record
         .shortlist()
         .iter()

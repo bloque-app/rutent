@@ -371,6 +371,13 @@ fn every_result_is_a_split_of_one_part() {
 ///
 /// Before router-api 3.0.0 the record listed A and B alone, and couldn't say why Q or E wasn't used.
 fn owners_example() -> Net {
+    owners_example_with(
+        &json!({ "fee": fee("2000", "0", "1"), "rate": { "kind": "fixed", "rate": "0.9" }, "settlement_seconds": 60 }),
+    )
+}
+
+/// The owner's example with exchange E priced by `e`.
+fn owners_example_with(e: &Value) -> Net {
     let mut net = Net::new("snap-owner", SHORTLIST_AT, 10);
     let (usd, eur) = (common::unit("USD", 2), common::unit("EUR", 2));
     net.ramp(
@@ -416,17 +423,7 @@ fn owners_example() -> Net {
         ("1", WIDE),
         json!({ "fee": fee("8800", "0", "1"), "settlement_seconds": 60 }),
     );
-    net.exchange(
-        "ex-e",
-        "n2",
-        (usd, eur),
-        ("1", WIDE),
-        json!({
-            "fee": fee("2000", "0", "1"),
-            "rate": { "kind": "fixed", "rate": "0.9" },
-            "settlement_seconds": 60,
-        }),
-    );
+    net.exchange("ex-e", "n2", (usd, eur), ("1", WIDE), e.clone());
     net.ramp(
         "r-eur",
         ("n2", "n1"),
@@ -449,8 +446,12 @@ fn owners_ends() -> (Value, Value, &'static str) {
 /// Both rounds of the owner's example, each passing the contract and the router suite, the choice round choosing
 /// route A.
 fn owners_rounds() -> [DecisionRecord; 2] {
+    owners_rounds_over(&owners_example())
+}
+
+fn owners_rounds_over(net: &Net) -> [DecisionRecord; 2] {
     let bounds = bounds(3);
-    let (shortlisted, choice, snapshot) = rounds(&owners_example(), owners_ends(), &bounds);
+    let (shortlisted, choice, snapshot) = rounds(net, owners_ends(), &bounds);
     let chosen = routed(&choice, &snapshot, &bounds);
     passes(&chosen);
     assert_eq!(tuples(chosen.chosen().unwrap()), ["r-a", "ex-a"]);
@@ -498,6 +499,43 @@ fn operation_whose_fee_is_above_what_reaches_it_is_recorded_with_its_drop_reason
         assert_eq!(operation.fee.amount, "1200");
         assert!(operation.amount_out.is_zero());
         // The record names every path the search reaches: A and B, Q, and E's.
+        let mut named: Vec<Vec<String>> = record.candidates.iter().map(tuples).collect();
+        named.sort();
+        assert_eq!(
+            named,
+            [
+                vec!["r-a", "ex-a"],
+                vec!["r-b", "ex-a"],
+                vec!["r-q"],
+                vec!["r-thin", "ex-e"],
+            ]
+        );
+    }
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn path_whose_step_delivers_nothing_before_the_destination_is_recorded_with_its_drop_reason() {
+    // Exchange E now charges exactly the 12 USD that reach it: its operation can be stated, but delivers nothing,
+    // short of the destination, so nothing after it can be.
+    let exact = json!({
+        "fee": fee("1200", "0", "1"),
+        "rate": { "kind": "fixed", "rate": "0.9" },
+        "settlement_seconds": 60,
+    });
+    for record in owners_rounds_over(&owners_example_with(&exact)) {
+        let e = on(&record, &["r-thin", "ex-e"]);
+        assert_eq!(
+            e.dropped,
+            Some(DropReason::NothingDelivered {
+                part: 0,
+                operation: 1
+            })
+        );
+        let operation = e.parts[0].operations.last();
+        assert_eq!(operation.amount_in.amount().as_str(), "1200");
+        assert_eq!(operation.fee.amount, "1200");
+        assert!(operation.amount_out.is_zero());
         let mut named: Vec<Vec<String>> = record.candidates.iter().map(tuples).collect();
         named.sort();
         assert_eq!(

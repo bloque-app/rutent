@@ -315,11 +315,11 @@ bump. `REQ-AUD-4` is therefore partly met. The orchestrator's default, reversibl
 `DEC-4` and the owner's click at the release into `main`. The owner then ruled it "Now in M2" (2026-11-09):
 `T-011-05` below.
 
-## T-011-05: REQ-AUD-4 met for the ruled cases (router-api 3.0.0)
+## T-011-05: REQ-AUD-4 met (router-api 3.0.0)
 
-`REQ-AUD-4` is now met for the two cases the ruling names: the decision record names every path the search reaches
-through a tuple with no price or an operation whose fee is above what reaches it, with its drop reason, beside the
-candidates it already named. One case is still left out, below. This supersedes the reading recorded under `T-011-04`'s open
+`REQ-AUD-4` is now met for every path the search reaches: the decision record names each one with its drop reason,
+including the paths router-api 2.x couldn't state, through a tuple with no price, an operation whose fee is above
+what reaches it, or one that delivers nothing short of the destination (the last added after review, below). This supersedes the reading recorded under `T-011-04`'s open
 items, that a candidate is a path of statable operations only.
 
 - **The contract.** Two `DropReason` variants, shaped as `beyond_levels` (0.7.0), as `T-011-04`'s item proposed:
@@ -370,7 +370,8 @@ items, that a candidate is a path of statable operations only.
   `tuples_no_operation_can_state_are_no_candidates_and_leave_the_choice_unchanged`, which pinned the omission.
 - **Property tests (`DEC-18`).** A generator shape `UNSTATABLE` adds tuples advertised with no price and tuples
   whose flat fee (10^24) is above any amount drawn; `ANY`'s draws are unchanged. Over it,
-  `every_candidate_the_search_reaches_is_ranked_or_dropped_with_a_reason`: every candidate is ranked or dropped
+  `every_candidate_the_search_reaches_is_ranked_or_dropped_with_a_reason` (extended and renamed below): every
+  candidate is ranked or dropped
   with a reason, and from the origin and from every point the search goes on from (past an operation that
   delivered something, within the hop limit), every unstatable tuple leaving there is a candidate dropped with its
   reason. It failed first at seed 1 against the router with unstatable steps skipped, then the router was restored.
@@ -384,12 +385,28 @@ items, that a candidate is a path of statable operations only.
   `OMITS_UNSTATABLE` early return made unreachable,
   `a_router_that_leaves_out_the_paths_it_can_not_state_fails_only_on_naming_them` failed with no failing cell.
   Both files were then restored.
-- **Still unlisted, an item to raise (`REQ-AUD-4`).** A step before the destination that delivers exactly 0
-  without being cut short, because its fee equals what enters, a unit change rounds it to 0, or a confirmed
-  answer delivers 0, ends its path unlisted, as before: the contract can't state it, since such a part must reach
-  the destination unless a cut-short reason names it, and the next operation would take in 0, which isn't a
-  positive amount. In the owner's example, `ex-e` charging exactly the 12 USD that reach it would drop that path
-  from the record. `beyond_levels` is one case of the same shape. The row names two reasons, so this task adds no
-  third. Recommended: a follow-up in `M2`, folded into router-api 3.0.0 while it is unreleased, with a reason such
-  as `nothing_delivered {part, operation}` shaped as these, or `no_positive_outcome` widened to name a part cut
-  short at the operation that delivers 0. Until then `REQ-AUD-4` is met except for this case.
+- **Nothing delivered short of the destination, closed in the same 3.0.0 (the orchestrator, 2026-11-09).** The first
+  pass left one case unlisted: a step before the destination that delivers exactly 0 without being cut short,
+  because its fee equals what enters, a unit change rounds it to 0, or a confirmed answer delivers 0. The contract
+  couldn't state it, as such a part must reach the destination unless a cut-short reason names it, and the next
+  operation would take in 0. router-api 3.0.0 isn't released and the owner's rule for pre-production gaps is to fix
+  them, so a third reason joins it: `nothing_delivered {part, operation}`, shaped as the others. The contract checks
+  the named operation is its part's last, arrives with 0 and doesn't end at the destination, where the part is
+  `no_positive_outcome` as before; its terms are stated as its figures give them, so the suite recomputes them like
+  any other's and needs no special case. `beyond_levels` stays its own reason and wins over it. The router and the
+  suite's double list such a path; the policy case adds `f-ramp-all`, a ramp keeping all that enters on the way
+  to the deposit, and the `OMITS_UNSTATABLE` flaw leaves it out too.
+- **What "every path the search reaches" means.** A candidate is a path that ends somewhere a route can be judged:
+  at the destination, or at an operation nothing can follow (beyond its levels, no price, fee above the amount,
+  nothing delivered). A path that has delivered something but runs out of tuples or hops short of the destination
+  ends nowhere a route could, so it is no candidate and has no reason; listing those would add a candidate for
+  every prefix the search walks. The property below checks exactly this.
+- **Tests, each seen failing first.** `path_whose_step_delivers_nothing_before_the_destination_is_recorded_with_its_drop_reason`
+  runs the owner's example with exchange E charging exactly the 12 USD that reach it, and failed with no candidate
+  on that path. The reach property became `every_path_the_search_reaches_is_ranked_or_dropped_with_a_reason`: every
+  candidate is ranked or dropped with a reason, one ending at a tuple no operation can state is dropped for it, and
+  from the origin and from every point the search goes on from, every tuple leaving there is taken by a candidate
+  unless no path of tuples from it, within the hop limit, reaches the destination or a tuple no operation can
+  state (amounts don't matter there: a walked step always ends in a candidate if anything after it can). The
+  `UNSTATABLE` shape adds tuples whose fee takes all that enters. Against the router before the fix it failed at
+  seed 6 (`t06` reached after `t00`, no candidate); it now also counts more than ten drops of each new reason.

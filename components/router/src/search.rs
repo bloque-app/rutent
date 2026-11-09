@@ -113,6 +113,8 @@ pub(crate) enum Cut {
     NoPrice,
     /// Its price's fee is above the amount that reaches it (`fee_above_amount`).
     FeeAboveAmount,
+    /// It delivers nothing, short of the destination (`nothing_delivered`).
+    NothingDelivered,
 }
 
 /// A path the search found: the segments it takes, by index, and their operations.
@@ -365,8 +367,14 @@ impl<'a> Search<'a> {
             // A step that can't be stated ends its path wherever it is: nothing after it can be stated, so it
             // adds one candidate per prefix the search already walks, and never chains.
             let cut = step.unstatable.or_else(|| {
-                (!at_destination && Self::beyond_levels(segment, &step))
-                    .then_some(Cut::BeyondLevels)
+                if at_destination {
+                    None
+                } else if Self::beyond_levels(segment, &step) {
+                    Some(Cut::BeyondLevels)
+                } else {
+                    // Short of the destination with nothing: no operation after it could take in anything.
+                    (arrives == BigUint::ZERO).then_some(Cut::NothingDelivered)
+                }
             });
             taken.push(i);
             steps.push(step);

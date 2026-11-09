@@ -232,15 +232,15 @@ alone, the same inputs give the same output, and a changed objective can change 
 | `passes-the-contract` | Its bytes deserialise, which runs the contract's check |
 | `recomputes-from-the-record-alone` | `recompute` finds nothing |
 | `chooses-the-expected-route` | It chooses the case's route, or none, and that is its recomputed choice |
-| `names-the-expected-drops` | It names each candidate the case expects, by the tuples it takes, with the expected drop reason: the policy case's path through an exchange with no price (`no_price`) and through a ramp whose fee is above what reaches it (`fee_above_amount`) (`REQ-AUD-4`, router-api 3.0.0) |
+| `names-the-expected-drops` | It names each candidate the case expects, by the tuples it takes, with the expected drop reason: the policy case's path through an exchange with no price (`no_price`) and through a ramp whose fee is above what reaches it (`fee_above_amount`), and through a ramp that keeps all that enters short of the destination (`nothing_delivered`) (`REQ-AUD-4`, router-api 3.0.0) |
 | `replays-from-its-own-inputs` | Routing the record's own request, snapshot and bounds gives it again, byte for byte |
 | `objective-changes-the-choice` | The AC-2 pair, one snapshot under both objectives, choose different routes |
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
 rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
-by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price and a
-ramp whose fee is above what reaches it; and a tie.
+by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price, a
+ramp whose fee is above what reaches it and one that keeps all that enters; and a tie.
 
 The suite can't see a candidate a router left out; the cases' expected routes and expected drops catch that on its
 own inputs only. `DROP_REASONS` lists the drop reasons the suite knows, router-api 3.0.0's; `DropReason` is

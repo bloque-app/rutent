@@ -75,7 +75,8 @@ struct Shape {
     exchanges: bool,
     /// Prices past their validity, exclusions and ceilings.
     faults: bool,
-    /// Tuples no operation can state: some advertised with no price, some whose flat fee is above any amount.
+    /// Tuples no operation can state: some advertised with no price, some whose flat fee is above any amount; and
+    /// some whose fee takes all that enters, so nothing comes out.
     unstatable: bool,
 }
 
@@ -124,6 +125,9 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
             // Above any amount the generator reaches: 10^24 against at most 10^21 units.
             unstatable.insert(id.clone(), "fee_above_amount");
             fee("1000000000000000000000000", "0", "1")
+        } else if shape.unstatable && draw.one_in(6) {
+            // All that enters: statable, but nothing comes out.
+            fee("0", "1", "1")
         } else if shape.priced {
             let mut f = fee(
                 &draw.below(1000).to_string(),
@@ -1050,11 +1054,49 @@ fn same_end(end: &End, endpoint: &rutent_contracts::router_api::Endpoint) -> boo
     end.json() == serde_json::to_value(endpoint).unwrap()
 }
 
+/// Whether, from a path `taken` that ends at `at` with `hops` operations left, no path of the network's tuples can
+/// end in a candidate: none reaches the destination, and none takes a tuple no operation can state. The amounts don't
+/// matter here: a step the search walks always gets an operation, and whatever it delivers, it ends in a candidate
+/// at the destination, at a tuple it can't state, or where it delivers nothing; only a path that runs out of tuples
+/// or hops first ends in none.
+fn leads_nowhere(
+    network: &Network,
+    to: &End,
+    taken: &mut Vec<String>,
+    at: &End,
+    hops: usize,
+) -> bool {
+    if hops == 0 {
+        return true;
+    }
+    network.edges.iter().all(|(id, from, next)| {
+        if from != at || taken.contains(id) {
+            return true;
+        }
+        if next == to || network.unstatable.contains_key(id) {
+            return false;
+        }
+        taken.push(id.clone());
+        let nowhere = leads_nowhere(network, to, taken, next, hops - 1);
+        taken.pop();
+        nowhere
+    })
+}
+
+fn end_of(endpoint: &rutent_contracts::router_api::Endpoint, network: &Network) -> Option<End> {
+    network
+        .edges
+        .iter()
+        .flat_map(|(_, from, to)| [from, to])
+        .find(|e| same_end(e, endpoint))
+        .cloned()
+}
+
 // verifies: REQ-AUD-4, DEC-18
 #[test]
-fn every_candidate_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
+fn every_path_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
     use rutent_conformance::router::reason_name;
-    let mut named: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut named: BTreeMap<String, usize> = BTreeMap::new();
     for (seed, network, request, bounds) in generated(300, UNSTATABLE) {
         let mut draw = Draw(seed ^ 0xC10E);
         let shortlisted = routed(&request, &network.snapshot, &bounds);
@@ -1066,54 +1108,71 @@ fn every_candidate_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
         let hops = usize::from(bounds.max_hops.get());
         for record in &records {
             assert!(recompute(record).passes(), "seed {seed}");
-            // Every candidate is ranked (kept, or chosen) or dropped with a reason.
+            let Some(to) = end_of(&record.request.to, &network) else {
+                continue;
+            };
+            // Every candidate is ranked (kept, or chosen) or dropped with a reason, and a path through a tuple no
+            // operation can state is dropped for it.
             for candidate in &record.candidates {
                 let ranked = candidate.dropped.is_none()
                     && (record.chosen.is_none()
                         || record.chosen.as_ref() == Some(&candidate.candidate_id));
                 assert!(ranked || candidate.dropped.is_some(), "seed {seed}");
+                let path = common::tuples(candidate);
+                if let Some(reason) = network.unstatable.get(path.last().unwrap()) {
+                    assert_eq!(
+                        candidate.dropped.as_ref().map(reason_name).as_deref(),
+                        Some(*reason),
+                        "seed {seed}: {path:?}"
+                    );
+                }
+                if let Some(d) = &candidate.dropped {
+                    *named.entry(reason_name(d)).or_default() += 1;
+                }
             }
-            // A path through a tuple no operation can state ends there whatever comes before it, so the search
-            // reaches it from the origin, and from wherever the search goes on: past an operation that delivered
-            // something, within the hop limit. Each such path must be a candidate, dropped for that tuple.
-            let lists = |prefix: &[String], tuple: &str, reason: &str| {
-                record.candidates.iter().any(|c| {
-                    let path = common::tuples(c);
-                    path.len() == prefix.len() + 1
-                        && path[..prefix.len()] == *prefix
-                        && path[prefix.len()] == tuple
-                        && c.dropped.as_ref().map(reason_name).as_deref() == Some(reason)
+            // Where the search goes on, from the origin or past an operation that delivered something within the
+            // hop limit, every tuple leaving there is taken by a candidate, unless no path from it can end in one.
+            let paths: Vec<Vec<String>> = record.candidates.iter().map(common::tuples).collect();
+            let continued = |prefix: &[String], id: &str| {
+                paths.iter().any(|p| {
+                    p.len() > prefix.len() && p[..prefix.len()] == *prefix && p[prefix.len()] == id
                 })
             };
-            let mut ends: Vec<(Vec<String>, rutent_contracts::router_api::Endpoint)> =
-                vec![(Vec::new(), record.request.from.clone())];
+            let origin =
+                end_of(&record.request.from, &network).expect("the request starts at a tuple");
+            let mut ends: Vec<(Vec<String>, End)> = vec![(Vec::new(), origin)];
             for candidate in &record.candidates {
                 let path = common::tuples(candidate);
                 let operations = &candidate.parts[0].operations;
                 for k in 1..=path.len().min(hops - 1) {
                     if !operations[k - 1].amount_out.is_zero() {
-                        ends.push((path[..k].to_vec(), operations[k - 1].to.clone()));
+                        let at = end_of(&operations[k - 1].to, &network).expect("a tuple's end");
+                        ends.push((path[..k].to_vec(), at));
                     }
                 }
             }
-            for (prefix, end) in &ends {
-                for (id, from, _) in &network.edges {
-                    let Some(reason) = network.unstatable.get(id) else {
+            for (prefix, at) in &ends {
+                for (id, from, next) in &network.edges {
+                    if from != at || prefix.contains(id) || continued(prefix, id) {
                         continue;
-                    };
-                    if same_end(from, end) && !prefix.contains(id) {
-                        assert!(
-                            lists(prefix, id, reason),
-                            "seed {seed}: no candidate takes {id} after {prefix:?}, dropped as {reason}"
-                        );
-                        *named.entry(reason).or_default() += 1;
                     }
+                    let mut taken = prefix.clone();
+                    taken.push(id.clone());
+                    let nowhere = next != &to
+                        && !network.unstatable.contains_key(id)
+                        && leads_nowhere(&network, &to, &mut taken, next, hops - prefix.len() - 1);
+                    assert!(
+                        nowhere,
+                        "seed {seed}: the search reaches {id} after {prefix:?}, and no candidate takes it"
+                    );
                 }
             }
         }
     }
-    assert!(
-        named.get("no_price") > Some(&20) && named.get("fee_above_amount") > Some(&20),
-        "too few unstatable paths reached: {named:?}"
-    );
+    for reason in ["no_price", "fee_above_amount", "nothing_delivered"] {
+        assert!(
+            named.get(reason).is_some_and(|&n| n > 10),
+            "too few {reason} drops: {named:?}"
+        );
+    }
 }

@@ -575,7 +575,7 @@ const FAST_ROUTE: [&str; 4] = ["f-w", "f-ex-fast", "f-ramp-y", "f-dep"];
 
 /// The policy network, a shortlist round over advertised figures: an excluded exchange, an exchange whose USDC
 /// output passes a ceiling at it, a ramp whose band stops short, a deposit that keeps everything, a floor, an
-/// exchange with no price and a ramp whose fee is above what reaches it.
+/// exchange with no price, a ramp whose fee is above what reaches it and one that keeps all that enters.
 fn policy_case() -> Case {
     let mut s = Snapshot::new("snap-policy", SHORTLIST_AT, 3540);
     withdrawal(&mut s);
@@ -667,6 +667,14 @@ fn policy_case() -> Case {
         WIDE,
         json!({ "fee": fee("300000000", "0", "1"), "settlement_seconds": 60 }),
     );
+    // A ramp that keeps all that enters: on the way to the deposit, nothing arrives, so the path ends there.
+    ramp(
+        &mut s,
+        "f-ramp-all",
+        ("ramp-all", "ramp-all"),
+        WIDE,
+        json!({ "fee": fee("0", "1", "1"), "settlement_seconds": 60 }),
+    );
     // The capped exchange would produce about 278.88 USDC; its ceiling is 200 USDC in flight there.
     let ceilings =
         json!([{ "provider": "exchange-capped", "asset": unit("USDC", 6), "amount": "200000000" }]);
@@ -686,6 +694,7 @@ fn policy_case() -> Case {
         drops: vec![
             (vec!["f-w", "f-ex-unpriced"], "no_price"),
             (vec!["f-w", "f-ex-fast", "f-ramp-dear"], "fee_above_amount"),
+            (vec!["f-w", "f-ex-fast", "f-ramp-all"], "nothing_delivered"),
         ],
     }
 }

@@ -576,6 +576,18 @@ pub enum DropReason {
         /// The operation within the part, by index: the part's last.
         operation: u32,
     },
+    /// An operation short of the destination delivers nothing, so nothing after it can be stated (`REQ-QTE-13`,
+    /// `REQ-AUD-4`; ruled by the owner, 2026-11-09, item `aud4-unstateable-candidates`): its fee takes all that
+    /// enters, or its output rounds to `0`. As with [`DropReason::BeyondLevels`], the part is listed only up to and
+    /// including that operation, its last, which arrives with `0` and doesn't end at the destination; at the
+    /// destination such a part is `no_positive_outcome`. Its terms are stated as its figures give them, and the
+    /// router suite recomputes them like any other's.
+    NothingDelivered {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last.
+        operation: u32,
+    },
     /// Its value in flight, its parts counted together, would pass a ceiling (`REQ-ORD-8`).
     OverCeiling {
         /// Which kind of ceiling.

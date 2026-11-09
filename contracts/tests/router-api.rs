@@ -26,7 +26,7 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 108] = [
+const RUST_RULES: [(&str, &str); 111] = [
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -438,6 +438,18 @@ const RUST_RULES: [(&str, &str); 108] = [
     (
         "decision-record-fee-above-amount-on-an-operation-a-usable-answer-covers",
         "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
+    ),
+    (
+        "decision-record-nothing-delivered-with-something-out",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-naming-an-operation-before-the-last",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-at-the-destination",
+        "a nothing-delivered reason names an operation short of the destination",
     ),
     (
         "candidate-fee-above-amount-naming-no-operation",

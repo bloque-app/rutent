@@ -10,7 +10,8 @@
 //! A path that meets an operation whose net is beyond its price's levels is recorded up to that operation, which
 //! arrives with nothing, and dropped as `beyond_levels`; it can't go further. So is a path through a tuple with no
 //! price (`no_price`, stating a fee of 0) or an operation whose price's fee is above what reaches it
-//! (`fee_above_amount`, stating its amount in as its fee), as router-api 3.0.0 has them. It drops any other candidate for
+//! (`fee_above_amount`, stating its amount in as its fee), or one that delivers nothing short of the destination
+//! (`nothing_delivered`), as router-api 3.0.0 has them. It drops any other candidate for
 //! the first of these that holds: excluded by policy, a void statement, a stale figure,
 //! a refused dry run, an ineligible judgement, outside a band, over a ceiling, a part arriving with nothing,
 //! below the floor, a profitable rate cycle, unconfirmed (choice round). Among the rest, the choice round chooses
@@ -52,7 +53,7 @@ pub const OUTRANKS_UNCONFIRMED: u8 = 7;
 /// Rounds a fee's proportion down, so a route is evaluated as up to one unit cheaper per operation.
 pub const FEE_ROUNDS_DOWN: u8 = 8;
 /// Leaves out the paths no operation can state, as router-api 2.x had routers do: through a tuple with no price,
-/// or an operation whose fee is above what reaches it.
+/// an operation whose fee is above what reaches it, or one that delivers nothing short of the destination.
 pub const OMITS_UNSTATABLE: u8 = 9;
 
 /// The reference double, with one flaw or none.
@@ -213,6 +214,8 @@ enum Cut {
     NoPrice,
     /// Its price's fee is above what reaches it.
     FeeAboveAmount,
+    /// It delivers nothing, short of the destination.
+    NothingDelivered,
 }
 
 /// One operation as evaluated, whether a provider's answer confirmed its terms, and whether it can't be stated.
@@ -435,8 +438,14 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             steps.push(step);
             let last = &steps[steps.len() - 1];
             let cut = last.unstatable.or_else(|| {
-                (hop.to != self.request.to && self.beyond_levels(hop, last))
-                    .then_some(Cut::BeyondLevels)
+                if hop.to == self.request.to {
+                    None
+                } else if self.beyond_levels(hop, last) {
+                    Some(Cut::BeyondLevels)
+                } else {
+                    (out == BigUint::ZERO && FLAW != OMITS_UNSTATABLE)
+                        .then_some(Cut::NothingDelivered)
+                }
             });
             if hop.to == self.request.to || cut.is_some() {
                 found.push(Found {
@@ -645,6 +654,12 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             }
             Some(Cut::FeeAboveAmount) => {
                 return Some(DropReason::FeeAboveAmount {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::NothingDelivered) => {
+                return Some(DropReason::NothingDelivered {
                     part: 0,
                     operation: last,
                 });

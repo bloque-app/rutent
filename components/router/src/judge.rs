@@ -1,8 +1,9 @@
 //! Why a path is dropped before ranking (`REQ-AUD-4`): the first of these that holds, in this order.
 //!
 //! First, a path cut short at an operation that can't be followed: its net beyond its price's levels, its tuple
-//! with no price, or its price's fee above what reaches it (router-api 3.0.0). Such a path's last part needn't
-//! reach the destination, which only these three reasons allow, so they come before every other. Then excluded by
+//! with no price, its price's fee above what reaches it, or nothing delivered short of the destination
+//! (router-api 3.0.0). Such a path's last part needn't reach the destination, which only these four reasons
+//! allow, so they come before every other. Then excluded by
 //! policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
 //! judgement of no; an operation outside its band or its price's levels, judged on what enters it after the fees
 //! before it, in its own unit (`REQ-QTE-12`); over a ceiling, counting what its operations produce and the
@@ -45,6 +46,12 @@ impl Search<'_> {
             }
             Some(Cut::FeeAboveAmount) => {
                 return Some(DropReason::FeeAboveAmount {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::NothingDelivered) => {
+                return Some(DropReason::NothingDelivered {
                     part: 0,
                     operation: last,
                 });

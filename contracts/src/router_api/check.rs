@@ -157,7 +157,7 @@ impl Part {
 
 impl Candidate {
     /// Checks every part, that a drop reason's indices name an operation of the candidate, that a `beyond_levels`,
-    /// `no_price` or `fee_above_amount` reason names its part's last operation, which arrives with nothing (stating
+    /// `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives with nothing (stating
     /// a fee of `0` for `no_price`, its amount in for `fee_above_amount`), and that a candidate isn't outranked by
     /// itself.
     pub fn check(&self) -> Result<(), Violation> {
@@ -190,6 +190,20 @@ impl Candidate {
                 {
                     return Err(Violation(
                         "a beyond-levels reason names its part's last operation, which arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::NothingDelivered { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation of its candidate",
+                    ));
+                };
+                if *operation as usize + 1 != p.operations.len()
+                    || !p.operations.last().amount_out.is_zero()
+                {
+                    return Err(Violation(
+                        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
                     ));
                 }
             }
@@ -684,7 +698,8 @@ impl DecisionRecord {
     ///   levels and which arrives with nothing; that part alone needn't reach the destination. So do a `no_price`
     ///   and a `fee_above_amount` candidate's (3.0.0): a `no_price` operation cites its tuple and no price, and the
     ///   snapshot holds none for that tuple; a `fee_above_amount` operation cites no usable accepted answer at its
-    ///   amount in. That its price's fee is above its amount in is the router suite's.
+    ///   amount in. That its price's fee is above its amount in is the router suite's. So does a
+    ///   `nothing_delivered` candidate's, whose named operation ends short of the destination.
     /// - Every operation but a `no_price` one cites one price.
     /// - Every operation cites one tuple figure, and every other figure it cites names that tuple.
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
@@ -1076,6 +1091,7 @@ impl DecisionRecord {
                     DropReason::BeyondLevels { part, .. }
                     | DropReason::NoPrice { part, .. }
                     | DropReason::FeeAboveAmount { part, .. }
+                    | DropReason::NothingDelivered { part, .. }
                 ) if part as usize == p
             );
             if last.to != request.to && !cut_short {
@@ -1261,6 +1277,15 @@ impl DecisionRecord {
                 Ok(())
             }
             DropReason::NoPrice { .. } => Ok(()),
+            DropReason::NothingDelivered { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                if named.to == request.to {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation short of the destination",
+                    ));
+                }
+                Ok(())
+            }
             DropReason::FeeAboveAmount { part, operation } => {
                 let named = &candidate.parts[*part as usize].operations[*operation as usize];
                 let tuple = self.tuple_of(named)?;
