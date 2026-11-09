@@ -25,7 +25,21 @@
 //! depend on the snapshot's order. Each is dropped for the first reason that holds (see the contract's
 //! [`DropReason`]); the rest are ranked by the request's [`Objective`], ties going to the lowest `candidate_id`.
 //! A shortlist round keeps them all, its shortlist; a choice round chooses the first and drops the others as
-//! outranked by it. Every candidate is one part (`DEC-8`).
+//! outranked by it. Every candidate is one part (`DEC-8`), whatever the bounds' `max_parts` allows.
+//!
+//! A candidate is a path whose every operation the contract can state. A tuple with no price, or an operation
+//! whose fee would be above what enters it, is no operation (`Operation` cites one price, and its fee is at most
+//! its amount in), so no candidate takes it, and router-api has no drop reason for either. Both stay in the
+//! record's snapshot verbatim, so the choice still recomputes from the record alone (`REQ-AUD-4`).
+//!
+//! # The objective
+//!
+//! The request names it (`REQ-QTE-11`). `lowest_total_cost`, which whoever builds the request writes when the
+//! customer chose none, ranks by the most value at the destination; `fastest_settlement` by the smallest declared
+//! settlement time. An objective the contract adds later is ranked as lowest total cost until this router learns
+//! it. Only the ranking reads the objective: a changed objective may change the choice and which candidates are
+//! outranked, never another drop. The choice reads the request, the snapshot and the bounds alone; the operator's
+//! own fee is taken afterwards, at the destination ([`quote`]), and doesn't enter it.
 
 mod judge;
 mod network;
