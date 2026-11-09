@@ -141,6 +141,9 @@ pub fn reconcile(reading: &HoldingReading) -> Result<Reconciliation, HoldingErro
     let mut seen = std::collections::BTreeSet::new();
     let mut sum: u128 = 0;
     for entry in &reading.held {
+        if entry.amount == 0 {
+            return Err(HoldingError::ZeroAmount);
+        }
         if !seen.insert(entry.order.as_str()) {
             return Err(HoldingError::DuplicateOrder(entry.order.clone()));
         }

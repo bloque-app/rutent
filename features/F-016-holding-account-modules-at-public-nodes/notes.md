@@ -23,5 +23,16 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   An order released in full leaves no entry.
 - **Property tests without a property-test crate.** As in `F-012`: a seeded xorshift generator, 400 cases, a failure
   names its seed. The generator is copied into the test file so `holding/` stays clear of `tests/common`.
+- **What each property covers.** The first INV-1 property is partly circular: `OrderLedger` computes its balance from
+  its attribution, so it proves the ledger's bookkeeping (holds, releases, refusals) against an independent model,
+  not the check. The second property and `account_whose_own_balance_drifts_from_its_attribution_is_flagged` cover
+  the check itself: an account whose own balance differs from its attribution is flagged Short or Over with the right
+  size, and `Matches` is drawn about a third of the time and asserted to be hit.
+- **Zero entries and asset.** `reconcile` refuses a zero-amount entry, as `hold` and `release` do. It does not check
+  `asset`: the reading carries one asset for the whole account, and `asset` is checked when `T-016-02` binds the
+  contract types.
 - **Test-first.** The tests and the implementation were written in one pass, so the red run was not observed
   separately; the tests were written from the interface's contract before the code was checked against them.
+- **Review round.** The tests added in answer to review were written first. The zero-entry test was seen failing
+  before the code changed. The drifting-account test and the `Matches` coverage passed at once, since they exercise
+  behaviour already present; they were added to pin it, not to drive new code.

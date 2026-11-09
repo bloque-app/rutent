@@ -73,6 +73,7 @@ fn holding_account_balance_equals_the_sum_held_for_its_orders() {
 // verifies: INV-1, REQ-AUD-15
 #[test]
 fn any_difference_between_balance_and_sum_is_raised_with_its_size_and_direction() {
+    let mut matched = 0;
     for seed in 0..CASES {
         let mut rng = Rng::new(seed);
         let held: Vec<HeldForOrder> = (0..rng.below(6))
@@ -82,7 +83,11 @@ fn any_difference_between_balance_and_sum_is_raised_with_its_size_and_direction(
             })
             .collect();
         let sum: u128 = held.iter().map(|h| h.amount).sum();
-        let balance = u128::from(rng.below(6_000));
+        let balance = if rng.below(3) == 0 {
+            sum
+        } else {
+            u128::from(rng.below(6_000))
+        };
         let reading = HoldingReading {
             node: "n".into(),
             asset: "USDC".into(),
@@ -91,7 +96,10 @@ fn any_difference_between_balance_and_sum_is_raised_with_its_size_and_direction(
             held,
         };
         match reconcile(&reading).unwrap() {
-            Reconciliation::Matches => assert_eq!(balance, sum, "seed {seed}"),
+            Reconciliation::Matches => {
+                assert_eq!(balance, sum, "seed {seed}");
+                matched += 1;
+            }
             Reconciliation::Differs(Difference::Short { by, .. }) => {
                 assert!(balance < sum && by == sum - balance, "seed {seed}");
             }
@@ -100,4 +108,5 @@ fn any_difference_between_balance_and_sum_is_raised_with_its_size_and_direction(
             }
         }
     }
+    assert!(matched > 50, "Matches was hit only {matched} times");
 }

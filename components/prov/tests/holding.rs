@@ -144,3 +144,47 @@ fn holding_account_can_be_read_through_a_trait_object() {
     let account: &dyn HoldingAccount = &ledger;
     assert_eq!(account.reading().unwrap().balance, 7);
 }
+
+/// An account whose own balance has drifted from what it attributes to orders.
+struct Drifting {
+    balance: u128,
+}
+
+impl HoldingAccount for Drifting {
+    fn reading(&self) -> Result<HoldingReading, HoldingError> {
+        Ok(HoldingReading {
+            node: "node-a".into(),
+            asset: "USDC".into(),
+            balance: self.balance,
+            source: BalanceSource::Module,
+            held: vec![HeldForOrder {
+                order: "o-1".into(),
+                amount: 100,
+            }],
+        })
+    }
+}
+
+// verifies: INV-1, REQ-AUD-15
+#[test]
+fn account_whose_own_balance_drifts_from_its_attribution_is_flagged() {
+    let short = reconcile(&Drifting { balance: 90 }.reading().unwrap());
+    assert!(matches!(
+        short,
+        Ok(Reconciliation::Differs(Difference::Short { by: 10, .. }))
+    ));
+    let over = reconcile(&Drifting { balance: 130 }.reading().unwrap());
+    assert!(matches!(
+        over,
+        Ok(Reconciliation::Differs(Difference::Over { by: 30, .. }))
+    ));
+    let fine = reconcile(&Drifting { balance: 100 }.reading().unwrap());
+    assert_eq!(fine, Ok(Reconciliation::Matches));
+}
+
+// verifies: REQ-AUD-15
+#[test]
+fn reading_with_a_zero_amount_entry_is_refused() {
+    let r = reading(0, &[("o-1", 0)], BalanceSource::Module);
+    assert_eq!(reconcile(&r), Err(HoldingError::ZeroAmount));
+}
