@@ -1,5 +1,25 @@
 # router-api changelog
 
+## 3.0.0
+- Breaking: three drop reasons for the candidates 2.x could not state, so a decision record names every path the
+  search reaches that ends anywhere, and why it was dropped (`REQ-AUD-4`; ruled by the owner, 2026-11-09, item
+  `aud4-unstateable-candidates`). `no_price {part, operation}`: a path through a tuple the snapshot holds no price
+  for. `fee_above_amount {part, operation}`: an operation whose fee, by its price's formula and counted at its
+  maximum where one is given, is above the amount that reaches it. `nothing_delivered {part, operation}`: an
+  operation short of the destination that delivers nothing, its fee taking all that enters or its output rounding
+  to 0. Each is shaped as `beyond_levels`: the part is listed up to and including the named operation, its last,
+  which arrives with 0 and needn't reach the destination. A `no_price` operation states a fee of 0 and cites its
+  tuple and no price, and the snapshot holds no price for that tuple; every other operation still cites one. A
+  `fee_above_amount` operation states its amount in as its fee and cites no usable accepted answer at its amount
+  in; that the formula's fee is above its amount in is the router suite's to recompute. A `nothing_delivered`
+  operation doesn't end at the destination, where such a part is `no_positive_outcome`, and its terms are
+  recomputed as any operation's. Before, a router left such a path out of the record, which then couldn't say why
+  a tuple wasn't used. A new Rust variant breaks an exhaustive match and the schema's `reason` enum grows, so this
+  is a major. `DropReason` is `#[non_exhaustive]` from here, as `Objective` is: that spares Rust callers, whose
+  matches need a wildcard arm, but the contract is language-neutral, and a reader on an older schema rejects a
+  reason it doesn't know, so a new wire value is still a major under `DEC-4`. Two valid fixtures carry the
+  three reasons; eleven invalid ones break their rules. (DEC-4, DEC-8, DEC-20, T-011-05)
+
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/router_api`) is `no_std` with `alloc`:
   it uses `core` and `alloc` paths, and the crate's

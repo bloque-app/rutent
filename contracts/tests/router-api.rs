@@ -26,7 +26,7 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 101] = [
+const RUST_RULES: [(&str, &str); 111] = [
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -416,6 +416,46 @@ const RUST_RULES: [(&str, &str); 101] = [
         "a beyond-levels reason names an operation whose net is above its price's last level",
     ),
     (
+        "decision-record-no-price-for-a-tuple-the-snapshot-prices",
+        "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+    ),
+    (
+        "decision-record-no-price-naming-an-operation-before-the-last",
+        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+    ),
+    (
+        "decision-record-no-price-stating-a-fee",
+        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-stating-a-lower-fee",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-with-something-out",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-on-an-operation-a-usable-answer-covers",
+        "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
+    ),
+    (
+        "decision-record-nothing-delivered-with-something-out",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-naming-an-operation-before-the-last",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-at-the-destination",
+        "a nothing-delivered reason names an operation short of the destination",
+    ),
+    (
+        "candidate-fee-above-amount-naming-no-operation",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
         "decision-record-confirmed-by-an-answer-made-before-the-shortlist",
         "a confirming answer is made at or after the shortlist round it refines",
     ),
@@ -435,7 +475,7 @@ const RUST_RULES: [(&str, &str); 101] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 61] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 62] = [
     (
         "operation-citing-a-figure-twice",
         &[("/figures", "uniqueItems")],
@@ -445,6 +485,10 @@ const SCHEMA_RULES: [(&str, &[(&str, &str)]); 61] = [
         &[("/dropped/reason", "enum")],
     ),
     ("candidate-dropped-null", &[("/dropped", "type")]),
+    (
+        "candidate-no-price-naming-no-operation",
+        &[("/dropped", "required")],
+    ),
     (
         "candidate-over-a-ceiling-of-no-scope",
         &[("/dropped", "required")],

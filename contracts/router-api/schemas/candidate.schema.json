@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:candidate",
   "title": "Route candidate",
-  "description": "One candidate the router considered: a split of one or more parts, each a route, an ordered list of typed operations (REQ-ORD-37, REQ-QTE-16), and why it was dropped unless it was kept (REQ-AUD-4). A single route is a split of one part (DEC-8). That each operation starts where the one before it ended, with what it delivered, that an outside-band, beyond-levels or unconfirmed reason names an operation of the candidate, and that a beyond-levels reason names its part's last operation, which arrives with 0, are checked by the contract's Rust types.",
+  "description": "One candidate the router considered: a split of one or more parts, each a route, an ordered list of typed operations (REQ-ORD-37, REQ-QTE-16), and why it was dropped unless it was kept (REQ-AUD-4). A single route is a split of one part (DEC-8). That each operation starts where the one before it ended, with what it delivered, that an outside-band, beyond-levels, no-price, fee-above-amount, nothing-delivered or unconfirmed reason names an operation of the candidate, and that a beyond-levels, no-price, fee-above-amount or nothing-delivered reason names its part's last operation, which arrives with 0, are checked by the contract's Rust types.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -67,6 +67,9 @@
             "unconfirmed",
             "outside_band",
             "beyond_levels",
+            "no_price",
+            "fee_above_amount",
+            "nothing_delivered",
             "excluded_by_policy",
             "below_floor",
             "no_positive_outcome",
@@ -358,6 +361,105 @@
             "properties": {
               "reason": {
                 "const": "beyond_levels"
+              },
+              "part": {
+                "$ref": "#/$defs/index"
+              },
+              "operation": {
+                "$ref": "#/$defs/index"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "no_price"
+              }
+            }
+          },
+          "then": {
+            "description": "An operation runs through a tuple the snapshot holds no price for, so its terms can't be stated (REQ-AUD-4): the part is listed only up to and including that operation, which states a fee of 0 and arrives with 0, and cites its tuple and no price. That the operation is its part's last, its fee and output 0, and that the snapshot holds no price for its tuple are checked by the contract's Rust types.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reason",
+              "part",
+              "operation"
+            ],
+            "properties": {
+              "reason": {
+                "const": "no_price"
+              },
+              "part": {
+                "$ref": "#/$defs/index"
+              },
+              "operation": {
+                "$ref": "#/$defs/index"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "fee_above_amount"
+              }
+            }
+          },
+          "then": {
+            "description": "An operation's fee, by its price's formula and counted at its maximum where one is given, is above the amount that reaches it, so it can't be stated (REQ-QTE-5, REQ-AUD-4): the part is listed only up to and including that operation, which states its amount in as its fee and arrives with 0. That the operation is its part's last, its fee and output, and that it cites no usable accepted answer at its amount in are checked by the contract's Rust types; that the formula's fee is above its amount in, by the router suite.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reason",
+              "part",
+              "operation"
+            ],
+            "properties": {
+              "reason": {
+                "const": "fee_above_amount"
+              },
+              "part": {
+                "$ref": "#/$defs/index"
+              },
+              "operation": {
+                "$ref": "#/$defs/index"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "nothing_delivered"
+              }
+            }
+          },
+          "then": {
+            "description": "An operation short of the destination delivers nothing, so nothing after it can be stated (REQ-QTE-13, REQ-AUD-4): the part is listed only up to and including that operation, which arrives with 0. That the operation is its part's last, arrives with 0 and doesn't end at the destination are checked by the contract's Rust types; its terms, by the router suite, as any operation's.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reason",
+              "part",
+              "operation"
+            ],
+            "properties": {
+              "reason": {
+                "const": "nothing_delivered"
               },
               "part": {
                 "$ref": "#/$defs/index"
