@@ -28,7 +28,7 @@ fn ten_to(power: u32) -> BigUint {
 }
 
 /// A rate as `digits / 10^places`, exactly: `0.00025` is `25 / 10^5`.
-fn fraction(rate: &Decimal) -> (BigUint, u32) {
+pub(crate) fn fraction(rate: &Decimal) -> (BigUint, u32) {
     let text = rate.as_str();
     let (integer, decimals) = text.split_once('.').unwrap_or((text, ""));
     let digits = whole(&format!("{integer}{decimals}")).unwrap_or_default();

@@ -71,3 +71,158 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   appear as candidates, because the router API has no drop reason for them. `REQ-AUD-4` ("every candidate
   considered") then holds only for operations the contract can state. Open for `T-011-04` (the decision record) to
   settle, either by a drop reason under a `DEC-4` bump or by recording this reading as the contract's.
+
+## T-011-03
+
+- **Where the rules live.** The quote rules are pure functions in `components/router/src/quote.rs`, public as
+  `rutent_router::quote`. None reads a clock, a provider or anything but its arguments; a time enters as a
+  `Timestamp` the caller passes. `route` itself is unchanged: the router API's record has no place for an
+  operator's fee, a firmness, a commitment or a hold, so these are checks Core runs on a record, not drops.
+- **Inputs the contract doesn't carry, an item to raise.** The router API holds no operator's fee formula
+  (`REQ-QTE-2`), no per-tuple slippage the operator sets (`REQ-QTE-9`), no history of a provider's stated terms
+  with their times (`REQ-QTE-6`), no actual settlement times (`REQ-QTE-3`) and no held quote (`REQ-QTE-15`). The
+  module defines each as its own argument type (`FeeFormula` for the operator, `SlippageLimit`, `StatedTerms`,
+  `Timestamp` pairs, `HeldQuote`) rather than changing `contracts/`, a `DEC-20` path needing a `DEC-4` bump. Whether
+  `PolicyBounds` should carry the operator's fee and the slippage limits, so a decision record names them
+  (`REQ-AUD-4`), is open. So is how Core reaches these types: `DEC-2` has Core reach the libraries only through
+  their public contracts, and these types are the router crate's, not `contracts/`'s.
+- **A quote's fields (`REQ-QTE-1`).** The contract's types already require every element, so `quote_fields`
+  refuses what the types can't: an amount in that isn't a positive whole number, an amount out or fee that isn't a
+  whole number, a fee with no asset, a `valid_until` that isn't a timestamp or a figure with no validity, an empty
+  `voided_by`, a conversion's rate that isn't a decimal, a figure from no provider, and a statement made by another
+  party than the figure's provider. "A forged one is detected" needs the signature verified against the provider's
+  keys, which the snapshot doesn't carry: that stays Core's precondition (router-api README, "Unchecked by
+  either"), and no signature crate was added.
+- **The price shown (`REQ-QTE-2`), read as composition.** Per the owner's ruling `spec-route-price-composition`,
+  the providers' terms compose: what they deliver is the last operation's `amount_out`, summed over parts. The
+  operator's fee is taken from that, at the destination, in its unit, by its formula: `flat + ceil(a × n / d)`,
+  capped by its maximum where it gives one and never raised to it. (Route evaluation counts a provider's fee at its
+  maximum, since the charge may come to it; a fee the operator shows is its own, known before execution, so the
+  maximum only caps it. Changed after review.) It is taken there, not from the origin's amount, because taking it first
+  would change every segment's amount and so void each quote asked at that amount (`amount_changes`). The only
+  difference between the providers' terms and what is shown is then the operator's fee; `check_shown` refuses a
+  shown amount with any other difference.
+- **Quote and price (`REQ-QTE-7`).** `quoted_price` labels what it shows a quote. `executed_price` labels it the
+  price, and only once every operation has an executed result; until then it is refused and what is shown stays
+  the quote. The executed amounts are taken as given, from each provider's result.
+- **Three calendar days (`REQ-QTE-9`, `REQ-QTE-10`).** A provider declares settlement in seconds from segment
+  start, and the start's date isn't known when the route is quoted, so three calendar days are read as
+  `3 × 86 400 = 259 200` seconds, inclusive: 259 200 is within three days, 259 201 is over. A segment's declared
+  time is the slowest usable fresh quote it cites, or else its price, as `fastest_settlement` counts it
+  (router-api `Objective`); a dry run's time isn't counted, as the contract counts only fresh quotes.
+- **An unknown settlement time fails closed.** An operation that cites neither a usable fresh quote nor a price,
+  which no record the contract accepts holds, has its time counted as `u64::MAX`, past any declared one (at most
+  2^53 − 1). `firmness` takes it as over three days, so the route has no firm rate; `commitments` takes it as
+  within them, so the segment is bound, never freed (after review).
+- **Slippage within three days (`REQ-QTE-9`).** Within three days, an exchange's rate may move against the
+  customer by at most the tighter of its quote's own regime (firm is 0, bounded is its bound) and the operator's
+  limit for the tuple. A floating regime, or no quote, leaves the operator's limit. Within three days, an exchange
+  on a tuple with no operator limit is named (`NoSlippageLimit`), not passed. A reserve or ramp sets no rate, so
+  only its fees are committed. A move in the customer's favour is always within. Rates compare exactly, by
+  cross-multiplication.
+- **No firm rate (`REQ-QTE-10`, `AC-13`).** A route with any segment over three days has no firm rate.
+  `firmness` names each such segment by part, operation and tuple, and `may_start` refuses it until the customer
+  has accepted. Recording the acceptance is Core's (`REQ-ORD-10`).
+- **Binding from segment start (`REQ-QTE-6`).** The terms bound are the last stated at or before the segment
+  started, ties going to the one listed last; before the start, everything is a quote. Core keeps the history of a
+  tuple's stated terms with their times; a snapshot's price figure states only its age at `taken_at`.
+- **Held quotes (`REQ-QTE-15`).** A hold is a choice round's record that chose a candidate, with a validity at or
+  after the record's snapshot. It is usable up to and at its validity, refused after it, and always labelled a
+  quote. It binds no provider, whose terms bind only from segment start, so a hold that lapses or whose quotes
+  expire has no effect beyond itself. Using a hold doesn't re-check its quotes' own validity; Core routes again
+  when it starts the route.
+- **Formula against charge (`REQ-QTE-5`, `AC-14`).** `formula_fee` computes `flat + ceil(a × n / d)`, its maximum
+  aside, so anyone with the inputs can compute the fee before use. `check_charge` flags a charge above the maximum
+  where one is given, the charge being known only after execution, and else above the formula's fee. A charge
+  below either is within. The search's own fee (`price::fee`) is unchanged: it counts the maximum, which is right
+  for evaluating a route but not for checking a charge.
+- **`quote_voided` is not here.** The `T-011-01` notes left `quote_voided` open beside these rules. It is a drop
+  reason in `route`, so it belongs with the search and the shortlist, which `T-011-02` is changing now. This task
+  doesn't touch it.
+- **Property tests (`DEC-18`), in `tests/quote.rs`, with no new dependency.** They use the same fixed-seed
+  splitmix64 as `T-011-01`. They check that a charge at its bound is never flagged and one unit more always is;
+  that a route is firm exactly when no segment is over three days, naming each that is; that no terms stated after
+  a segment starts ever bind it; that what is shown differs from the providers' terms by the operator's fee alone;
+  that a hold is refused exactly past its validity; and that a rate at its committed slippage is within while one
+  just past it is not.
+
+## T-011-02
+
+- **What was already there.** `T-011-01` built the choice round's drops: a refused dry run (`dry_run_refused`), a
+  path arriving with nothing (`no_positive_outcome`) and, in a choice round, an operation no answer confirmed
+  (`unconfirmed`). This task adds the questions between the two rounds, in the module `shortlist`, and its named
+  tests on the existing drops.
+- **Asked only of the shortlist (`REQ-CAT-5`), and pure.** The router calls no provider. `shortlist::asks` reads a
+  shortlist round's record alone and gives, by provider, one question for each operation of a kept candidate: the
+  fresh quote for a route or exchange, the reserve's dry run for a withdrawal or deposit, at the amount that reaches
+  it, each asked once. A provider on dropped candidates only, or on none, is asked nothing. Core puts the questions
+  and records the answers in the choice round's snapshot; `Asks::admits` says which figures may enter it, so an
+  answer nobody asked for stays out. The choice round is then the same pure function of its inputs.
+- **Only what the step needs.** A question names its tuple, the operation's kind and ends, and the amount entering
+  it. It names no candidate, no request and no other provider's tuple.
+- **A rival seen through amounts, a gap (`REQ-CAT-5`).** That holds for one question, not for the set a provider
+  receives. Questions are deduplicated on tuple and amount, so a later tuple reached through two kept earlier paths
+  gets two questions at two amounts: with reserves R1 or R2 before a ramp B, B is asked at both, learns that an
+  alternative before it was considered, and reads the difference of their fees from the gap. Asking only the best
+  path's amount would leave the alternatives unconfirmed and lose the fallback `AC-3` needs, so I left it. Delivering
+  the questions so they can't be linked is Core's (`F-020`), or this is accepted residual risk; raised as an item for
+  the owner.
+- **Eligibility, a gap.** No advertised tuple in the snapshot names the class or the verifier its provider's rules
+  need. So a question names only the tuple eligibility is checked for (`REQ-CPL-6`); which judgement to seek, of
+  which verifier, for which party, is the catalogue's grants (`F-012`), and Core's to put. `Asks::admits` lets in a
+  judgement for an asked tuple whatever its verifier.
+- **A refused dry run (`AC-3`, `REQ-CAT-14`).** Every kept candidate's providers are asked together, so another
+  provider serving the same ends already has its answer when one refuses, and the choice round uses it with no
+  second round. The test makes the refusing reserve the cheaper one, so its drop is what lets the other be chosen.
+- **No positive arrival (`REQ-QTE-13`).** A shortlist round that keeps nothing is refused before anyone is asked:
+  `asks` returns `Refusal::NoRoute`, and the choice round over the same figures chooses nothing. Where the main path
+  arrives with nothing and an alternative with something, only the alternative's provider is asked, and it is
+  chosen. `NoRoute` also covers a shortlist emptied for other reasons, such as the bounds, since none of them leaves
+  a path to offer.
+- **Asks are at the shortlist's amounts, a reading.** A question asks at the amount the shortlist round evaluated
+  from advertised prices. Where an earlier operation's fresh quote then differs from its price, a later operation's
+  amount shifts, the answer it got no longer covers it, and it is `unconfirmed`. Asking again at the new amount is
+  Core's (`F-020`): the provider is still on the shortlist. This task doesn't add it.
+- **Seeing the tests fail.** The questions' tests failed first to compile, with no `shortlist` module. The
+  refusal and no-positive-arrival tests pass on `T-011-01`'s code, so I disabled the two drops in `judge.rs` for one
+  run and saw them fail: the refusal test on its drop reason, the no-positive-arrival test on the contract refusing
+  the record. Then I restored `judge.rs` unchanged.
+- **Property tests (`DEC-18`).** Over the generated networks, the asked providers are exactly those of kept
+  operations, each asked only about its own tuples, and the questions don't change when the snapshot is reversed.
+  In a choice round built from the questions' answers, half of them refused at random, no refused option is chosen,
+  the choice always arrives with something, a shortlisted route whose every answer accepted always leaves a choice,
+  and an answer from a provider off the shortlist is never admitted. The choice-round property runs without
+  exchanges, since its answers carry no rate or slippage; its conversion branch is unused there. These are appended
+  to `tests/properties.rs` to reuse its generator; `tests/common/` is left as it was.
+- **Seeing the properties fail.** Each was run once against a mutated `asks`, then `shortlist.rs` was restored. Asking
+  every candidate's operations, not only the kept ones', trips the first property (seed 9). Asking only each kept
+  candidate's first operation trips the second (seed 61: a confirmed shortlisted route is not chosen).
+
+## Review of T-011-02 (fresh reviewer, 2026-11-09)
+
+- **One amount per tuple, the default applied for item `cat5-single-amount-asks`.** The reviewer confirmed the gap
+  above, so it is closed on the safe default, which the owner can overrule on the form. Each provider is asked
+  about each of its tuples once, at one amount. Where kept paths reach a tuple at different amounts, the question
+  is at the amount on the kept candidate ranked first: by the request's objective, as the choice round ranks, then
+  by `candidate_id`. For fastest settlement, the shortlist round holds no fresh quote, so each operation's seconds
+  are its price's. The other paths' operations at that tuple stay `unconfirmed` in the choice round until Core asks
+  again at their amounts (`F-020`). This trades away the fallback through those paths in one choice round. `AC-3`'s
+  fallback to another provider of the same tuple still holds, since that provider is asked about its own tuple.
+  Keeping questions unlinkable across calls, with no shared session, transaction or identity between them, is
+  `F-020`'s. The test `provider_reached_at_two_amounts_is_asked_at_one_only` failed first, with two questions to
+  the ramp. The first property now checks one question per kept tuple. Against the old per-amount keying it fails
+  at seed 60.
+- **A refused fresh quote, read differently from the review.** The review asked to admit a refused `FreshQuote` and
+  read it as a refusal. The contract refuses such a figure in any snapshot (`CatalogueSnapshot::check`: "a fresh
+  quote is a provider's dry-run quote", accepted only). So a ramp or exchange refuses as a `DryRun` figure holding
+  its refused transfer or conversion, and `judge.rs` already drops on that as `dry_run_refused`. `Asks::admits`
+  keeps a refused `FreshQuote` out and admits the refused `DryRun` for a fresh-quote question. `judge.rs` is
+  unchanged. The test `ramp_that_refuses_its_quote_is_dropped_as_refused_not_unconfirmed` shows all three: the
+  admission, the contract's refusal of the other form, and the drop. It passed on first run, since it pins down
+  existing behaviour.
+- **The form asked.** `Asks::admits` now also matches the question's `wants`. A fresh-quote question admits the
+  accepted quote or a refused dry run. A dry-run question admits a dry run, accepted or refused. The test
+  `answer_of_another_kind_than_asked_is_not_admitted` failed first, admitting a reserve's answer dressed as a fresh
+  quote.
+- **`Question`'s doc** now says that a question names no rival per question, and that the set a provider receives
+  is kept clean by the one-amount rule.
