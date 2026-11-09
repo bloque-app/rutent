@@ -587,17 +587,20 @@ pub struct CrossModuleCall {
     pub route: RouteReference,
     /// What is asked of the callee.
     pub operation: Operation,
-    /// Whether the platform delivered it or refused it.
+    /// Whether the callee answered it, the platform passed it on and no answer came, or the platform refused it.
     pub outcome: CrossModuleOutcome,
 }
 
-/// A cross-module call's outcome, by status.
+/// A cross-module call's outcome, by status (`REQ-MDL-21`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CrossModuleOutcome {
-    /// The platform delivered it to the callee.
+    /// The platform passed it on and the callee answered. A call is recorded as delivered only then.
     Delivered(Nothing),
-    /// The platform refused it.
+    /// The platform passed it on and no answer came: the callee stopped, was stopped by a limit or a deadline, or
+    /// gave no answer the platform could read. What the callee did is not known.
+    Unanswered(Nothing),
+    /// The platform refused it, and passed nothing on.
     Refused(CallRefused),
 }
 

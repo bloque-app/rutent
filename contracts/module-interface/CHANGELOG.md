@@ -1,5 +1,31 @@
 # module-interface changelog
 
+## 3.0.0
+- Breaking: a cross-module call is recorded as `delivered` only when its callee answered. A call the platform
+  passed on and got no answer to, its callee stopped, killed at a deadline or answering unreadably, is the new
+  outcome `unanswered`, whose effect is not known, in the schema and as `CrossModuleOutcome::Unanswered`. Before,
+  `delivered` meant passed on, so a record overstated delivery (`EXP-2` outcome, follow-up rows; `REQ-MDL-21`). A
+  2.x record of `delivered` for a call never answered is untrue now, and a new Rust variant breaks an exhaustive
+  match, so this is a major. `validate_call_against` holds an unanswered call to its declaration as a delivered one
+  (`UndeclaredCallDelivered`). Fixtures keep naming interface 2.0.1, as T-010-01's bump left them: nothing compares
+  it. (DEC-4, DEC-20, DEC-27, T-010-03)
+
+## 2.3.0
+- A platform's refusals are the contract's, with closer reasons: `AdmissionRefusal` gains `DisallowedImport` (a
+  part importing what the binding doesn't offer) and `VersionAlreadyAdmitted` (a version admitted or waiting),
+  and `PlatformRefusal` gains `LimitReached` (a part stopped by a limit before it answered, its module still
+  running), where `EXP-2`'s bindings gave `UnreadableBinary` and `Unavailable`. Both enums move here from the
+  module-boundary suite, which re-exports them unchanged in name. Minor: types added to the contract, no schema
+  or rule changes. (DEC-4, DEC-20, DEC-27, T-010-03)
+
+## 2.2.0
+- `validate_call_against` accepts the platform's `undeclared_kind` refusal of a call whose callee and forwarded
+  kind are declared: the caller's code named another kind, which the platform refuses without passing anything
+  on, and the record names the kind forwarded (`EXP-2` outcome, follow-up rows; F-008's notes). An
+  `undeclared_callee` refusal of a declared callee stays untrue. A valid
+  `declared-cross-module-call-refused-as-an-undeclared-kind-its-caller-named` fixture. Minor: it accepts a record
+  it refused, and refuses nothing it accepted. (DEC-4, DEC-20, DEC-27, T-010-03)
+
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/module_interface`) is `no_std` with `alloc`:
   it uses `core` and `alloc` paths, and the crate's
