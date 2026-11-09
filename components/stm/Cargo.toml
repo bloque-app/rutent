@@ -9,13 +9,18 @@ publish.workspace = true
 workspace = true
 
 [features]
+# On by default. Turn it off (`default-features = false`) for a `no_std` target with an allocator, such as the VOS
+# program (DEC-26, REQ-OPS-3): the library then needs only `core` and `alloc`.
+default = ["std"]
+std = ["rutent-contracts/std"]
 # EXP-1's purpose-built store (T-007-02), a host of the host contract on real disk. Off by default.
-purpose-built-store = ["dep:serde", "dep:serde_json"]
+purpose-built-store = ["std", "dep:serde", "dep:serde_json"]
 
 [dependencies]
-rutent-contracts = { path = "../../contracts" }
+rutent-contracts = { path = "../../contracts", default-features = false }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "1.0.154", optional = true }
 
 [dev-dependencies]
 rutent-conformance = { path = "../../conformance" }
+serde_json = "1.0.154"
