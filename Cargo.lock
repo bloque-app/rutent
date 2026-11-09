@@ -570,6 +570,7 @@ name = "rutent-prov"
 version = "0.0.0"
 dependencies = [
  "rutent-contracts",
+ "serde_json",
 ]
 
 [[package]]
