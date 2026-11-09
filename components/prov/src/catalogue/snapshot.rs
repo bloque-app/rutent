@@ -125,10 +125,15 @@ impl Catalogue {
         if !self.modules.contains_key(provider) {
             return Err(LeftOutReason::NoAdmittedModule);
         }
+        let publisher = self
+            .publishers
+            .publisher_of_provider(provider)
+            .unwrap_or_default();
         for end in [&tuple.origin, &tuple.destination] {
             if let Endpoint::Inner(node) = end {
-                let listed =
-                    self.nodes.is_public(node) || self.publishers.publisher_of_node(node).is_some();
+                // A private node is its declaring publisher's: another publisher's provider can't use it.
+                let listed = self.nodes.is_public(node)
+                    || self.publishers.publisher_of_node(node) == Some(publisher);
                 if !listed {
                     return Err(LeftOutReason::NodeNotListed(node.clone()));
                 }
@@ -198,7 +203,7 @@ fn values_of(ad: &Advertisement) -> Vec<(TupleKey, FigureValue)> {
         );
     }
     let keys = tuples_of(ad);
-    debug_assert_eq!(keys.len(), values.len());
+    assert_eq!(keys.len(), values.len(), "one figure value per tuple");
     keys.into_iter().zip(values).collect()
 }
 

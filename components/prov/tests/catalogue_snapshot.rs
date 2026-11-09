@@ -494,3 +494,37 @@ fn snapshot_validator() -> jsonschema::Validator {
         .build(&schema)
         .unwrap()
 }
+
+// verifies: REQ-CAT-22, REQ-CAT-23
+#[test]
+fn provider_of_another_publisher_cannot_route_through_a_private_node() {
+    // `bridge-pay` is acme's and declares `acme-ledger`; the same ramp under another publisher doesn't get it.
+    let mut other = ramp_advertisement();
+    other.provider = "rival-pay".into();
+    other.publisher = "rival".into();
+    other.private_nodes.clear();
+    let mut catalogue = acme_catalogue(&[ramp_advertisement()]);
+    let keys = tuples_of(&other);
+    catalogue
+        .grant(grant("g-rival", "rival-pay", keys.clone(), 100_000))
+        .unwrap();
+    catalogue.join(&other, JOINED_AT).unwrap();
+    catalogue.set_module_version(
+        "rival-pay",
+        rutent_contracts::router_api::Version::new("1").unwrap(),
+    );
+    for key in keys {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+
+    let built = catalogue.snapshot("snap-1", NOW).unwrap();
+
+    assert!(
+        origins(&built.snapshot)
+            .iter()
+            .all(|(p, _)| p == "bridge-pay")
+    );
+    assert!(built.left_out.iter().all(|l| l.provider == "rival-pay"
+        && l.reason == LeftOutReason::NodeNotListed("acme-ledger".into())));
+    assert_eq!(built.left_out.len(), 2);
+}
