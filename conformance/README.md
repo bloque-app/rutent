@@ -64,6 +64,8 @@ every probe from the provider's advertisement and returns a `Report`.
 
 ## Module-boundary suite (`boundary`)
 
+The `boundary` module (and `signing`) needs the `signing` feature (`T-010-10`); `test-support` implies it.
+
 `T-003-03`'s suite for the module interface (`contracts/module-interface/`). It scores a **format binding**: the
 runtime that admits a module in some portable binary format, runs its two parts, resolves its secrets, carries its
 outbound calls and checks its output. `EXP-2` binds it to Wasm (`T-008-02`) and PVM (`T-008-03`), and scores each

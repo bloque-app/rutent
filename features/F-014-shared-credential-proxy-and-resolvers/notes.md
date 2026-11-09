@@ -321,3 +321,110 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
     - the statement key's wire message.
 
     The store failure's contract reason moved to `T-010-09`, which added it as `store_unavailable`.
+
+## T-014-04
+
+- **The rule.** `proxy::judge_call` is the cross-module call rule on its own, in the contract's order of checks:
+  - `undeclared_callee` when the caller's own running release doesn't declare the callee. A release of another
+    provider than the caller declares nothing for it.
+  - `undeclared_kind` when it declares the callee but not the kind of the operation forwarded, or the caller's
+    code named another kind (as `T-013-01` had it).
+  - `not_named_by_route` when no outside request of the caller's is in flight, or no segment of the
+    transaction's route names the caller's call to that callee for that kind.
+
+  `module/platform.rs`'s `cross_module` calls it instead of its inline `match`, and its record names the route
+  the judgement gives instead of the suite's placeholder. Whether the callee runs (`callee_unavailable`) stays
+  the platform's, after the rule.
+- **Gap: no contract shape says which calls a route names.** `REQ-MDL-21` makes a call only "where the route
+  declares it", and the call record names a `RouteReference`. But the router-api decision record, its candidates
+  and their operations name no cross-module call, and `contracts/` is `F-010`'s. Reading: the platform holds
+  `proxy::RouteCalls`, the calls the routes in flight name, by transaction. Each is a `NamedCall`: the route
+  reference, the caller, the callee and the kinds. Whoever hands the platform a route segment's operation names
+  that segment's calls there (`Platform::routes`, a public field like `world`), and ends them with the route
+  (`RouteCalls::end`). Nothing is carried from one transaction to another. A contract shape for a segment's named
+  calls, in router-api, is an item for `F-010` and the router's feature. When it lands, `RouteCalls` is filled from
+  it and the rule is unchanged.
+- **The route a record names** (as corrected in review, below). A call refused by the route check is recorded
+  against `proxy::no_route`. A call a segment names is recorded against that segment, whatever else it fails.
+  Otherwise it is recorded against the first segment of the transaction's route that names any call of the
+  caller's, the segment it is on, and failing that against `proxy::no_route`, since the record must name a route.
+- **The callee's own credentials.** The call carries none. The callee runs in its own process, so the platform
+  attributes each of its lookups to the callee (the top of its stack) and judges it with `proxy::judge` against
+  the callee's own release and the callee's own outside request in flight. The caller's request in flight gives
+  the callee nothing. The shared proxy keeps one `Handling` per provider, so a callee's operation and request sit
+  beside its caller's, and its lookups reach only its own path in its role's bucket.
+- **Re-entrance, for `T-014-05`.** A call back into a provider already on the stack (A calls B, B calls A) is
+  refused as `callee_unavailable`: the platform takes a provider's process while that process runs an operation,
+  so A has none to hand the call to. That matters once `CredentialProxy` is the platform's `World`. Its
+  `begin_operation` replaces a provider's `Handling`, so a re-entrant operation would end A's outer request in the
+  proxy. `T-014-05` must keep re-entrance refused, or make `Handling` a stack.
+- **The suite's route.** The module-boundary suite has no routes. The tests' binding (`tests/module_support`,
+  shared with `F-013`) therefore names, for each operation's transaction, every call an accepted release declares,
+  under the suite's route `conformance-route`/`segment-1`, and ends them when the operation ends. Its records keep
+  the reference they had. The platform still judges each call against the caller's running declaration first. The
+  route tests (`tests/proxy_calls.rs`) hand operations to the platform directly and name the route's calls
+  themselves.
+- **The edit to `module/platform.rs`.** About 20 lines: the import, the `routes` field and its initialisation, the
+  `judge_call` call in place of the inline `match` (14 lines), the record's route, and the function's doc comment.
+  The limit, depth, deadline and `callee_unavailable` lines are untouched, since `T-010-09` rewrites them, and
+  nothing else in `module/` changes.
+- **Tests.**
+  - `undeclared_cross_module_call_is_refused` (`tests/proxy_calls.rs`) covers several cases, and in each the callee
+    receives nothing and the record passes `validate_call` and `validate_call_against`:
+    - a call the caller doesn't declare, which a route names, is refused as `undeclared_callee`;
+    - a declared call is refused as `not_named_by_route` when no route names it, or a route names it only for
+      another caller, kind, callee or transaction;
+    - the control, once the route names it, is delivered and recorded against that segment, and is refused again
+      once the route ends.
+  - `declared_call_runs_on_the_callees_own_credentials`: caller and callee each hold a secret of the same name with
+    its own value.
+    - The callee is handed only its own value, and the caller only its own.
+    - The callee's lookups are attributed to the callee and the call's transaction.
+    - Its lookup of the caller's other secret, by its name, is refused as `undeclared_secret`.
+    - The call is delivered and recorded against the route's segment.
+  - In the crate (`proxy/tests/calls.rs`):
+    - one test has a callee's lookups beside its caller's request in flight in the shared proxy;
+    - one judges a call against another provider's release.
+- **Property tests (`DEC-18`).** Over generated declarations, route namings, ended routes and calls, `judge_call`
+  allows a call exactly when the callee and kind are declared, the kind named is the one forwarded, a request is in
+  flight and a segment of that transaction names that call. A refusal names the first check it fails. The route
+  recorded is the naming segment, the caller's, or none. Every record built from a judgement passes
+  `validate_call` and `validate_call_against`. The generator reaches every outcome more than 50 times.
+- **How the tests were run.** Written first. The crate's tests failed to compile against the missing
+  `judge_call`, `RouteCalls` and `NamedCall`. The credential assertions can't run on `m2`, where the test doesn't compile,
+  but reading `m2`'s `lookup` says they would hold: the platform already attributed a callee's lookups to the
+  callee. The test pins that. The route check is the red part: with
+  the route check taken out of `judge_call`, `undeclared_cross_module_call_is_refused` fails on "a declared call no
+  route names", which is delivered.
+- **No owner yet fills `Platform::routes` in production.** No `PLAN.md` row names who hands the platform a
+  segment's named calls, so until one does, every cross-module call on the running platform is refused as
+  `not_named_by_route`. That fails closed. It is an item for the orchestrator, beside the contract gap above.
+- **One transaction per operation.** Each operation the route tests hand out has its own transaction, so they
+  keep passing once `T-013-06` refuses a duplicate transaction identifier (`REQ-MDL-14`).
+- **`DEC-20`.** This task touches the credential proxy's path: `proxy/`, and `platform.rs`'s cross-module router,
+  which decides whose credentials a call acts on. Its commit says so.
+
+## T-014-04, review round
+
+- **Merged `m2` (4c22cba).** router-api is 3.0.0 and module-interface 4.0.0. `T-011-06` now fills `RouteCalls`
+  from the router's decision, `T-014-05` keeps re-entrance refused on purpose, and Core (`M3`) fills
+  `Platform::routes` from live orders. That answers this task's gap and owner items. The conflicts were in the
+  imports of `module/platform.rs`, and in the tests' binding, where `m2`'s admission by assertion bytes and
+  acceptance by digest now sit beside the binding's record of accepted releases.
+- **Re-entrance has a test.** `call_back_into_a_provider_already_running_is_refused_as_unavailable`: A calls B,
+  and B calls back into A, with the route naming both calls.
+  - B's call back is refused as `callee_unavailable`, and A's call to B is delivered.
+  - A is handed only its own operation.
+  - A makes one lookup, its own, after the call, and none inside B's call.
+
+  It passed at once. The platform takes a provider's process while that process handles an operation
+  (`run_in_process`), so the callee check finds A without one. The test pins that until `T-014-05` refuses
+  re-entrance on purpose.
+- **The callee's lookup of the caller's secret.** It now reaches the store. The callee declares `caller.only` too,
+  so its own declaration lets the lookup through. It is `not_found`, because the callee's lookups are keyed by the
+  callee and only the caller holds that name. Before, the callee's own declaration refused it as
+  `undeclared_secret`, which showed nothing about whose keys were read.
+- **The no-route placeholder.** Its ids are now `rutent:no-route` and `rutent:no-segment`, reserved as
+  `proxy::NO_ROUTE_RECORD` and `NO_ROUTE_SEGMENT`. A decision record's id is its request's, and no router may issue
+  one by that id. A call refused as `not_named_by_route` is always recorded against it. Before, a call with no
+  request in flight could name a segment beside `not_named_by_route`. The property test checks this.

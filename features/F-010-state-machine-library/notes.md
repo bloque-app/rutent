@@ -493,3 +493,12 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   Wasm binding and its catalogue, and each category's run must exercise `ForgedReleaseRefused` in both languages.
   `signing::signed_inside` re-signs only the statements nested in a platform's answer (a verifier's judgement), as
   the platform signs its own result.
+
+## T-010-10: answering the review
+
+- The bindings under `experiments/` need the `signing` feature of `rutent-conformance` (the `boundary` module is
+  behind it), as well as `list_provider`, if they are revived.
+- CI's build and documentation steps pass `--features rutent-conformance/signing`, so `boundary` and `signing` are
+  built and documented in the existing `ci` job. `signing::signature_bytes` now takes only canonical signatures
+  (`role::is_canonical_signature`), so a final character with unused bits set is rejected.
+- `ReleaseJudge`'s doctest is pinned to `E0277`.

@@ -69,7 +69,7 @@ pub enum Unverified {
 /// The platform asks it before it reads the binaries, and records the release's statement key with it once the
 /// release is admitted.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use rutent_prov::catalogue::Instant;
 /// use rutent_prov::module::admission::{ReleaseJudge, Unverified};
 ///

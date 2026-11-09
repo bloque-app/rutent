@@ -137,3 +137,23 @@ fn role_suite_flags_a_statement_signed_by_another_key_or_altered_after_signing()
         altered.findings
     );
 }
+
+// verifies: REQ-PRT-1
+#[test]
+fn signature_with_unused_bits_set_in_its_last_character_is_not_a_signature() {
+    use rutent_conformance::signing::{Rejected, advertisement, verify};
+    let genuine = advertisement("some-provider", &SuiteContext::default());
+    assert_eq!(verify(&genuine), Ok(()));
+    let mut value: serde_json::Value = serde_json::from_slice(&genuine).unwrap();
+    let text = value["signature"]["value"].as_str().unwrap().to_owned();
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let last = text.chars().last().unwrap();
+    let index = alphabet.find(last).unwrap();
+    // The last character carries 2 bits of the signature; flipping a bit below them changes no byte.
+    let other = alphabet.chars().nth(index ^ 1).unwrap();
+    value["signature"]["value"] = format!("{}{other}", &text[..text.len() - 1]).into();
+    assert_eq!(
+        verify(&serde_json::to_vec(&value).unwrap()),
+        Err(Rejected::NoSignature)
+    );
+}

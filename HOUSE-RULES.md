@@ -83,6 +83,8 @@ security review. It may land on `develop` before that, once the reviewer approve
 - module admission and signature checking;
 - `CMP-CORE-AUTHZ`'s policy engine (`components/core-authz/`);
 - the log's and the checkpoints' signing (`components/core-audit/`).
+- the repository's own gates, which `.github/CODEOWNERS` also holds for the owner: `.github/`, `licences/`,
+  `tools/licence-check/` and `tools/contract-guard/`.
 
 A task whose diff touches one of these says so in its commit body.
 

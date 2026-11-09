@@ -25,7 +25,7 @@ use rutent_conformance::signing::{
 };
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
-    Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
+    Identifier, Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion, RouteReference,
 };
 use rutent_contracts::provider_role::{
     Advertisement, Operation, Signature, SignatureScheme, Statement,
@@ -37,6 +37,7 @@ use rutent_prov::module::children::Paths;
 use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types;
 use rutent_prov::module::wire::sha256;
+use rutent_prov::proxy::NamedCall;
 use serde_json::json;
 
 pub use program::Probe;
@@ -208,6 +209,8 @@ pub struct WasmBinding {
     category: String,
     standins: PathBuf,
     limits: Vec<types::LimitEvent>,
+    /// Every release accepted, whose declared calls the suite's route names (`WasmBinding::handle`).
+    accepted: Vec<Declaration>,
 }
 
 impl Deref for WasmBinding {
@@ -245,6 +248,7 @@ impl WasmBinding {
             category: category.to_owned(),
             standins: standins(),
             limits: Vec::new(),
+            accepted: Vec::new(),
         })
     }
 
@@ -396,7 +400,12 @@ impl ModuleBinding for WasmBinding {
             .platform
             .admit(&received, binaries, &mut self.catalogue, SUITE_AT)
         {
-            types::Admitted::Artefact(artefact) => suite::Admitted::Artefact(artefact),
+            types::Admitted::Artefact(artefact) => {
+                if artefact.acceptance.accepted.is_some() {
+                    self.accepted.push(artefact.declaration().clone());
+                }
+                suite::Admitted::Artefact(artefact)
+            }
             types::Admitted::Refused(refusal) => suite::Admitted::Refused(refusal),
             types::Admitted::Unverified(_) => {
                 suite::Admitted::Refused(suite::AdmissionRefusal::AssertionUnverified)
@@ -412,8 +421,13 @@ impl ModuleBinding for WasmBinding {
             .filter(|a| a.declaration().version.as_str() == version)?
             .assertion_digest
             .clone();
-        self.platform
-            .accept(provider, &digest, by, &self.catalogue, SUITE_AT)
+        let accepted = self
+            .platform
+            .accept(provider, &digest, by, &self.catalogue, SUITE_AT);
+        if let Some(artefact) = &accepted {
+            self.accepted.push(artefact.declaration().clone());
+        }
+        accepted
     }
 
     fn active_version(&self, provider: &str) -> Option<String> {
@@ -428,8 +442,38 @@ impl ModuleBinding for WasmBinding {
         self.platform.restart(provider)
     }
 
+    /// The suite has no routes, so its route, `conformance-route` and `segment-1`, names every call an accepted
+    /// release declares, in the operation's transaction, until the operation ends. The platform still judges each
+    /// call against the caller's running declaration first (`T-014-04`). Tests of the route itself hand operations
+    /// to the platform directly.
     fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
-        match self.platform.handle(provider, operation) {
+        let transaction = serde_json::to_value(&operation.statement)
+            .ok()
+            .and_then(|v| v["transaction"].as_str().and_then(Identifier::new));
+        if let Some(transaction) = &transaction {
+            let route = RouteReference {
+                decision_record: Identifier::new("conformance-route").expect("an id"),
+                segment: Identifier::new("segment-1").expect("an id"),
+            };
+            for declaration in &self.accepted {
+                for call in &declaration.outside.calls {
+                    self.platform.routes.name(
+                        transaction,
+                        NamedCall {
+                            route: route.clone(),
+                            caller: declaration.provider.clone(),
+                            callee: call.callee.clone(),
+                            kinds: call.kinds.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        let handled = self.platform.handle(provider, operation);
+        if let Some(transaction) = &transaction {
+            self.platform.routes.end(transaction);
+        }
+        match handled {
             types::Handled::Answered(result) => Handled::Answered(result),
             types::Handled::Refused(refusal) => Handled::Refused(refusal),
         }

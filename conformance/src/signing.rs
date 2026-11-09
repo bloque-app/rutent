@@ -56,7 +56,7 @@ pub fn base64url(bytes: &[u8]) -> String {
 
 /// The 64 bytes a canonical signature value stands for, if it is one.
 fn signature_bytes(text: &str) -> Option<[u8; 64]> {
-    if text.len() != 86 {
+    if !crate::role::is_canonical_signature(text) {
         return None;
     }
     let mut bytes = Vec::with_capacity(66);
