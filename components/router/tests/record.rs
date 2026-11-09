@@ -360,79 +360,216 @@ fn every_result_is_a_split_of_one_part() {
     );
 }
 
-// verifies: REQ-AUD-4, AC-2
-#[test]
-fn tuples_no_operation_can_state_are_no_candidates_and_leave_the_choice_unchanged() {
-    let ends = (
-        endpoint(json!("n0"), "USDC", 6),
-        endpoint(json!("n1"), "USDC", 6),
-        "1000000000",
+/// The owner's example of 2026-11-09 (item `aud4-unstateable-candidates`), in whole cents: 100 USD leave `n0`
+/// for EUR at `n1`.
+///
+/// - Route A: ramp `r-a` (1/1000) to `n1`, then exchange `ex-a` at 0.9: 99.90 USD, so 89.91 EUR.
+/// - Route B: ramp `r-b` (2/1000), then `ex-a`: 99.80 USD, so 89.82 EUR.
+/// - Ramp Q, `r-q`, is advertised with no price.
+/// - Ramp `r-thin` keeps a flat 88 USD, so only 12 USD reach `n2`, where exchange E, `ex-e`, charges a flat 20 USD
+///   before `r-eur` would take the EUR on to `n1`.
+///
+/// Before router-api 3.0.0 the record listed A and B alone, and couldn't say why Q or E wasn't used.
+fn owners_example() -> Net {
+    owners_example_with(
+        &json!({ "fee": fee("2000", "0", "1"), "rate": { "kind": "fixed", "rate": "0.9" }, "settlement_seconds": 60 }),
+    )
+}
+
+/// The owner's example with exchange E priced by `e`.
+fn owners_example_with(e: &Value) -> Net {
+    let mut net = Net::new("snap-owner", SHORTLIST_AT, 10);
+    let (usd, eur) = (common::unit("USD", 2), common::unit("EUR", 2));
+    net.ramp(
+        "r-a",
+        ("n0", "n1"),
+        "USD",
+        (2, 2),
+        ("1", WIDE),
+        priced("1", 60),
     );
-    let plain = || {
-        let mut net = Net::new("snap-unstated", SHORTLIST_AT, 10);
-        net.ramp(
-            "r-c",
-            ("n0", "n1"),
-            "USDC",
-            (6, 6),
-            ("1", WIDE),
-            priced("9", 60),
-        );
-        net
-    };
-    // Beside the route: a ramp advertised with no price, and one whose flat fee is above what would enter it.
-    let mut crowded = plain();
-    crowded.advertised(
-        "r-unpriced",
-        "p-r-unpriced",
+    net.ramp(
+        "r-b",
+        ("n0", "n1"),
+        "USD",
+        (2, 2),
+        ("1", WIDE),
+        priced("2", 60),
+    );
+    net.exchange(
+        "ex-a",
+        "n1",
+        (usd.clone(), eur.clone()),
+        ("1", WIDE),
+        exchanged("0", "0.9", 60),
+    );
+    net.advertised(
+        "r-q",
+        "p-r-q",
         json!({
             "kind": "ramp_tuple",
             "tuple": {
-                "origin": "n0", "destination": "n1", "asset": "USDC",
-                "decimals": { "origin": 6, "destination": 6 },
+                "origin": "n0", "destination": "n1", "asset": "USD",
+                "decimals": { "origin": 2, "destination": 2 },
                 "terms": common::terms("1", WIDE),
             },
         }),
     );
-    crowded.ramp(
-        "r-dear",
-        ("n0", "n1"),
-        "USDC",
-        (6, 6),
+    net.ramp(
+        "r-thin",
+        ("n0", "n2"),
+        "USD",
+        (2, 2),
         ("1", WIDE),
-        json!({ "fee": fee("2000000000", "0", "1"), "settlement_seconds": 1 }),
+        json!({ "fee": fee("8800", "0", "1"), "settlement_seconds": 60 }),
     );
-    let bounds = bounds(2);
-    let decide = |net: &Net| {
-        let (shortlisted, choice, snapshot) = rounds(net, ends.clone(), &bounds);
-        let chosen = routed(&choice, &snapshot, &bounds);
-        passes(&chosen);
-        (shortlisted, chosen)
-    };
-    let (plain_short, plain_choice) = decide(&plain());
-    let (short, choice) = decide(&crowded);
-    for record in [&short, &choice] {
-        for candidate in &record.candidates {
-            let cited: Vec<String> = tuples(candidate);
-            assert!(
-                !cited.iter().any(|t| t == "r-unpriced" || t == "r-dear"),
-                "{} takes a tuple no operation can state",
-                candidate.candidate_id.as_str()
-            );
-        }
-        // The record still holds both, verbatim, so a reader recomputing the choice sees why neither is a route.
-        for id in ["r-unpriced", "r-dear", "r-dear-price"] {
-            assert!(
-                record
-                    .snapshot
-                    .figures
-                    .iter()
-                    .any(|f| f.figure_id.as_str() == id),
-                "{id}"
-            );
-        }
+    net.exchange("ex-e", "n2", (usd, eur), ("1", WIDE), e.clone());
+    net.ramp(
+        "r-eur",
+        ("n2", "n1"),
+        "EUR",
+        (2, 2),
+        ("1", WIDE),
+        priced("0", 60),
+    );
+    net
+}
+
+fn owners_ends() -> (Value, Value, &'static str) {
+    (
+        endpoint(json!("n0"), "USD", 2),
+        endpoint(json!("n1"), "EUR", 2),
+        "10000",
+    )
+}
+
+/// Both rounds of the owner's example, each passing the contract and the router suite, the choice round choosing
+/// route A.
+fn owners_rounds() -> [DecisionRecord; 2] {
+    owners_rounds_over(&owners_example())
+}
+
+fn owners_rounds_over(net: &Net) -> [DecisionRecord; 2] {
+    let bounds = bounds(3);
+    let (shortlisted, choice, snapshot) = rounds(net, owners_ends(), &bounds);
+    let chosen = routed(&choice, &snapshot, &bounds);
+    passes(&chosen);
+    assert_eq!(tuples(chosen.chosen().unwrap()), ["r-a", "ex-a"]);
+    on(&chosen, &["r-b", "ex-a"]);
+    [shortlisted, chosen]
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn path_through_a_tuple_with_no_price_is_recorded_with_its_drop_reason() {
+    for record in owners_rounds() {
+        let q = on(&record, &["r-q"]);
+        assert_eq!(
+            q.dropped,
+            Some(DropReason::NoPrice {
+                part: 0,
+                operation: 0
+            })
+        );
+        let operation = q.parts[0].operations.last();
+        // It cites its tuple and no price, states nothing it can't, and arrives with nothing.
+        let cited: Vec<&str> = operation.figures.iter().map(|f| f.as_str()).collect();
+        assert_eq!(cited, ["r-q"]);
+        assert_eq!(operation.fee.amount, "0");
+        assert!(operation.amount_out.is_zero());
+        assert_eq!(operation.amount_in.amount().as_str(), "10000");
     }
-    assert_eq!(short.candidates, plain_short.candidates);
-    assert_eq!(choice.candidates, plain_choice.candidates);
-    assert_eq!(tuples(choice.chosen().unwrap()), ["r-c"]);
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn operation_whose_fee_is_above_what_reaches_it_is_recorded_with_its_drop_reason() {
+    for record in owners_rounds() {
+        let e = on(&record, &["r-thin", "ex-e"]);
+        assert_eq!(
+            e.dropped,
+            Some(DropReason::FeeAboveAmount {
+                part: 0,
+                operation: 1
+            })
+        );
+        // 12 USD reach the exchange, whose flat 20 USD is above them: the fee is stated as all that enters.
+        let operation = e.parts[0].operations.last();
+        assert_eq!(operation.amount_in.amount().as_str(), "1200");
+        assert_eq!(operation.fee.amount, "1200");
+        assert!(operation.amount_out.is_zero());
+        // The record names every path the search reaches: A and B, Q, and E's.
+        let mut named: Vec<Vec<String>> = record.candidates.iter().map(tuples).collect();
+        named.sort();
+        assert_eq!(
+            named,
+            [
+                vec!["r-a", "ex-a"],
+                vec!["r-b", "ex-a"],
+                vec!["r-q"],
+                vec!["r-thin", "ex-e"],
+            ]
+        );
+    }
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn path_whose_step_delivers_nothing_before_the_destination_is_recorded_with_its_drop_reason() {
+    // Exchange E now charges exactly the 12 USD that reach it: its operation can be stated, but delivers nothing,
+    // short of the destination, so nothing after it can be.
+    let exact = json!({
+        "fee": fee("1200", "0", "1"),
+        "rate": { "kind": "fixed", "rate": "0.9" },
+        "settlement_seconds": 60,
+    });
+    for record in owners_rounds_over(&owners_example_with(&exact)) {
+        let e = on(&record, &["r-thin", "ex-e"]);
+        assert_eq!(
+            e.dropped,
+            Some(DropReason::NothingDelivered {
+                part: 0,
+                operation: 1
+            })
+        );
+        let operation = e.parts[0].operations.last();
+        assert_eq!(operation.amount_in.amount().as_str(), "1200");
+        assert_eq!(operation.fee.amount, "1200");
+        assert!(operation.amount_out.is_zero());
+        let mut named: Vec<Vec<String>> = record.candidates.iter().map(tuples).collect();
+        named.sort();
+        assert_eq!(
+            named,
+            [
+                vec!["r-a", "ex-a"],
+                vec!["r-b", "ex-a"],
+                vec!["r-q"],
+                vec!["r-thin", "ex-e"],
+            ]
+        );
+    }
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn path_that_delivers_nothing_where_no_tuple_goes_on_is_still_recorded_with_its_drop_reason() {
+    // As above, but with no `r-eur`: from E's EUR at `n2` no tuple goes on, so the path ends there either way, and
+    // it is still named for delivering nothing.
+    let exact = json!({
+        "fee": fee("1200", "0", "1"),
+        "rate": { "kind": "fixed", "rate": "0.9" },
+        "settlement_seconds": 60,
+    });
+    let mut net = owners_example_with(&exact);
+    net.figures
+        .retain(|f| !["r-eur", "r-eur-price"].contains(&f["figure_id"].as_str().unwrap_or("")));
+    for record in owners_rounds_over(&net) {
+        assert_eq!(
+            on(&record, &["r-thin", "ex-e"]).dropped,
+            Some(DropReason::NothingDelivered {
+                part: 0,
+                operation: 1
+            })
+        );
+    }
 }

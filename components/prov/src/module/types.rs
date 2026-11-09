@@ -38,6 +38,8 @@ pub enum Admitted {
     Artefact(Box<AdmissionArtefact>),
     /// Refused, with why.
     Refused(AdmissionRefusal),
+    /// Refused: the assertion isn't one the platform admits on its word.
+    Unverified(crate::module::admission::Unverified),
 }
 
 pub use rutent_contracts::module_interface::{AdmissionRefusal, PlatformRefusal};

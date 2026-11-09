@@ -74,15 +74,13 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The reason the outbound call record gives. The contract has no reason for a failed TLS check, so
-    /// [`Refusal::NotVerified`] is recorded as `undeclared_destination`: a peer that doesn't prove it is the
-    /// declared host is not shown to be the declared destination (see the `F-014` notes).
+    /// The reason the outbound call record gives: each refusal its own, a failed TLS check as `peer_not_verified`
+    /// (module-interface 4.0.0, `T-010-09`).
     pub fn reason(self) -> RefusalReason {
         match self {
             Refusal::UndeclaredOperation => RefusalReason::UndeclaredOperation,
-            Refusal::UndeclaredDestination | Refusal::NotVerified => {
-                RefusalReason::UndeclaredDestination
-            }
+            Refusal::UndeclaredDestination => RefusalReason::UndeclaredDestination,
+            Refusal::NotVerified => RefusalReason::PeerNotVerified,
             Refusal::RedirectToUndeclaredDestination => {
                 RefusalReason::RedirectToUndeclaredDestination
             }
@@ -211,7 +209,12 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
                 to: SocketAddr::new(checked, destination.port.get()),
             };
             let answer = self.connector.exchange(&dial, &request);
-            if answer != Err(ConnectError::NotVerified) {
+            // The hop names the address only if a verified connection was made to it: not after a failed TLS
+            // check, and not after a dial that connected to nothing.
+            if !matches!(
+                answer,
+                Err(ConnectError::NotVerified | ConnectError::Unreachable)
+            ) {
                 hop.address = Some(text);
             }
             hops.push(hop);

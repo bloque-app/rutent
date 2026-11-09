@@ -381,3 +381,72 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
 - **Tests.** `UFFD_PROBE_FAKE` runs the same code against a fake kernel that asserts each ioctl's buffer has its
   struct's exact size, which the old code fails; four new tests cover success, a refusal and a missing feature bit
   as 1, an unexpected errno as 2, and `host-check.sh`'s message for a failed probe. Not run on Linux here.
+
+## T-010-09: the refusal reasons `M2`'s tasks found missing
+
+### What was built
+
+- **One bump, module-interface 4.0.0.** Every type the reasons live in is module-interface's (`RefusalReason`,
+  `SecretRefusalReason`, `CallRefusalReason`, `AdmissionRefusal`), so provider-role does not move. New Rust variants
+  break an exhaustive match, as 3.0.0 ruled, so this is a major. `VERSION` is `4.0.0`; the conformance suites read
+  the const, so no literal pin moved.
+- **The reasons.** `CallRefusalReason` gains `limit_reached` and `deadline_too_near`; `RefusalReason` gains
+  `peer_not_verified`; `SecretRefusalReason` gains `store_unavailable`; `AdmissionRefusal` gains `AdmissionPending`
+  and `AssertionUnverified` (the coordinator's addition from `T-013-04`). Each is in the schema's enum and the Rust
+  type. Valid fixtures name each wire reason; invalid ones are an unknown outbound reason, an unknown secret reason,
+  and a limit refusal of an undeclared callee (`RefusalReasonUntrue`).
+- **The record rule.** `validate_record` accepts an `unknown` call whose last hop matched a declared destination and
+  has no address: its dial connected to nothing. An unconnected hop before the last, and an `unknown` call ending at
+  a hop that matched no destination, stay `HopNotConnected`, each with a fixture.
+- **Call sites.** `module/platform.rs`: a call over a count or depth bound is `limit_reached` (unless an earlier
+  check already refused it), a callee with too little of the caller's deadline left is `deadline_too_near`, and only
+  a callee not running is `callee_unavailable`. `egress/layer.rs`: `Refusal::NotVerified` is `peer_not_verified`,
+  and a hop names its address only when a connection was made (not after `NotVerified` or `Unreachable`).
+  `proxy/shared.rs`: every store failure is `store_unavailable`, so `wire_reason` and `answer` are total.
+- **Tests.** The row's three, in `components/prov`: `call_refused_by_a_limit_names_its_own_reason`,
+  `outbound_call_that_failed_its_tls_check_names_its_own_reason` and
+  `secret_store_that_gave_no_answer_is_not_reported_as_not_found`. In the contract: one per reason and one for the
+  record rule. Each failed first (the prov ones at run time, on the old reasons; the contract ones on the missing
+  variants). Existing tests that held the placeholders now hold the new reasons; one was renamed, since its name
+  said "the address dialled" (`call_with_no_answer_is_recorded_as_unknown_and_one_that_connected_to_nothing_names_no_address`),
+  and `refusals_map_onto_the_contracts_two_reasons` is now `..._three_reasons`.
+
+### Readings taken where `PLAN.md` is silent
+
+- **`#[non_exhaustive]` on all five reason enums, in this bump** (`PlatformRefusal` added after review). A Rust
+  match on one now needs a wildcard arm, which spares Rust callers a broken build when a reason is added. It is not
+  a promise that a later reason is minor: the contract is language-neutral (`DEC-4`), a reader on an older schema
+  rejects a new wire value, so that stays a major. No workspace crate or experiment matched one exhaustively, so
+  nothing else changed. The outcome enums (`CallOutcome`, `CrossModuleOutcome`, `SecretOutcome`) are left exhaustive: a new
+  outcome changes what a record means, which stays a major.
+- **Two call reasons, not one.** The row names "a limit, or too little of the caller's deadline left". They differ in
+  the platform's own state: a count or depth bound ends the caller's operation as a limit (`LimitEvent`), a short
+  deadline leaves it going and records no limit. One reason would contradict the platform's record, so each has
+  its own.
+- **The fourth item is a rule, not a reason.** An `unknown` call that connected to nothing keeps its status: the
+  caller still checks rather than assuming nothing happened, as `T-014-03` read it. What changes is that the record
+  now says truthfully that nothing connected.
+- **`store_unavailable` covers every store failure,** denied token, unavailable or unexpected answer, malformed body,
+  transport, an unaddressable name: one reason, so the module learns nothing about the store or the deployment.
+- **Not fixtures for `AdmissionRefusal`.** It has no serialised shape in the contract (Rust only, since 2.3.0), so
+  its two reasons have a Rust test and no JSON fixtures. Adding a schema for it is outside this row.
+- **Left to other rows.** `World::secret` still returns `Option`, so the platform's own lookup path cannot yet tell
+  a failed store from a missing secret; `T-014-05`'s row owns that hook change. The platform's `World::route` →
+  `None` path still records `failed` with an unconnected hop, which `validate_record` refuses; the reference double
+  in `conformance/` does the same. `T-014-05` replaces that loop with `Egress`, which records it as `unknown` with
+  no address. The call sites of `AdmissionPending` and `AssertionUnverified` are `T-013-04`'s (branch
+  `f-013/t-013-04-admission`, not yet in `m2`), which adopts them when it integrates, in place of
+  `VersionAlreadyAdmitted` and its platform-only `Admitted::Unverified`.
+- **No shared file changed,** so `contracts/CHANGELOG.md` has no entry; `T-011-05` edits router-api beside this.
+
+## T-010-09: answering the review of `1689b51`
+
+- `PlatformRefusal` is `#[non_exhaustive]` too, so every reason enum a platform gives is, as the README and the
+  module docs say.
+- The changelog, README and docs no longer claim a later reason is a minor version: `#[non_exhaustive]` spares
+  Rust callers only, and a new wire value is still a major under `DEC-4`.
+- The changelog says the two admission reasons are Rust only, with a Rust test and no fixtures, as 2.3.0's were.
+- The admission test is renamed to what it checks
+  (`admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names`) and tagged `DEC-4`.
+- For `T-014-05`, in the F-014 notes: `platform.rs`'s lookup reply sends every reason but `not_found` as
+  `"undeclared_secret"`, so `store_unavailable` needs its own arm when `World::secret` changes.

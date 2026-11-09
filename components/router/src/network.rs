@@ -1,5 +1,7 @@
-//! The snapshot read as a network: each advertised tuple with its one price is a segment, an edge from one
-//! endpoint (node and asset in a unit) to another (`REQ-QTE-11`, `REQ-QTE-14`).
+//! The snapshot read as a network: each advertised tuple is a segment, an edge from one endpoint (node and asset in
+//! a unit) to another (`REQ-QTE-11`, `REQ-QTE-14`), priced by its one price where the snapshot holds one. A tuple
+//! with no price is still a segment, so a path that reaches it is a candidate, dropped as `no_price` (router-api
+//! 3.0.0, `REQ-AUD-4`).
 //!
 //! A segment of any kind connects what its ends say, so a route needs neither local money nor an exchange: a
 //! reserve takes value between an outer and an inner node, a ramp between two inner nodes in one asset, an
@@ -15,17 +17,16 @@ use rutent_contracts::router_api::{
 
 use crate::price::whole;
 
-/// One tuple the router can route through: its figure, its price and its two ends.
+/// One tuple the router can route through: its figure, its price if the snapshot holds one, and its two ends.
 pub(crate) struct Segment<'a> {
     /// The tuple figure.
     pub(crate) tuple: &'a Figure,
-    /// Its one price figure.
-    pub(crate) price: &'a Figure,
-    /// The price's fee formula.
-    pub(crate) fee: &'a FeeFormula,
+    /// Its one price figure, and that price's fee formula; `None` for a tuple advertised with no price.
+    pub(crate) price: Option<(&'a Figure, &'a FeeFormula)>,
     /// The price's rate, for an exchange.
     pub(crate) rate: Option<&'a Pricing>,
-    /// The price's declared settlement seconds.
+    /// The price's declared settlement seconds; never read for a tuple with no price, which no ranked candidate
+    /// takes.
     pub(crate) settlement_seconds: u64,
     /// The tuple's provider.
     pub(crate) provider: &'a Id,
@@ -99,8 +100,7 @@ fn ends(figure: &Figure) -> Option<(OperationKind, Endpoint, Endpoint, &[Band])>
     })
 }
 
-/// Every segment of the snapshot, in order of tuple figure id. A tuple with no price can't be stated as an
-/// operation, which must cite one, so it is no segment.
+/// Every segment of the snapshot, in order of tuple figure id, a tuple with no price included.
 pub(crate) fn segments(snapshot: &CatalogueSnapshot) -> Vec<Segment<'_>> {
     let prices: BTreeMap<&str, &Figure> = snapshot
         .figures
@@ -115,22 +115,23 @@ pub(crate) fn segments(snapshot: &CatalogueSnapshot) -> Vec<Segment<'_>> {
         .iter()
         .filter_map(|tuple| {
             let (kind, from, to, bands) = ends(tuple)?;
-            let price = *prices.get(tuple.figure_id.as_str())?;
-            let FigureValue::Price {
-                fee,
-                rate,
-                settlement_seconds,
-                ..
-            } = &price.value
-            else {
-                return None;
+            let (price, rate, settlement_seconds) = match prices.get(tuple.figure_id.as_str()) {
+                Some(&price) => match &price.value {
+                    FigureValue::Price {
+                        fee,
+                        rate,
+                        settlement_seconds,
+                        ..
+                    } => (Some((price, fee)), rate.as_ref(), settlement_seconds.get()),
+                    _ => return None,
+                },
+                None => (None, None, u64::MAX),
             };
             Some(Segment {
                 tuple,
                 price,
-                fee,
-                rate: rate.as_ref(),
-                settlement_seconds: settlement_seconds.get(),
+                rate,
+                settlement_seconds,
                 provider: tuple.origin.provider()?,
                 kind,
                 from,

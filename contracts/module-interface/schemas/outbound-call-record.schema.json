@@ -58,7 +58,7 @@
   },
   "$defs": {
     "hop": {
-      "description": "One connection: where it was asked to go, the declared destination that matched by name, and the address actually connected to. A hop refused before connecting has no address, and one whose name matched no declared destination has no destination; either is the last hop of a refused call.",
+      "description": "One connection: where it was asked to go, the declared destination that matched by name, and the address actually connected to. A hop refused before connecting has no address, and one whose name matched no declared destination has no destination; either is the last hop of a refused call. The last hop of an unknown call may also have no address, when it matched a declared destination and its dial connected to nothing.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -87,7 +87,7 @@
       }
     },
     "outcome": {
-      "description": "By status: completed or failed, as the destination answered; unknown, when no answer came; or refused by the platform, with the reason.",
+      "description": "By status: completed or failed, as the destination answered; unknown, when no answer came, the request perhaps sent or, with no address on the last hop, nothing connected; or refused by the platform, with the reason.",
       "type": "object",
       "required": [
         "status"

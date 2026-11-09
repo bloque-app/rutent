@@ -27,10 +27,14 @@
 //! A shortlist round keeps them all, its shortlist; a choice round chooses the first and drops the others as
 //! outranked by it. Every candidate is one part (`DEC-8`), whatever the bounds' `max_parts` allows.
 //!
-//! A candidate is a path whose every operation the contract can state. A tuple with no price, or an operation
-//! whose fee would be above what enters it, is no operation (`Operation` cites one price, and its fee is at most
-//! its amount in), so no candidate takes it, and router-api has no drop reason for either. Both stay in the
-//! record's snapshot verbatim, so the choice still recomputes from the record alone (`REQ-AUD-4`).
+//! Every path the search reaches is a candidate, including one through an operation the contract can't state
+//! (router-api 3.0.0, `REQ-AUD-4`): a tuple with no price, dropped as `no_price`; an operation whose price's fee
+//! is above what enters it, dropped as `fee_above_amount`; or one that delivers nothing short of the destination,
+//! dropped as `nothing_delivered`. As with `beyond_levels`, such a path is listed up to that operation, which
+//! delivers nothing, and goes no further, and the choice still recomputes from the record alone. A path that runs
+//! out of tuples or hops short of the destination, having delivered something, ends nowhere a route could, so it
+//! is no candidate. Listing the others costs at most one candidate per path prefix the search already walks and
+//! per tuple leaving its end, since each ends its path; no cap is needed.
 //!
 //! # The objective
 //!
@@ -59,7 +63,9 @@ use rutent_contracts::router_api::{
 use search::{Path, Search, answer_of};
 
 /// The version every record this router makes names in its `router_version`.
-pub const VERSION: &str = "rutent-router-0.1.0";
+/// `0.2.0` since router-api 3.0.0 (`T-011-05`): the same inputs now give a record that also names the candidates
+/// the contract couldn't state before.
+pub const VERSION: &str = "rutent-router-0.2.0";
 
 /// The route finder: the router API's [`Router`], as ADR-0006 and `DEC-8` decide it.
 #[derive(Debug, Clone, Copy, Default)]

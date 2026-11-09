@@ -227,6 +227,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   other is `the part failed`. The host has no host-call error of its own to map (its imports answer, never fail), and
   the store limiter's refused growth reaches the guest as a return value, not an error. `T-013-02` may touch the same
   lines in `output.rs` and `host.rs`; the change is a few lines, to be merged by hand.
+
 ## T-013-02
 
 - **What it adds.** `module/limits.rs`: the bounds on what a module's parts may ask of the platform, and the pure
@@ -257,12 +258,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   and what the endpoint received is what completed. A call over the limit is recorded too, one hop, refused as
   `LimitReached` (`RefusalReason` has it). Each hit is a `LimitEvent` (provider, transaction, which bound and which
   budget), which the suite's events have no place for, so the tests' binding keeps them apart.
-- **Gap: the contract has no limit reason for a cross-module call.** `CallRefusalReason` is `undeclared_callee`,
-  `undeclared_kind`, `not_named_by_route`, `callee_unavailable`, and the contract is frozen at 3.0.0. A call refused
-  because the caller hit a count or depth bound, and a call refused because too little of the caller's deadline was
-  left, are both recorded as `callee_unavailable`, which `validate_call_against` accepts for a declared callee. A
-  deadline refusal leaves the caller's operation going (the guest sees `refused`); a count or depth bound ends it as a
-  limit. `T-010-09` adds the reason to the contract; this placeholder stays until it lands.
+- **Gap: the contract has no limit reason for a cross-module call (closed by `T-010-09`).** `CallRefusalReason` was
+  `undeclared_callee`, `undeclared_kind`, `not_named_by_route`, `callee_unavailable`, frozen at 3.0.0, so a call
+  refused because the caller hit a count or depth bound, and one refused because too little of the caller's
+  deadline was left, were both recorded as `callee_unavailable`. A deadline refusal leaves the caller's operation
+  going (the guest sees `refused`); a count or depth bound ends it as a limit. Module-interface 4.0.0 (`T-010-09`)
+  gives each its own reason, `limit_reached` and `deadline_too_near`, and `module/platform.rs` now records them;
+  `callee_unavailable` is only a callee that isn't running.
 - **The caller's deadline.** A cross-module call needs `MIN_CALL_BUDGET` (1 second, settable) of the caller's
   deadline left, else the callee isn't started. The number is this task's reading: the callee would be killed at the
   caller's deadline before it answered, and the caller's own answer lost with it.
@@ -314,3 +316,89 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   calls the platform refuses for what the caller declares, which keep their reason. The provider's frame queue holds one
   frame, so a flooding process is stopped by its full pipe. A refused growth is forgotten when the next operation
   begins.
+
+## T-013-04, admission
+
+- **What admission checks, in order.** `Platform::admit(received, binaries, judge, at)` takes the assertion as the
+  bytes it arrived in, never a parsed statement, and admits what those bytes say. `module/admission.rs::read` parses
+  them, requires a signing input (`canonicalize`), the release-assertion shape and the platform's own deployment and
+  protocol version (`check_context`). The judge then verifies the signature and keys; then the binaries against the
+  digests the assertion states (`PartAltered`), their format and size (`UnreadableBinary`), a version admitted or a
+  release waiting (`VersionAlreadyAdmitted`), and the contract's `validate_artefact` and `validate_release` against
+  the release it follows (an assertion signed with a statement key an earlier release declared, `THR-4`). Only then
+  does the admitting compiler run. Once it has, the declared statement key is recorded with the judge.
+- **The judge.** `module/admission.rs` has a `ReleaseJudge` trait and its production judge, `Catalogue`:
+  `Catalogue::verify_statement` (context, the key listed for advertising by the last accepted advertisement and by
+  the one in force at `made_at`, strict Ed25519 over the signing input) and `validate_assertion_key` against
+  `Catalogue::accepted_advertisement` of the releasing provider, never an advertisement that arrives with the
+  release. `Catalogue::record_statement_key` is called for each admitted release. The platform holds no judge, and
+  every admission names one; there is no default and no way to skip it. `catalogue/` is untouched.
+- **Nested statements (F-012's note).** A release assertion carries no statement nested in it, so the context check
+  the note asks for is the assertion's own: `read` makes it against the platform's envelope and `verify_statement`
+  against the catalogue's, so a catalogue and a platform told different deployments admit nothing.
+- **The assertion's digest is of the bytes as received.** It was a re-serialisation of the parsed statement before,
+  which the contract's "as received" does not allow; the test's first run failed on exactly this.
+- **Acceptance bound to the digest.** `Platform::accept(provider, assertion_digest, by)` accepts only the waiting
+  release whose `assertion_digest` is the one given; another digest, or a `by` that is no identifier, accepts nothing
+  and leaves the waiting release and the running version as they were. `Platform::pending(provider)` shows what waits.
+  The suite's `ModuleBinding::accept` names a version, so the tests' binding looks the digest up there.
+- **A new admission while one waits (reading).** Refused as `VersionAlreadyAdmitted` under any version, before the
+  compiler runs. The contract has no closer reason (its doc speaks of "this version"); the brief names this one.
+  Item for `T-010-09`, whose row is the refusal reasons `M2`'s tasks found missing: an `AdmissionPending` reason. There is also no way yet to
+  withdraw a waiting release, so a release nobody accepts holds its provider's admissions; declining one is left to
+  `T-013-06`'s lifecycle.
+- **An unverified assertion (reading).** The contract's `AdmissionRefusal` has no reason for it, and stretching
+  `UnreadableBinary` or `PartAltered` would mislead. The platform's own `Admitted` gains `Unverified(Unverified)`,
+  which says which check failed (unreadable, no signing input, wrong shape or context, the catalogue's
+  `StatementRefusal`, no advertisement, the contract's rule violations, the statement key). Item for `T-010-09`
+  too: an `AssertionUnverified` reason.
+- **The module-boundary and role suites run with a judge that trusts every assertion (reading).** The suite signs its
+  assertions with placeholders and declares `placeholder_key(1)` as the statement key, which is no point of the curve,
+  so no advertisement the catalogue accepts can list it, and re-keying the assertion would break the suite's check
+  that the artefact holds the assertion submitted. The tests' binding (`tests/module_support/`) passes
+  `TrustsEveryAssertion`, which exists only there, and serialises the suite's statement to bytes; signed admission is
+  tested against the catalogue in `module_admission_signed.rs`. Item for `conformance/`'s owner: sign the suite's
+  assertions with real keys and give it a signature verifier, as the role suite has.
+- **Re-judged at acceptance** since the review round below.
+- **The platform build version with the machine code** was already recorded (`Build`, `T-013-01`); the artefact's
+  build is now filled in after compiling, the rest of the artefact before, so the judge and the contract's rules see
+  it as it will be recorded.
+- **Tests.** `tests/module_admission_signed.rs`: `release_with_an_unverified_assertion_is_refused` (an altered
+  assertion, the statements key, another deployment, an unknown provider, another provider as maker, a retired
+  advertising key, each refused before compiling), `acceptance_of_another_assertion_digest_does_not_admit_the_release`,
+  `admission_while_one_is_pending_is_refused`, `widened_release_needs_fresh_acceptance`.
+  `tests/module_admission_signed_properties.rs` (`DEC-18`, seeded, 400 cases each, none compiling per case): one
+  changed byte of a signed assertion is never admitted nor compiled; no digest but the admitted assertion's accepts
+  it; while a release waits no other release of the provider is admitted or compiled. The catalogue's keys and
+  advertisements are `tests/common`'s, through `tests/module_support/signed.rs`. "Not compiled" is read from
+  `measurements.compiles`, which counts compilations that succeeded; the binaries are honest stand-ins, so any that
+  ran would be counted. Test-first: all failed against a
+  stub of the new API (unverified admitted, another version admitted while one waited, the digest re-serialised,
+  any digest accepted), but `widened_release_needs_fresh_acceptance`, which passed at once because `T-013-01` built
+  the widening rule.
+- **An existing test changed.** `a_part_importing_anything_beyond_its_parts_interface_is_refused_at_admission` now
+  accepts its control release before admitting the hostile ones, which the new rule would otherwise refuse while the
+  control waits.
+- **DEC-20 paths.** Module admission and signature checking: `module/admission.rs`, `module/platform.rs`'s `admit`,
+  `accept` and `pending`, and admission's calls into `Catalogue::verify_statement` and
+  `Catalogue::record_statement_key`. `platform.rs` is shared with `T-013-02`: the edits are the imports, `admit`
+  around the unchanged `compile` match, `accept` and the new `pending`; `host.rs` is untouched.
+
+## T-013-04, review round
+
+- **Acceptance judges the assertion again.** `Platform::accept(provider, assertion_digest, by, judge, at)` keeps the
+  waiting release's assertion as received and runs `judge` on it once more. A release signed with a key retired
+  since its admission, as a provider retires a key it believes stolen, is no longer accepted, and stays waiting:
+  `acceptance_after_the_signing_keys_rotation_is_refused` (failed first, the stub accepting it). A refused release
+  still holds its provider's admissions until it is withdrawn, which `T-013-06` gains.
+- **Exact reasons, and the unsigned cases.** `release_with_an_unverified_assertion_is_refused` now names each case's
+  `Unverified` variant, and adds an assertion whose signature value is no signature (64 zero bytes:
+  `BadSignature(DoesNotVerify)`) and one with no signature at all (`Unreadable`). These passed on first run: the
+  admission code already gave these reasons; the test was only loose.
+- **The statement key after compiling.** `admit`'s documentation now says that the judge's refusal to record the
+  statement key is the one refusal, beside the compiler's, left after compiling, and why the catalogue's can't
+  happen once its judgement passed: the accepted advertisement lists the key for statements, and `join` and
+  `trust_advertising_key` keep a statements key from ever becoming an advertising key.
+- **`ReleaseJudge` is public and unsealed.** Any crate can write a judge, as the tests' trusting one does. Once
+  `conformance/` signs its assertions with real keys and the trusting judge is gone, `T-010-10` seals the trait, or
+  makes `admit` and `accept` take the catalogue itself. Not changed here.
