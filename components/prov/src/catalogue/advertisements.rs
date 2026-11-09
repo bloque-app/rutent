@@ -111,8 +111,13 @@ pub enum StatementRefusal {
     DatedTooFarAhead,
     /// The catalogue held no advertisement of the maker at that time.
     NoAdvertisementThen,
-    /// The advertisement in force then doesn't list the key for what the statement is.
-    KeyNotValidThen,
+    /// The key isn't one the accepted advertisement lists, and the one in force at `made_at` listed, for what the
+    /// statement is.
+    KeyNotInForce,
+    /// The statement is another deployment's or protocol version's (`REQ-PRT-1`, `THR-8`).
+    WrongContext,
+    /// The catalogue was never told which deployment it serves ([`Catalogue::set_context`]).
+    NoContext,
     /// The signature doesn't verify.
     BadSignature(SignatureError),
 }
@@ -150,7 +155,10 @@ impl Catalogue {
         if self.statements_seen.contains(&key) {
             return Err(super::CatalogueError::KeyIsAStatementsKey);
         }
-        self.grant_mut(grant_id)?.trust_advertising_key(key);
+        self.grant_mut(grant_id)?.trust_advertising_key(key.clone());
+        // A key the operator trusts for advertising is an advertising key from then on, so no provider can list
+        // it for statements first and lock the first advertisement out.
+        self.advertising_seen.insert(key);
         Ok(())
     }
 
@@ -350,14 +358,12 @@ impl Catalogue {
         Ok(())
     }
 
-    /// Verifies a statement a provider made, given as received, against the key that was valid at the statement's
-    /// `made_at`: the advertisement in force then must list `signature.key`, for advertising if the statement is
-    /// an advertisement or a release assertion, for statements otherwise. Then the signature must verify over the
-    /// statement's signing input. `at` is the caller's clock, as everywhere: a statement dated more than the skew
-    /// ahead of it is refused.
-    ///
-    /// A key retired later still verifies a statement dated before its retirement, and a leaked retired key can
-    /// sign a statement dated in the past: callers that need more bind the statement to a time they know.
+    /// Verifies a statement a provider made, given as received. It must name the catalogue's deployment and
+    /// protocol version (`THR-8`). Its `signature.key` must be listed by the advertisement the catalogue holds (the
+    /// last accepted), and by the one in force at the statement's `made_at`, for advertising if the statement is an
+    /// advertisement or a release assertion, for statements otherwise; so a retired key can't sign a backdated
+    /// statement (`THR-4`). Then the signature must verify over the statement's signing input. `at` is the caller's
+    /// clock, as everywhere: a statement dated more than the skew ahead of it is refused.
     pub fn verify_statement(&self, received: &[u8], at: Instant) -> Result<(), StatementRefusal> {
         let unreadable = |what: &str| StatementRefusal::Unreadable(what.to_owned());
         let text = |path: &[&str]| -> Result<String, StatementRefusal> {
@@ -366,6 +372,17 @@ impl Catalogue {
                 .ok_or_else(|| unreadable(&path.join("/")))?;
             serde_json::from_slice::<String>(bytes).map_err(|_| unreadable(&path.join("/")))
         };
+        let (deployment, protocol_version) =
+            self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
+        let sent_deployment: rutent_contracts::provider_role::Deployment =
+            rutent_contracts::provider_role::member(received, &["deployment"])
+                .ok()
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice(bytes).ok())
+                .ok_or_else(|| unreadable("deployment"))?;
+        if &sent_deployment != deployment || text(&["protocol_version"])? != *protocol_version {
+            return Err(StatementRefusal::WrongContext);
+        }
         let maker = text(&["maker"])?;
         let shape = text(&["shape"])?;
         let made_at = Stamp::parse(&text(&["made_at"])?).ok_or(StatementRefusal::BadTime)?;
@@ -375,11 +392,13 @@ impl Catalogue {
         if made_at.ceil_secs() > at.0.saturating_add(self.clock_skew()) {
             return Err(StatementRefusal::DatedTooFarAhead);
         }
-        let in_force = self
-            .ads
-            .get(&maker)
-            .and_then(|h| h.iter().rev().find(|a| a.made_at <= made_at))
+        let history = self.ads.get(&maker).map(Vec::as_slice).unwrap_or(&[]);
+        let then = history
+            .iter()
+            .rev()
+            .find(|a| a.made_at <= made_at)
             .ok_or(StatementRefusal::NoAdvertisementThen)?;
+        let accepted = history.last().expect("one exists, since one was found");
         let purpose = if shape == ADVERTISEMENT_SHAPE
             || shape == rutent_contracts::module_interface::RELEASE_ASSERTION_SHAPE
         {
@@ -387,14 +406,18 @@ impl Catalogue {
         } else {
             KeyPurpose::Statements
         };
-        let listed = in_force
-            .statement
-            .statement
-            .keys
-            .iter()
-            .any(|k| k.public_key == key && k.purpose == purpose);
-        if !listed {
-            return Err(StatementRefusal::KeyNotValidThen);
+        // The key must be in force now, in the advertisement the catalogue holds, and have been when the statement
+        // says it was made: a retired key signing a backdated statement fails the first, a key signing before it
+        // was listed fails the second.
+        let listed = |ad: &Accepted| {
+            ad.statement
+                .statement
+                .keys
+                .iter()
+                .any(|k| k.public_key == key && k.purpose == purpose)
+        };
+        if !listed(accepted) || !listed(then) {
+            return Err(StatementRefusal::KeyNotInForce);
         }
         verify_envelope(&key, &value, received).map_err(StatementRefusal::BadSignature)
     }

@@ -546,30 +546,26 @@ fn small_order_public_key_in_an_advertisement_is_refused() {
 
 // verifies: REQ-PRT-1, THR-8
 #[test]
-fn statement_is_checked_against_the_key_valid_at_its_time() {
+fn statement_is_checked_against_the_accepted_advertisement_and_the_key_valid_at_its_time() {
     let mut catalogue = first_accepted();
     let v2 = bytes(keys(&[&adv(1)], &[&stm(2)]), 3_000, &adv(1));
     assert_eq!(catalogue.join(&v2, Instant(3_000)), Ok(()));
     let at = Instant(4_000);
     let result = |made_at: u64, key: &SigningKey| made_by("bridge-pay", made_at, key, RESULT_SHAPE);
 
-    // Before the second advertisement, stm(1) was the statements key.
-    assert_eq!(
-        catalogue.verify_statement(&result(2_500, &stm(1)), at),
-        Ok(())
-    );
-    assert_eq!(
-        catalogue.verify_statement(&result(2_500, &stm(2)), at),
-        Err(StatementRefusal::KeyNotValidThen)
-    );
-    // From it on, stm(2) is.
+    // From the second advertisement on, stm(2) is the statements key and stm(1) is retired.
     assert_eq!(
         catalogue.verify_statement(&result(3_500, &stm(2)), at),
         Ok(())
     );
     assert_eq!(
         catalogue.verify_statement(&result(3_500, &stm(1)), at),
-        Err(StatementRefusal::KeyNotValidThen)
+        Err(StatementRefusal::KeyNotInForce)
+    );
+    // A key not yet listed can't sign a statement dated before it was.
+    assert_eq!(
+        catalogue.verify_statement(&result(2_500, &stm(2)), at),
+        Err(StatementRefusal::KeyNotInForce)
     );
     // Before any advertisement there was no key at all.
     assert_eq!(
@@ -579,7 +575,7 @@ fn statement_is_checked_against_the_key_valid_at_its_time() {
     // A statements key signs no advertisement, and an advertising key signs no result.
     assert_eq!(
         catalogue.verify_statement(&result(3_500, &adv(1)), at),
-        Err(StatementRefusal::KeyNotValidThen)
+        Err(StatementRefusal::KeyNotInForce)
     );
     let advertisement = made_by(
         "bridge-pay",
@@ -589,12 +585,173 @@ fn statement_is_checked_against_the_key_valid_at_its_time() {
     );
     assert_eq!(
         catalogue.verify_statement(&advertisement, at),
-        Err(StatementRefusal::KeyNotValidThen)
+        Err(StatementRefusal::KeyNotInForce)
     );
     // Another provider's statement is checked against its own history.
     assert_eq!(
         catalogue.verify_statement(&made_by("dex-pool", 3_500, &stm(2), RESULT_SHAPE), at),
         Err(StatementRefusal::NoAdvertisementThen)
+    );
+}
+
+// verifies: REQ-PRT-1, THR-4
+#[test]
+fn retired_key_cannot_sign_a_backdated_statement_or_release_assertion() {
+    let mut catalogue = first_accepted();
+    // The advertising key adv(1) is retired for adv(2), and the statements key stm(1) for stm(2).
+    let add = bytes(keys(&[&adv(1), &adv(2)], &[&stm(1)]), 3_000, &adv(1));
+    assert_eq!(catalogue.join(&add, Instant(3_000)), Ok(()));
+    let retire = bytes(keys(&[&adv(2)], &[&stm(2)]), 3_001, &adv(2));
+    assert_eq!(catalogue.join(&retire, Instant(3_001)), Ok(()));
+    let at = Instant(4_000);
+    // Leaked after its retirement, each signs a statement dated while it was in force, received now.
+    let assertion = made_by(
+        "bridge-pay",
+        2_500,
+        &adv(1),
+        rutent_contracts::module_interface::RELEASE_ASSERTION_SHAPE,
+    );
+    assert_eq!(
+        catalogue.verify_statement(&assertion, at),
+        Err(StatementRefusal::KeyNotInForce)
+    );
+    let result = made_by("bridge-pay", 2_500, &stm(1), RESULT_SHAPE);
+    assert_eq!(
+        catalogue.verify_statement(&result, at),
+        Err(StatementRefusal::KeyNotInForce)
+    );
+    // The key in force signs.
+    let assertion = made_by(
+        "bridge-pay",
+        3_500,
+        &adv(2),
+        rutent_contracts::module_interface::RELEASE_ASSERTION_SHAPE,
+    );
+    assert_eq!(catalogue.verify_statement(&assertion, at), Ok(()));
+}
+
+// verifies: REQ-PRT-1, THR-8
+#[test]
+fn statement_of_another_deployment_or_protocol_version_does_not_verify() {
+    let catalogue = first_accepted();
+    let at = Instant(3_000);
+    let envelope = |deployment: serde_json::Value, protocol: &str| {
+        sign_json(
+            serde_json::json!({
+                "deployment": deployment,
+                "protocol_version": protocol,
+                "shape": RESULT_SHAPE,
+                "maker": "bridge-pay",
+                "made_at": Instant(2_500).rfc3339().unwrap(),
+                "signature": {"scheme": "ed25519", "key": "", "value": ""},
+                "statement": {}
+            }),
+            &stm(1),
+        )
+    };
+    let here = serde_json::to_value(deployment()).unwrap();
+    assert_eq!(
+        catalogue.verify_statement(&envelope(here.clone(), VERSION), at),
+        Ok(())
+    );
+
+    let mut renamed = here.clone();
+    renamed["name"] = "another-deployment".into();
+    let mut rekeyed = here.clone();
+    rekeyed["operator_key"] = base64url(&[9u8; 32]).into();
+    for other in [renamed, rekeyed] {
+        assert_eq!(
+            catalogue.verify_statement(&envelope(other, VERSION), at),
+            Err(StatementRefusal::WrongContext)
+        );
+    }
+    assert_eq!(
+        catalogue.verify_statement(&envelope(here, "1.0.0"), at),
+        Err(StatementRefusal::WrongContext)
+    );
+}
+
+// verifies: REQ-CAT-2, THR-4
+#[test]
+fn advertising_key_the_operator_trusts_cannot_be_listed_for_statements_first() {
+    let mut catalogue = catalogue();
+    catalogue
+        .grant(grant(
+            "g-2",
+            "dex-pool",
+            rutent_prov::catalogue::tuples_of(&exchange_advertisement()),
+            100_000,
+        ))
+        .unwrap();
+    let dex_key = advertising_key("dex-pool");
+    catalogue
+        .trust_advertising_key("g-2", public_key(&dex_key))
+        .unwrap();
+    catalogue
+        .trust_advertising_key("g-1", public_key(&adv(1)))
+        .unwrap();
+    // dex-pool lists bridge-pay's trusted key for statements before bridge-pay's first advertisement lands.
+    let ad = advertisement_bytes(
+        &exchange_advertisement(),
+        Some(keys(&[&dex_key], &[&adv(1)])),
+        Instant(2_000),
+        &dex_key,
+    );
+    assert_eq!(
+        catalogue.join(&ad, NOW),
+        Err(JoinRefusal::StatementsKeyIsAnAdvertisingKey(public_key(
+            &adv(1)
+        )))
+    );
+    assert_eq!(
+        catalogue.record_statement_key(&public_key(&adv(1))),
+        Err(rutent_prov::catalogue::CatalogueError::KeyIsAnAdvertisingKey)
+    );
+    // bridge-pay's first advertisement is not locked out.
+    let first = bytes(keys(&[&adv(1)], &[&stm(1)]), 2_000, &adv(1));
+    assert_eq!(catalogue.join(&first, NOW), Ok(()));
+}
+
+// verifies: REQ-CAT-2, THR-4, THR-8
+#[test]
+fn statements_key_of_another_deployment_is_never_accepted_for_advertising() {
+    // Another deployment's advertisements are refused, so its keys reach this catalogue only as a release's
+    // declared statement key: recorded, they can't be listed for advertising here.
+    let mut catalogue = first_accepted();
+    let mut elsewhere = deployment();
+    elsewhere.name = "another-deployment".into();
+    let foreign = signing_key("another deployment's statements key", 1);
+    let foreign_ad = {
+        let mut ad = ramp_advertisement();
+        ad.keys = keys(&[&adv(1)], &[&foreign]);
+        let statement = rutent_contracts::provider_role::Statement {
+            deployment: elsewhere,
+            protocol_version: VERSION.into(),
+            shape: rutent_contracts::provider_role::ADVERTISEMENT_SHAPE.into(),
+            maker: ad.provider.clone(),
+            made_at: Instant(2_100).rfc3339().unwrap(),
+            signature: rutent_contracts::provider_role::Signature {
+                scheme: SignatureScheme::Ed25519,
+                key: public_key(&adv(1)),
+                value: base64url(&[0u8; 64]),
+            },
+            statement: ad,
+        };
+        sign_json(serde_json::to_value(&statement).unwrap(), &adv(1))
+    };
+    assert!(matches!(
+        catalogue.join(&foreign_ad, NOW),
+        Err(JoinRefusal::WrongContext(_))
+    ));
+    catalogue
+        .record_statement_key(&public_key(&foreign))
+        .unwrap();
+    let adds = bytes(keys(&[&adv(1), &foreign], &[&stm(1)]), 2_001, &adv(1));
+    assert_eq!(
+        catalogue.join(&adds, NOW),
+        Err(JoinRefusal::AdvertisingKeyIsAStatementsKey(public_key(
+            &foreign
+        )))
     );
 }
 

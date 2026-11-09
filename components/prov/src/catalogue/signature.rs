@@ -96,7 +96,7 @@ pub fn verify_ed25519(
         .map_err(|_| SignatureError::DoesNotVerify)
 }
 
-/// The 64 bytes a signature's text writes, if it is 86 characters of base64url without padding whose two unused
+/// The 64 bytes a signature's text writes, if it is 86 characters of base64url without padding whose four unused
 /// bits are zero (its last character is one of `AQgw`), the one canonical encoding.
 pub fn decode_signature(text: &str) -> Option<[u8; 64]> {
     let digit = |c: u8| -> Option<u32> {

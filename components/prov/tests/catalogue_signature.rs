@@ -182,7 +182,7 @@ fn public_key_with_y_at_or_above_the_prime_is_refused_as_non_canonical() {
     );
 }
 
-/// The eight points of small order, as RFC 8032 section 5.1.3 writes them.
+/// Six of the eight points of small order, as RFC 8032 section 5.1.3 writes them.
 const SMALL_ORDER: [&str; 6] = [
     // The identity, and the point of order two.
     "0100000000000000000000000000000000000000000000000000000000000000",
@@ -321,4 +321,18 @@ fn statement_with_a_member_named_twice_has_no_signing_input() {
         verify_envelope(&public_key(&key), &base64url(&[0; 64]), doubled.as_bytes()),
         Err(SignatureError::NoSigningInput(_))
     ));
+}
+
+// verifies: REQ-PRT-1
+#[test]
+fn public_key_that_is_no_point_of_the_curve_is_refused() {
+    // About half the values of y below the prime have no x on the curve.
+    let refused = (2u8..=64)
+        .filter(|y| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = *y;
+            check_public_key(&bytes).err() == Some(SignatureError::KeyNotAPoint)
+        })
+        .count();
+    assert!(refused > 10, "{refused} of 63");
 }

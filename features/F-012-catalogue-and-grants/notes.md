@@ -177,16 +177,20 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `at`.
 - **Key history.** The catalogue keeps every accepted advertisement per provider, oldest first
   (`advertisement_history`); a refused one leaves nothing in it. A statements key an accepted advertisement dropped
-  is never listed again by that provider, under either purpose. A key's purpose is held across providers and
-  deployments in both directions: reading the README's "a key used for `statements` anywhere never accepted for
+  is never listed again by that provider, under either purpose. A key's purpose is held across providers in both
+  directions, and a key the operator trusts for advertising counts as an advertising key from then on (so no one can
+  list it for statements first). Another deployment's advertisements are refused (`WrongContext`), so its keys reach
+  the catalogue only through `record_statement_key`, which the test for "in any deployment" uses: reading the README's "a key used for `statements` anywhere never accepted for
   `advertising` anywhere" one step further, an advertisement may not list for `statements` a key that is an advertising
   key of some provider either, or one provider could lock another out of its own key. The release side is
   `record_statement_key`, for `F-013` to call with each admitted release's `statement_key`.
-- **Key valid at the statement's time.** `verify_statement(received, at)` finds the provider's accepted
-  advertisement in force at the statement's `made_at` (the latest one made at or before it), requires `signature.key`
-  to be listed there for advertising (an advertisement or a release assertion) or for statements (anything else), and
-  verifies. A key retired later still verifies a statement dated before its retirement. The limit: a leaked retired
-  key can sign a statement dated in the past; a caller that must exclude that binds the statement to a time it knows.
+- **Which key verifies a statement.** `verify_statement(received, at)` first requires the statement's deployment
+  and protocol version to be the catalogue's (`THR-8`; keys may be shared across deployments). Then
+  `signature.key` must be listed by the advertisement the catalogue holds, the last accepted, and by the one in
+  force at the statement's `made_at` (the latest made at or before it), for advertising (an advertisement or a
+  release assertion) or for statements (anything else). The first check means a leaked retired key can't sign a
+  backdated release assertion (`THR-4`); the second, that a key can't sign for a time before it was listed. The
+  limit that remains: the key in force today can sign a statement with any past date after its own listing.
 - **`T-012-03`'s placeholder.** A figure's age now counts from the advertisement's `made_at` (whole seconds), not from
   when it was joined. A `made_at` ahead of `at` but within the skew gives age 0.
 - **Role suite.** The suite's stand-ins sign with placeholders and conformance has no curve code, so
@@ -203,3 +207,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   each was shown able to fail by disabling its rule in turn (canonical `y`, small order, `S < L`, skew, dropped
   key, purpose across providers, key at the statement's time, replay) and seeing its tests go red; the code was
   then restored. Property tests use the seeded generator of `T-012-01` (400 cases each); none needed a property-test crate.
+
+### T-012-02, review answers
+
+- **`verify_statement` checks the context** (blocker): a statement of another deployment or protocol version is
+  `WrongContext`; a catalogue told no deployment verifies nothing.
+- **Backdating**: checked against the last accepted advertisement as well as the one in force then (see "Which key
+  verifies a statement" above, which replaces the earlier stated limit).
+- **"In any deployment"**: tested as above, through `record_statement_key` and a refused advertisement of another
+  deployment; the catalogue still serves one deployment.
+- **Trusted keys** count as advertising keys at `trust_advertising_key`.
