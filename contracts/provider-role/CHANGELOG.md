@@ -1,5 +1,12 @@
 # provider-role changelog
 
+## 2.2.0
+- The Rust code behind this contract (`contracts/src/provider_role`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.1.0
 - After review round 1 on the M1 pull request (findings 3 and 6): `check_amounts(operation, result, terms)`
   publishes the rules that tie a result's amounts to the operation it answers, and returns the segment's

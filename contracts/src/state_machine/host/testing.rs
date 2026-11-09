@@ -8,7 +8,8 @@
 //! [`FaultSeam`], which stops a submit at a named point. For an out-of-process runtime the named points
 //! are best-effort, reached by timing a kill rather than by a hook.
 
-use std::fmt;
+use alloc::string::String;
+use core::fmt;
 
 use super::{Host, HostError, SnapshotStream};
 use crate::state_machine::StateMachine;
@@ -48,7 +49,7 @@ impl fmt::Display for HarnessError {
     }
 }
 
-impl std::error::Error for HarnessError {}
+impl core::error::Error for HarnessError {}
 
 impl From<HostError> for HarnessError {
     fn from(error: HostError) -> Self {

@@ -2,9 +2,10 @@
 //! denies unknown fields as the schemas set `additionalProperties: false`, text the schemas require non-empty is a
 //! non-empty newtype, and addresses are parsed.
 
-use std::fmt;
-use std::net::IpAddr;
-use std::num::NonZeroU16;
+use alloc::{string::String, string::ToString, vec::Vec};
+use core::fmt;
+use core::net::IpAddr;
+use core::num::NonZeroU16;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,7 +25,7 @@ impl fmt::Display for Invalid {
     }
 }
 
-impl std::error::Error for Invalid {}
+impl core::error::Error for Invalid {}
 
 macro_rules! checked_text {
     ($(#[$doc:meta])* $name:ident, $check:expr, $message:literal) => {

@@ -66,8 +66,9 @@
 //! its [`LastInput::record_id`] comes back as [`Outcome::Repeat`]. It keeps no other history, so it can't tell an
 //! older repeat from a fresh input, and doesn't try.
 
-use std::collections::BTreeSet;
-use std::fmt;
+use alloc::collections::BTreeSet;
+use alloc::{string::String, vec::Vec};
+use core::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
@@ -77,7 +78,7 @@ pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
 pub mod host;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +90,7 @@ impl fmt::Display for Violation {
     }
 }
 
-impl std::error::Error for Violation {}
+impl core::error::Error for Violation {}
 
 macro_rules! non_empty_text {
     ($(#[$doc:meta])* $name:ident) => {
@@ -181,7 +182,7 @@ fn some_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Id>, D::
 
 fn is_rfc3339(text: &str) -> bool {
     let b = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
+    let digits = |range: core::ops::Range<usize>| -> Option<u32> {
         let part = b.get(range)?;
         part.iter()
             .all(u8::is_ascii_digit)

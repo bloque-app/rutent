@@ -28,7 +28,8 @@
 //! released record, so every effect has its record (`INV-7`). What happens to effects after that is not the
 //! host's to guarantee, and not scored through [`Host`]: it is the effect driver's obligation, [`EFFECT_DRIVER`].
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
@@ -37,7 +38,7 @@ use super::{Id, Order, RecordId, RecordedInput, StateMachine, Violation};
 pub mod testing;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/host/CHANGELOG.md`.
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 
 /// The largest sequence number, 2^53 - 1, so it survives RFC 8785 canonical JSON, which writes numbers as IEEE
 /// doubles: a transition record's `seq`, a refusal record's `seq`, and the `seq` a refusal points to.

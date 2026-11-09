@@ -5,7 +5,8 @@
 //! reports gross or net: `reporting` says only whether `amount_out` includes the charge. Its fee is in the asset
 //! the segment takes in, in the origin unit, as the router counts it.
 
-use std::cmp::Ordering;
+use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use core::cmp::Ordering;
 
 use super::operation::Operation;
 use super::outcome::{
@@ -281,6 +282,7 @@ fn subtract(a: &str, b: &str) -> Option<String> {
 mod tests {
     use super::{AmountMismatch, check_amounts, subtract, whole};
     use crate::provider_role::{Operation, ResultBody, Terms};
+    use alloc::{format, vec};
 
     // verifies: INV-1, REQ-CAT-11
     #[test]

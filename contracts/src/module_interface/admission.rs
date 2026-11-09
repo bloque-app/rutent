@@ -5,7 +5,8 @@
 //! The contract states digests and signatures and checks their form; computing digests over bytes and verifying
 //! signatures is the platform's (`CMP-PROV`, `M2`/`M3`), as in the provider-role contract.
 
-use std::net::IpAddr;
+use alloc::vec::Vec;
+use core::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -593,7 +594,7 @@ pub fn validate_release(
         violations.push(RuleViolation::ReleaseUnderAnotherProtocolVersion);
     }
     let key = &next.assertion.signature.key;
-    let declared_before = std::iter::once(&before.outside.statement_key)
+    let declared_before = core::iter::once(&before.outside.statement_key)
         .chain(previous.history.iter().map(|entry| &entry.statement_key))
         .chain(next.history.iter().map(|entry| &entry.statement_key));
     if declared_before.into_iter().any(|k| k == key) {

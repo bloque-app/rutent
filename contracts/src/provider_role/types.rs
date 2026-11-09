@@ -1,6 +1,7 @@
 //! Types mirroring the `urn:rutent:provider-role:*` schemas. Field names match the schemas, and every struct
 //! denies unknown fields, as the schemas set `additionalProperties: false`.
 
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::envelope::{ADVERTISEMENT_SHAPE, StatementShape};
@@ -104,32 +105,32 @@ impl PartialEq for PublicKey {
 
 impl Eq for PublicKey {}
 
-impl std::hash::Hash for PublicKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for PublicKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.bytes().hash(state);
     }
 }
 
 impl PartialOrd for PublicKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for PublicKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.bytes().cmp(&other.bytes())
     }
 }
 
-impl std::fmt::Debug for PublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for PublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("PublicKey").field(&self.text).finish()
     }
 }
 
-impl std::fmt::Display for PublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.text)
     }
 }

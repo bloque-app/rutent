@@ -9,6 +9,7 @@
 //! Every key here is a [`PublicKey`], built only from its canonical encoding and compared by its decoded bytes.
 //! The verifier (`M2`) must still refuse non-canonical base64 and non-canonical points ([`PublicKey`] says which).
 
+use alloc::{borrow::ToOwned, string::String};
 use serde::{Deserialize, Serialize};
 
 use super::types::PublicKey;

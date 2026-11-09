@@ -1,7 +1,8 @@
 //! Operations the operator asks of a provider (`urn:rutent:provider-role:operation`, `REQ-CAT-9`,
 //! `REQ-CAT-14`). On the wire each is the operator's [`Statement`](super::Statement) of an [`Operation`].
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 
 use serde::{Deserialize, Serialize};
 

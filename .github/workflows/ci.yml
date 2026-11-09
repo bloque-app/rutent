@@ -25,8 +25,13 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
+          # A target with no `std`, so the no_std build below proves the contracts need only `core` and `alloc`.
+          targets: riscv32imac-unknown-none-elf
       - name: Build
         run: cargo build --workspace --all-targets
+      - name: Build the contracts without std (DEC-26)
+        # `CMP-STM` runs as a VOS program, which has no `std`; the contracts must build for such a target.
+        run: cargo build -p rutent-contracts --no-default-features --target riscv32imac-unknown-none-elf
       - name: Test (includes the boundary check)
         run: cargo test --workspace
       - name: Lint
