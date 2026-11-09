@@ -29,7 +29,7 @@ mod layer;
 mod resolve;
 
 pub use connector::{
-    ConnectError, Connector, Dial, Header, InvalidRequest, Method, Request, Response,
+    CREDENTIALS, ConnectError, Connector, Dial, Header, InvalidRequest, Method, Request, Response,
 };
 pub use layer::{Call, CallLog, Egress, Endpoint, MAX_HOPS, Outcome, Refusal};
 pub use resolve::{NameResolver, SystemResolver};

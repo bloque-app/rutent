@@ -184,3 +184,11 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
     running `tls_probe` against `T-014-02`'s `rustls` connector, which closes `B-18` end to end;
   - the `DEC-4` bump of `module-interface`: a refusal reason for a failed TLS check, and a valid shape for an
     unconnected last hop of a call that isn't refused. The two "Gap in the contract" items above are carried there.
+- **Credentials dropped by name too (second round).** The drop went by the `Header::sensitive` flag, so a plain
+  `Authorization` header still followed a redirect to another host. On a change of scheme, host or port the
+  egress now drops every sensitive header and every header named in `egress::CREDENTIALS` (`authorization`,
+  `proxy-authorization`, `cookie`), matched in any case. Once dropped, a credential is gone for the rest of the
+  call: on a chain from A to B and back to A, it doesn't return to A. Tests:
+  `plain_authorization_header_does_not_reach_another_host` and
+  `credentials_never_return_to_the_first_host_after_a_redirect_away`.
+- **Merged `m2` at `65c8ffe`**, which carries the new rows `T-010-09` and `T-014-05`.

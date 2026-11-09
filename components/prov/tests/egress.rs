@@ -933,3 +933,80 @@ fn pinned_block_over_a_special_purpose_range_reaches_none_of_it() {
         assert!(connector.dials().is_empty(), "{block}");
     }
 }
+
+/// A credential header goes by its name as well as its flag: `Authorization`, `Proxy-Authorization` and
+/// `Cookie`, in any case, built as plain headers, still don't reach another host.
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn plain_authorization_header_does_not_reach_another_host() {
+    let resolver = TableResolver::default();
+    resolver
+        .then("api.acme.example", &[API])
+        .then("files.acme.example", &[FILES]);
+    let connector = ScriptedConnector::default();
+    connector
+        .answer(API, redirect(302, "https://files.acme.example/upload"))
+        .answer(FILES, ok());
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-16");
+    let request = Request::new(
+        Method::Get,
+        "/p",
+        vec![
+            Header::plain("Authorization", "Bearer api-only"),
+            Header::plain("proxy-AUTHORIZATION", "Basic x"),
+            Header::plain("COOKIE", "session=api-only"),
+            Header::plain("X-Request-Id", "r-1"),
+        ],
+        Vec::new(),
+    )
+    .expect("a request");
+    let mut log = Vec::new();
+
+    egress.send(&flight.call(), https("api.acme.example"), request, &mut log);
+
+    let dials = connector.dials();
+    assert_eq!(dials.len(), 2);
+    assert_eq!(dials[0].headers.len(), 4, "the first host gets them all");
+    let names: Vec<&str> = dials[1].headers.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["X-Request-Id"]);
+}
+
+/// Credentials dropped on the way to another host never come back: on a chain from `api` to `files` and back to
+/// `api`, the last hop carries none of them, sensitive or plain.
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn credentials_never_return_to_the_first_host_after_a_redirect_away() {
+    let resolver = TableResolver::default();
+    resolver
+        .then("api.acme.example", &[API])
+        .then("files.acme.example", &[FILES]);
+    let connector = ScriptedConnector::default();
+    connector
+        .answer(API, redirect(302, "https://files.acme.example/hop"))
+        .answer(FILES, redirect(302, "https://api.acme.example/back"));
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-17");
+    let request = Request::new(
+        Method::Get,
+        "/p",
+        vec![
+            Header::sensitive("Authorization", "Bearer api-only"),
+            Header::plain("Cookie", "session=api-only"),
+            Header::plain("X-Request-Id", "r-1"),
+        ],
+        Vec::new(),
+    )
+    .expect("a request");
+    let mut log = Vec::new();
+
+    egress.send(&flight.call(), https("api.acme.example"), request, &mut log);
+
+    let dials = connector.dials();
+    assert!(dials.len() >= 3);
+    for (i, dial) in dials.iter().enumerate().skip(1) {
+        let names: Vec<&str> = dial.headers.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["X-Request-Id"], "dial {i} to {}", dial.name);
+    }
+    assert_eq!(dials[2].name, "api.acme.example", "back at the first host");
+}

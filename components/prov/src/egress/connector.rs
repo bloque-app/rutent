@@ -137,6 +137,10 @@ const FRAMING: &[&str] = &[
     "proxy-connection",
 ];
 
+/// Headers that carry a credential whatever flag they were built with, matched in any case. A redirect to
+/// another endpoint drops them.
+pub const CREDENTIALS: &[&str] = &["authorization", "proxy-authorization", "cookie"];
+
 /// One request header. `Debug` hides a sensitive header's value (`THR-50`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Header {
@@ -177,6 +181,14 @@ impl Header {
     /// Whether the value is a credential, which a connector must never log.
     pub fn is_sensitive(&self) -> bool {
         self.sensitive
+    }
+
+    /// Whether the header carries a credential: built as sensitive, or named in [`CREDENTIALS`].
+    fn is_credential(&self) -> bool {
+        self.sensitive
+            || CREDENTIALS
+                .iter()
+                .any(|c| self.name.eq_ignore_ascii_case(c))
     }
 }
 
@@ -286,8 +298,9 @@ impl Request {
 
     /// The same request at another target, as a redirect asks: `307` and `308` keep the method and the body,
     /// the others turn it into a `GET` with none. Unless the redirect stays on the same scheme, host and port,
-    /// every sensitive header is dropped, so a credential meant for one destination never reaches another (the
-    /// curl CVE-2018-1000007 class); plain headers follow.
+    /// every credential header is dropped ([`CREDENTIALS`] by name, in any case, and every sensitive one), so a
+    /// credential meant for one destination never reaches another (the curl CVE-2018-1000007 class); other
+    /// headers follow. Once dropped, a credential is gone for the rest of the call, a redirect back included.
     pub(super) fn redirected(&self, status: u16, target: String, same_endpoint: bool) -> Request {
         let keep = matches!(status, 307 | 308);
         Request {
@@ -296,7 +309,7 @@ impl Request {
             headers: self
                 .headers
                 .iter()
-                .filter(|h| same_endpoint || !h.sensitive)
+                .filter(|h| same_endpoint || !h.is_credential())
                 .cloned()
                 .collect(),
             body: if keep { self.body.clone() } else { Vec::new() },
