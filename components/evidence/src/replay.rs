@@ -87,6 +87,11 @@ pub enum Mismatch {
         /// The segment's position in the node's record.
         at: usize,
     },
+    /// The node's record holds no segments, so nothing can be replayed.
+    NoSegments {
+        /// The node.
+        node: String,
+    },
     /// A segment does not take in what the one before it gave out.
     BrokenChain {
         /// The node.
@@ -94,7 +99,7 @@ pub enum Mismatch {
         /// The segment's position.
         at: usize,
     },
-    /// Where the asset stays the same, amount in is not amount out plus fee.
+    /// The fee is more than what went in, or, where the asset stays the same, amount in is not amount out plus fee.
     FeeMismatch {
         /// The node.
         node: String,
@@ -164,12 +169,16 @@ fn amount(text: &str) -> Option<u128> {
     (n.to_string() == text).then_some(n)
 }
 
-/// Replays one node's recorded segments: each must take in what the one before gave out, and where the asset stays
-/// the same the fee must account for the difference. Where the asset changes, the rate is the node's own and no
-/// fee check is made. Pure: the result depends on the segments and nothing else.
-pub fn replay_node(node: &str, segments: &[RecordedSegment]) -> Result<Replayed, Vec<Mismatch>> {
+/// Reads a node's record as recorded and lists every fault in it. The value is what the record says leaves the node,
+/// whether or not the record holds up; `None` only for an empty record.
+fn walk(node: &str, segments: &[RecordedSegment]) -> (Option<Replayed>, Vec<Mismatch>) {
     let mut found = Vec::new();
     let at_fault = |kind: fn(String, usize) -> Mismatch, at: usize| kind(node.to_owned(), at);
+    if segments.is_empty() {
+        found.push(Mismatch::NoSegments {
+            node: node.to_owned(),
+        });
+    }
     for (at, seg) in segments.iter().enumerate() {
         let parsed = (
             amount(&seg.amount_in),
@@ -185,28 +194,40 @@ pub fn replay_node(node: &str, segments: &[RecordedSegment]) -> Result<Replayed,
         {
             found.push(at_fault(|node, at| Mismatch::BrokenChain { node, at }, at));
         }
-        if seg.asset_in == seg.asset_out && given.checked_add(fee) != Some(taken) {
+        let same_asset_off = seg.asset_in == seg.asset_out && given.checked_add(fee) != Some(taken);
+        if fee > taken || same_asset_off {
             found.push(at_fault(|node, at| Mismatch::FeeMismatch { node, at }, at));
         }
     }
-    match (segments.first(), segments.last()) {
-        (Some(first), Some(last)) if found.is_empty() => Ok(Replayed {
+    let value = match (segments.first(), segments.last()) {
+        (Some(first), Some(last)) => Some(Replayed {
             asset_in: first.asset_in.clone(),
             amount_in: first.amount_in.clone(),
             asset: last.asset_out.clone(),
             amount: last.amount_out.clone(),
         }),
-        _ => Err(found),
+        _ => None,
+    };
+    (value, found)
+}
+
+/// Replays one node's recorded segments: each must take in what the one before gave out, no fee may exceed what went
+/// in, and where the asset stays the same the fee must account for the difference. Where the asset changes, the
+/// exchange rate is the node's own and is not checked. An empty record is one `NoSegments` mismatch, so an `Err` is
+/// never empty. Pure: the result depends on the segments and nothing else.
+pub fn replay_node(node: &str, segments: &[RecordedSegment]) -> Result<Replayed, Vec<Mismatch>> {
+    match walk(node, segments) {
+        (Some(value), found) if found.is_empty() => Ok(value),
+        (_, found) => Err(found),
     }
 }
 
 /// Replays a route's private nodes, in route order, against its end.
 ///
-/// A route ending inside the node records no check. Otherwise every node is replayed; a fault inside a node is
-/// recorded alone, since what that node gives out can't be trusted for the comparisons after it. When every node
-/// holds up, what one hands on must be what the next took in, and what the last gives out is compared with the
-/// public movement out (the network alone decides it is final) and with the stated outcome. All the mismatches found
-/// are recorded; none found is consistency only.
+/// A route ending inside the node records no check. Otherwise every node is replayed, what one hands on must be what
+/// the next took in, and what the last gives out is compared with the public movement out (the network alone decides
+/// it is final) and with the stated outcome. A fault inside a node does not stop the later comparisons: they run on
+/// what the record says, and every mismatch found is recorded. None found is consistency only.
 pub fn replay_route(nodes: &[NodeRecord], end: &RouteEnd, net: &dyn PublicNetwork) -> Replay {
     let RouteEnd::Public(exit) = end else {
         return Replay::PublishersWord;
@@ -218,17 +239,12 @@ pub fn replay_route(nodes: &[NodeRecord], end: &RouteEnd, net: &dyn PublicNetwor
         return Replay::Unreplayable(Unreplayable::NothingRecorded(empty.node.clone()));
     }
     let mut replayed = Vec::new();
-    let mut faults = Vec::new();
-    for record in nodes {
-        match replay_node(&record.node, &record.segments) {
-            Ok(r) => replayed.push(r),
-            Err(found) => faults.extend(found),
-        }
-    }
-    if !faults.is_empty() {
-        return Replay::Mismatch(faults);
-    }
     let mut found = Vec::new();
+    for record in nodes {
+        let (value, faults) = walk(&record.node, &record.segments);
+        replayed.extend(value);
+        found.extend(faults);
+    }
     for (pair, names) in replayed.windows(2).zip(nodes.windows(2)) {
         if pair[0].asset != pair[1].asset_in || pair[0].amount != pair[1].amount_in {
             found.push(Mismatch::HandoffBroken {

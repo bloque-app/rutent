@@ -10,3 +10,9 @@ workspace = true
 
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
+num-bigint = "0.4.8"
+
+[dev-dependencies]
+rutent-conformance = { path = "../../conformance" }
+serde = "1.0.229"
+serde_json = "1.0.154"

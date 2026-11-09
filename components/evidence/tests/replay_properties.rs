@@ -80,6 +80,38 @@ proptest! {
         prop_assert_eq!(replay_route(&nodes, &end, &net), replay_route(&nodes, &end, &net));
     }
 
+    // verifies: REQ-ORD-41
+    #[test]
+    fn a_perturbed_record_turns_consistency_into_a_mismatch(
+        segments in chain(),
+        pick in any::<prop::sample::Index>(),
+        how in 0u8..2,
+    ) {
+        let last = segments.last().unwrap().amount_out.clone();
+        let consistent = |segs: Vec<RecordedSegment>| {
+            let net = Fake(Status::Final(Movement {
+                destination: "addr-1".into(),
+                asset: "USDC".into(),
+                amount: last.clone(),
+            }));
+            let nodes = [NodeRecord { node: "n".into(), segments: segs }];
+            replay_route(&nodes, &exit_of("USDC", &last), &net)
+        };
+        prop_assert!(matches!(consistent(segments.clone()), Replay::Consistent(_)));
+        let mut broken = segments;
+        let i = pick.index(broken.len());
+        if how == 0 {
+            // An amount in changed by one breaks the fee sum, or the link to the segment before.
+            let n: u64 = broken[i].amount_in.parse().unwrap();
+            broken[i].amount_in = (n + 1).to_string();
+        } else {
+            // A fee changed by one breaks the fee sum.
+            let n: u64 = broken[i].fee.parse().unwrap();
+            broken[i].fee = (n + 1).to_string();
+        }
+        prop_assert!(matches!(consistent(broken), Replay::Mismatch(_)));
+    }
+
     // verifies: REQ-ORD-41, AC-35
     #[test]
     fn any_exit_amount_other_than_the_replayed_one_is_a_mismatch(

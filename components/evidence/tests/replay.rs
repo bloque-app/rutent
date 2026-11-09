@@ -267,3 +267,54 @@ fn replaying_a_node_gives_what_leaves_it() {
     .unwrap();
     assert_eq!((out.asset.as_str(), out.amount.as_str()), ("EURC", "890"));
 }
+
+// verifies: REQ-ORD-41
+#[test]
+fn a_fee_larger_than_what_went_in_is_recorded_even_when_the_asset_changes() {
+    let nodes = [node(
+        "vault",
+        vec![seg("USDC", "1000", "EURC", "900", "1001")],
+    )];
+    let net = final_exit("EURC", "900");
+    let replay = replay_route(&nodes, &exit("EURC", "900"), &net);
+    assert_eq!(
+        replay,
+        Replay::Mismatch(vec![Mismatch::FeeMismatch {
+            node: "vault".into(),
+            at: 0
+        }])
+    );
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn an_empty_record_replays_to_a_distinct_mismatch() {
+    assert_eq!(
+        replay_node("vault", &[]),
+        Err(vec![Mismatch::NoSegments {
+            node: "vault".into()
+        }])
+    );
+}
+
+// verifies: REQ-ORD-41, AC-35
+#[test]
+fn a_fault_inside_a_node_does_not_hide_a_mismatch_with_the_public_exit() {
+    let nodes = [node("vault", vec![seg("USDC", "1000", "USDC", "990", "3")])];
+    let net = final_exit("USDC", "900");
+    let replay = replay_route(&nodes, &exit("USDC", "995"), &net);
+    assert_eq!(
+        replay,
+        Replay::Mismatch(vec![
+            Mismatch::FeeMismatch {
+                node: "vault".into(),
+                at: 0
+            },
+            Mismatch::PublicExit(Unmatched::WrongAmount),
+            Mismatch::StatedOutcome {
+                replayed_asset: "USDC".into(),
+                replayed_amount: "990".into()
+            },
+        ])
+    );
+}

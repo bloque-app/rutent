@@ -26,6 +26,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   deposit. Anything else is reported as a named violation, not panicked on and not guessed around.
 - `proptest` is a dev-dependency (`DEC-18`); its lock additions have `licences/RECORD` lines, all permissive.
 
+## T-015-02
+
+- The simulated network is `SimulatedNetwork`, in its own module (`simnet`). It is a hand-driven chain: `record`
+  puts a movement in the tip block, `advance` adds blocks, `checkpoint` covers every block to the tip, `reorg(depth)`
+  undoes the newest `depth` blocks' movements. It imports nothing but the interface (`DEC-2`).
+- Confirmations count the including block as the first, so `Confirmations(n)` is final when the tip is `n - 1`
+  blocks past the including block. `Confirmations(0)` is read as `Confirmations(1)`. `Instant` is final on record.
+  `Checkpoint` is final once a checkpoint taken at or after the including block's height exists.
+- A reorg undoes a movement only when it is not final and the reorg rule allows it: `Never` protects every movement,
+  `DepthBound(d)` protects one with more than `d` confirmations, `UntilFinal` protects only final ones. A final
+  movement is never undone, whatever depth a reorg asks for. Reorgs do not lower the tip height.
+- Recording a movement id the network already holds (not reorged out) is refused, as `T-015-01` reads a movement id
+  as unreusable. A reorged-out id may be recorded again, in a new block, because a reorg puts the transaction back in
+  the pool.
+- A checkpoint covers the movements recorded before it, by order of recording, not by block: a movement recorded
+  after a checkpoint, even into the same tip block, is not final until the next checkpoint. A reorged-out id may come
+  back only with the movement it first named, since a transaction id fixes its content (`ContentChanged` otherwise).
+
 ## T-015-03
 
 - The contracts define no record of a private node's inner segments, so `components/evidence` defines one
@@ -33,12 +51,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   Amounts are canonical decimal integer strings; anything else (`1e3`, a leading zero, a sign) is recorded as
   malformed rather than guessed at.
 - Replay checks what can be checked without a rate: each segment takes in what the one before gave out, and where
-  the asset stays the same, amount in equals amount out plus the fee. Where the asset changes the rate is the node's
-  own, so no fee check is made.
+  the asset stays the same, amount in equals amount out plus the fee. In every segment the fee may not exceed the
+  amount in. Where the asset changes, the exchange rate itself stays unchecked: it is the node's own.
 - A route across several private nodes is replayed node by node in route order; what one node hands on must be what
   the next records taking in. Only the last node's output is compared with the public movement out and the stated
-  outcome. A fault inside a node is recorded alone, because that node's output can't be trusted for later
-  comparisons.
+  outcome. A fault inside a node does not stop the later comparisons: they run on what the record says,
+  and every mismatch is recorded (`REQ-ORD-41`: record any mismatch). An empty record is a `NoSegments` mismatch from
+  `replay_node`; `replay_route` still reports it as `Unreplayable`.
 - The comparison with the public movement reuses `verify_movement` with the replayed value as the expectation, so
   the network alone decides finality (`T-015-01` reading). An unknown, pending or reorged-out exit is recorded as a
   `PublicExit` mismatch: there is no final public movement out to be consistent with.
