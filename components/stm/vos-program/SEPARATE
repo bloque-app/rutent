@@ -1,0 +1,5 @@
+# The separate files of the no_std port (EXP-1's re-score brief, section 3.1): every file beside the generated copy, under
+# probe-nostd/, that is not the original plus its plumbing-only patch. nostd.sh check requires
+# the files there to be exactly the copy and these; every run note lists them.
+probe-nostd/Cargo.toml
+probe-nostd/src/lib.rs

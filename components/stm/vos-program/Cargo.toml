@@ -1,0 +1,54 @@
+# CMP-STM as a VOS program (T-010-05, DEC-26): a VOS guest built with VOS's guest toolchain, running rutent-stm's
+# `Stm`, in a workspace of its own with its own lock. Its other member, `client/`, is the thin Host client.
+#
+# LICENCE. This package links VOS's `vos-sdk`, which is AGPL-3.0-or-later, so it is AGPL-3.0-or-later too, and so are
+# the binaries built from it. The owner ruled this on 2026-11-09 (item `vos-licence-v0`): AGPL covers only the
+# package that links `vos-sdk`. `rutent-stm` and the rest of the repository stay MIT; rutent's own Cargo.lock never
+# sees VOS.
+#
+# ../build.sh builds it for VOS's guest target, with the linker script and build-std on the command line, since
+# cargo's config can't name VOS's checkout.
+[package]
+name = "rutent-stm-vos-program"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "rutent-stm-vos-program"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# Builds the program with the host-contract suite's probe in place of `Stm`, to score the host's mechanics with the
+# suite, which is typed on its probe (T-010-05). Never the program that ships.
+probe-machine = ["dep:rutent-probe"]
+
+[dependencies]
+rutent-contracts = { path = "../../../contracts", default-features = false }
+rutent-probe = { package = "rutent-probe-nostd", path = "probe-nostd", optional = true }
+rutent-stm = { path = "..", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["alloc"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+# VOS at vos-core 5c78975, pinned by SHA (DEC-26). `sources` names where each source is fetched from.
+vos-sdk = { git = "https://github.com/virto-network/vos", rev = "5c7897582688ea93f8d02506bee8ea25da6b1458" }
+
+# A workspace of its own: rutent's workspace never sees this package, and the client (client/) is another one,
+# since the node and the guest build with different toolchains. `probe-nostd` is the generated no_std copy of the
+# suite's probe (nostd.sh).
+[workspace]
+resolver = "3"
+members = [".", "probe-nostd"]
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1

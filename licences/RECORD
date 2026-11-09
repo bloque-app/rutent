@@ -19,12 +19,13 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
-# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/, found by
-# walking the tree (a `target` directory is skipped). One record serves them all. A package locked at the same
-# name and version in several locks has one line; the same name at different versions has one line per version.
+# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/ or components/,
+# found by walking those trees (a `target` directory is skipped). One record serves them all. A package locked at
+# the same name and version in several locks has one line; the same name at different versions has one line per
+# version.
 #
-# Workspace members have no `source` in Cargo.lock, so they have no line here. In an experiment's lock every
-# package without a `source` is a member.
+# Workspace members have no `source` in Cargo.lock, so they have no line here. In an experiment's lock, or a
+# component's own, every package without a `source` is a member.
 # Blank lines and lines starting with `#` are ignored.
 #
 addr2line 0.26.1 Apache-2.0 OR MIT permitted licence-permissive-standing
@@ -304,6 +305,7 @@ rustversion 1.0.23 MIT OR Apache-2.0 permitted licence-permissive-standing
 rusty-fork 0.3.1 MIT/Apache-2.0 permitted licence-permissive-standing
 rutent-contracts-nostd 0.0.0 MIT permitted licence-permissive-standing
 rutent-probe-nostd 0.0.0 MIT permitted licence-permissive-standing
+rutent-stm-vos-program 0.0.0 AGPL-3.0-or-later permitted DEC-26,vos-licence-v0
 rutent-vos-journal 0.0.0 MIT permitted licence-permissive-standing
 rutent-vos-program 0.0.0 MIT permitted licence-permissive-standing
 scopeguard 1.2.0 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -478,8 +480,8 @@ zeroize_derive 1.5.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 zmij 1.0.21 MIT permitted licence-permissive-standing
 zmij 1.0.23 MIT permitted licence-permissive-standing
 # vos: adopted in part for v0 (item vos-licence-v0, 2026-11-09). AGPL-3.0-or-later applies only to the
-# package that links vos-sdk (the VOS program of T-010-05) and to binaries built from it. Every other package
-# stays MIT; the libraries stay runtime-neutral behind the host contract. Mixed licensing, as counsel-licences
+# packages that link VOS code: the VOS program and its client (T-010-05), and to binaries built from them. Every
+# other package stays MIT; the libraries stay runtime-neutral behind the host contract. Mixed licensing, as counsel-licences
 # rules.
 vos not-adopted AGPL-3.0-or-later permitted DEC-26,vos-licence-v0
 vault not-adopted BUSL-1.1 pending DEC-9,ADR-0004

@@ -14,14 +14,20 @@
 //!   `REQ-CAT-15`, `REQ-CAT-18`, `INV-2`).
 //! - [`check_tuple`]: the shape of a tuple (`REQ-CAT-13`, `REQ-CAT-21`).
 //! - [`Catalogue::snapshot`]: what the router reads (`T-012-03`).
+//! - `advertisements`: advertisements by their received bytes, first trust by the operator's grant, the key history
+//!   and the clock rule (`T-012-02`; `REQ-CAT-2`, `THR-4`).
+//! - `signature`: the Ed25519 verifier over the contract's canonical bytes (`REQ-PRT-1`, `THR-8`), the one admission
+//!   uses.
 //! - [`Catalogue`]: the whole, with the join rule of `REQ-CAT-16`.
 //!
 //! The catalogue is a plain value with no clock and no provider names in it: every time is passed in, and a
 //! provider the project builds is held to the same rules as any stand-in (`REQ-MOD-4`).
 //!
 //! The caller (the router or Core) must pass its own clock as `at`: a stale `at` would honour an expired grant.
-//! `T-012-02`'s check on how far ahead an advertisement is dated uses that same `at`.
+//! The check on how far ahead an advertisement is dated uses that same `at`, and a figure's age counts from its
+//! advertisement's `made_at`.
 
+mod advertisements;
 mod balance;
 mod bounds;
 mod declaration;
@@ -30,9 +36,12 @@ mod nodes;
 mod publisher;
 mod reversal;
 mod segments;
+mod signature;
 mod snapshot;
+mod time;
 mod tuples;
 
+pub use advertisements::{DEFAULT_CLOCK_SKEW_SECONDS, JoinRefusal, StatementRefusal};
 pub use balance::{
     Alert, CheckBound, CheckKind, CheckRecord, CheckRefusal, CheckTicket, Eligibility, Verdict,
     reveals_sufficiency,
@@ -53,12 +62,18 @@ pub use segments::{
     DryRunAssessment, DryRunError, EffectError, RefusalClass, SegmentDecline, SegmentEffect,
     UndoVerdict, judge_reversal, segment_effect,
 };
+pub use signature::{
+    SignatureError, check_public_key, decode_signature, verify_ed25519, verify_envelope,
+    verify_text,
+};
 pub use snapshot::{LeftOut, LeftOutReason, SnapshotBuild, SnapshotError};
 pub use tuples::{TupleRefusal, check_tuple};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use rutent_contracts::provider_role::{Advertisement, Declarations, EvidenceGrade};
+use rutent_contracts::provider_role::{
+    Advertisement, Declarations, Deployment, EvidenceGrade, PublicKey,
+};
 use rutent_contracts::router_api::Version;
 
 /// Why a provider's tuple can't be used in a new route.
@@ -93,31 +108,18 @@ pub enum CatalogueError {
     UnknownGrant(String),
     /// The reversal-capacity rule refused it (`DEC-11`).
     Reversal(ReversalError),
-}
-
-/// Why a provider can't join (`REQ-CAT-16`, `REQ-CAT-2`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JoinRefusal {
-    /// It offers neither an identifier nor a status query to follow an outcome with.
-    NoTracking,
-    /// The advertisement breaks one of the contract's rules.
-    Invalid(Vec<rutent_contracts::provider_role::RuleViolation>),
-    /// The provider has no grant in force: entry is by the operator's grant.
-    NoGrantInForce,
-    /// A publisher rule refused it.
-    Publisher(PublisherError),
-    /// A declaration rule refused it.
-    Declaration(DeclarationError),
-    /// It declares a private node the operator lists as public (`REQ-CAT-22`).
-    PrivateNodeIsPublic(String),
+    /// The key is a statements key somewhere, so it can't be trusted for advertising (`THR-4`).
+    KeyIsAStatementsKey,
+    /// The key is an advertising key somewhere, so it can't be a statements key (`THR-4`).
+    KeyIsAnAdvertisingKey,
 }
 
 /// An advertisement as joined, and when.
 #[derive(Debug, Clone)]
 struct Joined {
     advertisement: Advertisement,
-    /// When the catalogue took it: its figures' age counts from here.
-    stated_at: Instant,
+    /// When it was made, to the whole second: its figures' age counts from here (`REQ-QTE-4`).
+    made_at: Instant,
 }
 
 /// The catalogue.
@@ -129,6 +131,11 @@ pub struct Catalogue {
     publishers: PublisherIndex,
     owed: OwedReversals,
     joined: BTreeMap<String, Joined>,
+    ads: BTreeMap<String, Vec<advertisements::Accepted>>,
+    advertising_seen: HashSet<PublicKey>,
+    statements_seen: HashSet<PublicKey>,
+    context: Option<(Deployment, String)>,
+    skew_secs: Option<u64>,
     nodes: NodeBook,
     floors: HashMap<TupleKey, EvidenceGrade>,
     modules: BTreeMap<String, Version>,
@@ -287,49 +294,6 @@ impl Catalogue {
             .iter_mut()
             .find(|g| g.id() == id)
             .ok_or_else(|| CatalogueError::UnknownGrant(id.to_owned()))
-    }
-
-    /// Admits an advertisement: it follows the contract's rules, offers a way to follow an outcome
-    /// (`REQ-CAT-16`), comes from a provider with a grant in force (`REQ-CAT-2`), and its publisher and reserve
-    /// declaration are recorded. A refusal changes nothing.
-    pub fn join(&mut self, ad: &Advertisement, at: Instant) -> Result<(), JoinRefusal> {
-        if ad.declarations.tracking.is_empty() {
-            return Err(JoinRefusal::NoTracking);
-        }
-        rutent_contracts::provider_role::validate(ad).map_err(JoinRefusal::Invalid)?;
-        let in_force = self
-            .grants_of_provider(&ad.provider)
-            .iter()
-            .any(|g| g.standing(at) == Standing::InForce);
-        if !in_force {
-            return Err(JoinRefusal::NoGrantInForce);
-        }
-        if let Some(node) = ad.private_nodes.iter().find(|n| self.nodes.is_public(n)) {
-            return Err(JoinRefusal::PrivateNodeIsPublic(node.clone()));
-        }
-        let backup = (self.publishers.clone(), self.declarations.clone());
-        let done = self
-            .publishers
-            .register(ad)
-            .map_err(JoinRefusal::Publisher)
-            .and_then(|()| {
-                self.declarations
-                    .record(ad, at)
-                    .map(|_| ())
-                    .map_err(JoinRefusal::Declaration)
-            });
-        if done.is_err() {
-            (self.publishers, self.declarations) = backup;
-        } else {
-            self.joined.insert(
-                ad.provider.clone(),
-                Joined {
-                    advertisement: ad.clone(),
-                    stated_at: at,
-                },
-            );
-        }
-        done
     }
 
     /// What a joined provider declared: how it is followed, its evidence and whether a repeat is safe

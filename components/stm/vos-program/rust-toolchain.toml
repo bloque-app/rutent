@@ -1,0 +1,4 @@
+# VOS's guest toolchain at the re-score's commit (its agent/programs/rust-toolchain.toml).
+[toolchain]
+channel = "nightly-2026-03-20"
+components = ["rust-src"]

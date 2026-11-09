@@ -639,3 +639,45 @@ fn a_process_spawned_beside_a_closing_store_never_keeps_its_lock() {
         assert_eq!(failure, None);
     });
 }
+
+// verifies: REQ-OPS-3
+#[test]
+fn open_refused_while_children_spawn_is_retried() {
+    let _gate = stores_in_use();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let store = harness.fresh_store().unwrap();
+    let held = Pb::open(store.clone()).unwrap();
+    // A spawned child keeps a dropped host's lock for a moment; here the lock is let go of a little after the
+    // open starts, which is what the open must wait out.
+    let releasing = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        drop(held);
+    });
+    let reopened = Pb::open(store);
+    releasing.join().unwrap();
+    assert!(
+        reopened.is_ok(),
+        "the open gave up on a lock that was let go of: {:?}",
+        reopened.map(|_| ())
+    );
+}
+
+// verifies: REQ-OPS-3, NFR-6
+#[test]
+fn a_store_held_open_by_a_live_host_is_still_refused_when_the_retries_run_out() {
+    let _gate = stores_in_use();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let store = harness.fresh_store().unwrap();
+    let _live = Pb::open(store.clone()).unwrap();
+    let started = std::time::Instant::now();
+    match Pb::open(store) {
+        Err(HostError::Unavailable { reason }) => {
+            assert!(reason.contains("another host"), "{reason}")
+        }
+        other => panic!("a second host opened a live store: {:?}", other.map(|_| ())),
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the retries are bounded"
+    );
+}

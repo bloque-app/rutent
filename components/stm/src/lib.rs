@@ -14,13 +14,16 @@
 //! are `F-020`'s.
 //!
 //! The in-memory reference host of `T-005-04` is built with the `std` feature, and the purpose-built store of
-//! `EXP-1` (`T-007-02`) only with the `purpose-built-store` feature, off by default.
+//! `EXP-1` (`T-007-02`) only with the `purpose-built-store` feature, off by default. [`open_retry`] is the bounded
+//! retry of an open refused while the platform spawns children, which the store and the VOS client share.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 mod hand_on;
 mod machine;
+#[cfg(feature = "std")]
+pub mod open_retry;
 mod parts;
 #[cfg(feature = "purpose-built-store")]
 pub mod purpose_built_store;
