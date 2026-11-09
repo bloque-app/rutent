@@ -613,7 +613,7 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
             );
             assert!(matches!(
                 events.calls[0].outcome,
-                CrossModuleOutcome::Refused(ref r) if r.reason == CallRefusalReason::CalleeUnavailable
+                CrossModuleOutcome::Refused(ref r) if r.reason == CallRefusalReason::LimitReached
             ));
             assert!(matches!(
                 events.calls[1].outcome,
@@ -621,6 +621,47 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
             ));
             assert_eq!(binding.operations_received(&names[2]), 0);
         }
+    }
+}
+
+/// A call over the caller's own count of calls is refused for the limit, not as an unavailable callee: the callee
+/// runs, and the record says the caller's bound refused it.
+// verifies: DEC-4, REQ-MDL-9
+#[test]
+fn call_refused_by_a_limit_names_its_own_reason() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("counted-{language}"), format!("running-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        let steps = (0..2)
+            .map(|_| Step::CallModule {
+                callee: callee.clone(),
+                kind: OperationKind::Withdrawal,
+            })
+            .collect();
+        let caller_module = module(calling(&caller, Some(&callee)), steps);
+        install(&mut binding, &caller_module, &language, "reserve", &[]);
+        binding.set_bounds(tight(|b| b.per_operation.module_calls = 1));
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert_eq!(handled, Handled::Refused(PlatformRefusal::LimitReached));
+        let events = binding.take_events();
+        let refused = events.calls.last().expect("a record of the refused call");
+        let reason = serde_json::to_value(&refused.outcome).expect("JSON")["reason"].clone();
+        assert_ne!(reason, "callee_unavailable", "{language}");
+        assert_eq!(reason, "limit_reached", "{language}");
+        assert_eq!(validate_call(refused), Ok(()));
+        assert_eq!(
+            validate_call_against(&caller_module.declaration, refused),
+            Ok(())
+        );
+        assert_eq!(binding.operations_received(&callee), 1, "{language}");
     }
 }
 

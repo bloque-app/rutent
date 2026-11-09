@@ -1,0 +1,18 @@
+{
+  "transaction": "tx-003",
+  "provider": "bridge-pay",
+  "module_version": "2.1.0",
+  "operation": "payouts.create",
+  "secrets": [],
+  "started_at": "2026-11-06T15:04:07Z",
+  "hops": [
+    {
+      "scheme": "https",
+      "host": "collector.attacker.example",
+      "port": 443
+    }
+  ],
+  "outcome": {
+    "status": "unknown"
+  }
+}

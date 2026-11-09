@@ -17,11 +17,13 @@ use serde_json::{Value, json};
 /// The proxy over fake stores, as the tests build it.
 pub type Proxy = CredentialProxy<KvResolver<Arc<Store>>>;
 
-/// A fake KV version 2 store: answers each path written to it, 404 otherwise, and keeps every request's path.
+/// A fake KV version 2 store: answers each path written to it, 404 otherwise, and keeps every request's path. Set
+/// failing, it answers every request with that status instead.
 #[derive(Default)]
 pub struct Store {
     values: Mutex<HashMap<String, String>>,
     seen: Mutex<Vec<String>>,
+    failing: Mutex<Option<u16>>,
 }
 
 impl Store {
@@ -37,11 +39,23 @@ impl Store {
     pub fn seen(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
+
+    /// Answers every later request with `status` and no secret, as a sealed, overloaded or misconfigured store
+    /// does; `None` answers as before.
+    pub fn fail_with(&self, status: Option<u16>) {
+        *self.failing.lock().unwrap() = status;
+    }
 }
 
 impl Transport for Store {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
         self.seen.lock().unwrap().push(request.path().to_owned());
+        if let Some(status) = *self.failing.lock().unwrap() {
+            return Ok(Response {
+                status,
+                body: b"{\"errors\":[]}".to_vec(),
+            });
+        }
         Ok(match self.values.lock().unwrap().get(request.path()) {
             Some(value) => Response {
                 status: 200,

@@ -1,5 +1,24 @@
 # module-interface changelog
 
+## 4.0.0
+- Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module
+  call refused because its caller reached a limit on its calls is `limit_reached`, and one refused because too little
+  of the caller's deadline is left is `deadline_too_near`, where both were `callee_unavailable`. An outbound call
+  whose peer didn't prove over TLS that it is the declared host is refused as `peer_not_verified`, where it was
+  `undeclared_destination`. A secret lookup the store couldn't answer is refused as `store_unavailable`, never
+  `not_found`. `AdmissionRefusal` gains `AdmissionPending` (a new release while another waits for its acceptance)
+  and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
+  the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
+  Rust test. (DEC-4, DEC-20, T-010-09)
+- `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
+  nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
+  ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)
+- `RefusalReason`, `SecretRefusalReason`, `CallRefusalReason`, `AdmissionRefusal` and `PlatformRefusal` are
+  `#[non_exhaustive]`, so a Rust caller's match has a wildcard arm and a later reason doesn't break its build. A new
+  value on the wire is still a major (`DEC-4`): a reader on an older schema rejects it. New Rust variants and the
+  attribute both break an exhaustive match, so this is a major. Fixtures keep naming interface 2.0.1: nothing
+  compares it. (DEC-4, DEC-20, T-010-09)
+
 ## 3.0.0
 - Breaking: a cross-module call is recorded as `delivered` only when its callee answered. A call the platform
   passed on and got no answer to, its callee stopped, killed at a deadline or answering unreadably, is the new

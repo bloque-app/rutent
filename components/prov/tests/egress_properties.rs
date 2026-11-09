@@ -401,9 +401,12 @@ fn every_call_leaves_one_record_its_declaration_accepts() {
             .filter(|s| matches!(s, Seen::Dialled { .. }))
             .count();
         let connected = record.hops.iter().filter(|h| h.address.is_some()).count();
-        let unverified =
-            usize::from(outcome == Outcome::Refused(rutent_prov::egress::Refusal::NotVerified));
-        assert_eq!(connected + unverified, dials, "seed {seed}: {record:?}");
+        // A dial that failed its TLS check, or connected to nothing, leaves its hop with no address.
+        let unconnected = usize::from(matches!(
+            outcome,
+            Outcome::Refused(rutent_prov::egress::Refusal::NotVerified) | Outcome::Unreachable
+        ));
+        assert_eq!(connected + unconnected, dials, "seed {seed}: {record:?}");
         assert!(record.hops.len() <= MAX_HOPS, "seed {seed}");
         let status = match (&outcome, &record.outcome) {
             (Outcome::Completed(_), CallOutcome::Completed(_))

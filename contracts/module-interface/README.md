@@ -99,7 +99,9 @@ rule it is named for:
     calling process's own provider, which it knows from the process (ADR-0003), never from the request. So a lookup
     can't ask for another provider's secret (`REQ-MDL-9`). The answer carries the current value, so rotating a
     secret needs no release (`REQ-MDL-6`). The secret answer is the only shape here that carries plaintext, and only
-    the outside part receives it.
+    the outside part receives it. A refused lookup names its reason: `undeclared_secret`, `not_found` when the
+    provider holds no secret by the name, or, since 4.0.0, `store_unavailable` when the store couldn't be asked or
+    gave no usable answer, so a failed store is never reported as a missing secret.
   - **It signs the sandboxed part's results** with its declared statement-signing key, as "Signing a result"
     below states.
   - **What the outside part does with plaintext** is not bounded by this contract: its author reads it by design
@@ -287,10 +289,13 @@ The checks run per hop: the first connection, then each redirect.
 - **Connected address:** the address actually connected to, not one resolved earlier, must satisfy that
   destination's `addresses`. Otherwise the call is refused (`address_not_allowed`). This is what "altered
   resolution" in `REQ-MDL-7` is tested against.
+- **TLS:** the peer at that address must prove it is the declared host. Otherwise the call is refused before any
+  byte of it is sent (`peer_not_verified`, since 4.0.0).
 
 The outbound call record shows each check was made. Each hop records the scheme, host and port asked for, the
-declared destination it matched, and the address connected to. Every hop but the last of a refused call matched
-and connected.
+declared destination it matched, and the address connected to. Every hop matched and connected, but the last of a
+refused call, and, since 4.0.0, the last of an `unknown` call that matched a declared destination and connected to
+nothing: its dial failed, so the record names no address.
 
 ## The outbound call record
 
@@ -327,7 +332,9 @@ The platform's egress layer writes it, not the module, since the outside part is
   - `undeclared_callee`: the caller doesn't declare the callee;
   - `undeclared_kind`: it declares the callee but not the kind;
   - `not_named_by_route`: the route doesn't name the call;
-  - `callee_unavailable`: the callee's module isn't running.
+  - `limit_reached` (since 4.0.0): the caller reached a limit on its calls, their count or depth (`REQ-MDL-11`);
+  - `callee_unavailable`: the callee's module isn't running;
+  - `deadline_too_near` (since 4.0.0): too little of the caller's deadline is left for the callee to answer in it.
 
   `validate_call` checks that a refusal's callee and kind are the operation's. `validate_call_against(declaration,
   call)` checks the outcome against the caller's declaration: a call passed on, delivered or unanswered, has its
@@ -343,14 +350,21 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
 
 - `AdmissionRefusal`: a part altered from its asserted digest (`PartAltered`), binaries the binding can't read
   (`UnreadableBinary`), a part importing what the binding doesn't offer it (`DisallowedImport`), a version the
-  provider already has admitted or waiting (`VersionAlreadyAdmitted`), or a module judged unable to start
-  (`WontStart`).
+  provider already has admitted or waiting (`VersionAlreadyAdmitted`), a module judged unable to start
+  (`WontStart`), and since 4.0.0 a new release while another waits for its acceptance (`AdmissionPending`) or one
+  whose signed assertion doesn't verify (`AssertionUnverified`).
 - `PlatformRefusal`, for an operation's answer: malformed or oversized output (`REQ-MDL-12`), a part stopped by a
   limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running
   (`Unavailable`), or a kind the module doesn't handle (`NotHandled`).
 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.
+
+Since 4.0.0 every reason enum a platform gives is `#[non_exhaustive]`: `AdmissionRefusal` and `PlatformRefusal`,
+and the outbound call's `RefusalReason`, the secret answer's `SecretRefusalReason` and the cross-module call's
+`CallRefusalReason`. A Rust match on one needs a wildcard arm, so a reason added later spares Rust callers a
+broken build. It spares no one else: the contract is language-neutral (`DEC-4`), and a reader validating against
+an older schema still rejects a new value, so a new reason on the wire is still a major version.
 
 ## Which rule lives where
 
@@ -394,16 +408,17 @@ governs.
 | An outbound call record's secrets are ones its operation declares, and the record is the declared module's | Rust, `validate_record_secrets`: `RecordedSecretUndeclaredForOperation`, `RecordOfAnotherModule` | `declared-outbound-call-record-using-a-secret-its-operation-does-not-declare`, `declared-outbound-call-record-of-another-module-version` |
 | A secret lookup's operation is declared, and declares the secret | Rust, `validate_lookup`: `LookupForUndeclaredOperation`, `SecretUndeclaredForOperation` | `declared-secret-lookup-for-an-undeclared-operation`, `declared-secret-lookup-of-a-secret-its-operation-does-not-declare` |
 | A resolved secret carries a non-empty value | schema, and Rust | `secret-answer-resolved-without-a-value`, `secret-answer-resolved-to-an-empty-value` |
+| A refused secret answer states a known reason | schema | `secret-answer-refused-for-an-unknown-reason` |
 | An outbound call record names its transaction and module version, and has at least one hop | schema | `outbound-call-record-without-a-transaction`, `outbound-call-record-without-a-module-version`, `outbound-call-record-without-hops` |
 | It names the secrets used, never their values; a connected address is an IP address | schema, and Rust | `outbound-call-record-carrying-a-secret-value`, `outbound-call-record-connected-to-a-host-name-as-its-address`, `outbound-call-record-connected-to-a-malformed-ipv6-address` |
 | A hop's optional destination and address are absent or present, never `null` | schema, and Rust | `outbound-call-record-hop-with-a-null-destination`, `outbound-call-record-hop-with-a-null-address` |
-| A refused call states its reason; any other outcome carries none | schema | `outbound-call-record-refused-without-a-reason`, `outbound-call-record-completed-carrying-a-reason` |
-| Every hop matched a declared destination and connected, except the last hop of a refused call | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop` |
+| A refused call states a known reason; any other outcome carries none | schema | `outbound-call-record-refused-without-a-reason`, `outbound-call-record-refused-for-an-unknown-reason`, `outbound-call-record-completed-carrying-a-reason` |
+| Every hop matched a declared destination and connected, except the last hop of a refused call and the last hop of an `unknown` call that matched a declared destination | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop`, `outbound-call-record-unknown-through-an-unconnected-hop-before-the-last`, `outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination` |
 | A cross-module call names its transaction and its route segment, and carries no credentials | schema | `cross-module-call-without-a-transaction`, `cross-module-call-without-a-route`, `cross-module-call-route-without-its-segment`, `cross-module-call-carrying-credentials` |
 | A cross-module call's callee isn't its caller, and its operation names the call's transaction | Rust, `CallToOwnProvider`, `TransactionMismatch` | `cross-module-call-to-its-own-provider`, `cross-module-call-for-another-transaction` |
 | A cross-module call records its outcome; a refusal names the callee, the kind and a known reason; an unanswered call carries nothing | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason`, `cross-module-call-unanswered-carrying-a-reason` |
 | A refusal's callee and kind are the call's | Rust, `RefusalNamesAnotherCall` | `cross-module-call-refusal-naming-another-callee` |
-| A call passed on, delivered or unanswered, is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-unanswered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
+| A call passed on, delivered or unanswered, is declared; a refusal's reason is true of the caller's declaration; the call is the declared module's | Rust, `validate_call_against`: `UndeclaredCallDelivered`, `RefusalReasonUntrue`, `CallOfAnotherModule` | `declared-cross-module-call-delivered-to-an-undeclared-callee`, `declared-cross-module-call-delivered-of-an-undeclared-kind`, `declared-cross-module-call-unanswered-of-an-undeclared-kind`, `declared-cross-module-call-refused-as-undeclared-though-declared`, `declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee`, `declared-cross-module-call-refused-as-a-limit-to-an-undeclared-callee`, `declared-cross-module-call-of-another-module-version` |
 | A signed result's `signature.key` is the declared `statement_key` | Rust, `ResultNotSignedWithStatementKey` | `signed-result-signed-with-another-advertised-key` |
 | The `statement_key` is one of the provider's advertised `keys`, listed for `statements`, and isn't the deployment's `operator_key` | Rust, `StatementKeyNotAdvertised`, `StatementKeyNotForStatements`, `StatementKeyIsOperatorKey` | `signed-result-statement-key-not-advertised`, `signed-result-statement-key-listed-for-advertising`, `signed-result-statement-key-is-the-operator-key` |
 | The advertisement checked is the declaring provider's own | Rust, `AdvertisementOfAnotherProvider` | `signed-result-checked-against-another-providers-advertisement` |

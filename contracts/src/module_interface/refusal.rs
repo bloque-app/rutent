@@ -5,8 +5,9 @@
 
 use super::admission::PartName;
 
-/// Why a platform refused a release at admission.
+/// Why a platform refused a release at admission. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AdmissionRefusal {
     /// This part's binary differs from the digest its assertion states (`REQ-MDL-1`).
     PartAltered(PartName),
@@ -21,10 +22,17 @@ pub enum AdmissionRefusal {
     VersionAlreadyAdmitted,
     /// The binding judged at admission that the module won't start.
     WontStart,
+    /// Another release of the provider waits for its fresh acceptance, so no new one is admitted until it is
+    /// accepted or withdrawn (`REQ-MDL-3`).
+    AdmissionPending,
+    /// The release's signed assertion doesn't verify: its signature, its signing key, or the deployment or
+    /// protocol version it names. Nothing of the release is judged further (`REQ-MDL-1`).
+    AssertionUnverified,
 }
 
-/// Why a platform refused to pass a module's answer on.
+/// Why a platform refused to pass a module's answer on. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum PlatformRefusal {
     /// The output isn't a result of the operation's shape: unparseable, of another kind, for another transaction,
     /// or with an unknown field (`REQ-MDL-12`).

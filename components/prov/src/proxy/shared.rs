@@ -62,9 +62,10 @@ pub struct InFlight {
 
 /// Why the proxy refused a lookup, an admission or a request. No variant carries a value or a token (`THR-50`).
 ///
-/// On the wire the contract has two reasons ([`Refusal::wire_reason`]): `not_found` when the caller's provider holds
-/// no secret by a name it may resolve, and `undeclared_secret` for every other refusal, so a module learns nothing
-/// about another provider, another request or the deployment from the reason. The record keeps the true cause.
+/// On the wire the contract has three reasons ([`Refusal::wire_reason`]): `not_found` when the caller's provider
+/// holds no secret by a name it may resolve, `store_unavailable` when the store couldn't be asked or gave no usable
+/// answer, whatever the failure, and `undeclared_secret` for every other refusal, so a module learns nothing about
+/// another provider, another request or the deployment from the reason. The record keeps the true cause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The deployment settings give the provider no process role, so it has no bucket.
@@ -106,13 +107,13 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The contract's reason for this refusal, or `None` for a store failure, which the contract gives no reason
-    /// for: the outside part is told no answer came.
-    pub fn wire_reason(&self) -> Option<SecretRefusalReason> {
+    /// The contract's reason for this refusal. Every store failure is `store_unavailable`, never `not_found`
+    /// (module-interface 4.0.0, `T-010-09`).
+    pub fn wire_reason(&self) -> SecretRefusalReason {
         match self {
-            Refusal::NotFound => Some(SecretRefusalReason::NotFound),
-            Refusal::Store(_) => None,
-            _ => Some(SecretRefusalReason::UndeclaredSecret),
+            Refusal::NotFound => SecretRefusalReason::NotFound,
+            Refusal::Store(_) => SecretRefusalReason::StoreUnavailable,
+            _ => SecretRefusalReason::UndeclaredSecret,
         }
     }
 }
@@ -142,26 +143,22 @@ pub fn judge(
     validate_lookup(release, lookup).map_err(|_| Refusal::UndeclaredSecret)
 }
 
-/// The contract's answer to `lookup` for `result`, or `None` when the store failed, which the contract has no
-/// answer for.
-pub fn answer(
-    lookup: &SecretLookup,
-    result: &Result<SecretValue, Refusal>,
-) -> Option<SecretAnswer> {
+/// The contract's answer to `lookup` for `result`.
+pub fn answer(lookup: &SecretLookup, result: &Result<SecretValue, Refusal>) -> SecretAnswer {
     let outcome = match result {
         Ok(value) => SecretOutcome::Resolved(Resolved {
             value: value.clone(),
         }),
         Err(refusal) => SecretOutcome::Refused(SecretRefused {
-            reason: refusal.wire_reason()?,
+            reason: refusal.wire_reason(),
         }),
     };
-    Some(SecretAnswer {
+    SecretAnswer {
         transaction: lookup.transaction.clone(),
         operation: lookup.operation.clone(),
         name: lookup.name.clone(),
         outcome,
-    })
+    }
 }
 
 /// What a use asked for.

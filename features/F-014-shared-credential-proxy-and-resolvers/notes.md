@@ -102,20 +102,21 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   header and any framing header (`content-length`, `transfer-encoding`, `connection`, `te`, `upgrade`, `trailer`,
   `keep-alive`, `proxy-connection`), and a header with a control character in its value. `Debug` never prints a
   sensitive header's value or a body (`THR-50`).
-- **Gap in the contract, item raised: a TLS refusal reason.** `module-interface`'s `RefusalReason` has no reason
-  for a failed TLS check. Until it has one (a minor bump of `contracts/`, a `DEC-20` path, outside this task),
-  `Refusal::NotVerified` is recorded as `undeclared_destination`. The reading is that a peer which doesn't prove it
-  is the declared host is not shown to be the declared destination. The hop keeps the destination it matched by
-  name and has no address, since no verified connection was made. `Egress` itself returns the precise
-  `Refusal::NotVerified`.
-- **Gap in the contract, item raised: an unanswered hop that isn't refused.** `validate_record` allows an
-  unconnected hop only as the last hop of a refused call, so a call whose dial failed has no valid shape with
-  `address` absent. Reading: `ConnectError::Unreachable` and `ConnectError::NoAnswer` are both recorded as
-  `unknown`, with the hop's `address` the one dialled, so the record says where the call went. `Egress` still tells
-  the two apart (`Outcome::Unreachable` and `Outcome::NoAnswer`). Recording `unknown` and not `failed` errs the
-  safe way for money: the caller checks rather than assuming nothing happened. The platform's current path,
-  `World::route` returning `None`, records `failed` with no address, which `validate_record` refuses. That is
-  noted here and not fixed (`module/` is `F-013`'s).
+- **Gap in the contract, item raised: a TLS refusal reason (closed by `T-010-09`).** `module-interface`'s
+  `RefusalReason` had no reason for a failed TLS check, so `Refusal::NotVerified` was recorded as
+  `undeclared_destination`, on the reading that a peer which doesn't prove it is the declared host is not shown to
+  be the declared destination. Module-interface 4.0.0 adds `peer_not_verified`, which `Refusal::reason` now gives.
+  The hop keeps the destination it matched by name and has no address, since no verified connection was made.
+- **Gap in the contract, item raised: an unanswered hop that isn't refused (closed by `T-010-09`).**
+  `validate_record` allowed an unconnected hop only as the last hop of a refused call, so a call whose dial failed
+  had no valid shape with `address` absent, and `ConnectError::Unreachable` was recorded with the address dialled.
+  Since module-interface 4.0.0 an `unknown` call's last hop may match a destination and name no address, and
+  `Egress` records it so: `ConnectError::NoAnswer` keeps the address it connected to, `Unreachable` names none.
+  Both stay `unknown`, and `Egress` still tells them apart (`Outcome::Unreachable` and `Outcome::NoAnswer`).
+  Recording `unknown` and not `failed` errs the safe way for money: the caller checks rather than assuming nothing
+  happened. The platform's current path, `World::route` returning `None`, records `failed` with no address, which
+  `validate_record` refuses. That is noted here and not fixed (`module/` is `F-013`'s); `T-010-09` left it too,
+  since `T-014-05` replaces the loop with `Egress`.
 - **The platform's hook, not edited.** `module/platform.rs` is untouched. Its `World::route` then `World::deliver`
   splits the check from the use: against a real network, `deliver` would resolve again, which is the window
   `B-17` closes, and a redirect is known only after sending, not from a lookup. So the platform's loop can't
@@ -211,7 +212,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `CredentialProxy` the platform's production `World`, with the platform calling `begin_*`/`end_*` from its own
   context, moved to `T-014-05` (below). That work changes the `World::secret` hook as well. The hook returns
   `Option<String>`, so a store failure would reach the module as `not_found`; it needs a result that tells a
-  missing secret from a failed store.
+  missing secret from a failed store. The contract reason for that, `store_unavailable`, came with `T-010-09`
+  (module-interface 4.0.0); the hook change stays `T-014-05`'s. When it lands, `module/platform.rs`'s `lookup`
+  must map `store_unavailable` explicitly: its reply's `_ =>` arm turns every reason but `not_found` into
+  `"undeclared_secret"`, so a store failure would go out under the wrong reason (`T-010-09`'s review).
 - **Admission.** `admit` takes the accepted `AdmissionArtefact` and the advertisement the catalogue accepted for its
   provider. It refuses an artefact that isn't accepted yet, an advertisement of another provider, and a provider the
   settings give no role. It does not re-run `validate_artefact`, which admission (`F-013`) already runs. Its own
@@ -221,14 +225,14 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   most 255 bytes. The contract's `Name` allows any non-empty text, so without this a release could pass admission
   and then fail every lookup. The resolver keeps its own check as well. A property test drives generated names of 1
   to 300 bytes through admission and lookup.
-- **Refusals on the wire.** The contract has two reasons, `undeclared_secret` and `not_found`, and `contracts/` is
-  `F-010`'s, so no reason is added. `Refusal::wire_reason` maps `NotFound` to `not_found`, and every other refusal
+- **Refusals on the wire.** The contract had two reasons, `undeclared_secret` and `not_found`, and `contracts/` is
+  `F-010`'s, so no reason was added here. `Refusal::wire_reason` maps `NotFound` to `not_found`, and every other refusal
   to `undeclared_secret`: no role, no release, no request in flight, a request of another provider, another
   transaction or operation, an undeclared operation or secret. That matches what the platform already answered, and
   it tells a module nothing about another provider or the deployment. A store failure (denied token, unavailable
-  store, transport) has no reason in the contract. `wire_reason` gives `None` and `proxy::answer` no answer, so the
-  outside part learns no answer came. The record keeps the true cause in each case. A contract reason for a store
-  failure moved to `T-010-09`, the row that owns it.
+  store, transport) had no reason in the contract, so `wire_reason` gave `None` and `proxy::answer` no answer. The
+  record keeps the true cause in each case. `T-010-09` added `store_unavailable` (module-interface 4.0.0): every
+  store failure now maps to it, and `wire_reason` and `answer` are total.
 - **Every use recorded.** Each `lookup` and `statement_key` call, resolved or refused, leaves one `Use`: the
   provider, its running module version, the transaction, the outside operation (`None` for the statement key), what
   was asked for, and the outcome. A `Use` never holds the value, and neither does its `Debug` (`THR-50`). The
@@ -316,4 +320,4 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
     - the production `World`, with the platform calling `begin_*`/`end_*`, and the `World::secret` change;
     - the statement key's wire message.
 
-    The store failure's contract reason moved to `T-010-09`, which owns it.
+    The store failure's contract reason moved to `T-010-09`, which added it as `store_unavailable`.

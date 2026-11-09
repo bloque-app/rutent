@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::module_interface::{
-    self, Address, AddressBlock, AdmissionArtefact, CallRefusalReason, CrossModuleCall,
-    CrossModuleOutcome, Declaration, DeclaredList, Nothing, OutboundCallRecord, OutsideRequest,
-    OutsideResponse, ReleaseAssertion, RuleViolation, SecretAnswer, SecretLookup, SecretOutcome,
-    Widening,
+    self, Address, AddressBlock, AdmissionArtefact, AdmissionRefusal, CallOutcome,
+    CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration, DeclaredList, Nothing,
+    OutboundCallRecord, OutsideRequest, OutsideResponse, RefusalReason, ReleaseAssertion,
+    RuleViolation, SecretAnswer, SecretLookup, SecretOutcome, SecretRefusalReason, Widening,
 };
 use rutent_contracts::provider_role::{self, Advertisement, ResultBody, Statement};
 use serde::de::DeserializeOwned;
@@ -334,6 +334,14 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/outcome", "required")],
         ),
         (
+            "outbound-call-record-refused-for-an-unknown-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
+            "secret-answer-refused-for-an-unknown-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
             "cross-module-call-unanswered-carrying-a-reason",
             vec![("/outcome", "additionalProperties")],
         ),
@@ -476,6 +484,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::HopNotConnected { hop: 1 }),
         ),
         (
+            "outbound-call-record-unknown-through-an-unconnected-hop-before-the-last",
+            one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
+            "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
+            one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
             "cross-module-call-to-its-own-provider",
             one(RuleViolation::CallToOwnProvider),
         ),
@@ -510,6 +526,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "declared-cross-module-call-unanswered-of-an-undeclared-kind",
             one(RuleViolation::UndeclaredCallDelivered),
+        ),
+        (
+            "declared-cross-module-call-refused-as-a-limit-to-an-undeclared-callee",
+            one(RuleViolation::RefusalReasonUntrue),
         ),
         (
             "signed-result-signed-with-another-advertised-key",
@@ -1725,6 +1745,120 @@ fn call_its_callee_never_answered_is_not_recorded_as_delivered() {
     // Passed on unanswered is still passed on: its callee and kind must be declared, and it carries nothing.
     assert_rules_reject(&["declared-cross-module-call-unanswered-of-an-undeclared-kind"]);
     assert_schema_rejects("cross-module-call-unanswered-carrying-a-reason");
+}
+
+/// The reason a fixture's refused outcome gives on the wire.
+fn wire_reason(name: &str, at: &str) -> Value {
+    fixture("valid", name)
+        .pointer(at)
+        .unwrap_or_else(|| panic!("{name} has {at}"))
+        .clone()
+}
+
+// verifies: DEC-4, REQ-MDL-9, REQ-MDL-11
+#[test]
+fn cross_module_call_refused_by_a_limit_or_a_near_deadline_names_its_own_reason() {
+    for (name, reason, wire) in [
+        (
+            "declared-cross-module-call-refused-as-a-limit-was-reached",
+            CallRefusalReason::LimitReached,
+            "limit_reached",
+        ),
+        (
+            "declared-cross-module-call-refused-as-too-little-of-the-deadline-was-left",
+            CallRefusalReason::DeadlineTooNear,
+            "deadline_too_near",
+        ),
+    ] {
+        let (declaration, call) = declared_call("valid", name);
+        let CrossModuleOutcome::Refused(refused) = &call.outcome else {
+            panic!("{name} is a refused call");
+        };
+        assert_eq!(refused.reason, reason, "{name}");
+        assert_ne!(refused.reason, CallRefusalReason::CalleeUnavailable);
+        assert_eq!(wire_reason(name, "/call/outcome/reason"), wire);
+        assert_eq!(module_interface::validate_call(&call), Ok(()));
+        assert_eq!(
+            module_interface::validate_call_against(&declaration, &call),
+            Ok(())
+        );
+    }
+    // A limit doesn't excuse an undeclared callee: the first check the call fails still names the reason.
+    assert_rules_reject(&["declared-cross-module-call-refused-as-a-limit-to-an-undeclared-callee"]);
+}
+
+// verifies: DEC-4, REQ-MDL-6, REQ-MDL-7
+#[test]
+fn outbound_call_record_refused_for_a_failed_tls_check_has_its_own_reason() {
+    let name = "outbound-call-record-refused-as-the-peer-was-not-verified";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(
+        record.outcome,
+        CallOutcome::Refused(module_interface::Refused {
+            reason: RefusalReason::PeerNotVerified
+        })
+    );
+    assert_eq!(wire_reason(name, "/outcome/reason"), "peer_not_verified");
+    // The hop matched the declared destination by name, and no verified connection was made.
+    assert!(record.hops[0].destination.is_some() && record.hops[0].address.is_none());
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+    assert_schema_rejects("outbound-call-record-refused-for-an-unknown-reason");
+}
+
+// verifies: DEC-4, REQ-MDL-6
+#[test]
+fn secret_answer_for_a_store_that_gave_no_answer_has_its_own_reason() {
+    let name = "secret-answer-refused-as-the-store-gave-no-answer";
+    let answer: SecretAnswer = serde_json::from_value(fixture("valid", name)).expect("an answer");
+    let SecretOutcome::Refused(refused) = &answer.outcome else {
+        panic!("{name} is refused");
+    };
+    assert_eq!(refused.reason, SecretRefusalReason::StoreUnavailable);
+    assert_ne!(refused.reason, SecretRefusalReason::NotFound);
+    assert_eq!(wire_reason(name, "/outcome/reason"), "store_unavailable");
+    assert_schema_rejects("secret-answer-refused-for-an-unknown-reason");
+}
+
+// verifies: DEC-4, REQ-AUD-1, REQ-MDL-8
+#[test]
+fn unknown_call_whose_last_hop_connected_to_nothing_is_a_valid_record() {
+    let name = "outbound-call-record-unknown-as-nothing-connected";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(record.outcome, CallOutcome::Unknown(Nothing {}));
+    let last = record.hops.last().expect("a hop");
+    assert!(last.destination.is_some() && last.address.is_none());
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+    // Only the last hop may have connected to nothing, and only one that matched a declared destination.
+    assert_rules_reject(&[
+        "outbound-call-record-unknown-through-an-unconnected-hop-before-the-last",
+        "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
+        "outbound-call-record-completed-through-an-unconnected-hop",
+    ]);
+}
+
+// verifies: DEC-4
+#[test]
+fn admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names() {
+    let reasons = [
+        AdmissionRefusal::AdmissionPending,
+        AdmissionRefusal::AssertionUnverified,
+        AdmissionRefusal::VersionAlreadyAdmitted,
+    ];
+    for (i, a) in reasons.iter().enumerate() {
+        for b in &reasons[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        format!("{:?}", AdmissionRefusal::AdmissionPending),
+        "AdmissionPending"
+    );
+    assert_eq!(
+        format!("{:?}", AdmissionRefusal::AssertionUnverified),
+        "AssertionUnverified"
+    );
 }
 
 // verifies: DEC-4
