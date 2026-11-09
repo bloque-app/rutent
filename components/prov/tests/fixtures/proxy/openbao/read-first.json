@@ -1,0 +1,1 @@
+{"request_id":"0d3c2f8e-5b1a-4a7e-9a61-2f6c1d9e7b10","lease_id":"","renewable":false,"lease_duration":0,"data":{"data":{"value":"first-key-value"},"metadata":{"created_time":"2026-11-09T16:41:02.118302114Z","custom_metadata":null,"deletion_time":"","destroyed":false,"version":1}},"wrap_info":null,"warnings":null,"auth":null}
