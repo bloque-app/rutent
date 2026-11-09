@@ -8,6 +8,10 @@
 //! - `declaration`: reserve declarations, recorded once and shown before acceptance (`REQ-CAT-6`).
 //! - `publisher`: the publisher behind each provider and node (`REQ-CAT-20`).
 //! - `nodes`: the operator's public nodes, and every node's holding account (`REQ-CAT-22`, `REQ-CAT-23`).
+//! - `balance`: balance checks, bounded and logged per account, and a silent reserve's ineligibility
+//!   (`REQ-CAT-3`, `REQ-CAT-4`, `REQ-CAT-19`).
+//! - `segments`: dry runs, refusal classes, a true undo and where value is after a failure (`REQ-CAT-14`,
+//!   `REQ-CAT-15`, `REQ-CAT-18`, `INV-2`).
 //! - [`check_tuple`]: the shape of a tuple (`REQ-CAT-13`, `REQ-CAT-21`).
 //! - [`Catalogue::snapshot`]: what the router reads (`T-012-03`).
 //! - [`Catalogue`]: the whole, with the join rule of `REQ-CAT-16`.
@@ -18,15 +22,21 @@
 //! The caller (the router or Core) must pass its own clock as `at`: a stale `at` would honour an expired grant.
 //! `T-012-02`'s check on how far ahead an advertisement is dated uses that same `at`.
 
+mod balance;
 mod bounds;
 mod declaration;
 mod grant;
 mod nodes;
 mod publisher;
 mod reversal;
+mod segments;
 mod snapshot;
 mod tuples;
 
+pub use balance::{
+    Alert, CheckBound, CheckKind, CheckRecord, CheckRefusal, CheckTicket, Eligibility, Verdict,
+    reveals_sufficiency,
+};
 pub use bounds::{OperatorBounds, TupleBound};
 pub use declaration::{
     AcceptRefusal, DeclarationError, DeclarationId, DeclarationLog, DeclarationRecord,
@@ -39,6 +49,10 @@ pub use reversal::{
     Bond, Observation, Owed, OwedError, OwedReversals, ReversalCapacity, ReversalError,
 };
 pub use rutent_contracts::provider_role::Category;
+pub use segments::{
+    DryRunAssessment, DryRunError, EffectError, RefusalClass, SegmentDecline, SegmentEffect,
+    UndoVerdict, judge_reversal, segment_effect,
+};
 pub use snapshot::{LeftOut, LeftOutReason, SnapshotBuild, SnapshotError};
 pub use tuples::{TupleRefusal, check_tuple};
 
@@ -62,6 +76,11 @@ pub enum Unusable {
     OverBound {
         /// The largest amount the operator allows.
         max: u128,
+    },
+    /// A reserve that didn't answer a check in time is out until it answers one (`REQ-CAT-19`).
+    TemporarilyUnavailable {
+        /// The moment its answer was due.
+        since: Instant,
     },
 }
 
@@ -113,6 +132,7 @@ pub struct Catalogue {
     nodes: NodeBook,
     floors: HashMap<TupleKey, EvidenceGrade>,
     modules: BTreeMap<String, Version>,
+    checks: balance::BalanceChecks,
 }
 
 impl Catalogue {
@@ -159,6 +179,7 @@ impl Catalogue {
     /// hasn't restricted it.
     pub fn usable(&self, provider: &str, tuple: &TupleKey, at: Instant) -> Result<(), Unusable> {
         self.check_standing(provider, at, |g| g.covers(tuple))?;
+        self.check_answering(provider, tuple.category, at)?;
         match self.bounds.get(provider, tuple) {
             Some(TupleBound::Restricted) => Err(Unusable::Restricted),
             _ => Ok(()),
@@ -187,7 +208,23 @@ impl Catalogue {
         category: Category,
         at: Instant,
     ) -> Result<(), Unusable> {
-        self.check_standing(provider, at, |g| g.covers_category(category))
+        self.check_standing(provider, at, |g| g.covers_category(category))?;
+        self.check_answering(provider, category, at)
+    }
+
+    /// A reserve marked silent is out until it answers a check in time.
+    fn check_answering(
+        &self,
+        provider: &str,
+        category: Category,
+        at: Instant,
+    ) -> Result<(), Unusable> {
+        match self.checks.unavailable_since(provider, at) {
+            Some(since) if category == Category::Reserve => {
+                Err(Unusable::TemporarilyUnavailable { since })
+            }
+            _ => Ok(()),
+        }
     }
 
     fn check_standing(
