@@ -357,3 +357,14 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   without native codegen building and the suite passing on it; the drill and the perf-map test compiling and passing.
   The run id goes here once the orchestrating session pushes the branch. The restore's time at 100k records is not
   re-measured here.
+
+## T-010-08: answering the review of `5850eda`
+
+- A `-rc` kernel of 6.7 now fails the check (`6.7-rc1`, `6.7.0-rc3-generic`), with tests.
+- The userfaultfd probe now also registers an anonymous mapping in write-protect mode and write-protects one page
+  (`UFFDIO_REGISTER`, `UFFDIO_WRITEPROTECT`), after `UFFDIO_API`. Written from the uapi's ioctl numbers and not run
+  on Linux here; the node on the JIT (step 3) stays the real test, and CI's run is the first of this probe.
+- `PORTABLE=1` replaces all of VOS's rustflags through `RUSTFLAGS`. Read at the pin through the GitHub contents API,
+  `.cargo/config.toml` has one flag for x86_64 Linux, `-C target-cpu=native`, none under `[build]`, and an aarch64
+  section with none; so nothing else is lost. The build now checks that before it builds and fails if the file gains
+  another flag, so the substitution can't drop one unnoticed.

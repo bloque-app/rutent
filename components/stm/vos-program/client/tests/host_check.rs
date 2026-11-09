@@ -48,7 +48,13 @@ fn host_check_fails_on_a_host_without_userfaultfd_write_protect() {
 // verifies: REQ-OPS-3
 #[test]
 fn host_check_fails_on_a_kernel_older_than_6_7() {
-    for kernel in ["6.6.30-generic", "5.15.0-1", "4.19"] {
+    for kernel in [
+        "6.6.30-generic",
+        "5.15.0-1",
+        "4.19",
+        "6.7-rc1",
+        "6.7.0-rc3-generic",
+    ] {
         let output = check(&[("HOST_CHECK_KERNEL", kernel)]);
         assert!(!output.status.success(), "{kernel}: {}", said(&output));
         assert!(said(&output).contains("kernel"), "{}", said(&output));

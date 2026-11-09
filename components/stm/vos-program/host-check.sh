@@ -32,6 +32,9 @@ else
     minor=$(printf '%s' "$kernel" | sed -n 's/^[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p')
     if [ -z "$major" ]; then
         fail "the kernel version \"$kernel\" does not read as MAJOR.MINOR"
+    elif [ "$major" -eq 6 ] && [ "${minor:-0}" -eq 7 ] && printf '%s' "$kernel" | grep -q -- '-rc'; then
+        # 6.7's release candidates predate the release that has asynchronous write-protect settled.
+        fail "the kernel is $kernel, a release candidate of 6.7, and the JIT needs 6.7 or later"
     elif [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "${minor:-0}" -ge 7 ]; }; then
         pass "the kernel is $kernel (6.7 or later)"
     else
@@ -39,7 +42,8 @@ else
     fi
 fi
 
-# 2. userfaultfd with asynchronous write-protect, probed as VOS's write tracking asks for it.
+# 2. userfaultfd with asynchronous write-protect, probed as VOS's write tracking asks for it, then used: a page of an
+# anonymous mapping is registered in WP mode and write-protected.
 uffd_probe() {
     python3 - <<'PY'
 import ctypes, os, struct, sys
@@ -63,6 +67,30 @@ if rc != 0:
 if struct.unpack("QQQ", api.raw)[1] & features != features:
     sys.exit("UFFDIO_API did not grant asynchronous write-protect")
 os.close(os.open("/proc/self/pagemap", os.O_RDONLY | os.O_CLOEXEC))
+# Write-protect itself: register an anonymous mapping in WP mode and write-protect one page of it. A host whose
+# UFFDIO_API answers but whose registration or protection is refused (a seccomp filter on the ioctl, say) fails here.
+# The real test remains step 3, a node on the JIT.
+import mmap
+UFFDIO_REGISTER = 0xC020AA00      # _IOWR(0xAA, 0x00, struct uffdio_register: range, mode, ioctls = 32 bytes)
+UFFDIO_WRITEPROTECT = 0xC018AA06  # _IOWR(0xAA, 0x06, struct uffdio_writeprotect: range, mode = 24 bytes)
+MODE_WP = 2                       # UFFDIO_REGISTER_MODE_WP
+WRITEPROTECT_MODE_WP = 1          # UFFDIO_WRITEPROTECT_MODE_WP
+page = mmap.PAGESIZE
+area = mmap.mmap(-1, 4 * page, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+start = ctypes.addressof(ctypes.c_char.from_buffer(area))
+fd = libc.syscall(SYS_USERFAULTFD, os.O_CLOEXEC | os.O_NONBLOCK | UFFD_USER_MODE_ONLY)
+if fd < 0:
+    sys.exit("userfaultfd(UFFD_USER_MODE_ONLY): " + os.strerror(ctypes.get_errno()))
+api = ctypes.create_string_buffer(struct.pack("QQQ", UFFD_API, features, 0))
+if libc.ioctl(fd, ctypes.c_ulong(UFFDIO_API), api) != 0:
+    sys.exit("UFFDIO_API: " + os.strerror(ctypes.get_errno()))
+register = ctypes.create_string_buffer(struct.pack("QQQQ", start, 4 * page, MODE_WP, 0))
+if libc.ioctl(fd, ctypes.c_ulong(UFFDIO_REGISTER), register) != 0:
+    sys.exit("UFFDIO_REGISTER in write-protect mode: " + os.strerror(ctypes.get_errno()))
+protect = ctypes.create_string_buffer(struct.pack("QQQ", start, page, WRITEPROTECT_MODE_WP))
+if libc.ioctl(fd, ctypes.c_ulong(UFFDIO_WRITEPROTECT), protect) != 0:
+    sys.exit("UFFDIO_WRITEPROTECT: " + os.strerror(ctypes.get_errno()))
+os.close(fd)
 PY
 }
 if [ -n "${HOST_CHECK_UFFD:-}" ]; then

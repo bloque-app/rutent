@@ -41,6 +41,16 @@ timed() {
 sources_git_config "$vos"
 node() {
     if [ "${PORTABLE:-0}" = 1 ]; then
+        # RUSTFLAGS replaces every rustflag of VOS's .cargo/config.toml, not only target-cpu=native. At the pin that
+        # file has one for x86_64 Linux, `-C target-cpu=native`, and none under [build] (read through the GitHub
+        # contents API at 5c78975). Keep it so: if the file gains any other flag, this build must carry it over.
+        awk '/^\[/ { in_x86 = ($0 == "[target.x86_64-unknown-linux-gnu]"); in_build = ($0 == "[build]") }
+             /^rustflags/ && in_build { bad = 1 }
+             /^rustflags/ && in_x86 { n++; if ($0 != "rustflags = [\"-C\", \"target-cpu=native\"]") bad = 1 }
+             END { exit (bad || n != 1) }' "$vos/.cargo/config.toml" || {
+            echo "build.sh: VOS's .cargo/config.toml holds rustflags other than target-cpu=native for x86_64; carry them into RUSTFLAGS" >&2
+            return 1
+        }
         (cd "$vos" && RUSTFLAGS="-C target-cpu=x86-64" CARGO_TARGET_DIR="$out/vos-target" \
             cargo build -v --release --locked -p vos-cli --features faults) > "$out/node-build.log" 2>&1 ||
             { tail -30 "$out/node-build.log" >&2; return 1; }
