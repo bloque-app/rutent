@@ -176,6 +176,100 @@ binaries built from it. That package declares `license = "AGPL-3.0-or-later"`. `
 package stay MIT and runtime-neutral behind the host contract, so the purpose-built store stays a drop-in fallback.
 `licences/RECORD`'s `vos` line reads permitted under `DEC-26` and `vos-licence-v0`.
 
+## T-010-05: the VOS program (`components/stm/vos-program/`)
+
+Built on `T-010-04`'s library at `bf6502d`; nothing in `contracts/` was needed or edited.
+
+### What was built
+
+- **The program** (`components/stm/vos-program/`, package `rutent-stm-vos-program`): `EXP-1`'s re-score program with
+  the suite's probe replaced by `rutent_stm::Stm`, which it builds `no_std` (`default-features = false`). The program's
+  feature `probe-machine` swaps the probe back in, through the generated no_std copy of conformance's probe, its patch
+  and `nostd.sh`, carried over from the adapter: see "The suite is typed on its probe" below. `EXP-1`'s `next` and
+  `next-format` versions (`R-06a`, `R-06b`) are not carried over: nothing here upgrades a running program. It is a
+  cargo workspace of its own with its own lock and the guest toolchain (`nightly-2026-03-20`).
+- **The thin `Host` client** (`components/stm/vos-program/client/`, package `rutent-stm-vos`): the re-score's client,
+  `Host<M>` for any `M` (see the readings), its node processes (one node or three) and its platform assertion, behind
+  its own `vos` feature, off by default; a workspace of its own with the node toolchain (`nightly-2025-07-14`).
+- **The retry** (`rutent_stm::open_retry`, MIT, `std`): `retry_open(policy, retryable, open)`, bounded (40 tries 10 ms
+  apart, `OpenRetry::SPAWN_WINDOW`). The purpose-built store retries only "the store is open in another host"; the
+  client retries a node that "exited before it started" when the cluster being opened already exists. Another failure returns at
+  once, and a store held by a live second host is still refused after about 400 ms.
+- **Sources** (`G-48`): `components/stm/vos-program/sources` lists `name revision upstream-url fetch-url` for `vos-core`
+  and its three forks. The scripts read it, derive git's `insteadOf` rewrites from it, and `sources.sh check` fails
+  when a manifest or lockfile pins another revision. Fetching is from upstream for now.
+- **Licence check**: it now reads every lock under `components/` as well as `experiments/` (`LOCK_DIRS`, a test written
+  first), since the program's locks live there; `licences/RECORD`'s header says so, and it has a line for
+  `rutent-stm-vos-program` (AGPL-3.0-or-later, `DEC-26,vos-licence-v0`; the client's lock names it as a path
+  dependency outside its own workspace). Every other package the two new locks name was already recorded.
+- **CI**: `.github/workflows/stm-vos.yml`, modelled on `exp1-vos.yml` (a push to this branch under `components/stm/`,
+  or a dispatch; never a pull request). It is a `DEC-20` path.
+
+### Readings taken where `PLAN.md` is silent or the row's wording does not fit
+
+- **"A `vos` feature of `rutent-stm`".** Read as a `vos` feature of the client's own package, `rutent-stm-vos`. A
+  feature of `rutent-stm` that pulls the client or the program would (a) make `rutent-stm` depend on a package that
+  depends on it, (b) put `vos-node`, `vos-wire` and their git sources into rutent's root `Cargo.lock`, even with the
+  feature off, which breaks "`cargo test --workspace` never needs VOS" and moves the lock reached from
+  `rutent-contracts` (`T-010-02`'s guard), and (c) link AGPL crates into the MIT library, outside the owner's ruling
+  (AGPL covers only the packages that link VOS code and the binaries built from them). The client links `vos-node` and
+  the program's types, so it is AGPL-3.0-or-later with the program: the owner's partial adoption covers the packages
+  that link VOS code, the VOS program and its client, and the client's manifest declares it. Off by default holds: nothing of VOS builds
+  without the flag, and neither package is in rutent's workspace. I did not run the scratch change that would show
+  (b); it rests on cargo locking optional git dependencies.
+- **A binary built from the AGPL package is AGPL.** A node or a client binary built here is under the ruling; shipping
+  one is `F-034`'s question (`G-46`), not this task's.
+- **The suite is typed on its probe, so a host running `Stm` can't pass it** (found by running it). The suite on the
+  program with `Stm` failed three cells: `stop-after-computed` (it needs the faults node build, which holds commits),
+  and `reordered-delivery-is-applied-in-submit-order` and `replay-reaches-the-same-states`, which compare the host's
+  recorded states with the probe's over shuffled inputs, where `Stm` (forward-only segments, `INV-4`) rightly differs
+  from the probe. `conformance/` is not this task's to edit, so the reading: the suite scores the host's mechanics on
+  the program built with the probe (`probe-machine`, `elf/probe.elf`, the nodes the faults build), as `EXP-1` did, and
+  `the_program_records_the_states_the_state_machine_library_computes` scores `Stm` on the nodes: one node, an order to
+  completion, one with a failed final deposit and one shuffled, each journal's states equal to a native `Stm` fold.
+  The client is `Host<M>` for any `M` so the suite can drive it as `Harness<Probe>`. A suite that takes its state
+  machine as a parameter would remove the second program; that is an edit to `conformance/`, for the owner or a later
+  task.
+- **The retry's two predicates.** The store matches its own refusal text, exported as `STORE_OPEN_ELSEWHERE`. The VOS
+  client has no refusal text of VOS's to match, so it retries a node that exited before it started (not one whose 60 s wait ran out) on a cluster that exists, and
+  never on a fresh one. If a node fails to start for another reason, it costs about 400 ms per node open before the
+  error returns.
+- **Tests that need the toolchain.** `killing_the_leader_mid_submit_loses_no_acknowledged_record` is a smaller test than
+  `EXP-1`'s `R-01`: three rounds, each killing the current leader once a submit of a stream is in flight (an in-flight
+  marker is set before the call and cleared after it; the test requires that at least one round's kill landed in
+  one, and all three did in the development run), resubmitting what was not acknowledged, restarting the node, and checking each acknowledged record is in a surviving node's journal
+  once. `R-01`'s 20 random kill points and its `hold_commits` placement (a faults build) are not repeated here. The
+  nodes are the faults build, for the suite's `AfterComputed` stop.
+- **Test order.** The open-retry tests of `rutent-stm` were written first and failed to compile (no `open_retry`
+  module); the store's retry test was seen failing on "the store is open in another host". The client's retry test was
+  seen failing with its retry turned off. The suite and kill tests were written against the re-score's client and were
+  not seen failing before it existed.
+
+### What was run, and what was not
+
+- Built here (macOS arm64): VOS's agent and the program (both ways) for the guest target, the faults node, and the
+  client, all at `5c78975`. Run here, as a **development run** (`VOS_DEV=1`, the interpreter, which is not scored): all
+  four tests of `vos_node.rs` passed (the suite on one node and on three, the states test, the leader kill), and so
+  did the two retry tests. The nodes on this Mac are real processes of VOS's own node, but off Linux x86_64 with the
+  JIT their result is not the task's.
+- Not run: the host-contract suite on one node and on three, and the leader kill, **on Linux x86_64 with the JIT**, the
+  only scored platform, and so the run id the `Done when` wants. They run in `stm-vos.yml` once the branch is pushed;
+  the run id goes here then. The licence check is green on this branch, which `Done when` also names.
+- **How the CI run happens.** As far as I know GitHub runs a `workflow_dispatch` only for a workflow file on the
+  default branch (`main`), so before the release into `main` the only trigger of `stm-vos.yml` is a push of
+  `f-010/t-010-05-vos-program`. A task agent does not push: the orchestrating session pushes that branch to get the
+  run, and the run id goes here. I did not check this against GitHub's documentation.
+- **Checks run locally** besides the brief's list: CI's `cargo build --workspace --all-targets`, the `no_std`
+  builds of `rutent-contracts` and `rutent-stm` for `riscv32imac-unknown-none-elf`, the purpose-built-store docs and
+  tests, and `contract-guard` against `bf6502d` (no violations; the root `Cargo.lock` is unchanged).
+- **Private mirrors.** `bloque-app/vos-mirror`, `bloque-app/lsm-tree`, `bloque-app/stwo`, `bloque-app/s4` are the
+  fallback, recorded in the program's README. Pointing CI at them needs a token that can read private repositories
+  (a deploy key or a fine-grained token in a secret), which `stm-vos.yml` does not have; `sources` takes the mirror
+  URLs, and the workflow would need the credential in git's configuration for the fetch.
+- **Read before build.** The fetched VOS tree was skimmed, not audited: its five `build.rs` files (they read
+  environment variables and write to `OUT_DIR`, and the phone tool's embeds two ELFs), its `.cargo/config.toml` files
+  and `blobs.lock`. It sits under `target/` and its lockfiles stay out of the tracked tree.
+
 ## T-010-03: answering the review of `e1c7cf2`
 
 - **The tie check's cost.** Expanding a double's exact value (`{:.780e}`) for every shortest form ending in an odd
@@ -198,3 +292,24 @@ package stay MIT and runtime-neutral behind the host contract, so the purpose-bu
   change is its dependency list needs no bump, only a bullet in `contracts/CHANGELOG.md` naming a `DEC-*`, as a shared
   file does. Features can change behaviour (`serde_json`'s `preserve_order`), so the change stays visible and
   reviewed, without fake bumps. Reversible: restore the single identity in `lock_moves`.
+
+
+## T-010-05: answering the review of `6b73945`
+
+- The suite also runs on `STM_PROGRAM_ELF`, the real `Stm` program, on one node and on three, excusing only the two
+  cells that compare recorded states with the probe's (`reordered-delivery-is-applied-in-submit-order`,
+  `replay-reaches-the-same-states`); the states test runs on one node and on three. The probe-built program stays for
+  the suite's full pass.
+- `platform.rs` has the adapter's five `assert_jit` unit tests and its perf-map check back, as `backend_proof`, which
+  reads `STARTED` and `PROBED` and ends each node test.
+- The workflow also runs on pushes to `m*` and `develop`, and on `contracts/` and `conformance/`.
+- `sources.sh check` fails on a missing pin. The client declares AGPL-3.0-or-later. Not run for these changes: the
+  Linux/JIT run.
+
+## T-010-05's scored run (2026-11-09)
+
+The host-contract suite passed on one VOS node and on three, on Linux x86_64 with the JIT, in CI: workflow
+`STM on VOS`, run 42675856453, at `dbf5222` (jobs `sources` and `vos` both green). The suite ran on the probe program
+and on the real `Stm` program, excusing only the two cells that compare states against the probe; the states test
+and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both setups. The first run, 42669881289 at
+`6b73945`, was before the review's fixes.

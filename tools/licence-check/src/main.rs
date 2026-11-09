@@ -1,7 +1,7 @@
 //! Runs the licence record check on every `Cargo.lock` in the repository, `licences/RECORD` and the workspace members.
 
 use rutent_licence_check::{
-    LockFile, Member, Violation, check_locks, find_locks, member_paths, package_identity,
+    LockFile, Member, Violation, check_locks, find_all_locks, member_paths, package_identity,
     workspace_member_paths,
 };
 use std::fs;
@@ -42,7 +42,7 @@ fn run(root: &Path) -> Result<Vec<Violation>, String> {
         text: read("Cargo.lock")?,
         members: members.clone(),
     }];
-    for path in find_locks(root, "experiments")? {
+    for path in find_all_locks(root)? {
         let text = read(&path)?;
         let dir = path.strip_suffix("Cargo.lock").unwrap_or_default();
         let ws_manifest = read(&format!("{dir}Cargo.toml")).map_err(|e| format!("{path}: {e}"))?;
