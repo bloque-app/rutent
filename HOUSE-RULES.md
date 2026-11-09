@@ -33,8 +33,8 @@ The owner gave this ruling in chat on 2026-11-06 and it is recorded on the decis
 
 This replaced the per-task pull requests of `PLAN.md` `DEC-20` and the two-helper cap of `DEC-22`; `PLAN.md` 0.2.0
 states it. The branch and commit naming below still holds for each task; only the pull request moves up
-to the milestone. The `DEC-20` paths still wait for the owner's click, which now happens on the milestone pull request,
-after a separate security review of those paths.
+to the milestone. The `DEC-20` paths still wait for the owner's click, after a separate security review of those paths.
+This ruling put the click on the milestone pull request; `branch-model` later moved it to the release into `main`.
 
 ## The owner's ruling of 2026-11-08 (`branch-model`)
 
