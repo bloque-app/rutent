@@ -24,11 +24,13 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
 The schemas refer to each other by `$id`. A validator registers all nine and needs nothing from the network.
-A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-` or
-`successive-advertisements-`. The last is a bundle, not a schema: a `previous` and a `next` enveloped advertisement,
-each checked against the advertisement schema, for the rules that relate them (`validate_successor`). The other
-schemas are exercised through those. A judgement and a reversal confirmation are exercised inside the
-results that carry them.
+A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
+`successive-advertisements-` or `answered-operation-`. The last two are bundles, not schemas:
+`successive-advertisements` is a `previous` and a `next` enveloped advertisement, each checked against the
+advertisement schema, for the rules that relate them (`validate_successor`); `answered-operation` is an enveloped
+`operation`, the enveloped `result` that answers it, and the `terms` of the tuple it runs through (the
+advertisement's `$defs/terms`), for the rules that relate their amounts (`check_amounts`). The other schemas are
+exercised through those. A judgement and a reversal confirmation are exercised inside the results that carry them.
 
 ## The envelope and the signing rule
 
@@ -221,6 +223,9 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   - **reversal confirmation:** `confirmed`, carrying the reserve's whole enveloped confirmation
     (`urn:rutent:provider-role:reversal-confirmation`: segment, asset and amount, and nothing else), `not_confirmed`
     (nothing more), or `refused`.
+- **Amounts** (2.1.0; see "Amounts against the operation"). `amount_in` is what left the segment's origin, the
+  provider's charge included, whether the tuple reports gross or net: `reporting` says only whether `amount_out`
+  includes the charge. The fee is in the asset the segment takes in, in the origin unit.
 - **No `null`.** An optional field is present with a value or absent. Rust refuses `null` as the schemas do.
 - **Evidence** is a non-empty list of `{grade, reference, by}`, where `by` says whose evidence each piece is. A
   public record and a reserve's statement can then both close an order (`REQ-ORD-33`, `REQ-ORD-39`, ADR-0007).
@@ -323,7 +328,45 @@ if it is attributable to that segment's provider and matches that transaction.
 
 The contract's own Rust checks cover what one statement can show about itself: `check_context`,
 `check_signed_by_operator`, and `validate_statement`'s maker and key bindings. `validate_successor` relates two
-advertisements, and the catalogue holds the rest (see "Key purposes").
+advertisements, and the catalogue holds the rest (see "Key purposes"). `check_amounts` relates a result's amounts
+to its operation; `CMP-CORE-ORCH` calls it when it matches the two, and the role suite does on every answer.
+
+### Amounts against the operation
+
+Added in 2.1.0, after review round 1 on the M1 pull request (`INV-1`, `REQ-CAT-11`, `REQ-QTE-5`, `THR-108`).
+`check_amounts(operation, result, terms)` takes an operation, the result that answers it, and the terms of the
+tuple it runs through. It returns the segment's `Remainder`, or every rule broken:
+
+- **`amount_in` is gross.** It is what left the origin, the charge included, whatever `reporting` declares. So a
+  provider that counts its fee on top of the amount (`THR-108`) shows it in `amount_in`.
+- **The fee is in the asset the segment takes in**: a withdrawal's, deposit's or transfer's `asset`, a conversion's
+  `from`. It is in the origin unit (a conversion's `from` unit), and at most `amount_in`. The router asks the same of
+  every quote and operation, so a charge can be counted against the tuple's formula (`REQ-QTE-5`).
+- **`exact_in` takes in at most what it was asked.** Where the operation fixes what is taken in (`exact_in`; a
+  withdrawal and a deposit always state their origin amount), `amount_in` is at most the stated `amount`. The
+  difference never left the origin node: it is the segment's **remainder**, which `INV-1` counts as the reported
+  remainder, at that node. At an inner node `REQ-AUD-15` counts it at the node's holding account; a withdrawal's
+  remainder never left its outer node, so it never entered the book.
+- **A remainder is declared.** It is below the tuple's fill `increment`, or zero where the tuple declares none
+  (`REQ-CAT-11`: a report in undeclared form is flagged). Nothing requires what is taken in to be a multiple of the
+  increment, since SPEC sets no such rule.
+- **Dry-run answers** are held to the same rules, since their figures price the execution, and name no remainder.
+- **`exact_out` names none either.** Its operation states what is given out, so what stays at the origin follows
+  from the quote it was priced on, not from the operation. That is the state machine's (`F-010`, `F-020`), with the
+  question of which amount a following segment moves (review round 1, finding 2).
+
+The check assumes both statements passed their schemas, and is about amounts only: the other rules across
+statements above still apply.
+
+| Rule | `AmountMismatch` | Invalid fixture |
+|---|---|---|
+| The result is of the operation's kind and names its transaction | `AnswersAnotherOperation` | `answered-operation-for-another-transaction` |
+| The fee is in the asset the segment takes in, for a settlement and a quote | `FeeInAnotherAsset` | `answered-operation-charging-its-fee-in-another-asset`, `answered-operation-quoting-its-fee-in-another-asset` |
+| The fee is at most `amount_in` | `FeeAboveAmountIn` | `answered-operation-charging-more-than-it-took-in` |
+| `exact_in` takes in at most the stated amount | `TookInMoreThanStated` | `answered-operation-taking-its-fee-on-top-of-the-stated-amount` |
+| A remainder needs a declared increment | `UndeclaredRemainder` | `answered-operation-leaving-an-undeclared-remainder` |
+| A remainder is below the increment | `RemainderOfAWholeIncrement` | `answered-operation-leaving-a-whole-increment-behind` |
+| Amounts are whole numbers | `NotAnAmount` | none: the schemas refuse them first; a unit test covers it |
 
 ### Agreement with the Rust types
 
@@ -349,8 +392,9 @@ Some rules this contract doesn't check, because they need the catalogue (`F-012`
   - The Rust types are checked against `rust_accepts`.
 - It checks that `VERSION` matches this changelog.
 
-Every fixture names `protocol_version` `2.0.1`, this contract's version (it was `1.0.0` at `C1`, `2.0.0` before the
-final security review's fix), except `v3` in
+Every fixture names `protocol_version` `2.0.1`, the contract's version when the fixtures were last rewritten (it was
+`1.0.0` at `C1`, `2.0.0` before the final security review's fix; 2.1.0 added rules and left them as they were),
+except `v3` in
 `statement-envelope-protocol-version-not-major-minor-patch`, which is malformed on purpose (the module-interface
 fixture `successive-releases-under-another-protocol-version` also keeps old versions, for a mismatch). No check compares a fixture's protocol version with
 `VERSION`: the tests run `check_context` against each fixture's own deployment and protocol version, since a fixture stands

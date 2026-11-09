@@ -9,8 +9,11 @@ use rutent_contracts::provider_role::{
     Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
     ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
     ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape, Terms,
-    Tracking, Transfer, TransferOutcome, Withdrawal, validate_statement,
+    Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, validate_statement,
 };
+
+/// An operation, the result that answers it, and the terms of the tuple it runs through.
+type Answered<'a> = (&'a Operation, &'a ResultBody, &'a Terms);
 
 use super::encoding::{is_canonical_signature, is_protocol_version, is_utc_timestamp};
 use super::{
@@ -101,7 +104,6 @@ impl From<&BalanceRefusal> for RefusalClass {
 /// A quote, or a reserve's dry-run answer, as far as the checks need.
 #[derive(Debug, Clone)]
 struct Quote {
-    amount_in: String,
     amount_out: String,
     fee: Fee,
     rate: Option<String>,
@@ -192,7 +194,6 @@ fn view_of(body: &ResultBody) -> View {
             ReserveMovementOutcome::Unknown(_) => Status::Unknown,
             ReserveMovementOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
             ReserveMovementOutcome::DryRunAccepted(q) => Status::DryRunAccepted(Quote {
-                amount_in: q.amount_in.clone(),
                 amount_out: q.amount_out.clone(),
                 fee: q.fee.clone(),
                 rate: None,
@@ -221,7 +222,6 @@ fn view_of(body: &ResultBody) -> View {
                 TransferOutcome::Unknown(_) => Status::Unknown,
                 TransferOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
                 TransferOutcome::DryRunAccepted(q) => Status::DryRunAccepted(Quote {
-                    amount_in: q.amount_in.clone(),
                     amount_out: q.amount_out.clone(),
                     fee: q.fee.clone(),
                     rate: None,
@@ -247,7 +247,6 @@ fn view_of(body: &ResultBody) -> View {
                 ConversionOutcome::Unknown(_) => Status::Unknown,
                 ConversionOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
                 ConversionOutcome::DryRunAccepted(q) => Status::DryRunAccepted(Quote {
-                    amount_in: q.amount_in.clone(),
                     amount_out: q.amount_out.clone(),
                     fee: q.fee.clone(),
                     rate: Some(q.rate.clone()),
@@ -721,7 +720,7 @@ impl Run<'_> {
         // A dry run at the band's minimum: its quote.
         let what = format!("{label}, dry run");
         let operation = (segment.build)(&probe(self.transaction(), min, true));
-        let answer = self.ask(provider, operation, &what);
+        let answer = self.ask(provider, operation.clone(), &what);
         if answer.changed_state {
             self.flag(
                 Check::DryRunHasNoEffect,
@@ -731,15 +730,10 @@ impl Run<'_> {
         let quote = match answer.view.status {
             Status::DryRunAccepted(quote) => {
                 self.saw(&label, Exercised::DryRunAccepted);
-                if quote.amount_in != min.to_string() {
-                    self.flag(
-                        Check::AnswersItsOperation,
-                        format!(
-                            "{what}: quotes {} in, not the stated {min}",
-                            quote.amount_in
-                        ),
-                    );
-                }
+                self.check_amounts(
+                    (&operation, &answer.result.statement, &segment.terms),
+                    &what,
+                );
                 if let Some(direction) = quote.direction
                     && direction != Direction::ExactIn
                 {
@@ -766,7 +760,10 @@ impl Run<'_> {
         self.check_execution(
             &label,
             &answer.view,
-            (&min.to_string(), quote.as_ref()),
+            (
+                (&operation, &answer.result.statement, &segment.terms),
+                quote.as_ref(),
+            ),
             &what,
         );
         if matches!(answer.view.status, Status::Succeeded(_)) && !answer.changed_state {
@@ -1023,7 +1020,7 @@ impl Run<'_> {
             let what = format!("{label}, outcome unknown");
             let operation = (segment.build)(&probe(tx.clone(), min, false));
             let (kind, _) = kind_of(&operation);
-            let answer = self.ask(provider, operation, &what);
+            let answer = self.ask(provider, operation.clone(), &what);
             match answer.view.status {
                 Status::Unknown => self.saw(THE_PROVIDER, Exercised::OutcomeUnknown),
                 other => self.flag(
@@ -1037,7 +1034,13 @@ impl Run<'_> {
                 .tracking
                 .contains(&Tracking::StatusQuery)
             {
-                self.probe_status(provider, (kind, &tx), (&label, &what), min, quote.as_ref());
+                self.probe_status(
+                    provider,
+                    (kind, &tx),
+                    (&label, &what),
+                    (&operation, &segment.terms),
+                    quote.as_ref(),
+                );
             }
         }
     }
@@ -1049,7 +1052,7 @@ impl Run<'_> {
         provider: &mut P,
         (kind, tx): (Kind, &str),
         (label, what): (&str, &str),
-        min: u128,
+        (operation, terms): (&Operation, &Terms),
         quote: Option<&Quote>,
     ) {
         let what = format!("{what}, status query");
@@ -1065,7 +1068,12 @@ impl Run<'_> {
         match &view.status {
             Status::Succeeded(_) | Status::Failed { .. } => {
                 self.saw(THE_PROVIDER, Exercised::StatusQuery);
-                self.check_execution(label, &view, (&min.to_string(), quote), &what);
+                self.check_execution(
+                    label,
+                    &view,
+                    ((operation, &result.statement, terms), quote),
+                    &what,
+                );
             }
             Status::Unknown => self.flag(
                 Check::OutcomeUnknownDistinct,
@@ -1154,7 +1162,7 @@ impl Run<'_> {
         &mut self,
         label: &str,
         view: &View,
-        (stated, quote): (&str, Option<&Quote>),
+        (answered, quote): (Answered<'_>, Option<&Quote>),
         what: &str,
     ) {
         match &view.status {
@@ -1163,15 +1171,7 @@ impl Run<'_> {
                     self.check_quote(quote, settled, what);
                     self.saw(label, Exercised::Execution);
                 }
-                if settled.amount_in != stated {
-                    self.flag(
-                        Check::AnswersItsOperation,
-                        format!(
-                            "{what}: took {} in, not the stated {stated}",
-                            settled.amount_in
-                        ),
-                    );
-                }
+                self.check_amounts(answered, what);
                 self.check_evidence(&settled.evidence, what);
             }
             Status::Failed { evidence } => self.check_evidence(evidence, what),
@@ -1180,6 +1180,18 @@ impl Run<'_> {
                 Check::ExecutionReported,
                 format!("{what}: answered {other:?}"),
             ),
+        }
+    }
+
+    /// A result's amounts against its operation and the tuple's terms, by the contract's own rule
+    /// (`check_amounts`): its fee in the asset the segment takes in and within what it took, and for `exact_in`
+    /// no more taken in than stated and no remainder beyond the tuple's fill increment (`REQ-QTE-5`,
+    /// `REQ-CAT-11`, `THR-108`).
+    fn check_amounts(&mut self, (operation, result, terms): Answered<'_>, what: &str) {
+        if let Err(mismatches) = check_amounts(operation, result, terms) {
+            for mismatch in mismatches {
+                self.flag(Check::AnswersItsOperation, format!("{what}: {mismatch:?}"));
+            }
         }
     }
 
@@ -1884,12 +1896,12 @@ mod tests {
     #[test]
     fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
         assert_eq!(
-            VERSION, "2.0.1",
+            VERSION, "2.1.0",
             "re-pin these values when the protocol version moves"
         );
         let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["3.0.0", "2.0.2", "2.0.0"]);
+        assert_eq!(versions, ["3.0.0", "2.1.1", "2.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),

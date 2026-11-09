@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::provider_role::{
-    self, Advertisement, Category, ContextMismatch, Deployment, Operation, ResultBody,
-    RuleViolation, Statement, StatementShape, TransferOutcome,
+    self, Advertisement, AmountMismatch, Category, ContextMismatch, Deployment, NodeRef, Operation,
+    OuterNode, Remainder, ResultBody, RuleViolation, Statement, StatementShape, Terms,
+    TransferOutcome,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -27,19 +28,34 @@ const SCHEMAS: [&str; 9] = [
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
-/// followed by `-`. `successive-advertisements` is a bundle of values, not a schema of its own: see
-/// [`SuccessiveAdvertisements`].
-const SHAPES: [&str; 5] = [
+/// followed by `-`. `successive-advertisements` and `answered-operation` are bundles of values, not schemas of
+/// their own: see [`SuccessiveAdvertisements`] and [`AnsweredOperation`].
+const SHAPES: [&str; 6] = [
     "advertisement",
     "statement-envelope",
     "operation",
     "result",
     "successive-advertisements",
+    "answered-operation",
 ];
 
 /// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
 /// follows it, each an enveloped advertisement, for the rules that relate them (`validate_successor`).
-const SUCCESSIVE_ADVERTISEMENTS_MEMBERS: [&str; 2] = ["previous", "next"];
+const SUCCESSIVE_ADVERTISEMENTS_MEMBERS: [(&str, &str); 2] = [
+    ("previous", "urn:rutent:provider-role:advertisement"),
+    ("next", "urn:rutent:provider-role:advertisement"),
+];
+
+/// The members of an `answered-operation` bundle: an enveloped operation, the enveloped result that answers it,
+/// and the terms of the tuple it runs through, for the rules that relate their amounts (`check_amounts`).
+const ANSWERED_OPERATION_MEMBERS: [(&str, &str); 3] = [
+    ("operation", "urn:rutent:provider-role:operation"),
+    ("result", "urn:rutent:provider-role:result"),
+    (
+        "terms",
+        "urn:rutent:provider-role:advertisement#/$defs/terms",
+    ),
+];
 
 /// A `successive-advertisements` fixture.
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +63,25 @@ const SUCCESSIVE_ADVERTISEMENTS_MEMBERS: [&str; 2] = ["previous", "next"];
 struct SuccessiveAdvertisements {
     previous: Statement<Advertisement>,
     next: Statement<Advertisement>,
+}
+
+/// An `answered-operation` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnsweredOperation {
+    operation: Statement<Operation>,
+    result: Statement<ResultBody>,
+    terms: Terms,
+}
+
+impl AnsweredOperation {
+    fn check(&self) -> Result<Option<Remainder>, Vec<AmountMismatch>> {
+        provider_role::check_amounts(
+            &self.operation.statement,
+            &self.result.statement,
+            &self.terms,
+        )
+    }
 }
 
 /// Invalid fixtures the schemas must reject, each with the exact (instance location, keyword) errors of the one
@@ -489,6 +524,7 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
 /// `rust_rules` names it.
 fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let advertisement = |v: RuleViolation| format!("{:?}", vec![v]);
+    let amounts = |v: AmountMismatch| format!("{:?}", vec![v]);
     vec![
         (
             "advertisement-ramp-within-one-node",
@@ -579,6 +615,34 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             advertisement(RuleViolation::SuccessorOfAnotherDeployment),
         ),
         (
+            "answered-operation-for-another-transaction",
+            amounts(AmountMismatch::AnswersAnotherOperation),
+        ),
+        (
+            "answered-operation-taking-its-fee-on-top-of-the-stated-amount",
+            amounts(AmountMismatch::TookInMoreThanStated),
+        ),
+        (
+            "answered-operation-charging-its-fee-in-another-asset",
+            amounts(AmountMismatch::FeeInAnotherAsset),
+        ),
+        (
+            "answered-operation-quoting-its-fee-in-another-asset",
+            amounts(AmountMismatch::FeeInAnotherAsset),
+        ),
+        (
+            "answered-operation-charging-more-than-it-took-in",
+            amounts(AmountMismatch::FeeAboveAmountIn),
+        ),
+        (
+            "answered-operation-leaving-an-undeclared-remainder",
+            amounts(AmountMismatch::UndeclaredRemainder),
+        ),
+        (
+            "answered-operation-leaving-a-whole-increment-behind",
+            amounts(AmountMismatch::RemainderOfAWholeIncrement),
+        ),
+        (
             "operation-signed-with-another-key",
             "NotSignedByOperator".to_owned(),
         ),
@@ -638,6 +702,11 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
             provider_role::validate_statement(&bundle.next).map_err(|v| format!("next: {v:?}"))?;
             provider_role::validate_successor(&bundle.previous, &bundle.next)
                 .map_err(|v| format!("{v:?}"))
+        }
+        "answered-operation" => {
+            let bundle: AnsweredOperation =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle.check().map(|_| ()).map_err(|v| format!("{v:?}"))
         }
         _ => Ok(()),
     }
@@ -763,6 +832,11 @@ fn read_json(path: &Path) -> Value {
 /// A validator for `urn:rutent:provider-role:<shape>`, with every schema of the contract registered by its
 /// `$id` and nothing fetched from elsewhere.
 fn validator(shape: &str) -> Validator {
+    validator_of(&format!("urn:rutent:provider-role:{shape}"))
+}
+
+/// A validator for the schema or definition at `reference`, with every schema of the contract registered.
+fn validator_of(reference: &str) -> Validator {
     let schemas: Vec<(String, Value)> = SCHEMAS
         .iter()
         .map(|name| {
@@ -792,31 +866,32 @@ fn validator(shape: &str) -> Validator {
         .expect("schema ids are valid URIs")
         .prepare()
         .expect("registry prepares");
-    let root = serde_json::json!({ "$ref": format!("urn:rutent:provider-role:{shape}") });
+    let root = serde_json::json!({ "$ref": reference });
     jsonschema::options()
         .offline()
         .with_registry(&registry)
         .build(&root)
-        .unwrap_or_else(|e| panic!("{shape} schema builds: {e}"))
+        .unwrap_or_else(|e| panic!("{reference} schema builds: {e}"))
 }
 
 /// The schema errors of a fixture of `shape`, as sorted (instance location, keyword) pairs. A bundle's members
-/// are each checked against the advertisement schema, with locations under the member's name, and a missing or
-/// extra member is an error at the root.
+/// are each checked against their own schema or definition, with locations under the member's name, and a
+/// missing or extra member is an error at the root.
 fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
-    if shape != "successive-advertisements" {
-        return schema_errors(&validator(shape), instance);
-    }
-    let advertisement = validator("advertisement");
+    let bundle: &[(&str, &str)] = match shape {
+        "successive-advertisements" => &SUCCESSIVE_ADVERTISEMENTS_MEMBERS,
+        "answered-operation" => &ANSWERED_OPERATION_MEMBERS,
+        _ => return schema_errors(&validator(shape), instance),
+    };
     let members = instance.as_object().cloned().unwrap_or_default();
     let mut errors = Vec::new();
-    if members.len() != SUCCESSIVE_ADVERTISEMENTS_MEMBERS.len() {
+    if members.len() != bundle.len() {
         errors.push((String::new(), "members".to_owned()));
     }
-    for member in SUCCESSIVE_ADVERTISEMENTS_MEMBERS {
-        match members.get(member) {
+    for (member, reference) in bundle {
+        match members.get(*member) {
             Some(value) => errors.extend(
-                schema_errors(&advertisement, value)
+                schema_errors(&validator_of(reference), value)
                     .into_iter()
                     .map(|(at, keyword)| (format!("/{member}{at}"), keyword)),
             ),
@@ -865,6 +940,16 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
                 .check_shape()
                 .map_err(|e| format!("{e:?}"))?;
             bundle.next.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
+        "answered-operation" => {
+            let bundle: AnsweredOperation =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .operation
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.result.check_shape().map_err(|e| format!("{e:?}"))?;
             serde_json::to_value(&bundle).map_err(|e| e.to_string())
         }
         other => Err(format!("no Rust type for {other}")),
@@ -1074,28 +1159,18 @@ fn statement_without_its_deployment_and_protocol_version_is_invalid() {
     let statement: Statement<ResultBody> =
         serde_json::from_value(fixture("valid", "result-transfer-failed")).expect("deserialises");
     let here = statement.deployment.clone();
-    assert_eq!(
-        statement.check_context(&here, provider_role::VERSION),
-        Ok(())
-    );
+    let version = statement.protocol_version.clone();
+    assert_eq!(statement.check_context(&here, &version), Ok(()));
     let elsewhere = Deployment {
         name: "rutent-other".into(),
         ..here.clone()
     };
-    assert!(
-        statement
-            .check_context(&elsewhere, provider_role::VERSION)
-            .is_err()
-    );
+    assert!(statement.check_context(&elsewhere, &version).is_err());
     let other_operator = Deployment {
         operator_key: provider_role::PublicKey::new("A".repeat(43)).expect("a canonical key"),
         ..here.clone()
     };
-    assert!(
-        statement
-            .check_context(&other_operator, provider_role::VERSION)
-            .is_err()
-    );
+    assert!(statement.check_context(&other_operator, &version).is_err());
     assert!(statement.check_context(&here, "1.0.0").is_err());
 }
 
@@ -1133,6 +1208,105 @@ fn a_non_canonical_alias_of_a_key_is_refused_in_both_layers() {
         .expect("a canonical key");
     assert_eq!(key.bytes()[..4], [1, 2, 3, 4]);
     assert_eq!(key.bytes()[31], 32);
+}
+
+/// The `answered-operation` fixtures of `kind`, asserting there is at least one, so a test over them can't pass
+/// on nothing.
+fn answered_operations(kind: &str) -> Vec<(String, Value)> {
+    let found: Vec<(String, Value)> = fixtures(kind)
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("answered-operation-"))
+        .collect();
+    assert!(!found.is_empty(), "no {kind} answered-operation fixtures");
+    found
+}
+
+/// What `check_amounts` gives for a valid `answered-operation` fixture.
+fn amounts_of(name: &str) -> Result<Option<Remainder>, Vec<AmountMismatch>> {
+    let bundle: AnsweredOperation =
+        serde_json::from_value(fixture("valid", name)).expect("the bundle deserialises");
+    bundle.check()
+}
+
+/// Asserts every invalid `answered-operation` fixture whose rule is one of `rules` breaks exactly that rule, and
+/// that there is at least one for each.
+fn assert_amounts_reject(rules: &[AmountMismatch]) {
+    let table = rust_rule_fixtures();
+    let invalid = answered_operations("invalid");
+    for rule in rules {
+        let expected = format!("{:?}", vec![rule.clone()]);
+        let names: Vec<&str> = table
+            .iter()
+            .filter(|(_, r)| *r == expected)
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(!names.is_empty(), "no invalid fixture breaks {rule:?}");
+        for name in names {
+            assert!(
+                invalid.iter().any(|(n, _)| n == name),
+                "missing invalid fixture {name}"
+            );
+            assert_rule_rejects(name, &expected);
+        }
+    }
+}
+
+// verifies: INV-1, REQ-CAT-11, THR-108, REQ-ORD-1
+#[test]
+fn a_result_takes_in_at_most_its_stated_amount_and_names_what_stays_at_the_origin() {
+    for (name, _) in answered_operations("valid") {
+        assert!(amounts_of(&name).is_ok(), "{name}: {:?}", amounts_of(&name));
+    }
+    // An exchange that fills in increments of 100000 leaves 50000 of the 25050000 asked unconverted, at its node.
+    assert_eq!(
+        amounts_of("answered-operation-conversion-filling-in-increments"),
+        Ok(Some(Remainder {
+            node: NodeRef::Inner("acme-ledger".into()),
+            asset: "COP".into(),
+            amount: "50000".into(),
+        }))
+    );
+    // A withdrawal that takes in what it was asked leaves nothing at its outer node.
+    assert_eq!(
+        amounts_of("answered-operation-withdrawal-taking-in-the-stated-amount"),
+        Ok(Some(Remainder {
+            node: NodeRef::Outer(OuterNode {
+                network: "co-bank-transfer".into(),
+            }),
+            asset: "COP".into(),
+            amount: "0".into(),
+        }))
+    );
+    // An `exact_out` operation states no amount in, so no remainder follows from it alone; nor from a quote.
+    assert_eq!(
+        amounts_of("answered-operation-transfer-fixing-what-it-delivers"),
+        Ok(None)
+    );
+    assert_eq!(
+        amounts_of("answered-operation-conversion-quote-charging-in-its-from-asset"),
+        Ok(None)
+    );
+    assert_amounts_reject(&[
+        AmountMismatch::AnswersAnotherOperation,
+        AmountMismatch::TookInMoreThanStated,
+        AmountMismatch::UndeclaredRemainder,
+        AmountMismatch::RemainderOfAWholeIncrement,
+    ]);
+}
+
+// verifies: REQ-QTE-5, REQ-CAT-9
+#[test]
+fn a_fee_is_charged_in_the_asset_the_segment_takes_in_and_within_it() {
+    assert_amounts_reject(&[
+        AmountMismatch::FeeInAnotherAsset,
+        AmountMismatch::FeeAboveAmountIn,
+    ]);
+    // A quote is held to the same rule as the execution it prices.
+    assert!(
+        rust_rule_fixtures()
+            .iter()
+            .any(|(n, _)| *n == "answered-operation-quoting-its-fee-in-another-asset")
+    );
 }
 
 // verifies: REQ-CAT-6, REQ-CAT-8, REQ-CAT-9, REQ-CAT-10, REQ-CAT-11, REQ-CAT-12, REQ-CAT-13, REQ-CAT-14, REQ-CAT-16, REQ-CAT-18, REQ-CAT-20, REQ-CAT-22, REQ-ORD-1, REQ-ORD-39, REQ-PRT-1, INV-9

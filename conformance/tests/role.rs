@@ -259,6 +259,16 @@ fn stand_in_that_breaks_its_role_is_flagged() {
             Check::AnswersItsOperation,
         ),
         (
+            "an exchange charging its fee in another asset",
+            Box::new(Exchange::new(&context).charging_its_fee_in_another_asset()),
+            Check::AnswersItsOperation,
+        ),
+        (
+            "a ramp taking its fee on top of the amount",
+            Box::new(Ramp::new(&context).taking_its_fee_on_top_of_the_amount()),
+            Check::AnswersItsOperation,
+        ),
+        (
             "an exchange answering dry runs with outcome unknown",
             Box::new(Exchange::new(&context).answering_dry_runs_with_outcome_unknown()),
             Check::DryRunAnswered,
@@ -350,6 +360,39 @@ fn stand_in_that_breaks_its_role_is_flagged() {
         "a rejected signature should be flagged by exactly SignatureVerifies: {:?}",
         report.findings
     );
+}
+
+// verifies: THR-108, REQ-QTE-5, REQ-CAT-11
+#[test]
+fn a_fee_on_top_of_the_amount_or_in_another_asset_is_flagged_on_the_quote_and_on_the_execution() {
+    let context = SuiteContext::default();
+    let cases: Vec<(&str, Box<dyn RoleHarness>, &str)> = vec![
+        (
+            "a ramp taking its fee on top of the amount",
+            Box::new(Ramp::new(&context).taking_its_fee_on_top_of_the_amount()),
+            "TookInMoreThanStated",
+        ),
+        (
+            "an exchange charging its fee in another asset",
+            Box::new(Exchange::new(&context).charging_its_fee_in_another_asset()),
+            "FeeInAnotherAsset",
+        ),
+    ];
+    for (name, mut provider, rule) in cases {
+        let report = run(provider.as_mut());
+        for answer in [", dry run: ", ", execution: "] {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.check == Check::AnswersItsOperation
+                        && f.detail.contains(answer)
+                        && f.detail.ends_with(rule)),
+                "{name}: no {rule} finding on the{answer}{:?}",
+                report.findings
+            );
+        }
+    }
 }
 
 // verifies: REQ-CAT-21, AC-30

@@ -278,7 +278,7 @@ impl StatementShape for ReversalConfirmation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MovementSettlement {
-    /// What the provider took in, in the origin unit.
+    /// What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.
     pub amount_in: String,
     /// What it gave out, in the destination unit, gross or net as its tuple declares.
     pub amount_out: String,
@@ -292,7 +292,7 @@ pub struct MovementSettlement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversionSettlement {
-    /// What the exchange took in, in the from unit.
+    /// What left the origin, in the from unit, the charge included.
     pub amount_in: String,
     /// What it gave out, in the to unit.
     pub amount_out: String,
@@ -558,13 +558,15 @@ pub enum JudgementAnswer {
     No,
 }
 
-/// A fee, in one asset (`REQ-CAT-9`).
+/// A fee (`REQ-CAT-9`, `REQ-QTE-5`), in the asset the segment takes in: a withdrawal's, deposit's or transfer's
+/// `asset`, a conversion's `from`. [`check_amounts`](super::check_amounts) holds it to that asset and to at most
+/// `amount_in`, as the router does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fee {
-    /// The asset.
+    /// The asset: the one the segment takes in.
     pub asset: String,
-    /// The amount, in that asset's unit at the tuple.
+    /// The amount, in the origin unit (a conversion's `from` unit).
     pub amount: String,
 }
 

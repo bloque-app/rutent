@@ -884,7 +884,7 @@
           "const": "succeeded"
         },
         "amount_in": {
-          "description": "What the provider took in, in the origin unit.",
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "amount_out": {
@@ -915,7 +915,7 @@
           "const": "succeeded"
         },
         "amount_in": {
-          "description": "What the provider took in, in the origin unit.",
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "amount_out": {
@@ -1014,7 +1014,7 @@
           "const": "dry_run_accepted"
         },
         "amount_in": {
-          "description": "What the provider took in, in the origin unit.",
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "amount_out": {
@@ -1056,7 +1056,7 @@
           "const": "dry_run_accepted"
         },
         "amount_in": {
-          "description": "What the provider took in, in the origin unit.",
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "amount_out": {
@@ -1107,7 +1107,7 @@
           "const": "dry_run_accepted"
         },
         "amount_in": {
-          "description": "What the provider took in, in the origin unit.",
+          "description": "What left the origin, in the origin unit, the charge included whether the tuple reports gross or net.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "amount_out": {
@@ -1299,7 +1299,7 @@
       }
     },
     "fee": {
-      "description": "A fee, in one asset and its unit for that asset at the tuple (REQ-CAT-9).",
+      "description": "A fee, in the asset the segment takes in (a withdrawal's, deposit's or transfer's asset, a conversion's from) and in the origin unit, at most amount_in (REQ-CAT-9, REQ-QTE-5). check_amounts holds it.",
       "type": "object",
       "additionalProperties": false,
       "required": [

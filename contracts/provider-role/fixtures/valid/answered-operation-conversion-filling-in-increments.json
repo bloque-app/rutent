@@ -1,0 +1,76 @@
+{
+  "operation": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:operation",
+    "maker": "rutent-operator",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "conversion",
+      "transaction": "tx-009",
+      "provider": "acme-co",
+      "node": "acme-ledger",
+      "from": "COP",
+      "to": "USDC",
+      "direction": "exact_in",
+      "amount": "25050000",
+      "dry_run": false,
+      "inputs": {}
+    }
+  },
+  "result": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:result",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "conversion",
+      "transaction": "tx-009",
+      "outcome": {
+        "status": "succeeded",
+        "amount_in": "25000000",
+        "amount_out": "61250000",
+        "rate": "0.000245",
+        "fee": {
+          "asset": "COP",
+          "amount": "100000"
+        },
+        "evidence": [
+          {
+            "grade": 3,
+            "reference": "acme-receipt-7781",
+            "by": "acme-co"
+          }
+        ]
+      }
+    }
+  },
+  "terms": {
+    "bands": [
+      {
+        "min": "1",
+        "max": "100000000000"
+      }
+    ],
+    "increment": "100000",
+    "reporting": "gross",
+    "required_inputs": []
+  }
+}

@@ -1,5 +1,17 @@
 # provider-role changelog
 
+## 2.1.0
+- After review round 1 on the M1 pull request (findings 3 and 6): `check_amounts(operation, result, terms)`
+  publishes the rules that tie a result's amounts to the operation it answers, and returns the segment's
+  `Remainder`. A result's `amount_in` is what left the origin, the charge included, whether the tuple reports gross
+  or net. Its fee is in the asset the segment takes in (a conversion's `from`), in the origin unit, and at most
+  `amount_in`, as the router counts it. For `exact_in`, and always for withdrawals and deposits, `amount_in` is at
+  most the stated amount; the difference is the remainder at the origin node, below the tuple's fill increment, or
+  zero where it declares none (`INV-1`, `REQ-CAT-11`, `REQ-QTE-5`, `THR-108`). Dry-run answers are held to the same
+  rules. `answered-operation-` bundle fixtures; the role suite applies the check. Minor, not major: no schema or
+  Rust type changes, every valid fixture stays valid, and the fee rule asks of a result what the router already
+  asks of every quote and operation. Fixtures keep naming 2.0.1. (DEC-4, DEC-20, T-002-03)
+
 ## 2.0.1
 - The newer-than check for `made_at` now fails closed: a time that isn't in the schema's form (UTC `Z`, at most 9
   fraction digits, so no `+05:00` offset) is never newer, instead of being compared as text. The README adds that

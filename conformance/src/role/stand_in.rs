@@ -68,6 +68,8 @@ enum Fault {
     IgnoresMissingInputs,
     JudgesAnotherClass,
     DatesItsJudgementBadly,
+    ChargesItsFeeInAnotherAsset,
+    TakesItsFeeOnTopOfTheAmount,
 }
 
 /// Signs statements as one maker, with placeholder signatures: its advertisements with its advertising key, and
@@ -782,6 +784,14 @@ impl Exchange {
         self
     }
 
+    /// Breaks `REQ-QTE-5`: the exchange quotes and charges its fee in the asset it gives out, not the one it
+    /// takes in, so the fee can't be counted against its formula. Quote and charge agree, so only the contract's
+    /// amount rule sees it.
+    pub fn charging_its_fee_in_another_asset(mut self) -> Self {
+        self.faults.insert(Fault::ChargesItsFeeInAnotherAsset);
+        self
+    }
+
     /// Breaks `REQ-CAT-14`: the exchange answers a dry run with outcome unknown.
     pub fn answering_dry_runs_with_outcome_unknown(mut self) -> Self {
         self.faults.insert(Fault::AnswersDryRunsWithOutcomeUnknown);
@@ -861,7 +871,11 @@ impl Exchange {
 
     fn convert(&mut self, c: &rutent_contracts::provider_role::Conversion) -> ConversionOutcome {
         let fee = Fee {
-            asset: c.from.clone(),
+            asset: if self.breaks(Fault::ChargesItsFeeInAnotherAsset) {
+                c.to.clone()
+            } else {
+                c.from.clone()
+            },
             amount: "0".to_owned(),
         };
         let Some(value) =
@@ -1168,6 +1182,13 @@ impl Ramp {
         self.signer.accepts(operation)
     }
 
+    /// Breaks `THR-108`: the ramp takes its fee on top of the amount stated, so more leaves the origin than the
+    /// `exact_in` operation asked. Its quote says so too, so only the contract's amount rule sees it.
+    pub fn taking_its_fee_on_top_of_the_amount(mut self) -> Self {
+        self.faults.insert(Fault::TakesItsFeeOnTopOfTheAmount);
+        self
+    }
+
     /// Breaks `REQ-QTE-1`: a transfer whose outcome arrives through the status query pays half what was quoted.
     pub fn paying_less_through_its_status(mut self) -> Self {
         self.faults.insert(Fault::PaysLessThroughItsStatus);
@@ -1241,13 +1262,20 @@ impl Ramp {
         {
             return TransferOutcome::Refused(waiting_on_the_person());
         }
+        // The ramp charges nothing, unless it takes a fee of one unit on top of the amount stated.
+        let on_top = self.breaks(Fault::TakesItsFeeOnTopOfTheAmount);
+        let taken = if on_top {
+            amount(&t.amount).map_or(t.amount.clone(), |v| (v + 1).to_string())
+        } else {
+            t.amount.clone()
+        };
         let fee = Fee {
             asset: t.asset.clone(),
-            amount: "0".to_owned(),
+            amount: if on_top { "1" } else { "0" }.to_owned(),
         };
         if t.dry_run {
             return TransferOutcome::DryRunAccepted(TransferQuote {
-                amount_in: t.amount.clone(),
+                amount_in: taken.clone(),
                 amount_out: t.amount.clone(),
                 fee,
                 direction: t.direction,
@@ -1292,7 +1320,7 @@ impl Ramp {
             },
         );
         let settled = TransferOutcome::Succeeded(MovementSettlement {
-            amount_in: t.amount.clone(),
+            amount_in: taken,
             amount_out: t.amount.clone(),
             fee,
             evidence: evidence(self.grade(), &t.destination, &t.transaction),

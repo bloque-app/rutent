@@ -471,3 +471,48 @@ a major bump under `DEC-4` and the owner's click under `DEC-20`; the M1 pull req
 - **Nits.** `validate_statement`, `validate_successor` and `validate_assertion_key` match the signature's scheme as
   well as the key's bytes (`purpose_of_signer`), a no-op while Ed25519 is the only scheme. The role suite's two
   canonical-key encoding checks are gone: a `PublicKey` only builds from its canonical text, so they couldn't fail.
+
+## Review round 1 on the M1 pull request (provider-role 2.1.0, `T-002-03`)
+
+Findings 3 and 6 of the external review were `F-002`'s. Both are addressed by one published check,
+`check_amounts(operation, result, terms)` in `contracts/src/provider_role/settlement.rs`, which relates three things,
+as `validate_successor` relates two advertisements.
+
+- **`amount_in` is gross.** It is what left the segment's origin, the charge included, whatever the tuple's
+  `reporting`. `reporting` says only whether `amount_out` includes the charge. That was already the reading in three
+  places: T-002-02's "Amounts in results" above attaches gross or net to `amount_out`, the existing fixtures settle
+  a withdrawal at `amount_out = amount_in − fee`, and the router computes a conversion from `n = a − fee`. It is now
+  stated, because the other reading lets `THR-108`'s "counts fees on top of the amount" through: a `net` report could
+  leave the fee out of `amount_in` and still pass `amount_in ≤ amount`.
+- **The fee is in the asset the segment takes in** (finding 6): a withdrawal's, deposit's or transfer's `asset`, a
+  conversion's `from`, in the origin unit, and at most `amount_in`. The router already asks this of an operation
+  (`Operation::check`) and of a quote (`check_fee`). A fee in another asset has no unit "at the tuple" and can't be
+  counted against a formula in the input unit (`REQ-QTE-5`), so tying it is better than defining a conversion. The
+  rule holds for dry-run answers too, since the role suite and the router price from them.
+- **The remainder is derived, not carried** (finding 3). Where an operation fixes what it takes in (`exact_in`;
+  withdrawals and deposits always), `amount_in ≤ amount`, and `amount − amount_in` is the segment's `Remainder`, at
+  the operation's origin node, in the asset taken in and the origin unit. A remainder field on the wire would be a
+  second figure that could disagree with the derived one, and adding it as required would be a major bump that
+  ripples into module-interface's fixtures, which embed succeeded results. The check returns the remainder as a
+  typed value, so `INV-1` (`F-024`) and `REQ-AUD-15` have it to read.
+- **A remainder must be declared.** Below the tuple's fill `increment`, or zero where it declares none: `REQ-CAT-11`'s
+  "a report in undeclared form is flagged". SPEC sets no rule that what is taken in is a multiple of the increment,
+  so the check doesn't add one.
+- **Routed: the `exact_out` remainder, to `F-010` and `F-020`.** An `exact_out` operation states what is given out,
+  so what stays at its origin is the quote's `amount_in` less the result's, not anything the operation states. Which
+  quote a segment was priced on, and which amount the next segment moves, is finding 2's question, which the review
+  gives to `F-010` and `F-020`. `check_amounts` returns no remainder for `exact_out`, and still holds its fee rules.
+- **Minor, not major.** No schema validates differently and no Rust type changes; every valid fixture stays valid;
+  the fee rule asks of a result what the router already asks of every quote and operation. So 2.1.0. Fixtures keep
+  naming 2.0.1, as at 0.4.0 they kept 0.3.0. `statement_without_its_deployment_and_protocol_version_is_invalid`
+  checked one fixture's context against `VERSION`, against the README's rule that no check compares the two; it
+  now uses the fixture's own protocol version, as every other fixture test does, and still asserts a refusal under
+  another one.
+- **The role suite applies the check.** Its `amount_in != stated` equality became a call to `check_amounts` on every
+  dry-run answer and execution, under `AnswersItsOperation`, rather than a 22nd check. That isn't a weakening: the
+  stand-ins declare no increment, so equality still holds for them. Two breakers trip that check alone: an exchange
+  quoting and charging its fee in its `to` asset, and a ramp taking a one-unit fee on top of the amount, each with a
+  quote that agrees with the execution so `QuoteHonoured` stays quiet. A further test pins that both the quote and
+  the execution are flagged, so neither call can be dropped unseen.
+- **Bundle fixtures** are `answered-operation-*`: an enveloped `operation`, the enveloped `result` and the tuple's
+  `terms`, each member checked against its own schema or definition. Four valid, seven invalid, one rule each.
