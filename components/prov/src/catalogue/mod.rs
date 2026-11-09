@@ -7,6 +7,10 @@
 //!   reversals a provider owes (`REQ-CAT-7`).
 //! - [`declaration`]: reserve declarations, recorded once and shown before acceptance (`REQ-CAT-6`).
 //! - [`publisher`]: the publisher behind each provider and node (`REQ-CAT-20`).
+//! - [`nodes`](NodeBook): the operator's public nodes, and every node's holding account (`REQ-CAT-22`,
+//!   `REQ-CAT-23`).
+//! - [`check_tuple`]: the shape of a tuple (`REQ-CAT-13`, `REQ-CAT-21`).
+//! - [`Catalogue::snapshot`]: what the router reads (`T-012-03`).
 //! - [`Catalogue`]: the whole, with the join rule of `REQ-CAT-16`.
 //!
 //! The catalogue is a plain value with no clock and no provider names in it: every time is passed in, and a
@@ -18,8 +22,11 @@
 mod bounds;
 mod declaration;
 mod grant;
+mod nodes;
 mod publisher;
 mod reversal;
+mod snapshot;
+mod tuples;
 
 pub use bounds::{OperatorBounds, TupleBound};
 pub use declaration::{
@@ -27,13 +34,19 @@ pub use declaration::{
     RecordOutcome,
 };
 pub use grant::{Endpoint, Grant, GrantError, GrantTerms, Instant, Standing, TupleKey, tuples_of};
+pub use nodes::{HoldingAccount, HoldingSource, NodeBook, NodeError};
 pub use publisher::{PublisherError, PublisherIndex};
 pub use reversal::{
     Bond, Observation, Owed, OwedError, OwedReversals, ReversalCapacity, ReversalError,
 };
 pub use rutent_contracts::provider_role::Category;
+pub use snapshot::{LeftOut, LeftOutReason, SnapshotBuild, SnapshotError};
+pub use tuples::{TupleRefusal, check_tuple};
 
-use rutent_contracts::provider_role::Advertisement;
+use std::collections::{BTreeMap, HashMap};
+
+use rutent_contracts::provider_role::{Advertisement, Declarations, EvidenceGrade};
+use rutent_contracts::router_api::Version;
 
 /// Why a provider's tuple can't be used in a new route.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +90,16 @@ pub enum JoinRefusal {
     Publisher(PublisherError),
     /// A declaration rule refused it.
     Declaration(DeclarationError),
+    /// It declares a private node the operator lists as public (`REQ-CAT-22`).
+    PrivateNodeIsPublic(String),
+}
+
+/// An advertisement as joined, and when.
+#[derive(Debug, Clone)]
+struct Joined {
+    advertisement: Advertisement,
+    /// When the catalogue took it: its figures' age counts from here.
+    stated_at: Instant,
 }
 
 /// The catalogue.
@@ -87,6 +110,10 @@ pub struct Catalogue {
     declarations: DeclarationLog,
     publishers: PublisherIndex,
     owed: OwedReversals,
+    joined: BTreeMap<String, Joined>,
+    nodes: NodeBook,
+    floors: HashMap<TupleKey, EvidenceGrade>,
+    modules: BTreeMap<String, Version>,
 }
 
 impl Catalogue {
@@ -241,6 +268,9 @@ impl Catalogue {
         if !in_force {
             return Err(JoinRefusal::NoGrantInForce);
         }
+        if let Some(node) = ad.private_nodes.iter().find(|n| self.nodes.is_public(n)) {
+            return Err(JoinRefusal::PrivateNodeIsPublic(node.clone()));
+        }
         let backup = (self.publishers.clone(), self.declarations.clone());
         let done = self
             .publishers
@@ -254,8 +284,73 @@ impl Catalogue {
             });
         if done.is_err() {
             (self.publishers, self.declarations) = backup;
+        } else {
+            self.joined.insert(
+                ad.provider.clone(),
+                Joined {
+                    advertisement: ad.clone(),
+                    stated_at: at,
+                },
+            );
         }
         done
+    }
+
+    /// What a joined provider declared: how it is followed, its evidence and whether a repeat is safe
+    /// (`REQ-CAT-10`).
+    pub fn declared_by(&self, provider: &str) -> Option<&Declarations> {
+        self.joined
+            .get(provider)
+            .map(|j| &j.advertisement.declarations)
+    }
+
+    /// Adds a node to the operator's public list. A node a provider declares private can't be public.
+    pub fn add_public_node(&mut self, node: &str) -> Result<(), NodeError> {
+        let private = self.publishers.publisher_of_node(node).is_some();
+        self.nodes.add_public(node, private)
+    }
+
+    /// Registers a public node's holding account, by default a plain wallet, as a module outside the core
+    /// (`REQ-CAT-23`).
+    pub fn register_public_holding(
+        &mut self,
+        node: &str,
+        reference: &str,
+    ) -> Result<(), NodeError> {
+        self.nodes.hold_public(node, reference)
+    }
+
+    /// Records the way a private node's publisher gave the operator to its holding account (`REQ-CAT-23`).
+    pub fn register_private_holding(
+        &mut self,
+        node: &str,
+        publisher: &str,
+        interface: &str,
+    ) -> Result<(), NodeError> {
+        let recorded = self.publishers.publisher_of_node(node);
+        self.nodes
+            .hold_private(node, recorded, publisher, interface)
+    }
+
+    /// The public nodes and every node's holding account.
+    pub fn nodes(&self) -> &NodeBook {
+        &self.nodes
+    }
+
+    /// Sets the weakest evidence grade the operator accepts on a tuple (`REQ-ORD-39`): grade 1 is the strongest.
+    /// A provider declaring a weaker grade is left out of the snapshot for it.
+    pub fn set_evidence_floor(&mut self, tuple: TupleKey, floor: EvidenceGrade) {
+        self.floors.insert(tuple, floor);
+    }
+
+    /// The floor set on a tuple, if any.
+    pub fn evidence_floor(&self, tuple: &TupleKey) -> Option<EvidenceGrade> {
+        self.floors.get(tuple).copied()
+    }
+
+    /// Records the version of the admitted module behind a provider, which its figures' origin names.
+    pub fn set_module_version(&mut self, provider: &str, version: Version) {
+        self.modules.insert(provider.to_owned(), version);
     }
 
     /// The reserve declarations.
