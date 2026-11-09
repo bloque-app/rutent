@@ -1,6 +1,6 @@
 //! Grants (`REQ-CAT-2`) and the tuples they are scoped to.
 
-use rutent_contracts::provider_role::{Advertisement, Category, NodeRef};
+use rutent_contracts::provider_role::{Advertisement, Category, NodeRef, PublicKey};
 
 use super::reversal::ReversalCapacity;
 
@@ -138,6 +138,8 @@ pub enum GrantError {
 pub struct Grant {
     terms: GrantTerms,
     revoked_at: Option<Instant>,
+    /// The advertising keys the operator trusts for the provider under this grant (`REQ-CAT-2`, `THR-4`).
+    advertising_keys: Vec<PublicKey>,
 }
 
 impl Grant {
@@ -174,7 +176,20 @@ impl Grant {
         Ok(Self {
             terms,
             revoked_at: None,
+            advertising_keys: Vec::new(),
         })
+    }
+
+    /// The advertising keys the operator trusts for the provider under this grant. An advertisement's own list of
+    /// keys vouches for none of them: only this list does (`REQ-CAT-2`).
+    pub fn advertising_keys(&self) -> &[PublicKey] {
+        &self.advertising_keys
+    }
+
+    pub(super) fn trust_advertising_key(&mut self, key: PublicKey) {
+        if !self.advertising_keys.contains(&key) {
+            self.advertising_keys.push(key);
+        }
     }
 
     /// The terms it was made with.

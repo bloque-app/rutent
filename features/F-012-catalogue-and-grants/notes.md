@@ -135,3 +135,71 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Dry run answered as done.** `segment_effect` refuses a dry-run operation whose result states a settlement
   (`EffectError::NotADryRunAnswer`).
 - **`own_order`** stays as it is: the guard is `F-020`'s.
+
+## T-012-02
+
+- **Crate.** `ed25519-dalek` 2.2 with default features off (pure Rust, `no_std`-capable, BSD-3-Clause), over
+  `curve25519-dalek` 4.1. It has strict verification (`verify_strict`: a small-order `R` refused, `R` compared as
+  the bytes sent) and is the widely reviewed one. The lock gains about 25 packages, all permissive (MIT, Apache-2.0,
+  BSD-3-Clause); only `zeroize 1.9.1` was missing from `licences/RECORD` (`1.9.0` was there), and it is
+  now recorded. No locked package changed version. The tests also use it to sign, as a dev-dependency with its
+  default features.
+- **What the verifier refuses, each with its own `SignatureError`.** `catalogue/signature.rs`, in two layers:
+  `verify_ed25519` over raw bytes (`F-013` reuses it for release assertions) and `verify_envelope` over a statement
+  as received (the bytes signed are `signing_input(received)`). `ed25519-dalek` 2.2 decompresses a `y` at or above
+  2^255 - 19 without a word, so the canonical check is its own: `y < p`, then decompression, then `is_weak()`
+  (small order), then `S < L` (the malleable twin), then `verify_strict`. A signature's text goes through
+  `decode_signature`, which takes 86 characters of unpadded base64url whose last one is in `AQgw`; a key's text goes
+  through the contract's `PublicKey`. Test vectors: RFC 8032 section 7.1, tests 1 to 3 (verified, and re-signed
+  from the secret key), plus `p` to `p + 18` with both sign bits, six of the eight small-order points, and `S + L`.
+- **Admission uses it: a `DEC-20` path.** `Catalogue::join` and `Catalogue::verify_statement` are what module
+  admission (`T-013-04`) calls for signature checking.
+- **`join` takes the received bytes.** `Catalogue::join(&[u8], at)` replaces `join(&Advertisement, at)`, so no
+  advertisement is admitted without its signature checked. `JoinRefusal` gained the signature, key and clock
+  variants. Existing tests join through `tests/common`'s helper, which signs the fixtures' advertisements anew with
+  deterministic test keys (the fixtures' own signatures are placeholders).
+- **Which deployment.** The catalogue is told once (`set_context(deployment, protocol_version)`); with none set no
+  advertisement is joined. `check_shape` and `check_context` run on every advertisement (`REQ-PRT-1`, `THR-8`).
+  A catalogue that guessed its deployment from the first advertisement would let the first caller choose it.
+- **First trust (`REQ-CAT-2`).** The operator names the keys it trusts for a provider on a grant:
+  `trust_advertising_key(grant_id, key)`. The first advertisement must be signed with a key a grant in force names,
+  and every advertising key it lists must be named too (a listed key vouches for nothing, and a key it lists but
+  the operator never named is refused). A key that is a statements key somewhere can't be trusted.
+- **Later advertisements.** They pass `validate_successor` against the last accepted, then the signature verifies
+  with the key that one lists for advertising. A provider that lost every advertising key is let back in by a grant
+  made after its last accepted advertisement and signed with a key that grant names (the README's "fresh operator
+  grant"), under the same rules otherwise.
+- **No replay.** Strictly newer than the last accepted by `made_at`, to the nanosecond; checked by
+  `validate_successor` on the successor path and again by the catalogue on both, so the grant path has it too.
+- **The clock (`REQ-CAT-2`).** `made_at` more than the skew ahead of the caller's `at` is refused; a fraction of a
+  second counts as the next second, so the check fails closed. `SPEC.md` gives no skew, so it is the operator's
+  setting (`set_clock_skew`) with a default of 300 seconds. `verify_statement` applies the same bound with the same
+  `at`.
+- **Key history.** The catalogue keeps every accepted advertisement per provider, oldest first
+  (`advertisement_history`); a refused one leaves nothing in it. A statements key an accepted advertisement dropped
+  is never listed again by that provider, under either purpose. A key's purpose is held across providers and
+  deployments in both directions: reading the README's "a key used for `statements` anywhere never accepted for
+  `advertising` anywhere" one step further, an advertisement may not list for `statements` a key that is an advertising
+  key of some provider either, or one provider could lock another out of its own key. The release side is
+  `record_statement_key`, for `F-013` to call with each admitted release's `statement_key`.
+- **Key valid at the statement's time.** `verify_statement(received, at)` finds the provider's accepted
+  advertisement in force at the statement's `made_at` (the latest one made at or before it), requires `signature.key`
+  to be listed there for advertising (an advertisement or a release assertion) or for statements (anything else), and
+  verifies. A key retired later still verifies a statement dated before its retirement. The limit: a leaked retired
+  key can sign a statement dated in the past; a caller that must exclude that binds the statement to a time it knows.
+- **`T-012-03`'s placeholder.** A figure's age now counts from the advertisement's `made_at` (whole seconds), not from
+  when it was joined. A `made_at` ahead of `at` but within the skew gives age 0.
+- **Role suite.** The suite's stand-ins sign with placeholders and conformance has no curve code, so
+  `tests/role_suite.rs` runs each stand-in behind a wrapper that gives every statement a real signature (the seed is
+  the placeholder key's bytes; a statement nested in a result is signed first). The catalogue, holding the stand-in's
+  advertisement under a grant, is the suite's `SignatureVerifier`. All four stand-ins pass with no signature deferred;
+  a stand-in run with its placeholders is flagged under `SignatureVerifies`. `rutent-conformance` is a dev-dependency
+  of `components/prov`, as the boundary check allows (`DEC-2`).
+- **Not done here.** Releases' assertion keys against the accepted advertisement (`validate_assertion_key`) and
+  the admission record are `T-013-04`. The catalogue keeps no key history across restarts; persistence is outside
+  `F-012`.
+- **Test-first, as it happened.** The verifier's and the history's code was written before the test files in this
+  task, against the README's rules, which breaks the brief. The tests were then written from the rules, and
+  each was shown able to fail by disabling its rule in turn (canonical `y`, small order, `S < L`, skew, dropped
+  key, purpose across providers, key at the statement's time, replay) and seeing its tests go red; the code was
+  then restored. Property tests use the seeded generator of `T-012-01` (400 cases each); none needed a property-test crate.

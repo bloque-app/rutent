@@ -9,9 +9,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+ed25519-dalek = { version = "2.2.0", default-features = false }
 rutent-contracts = { path = "../../contracts" }
 serde_json = "1.0.154"
 
 [dev-dependencies]
 serde_json = "1.0.154"
 jsonschema = { version = "0.60.2", default-features = false }
+ed25519-dalek = "2.2.0"
+rutent-conformance = { path = "../../conformance" }
