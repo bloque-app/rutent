@@ -1,12 +1,10 @@
 //! Property tests of the shared credential proxy's invariants (`DEC-18`, `T-014-02`): seeded, so a failure names
 //! the seed that replays it.
 
-mod proxy_support;
-
 use std::collections::BTreeMap;
 
-use proxy_support::*;
-use rutent_prov::proxy::Refusal;
+use super::support::*;
+use crate::proxy::Refusal;
 
 const PROVIDERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
 const TRANSACTIONS: [&str; 3] = ["tx-1", "tx-2", "tx-3"];

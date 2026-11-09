@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use rutent_contracts::module_interface::{Identifier, Name};
 use rutent_prov::proxy::{
-    KvConfig, KvResolver, Request, ResolveError, Resolver, Response, Server, Token, Transport,
-    TransportError,
+    HttpsTransport, KvConfig, KvResolver, Request, ResolveError, Resolver, Response, Server,
+    StoreAddress, StoreScheme, Token, Transport, TransportError,
 };
 
 const TOKEN: &str = "test-token-not-a-secret";
@@ -550,22 +550,6 @@ mod live {
             assert!(answer.status < 300, "write answered {}", answer.status);
         }
     }
-
-    impl Transport for PlainHttp {
-        fn get(&self, request: &Request) -> Result<Response, TransportError> {
-            // HTTP/1.0, so the server closes the connection and never chunks the body.
-            let mut head = format!(
-                "GET {} HTTP/1.0\r\nHost: {}\r\n",
-                request.path(),
-                self.address
-            );
-            for header in request.headers() {
-                head.push_str(&format!("{}: {}\r\n", header.name(), header.value()));
-            }
-            head.push_str("\r\n");
-            self.exchange(&head, &[])
-        }
-    }
 }
 
 // verifies: REQ-MDL-17, REQ-MDL-6
@@ -585,11 +569,27 @@ fn live_servers_resolve_and_rotate_a_secret_when_configured() {
             eprintln!("{server:?}: no live server configured, skipped");
             continue;
         };
-        let transport = live::PlainHttp { address };
+        // Reads go through the production transport, over plain HTTP to the loopback dev server; writes, which
+        // only the test makes, through the test's own.
+        let writer = live::PlainHttp {
+            address: address.clone(),
+        };
+        let (host, port) = address
+            .rsplit_once(':')
+            .expect("RUTENT_LIVE_*_ADDR is host:port");
+        let transport = HttpsTransport::new(
+            &StoreAddress {
+                scheme: StoreScheme::Http,
+                host: host.to_owned(),
+                port: port.parse().expect("a port"),
+            },
+            None,
+        )
+        .expect("the live server is on a loopback address");
         let config =
             KvConfig::new("secret", "rutent-live", Token::new(token.as_str()).unwrap()).unwrap();
         let path = "/v1/secret/data/rutent-live/bridge-pay/api-key";
-        transport.write(path, &token, "live-first");
+        writer.write(path, &token, "live-first");
         let resolver = match server {
             Server::OpenBao => KvResolver::openbao(config, transport),
             Server::Vault => KvResolver::vault(config, transport),
@@ -597,7 +597,7 @@ fn live_servers_resolve_and_rotate_a_secret_when_configured() {
         let lookup = || resolver.resolve(&provider("bridge-pay"), &name("api-key"));
 
         assert_eq!(lookup().unwrap().as_str(), "live-first", "{server:?}");
-        resolver.transport().write(path, &token, "live-rotated");
+        writer.write(path, &token, "live-rotated");
         assert_eq!(lookup().unwrap().as_str(), "live-rotated", "{server:?}");
         assert_eq!(
             resolver.resolve(&provider("other-pay"), &name("api-key")),

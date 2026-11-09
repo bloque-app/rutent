@@ -79,8 +79,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   edit is minimal: about 25 lines inside that one function, and its imports. `World`, `wire.rs` and the test world are unchanged. So the
   module-boundary suite's secret probes, which run on the platform, go through the proxy's rule. Making
   `CredentialProxy` the platform's production `World`, with the platform calling `begin_*`/`end_*` from its own
-  context, belongs to the work that builds the production world (`T-013-02` and `T-013-03` have `module/` now). The
-  `World::secret` hook needs no change for it.
+  context, moved to `T-014-05` (below). That work changes the `World::secret` hook as well. The hook returns
+  `Option<String>`, so a store failure would reach the module as `not_found`; it needs a result that tells a
+  missing secret from a failed store.
 - **Admission.** `admit` takes the accepted `AdmissionArtefact` and the advertisement the catalogue accepted for its
   provider. It refuses an artefact that isn't accepted yet, an advertisement of another provider, and a provider the
   settings give no role. It does not re-run `validate_artefact`, which admission (`F-013`) already runs. Its own
@@ -96,8 +97,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   transaction or operation, an undeclared operation or secret. That matches what the platform already answered, and
   it tells a module nothing about another provider or the deployment. A store failure (denied token, unavailable
   store, transport) has no reason in the contract. `wire_reason` gives `None` and `proxy::answer` no answer, so the
-  outside part learns no answer came. The record keeps the true cause in each case. Reading: a contract reason for
-  a store failure is an item for `F-010`, if one is wanted.
+  outside part learns no answer came. The record keeps the true cause in each case. A contract reason for a store
+  failure moved to `T-014-05`.
 - **Every use recorded.** Each `lookup` and `statement_key` call, resolved or refused, leaves one `Use`: the
   provider, its running module version, the transaction, the outside operation (`None` for the statement key), what
   was asked for, and the outcome. A `Use` never holds the value, and neither does its `Debug` (`THR-50`). The
@@ -111,8 +112,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   is refused. The settings are refused unless:
   - every role, provider, mount, prefix and namespace is plain segments;
   - every provider's role exists;
-  - no two buckets nest in one store, namespace and mount, compared segment by segment, a role's own secrets and
-    keys included.
+  - no two buckets on one store nest, compared segment by segment by the path the store resolves, a role's own
+    secrets and keys included (as corrected in review, below).
 
   Without the last rule, prefix `a` with provider `b` would read the same paths as prefix `a/b`. Tokens are not in
   the settings. `kv_bucket` builds a role's two resolvers from its settings, a token and a transport. The deployment
@@ -128,8 +129,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   Reading of "by the deployment's name" in the secret-lookup schema: the key sits where the deployment's settings
   put it (the role's `keys` prefix), under its provider. It is named by the public key the release declares, so
   only the declared key can be addressed. The contract gives this lookup no wire shape, and `wire.rs` has no
-  message for it, so the platform doesn't call it yet. That wiring belongs to the work that signs results on the
-  outside part.
+  message for it, so the platform doesn't call it yet. The statement key's wire message moved to `T-014-05`.
 - **The production transport.** `proxy::HttpsTransport` sends one HTTP/1.0 `GET` per connection, so no answer is
   chunked. It speaks TLS through rustls 0.23, a pure-Rust TLS implementation, over ring's primitives
   (`Apache-2.0 AND ISC`). It uses no OpenSSL, and no aws-lc, whose C build needs cmake. The handshake, and so the
@@ -143,18 +143,18 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   default). It never follows a redirect: the status goes back to the resolver, which reports it as `Unexpected`.
   Its tests run against a local rustls server. That server's test-only certificates are under
   `components/prov/tests/fixtures/proxy/tls/`, valid until 2126, and no deployment trusts them.
-- **Gap: the transport against a real store.** The HTTPS transport's HTTP/1.0 exchange is tested against a local
-  rustls server, not against OpenBao or Vault. The CI live test (`live_servers_resolve_and_rotate_a_secret_when_configured`)
-  still reads through its own plain-HTTP transport. Switching its reads to `HttpsTransport` over plain HTTP to
-  `127.0.0.1` would close the gap. This task left it alone, since it couldn't run the live servers here; a later
-  change to the live test can do it.
+- **The transport against a real store.** CI's live test
+  (`live_servers_resolve_and_rotate_a_secret_when_configured`) reads through `HttpsTransport`, over plain HTTP to
+  the dev servers at `127.0.0.1`, so CI runs the production transport against OpenBao and Vault. Only its writes,
+  which the test alone makes, go through the test's own plain-HTTP client. It couldn't be run here, where no live
+  server runs; it skips without `RUTENT_LIVE_*`.
 - **Dependencies.** `rustls` (with `ring`, `std` and `tls12`, no default features) and `rustls-pki-types` become
   normal dependencies of `rutent-prov`. `Cargo.lock` gains `ring`, `rustls`, `rustls-pki-types`, `rustls-webpki`,
   `subtle`, `untrusted`, `zeroize`, `getrandom` 0.2, `wasi` 0.11 and the `windows-*` 0.52 family. No locked
   version changes. Most of those versions were already in `licences/RECORD` from the experiments' locks.
   `licences/RECORD` gains three lines, all permissive standing: `rustls 0.23.46`, `rustls-webpki 0.103.16`,
   `zeroize 1.9.1`.
-- **Property tests (`DEC-18`).** `proxy_properties.rs` checks four invariants:
+- **Property tests (`DEC-18`).** `proxy/tests/properties.rs` checks four invariants:
   - over random sequences of operations, requests and lookups by four callers, a lookup resolves exactly when the
     caller's own request in flight matches and the secret is declared, and it asks only the caller's role's bucket
     for the caller's own path;
@@ -163,3 +163,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - every lookup leaves one record with its caller's transaction, and no record prints a value;
   - a declared name reaches the store only as one plain segment of at most 255 bytes.
 - **`DEC-20`.** This task touches the credential proxy and its resolvers. Its commit says so.
+- **From review.** A reviewer's findings, answered in a follow-up commit:
+  - **Buckets compared by their real path.** The overlap check compared prefixes only within one store, namespace
+    and mount. So mount `secret` with prefix `data/x` aliased mount `secret/data` with prefix `x`, and namespace
+    `ns1` with mount `secret` aliased mount `ns1/secret`. It now compares the path the store resolves, segment by
+    segment, per store: namespace, mount, `data`, then the prefix. The store's host is compared without case.
+  - **A body cut short.** An answer with no `Content-Length` stands only if the connection ended cleanly, with
+    TLS's close_notify or the end of a plain connection. One that just stops is refused.
+  - **The statement key's purpose and the operator key.** A key the advertisement lists more than once is refused
+    if any entry lists it for `advertising`. The operator key now comes from the proxy's settings: `ProxySettings`
+    names the deployment, `{name, operator_key}`. `admit` refuses an advertisement of another deployment, so an
+    advertisement can't move the operator key.
+  - **Only the crate builds a `Caller`.** `Caller::process_of` is `pub(crate)`, so no code outside `rutent-prov`
+    can claim to be a provider's process. A `compile_fail` doc test keeps it so. The proxy's tests therefore moved
+    from `tests/` into the crate, at `components/prov/src/proxy/tests/`. A dev-dependency of the crate on itself,
+    which would have kept them outside, is a dependency of ours that the `DEC-2` boundary check refuses. The HTTPS
+    transport's tests need no caller and stay in `tests/proxy_https.rs`.
+  - **Moved to `T-014-05`**, the row the orchestrator adds:
+    - an egress `Connector` built on this transport's `ClientConfig` and handshake;
+    - the production `World`, with the platform calling `begin_*`/`end_*`, and the `World::secret` change;
+    - the store failure's contract reason;
+    - the statement key's wire message.

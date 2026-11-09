@@ -34,6 +34,9 @@ mod settings;
 mod shared;
 mod transport;
 
+#[cfg(test)]
+mod tests;
+
 pub use https::HttpsTransport;
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};
 pub use resolver::{ResolveError, Resolver};

@@ -4,16 +4,14 @@
 //! only as the release declares it, never a key listed for `advertising`. Every use is recorded with its
 //! transaction, and each provider's lookups reach only its process role's bucket.
 //!
-//! The stores are fakes, one per role (`proxy_support`). The resolvers' own behaviour against OpenBao and Vault is
-//! `proxy.rs`'s.
+//! The stores are fakes, one per role (`support`). The resolvers' own behaviour against OpenBao and Vault is
+//! `tests/proxy.rs`'s.
 
-mod proxy_support;
-
-use proxy_support::*;
-use rutent_contracts::module_interface::{SecretOutcome, SecretRefusalReason};
-use rutent_prov::proxy::{
+use super::support::*;
+use crate::proxy::{
     InFlight, ProxySettings, Refusal, ResolveError, Token, UseOf, answer, judge, kv_bucket,
 };
+use rutent_contracts::module_interface::{SecretOutcome, SecretRefusalReason};
 use serde_json::json;
 
 // verifies: REQ-MDL-9, DEC-9
@@ -569,7 +567,10 @@ fn settings_whose_buckets_nest_or_name_no_role_are_refused() {
         })
     };
     let settings = |roles: serde_json::Value, providers: serde_json::Value| {
-        ProxySettings::from_json(&json!({ "roles": roles, "providers": providers }).to_string())
+        ProxySettings::from_json(
+            &json!({ "deployment": deployment(), "roles": roles, "providers": providers })
+                .to_string(),
+        )
     };
 
     // The control.
@@ -614,6 +615,49 @@ fn settings_whose_buckets_nest_or_name_no_role_are_refused() {
         );
     }
 
+    // Buckets that alias one store path across a mount, a namespace or a host's case.
+    let on = |mount: &str, namespace: Option<&str>, host: &str, secrets: &str, keys: &str| {
+        let mut role = role(secrets, keys);
+        role["mount"] = json!(mount);
+        role["store"]["host"] = json!(host);
+        if let Some(namespace) = namespace {
+            role["namespace"] = json!(namespace);
+        }
+        role
+    };
+    for (internal, integrations) in [
+        // `secret` + `data/x` and `secret/data` + `x` both read `secret/data/data/x`.
+        (
+            on("secret", None, "bao.internal", "data/x", "k/internal"),
+            on("secret/data", None, "bao.internal", "x", "k/integrations"),
+        ),
+        // Namespace `ns1` with mount `secret`, and mount `ns1/secret` with none, are one path.
+        (
+            on("secret", Some("ns1"), "bao.internal", "r/s", "r/internal/k"),
+            on(
+                "ns1/secret",
+                None,
+                "bao.internal",
+                "r/s",
+                "r/integrations/k",
+            ),
+        ),
+        // A host name in another case is the same store.
+        (
+            on("secret", None, "bao.internal", "r/s", "r/internal/k"),
+            on("secret", None, "BAO.Internal", "r/s", "r/integrations/k"),
+        ),
+    ] {
+        assert!(
+            settings(
+                json!({ "internal": internal.clone(), "integrations": integrations.clone() }),
+                json!({})
+            )
+            .is_err(),
+            "accepted aliasing buckets: {internal} {integrations}"
+        );
+    }
+
     // The same prefixes on another mount, or in another namespace, don't nest.
     let mut other_mount = role("r/s", "r/k2");
     other_mount["mount"] = json!("kv-integrations");
@@ -629,6 +673,7 @@ fn settings_whose_buckets_nest_or_name_no_role_are_refused() {
 fn proxy_over_settings_that_were_never_checked_is_refused() {
     // Settings made without `from_json`, whose role's keys sit inside its secrets.
     let nesting: ProxySettings = serde_json::from_value(json!({
+        "deployment": deployment(),
         "roles": { "internal": {
             "server": "openbao",
             "store": { "scheme": "https", "host": "bao.internal", "port": 8200 },
@@ -655,4 +700,53 @@ fn proxy_over_settings_that_were_never_checked_is_refused() {
         built, 0,
         "a bucket was built before the settings were checked"
     );
+}
+
+// verifies: REQ-MDL-6, THR-4
+#[test]
+fn statement_key_listed_twice_once_for_advertising_is_never_resolved() {
+    let (mut proxy, stores) = proxy();
+    stores["internal"].write(&key_path("internal", "alpha", KEY_B), "private-half");
+    let alpha = caller("alpha");
+    proxy
+        .admit(
+            &release("alpha", "1.0.0", &[SECRET], KEY_B),
+            &advertisement(
+                "alpha",
+                &[
+                    (KEY_A, "advertising"),
+                    (KEY_B, "statements"),
+                    (KEY_B, "advertising"),
+                ],
+            ),
+        )
+        .unwrap();
+    proxy.begin_operation(&alpha, &id("tx-1")).unwrap();
+
+    assert_eq!(
+        proxy.statement_key(&alpha, &id("tx-1")),
+        Err(Refusal::StatementKeyForAdvertising)
+    );
+    assert!(stores["internal"].seen().is_empty());
+}
+
+// verifies: REQ-MDL-6, THR-4, DEC-9
+#[test]
+fn advertisement_of_another_deployment_is_not_admitted() {
+    let (mut proxy, _) = proxy();
+    let keys = [(KEY_A, "advertising"), (KEY_B, "statements")];
+    // An advertisement naming another operator key: the proxy's operator key is the deployment's, from its
+    // settings, so this one can't move it.
+    let mut elsewhere = advertisement("alpha", &keys);
+    elsewhere.deployment.operator_key =
+        rutent_contracts::provider_role::PublicKey::new(KEY_C).unwrap();
+    let mut renamed = advertisement("alpha", &keys);
+    renamed.deployment.name = "another-deployment".to_owned();
+
+    for advertisement in [elsewhere, renamed] {
+        assert_eq!(
+            proxy.admit(&release("alpha", "1.0.0", &[SECRET], KEY_C), &advertisement),
+            Err(Refusal::AdvertisementOfAnotherDeployment)
+        );
+    }
 }

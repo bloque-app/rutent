@@ -194,9 +194,14 @@ impl HttpsTransport {
         stream.flush().map_err(io_error)?;
         let mut answer = Vec::new();
         let mut chunk = [0u8; 8192];
+        // Whether the peer ended the answer cleanly: TLS's close_notify, or the end of a plain connection.
+        let mut closed = false;
         loop {
             match stream.read(&mut chunk) {
-                Ok(0) => break,
+                Ok(0) => {
+                    closed = true;
+                    break;
+                }
                 Ok(n) => {
                     answer.extend_from_slice(&chunk[..n]);
                     if answer.len() > self.max_answer {
@@ -206,13 +211,14 @@ impl HttpsTransport {
                         break;
                     }
                 }
-                // A peer that closes without TLS's close_notify: the answer stands only if it is complete.
+                // A peer that ends the connection without TLS's close_notify: the answer stands only if it is
+                // complete by its declared length.
                 Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) => return Err(io_error(e)),
             }
         }
-        parse(&answer)
+        parse(&answer, closed)
     }
 }
 
@@ -269,8 +275,9 @@ fn complete(answer: &[u8]) -> bool {
     matches!(split(answer), Some((end, Some(length))) if answer.len() >= end + length)
 }
 
-/// The status and body of an HTTP/1.x answer. A chunked body is refused: an HTTP/1.0 request gets none.
-fn parse(answer: &[u8]) -> Result<Response, TransportError> {
+/// The status and body of an HTTP/1.x answer. A chunked body is refused: an HTTP/1.0 request gets none. A body
+/// with no declared length stands only if the connection was `closed` cleanly, since otherwise it may be cut short.
+fn parse(answer: &[u8], closed: bool) -> Result<Response, TransportError> {
     let malformed = || TransportError::new("the store's answer is not HTTP");
     let (end, length) = split(answer).ok_or_else(malformed)?;
     let head = std::str::from_utf8(&answer[..end]).map_err(|_| malformed())?;
@@ -302,7 +309,8 @@ fn parse(answer: &[u8]) -> Result<Response, TransportError> {
             return Err(TransportError::new("the store's answer was cut short"));
         }
         Some(length) => &body[..length],
-        None => body,
+        None if closed => body,
+        None => return Err(TransportError::new("the store's answer was cut short")),
     };
     Ok(Response {
         status,

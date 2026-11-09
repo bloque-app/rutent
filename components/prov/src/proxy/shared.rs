@@ -15,7 +15,7 @@ use rutent_contracts::module_interface::{
     SecretOutcome, SecretRefusalReason, SecretRefused, SecretValue, validate_lookup,
 };
 use rutent_contracts::provider_role::{
-    Advertisement, KeyPurpose, PublicKey, SigningKey, Statement,
+    Advertisement, Deployment, KeyPurpose, PublicKey, SigningKey, Statement,
 };
 
 use super::resolver::{ResolveError, Resolver, plain_segment};
@@ -24,13 +24,21 @@ use super::settings::{Bucket, InvalidSettings, ProxySettings, RoleSettings};
 /// The provider a lookup comes from, as the platform attributes it: the provider whose process the lookup came
 /// from, never anything the lookup says (`DEC-9`). One OS process runs one provider's module (ADR-0003), so the
 /// platform knows it from the channel the lookup arrived on.
+///
+/// Only code inside this crate can build one, so nothing outside it can claim to be a provider's process:
+///
+/// ```compile_fail
+/// use rutent_contracts::module_interface::Identifier;
+///
+/// let _ = rutent_prov::proxy::Caller::process_of(Identifier::new("beta").unwrap());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller(Identifier);
 
 impl Caller {
     /// The caller whose process is `provider`'s. Only the platform, which owns each provider's process and its
-    /// channel, builds one.
-    pub fn process_of(provider: Identifier) -> Self {
+    /// channel, builds one; it is not public.
+    pub(crate) fn process_of(provider: Identifier) -> Self {
         Caller(provider)
     }
 
@@ -69,6 +77,8 @@ pub enum Refusal {
     ReleaseOfAnotherProvider,
     /// The advertisement offered with a release is another provider's.
     AdvertisementOfAnotherProvider,
+    /// The advertisement offered with a release belongs to another deployment than the proxy's settings name.
+    AdvertisementOfAnotherDeployment,
     /// The release's provider or one of its secret names isn't one plain path segment of at most 255 bytes, so
     /// the store can't address it under that provider's keys.
     UnaddressableName,
@@ -186,7 +196,6 @@ pub struct Use {
 struct Release {
     declaration: Declaration,
     keys: Vec<SigningKey>,
-    operator_key: PublicKey,
 }
 
 /// What the platform is handling for one provider's module: the operation's transaction, and the outside
@@ -202,6 +211,7 @@ struct Handling {
 /// module is handling ([`CredentialProxy::begin_operation`], [`CredentialProxy::begin_request`] and their ends),
 /// and passes on each lookup with the [`Caller`] it came from.
 pub struct CredentialProxy<R> {
+    deployment: Deployment,
     roles: BTreeMap<String, String>,
     buckets: BTreeMap<String, Bucket<R>>,
     releases: BTreeMap<String, Release>,
@@ -223,6 +233,7 @@ impl<R: Resolver> CredentialProxy<R> {
             buckets.insert(role.clone(), bucket_for(role, role_settings)?);
         }
         Ok(CredentialProxy {
+            deployment: settings.deployment.clone(),
             roles: settings.providers.clone(),
             buckets,
             releases: BTreeMap::new(),
@@ -248,6 +259,9 @@ impl<R: Resolver> CredentialProxy<R> {
         if advertisement.statement.provider != provider {
             return Err(Refusal::AdvertisementOfAnotherProvider);
         }
+        if advertisement.deployment != self.deployment {
+            return Err(Refusal::AdvertisementOfAnotherDeployment);
+        }
         if !self.roles.contains_key(provider) {
             return Err(Refusal::NoRole);
         }
@@ -267,7 +281,6 @@ impl<R: Resolver> CredentialProxy<R> {
             Release {
                 declaration: declaration.clone(),
                 keys: advertisement.statement.keys.clone(),
-                operator_key: advertisement.deployment.operator_key.clone(),
             },
         );
         Ok(())
@@ -415,17 +428,22 @@ impl<R: Resolver> CredentialProxy<R> {
             return Err(Refusal::NotTheRequestInFlight);
         }
         let key = &release.declaration.outside.statement_key;
-        match release
+        // Every entry the advertisement lists for the key counts: one listing it for `advertising` is enough to
+        // refuse it, whatever another entry says.
+        let mut purposes = release
             .keys
             .iter()
-            .find(|k| &k.public_key == key)
+            .filter(|k| &k.public_key == key)
             .map(|k| k.purpose)
-        {
-            None => return Err(Refusal::StatementKeyNotAdvertised),
-            Some(KeyPurpose::Advertising) => return Err(Refusal::StatementKeyForAdvertising),
-            Some(KeyPurpose::Statements) => {}
+            .peekable();
+        if purposes.peek().is_none() {
+            return Err(Refusal::StatementKeyNotAdvertised);
         }
-        if key == &release.operator_key {
+        if purposes.any(|p| p == KeyPurpose::Advertising) {
+            return Err(Refusal::StatementKeyForAdvertising);
+        }
+        // The operator key is the deployment's, from the proxy's settings, never from an advertisement.
+        if key == &self.deployment.operator_key {
             return Err(Refusal::StatementKeyIsOperatorKey);
         }
         let name = Name::new(key.as_str()).ok_or(Refusal::UnaddressableName)?;

@@ -62,9 +62,19 @@ fn serve_one<S: Read + Write>(stream: S, answer: &[u8], received: &Received) {
     let _ = stream.flush();
 }
 
-/// A stand-in store over TLS on a loopback port, answering each connection with `answer`. It serves
-/// `connections` connections, then stops.
+/// A stand-in store over TLS on a loopback port, answering each connection with `answer` and closing it cleanly,
+/// with TLS's close_notify. It serves `connections` connections, then stops.
 fn tls_store(answer: Vec<u8>, connections: usize) -> (u16, Received, JoinHandle<()>) {
+    tls_store_closing(answer, connections, true)
+}
+
+/// The same, closing each connection with close_notify only if `close_notify`; otherwise the TCP connection just
+/// ends, as a cut connection does.
+fn tls_store_closing(
+    answer: Vec<u8>,
+    connections: usize,
+    close_notify: bool,
+) -> (u16, Received, JoinHandle<()>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let certs: Vec<CertificateDer<'static>> =
         CertificateDer::pem_slice_iter(&tls_fixture("store.pem"))
@@ -94,7 +104,9 @@ fn tls_store(answer: Vec<u8>, connections: usize) -> (u16, Received, JoinHandle<
             let connection = rustls::ServerConnection::new(Arc::clone(&config)).unwrap();
             let mut stream = rustls::StreamOwned::new(connection, tcp);
             serve_one(&mut stream, &answer, &seen);
-            stream.conn.send_close_notify();
+            if close_notify {
+                stream.conn.send_close_notify();
+            }
             let _ = stream.flush();
         }
     });
@@ -352,6 +364,29 @@ fn transport_for_a_role_trusts_the_ca_file_its_settings_name() {
     assert!(HttpsTransport::for_role(&role(Some(fixtures.join("missing.pem")))).is_err());
 
     let transport = HttpsTransport::for_role(&role(Some(fixtures.join("ca.pem")))).unwrap();
+    assert_eq!(lookup(&resolver(transport)), Ok("over-tls".to_owned()));
+    server.join().unwrap();
+}
+
+// verifies: REQ-MDL-17
+#[test]
+fn answer_without_a_length_is_refused_unless_tls_closed_cleanly() {
+    let unsized_answer =
+        format!("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{BODY}").into_bytes();
+    let ca = tls_fixture("ca.pem");
+
+    // The connection ends without close_notify: the body may have been cut, so it is refused.
+    let (port, _, server) = tls_store_closing(unsized_answer.clone(), 1, false);
+    let transport = HttpsTransport::new(&https("localhost", port), Some(&ca)).unwrap();
+    assert!(
+        lookup(&resolver(transport)).is_err(),
+        "a body that may be cut short was accepted"
+    );
+    server.join().unwrap();
+
+    // The control: closed cleanly, the same answer stands.
+    let (port, _, server) = tls_store_closing(unsized_answer, 1, true);
+    let transport = HttpsTransport::new(&https("localhost", port), Some(&ca)).unwrap();
     assert_eq!(lookup(&resolver(transport)), Ok("over-tls".to_owned()));
     server.join().unwrap();
 }

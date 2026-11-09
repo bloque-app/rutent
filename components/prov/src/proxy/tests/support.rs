@@ -2,18 +2,16 @@
 //! process roles, admitted releases and advertisements written from the contract's fixtures, and a seeded
 //! generator for the property tests.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rutent_contracts::module_interface::{AdmissionArtefact, Identifier, Name, SecretLookup};
-use rutent_contracts::provider_role::{Advertisement, Statement};
-use rutent_prov::proxy::{
+use crate::proxy::{
     Caller, CredentialProxy, InvalidSettings, KvResolver, ProxySettings, Request, Response, Token,
     Transport, TransportError, kv_bucket,
 };
+use rutent_contracts::module_interface::{AdmissionArtefact, Identifier, Name, SecretLookup};
+use rutent_contracts::provider_role::{Advertisement, Statement};
 use serde_json::{Value, json};
 
 /// The proxy over fake stores, as the tests build it.
@@ -68,6 +66,7 @@ pub const ROLES: [&str; 2] = ["internal", "integrations"];
 pub fn settings() -> ProxySettings {
     ProxySettings::from_json(
         &json!({
+            "deployment": deployment(),
             "roles": {
                 "internal": {
                     "server": "openbao",
@@ -92,6 +91,11 @@ pub fn settings() -> ProxySettings {
         .to_string(),
     )
     .expect("the tests' settings are valid")
+}
+
+/// The deployment the tests' settings name: the contract fixtures' deployment and operator key.
+pub fn deployment() -> Value {
+    json!({ "name": "rutent-test", "operator_key": OPERATOR_KEY })
 }
 
 /// Where provider `provider` of role `role` keeps its secret `name`.

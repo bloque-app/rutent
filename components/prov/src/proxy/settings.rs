@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use core::fmt;
 
+use rutent_contracts::provider_role::Deployment;
 use serde::Deserialize;
 
 use super::kv::{KvConfig, KvResolver, Server, Token};
@@ -23,6 +24,7 @@ use super::transport::Transport;
 ///
 /// ```json
 /// {
+///   "deployment": { "name": "rutent-prod", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA" },
 ///   "roles": {
 ///     "internal": {
 ///       "server": "openbao",
@@ -41,6 +43,9 @@ use super::transport::Transport;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxySettings {
+    /// The deployment the proxy serves: its name and the operator's key (`REQ-PRT-1`). An advertisement of
+    /// another deployment is not admitted, and the operator key is never resolved as a statement key.
+    pub deployment: Deployment,
     /// Each process role's bucket, by role name.
     pub roles: BTreeMap<String, RoleSettings>,
     /// Each provider's process role, by provider identifier.
@@ -115,8 +120,13 @@ impl ProxySettings {
     }
 
     /// Checks the settings' rules a parse can't: every role and provider name is one plain path segment; every
-    /// provider's role exists; every mount, prefix and namespace is plain path segments; and no two buckets in one
-    /// store, namespace and mount nest, so no role's paths, and no secret's, reach another bucket's.
+    /// provider's role exists; every mount, prefix and namespace is plain path segments; and no two buckets on one
+    /// store nest, so no role's paths, and no secret's, reach another bucket's.
+    ///
+    /// Buckets are compared by the path the store resolves, segment by segment: the namespace, the mount, the KV
+    /// version 2 `data` segment, then the prefix. So mount `secret` with prefix `data/x` is the same bucket as mount
+    /// `secret/data` with prefix `x`, and namespace `ns1` with mount `secret` the same as mount `ns1/secret`. A
+    /// store is its host, compared without case, and its port.
     pub fn check(&self) -> Result<(), InvalidSettings> {
         let invalid = |what: String| Err(InvalidSettings(what));
         let mut buckets = Vec::new();
@@ -140,13 +150,21 @@ impl ProxySettings {
                     "role {role:?}'s namespace is not plain path segments"
                 ));
             }
-            let place = (
-                &settings.store,
-                settings.namespace.as_deref(),
-                settings.mount.as_str(),
+            let store = (
+                settings.store.host.to_ascii_lowercase(),
+                settings.store.port,
             );
-            buckets.push((role, place, settings.secrets.as_str()));
-            buckets.push((role, place, settings.keys.as_str()));
+            for prefix in [&settings.secrets, &settings.keys] {
+                let path: Vec<&str> = settings
+                    .namespace
+                    .iter()
+                    .chain([&settings.mount])
+                    .flat_map(|part| part.split('/'))
+                    .chain(["data"])
+                    .chain(prefix.split('/'))
+                    .collect();
+                buckets.push((role, store.clone(), path));
+            }
         }
         for (provider, role) in &self.providers {
             if !plain_segment(provider) {
@@ -160,11 +178,13 @@ impl ProxySettings {
                 ));
             }
         }
-        for (i, (role, place, prefix)) in buckets.iter().enumerate() {
-            for (other, other_place, other_prefix) in &buckets[i + 1..] {
-                if place == other_place && nests(prefix, other_prefix) {
+        for (i, (role, store, path)) in buckets.iter().enumerate() {
+            for (other, other_store, other_path) in &buckets[i + 1..] {
+                if store == other_store && nests(path, other_path) {
                     return invalid(format!(
-                        "role {role:?}'s and role {other:?}'s paths nest: {prefix:?} and {other_prefix:?}"
+                        "role {role:?}'s and role {other:?}'s paths nest: {} and {}",
+                        path.join("/"),
+                        other_path.join("/")
                     ));
                 }
             }
@@ -215,6 +235,6 @@ pub fn kv_bucket<T: Transport + Clone>(
 }
 
 /// Whether two paths, compared segment by segment, are equal or one starts the other.
-fn nests(a: &str, b: &str) -> bool {
-    a.split('/').zip(b.split('/')).all(|(x, y)| x == y)
+fn nests(a: &[&str], b: &[&str]) -> bool {
+    a.iter().zip(b).all(|(x, y)| x == y)
 }
