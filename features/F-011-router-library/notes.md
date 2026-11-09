@@ -304,3 +304,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   a difference into a tie, which goes to the lowest `candidate_id`. All
   five, and whether the ranking should be net of the operator's fee, stay open for that task, together with how
   Core reaches the `quote` module's types under `DEC-2`.
+
+## REQ-AUD-4 partly met until router-api 3.0.0 (review of T-011-04, 2026-11-09)
+
+A path through an unpriced tuple, or through an operation whose fee exceeds what enters it, is a candidate in
+`REQ-AUD-4`'s sense ("every candidate and why each was dropped"), but the router leaves it out with no drop reason,
+because router-api 2.0.0's `DropReason` has no variant for it and isn't `#[non_exhaustive]`, so adding one is a major
+bump. `REQ-AUD-4` is therefore partly met. The orchestrator's default, reversible and on the decision form
+(item `aud4-unstateable-candidates`): the drop reasons come with M3's Core contract task as router-api 3.0.0, under
+`DEC-4` and the owner's click at the release into `main`.
