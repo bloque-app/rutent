@@ -1,0 +1,82 @@
+#!/bin/sh
+# The production-host check (`T-010-08`, `G-37`). Fails unless the host can run VOS's JIT as the program needs it:
+#   1. Linux x86_64 on kernel 6.7 or later (the kernel that gives userfaultfd asynchronous write-protect);
+#   2. userfaultfd write-protect allowed to an unprivileged process (not blocked by sysctl, seccomp or a container);
+#   3. the JIT's perf map appears: a node built by build.sh, started on the JIT, runs the program and names it in
+#      /tmp/perf-<pid>.map (the client's test `a_vos_node_on_the_jit_names_the_program_in_its_perf_map`).
+# Every fact is checked and reported, so one run shows all that is wrong. CI runs it on the runner after the build
+# (`.github/workflows/stm-vos.yml`), and `F-030` runs it on the production host.
+# Usage: VOS_DIR=<checkout from fetch-vos.sh> host-check.sh BUILD_DIR     (BUILD_DIR is what build.sh made)
+# Needs: sh, uname, and python3 for uffd-probe.py (the standard library only).
+# Hooks, for the tests that stand in for a host that lacks a fact (client/tests/host_check.rs): HOST_CHECK_OS,
+# HOST_CHECK_KERNEL, and HOST_CHECK_UFFD and HOST_CHECK_PERF, each a shell command whose exit status is the answer.
+# Left unset they read the real host. Never set them on a host being checked.
+set -u
+here=$(cd "$(dirname "$0")" && pwd -P)
+failed=0
+fail() {
+    echo "host-check: FAIL: $*" >&2
+    failed=1
+}
+pass() {
+    echo "host-check: ok: $*"
+}
+
+# 1. The platform and the kernel.
+os=${HOST_CHECK_OS:-$(uname -sm)}
+kernel=${HOST_CHECK_KERNEL:-$(uname -r)}
+if [ "$os" != "Linux x86_64" ]; then
+    fail "the kernel check wants Linux x86_64, not $os"
+else
+    major=$(printf '%s' "$kernel" | sed -n 's/^\([0-9][0-9]*\).*/\1/p')
+    minor=$(printf '%s' "$kernel" | sed -n 's/^[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p')
+    if [ -z "$major" ]; then
+        fail "the kernel version \"$kernel\" does not read as MAJOR.MINOR"
+    elif [ "$major" -eq 6 ] && [ "${minor:-0}" -eq 7 ] && printf '%s' "$kernel" | grep -q -- '-rc'; then
+        # 6.7's release candidates predate the release that has asynchronous write-protect settled.
+        fail "the kernel is $kernel, a release candidate of 6.7, and the JIT needs 6.7 or later"
+    elif [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "${minor:-0}" -ge 7 ]; }; then
+        pass "the kernel is $kernel (6.7 or later)"
+    else
+        fail "the kernel is $kernel, and the JIT needs 6.7 or later"
+    fi
+fi
+
+# 2. userfaultfd with asynchronous write-protect, probed as VOS's write tracking asks for it, then used: a page of an
+# anonymous mapping is registered in WP mode and write-protected.
+# uffd-probe.py exits 0 when write-protect works, 1 when the host does not allow it, and 2 when the probe itself
+# failed, which says nothing about the host: the check fails then too, and says it is the script's error.
+if [ -n "${HOST_CHECK_UFFD:-}" ]; then
+    sh -c "$HOST_CHECK_UFFD"
+else
+    python3 "$here/uffd-probe.py"
+fi
+uffd=$?
+case $uffd in
+0) pass "userfaultfd write-protect is allowed" ;;
+1) fail "userfaultfd write-protect is not allowed to this process" ;;
+*) fail "the userfaultfd probe itself failed (script error, status $uffd), so this host was not checked" ;;
+esac
+
+# 3. The JIT's perf map appears.
+if [ -n "${HOST_CHECK_PERF:-}" ]; then
+    sh -c "$HOST_CHECK_PERF"
+elif [ $# -ge 1 ] && [ -n "${VOS_DIR:-}" ]; then
+    "$here/test.sh" "$1" --test vos_node a_vos_node_on_the_jit_names_the_program_in_its_perf_map
+else
+    echo "host-check: no build directory and no VOS_DIR, so no node can run" >&2
+    false
+fi
+# shellcheck disable=SC2181
+if [ $? -eq 0 ]; then
+    pass "the JIT's perf map names the program"
+else
+    fail "the JIT's perf map did not appear"
+fi
+
+if [ "$failed" -eq 0 ]; then
+    echo "host-check: this host can run the JIT"
+else
+    echo "host-check: this host cannot run the JIT" >&2
+fi
+exit "$failed"

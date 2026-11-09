@@ -313,3 +313,71 @@ The host-contract suite passed on one VOS node and on three, on Linux x86_64 wit
 and on the real `Stm` program, excusing only the two cells that compare states against the probe; the states test
 and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both setups. The first run, 42669881289 at
 `6b73945`, was before the review's fixes.
+
+## T-010-08: the production-host check, the build without native codegen, and the recovery drill
+
+- **The check** is `components/stm/vos-program/host-check.sh BUILD_DIR` (with `VOS_DIR`). It reports and fails on each
+  of: Linux x86_64 with a kernel of 6.7 or later; a userfaultfd that gives asynchronous write-protect to an
+  unprivileged process (a Python 3 `ctypes` probe, standard library only, that makes the calls `platform.rs`'s
+  `uffd_probe` makes: `userfaultfd` with `UFFD_USER_MODE_ONLY`, `UFFDIO_API` asking for `WP_ASYNC`, `/proc/self/pagemap`);
+  and the JIT's perf map, by running the client's test `a_vos_node_on_the_jit_names_the_program_in_its_perf_map` (one
+  node on the JIT, one record, `backend_proof`). It checks all three and does not stop at the first failure. With no
+  build directory the perf-map check fails, since a skipped check is not a pass.
+- **Hooks.** `HOST_CHECK_OS`, `HOST_CHECK_KERNEL`, `HOST_CHECK_UFFD` and `HOST_CHECK_PERF` replace a fact so the tests
+  can stand in for a host that lacks it. They are in the production script, which is a small risk (anyone can fake a
+  pass in their own shell); the alternative, a second script for the tests, would leave the tested script not the one
+  that runs. `F-030` runs it with none set. Reading: the hooks stay.
+- **Tests.** `client/tests/host_check.rs`: seven, none needing VOS or a node, led by
+  `host_check_fails_on_a_host_without_userfaultfd_write_protect`. I saw them fail with the script absent, then pass.
+  They were compiled and run with plain `rustc --test` here, since the client's cargo build resolves VOS's git
+  sources, which this machine did not fetch. CI's step `The host check's own tests` runs them through `test.sh`.
+  A shell test has no tag syntax in `tag-check`; a Rust test driving the script keeps `// verifies:` working.
+- **Without native codegen.** `G-37`'s finding was VOS's `.cargo/config.toml` pinning `target-cpu=native` for
+  `x86_64-unknown-linux-gnu`. `PORTABLE=1 STEP=node build.sh DIR` builds the node with `RUSTFLAGS="-C target-cpu=x86-64"`
+  (an environment `RUSTFLAGS` replaces the config's rustflags), with `cargo build -v`, and fails unless the log shows
+  rustc ran with `target-cpu=x86-64` and never with `target-cpu=native`. The guests are riscv builds and the client
+  has no such config, so only the node changes. I read "native codegen" as that CPU pin; the JIT itself stays on, since
+  the node's backend is a runtime choice. The workflow runs `the_host_contract_suite` (four tests, the probe and the
+  program on one node and on three) on that node. If VOS's checkout keeps its `target-cpu=native` somewhere
+  `RUSTFLAGS` does not reach, the build fails by its own check; I could not see VOS's config offline.
+- **The runbook** is `components/stm/vos-program/RECOVERY.md`: scheduled halted exports, the halt each costs and the
+  restore's downtime at 1k, 10k and 100k records (`R-08`), the RPO as the export interval, and what it does not cover
+  (power loss, `G-54`; upstream `vos node restore`; where streams live and who schedules them, which are `F-030`'s).
+  No exporter program exists yet: the schedule is a procedure over `Host::halt`, `export` and `resume`, which
+  `F-030` wires. Reading: the task asks for the runbook and the drill, not a scheduler.
+- **The drill** is `halted_export_imported_onto_fresh_nodes_keeps_every_record_acknowledged_before_it` in
+  `vos_node.rs`, on three nodes: submit two orders, halt, export, kill the cluster and delete its data, import onto
+  three fresh nodes, check each acknowledged record is held once at its sequence number and each journal is equal.
+  It and the perf-map test were written against the library's API and not compiled or run here.
+- **Workflow.** Steps added to the `vos` job of `STM on VOS`, no new workflow: the check on the runner, then the
+  same script on its fixture (`HOST_CHECK_UFFD=false`), which must fail; the check's tests; the portable node and the
+  suite on it. The drill runs in the existing full-suite step. The branch is added to the push list. This is a
+  `DEC-20` path.
+- **Only CI can prove**: the check passing on the runner (it needs Linux x86_64, kernel 7.0 and the JIT); the node
+  without native codegen building and the suite passing on it; the drill and the perf-map test compiling and passing.
+  The run id goes here once the orchestrating session pushes the branch. The restore's time at 100k records is not
+  re-measured here.
+
+## T-010-08: answering the review of `5850eda`
+
+- A `-rc` kernel of 6.7 now fails the check (`6.7-rc1`, `6.7.0-rc3-generic`), with tests.
+- The userfaultfd probe now also registers an anonymous mapping in write-protect mode and write-protects one page
+  (`UFFDIO_REGISTER`, `UFFDIO_WRITEPROTECT`), after `UFFDIO_API`. Written from the uapi's ioctl numbers and not run
+  on Linux here; the node on the JIT (step 3) stays the real test, and CI's run is the first of this probe.
+- `PORTABLE=1` replaces all of VOS's rustflags through `RUSTFLAGS`. Read at the pin through the GitHub contents API,
+  `.cargo/config.toml` has one flag for x86_64 Linux, `-C target-cpu=native`, none under `[build]`, and an aarch64
+  section with none; so nothing else is lost. The build now checks that before it builds and fails if the file gains
+  another flag, so the substitution can't drop one unnoticed.
+
+## T-010-08: the userfaultfd probe's struct sizes (CI runs 42694618063 and 42696178411)
+
+- **Cause.** `ctypes.create_string_buffer(bytes)` allocates one byte more than it is given, for a NUL, so the
+  24-byte `uffdio_api` came back as a 25-byte `.raw` and `struct.unpack("QQQ", ...)` raised. The runner's kernel was
+  fine; the probe's own bug read as "not allowed". Runs `5850eda` and `403705f` both failed there.
+- **Fix.** The probe is now `uffd-probe.py`; every ioctl buffer is built with its exact size (24, 32, 24) and the
+  result read from that size. Exit 0 means write-protect works, 1 means the host does not allow it (EPERM, EACCES,
+  ENOSYS, EINVAL or the feature bit missing), 2 means the probe itself failed on any other errno or any Python
+  exception; `host-check.sh` fails on 2 and says "script error", so a bug can no longer pass for a verdict on the host.
+- **Tests.** `UFFD_PROBE_FAKE` runs the same code against a fake kernel that asserts each ioctl's buffer has its
+  struct's exact size, which the old code fails; four new tests cover success, a refusal and a missing feature bit
+  as 1, an unexpected errno as 2, and `host-check.sh`'s message for a failed probe. Not run on Linux here.
