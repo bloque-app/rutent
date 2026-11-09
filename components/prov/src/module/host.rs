@@ -11,6 +11,7 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::module::engine::{FUEL_PER_PART, MEMORIES_PER_PART, MEMORY_PER_PART, TABLE_ELEMENTS};
+use crate::module::output::trap_reason;
 use crate::module::wire::{FromProvider, Reply};
 
 /// The sandboxed part's world, as `bindgen!` generates it.
@@ -314,14 +315,15 @@ impl Loaded {
             .map_err(|e| e.to_string())?;
         let bindings =
             outside::Outside::instantiate(&mut outside_store, &self.outside, &self.outside_linker)
-                .map_err(|e| format!("the outside part didn't instantiate: {e}"))?;
+                .map_err(|_| "the outside part didn't instantiate".to_owned())?;
         outside_store
             .set_fuel(FUEL_PER_PART)
             .map_err(|e| e.to_string())?;
         bindings
             .call_start(&mut outside_store)
-            .map_err(|e| format!("the outside part trapped starting: {e}"))?
-            .map_err(|e| format!("the outside part didn't start: {e}"))?;
+            .map_err(|e| format!("the outside part trapped starting: {}", trap_reason(&e)))?
+            // The part's own error string is the guest's: never echoed (`REQ-MDL-12`).
+            .map_err(|_| "the outside part didn't start".to_owned())?;
         let mut store = Store::new(
             &self.engine,
             SandboxedState {
@@ -339,12 +341,12 @@ impl Loaded {
         store.set_fuel(FUEL_PER_PART).map_err(|e| e.to_string())?;
         let bindings =
             sandboxed::Sandboxed::instantiate(&mut store, &self.sandboxed, &self.sandboxed_linker)
-                .map_err(|e| format!("the sandboxed part didn't instantiate: {e}"))?;
+                .map_err(|_| "the sandboxed part didn't instantiate".to_owned())?;
         store.set_fuel(FUEL_PER_PART).map_err(|e| e.to_string())?;
         bindings
             .call_start(&mut store)
-            .map_err(|e| format!("the sandboxed part trapped starting: {e}"))?
-            .map_err(|e| format!("the sandboxed part didn't start: {e}"))?;
+            .map_err(|e| format!("the sandboxed part trapped starting: {}", trap_reason(&e)))?
+            .map_err(|_| "the sandboxed part didn't start".to_owned())?;
         Ok(Running { store, bindings })
     }
 }
@@ -359,7 +361,7 @@ impl Running {
             .map_err(|e| e.to_string())?;
         self.bindings
             .call_handle(&mut self.store, operation)
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| trap_reason(&e))
     }
 
     /// Whether the outside part trapped during the last operation.
@@ -401,9 +403,14 @@ fn check_part_why(
 ) -> Result<(), (bool, String)> {
     let allowed = allowed_imports(part);
     let ty = component.component_type();
-    for (name, _) in ty.imports(engine) {
+    for (index, (name, _)) in ty.imports(engine).enumerate() {
         if !allowed.contains(&name) {
-            return Err((true, format!("it imports {name}, which its part may not")));
+            // The import's name is the guest's: it is never put in a reason (`REQ-MDL-12`), but its place among the
+            // part's imports is, so an operator can find it in the binary.
+            return Err((
+                true,
+                format!("import #{index} is one its part may not name"),
+            ));
         }
     }
     match part {
@@ -413,13 +420,9 @@ fn check_part_why(
                 .map_err(|e| (false, e.to_string()))?;
             let pre = linker
                 .instantiate_pre(component)
-                .map_err(|e| (true, format!("its imports aren't the binding's: {e}")))?;
-            sandboxed::SandboxedPre::new(pre).map_err(|e| {
-                (
-                    false,
-                    format!("its exports aren't the sandboxed world's: {e}"),
-                )
-            })?;
+                .map_err(|_| (true, "its imports aren't the binding's".to_owned()))?;
+            sandboxed::SandboxedPre::new(pre)
+                .map_err(|_| (false, "its exports aren't the sandboxed world's".to_owned()))?;
         }
         _ => {
             let mut linker: Linker<OutsideState> = Linker::new(engine);
@@ -427,13 +430,9 @@ fn check_part_why(
                 .map_err(|e| (false, e.to_string()))?;
             let pre = linker
                 .instantiate_pre(component)
-                .map_err(|e| (true, format!("its imports aren't the binding's: {e}")))?;
-            outside::OutsidePre::new(pre).map_err(|e| {
-                (
-                    false,
-                    format!("its exports aren't the outside world's: {e}"),
-                )
-            })?;
+                .map_err(|_| (true, "its imports aren't the binding's".to_owned()))?;
+            outside::OutsidePre::new(pre)
+                .map_err(|_| (false, "its exports aren't the outside world's".to_owned()))?;
         }
     }
     Ok(())
