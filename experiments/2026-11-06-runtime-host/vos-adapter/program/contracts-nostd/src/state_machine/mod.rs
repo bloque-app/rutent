@@ -3,8 +3,11 @@
 //!
 //! This is a library API (`DEC-4`): these types are the API, and they serialise to the schemas under
 //! `contracts/state-machine/schemas/`. `CMP-STM` implements [`StateMachine`]; this module holds no transition
-//! rules of its own but one, published so that every implementation applies it the same way: what a part becomes
-//! when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`).
+//! rules of its own but a few, published so that every implementation applies them the same way: what a part
+//! becomes when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`), how
+//! `deposit_failed_at` is kept ([`deposit_failed_at_after`]), and whether a new route keeps the destination and
+//! starts where the value sits ([`recalculation_keeps_destination`], [`destination_change_applies`],
+//! [`recalculation_starts_where_value_sits`]).
 //!
 //! # The typed operation is the router's
 //!
@@ -26,6 +29,14 @@
 //! outer node it deposits to, and the asset with its decimals. `INV-10` keeps it: a recalculation must end at the
 //! same destination ([`recalculation_keeps_destination`]), and only the customer's accepted `destination_changed`
 //! replaces it. [`Order::check`] requires every part's route to end with a deposit at its destination.
+//!
+//! # Where a route starts and restarts
+//!
+//! A route starts with a withdrawal from an outer node (`REQ-ORD-16`). A route handed on starts instead at the
+//! inner node where the value sits, whose holding account counts as its origin reserve, with no withdrawal
+//! (`REQ-ORD-43`, `REQ-CAT-17`); [`Order::check`] and [`RecordedInput::check`] hold both. A recalculation, or the
+//! customer's change of destination, restarts a route only from where the part's value is evidenced
+//! ([`recalculation_starts_where_value_sits`], `INV-4`), so a part keeps its start through every recalculation.
 //!
 //! # Rust is as strict as the schemas
 //!
@@ -68,7 +79,7 @@ pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
 pub mod host;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "2.0.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +376,26 @@ fn check_chain<'a>(
     }
 }
 
+/// How a part's route starts (`REQ-ORD-16`): with a withdrawal from an outer node; or, in an order handed on
+/// (`REQ-ORD-43`), at the inner node where the value sits, with no withdrawal. The holding account there counts as
+/// the origin reserve, "the one reserve at an inner node" (`REQ-CAT-17`), and a typed withdrawal can't start at an
+/// inner node. How the holding account is named is the catalogue's and the module interface's (`F-012`, `F-003`);
+/// that the node is where the first order's value sits is a rule across two orders, which one order can't check.
+fn check_start(handed_on: bool, kind: OperationKind, from: &Endpoint) -> Result<(), Violation> {
+    if handed_on {
+        if !matches!(from.node, NodeRef::Inner(_)) {
+            return Err(Violation(
+                "a route handed on starts at an inner node, where the value sits, with no withdrawal",
+            ));
+        }
+    } else if kind != OperationKind::Withdrawal {
+        return Err(Violation(
+            "a route starts with a withdrawal from an outer node",
+        ));
+    }
+    Ok(())
+}
+
 /// A part's destination (`INV-10`): its route's last deposit, that is the destination reserve, the outer node it
 /// deposits to and the asset, decimals included. Schema: the `destination` of
 /// `urn:rutent:state-machine:order#/$defs/part`.
@@ -401,6 +432,22 @@ impl Destination {
 /// customer's accepted `destination_changed`.
 pub fn recalculation_keeps_destination(part: &Part, route: &[SegmentPlan]) -> bool {
     Destination::of(route).as_ref() == Some(&part.destination)
+}
+
+/// The published rule of `INV-4` for a `route_recalculated` or a `destination_changed` input: whether its route
+/// starts where the part's value is evidenced, [`value_at`], in the same unit. "A route MUST NOT restart until the
+/// value is evidenced at a node": while a segment has started, owes a reversal that isn't a failed deposit's, or
+/// has an unknown outcome, the value is in flight and no route starts; before the withdrawal settles nothing has
+/// moved, and no route starts either. One that fails the rule is not applicable (`value_not_at_start`).
+///
+/// With it, a recalculation never replaces a part's settled withdrawal, so the route keeps the start
+/// [`Order::check`] requires; in a route handed on, it may replace a first segment that hasn't started, by a route
+/// from the same inner node.
+pub fn recalculation_starts_where_value_sits(part: &Part, route: &[SegmentPlan]) -> bool {
+    match (value_at(part), route.first()) {
+        (Some(at), Some(first)) => first.from == *at,
+        _ => false,
+    }
 }
 
 /// The published rule for a `destination_changed` input (the orchestrator's ruling): whether it changes the
@@ -638,7 +685,11 @@ impl RecordedInput {
         }
         let mut ids = BTreeSet::new();
         match &self.observed {
-            Observed::RouteChosen { parts, .. } => {
+            Observed::RouteChosen {
+                parts,
+                handed_on_from,
+                ..
+            } => {
                 if parts.is_empty() {
                     return Err(Violation("a chosen route has at least one part"));
                 }
@@ -648,6 +699,8 @@ impl RecordedInput {
                         return Err(Violation("part ids are unique within an order"));
                     }
                     route_ids(&p.segments, &mut ids)?;
+                    let first = &p.segments[0];
+                    check_start(handed_on_from.is_some(), first.kind, &first.from)?;
                 }
             }
             Observed::RouteRecalculated { segments, .. }
@@ -871,6 +924,9 @@ pub enum NotApplicableReason {
     /// A recalculation or change of destination whose route reuses a segment id the order has, current or
     /// retired: ids are unique for the order's whole life.
     ReusesSegmentId,
+    /// A recalculation or change of destination whose route doesn't start where the part's value is evidenced,
+    /// or while it is in flight or not yet withdrawn (`INV-4`, [`recalculation_starts_where_value_sits`]).
+    ValueNotAtStart,
 }
 
 /// What the last input did (`REQ-AUD-1`): every input leaves a trace, including those that change nothing.
@@ -934,6 +990,9 @@ impl Order {
     /// - An `applied` last input is the input that reached the state.
     /// - Every segment meets its typed operation's rules ([`SegmentPlan::check`]), and each starts where the one
     ///   before it ended.
+    /// - Every part's route starts with a withdrawal from an outer node; in an order handed on, at an inner node,
+    ///   with no withdrawal (`REQ-ORD-16`, `REQ-CAT-17`). A recalculated part keeps that start, which
+    ///   [`recalculation_starts_where_value_sits`] ensures.
     /// - Every part's route ends with a deposit at the part's destination (`INV-10`).
     /// - While a part's last segment is a failed deposit, its `deposit_failed_at` is that deposit's `from` node; and
     ///   it has one only where a final deposit failed: that last segment, or one a recalculation since retired.
@@ -951,6 +1010,8 @@ impl Order {
                 check_operation(segment.kind, &segment.from, &segment.to)?;
             }
             check_chain(part.segments.iter().map(|s| (s.kind, &s.from, &s.to)))?;
+            let first = &part.segments[0];
+            check_start(self.handed_on_from.is_some(), first.kind, &first.from)?;
             if NodeId::new(part.destination.provider.as_str()).is_none() {
                 return Err(Violation(
                     "a destination reserve is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
@@ -1047,6 +1108,13 @@ pub trait StateMachine {
     /// [`Part::deposit_failed_at`] by [`deposit_failed_at_after`]. A `route_recalculated` that leaves the
     /// destination is not applicable (`changes_destination`, [`recalculation_keeps_destination`]); a
     /// `destination_changed` that keeps it is not applicable (`keeps_destination`,
-    /// [`destination_change_applies`]).
+    /// [`destination_change_applies`]). A `route_recalculated` or `destination_changed` whose route doesn't start
+    /// where the part's value is evidenced is not applicable (`value_not_at_start`,
+    /// [`recalculation_starts_where_value_sits`], `INV-4`).
+    ///
+    /// When a route breaks more than one of these, its reason is the first that applies, in this order:
+    /// `changes_destination` or `keeps_destination`, then `reuses_segment_id`, then `value_not_at_start`. A route
+    /// that doesn't belong to the part is named for that before a route that can't start yet, so every
+    /// implementation gives the same `last_input` (`REQ-STM-3`).
     fn transition(state: &Order, input: &RecordedInput) -> Order;
 }

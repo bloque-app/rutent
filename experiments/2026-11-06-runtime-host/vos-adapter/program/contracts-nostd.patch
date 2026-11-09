@@ -57,6 +57,18 @@ diff -ruN a/contracts-nostd/src/provider_role/outcome.rs b/contracts-nostd/src/p
  use serde::{Deserialize, Serialize};
  
  use super::envelope::{
+diff -ruN a/contracts-nostd/src/provider_role/settlement.rs b/contracts-nostd/src/provider_role/settlement.rs
+--- a/contracts-nostd/src/provider_role/settlement.rs	2026-11-08 23:00:00
++++ b/contracts-nostd/src/provider_role/settlement.rs	2026-11-08 23:00:00
+@@ -5,6 +5,8 @@
+ //! reports gross or net: `reporting` says only whether `amount_out` includes the charge. Its fee is in the asset
+ //! the segment takes in, in the origin unit, as the router counts it.
+ 
++use core as std;
++use alloc::{borrow::ToOwned, boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
+ use std::cmp::Ordering;
+ 
+ use super::operation::Operation;
 diff -ruN a/contracts-nostd/src/provider_role/types.rs b/contracts-nostd/src/provider_role/types.rs
 --- a/contracts-nostd/src/provider_role/types.rs	2026-11-07 14:32:53
 +++ b/contracts-nostd/src/provider_role/types.rs	2026-11-07 14:32:53

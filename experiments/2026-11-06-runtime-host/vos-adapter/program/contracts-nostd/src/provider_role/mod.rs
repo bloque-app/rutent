@@ -7,11 +7,13 @@
 //! ramp's two nodes being different. [`validate_statement`] and [`validate_successor`] hold the key purposes
 //! ([`KeyPurpose`]): an advertisement is signed with an `advertising` key, and a later one only with a key the
 //! accepted one lists for `advertising`. Every key is a [`PublicKey`], compared by its decoded bytes.
+//! [`check_amounts`] ties a result's amounts to the operation it answers and names the segment's [`Remainder`].
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
 mod envelope;
 mod operation;
 mod outcome;
+mod settlement;
 mod types;
 mod validate;
 
@@ -23,8 +25,9 @@ pub use envelope::{
 };
 pub use operation::*;
 pub use outcome::*;
+pub use settlement::{AmountMismatch, Remainder, check_amounts};
 pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "2.0.1";
+pub const VERSION: &str = "2.1.0";
