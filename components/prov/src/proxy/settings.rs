@@ -126,7 +126,8 @@ impl ProxySettings {
     /// Buckets are compared by the path the store resolves, segment by segment: the namespace, the mount, the KV
     /// version 2 `data` segment, then the prefix. So mount `secret` with prefix `data/x` is the same bucket as mount
     /// `secret/data` with prefix `x`, and namespace `ns1` with mount `secret` the same as mount `ns1/secret`. A
-    /// store is its host, compared without case, and its port.
+    /// store is its host, compared without case and without one trailing dot, and its port. A host written once
+    /// as a name and once as an address isn't recognised as one store.
     pub fn check(&self) -> Result<(), InvalidSettings> {
         let invalid = |what: String| Err(InvalidSettings(what));
         let mut buckets = Vec::new();
@@ -150,8 +151,9 @@ impl ProxySettings {
                     "role {role:?}'s namespace is not plain path segments"
                 ));
             }
+            let host = settings.store.host.to_ascii_lowercase();
             let store = (
-                settings.store.host.to_ascii_lowercase(),
+                host.strip_suffix('.').unwrap_or(&host).to_owned(),
                 settings.store.port,
             );
             for prefix in [&settings.secrets, &settings.keys] {

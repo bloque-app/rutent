@@ -98,7 +98,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   it tells a module nothing about another provider or the deployment. A store failure (denied token, unavailable
   store, transport) has no reason in the contract. `wire_reason` gives `None` and `proxy::answer` no answer, so the
   outside part learns no answer came. The record keeps the true cause in each case. A contract reason for a store
-  failure moved to `T-014-05`.
+  failure moved to `T-010-09`, the row that owns it.
 - **Every use recorded.** Each `lookup` and `statement_key` call, resolved or refused, leaves one `Use`: the
   provider, its running module version, the transaction, the outside operation (`None` for the statement key), what
   was asked for, and the outcome. A `Use` never holds the value, and neither does its `Debug` (`THR-50`). The
@@ -167,7 +167,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - **Buckets compared by their real path.** The overlap check compared prefixes only within one store, namespace
     and mount. So mount `secret` with prefix `data/x` aliased mount `secret/data` with prefix `x`, and namespace
     `ns1` with mount `secret` aliased mount `ns1/secret`. It now compares the path the store resolves, segment by
-    segment, per store: namespace, mount, `data`, then the prefix. The store's host is compared without case.
+    segment, per store: namespace, mount, `data`, then the prefix. The store's host is compared without case, and
+    without one trailing dot, so `bao.internal.` and `bao.internal` are one store. A host written once as a name and
+    once as an IP address is out of scope: the check doesn't resolve names, so it can't tell they are one store.
   - **A body cut short.** An answer with no `Content-Length` stands only if the connection ended cleanly, with
     TLS's close_notify or the end of a plain connection. One that just stops is refused.
   - **The statement key's purpose and the operator key.** A key the advertisement lists more than once is refused
@@ -182,5 +184,6 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - **Moved to `T-014-05`**, the row the orchestrator adds:
     - an egress `Connector` built on this transport's `ClientConfig` and handshake;
     - the production `World`, with the platform calling `begin_*`/`end_*`, and the `World::secret` change;
-    - the store failure's contract reason;
     - the statement key's wire message.
+
+    The store failure's contract reason moved to `T-010-09`, which owns it.

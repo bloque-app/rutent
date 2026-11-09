@@ -647,6 +647,11 @@ fn settings_whose_buckets_nest_or_name_no_role_are_refused() {
             on("secret", None, "bao.internal", "r/s", "r/internal/k"),
             on("secret", None, "BAO.Internal", "r/s", "r/integrations/k"),
         ),
+        // So is a host name with its root's trailing dot.
+        (
+            on("secret", None, "bao.internal", "r/s", "r/internal/k"),
+            on("secret", None, "bao.internal.", "r/s", "r/integrations/k"),
+        ),
     ] {
         assert!(
             settings(
