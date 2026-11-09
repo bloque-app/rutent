@@ -10,7 +10,10 @@
 #   client-target/           the client's tests, built (not run)
 # Usage: VOS_DIR=<checkout from fetch-vos.sh> build.sh OUT
 # Toolchains, as VOS pins them at the commit: nightly-2025-07-14 for the node and the client, and nightly-2026-03-20
-# with rust-src for the guests. With STEP=guest only the agent and the program are built, which needs no node.
+# with rust-src for the guests. With STEP=guest only the agent and the program are built, which needs no node. With
+# STEP=node only the node is built. With PORTABLE=1 the node is built without native codegen (`T-010-08`, `G-37`):
+# VOS's .cargo/config.toml pins target-cpu=native for x86_64 Linux, and RUSTFLAGS here replaces it with the baseline
+# x86-64; the build fails if rustc still ran with target-cpu=native. The JIT stays on, since it is a runtime backend.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd -P)
 . "$here/sources.sh"
@@ -37,7 +40,22 @@ timed() {
 }
 sources_git_config "$vos"
 node() {
-    (cd "$vos" && CARGO_TARGET_DIR="$out/vos-target" cargo build --release --locked -p vos-cli --features faults)
+    if [ "${PORTABLE:-0}" = 1 ]; then
+        (cd "$vos" && RUSTFLAGS="-C target-cpu=x86-64" CARGO_TARGET_DIR="$out/vos-target" \
+            cargo build -v --release --locked -p vos-cli --features faults) > "$out/node-build.log" 2>&1 ||
+            { tail -30 "$out/node-build.log" >&2; return 1; }
+        if grep -q 'target-cpu=native' "$out/node-build.log"; then
+            echo "build.sh: PORTABLE=1 but rustc ran with target-cpu=native" >&2
+            return 1
+        fi
+        grep -q 'target-cpu=x86-64' "$out/node-build.log" || {
+            echo "build.sh: PORTABLE=1 but no rustc ran with target-cpu=x86-64" >&2
+            return 1
+        }
+        echo "the node was built without native codegen (rustc ran with target-cpu=x86-64)" >> "$out/build-times.txt"
+    else
+        (cd "$vos" && CARGO_TARGET_DIR="$out/vos-target" cargo build --release --locked -p vos-cli --features faults)
+    fi
 }
 agent() {
     (cd "$vos/agent/programs" && CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$out/agent-target" \
@@ -52,11 +70,16 @@ program() {
         -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem "$@")
     cp "$out/program-target-$name/riscv64em-vos/release/rutent-stm-vos-program.elf" "$out/elf/$name.elf"
 }
-timed "the default agent" agent
-cp "$out/agent-target/riscv64em-vos/release/vos-agent.elf" "$out/elf/"
-timed "the program" program stm
-timed "the program with the suite's probe" program probe --features probe-machine
-if [ "${STEP:-all}" = all ]; then
+if [ "${STEP:-all}" != node ]; then
+    timed "the default agent" agent
+    cp "$out/agent-target/riscv64em-vos/release/vos-agent.elf" "$out/elf/"
+    timed "the program" program stm
+    timed "the program with the suite's probe" program probe --features probe-machine
+fi
+if [ "${STEP:-all}" = node ]; then
+    timed "the node" node
+    cp "$out/vos-target/release/vos" "$out/bin/vos"
+elif [ "${STEP:-all}" = all ]; then
     timed "the node" node
     cp "$out/vos-target/release/vos" "$out/bin/vos"
     timed "the client's tests" sh -c "cd '$here/client' && CARGO_TARGET_DIR='$out/client-target' \

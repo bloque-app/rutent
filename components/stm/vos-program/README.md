@@ -29,6 +29,7 @@
 | `probe-nostd/`, `probe-nostd.patch`, `nostd.sh`, `SEPARATE` | The generated no_std copy of the suite's probe, the patch that makes it, the script that generates it and checks it (`nostd.sh check` runs in `build.sh` and CI), and the files beside it |
 | `client/` | `rutent-stm-vos`: the `Host` client (`host.rs`), the node processes of one node or three (`cluster.rs`), the platform assertion (`platform.rs`), and the retry of an open refused while the platform spawns children (`retry.rs`, over `rutent_stm::open_retry`); toolchain `nightly-2025-07-14` |
 | `client/tests/` | `vos_node.rs`: the host-contract suite on one node and on three, the program's states against `Stm`'s, and the leader killed mid-submit (they need the VOS toolchain); `retry.rs`: the open retry, which needs no node |
+| `host-check.sh`, `RECOVERY.md` | The production-host check (`T-010-08`, `G-37`): kernel 6.7 or later, userfaultfd write-protect, the JIT's perf map; the total-loss recovery runbook, with its drill |
 | `sources` | The list of sources, `G-48`: each source's name, SHA, upstream URL and fetch URL |
 | `sources.sh`, `fetch-vos.sh`, `build.sh`, `test.sh` | Read the list; fetch VOS; build the node, the agent, the program and the client's tests on the machine that runs them; run the tests |
 
@@ -59,6 +60,10 @@ cannot be cloned anonymously.
 VOS_DIR=<dir> ./build.sh <build dir>                       # STEP=guest builds only the agent and the program
 VOS_DIR=<dir> ./test.sh <build dir>                        # the client's tests, against what build.sh made
 ```
+
+`PORTABLE=1 STEP=node ./build.sh <dir>` builds only the node, without native codegen (VOS pins `target-cpu=native` for
+x86_64 Linux; the build replaces it with the baseline and fails if rustc still ran with it), and CI runs the
+host-contract suite on it. `VOS_DIR=<dir> ./host-check.sh <build dir>` is the production-host check.
 
 A scored run is Linux x86_64 on kernel 6.7 or later with userfaultfd write-protect: the nodes run VOS's JIT, and the
 tests fail closed on a machine that can't. `VOS_DEV=1 ./test.sh ...` runs the interpreter on any machine, a
