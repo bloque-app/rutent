@@ -175,3 +175,55 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `module-guests/Cargo.lock`, and `tools/licence-check/` is untouched here.
 - **CI.** The `ci` job also checks the guests' format and lints (the host tool, and the stand-ins for wasm32), and no
   longer installs `lld`: the guests link with the toolchain's `rust-lld`.
+
+## T-013-03, output checks (`B-19`)
+
+- **What is checked.** `module/output.rs` judges every output of a module's sandboxed part against the provider-role
+  contract's own result schema (`#/$defs/result` of `urn:rutent:provider-role:result`), patterns and lengths
+  included, before the platform types it. The platform reads the bytes once into a JSON value, judges that value,
+  and types that same value; there is no second reading. A value the schema refuses, an unknown field, an amount with
+  a sign or a leading zero, a reference past 512 characters, is `MalformedOutput`; a longer output than the
+  binding's limit is `OversizedOutput`, judged first. `result_matches` (kind and transaction of the operation in
+  flight) still runs after it.
+- **The schemas come in with `include_str!`.** The contract crate builds for `no_std` and carries no schema text, so
+  `output.rs` includes the nine files of `contracts/provider-role/schemas/` at build time and registers them under
+  their `$id`s; `contracts/` is untouched, so no version bump. `jsonschema` 0.60.2 (already a dev-dependency of the
+  workspace and in `licences/RECORD`) is now a dependency of `rutent-prov`. Reading: a validator that can't be built
+  fails closed, the output being refused. The provider process and the compiler link it too, which the sandbox does
+  not mind (it adds no system call); it is not used there.
+- **A reading on the stand-ins' padding.** The boundary suite pads an honest result to exactly the output limit and
+  measures what the platform passes on, and the stand-ins padded the evidence reference with `x`; past 512
+  characters that breaks the schema, which the new check refuses, so the suite's "output exactly at the limit"
+  answer failed. The stand-ins (Rust and C) now carry the padding in extra evidence pieces of at most 512 characters
+  (the schema sets no limit on the pieces), sized so the result is exactly as long as asked. `conformance/` is
+  untouched.
+- **Guest strings.** Nothing a guest wrote reaches a refusal, a log or a report: refusals are the contract's enum, and
+  `output::trap_reason` replaces the error text the platform kept for a trap (`Measurements::last_trap`) with
+  wasmtime's own words for the trap's kind, since a backtrace carries the names in the guest's binary. The same
+  holds for a part's `start` error string, the names of an import the admission refuses, and the component
+  parser's message at the compiler: each is now a fixed sentence. Reading: the import's name, which an operator
+  might want, is lost from the admission log; the part and the kind of refusal stay. The existing tests read only
+  `fuel`, `deadline` and the digest sentence from these texts.
+- **Tests.** `tests/module_output.rs` runs through the platform and the Rust stand-ins: the new `Probe::Output` and
+  the Rust stand-in's `output set <pointer> <json>` replace one value of the honest result. The C stand-ins have no
+  such mode, so the pattern and length cases and the canary run in Rust only; the C stand-ins still pass the
+  boundary suite. `tests/module_output_properties.rs` holds the seeded property tests (`DEC-18`).
+- **DEC-20 paths.** This task touches module admission (`module/`, a `DEC-20` path); the click comes with the
+  release into `main`. `host.rs` and `platform.rs` are shared with `T-013-02`; the edits to them are a few lines
+  each, and `T-013-02` carries the reporting of a limit a trap stands for.
+
+## T-013-03, review round
+
+- **Canary tests for the paths the task changed.** `an_imports_name_never_appears_in_the_reason_admission_gives`
+  compiles a part importing an interface named with a canary (`hostile-canary.wasm`, written by the guests' tool) and
+  checks the reason and the compiler's stderr; `a_start_error_the_guest_wrote_never_appears_in_why_the_release_did_not_start`
+  makes the Rust stand-in's start fail with a canary string (`Probe::StartError`) and checks the process's refusal,
+  events and stderr. The start test passed on first run, because the first commit had already replaced that text; only
+  the import test failed first (it asked for the index). The parser's message at `compiler.rs` has no test of its own:
+  a canary there needs a binary the parser quotes, which the tool cannot write.
+- **Import index in the admission log.** The reason now reads `import #N is one its part may not name`, N the import's
+  place among the part's imports, so an operator can find it without the guest's string.
+- **`trap_reason`, small.** A non-`Trap` error keeps its kind for `OutOfMemory` (`resource limit: out of memory`); any
+  other is `the part failed`. The host has no host-call error of its own to map (its imports answer, never fail), and
+  the store limiter's refused growth reaches the guest as a return value, not an error. `T-013-02` may touch the same
+  lines in `output.rs` and `host.rs`; the change is a few lines, to be merged by hand.
