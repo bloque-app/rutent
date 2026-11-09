@@ -128,6 +128,9 @@ pub enum GrantError {
     CategoryWithoutTuples(Category),
     /// A tuple is of a category the grant doesn't admit.
     TupleOutsideCategories(Category),
+    /// A tuple's shape breaks its role's contract: an exchange spanning two nodes, a ramp within one
+    /// (`REQ-CAT-13`).
+    MalformedTuple(super::tuples::TupleRefusal),
 }
 
 /// An operator's grant of entry (`REQ-CAT-2`). Built only from well-formed terms, and never deleted.
@@ -159,6 +162,9 @@ impl Grant {
             .find(|t| !terms.categories.contains(&t.category))
         {
             return Err(GrantError::TupleOutsideCategories(t.category));
+        }
+        for t in &terms.tuples {
+            super::tuples::check_tuple(t).map_err(GrantError::MalformedTuple)?;
         }
         for &category in &terms.categories {
             if category.moves_value() && !terms.tuples.iter().any(|t| t.category == category) {
