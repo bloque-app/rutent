@@ -45,6 +45,14 @@ fn lock(serde: &str, other: &str) -> String {
     )
 }
 
+/// `lock`, with `serde_core` also depending on a package that `rutent-contracts` already reaches through `serde`.
+fn lock_with_extra_edge(serde: &str) -> String {
+    lock(serde, "1.0.0").replace(
+        "checksum = \"c\"\n",
+        "checksum = \"c\"\ndependencies = [\n \"serde\",\n]\n",
+    )
+}
+
 struct Fixture {
     base: HashMap<String, String>,
     head: HashMap<String, String>,
@@ -278,6 +286,42 @@ fn lockfile_change_moving_a_contract_dependency_with_every_bump_passes() {
     assert!(
         violations.is_empty(),
         "bumped contracts cover the move, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_adding_only_dependency_edges_needs_the_crate_changelog() {
+    let fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.1"));
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "shared" && v.message.contains("serde_core")),
+        "new edges need the shared changelog entry, got {violations:?}"
+    );
+    assert!(
+        !violations.iter().any(|v| v.subject != "shared"),
+        "new edges need no contract's bump, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_adding_only_dependency_edges_with_the_crate_changelog_passes() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency gained edges. (DEC-4)\n");
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.1"));
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations.is_empty(),
+        "an entry covers new edges, got {violations:?}"
     );
 }
 
