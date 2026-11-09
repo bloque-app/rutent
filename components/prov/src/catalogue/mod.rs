@@ -1,12 +1,12 @@
 //! The catalogue (`F-012`): who may be routed through, under what bounds, and what the catalogue must keep.
 //!
-//! - [`grant`]: an operator's grant, attributable, scoped to a named legal party, categories and tuples, with an
+//! - `grant`: an operator's grant, attributable, scoped to a named legal party, categories and tuples, with an
 //!   expiry (`REQ-CAT-2`); standing lost stops routing.
-//! - [`bounds`]: the operator's bound per tuple (`REQ-CAT-1`).
-//! - [`reversal`]: each grant's reversal-capacity check, the ceiling that follows the bond (`DEC-11`), and the
+//! - `bounds`: the operator's bound per tuple (`REQ-CAT-1`).
+//! - `reversal`: each grant's reversal-capacity check, the ceiling that follows the bond (`DEC-11`), and the
 //!   reversals a provider owes (`REQ-CAT-7`).
-//! - [`declaration`]: reserve declarations, recorded once and shown before acceptance (`REQ-CAT-6`).
-//! - [`publisher`]: the publisher behind each provider and node (`REQ-CAT-20`).
+//! - `declaration`: reserve declarations, recorded once and shown before acceptance (`REQ-CAT-6`).
+//! - `publisher`: the publisher behind each provider and node (`REQ-CAT-20`).
 //! - [`Catalogue`]: the whole, with the join rule of `REQ-CAT-16`.
 //!
 //! The catalogue is a plain value with no clock and no provider names in it: every time is passed in, and a
