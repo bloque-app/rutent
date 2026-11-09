@@ -1,0 +1,20 @@
+# The guest packages of `CMP-PROV`'s module runtime (`T-013-01`): the stand-ins the module tests admit, in Rust and
+# C, and the tool that builds them. Its own workspace with its own Cargo.lock, outside the root workspace, as
+# `T-008-02`'s was: what it brings builds for `wasm32-unknown-unknown` or only here, and none of it is linked into
+# the platform. `build.sh` builds it.
+[workspace]
+resolver = "3"
+members = ["tool", "rust", "role"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true

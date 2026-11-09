@@ -8,10 +8,24 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "rutent-wasm-compiler"
+path = "src/module/bin/compiler.rs"
+
+[[bin]]
+name = "rutent-wasm-provider"
+path = "src/module/bin/provider.rs"
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
+# Wasmtime, the LTS release (`DEC-27`): the compiler and the runtime, components, no WASI, no cache, no threads.
+wasmtime = { version = "=48.0.8", default-features = false, features = ["cranelift", "runtime", "component-model", "std", "anyhow"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10"
+libc = "0.2"
 
 [dev-dependencies]
+rutent-conformance = { path = "../../conformance" }
 serde_json = "1.0.154"
 jsonschema = { version = "0.60.2", default-features = false }

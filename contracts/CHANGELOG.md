@@ -32,3 +32,4 @@ directory (see `README.md`).
 - Guard: a `Cargo.lock` change that only adds or drops dependency edges of a package the crate reaches needs this
   changelog's entry, not every contract's bump; a change to a package's name, version, source or checksum still needs
   every bump. (DEC-4, DEC-20, T-010-02)
+- Wasmtime 48.0.8 in `rutent-prov` turns on the `serde` and `allocator-api2` features of crates the contracts reach, which adds dependency edges to `bumpalo`, `hashbrown`, `referencing` and `smallvec` in the root `Cargo.lock`. No contract changed. (DEC-27, T-013-01)
