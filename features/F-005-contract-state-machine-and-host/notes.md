@@ -375,3 +375,72 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   security-review fixes, and its changelog bullet names `T-002-03`.
 - An end entry's counts are not sequence numbers and stay uncapped; a stream whose counts exceed what came before
   fails `StreamCheck` already.
+
+## Review round 1 of M1 (state-machine 2.0.0, `T-005-01`)
+
+The external review of M1's pull request raised three findings on this feature: which amount the next segment
+moves (2), how a handed-on route starts (4), and `INV-4`'s rule (5).
+
+### Finding 4: where a route starts (addressed)
+
+- `REQ-ORD-16`'s start is now checked, on orders and on `route_chosen` inputs, in the schemas and in Rust: a part's
+  first segment is a withdrawal, which the router's typed operation already makes outer to inner. A route handed
+  on starts instead at an inner node, with no withdrawal.
+- Why no withdrawal segment. `REQ-CAT-17` makes the holding account "the one reserve at an inner node", and a typed
+  withdrawal starts at an outer node (`check_typed_operation`). `F-002` keeps inner-to-inner reserve tuples invalid
+  (its notes, "A holding account doesn't advertise through this contract"). So a handed-on route can't open with a
+  typed withdrawal, and the old valid fixture had to invent an outer node `{"network": "ledger-in"}` for the
+  holding account. It now sits under `invalid/` as `order-handed-on-starting-with-a-withdrawal`.
+- `REQ-ORD-40` says the holding account's own record proves a handed-on route's withdrawal. That record isn't a
+  segment here. It is what `route_chosen` with `handed_on_from` rests on, and how it is named is `F-012`'s and
+  `F-003`'s, with the holding account's shape. When a handed-on order counts as past its first segment
+  (`REQ-ORD-12`) is `F-020`'s; in this contract the first segment is whatever moves the value first.
+- Not checked: that a handed-on route starts at the first order's `deposit_failed_at`. That is a rule across two
+  orders, which one order's check can't see; it is `CMP-STM`'s and Core's (`F-010`, `F-020`).
+- The router already allows it: a request's `from` is any endpoint, inner included, as recalculations need. The
+  router checks that a part starts at the request's origin, and doesn't check `REQ-ORD-16`'s withdrawal, so a
+  route chosen for a fresh order is held to it only here. Whether the router should refuse a fresh request from an
+  inner node is `F-004`'s; noted for it, not changed.
+- Superseded: the `T-005-01` bullet that leaves "the route's own shape rules (it starts with a withdrawal and ends
+  with a deposit)" to the router contract. The end has been checked here since 0.4.0, and the start is checked
+  since 2.0.0. Amounts still aren't.
+- Why major. An order and an input valid at 1.0.0 are refused now, which the contracts README calls breaking, as
+  for host 2.0.0's `seq` cap. No host file changes: its fixtures' orders all start with a withdrawal, and its
+  headers' `state_machine_version` isn't compared with this contract's version by any test.
+
+### Finding 5: `INV-4`'s rule (addressed)
+
+- Published as `recalculation_starts_where_value_sits(part, route)`: `value_at` places the value, and the route's
+  first segment starts there, node and unit. It applies to `destination_changed` too: `REQ-ORD-43`'s other route
+  starts "from the node where the value sits", and `INV-4` is about any restart.
+- It reads `value_at` as `after_no_route` does. No route restarts while the value is in flight (a segment started,
+  owing a reversal that isn't a failed deposit's, or of unknown outcome), nor before the withdrawal settles. In
+  that second case the part can still end (`REQ-ORD-12`) or recalculate once the withdrawal settles, so nothing is
+  lost.
+- With it, a recalculation never replaces a settled withdrawal, so finding 4's start holds through recalculations.
+  In a route handed on, a first segment that hasn't started may be replaced by a route from the same inner node.
+- The reasons' precedence is stated, since `last_input` is part of the state and replay must agree across
+  implementations (`REQ-STM-3`): `changes_destination` or `keeps_destination`, then `reuses_segment_id`, then
+  `value_not_at_start`. The route's fit to the part comes before its timing. This keeps the existing
+  `not_applicable` fixtures consistent: both have a segment started, so a timing-first order would have named them
+  `value_not_at_start`.
+- The probe doesn't apply part-scope inputs, so the host suite is unchanged.
+
+### Finding 2: which amount the next segment moves (routed to `F-020` and `F-010`)
+
+- Not changed here. No published rule reads an amount: `after_no_route`, `deposit_failed_at_after` and the
+  destination and start tests read endpoints only. A settled amount added now would have no rule to pin it, and
+  its unit and gross-or-net reading depend on the result shapes `F-002` is changing in the same round (findings 3
+  and 6).
+- The settled amount is already recorded. `segment_settled` names its evidence by id, and `REQ-ORD-39` has that
+  evidence recorded, as `route_chosen` names its priced decision record by id.
+- The open question, for `F-020` (`CMP-CORE-ORCH`, which moves value between segments) and `F-010` (`CMP-STM`):
+  - Does segment k+1 move its plan's amount, or segment k's settled `amount_out`?
+  - If the settled amount, what happens when it falls outside segment k+1's band or quote: a re-quote, so in effect
+    a recalculation?
+  - If the plan's amount, where does the difference rest, so that `INV-1` and `REQ-AUD-15` attribute it to the
+    order at that holding account (`F-024`'s property tests)?
+- What the answer costs this contract. If any transition comes to read the settled amount, it must be a field of
+  `segment_settled`, because `transition` is pure and can't read the evidence behind an id (`REQ-STM-3`). Adding
+  it as a required field is a state-machine major, with the owner's click. If no transition reads it, the state
+  machine stays amount-free and Core reads the amount from the evidence record.

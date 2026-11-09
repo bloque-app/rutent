@@ -37,6 +37,8 @@ field by field in Rust is checked only when `check` is called; a `StateMachine` 
 | A withdrawal, route or deposit keeps its asset; a route runs between two different nodes; an exchange stays at one node | can't be stated | `SegmentPlan::check`, on every segment of an input and an order, as the router's `Operation::check` |
 | Every node, network and asset is a provider-role identifier, and decimals are at most 36 | provider-role's `identifier` and `decimals` | `SegmentPlan::check`, with the router's own `Id` |
 | Each segment starts where the one before it ended, in the same unit, and a route ends with a deposit | can't be stated | `RecordedInput::check`, `Order::check`, as the router's `Part::check` |
+| A route starts with a withdrawal from an outer node; a route handed on starts at an inner node, with no withdrawal (`REQ-ORD-16`, `REQ-CAT-17`) | `if`/`then`/`else` on `handed_on_from`, `prefixItems` | `Order::check`, `RecordedInput::check` for `route_chosen` |
+| A recalculation or change of destination restarts a route only from where the part's value is evidenced (`INV-4`) | can't be stated: a transition | `recalculation_starts_where_value_sits`, applied by `CMP-STM`, else `not_applicable` / `value_not_at_start` |
 | `deposit_failed_at`, when present, is an inner node, never an outer one or `null` | `$ref` to provider-role's `inner_node` | `NodeId`, `deserialize_with` |
 | While a part's last segment is a failed deposit, `deposit_failed_at` is that deposit's `from` node | can't be stated | `Order::check` |
 | A part has a `deposit_failed_at` only where a final deposit failed: its last segment, or one a recalculation retired | can't be stated | `Order::check` |
@@ -79,6 +81,26 @@ is a recalculation, not a change of destination. It is not applicable (`keeps_de
 `deposit_failed_at` included. `destination_change_applies` is the published test, `recalculation_keeps_destination`
 negated.
 
+## Where a route starts and restarts
+
+A route starts with a withdrawal from an outer node (`REQ-ORD-16`). A route handed on (`REQ-ORD-43`) starts instead
+at the inner node where the value sits, whose holding account counts as its origin reserve, "the one reserve at an
+inner node" (`REQ-CAT-17`). A typed withdrawal goes from an outer node to an inner one, so a route handed on has no
+withdrawal segment. The contract leaves two things open:
+
+- how the holding account is named as that reserve: the catalogue's and the module interface's (`F-012`, `F-003`);
+- that the node is where the first order's value sits: a rule across two orders, which one order can't check.
+
+A route restarts, by `route_recalculated` or by the customer's `destination_changed`, only from where the part's value
+is evidenced (`INV-4`): `recalculation_starts_where_value_sits` holds when `value_at` places the value and the route's
+first segment starts there, in the same unit. While a segment has started, owes a reversal that isn't a failed
+deposit's, or has an unknown outcome, the value is in flight; before the withdrawal settles nothing has moved. Either
+way no route restarts, and the input is not applicable (`value_not_at_start`). So a recalculation never replaces a
+settled withdrawal, and every part keeps the start above.
+
+When a route breaks more than one rule, its reason is the first that applies: `changes_destination` or
+`keeps_destination`, then `reuses_segment_id`, then `value_not_at_start`.
+
 ## Repeats and record ids
 
 Repeats are kept from moving anything twice (`REQ-STM-4`, `INV-8`) by a split of duties:
@@ -96,4 +118,4 @@ The state machine is a second line only: an input whose record id is the order's
 `transition` keeps the SAD's signature and returns the order. The order's `last_input` names the last input
 delivered and what it did (`REQ-AUD-1`): `applied`; `repeat`; `late`, when it names a retired segment and so
 matches no current one; or `not_applicable`, with a reason (`other_order`, `unknown_subject`, `ended`,
-`not_from_this_state`, `changes_destination`, `keeps_destination`, `reuses_segment_id`).
+`not_from_this_state`, `changes_destination`, `keeps_destination`, `reuses_segment_id`, `value_not_at_start`).

@@ -1,5 +1,18 @@
 # state-machine changelog
 
+## 2.0.0
+- Breaking, after round 1 of M1's external review: a route starts with a withdrawal from an outer node, and a route
+  handed on starts instead at an inner node, where the value sits, with no withdrawal (`REQ-ORD-16`,
+  `REQ-CAT-17`). Orders and `route_chosen` inputs are checked, in the schemas and in Rust. The handed-on fixture
+  that withdrew from an outer node invented for the holding account was valid at 1.0.0 and is refused now, so
+  this is a major bump; the fixture is kept as an invalid one, and the valid one starts at the inner node.
+  (DEC-4, DEC-20, T-005-01)
+- The published rule of `INV-4`, `recalculation_starts_where_value_sits`: a `route_recalculated` or
+  `destination_changed` restarts a route only from where the part's value is evidenced (`value_at`), and is
+  otherwise not applicable, with the new reason `value_not_at_start`. When a route breaks more than one rule, the
+  reason is the first of `changes_destination` or `keeps_destination`, `reuses_segment_id`, `value_not_at_start`.
+  (DEC-4, DEC-20, T-005-01)
+
 ## 1.0.0
 - Frozen at C1: from here a change needs a version bump, a changelog entry naming a DEC-*, and the owner's click. (DEC-3, DEC-4, DEC-20, T-006-01)
 

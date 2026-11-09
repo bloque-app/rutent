@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::state_machine::{
-    Destination, Id, NodeId, NodeRef, Observed, Order, OrderState, Part, RecordedInput, Segment,
-    SegmentPlan, SegmentState, VERSION, after_no_route, deposit_failed_at_after,
-    destination_change_applies, recalculation_keeps_destination, value_at,
+    Destination, Id, NodeId, NodeRef, NotApplicableReason, Observed, Order, OrderState, Outcome,
+    Part, RecordedInput, Segment, SegmentPlan, SegmentState, VERSION, after_no_route,
+    deposit_failed_at_after, destination_change_applies, recalculation_keeps_destination,
+    recalculation_starts_where_value_sits, value_at,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -762,5 +763,178 @@ fn a_destination_change_that_keeps_the_destination_is_a_recalculation_and_not_ap
     assert_eq!(
         after_no_route(&waiting),
         Some(OrderState::WaitingForCustomer)
+    );
+}
+
+/// Each case must be refused by the schema and by Rust, and by Rust for the rule given.
+fn refused_for(shape: &str, cases: Vec<(&str, Value)>, rule: &str) {
+    for (case, value) in cases {
+        assert!(
+            !validator(shape).is_valid(&value),
+            "{case}: the schema accepts it"
+        );
+        match through_rust(shape, &value) {
+            Err(e) => assert!(e.contains(rule), "{case}: refused for another reason: {e}"),
+            Ok(_) => panic!("{case}: Rust accepts it"),
+        }
+    }
+}
+
+// verifies: REQ-ORD-16, REQ-CAT-17, INV-5, REQ-ORD-43
+#[test]
+fn a_route_starts_with_a_withdrawal_unless_it_was_handed_on_and_then_at_the_inner_node_where_the_value_sits()
+ {
+    // An order handed on starts at ledger-in, where the first order's final deposit failed, with no withdrawal.
+    let handed = valid_fixture("order-handed-on-from-another");
+    assert!(validator("order").is_valid(&handed));
+    let part = part_of("order-handed-on-from-another");
+    assert_eq!(
+        part.segments[0].from.node,
+        NodeRef::Inner("ledger-in".into())
+    );
+
+    let mut not_handed = handed.clone();
+    not_handed.as_object_mut().unwrap().remove("handed_on_from");
+    let mut recalculated_over_the_withdrawal = valid_fixture("order-last-input-late");
+    recalculated_over_the_withdrawal["parts"][0]["segments"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    refused_for(
+        "order",
+        vec![
+            (
+                "an order not handed on that starts at an inner node",
+                not_handed,
+            ),
+            (
+                "a recalculation that replaced the settled withdrawal",
+                recalculated_over_the_withdrawal,
+            ),
+        ],
+        "a route starts with a withdrawal from an outer node",
+    );
+    // A recalculated part keeps its withdrawal first.
+    assert!(serde_json::from_value::<Order>(valid_fixture("order-last-input-late")).is_ok());
+
+    let mut handed_with_a_withdrawal = valid_fixture("order-of-one-part");
+    handed_with_a_withdrawal["handed_on_from"] = "ord-0".into();
+    refused_for(
+        "order",
+        vec![(
+            "an order handed on that withdraws",
+            handed_with_a_withdrawal,
+        )],
+        "a route handed on starts at an inner node",
+    );
+
+    // The input that opens the order carries the same rule.
+    let chosen = valid_fixture("recorded-input-route-chosen-handed-on");
+    let mut chosen_not_handed = chosen.clone();
+    chosen_not_handed["observed"]
+        .as_object_mut()
+        .unwrap()
+        .remove("handed_on_from");
+    refused_for(
+        "recorded-input",
+        vec![(
+            "a route chosen not handed on, from an inner node",
+            chosen_not_handed,
+        )],
+        "a route starts with a withdrawal from an outer node",
+    );
+    let mut three_parts_handed = valid_fixture("recorded-input-route-chosen-three-parts");
+    three_parts_handed["observed"]["handed_on_from"] = "ord-0".into();
+    refused_for(
+        "recorded-input",
+        vec![(
+            "a route chosen handed on, with withdrawals",
+            three_parts_handed,
+        )],
+        "a route handed on starts at an inner node",
+    );
+}
+
+fn plans(segments: &[Segment]) -> Vec<SegmentPlan> {
+    segments.iter().map(|s| s.plan()).collect()
+}
+
+// verifies: INV-4, REQ-ORD-22, REQ-ORD-43
+#[test]
+fn a_route_restarts_only_from_where_the_value_is_evidenced() {
+    // After a failed final deposit, from the deposit's own start.
+    let waiting = part_of("order-waiting-for-the-customer-after-a-failed-final-deposit");
+    let mut from_there = plans(&waiting.segments[2..]);
+    from_there[0].segment_id = Id::new("p1-s9").unwrap();
+    assert!(recalculation_starts_where_value_sits(&waiting, &from_there));
+    let mut other_node = from_there.clone();
+    other_node[0].from.node = NodeRef::Inner("ledger-b".into());
+    assert!(
+        !recalculation_starts_where_value_sits(&waiting, &other_node),
+        "another node"
+    );
+    let mut other_unit = from_there.clone();
+    other_unit[0].from.asset.decimals = 2;
+    assert!(
+        !recalculation_starts_where_value_sits(&waiting, &other_unit),
+        "the same node in another unit"
+    );
+    assert!(!recalculation_starts_where_value_sits(&waiting, &[]));
+
+    // A segment whose value is in flight: started, owing a reversal that isn't a deposit's, or of unknown outcome.
+    let mut part = part_of("order-stuck-with-no-route-and-no-failed-final-deposit");
+    let from_the_exchange = plans(&part.segments[1..]);
+    for state in [
+        SegmentState::Started,
+        SegmentState::FailedReversalOwed,
+        SegmentState::OutcomeUnknown,
+    ] {
+        part.segments[1].state = state;
+        assert!(
+            !recalculation_starts_where_value_sits(&part, &from_the_exchange),
+            "{state:?}: the value is in flight"
+        );
+    }
+    // Reversed, or not yet started, the value is back at, or still at, the segment's start.
+    for state in [SegmentState::ReversalComplete, SegmentState::Pending] {
+        part.segments[1].state = state;
+        assert!(
+            recalculation_starts_where_value_sits(&part, &from_the_exchange),
+            "{state:?}"
+        );
+    }
+
+    // Before the withdrawal settles nothing has moved, and nothing restarts, not even from the outer node.
+    for segment in &mut part.segments {
+        segment.state = SegmentState::Pending;
+    }
+    let whole = plans(&part.segments);
+    assert!(!recalculation_starts_where_value_sits(&part, &whole));
+
+    // An order handed on: the value sits at its inner start before anything has started.
+    let handed = part_of("order-handed-on-from-another");
+    assert!(recalculation_starts_where_value_sits(
+        &handed,
+        &plans(&handed.segments)
+    ));
+}
+
+// verifies: INV-4, REQ-AUD-1
+#[test]
+fn a_restart_away_from_the_value_has_its_own_reason_in_both_lists() {
+    let reasons = schema("order")["$defs"]["outcome"]["oneOf"][3]["properties"]["reason"]["enum"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(reasons.contains(&"value_not_at_start".into()));
+    let order: Order = serde_json::from_value(valid_fixture(
+        "order-last-input-not-applicable-value-not-at-start",
+    ))
+    .unwrap();
+    assert_eq!(
+        order.last_input.outcome,
+        Outcome::NotApplicable {
+            reason: NotApplicableReason::ValueNotAtStart
+        }
     );
 }

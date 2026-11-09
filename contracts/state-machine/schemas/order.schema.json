@@ -68,6 +68,65 @@
           }
         }
       }
+    },
+    {
+      "description": "Where a route starts (REQ-ORD-16): each part's first segment is a withdrawal, from an outer node; in an order handed on (REQ-ORD-43), it starts at an inner node, where the value sits and whose holding account counts as the origin reserve (REQ-CAT-17), with no withdrawal, since a withdrawal starts at an outer node.",
+      "if": {
+        "properties": {
+          "handed_on_from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "handed_on_from"
+        ]
+      },
+      "then": {
+        "properties": {
+          "parts": {
+            "items": {
+              "properties": {
+                "segments": {
+                  "prefixItems": [
+                    {
+                      "properties": {
+                        "from": {
+                          "properties": {
+                            "node": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "parts": {
+            "items": {
+              "properties": {
+                "segments": {
+                  "prefixItems": [
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "withdrawal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -261,7 +320,8 @@
                 "not_from_this_state",
                 "changes_destination",
                 "keeps_destination",
-                "reuses_segment_id"
+                "reuses_segment_id",
+                "value_not_at_start"
               ]
             }
           },

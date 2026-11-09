@@ -1,0 +1,45 @@
+{
+  "record_id": "rec-0041",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "customer",
+    "id": "user-42"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-2"
+  },
+  "observed": {
+    "kind": "route_chosen",
+    "decision_record": "dr-0041",
+    "parts": [
+      {
+        "part_id": "p1",
+        "segments": [
+          {
+            "segment_id": "p1-s1",
+            "provider": "reserve-wallet-b",
+            "kind": "deposit",
+            "from": {
+              "node": "ledger-in",
+              "asset": {
+                "id": "USDC",
+                "decimals": 6
+              }
+            },
+            "to": {
+              "node": {
+                "network": "base"
+              },
+              "asset": {
+                "id": "USDC",
+                "decimals": 6
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -320,10 +320,71 @@
           "description": "The order whose value this order was handed (REQ-ORD-43)."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "Where a route starts (REQ-ORD-16): each part's first segment is a withdrawal, from an outer node; in an order handed on (REQ-ORD-43), it starts at an inner node, where the value sits and whose holding account counts as the origin reserve (REQ-CAT-17), with no withdrawal, since a withdrawal starts at an outer node.",
+          "if": {
+            "properties": {
+              "handed_on_from": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handed_on_from"
+            ]
+          },
+          "then": {
+            "properties": {
+              "parts": {
+                "items": {
+                  "properties": {
+                    "segments": {
+                      "prefixItems": [
+                        {
+                          "properties": {
+                            "from": {
+                              "properties": {
+                                "node": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "parts": {
+                "items": {
+                  "properties": {
+                    "segments": {
+                      "prefixItems": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "withdrawal"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "route_recalculated": {
-      "description": "A new route for one part, from the node where its value sits, to the same destination and to asset (REQ-ORD-22, INV-10). Automatic, with no acceptance: it acts within the customer's authorisation and floor (REQ-AUZ-3, REQ-ORD-4); a route past the floor makes the part wait for the customer instead (REQ-ORD-27). A route that ends elsewhere is not applicable; a new destination is destination_changed.",
+      "description": "A new route for one part, from the node where its value sits, to the same destination and to asset (REQ-ORD-22, INV-10). Automatic, with no acceptance: it acts within the customer's authorisation and floor (REQ-AUZ-3, REQ-ORD-4); a route past the floor makes the part wait for the customer instead (REQ-ORD-27). A route that ends elsewhere is not applicable; a new destination is destination_changed. A route that doesn't start where the part's value is evidenced, or comes while it is in flight, is not applicable too (value_not_at_start, INV-4).",
       "type": "object",
       "required": [
         "kind",
@@ -344,7 +405,7 @@
       "additionalProperties": false
     },
     "destination_changed": {
-      "description": "A new route for one part to another destination: the customer's choice after a failed final deposit (REQ-ORD-43). It always carries the customer's acceptance (REQ-ORD-34, REQ-AUZ-3).",
+      "description": "A new route for one part to another destination: the customer's choice after a failed final deposit (REQ-ORD-43). It always carries the customer's acceptance (REQ-ORD-34, REQ-AUZ-3). Like a recalculation, it starts from the node where the part's value sits, and is not applicable otherwise (value_not_at_start, INV-4).",
       "type": "object",
       "required": [
         "kind",
