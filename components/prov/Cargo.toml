@@ -10,3 +10,7 @@ workspace = true
 
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+jsonschema = { version = "0.60.2", default-features = false }

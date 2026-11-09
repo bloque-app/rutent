@@ -120,3 +120,11 @@ refusal reasons, the call-recording rules) names nothing the library reads. The 
   failing against a stub. The "reordered" half of `REQ-STM-4` is exercised by the generator, which delivers segment
   reports out of their natural order (a settlement before its bind, a report on a later segment), and by the segment
   edge check.
+
+## The VOS licence, adopted in part (owner, item `vos-licence-v0`, 2026-11-09)
+
+The owner ruled a partial adoption: "There's nothing ruling that the entire repo must be on a single licence."
+AGPL-3.0-or-later applies only to the package that links `vos-sdk`, the VOS program `T-010-05` builds, and to
+binaries built from it. That package declares `license = "AGPL-3.0-or-later"`. `components/stm` and every other
+package stay MIT and runtime-neutral behind the host contract, so the purpose-built store stays a drop-in fallback.
+`licences/RECORD`'s `vos` line reads permitted under `DEC-26` and `vos-licence-v0`.
