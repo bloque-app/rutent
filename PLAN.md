@@ -398,7 +398,7 @@ since one package can't build for two targets.
 
 #### `F-011` Router library
 
-- **Goal:** `route(request, snapshot, policy bounds)` as router-api 2.0.0 defines it, a pure hop-limited exhaustive
+- **Goal:** `route(request, snapshot, policy bounds)` as router-api defines it (2.0.0, then 3.0.0 from `T-011-05`), a pure hop-limited exhaustive
   search (ADR-0006) returning one route as a split of one part (`DEC-8`); owns `components/router/`.
 - **Serves:** `REQ-QTE-1` to `REQ-QTE-15`, the shape of `REQ-QTE-16`, `REQ-EXT-2`, `AC-2`, `AC-3`, `AC-13`, `AC-14`,
   ADR-0006.
@@ -409,6 +409,7 @@ since one package can't build for two targets.
 | `T-011-02` | The shortlist: fresh quotes, dry-runs and eligibility asked only of shortlisted providers, entering as recorded answers so the router stays pure; a dry-run's rejection drops that option for another provider of the tuple; a route with no path arriving with a positive balance is refused | `T-011-01` | `REQ-CAT-5`, `REQ-CAT-14`, `REQ-QTE-13`, `AC-3` | `provider whose dry run rejects is dropped for another serving the tuple` [`AC-3`, `REQ-CAT-14`]; `provider off the shortlist is never asked` [`REQ-CAT-5`]; `route with no positive arrival is refused` [`REQ-QTE-13`] | these tests pass |
 | `T-011-03` | The quote rules as pure checks: a quote's fields; the difference between the quotes and the shown price, the operator's fee by formula; declared settlement time recorded; a fee formula's maximum, a charge above it flagged; a formula binding from segment start; quote versus price labels; slippage within three days; no firm rate past three days, naming the segment and needing acceptance; held quotes and their validity | `T-011-01` | `REQ-QTE-1`, `REQ-QTE-2`, `REQ-QTE-3`, `REQ-QTE-5`, `REQ-QTE-6`, `REQ-QTE-7`, `REQ-QTE-9`, `REQ-QTE-10`, `REQ-QTE-15`, `AC-13`, `AC-14` | `route with a segment over three days has no firm rate and names it` [`AC-13`, `REQ-QTE-10`]; `charge above the formula's maximum is flagged` [`AC-14`, `REQ-QTE-5`]; `formula changed after segment start does not apply to it` [`REQ-QTE-6`]; `held quote past its validity is refused` [`REQ-QTE-15`] | these tests pass |
 | `T-011-04` | Objectives and the decision record: the customer's objective, lowest total cost by default; the record names every candidate with its drop reason and recomputes the choice alone; the result always a split of one part | `T-011-02`, `T-011-03` | `AC-2`, `REQ-AUD-4`, `REQ-QTE-11`, `REQ-QTE-16`, `DEC-8` | `changed objective can change the chosen route` [`AC-2`, `REQ-QTE-11`]; `decision record recomputes the choice with no provider call` [`AC-2`, `REQ-AUD-4`]; `every result is a split of one part` [`REQ-QTE-16`] | these tests and the router suite pass, and every public element is documented |
+| `T-011-05` | Router-api 3.0.0 (`DEC-4`): drop reasons for the candidates `T-011-04` found the contract can't state, a path through a tuple with no price and an operation whose fee is above the amount that reaches it, so the decision record names every candidate and why it was dropped. The router emits them; the router suite and fixtures carry them; the owner ruled it for `M2` (item `aud4-unstateable-candidates`, 2026-11-09) | `T-011-04` | `REQ-AUD-4`, `DEC-4`, `DEC-8`, ADR-0006 | `path through a tuple with no price is recorded with its drop reason` [`REQ-AUD-4`]; `operation whose fee is above what reaches it is recorded with its drop reason` [`REQ-AUD-4`] | router-api is at 3.0.0 with both reasons and their fixtures, the record names every candidate, and the contract guard and the router suite pass |
 
 #### `F-012` Catalogue and grants
 
@@ -587,7 +588,7 @@ flowchart LR
 | 12 | `T-010-03`, `T-010-04`, `T-011-02`, `T-011-03`, `T-012-03`, `T-013-01`, `T-014-01`, `T-015-02`, `T-015-03`, `T-016-01` |
 | 13 | `T-010-05`, `T-011-04`, `T-012-02`, `T-012-04`, `T-013-02`, `T-013-03`, `T-014-02`, `T-014-03` |
 | 14 | `T-010-06`, `T-010-07`, `T-010-08`, `T-010-09`, `T-013-04`, `T-014-04` |
-| 15 | `T-013-05`, `T-013-06`, `T-014-05`, `T-016-02` |
+| 15 | `T-011-05`, `T-013-05`, `T-013-06`, `T-014-05`, `T-016-02` |
 | 16 | `T-016-03` |
 
 **Critical path:** `T-010-01` → `T-010-03` → `T-012-02` → `T-013-04` → `T-016-02` → `T-016-03`: six tasks. The

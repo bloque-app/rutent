@@ -873,3 +873,92 @@ fn module_repeating_a_call_to_a_callee_that_is_no_identifier_hits_the_limit() {
         assert_eq!(binding.process(&caller), pid);
     }
 }
+
+// verifies: REQ-MDL-11, THR-57
+#[test]
+fn module_repeating_lookups_through_the_credential_proxy_hits_the_limit_and_resolves_no_more() {
+    for language in languages() {
+        // Resolved lookups, and lookups of a name the declaration doesn't have: both are counted before the proxy
+        // answers or refuses.
+        for name in ["own.key", "not.declared"] {
+            let mut binding = binding("reserve");
+            let provider = format!("proxied-{language}-{}", name.replace('.', "-"));
+            binding.seed_secret(&provider, "own.key", "canary-secret");
+            let steps = (0..5)
+                .map(|_| Step::LookUpSecret {
+                    part: PartName::Outside,
+                    operation: OPERATION.to_owned(),
+                    name: name.to_owned(),
+                })
+                .collect();
+            install(
+                &mut binding,
+                &module(declaration(&provider, "1.0.0", &["withdrawal"]), steps),
+                &language,
+                "reserve",
+                &[],
+            );
+            binding.set_bounds(tight(|b| b.per_operation.secret_lookups = 3));
+            binding.take_events();
+            let handled = binding.handle(&provider, &withdrawal(&provider, 1));
+            assert_eq!(
+                handled,
+                Handled::Refused(PlatformRefusal::LimitReached),
+                "{language} {name}"
+            );
+            let events = binding.take_events();
+            let limits = binding.take_limits();
+            assert_eq!(limits.len(), 1, "{limits:?}");
+            assert_eq!(limits[0].hit, operation(Metered::SecretLookups));
+            assert_eq!(
+                events.lookups.len(),
+                3,
+                "{language} {name}: lookups past the bound were answered"
+            );
+            let resolved = binding.delivered_secrets(&provider).len();
+            assert_eq!(
+                resolved,
+                if name == "own.key" { 3 } else { 0 },
+                "{language} {name}"
+            );
+        }
+    }
+}
+
+// verifies: REQ-MDL-11, THR-57
+#[test]
+fn module_repeating_lookups_the_proxy_refuses_hits_the_limit() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("prober-{language}");
+        let steps = (0..4)
+            .map(|_| Step::LookUpSecret {
+                part: PartName::Outside,
+                operation: OPERATION.to_owned(),
+                name: "someone.elses.key".to_owned(),
+            })
+            .collect();
+        install(
+            &mut binding,
+            &module(declaration(&provider, "1.0.0", &["withdrawal"]), steps),
+            &language,
+            "reserve",
+            &[],
+        );
+        binding.set_bounds(tight(|b| b.per_operation.secret_lookups = 2));
+        binding.take_events();
+        let handled = binding.handle(&provider, &withdrawal(&provider, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::LimitReached),
+            "{language}: lookups the proxy refuses went uncounted"
+        );
+        let events = binding.take_events();
+        let limits = binding.take_limits();
+        assert_eq!(limits.len(), 1, "{limits:?}");
+        assert_eq!(limits[0].hit, operation(Metered::SecretLookups));
+        // The two within the bound were answered by the proxy, refused; none resolved.
+        assert_eq!(events.lookups.len(), 2);
+        assert!(binding.delivered_secrets(&provider).is_empty());
+    }
+}

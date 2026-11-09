@@ -21,7 +21,7 @@ use rutent_contracts::module_interface::{
     Declaration, Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name,
     Nothing, OperationKind, OutboundCallRecord, OutsideOutcome, OutsideRequest, OutsideResponse,
     PartName, Parts, RefusalReason, Refused, ReleaseAssertion, RouteReference, SPECIAL_PURPOSE,
-    Scheme, SecretLookup, SecretRefusalReason, Time, validate_lookup, widening,
+    Scheme, SecretLookup, SecretRefusalReason, Time, widening,
 };
 use rutent_contracts::provider_role::{
     Operation, RESULT_SHAPE, ResultBody, Signature, SignatureScheme, Statement,
@@ -43,6 +43,7 @@ use crate::module::types::{
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent,
 };
 use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
+use crate::proxy::{self, Caller, InFlight};
 
 /// The most hops an outbound call follows, redirects included.
 const MAX_HOPS: usize = 5;
@@ -578,15 +579,36 @@ impl<W: World> Platform<W> {
                 reason: "undeclared_secret".to_owned(),
             };
         };
-        let as_claimed =
-            transaction == serving.transaction.as_str() && operation == serving.operation.as_str();
+        // The credential proxy's rule (`F-014`), from the platform's own state: the caller is the provider whose
+        // process asked, and the request in flight the one passed to its outside part.
+        let judged = match (
+            Identifier::new(provider.clone()),
+            Identifier::new(transaction),
+            Name::new(operation),
+        ) {
+            (Some(caller), Some(transaction), Some(operation)) => proxy::judge(
+                &Caller::process_of(caller.clone()),
+                &context.declaration,
+                Some(&InFlight {
+                    provider: caller,
+                    transaction: serving.transaction.clone(),
+                    operation: serving.operation.clone(),
+                }),
+                &SecretLookup {
+                    transaction,
+                    operation,
+                    name: name.clone(),
+                },
+            ),
+            _ => Err(proxy::Refusal::NotTheRequestInFlight),
+        };
         let lookup = SecretLookup {
             transaction: serving.transaction,
             operation: serving.operation,
             name,
         };
         let mut value = None;
-        let outcome = if !as_claimed || validate_lookup(&context.declaration, &lookup).is_err() {
+        let outcome = if judged.is_err() {
             LookupOutcome::Refused(SecretRefusalReason::UndeclaredSecret)
         } else {
             match self.world.secret(&provider, lookup.name.as_str()) {
