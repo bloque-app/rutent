@@ -32,6 +32,7 @@ use crate::module::children::{
     CompileError, Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
 };
 use crate::module::engine::{self, FORMAT, MAX_BINARY};
+use crate::module::output;
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LookupEvent, LookupOutcome,
     PlatformRefusal, ProcessId, StateEvent,
@@ -1081,11 +1082,10 @@ impl<W: World> Platform<W> {
             Ok(bytes) => bytes,
             Err(refusal) => return Handled::Refused(refusal),
         };
-        if bytes.len() > self.output_limit {
-            return Handled::Refused(PlatformRefusal::OversizedOutput);
-        }
-        let Ok(result) = serde_json::from_slice::<ResultBody>(&bytes) else {
-            return Handled::Refused(PlatformRefusal::MalformedOutput);
+        // The output is untrusted: judged against the result schema, patterns and lengths included (`REQ-MDL-12`).
+        let result = match output::check(&bytes, self.output_limit) {
+            Ok(result) => result,
+            Err(refusal) => return Handled::Refused(refusal),
         };
         if !result_matches(&result, &operation.statement) {
             return Handled::Refused(PlatformRefusal::MalformedOutput);

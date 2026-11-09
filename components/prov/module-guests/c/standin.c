@@ -223,8 +223,19 @@ static char *member(span obj, const char *key, size_t *len) {
 
 static void put_s(text *t, const char *s) { put_string(t, s, strlen(s)); }
 
+static void put_piece(text *t, program *p, size_t length) {
+    puts_(t, ",{\"grade\":3,\"reference\":\"");
+    for (size_t i = 0; i < length; i++) {
+        puts_(t, "x");
+    }
+    puts_(t, "\",\"by\":");
+    put_s(t, p->provider);
+    puts_(t, "}");
+}
+
 /* The honest withdrawal result, compact, as the suite pins it: its one evidence reference is
- * `{provider}-{version}`, then `-{value}` for each value obtained, then `pad` times `x`. */
+ * `{provider}-{version}`, then `-{value}` for each value obtained, then `pad` more bytes of result in
+ * extra evidence pieces of at most 512 characters each, as the result schema allows (`B-19`). */
 static text honest(program *p, const char *kind, const char *transaction, const char *amount, const char *asset,
                    values *got, size_t pad) {
     text reference = {0};
@@ -235,8 +246,14 @@ static text honest(program *p, const char *kind, const char *transaction, const 
         puts_(&reference, "-");
         put(&reference, got->v[i], got->n[i]);
     }
-    for (size_t i = 0; i < pad; i++) {
-        puts_(&reference, "x");
+    text empty = {0};
+    put_piece(&empty, p, 0);
+    size_t fixed = empty.len;
+    if (pad <= fixed) {
+        for (size_t i = 0; i < pad; i++) {
+            puts_(&reference, "x");
+        }
+        pad = 0;
     }
     text t = {0};
     puts_(&t, "{\"kind\":");
@@ -253,7 +270,18 @@ static text honest(program *p, const char *kind, const char *transaction, const 
     put_string(&t, reference.p ? reference.p : "", reference.len);
     puts_(&t, ",\"by\":");
     put_s(&t, p->provider);
-    puts_(&t, "}]}}");
+    puts_(&t, "}");
+    while (pad > 0) {
+        size_t length = pad - fixed < 512 ? pad - fixed : 512;
+        size_t rest = pad - fixed - length;
+        if (rest > 0 && rest <= fixed) {
+            /* Leave a remainder a piece can hold. */
+            length -= fixed + 1 - rest;
+        }
+        put_piece(&t, p, length);
+        pad -= fixed + length;
+    }
+    puts_(&t, "]}}");
     return t;
 }
 

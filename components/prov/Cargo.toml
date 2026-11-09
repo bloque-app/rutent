@@ -24,8 +24,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10"
 libc = "0.2"
+# Checks a module's output against the provider-role contract's schemas, patterns and lengths included (`B-19`).
+jsonschema = { version = "0.60.2", default-features = false }
 
 [dev-dependencies]
 rutent-conformance = { path = "../../conformance" }
 serde_json = "1.0.154"
-jsonschema = { version = "0.60.2", default-features = false }
