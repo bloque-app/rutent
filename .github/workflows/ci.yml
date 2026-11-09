@@ -88,6 +88,15 @@ jobs:
           cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-guests --all-targets -- -D warnings
           cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-standin -p rutent-wasm-role-standin \
             --target wasm32-unknown-unknown --features rutent-wasm-standin/sandboxed,rutent-wasm-standin/reserve,rutent-wasm-role-standin/reserve -- -D warnings
+      # The plain wallet's guest (`components/prov/guests/plain-wallet/`, `T-016-02`) is a workspace of its own too.
+      - name: Format, plain wallet guest
+        run: cargo fmt --manifest-path components/prov/guests/plain-wallet/Cargo.toml --all -- --check
+      - name: Lint, plain wallet guest
+        run: |
+          cargo clippy --manifest-path components/prov/guests/plain-wallet/Cargo.toml --target wasm32-unknown-unknown \
+            --features sandboxed -- -D warnings
+          cargo clippy --manifest-path components/prov/guests/plain-wallet/Cargo.toml --target wasm32-unknown-unknown \
+            --features outside -- -D warnings
       - name: Documentation check
         # Every crate denies `missing_docs` through `[workspace.lints]`; rustdoc enforces it here.
         run: cargo doc --workspace --no-deps
