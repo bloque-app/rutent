@@ -753,3 +753,223 @@ fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_ch
         "the draws should hold some providers off the shortlist"
     );
 }
+
+// Objectives and the decision record (`T-011-04`).
+
+/// Every kept operation of a shortlist round answered by its provider, accepted on the terms the round evaluated,
+/// at every amount a kept candidate takes its tuple at, each declaring a settlement time drawn at random.
+fn answer_every_kept_operation(draw: &mut Draw, shortlisted: &DecisionRecord) -> Vec<Value> {
+    let mut seen = BTreeSet::new();
+    let mut figures = Vec::new();
+    for operation in shortlisted
+        .shortlist()
+        .into_iter()
+        .flat_map(|c| c.parts[0].operations.iter())
+    {
+        let tuple = operation.figures.first().as_str();
+        let amount_in = operation.amount_in.amount().as_str();
+        if !seen.insert((tuple.to_owned(), amount_in.to_owned())) {
+            continue;
+        }
+        let id = format!("a-{tuple}-{}", figures.len());
+        let provider = operation.provider.as_str();
+        let mut outcome = json!({
+            "status": "dry_run_accepted",
+            "amount_in": amount_in,
+            "amount_out": operation.amount_out.as_str(),
+            "fee": { "asset": operation.fee.asset, "amount": operation.fee.amount },
+            "valid_until": "2026-11-06T15:05:00Z",
+            "voided_by": ["validity_passes", "amount_changes"],
+            "settlement_seconds": 1 + draw.below(10_000),
+        });
+        let (kind, quoted) = match operation.kind {
+            OperationKind::Withdrawal => ("withdrawal", false),
+            OperationKind::Deposit => ("deposit", false),
+            OperationKind::Route => ("transfer", true),
+            OperationKind::Exchange => ("conversion", true),
+        };
+        if operation.kind == OperationKind::Exchange {
+            outcome["rate"] = json!("1");
+            outcome["slippage"] = json!({ "regime": "firm" });
+        }
+        if quoted {
+            outcome["direction"] = json!("exact_in");
+        }
+        let body = json!({ "kind": kind, "transaction": format!("tx-{id}"), "outcome": outcome });
+        let statement = Net::envelope(provider, TAKEN_AT, "urn:rutent:provider-role:result", body);
+        let value = if quoted {
+            json!({ "kind": "fresh_quote", "tuple": tuple, "quote": statement })
+        } else {
+            json!({ "kind": "dry_run", "tuple": tuple, "amount_in": amount_in, "result": statement })
+        };
+        figures.push(json!({
+            "figure_id": id,
+            "origin": Net::origin(provider),
+            "age_seconds": 0,
+            "valid_for_seconds": 300,
+            "value": value,
+        }));
+    }
+    figures
+}
+
+/// A choice round refining `shortlisted`, under its objective, over its snapshot with every kept operation
+/// answered: its request and its snapshot.
+fn choice_round(
+    draw: &mut Draw,
+    network: &Network,
+    shortlisted: &DecisionRecord,
+) -> (Request, rutent_contracts::router_api::CatalogueSnapshot) {
+    let mut snapshot = serde_json::to_value(&network.snapshot).unwrap();
+    snapshot["snapshot_id"] = json!("snap-gen-choice");
+    snapshot["figures"]
+        .as_array_mut()
+        .unwrap()
+        .extend(answer_every_kept_operation(draw, shortlisted));
+    let mut choice = serde_json::to_value(&shortlisted.request).unwrap();
+    choice["request_id"] = json!(format!(
+        "{}-choice",
+        shortlisted.request.request_id.as_str()
+    ));
+    choice["round"] = json!({
+        "kind": "choice",
+        "refines": { "request_id": shortlisted.request.request_id, "taken_at": TAKEN_AT },
+    });
+    (
+        parse("choice request", choice),
+        parse("choice snapshot", snapshot),
+    )
+}
+
+const OBJECTIVES: [&str; 2] = ["lowest_total_cost", "fastest_settlement"];
+
+/// The request under another objective.
+fn under(request: &Request, objective: &str) -> Request {
+    let mut value = serde_json::to_value(request).unwrap();
+    value["objective"] = json!({ "kind": objective });
+    parse("request", value)
+}
+
+// verifies: AC-2, REQ-AUD-4, DEC-18
+#[test]
+fn the_choice_recomputed_from_the_record_alone_is_the_one_it_names() {
+    let mut chosen = 0;
+    for (seed, network, request, bounds) in generated(500, ANY) {
+        let mut draw = Draw(seed ^ 0x5EED);
+        let objective = *draw.pick(&OBJECTIVES);
+        let shortlisted = routed(&under(&request, objective), &network.snapshot, &bounds);
+        if shortlisted.shortlist().is_empty() {
+            continue;
+        }
+        let (choice, snapshot) = choice_round(&mut draw, &network, &shortlisted);
+        let bytes = serde_json::to_vec(&RouteFinder::route(&choice, &snapshot, &bounds)).unwrap();
+        // From here, the record's bytes alone.
+        let record: DecisionRecord = serde_json::from_slice(&bytes).unwrap();
+        let recomputed = recompute(&record);
+        assert!(
+            recomputed.passes(),
+            "seed {seed}: {:#?}",
+            recomputed.findings
+        );
+        // Every shortlisted route is confirmed on its own terms, so the choice round always chooses.
+        assert!(record.chosen.is_some(), "seed {seed}: nothing chosen");
+        assert_eq!(recomputed.choice, record.chosen, "seed {seed}");
+        let again = RouteFinder::route(&record.request, &record.snapshot, &record.bounds);
+        assert_eq!(serde_json::to_vec(&again).unwrap(), bytes, "seed {seed}");
+        chosen += 1;
+    }
+    assert!(chosen > 100, "only {chosen} choices");
+}
+
+// verifies: REQ-QTE-16, DEC-8, DEC-18
+#[test]
+fn every_candidate_is_one_part_whatever_the_part_limit() {
+    for (seed, network, request, bounds) in generated(200, ANY) {
+        let mut draw = Draw(seed ^ 0x9A27);
+        let mut bounds = serde_json::to_value(&bounds).unwrap();
+        bounds["max_parts"] = json!(1 + draw.below(8));
+        let bounds: PolicyBounds = parse("bounds", bounds);
+        let shortlisted = routed(&request, &network.snapshot, &bounds);
+        let mut records = vec![shortlisted];
+        if !records[0].shortlist().is_empty() {
+            let (choice, snapshot) = choice_round(&mut draw, &network, &records[0]);
+            records.push(routed(&choice, &snapshot, &bounds));
+        }
+        for record in &records {
+            assert!(recompute(record).passes(), "seed {seed}");
+            for candidate in &record.candidates {
+                assert_eq!(
+                    candidate.parts.len(),
+                    1,
+                    "seed {seed}: {} is split",
+                    candidate.candidate_id.as_str()
+                );
+            }
+        }
+    }
+}
+
+// verifies: AC-2, REQ-QTE-11, DEC-18
+#[test]
+fn changing_the_objective_changes_no_drop_but_outranked() {
+    use rutent_contracts::router_api::DropReason;
+    // A drop that isn't the ranking's: `outranked` and the choice itself are the objective's.
+    let fault = |d: &Option<DropReason>| match d {
+        None | Some(DropReason::Outranked { .. }) => None,
+        other => other.clone(),
+    };
+    let mut changed = 0;
+    for (seed, network, request, bounds) in generated(600, ANY) {
+        let mut draw = Draw(seed ^ 0x0B1E);
+        let shortlisted = routed(&request, &network.snapshot, &bounds);
+        let mut rounds = vec![(request.clone(), network.snapshot.clone())];
+        if !shortlisted.shortlist().is_empty() {
+            rounds.push(choice_round(&mut draw, &network, &shortlisted));
+        }
+        for (asked, snapshot) in rounds {
+            let [cost, time] =
+                OBJECTIVES.map(|objective| routed(&under(&asked, objective), &snapshot, &bounds));
+            assert_eq!(cost.candidates.len(), time.candidates.len(), "seed {seed}");
+            for (a, b) in cost.candidates.iter().zip(&time.candidates) {
+                assert_eq!(a.candidate_id, b.candidate_id, "seed {seed}");
+                assert_eq!(a.parts, b.parts, "seed {seed}");
+                assert_eq!(fault(&a.dropped), fault(&b.dropped), "seed {seed}");
+            }
+            assert_eq!(cost.chosen.is_some(), time.chosen.is_some(), "seed {seed}");
+            changed += usize::from(cost.chosen != time.chosen);
+        }
+    }
+    assert!(
+        changed > 5,
+        "the objective changed the choice only {changed} times"
+    );
+}
+
+// verifies: REQ-AUD-4, AC-2, DEC-18
+#[test]
+fn a_tuple_with_no_price_changes_no_record_beyond_its_own_figure() {
+    let mut unpriced = 0;
+    for (seed, network, request, bounds) in generated(200, ANY) {
+        let mut draw = Draw(seed ^ 0x7E1D);
+        let (tuple, ..) = draw.pick(&network.edges).clone();
+        let price = format!("{tuple}-price");
+        let without = |drop: &[&str]| {
+            let mut snapshot = network.snapshot.clone();
+            snapshot
+                .figures
+                .retain(|f| !drop.contains(&f.figure_id.as_str()));
+            snapshot
+        };
+        // Unpriced, the tuple is in the record's snapshot, but nothing the router finds takes it: as if absent.
+        let kept = routed(&request, &without(&[&price]), &bounds);
+        let absent = routed(&request, &without(&[&price, &tuple]), &bounds);
+        assert!(recompute(&kept).passes(), "seed {seed}");
+        assert_eq!(kept.candidates, absent.candidates, "seed {seed}");
+        unpriced +=
+            usize::from(routed(&request, &network.snapshot, &bounds).candidates != kept.candidates);
+    }
+    assert!(
+        unpriced > 20,
+        "removing a price changed only {unpriced} records"
+    );
+}

@@ -191,3 +191,10 @@ package stay MIT and runtime-neutral behind the host contract, so the purpose-bu
   when the callee received it, since being passed on is what lends the widening. The reference double gains
   `with_callees_that_never_answer`, which records every call it passes on as `unanswered`, for the suite's test. No
   contract changes with it.
+- **Ruling: edge-only lock changes (orchestrator's default, reversible).** `T-013-01` adds Wasmtime, whose `serde` and
+  `allocator-api2` features give bumpalo, hashbrown, referencing and smallvec new dependency edges in `Cargo.lock`,
+  with no contract text changed. The limit above had bitten, so the orchestrator ruled: a reached package whose name,
+  version, source or checksum changes (or that appears or vanishes) still needs every contract's bump; one whose only
+  change is its dependency list needs no bump, only a bullet in `contracts/CHANGELOG.md` naming a `DEC-*`, as a shared
+  file does. Features can change behaviour (`serde_json`'s `preserve_order`), so the change stays visible and
+  reviewed, without fake bumps. Reversible: restore the single identity in `lock_moves`.
