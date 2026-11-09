@@ -10,8 +10,9 @@ pub const FORMAT: &str = "wasm-component";
 /// The runtime and its pinned version (item `exp2-wasm-runtime`).
 pub const WASMTIME_VERSION: &str = "48.0.8";
 
-/// The binding's own version.
-pub const BINDING_VERSION: &str = "0.1.0";
+/// The binding's own version, which names, with the runtime and the target, what made a release's machine code
+/// (`build.platform_version`). It changed with `T-013-02`'s engine settings, which change the machine code.
+pub const BINDING_VERSION: &str = "0.2.0";
 
 /// The compilation target, set explicitly so that the machine code doesn't depend on the compiling machine's CPU
 /// (ADR-0014, `G-03`). It is the build's own triple; no CPU feature is enabled beyond the triple's baseline.
@@ -35,6 +36,14 @@ pub const FUEL_PER_PART: u64 = 200_000_000;
 
 /// The most linear memory one part's instance may hold, in bytes (`REQ-MDL-11`, `B-04`).
 pub const MEMORY_PER_PART: usize = 16 * 1024 * 1024;
+
+/// The address space the engine reserves for one linear memory, in bytes: what the part may hold, no more
+/// (`G-05`). Wasmtime's default is 4 GiB for each memory on a 64-bit machine, which would put a provider's process
+/// at several GiB of address space for two parts and leave no bound on it that a part's own limit doesn't already
+/// make. With the reservation this small, the engine checks each access against the memory's size and leaves no
+/// guard region either (the part is slower; it is also bounded), so the process's address space is its parts' memory
+/// and the engine's own, which `RLIMIT_AS` then bounds (`sandbox::PROVIDER_ADDRESS_SPACE`).
+pub const MEMORY_RESERVATION: u64 = MEMORY_PER_PART as u64;
 
 /// The most elements any one table of a part may hold. The stand-ins' largest table has 51.
 pub const TABLE_ELEMENTS: usize = 1024;
@@ -81,7 +90,10 @@ pub fn config() -> wasmtime::Result<Config> {
         .relaxed_simd_deterministic(true)
         .debug_info(false)
         .generate_address_map(false)
-        .max_wasm_stack(MAX_WASM_STACK);
+        .max_wasm_stack(MAX_WASM_STACK)
+        .memory_reservation(MEMORY_RESERVATION)
+        .memory_reservation_for_growth(0)
+        .memory_guard_size(0);
     Ok(config)
 }
 
@@ -121,6 +133,12 @@ pub fn settings() -> Vec<(&'static str, String)> {
         ("debug_info", "false".to_owned()),
         ("generate_address_map", "false".to_owned()),
         ("max_wasm_stack", format!("{MAX_WASM_STACK} bytes")),
+        (
+            "memory_reservation / memory_reservation_for_growth / memory_guard_size",
+            format!(
+                "{MEMORY_RESERVATION} bytes / 0 / 0: no address space beyond the memory a part may hold"
+            ),
+        ),
         (
             "store limits (StoreLimits)",
             format!(

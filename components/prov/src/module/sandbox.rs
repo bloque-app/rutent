@@ -40,6 +40,13 @@ pub fn write_frame(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
 
 /// Reads one frame, or `None` at the end of the stream.
 pub fn read_frame(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+    read_frame_up_to(input, MAX_FRAME)
+}
+
+/// Reads one frame of at most `max` bytes, or `None` at the end of the stream. A frame whose length prefix names
+/// more is refused from the prefix alone: no room is allocated for it and not one of its bytes is read
+/// (`REQ-MDL-11`, `THR-57`).
+pub fn read_frame_up_to(input: &mut impl Read, max: usize) -> io::Result<Option<Vec<u8>>> {
     let mut length = [0u8; 4];
     match input.read_exact(&mut length) {
         Ok(()) => {}
@@ -47,7 +54,7 @@ pub fn read_frame(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
         Err(e) => return Err(e),
     }
     let length = u32::from_le_bytes(length) as usize;
-    if length > MAX_FRAME {
+    if length > max.min(MAX_FRAME) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too long"));
     }
     let mut bytes = vec![0u8; length];
@@ -113,6 +120,13 @@ pub const PROVIDER_MEMORY_FILE: u64 = 16 * 1024 * 1024;
 /// The address space the admitting compiler may map on Linux, in bytes.
 pub const COMPILER_ADDRESS_SPACE: u64 = 8 << 30;
 
+/// The address space a provider's process may map on Linux, in bytes (`G-05`): the whole of its memory, both parts'
+/// linear memories (16 MiB each, and the engine reserves no more than that, `engine::MEMORY_RESERVATION`), their
+/// machine code, and the process's own heap and stacks. The process builds the instances of a part again after a
+/// trap before it drops the old ones, so room for four memories is the least; the rest is the engine's and the
+/// runtime's. The operator's cgroup (`F-030`) bounds what the process may actually use of it.
+pub const PROVIDER_ADDRESS_SPACE: u64 = 4 << 30;
+
 /// The arguments `unshare` is given on Linux, before the child's executable.
 pub const UNSHARE: [&str; 10] = [
     "--user",
@@ -166,7 +180,8 @@ pub fn layers() -> Vec<String> {
                 .into(),
         );
         layers.push(
-            "close_range(3, ~0) again; RLIMIT_NPROC 0, RLIMIT_CORE 0, and RLIMIT_AS 8 GiB for the compiler"
+            "close_range(3, ~0) again; RLIMIT_NPROC 0, RLIMIT_CORE 0, and RLIMIT_AS bounded: 8 GiB for the compiler, \
+             4 GiB for a provider's process, the whole of its memory"
                 .into(),
         );
         layers.push(
@@ -401,6 +416,8 @@ mod linux {
     pub(super) struct Applied {
         /// The Landlock ABI the ruleset was made for, or `None` if the kernel has no Landlock.
         pub(super) landlock_abi: Option<u32>,
+        /// `RLIMIT_AS` as the process read it back once it was set, before the system calls were filtered.
+        pub(super) address_space: Option<u64>,
     }
 
     fn os_error(what: &str) -> String {
@@ -765,13 +782,30 @@ mod linux {
         super::close_from_3();
         rlimit(libc::RLIMIT_NPROC, 0, "RLIMIT_NPROC")?;
         rlimit(libc::RLIMIT_CORE, 0, "RLIMIT_CORE")?;
-        if role == Role::Compiler {
-            rlimit(libc::RLIMIT_AS, super::COMPILER_ADDRESS_SPACE, "RLIMIT_AS")?;
-        }
+        let space = match role {
+            Role::Compiler => super::COMPILER_ADDRESS_SPACE,
+            Role::Provider => super::PROVIDER_ADDRESS_SPACE,
+        };
+        rlimit(libc::RLIMIT_AS, space, "RLIMIT_AS")?;
+        let address_space = current_limit(libc::RLIMIT_AS);
         drop_capabilities()?;
         let landlock_abi = landlock()?;
         seccomp(role)?;
-        Ok(Applied { landlock_abi })
+        Ok(Applied {
+            landlock_abi,
+            address_space,
+        })
+    }
+
+    /// The soft limit of `resource` as the process reads it, or `None` if it has none or can't be read.
+    fn current_limit(resource: libc::__rlimit_resource_t) -> Option<u64> {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `limit` is valid for the call.
+        let read = unsafe { libc::getrlimit(resource, &mut limit) } == 0;
+        (read && limit.rlim_cur != libc::RLIM_INFINITY).then_some(limit.rlim_cur)
     }
 }
 
@@ -805,6 +839,10 @@ pub struct Probe {
     pub open_descriptors: Vec<i32>,
     /// The Landlock ABI the child confined itself with, on Linux, if the kernel has Landlock.
     pub landlock_abi: Option<u32>,
+    /// The address space the child may map, in bytes, on Linux (`RLIMIT_AS`).
+    pub address_space_limit: Option<u64>,
+    /// An anonymous mapping of one page more than that limit failed, on Linux.
+    pub address_space_denied: Option<bool>,
 }
 
 /// The open file descriptors from 3 up to [`CLOSE_UP_TO`].
@@ -1025,6 +1063,39 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>, other: Option<
     let landlock_abi = CONFINED.get().and_then(|a| a.landlock_abi);
     #[cfg(not(target_os = "linux"))]
     let landlock_abi = None;
+    #[cfg(target_os = "linux")]
+    let (address_space_limit, address_space_denied) = {
+        // The limit as the child read it when it set it, since the system calls it may make now don't include
+        // reading one back.
+        let limit = CONFINED.get().and_then(|a| a.address_space);
+        let denied = limit.map(|limit| {
+            // A mapping past the limit must fail for want of memory, not for want of permission, and a small one
+            // with the same flags must succeed: otherwise the filter, not the limit, refused it.
+            let map = |size: usize| {
+                // SAFETY: an anonymous, private, inaccessible mapping, unmapped at once if it was made.
+                unsafe {
+                    let at = libc::mmap(
+                        std::ptr::null_mut(),
+                        size,
+                        libc::PROT_NONE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                        -1,
+                        0,
+                    );
+                    if at == libc::MAP_FAILED {
+                        Err(io::Error::last_os_error().raw_os_error())
+                    } else {
+                        libc::munmap(at, size);
+                        Ok(())
+                    }
+                }
+            };
+            map(4096).is_ok() && map(limit as usize + 4096) == Err(Some(libc::ENOMEM))
+        });
+        (limit, denied)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (address_space_limit, address_space_denied) = (None, None);
     Probe {
         network_denied,
         unix_socket_denied,
@@ -1038,6 +1109,8 @@ pub fn probe(readable: Option<&Path>, unix_socket: Option<&Path>, other: Option<
         process_args_denied,
         open_descriptors,
         landlock_abi,
+        address_space_limit,
+        address_space_denied,
     }
 }
 
@@ -1051,7 +1124,8 @@ pub fn probe_report(args: &[String]) -> String {
         "{{\"network_denied\":{},\"unix_socket_denied\":{},\"file_write_denied\":{},\"file_read_denied\":{},\
          \"process_denied\":{},\"signal_denied\":{},\"process_info_denied\":{},\"iokit_denied\":{},\
          \"process_list_denied\":{},\"process_args_denied\":{},\
-         \"open_descriptors\":{:?},\"landlock_abi\":{}}}",
+         \"open_descriptors\":{:?},\"landlock_abi\":{},\"address_space_limit\":{},\
+         \"address_space_denied\":{}}}",
         p.network_denied,
         flag(p.unix_socket_denied),
         p.file_write_denied,
@@ -1064,5 +1138,8 @@ pub fn probe_report(args: &[String]) -> String {
         p.process_args_denied,
         p.open_descriptors,
         p.landlock_abi.map_or("null".to_owned(), |a| a.to_string()),
+        p.address_space_limit
+            .map_or("null".to_owned(), |a| a.to_string()),
+        flag(p.address_space_denied),
     )
 }

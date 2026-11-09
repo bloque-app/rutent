@@ -288,3 +288,55 @@ fn a_pending_release_leaves_the_running_version_in_force_across_a_restart() {
         );
     }
 }
+
+// verifies: REQ-MDL-11, NFR-3
+#[test]
+fn restarts_do_not_grow_platform_memory() {
+    const CAP: usize = 3;
+    for language in languages().into_iter().take(1) {
+        let mut binding = binding("reserve");
+        binding.set_measurement_cap(CAP);
+        binding.set_stderr_capacity(CAP);
+        let providers: Vec<String> = (0..5)
+            .map(|n| format!("restarted-{language}-{n}"))
+            .collect();
+        for provider in &providers {
+            install(
+                &mut binding,
+                &spec(provider, "1.0.0", Vec::new(), true),
+                &language,
+                "reserve",
+                &[],
+            );
+        }
+        // Many more restarts than anything platform-side may keep a trace of.
+        for round in 0..6 {
+            for provider in &providers {
+                assert!(binding.restart(provider), "{provider} didn't restart");
+            }
+            assert!(
+                answers_as(&mut binding, &providers[0], "1.0.0", round + 1),
+                "a restarted provider stopped answering"
+            );
+        }
+        let measurements = &binding.measurements;
+        assert_eq!(
+            measurements.starts.len(),
+            CAP,
+            "the starts it keeps aren't the newest {CAP} of {}",
+            providers.len() * 7
+        );
+        assert_eq!(measurements.compiles.len(), CAP);
+        assert!(binding.stderrs().len() <= CAP);
+        // Each restart's process left nothing behind: one working directory per process still running.
+        let directories = std::fs::read_dir(binding.workdir())
+            .expect("the platform's work directory")
+            .count();
+        assert_eq!(
+            directories,
+            binding.processes().len(),
+            "a restart left a working directory, or a process, behind"
+        );
+        assert_eq!(binding.processes().len(), providers.len());
+    }
+}

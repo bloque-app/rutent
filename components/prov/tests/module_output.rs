@@ -9,7 +9,7 @@ use common::Probe;
 use common::{answers_as, binding, install, spec, withdrawal};
 use rutent_conformance::boundary::{Handled, ModuleBinding, PlatformRefusal};
 use rutent_prov::module::children::{CompileError, ProviderProcess, Stderrs, compile};
-use rutent_prov::module::platform::OPERATION_DEADLINE;
+use rutent_prov::module::platform::{COMPILE_DEADLINE, OPERATION_DEADLINE};
 use rutent_prov::module::wire::sha256;
 
 const RUST: &str = "rs";
@@ -171,6 +171,7 @@ fn an_imports_name_never_appears_in_the_reason_admission_gives() {
         &read("hostile-canary.wasm"),
         &read("rs-reserve-outside.wasm"),
         &stderrs,
+        COMPILE_DEADLINE,
     );
     let Err(CompileError::Refused {
         disallowed_import,
@@ -184,7 +185,7 @@ fn an_imports_name_never_appears_in_the_reason_admission_gives() {
     assert!(!why.contains(NAMED), "the import's name is in: {why}");
     // The operator can still find which import it was, by its place among the part's imports.
     assert!(why.contains("import #"), "no index in: {why}");
-    for stderr in stderrs.lock().expect("a lock").iter() {
+    for stderr in stderrs.lock().expect("a lock").entries().iter() {
         let text = String::from_utf8_lossy(&stderr.bytes);
         assert!(
             !text.contains(NAMED),
@@ -229,7 +230,7 @@ fn a_start_error_the_guest_wrote_never_appears_in_why_the_release_did_not_start(
         "refused for another reason: {why}"
     );
     let mut seen = vec![why, format!("{:?}", binding.take_events())];
-    for stderr in stderrs.lock().expect("a lock").iter() {
+    for stderr in stderrs.lock().expect("a lock").entries().iter() {
         seen.push(String::from_utf8_lossy(&stderr.bytes).into_owned());
     }
     for stderr in binding.stderrs() {
