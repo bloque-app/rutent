@@ -37,16 +37,17 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **The token.** `KvConfig` holds one static token per resolver. How a token is obtained and renewed (an auth
   method, a lease) is the deployment's and `T-014-02`'s; a resolver gets a new one by being rebuilt with a new
   configuration, which is not a module release.
-- **Recorded responses.** Vault's fixtures under `components/prov/tests/fixtures/proxy/vault/` were recorded from a
-  Vault 2.0.3 dev server. No OpenBao image was at hand, so OpenBao's fixtures are written from its documented KV
-  version 2 answer, the same shape as Vault's; they leave out Vault's `mount_type` field, so the parser is shown
-  not to depend on it. They should be re-recorded from an
-  OpenBao server when one is available.
+- **Recorded responses.** The fixtures under `components/prov/tests/fixtures/proxy/` were recorded from dev-mode
+  servers with KV version 2 at `secret`. Vault's came from image `hashicorp/vault:2.0.3`, which reports version
+  2.0.3. OpenBao's came from image `openbao/openbao:2.4.1`, which reports version 2.4.1, at digest
+  `sha256:597f62847dd382382056a1d6704d50465908c2040038c4611832a23269a67112`. The fixtures are bodies only, with no
+  headers, and hold no token. Each answer has the same shape on both servers. Vault adds a `mount_type` field and
+  OpenBao doesn't, and the parser reads neither.
 - **Gap: Done-when says "against both servers in CI".** The tests here need no server: they run both resolvers on
   recorded responses through a fake transport. `live_servers_resolve_and_rotate_a_secret_when_configured` runs
   against real servers only when `RUTENT_LIVE_OPENBAO_ADDR`/`_TOKEN` or `RUTENT_LIVE_VAULT_ADDR`/`_TOKEN` are set,
-  and skips otherwise. It passed locally against a Vault 2.0.3 dev server; it hasn't been run against OpenBao. CI
-  doesn't start either server yet. That needs a job in `.github/workflows/`, outside this task's files, with each
+  and skips otherwise. It passed locally against both dev servers above, each run in its own container. CI doesn't
+  start either server yet. That needs a job in `.github/workflows/`, outside this task's files, with each
   server run apart as a service container, so Vault enters no lockfile. It is left to the orchestrating session.
 - **Gap: no production transport.** This task ships the `Transport` trait, not an HTTPS client. The live test
   carries its own plain-HTTP transport, for a loopback dev server only. The production transport has to verify

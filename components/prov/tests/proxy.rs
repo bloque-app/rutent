@@ -1,10 +1,9 @@
 //! Tests of the credential proxy's resolvers (`T-014-01`): resolve-by-name at call time against OpenBao and Vault,
 //! with credentials keyed by provider (`DEC-9`, ADR-0004).
 //!
-//! No server runs here. Each resolver talks to a fake [`Transport`] that answers with recorded responses: Vault's
-//! were recorded from a Vault 2.0.3 dev server, OpenBao's are written from its documented KV v2 answer, which has
-//! the same shape. `live_servers_resolve_and_rotate_a_secret_when_configured` runs against real servers only when
-//! their addresses are set in the environment.
+//! No server runs here. Each resolver talks to a fake [`Transport`] that answers with recorded responses, from a
+//! Vault 2.0.3 dev server and an OpenBao 2.4.1 dev server. `live_servers_resolve_and_rotate_a_secret_when_configured`
+//! runs against real servers only when their addresses are set in the environment.
 
 use std::collections::HashMap;
 use std::path::Path;
