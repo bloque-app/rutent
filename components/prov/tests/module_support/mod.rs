@@ -24,7 +24,11 @@ use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
     Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
 };
-use rutent_contracts::provider_role::{Operation, Signature, SignatureScheme, Statement};
+use rutent_contracts::provider_role::{
+    Operation, PublicKey, Signature, SignatureScheme, Statement,
+};
+use rutent_prov::catalogue::Instant;
+use rutent_prov::module::admission::{ReleaseJudge, Unverified};
 use rutent_prov::module::children::Paths;
 use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types;
@@ -254,13 +258,48 @@ impl WasmBinding {
         if !self.languages.iter().any(|l| l == language) {
             return None;
         }
-        let text = program::encode(spec, probes);
-        Some(Parts {
-            sandboxed: program::patch(&self.template(language, category, "sandboxed")?, &text)?,
-            outside: program::patch(&self.template(language, category, "outside")?, &text)?,
-        })
+        build_standin(spec, language, category, probes)
     }
 }
+
+/// Builds the module `spec` describes from `category`'s stand-in in `language`, with the tests' own `probes` after
+/// its steps.
+pub fn build_standin(
+    spec: &ModuleSpec,
+    language: &str,
+    category: &str,
+    probes: &[Probe],
+) -> Option<Parts<Vec<u8>>> {
+    let template = |part: &str| {
+        std::fs::read(standins().join(format!("{language}-{category}-{part}.wasm"))).ok()
+    };
+    let text = program::encode(spec, probes);
+    Some(Parts {
+        sandboxed: program::patch(&template("sandboxed")?, &text)?,
+        outside: program::patch(&template("outside")?, &text)?,
+    })
+}
+
+/// The module-boundary suite's judge of release assertions: it trusts every one.
+///
+/// The suite signs its assertions with placeholders, and its declarations name a placeholder statement key that is
+/// no point of the curve, so no advertisement the catalogue would accept can list it. Signed admission, against
+/// the catalogue, is tested apart (`module_admission_signed.rs`); the platform has no judge of its own, so nothing
+/// but a test can pass this one.
+pub struct TrustsEveryAssertion;
+
+impl ReleaseJudge for TrustsEveryAssertion {
+    fn judge(&self, _: &[u8], _: &AdmissionArtefact, _: Instant) -> Result<(), Unverified> {
+        Ok(())
+    }
+
+    fn record_statement_key(&mut self, _: &PublicKey) -> Result<(), Unverified> {
+        Ok(())
+    }
+}
+
+/// The clock the suite's admissions are judged at, which the judge above ignores.
+const SUITE_AT: Instant = Instant(1_794_009_600);
 
 impl ModuleBinding for WasmBinding {
     fn format(&self) -> String {
@@ -280,14 +319,29 @@ impl ModuleBinding for WasmBinding {
         assertion: &Statement<ReleaseAssertion>,
         binaries: &Parts<Vec<u8>>,
     ) -> suite::Admitted {
-        match self.platform.admit(assertion, binaries) {
+        // The assertion as a provider sends it: its bytes.
+        let received = serde_json::to_vec(assertion).expect("the suite's assertion is JSON");
+        match self
+            .platform
+            .admit(&received, binaries, &mut TrustsEveryAssertion, SUITE_AT)
+        {
             types::Admitted::Artefact(artefact) => suite::Admitted::Artefact(artefact),
             types::Admitted::Refused(refusal) => suite::Admitted::Refused(refusal),
+            types::Admitted::Unverified(why) => {
+                unreachable!("the suite's judge trusts every assertion, yet: {why:?}")
+            }
         }
     }
 
     fn accept(&mut self, provider: &str, version: &str, by: &str) -> Option<AdmissionArtefact> {
-        self.platform.accept(provider, version, by)
+        // The suite accepts by version; the platform by the assertion's digest, which the waiting release names.
+        let digest = self
+            .platform
+            .pending(provider)
+            .filter(|a| a.declaration().version.as_str() == version)?
+            .assertion_digest
+            .clone();
+        self.platform.accept(provider, &digest, by)
     }
 
     fn active_version(&self, provider: &str) -> Option<String> {
@@ -528,8 +582,14 @@ pub fn withdrawal(provider: &str, n: usize) -> Statement<Operation> {
 }
 
 /// Whether the provider's module answers a withdrawal as `version`, by its evidence reference.
-pub fn answers_as(binding: &mut WasmBinding, provider: &str, version: &str, n: usize) -> bool {
-    let Handled::Answered(result) = binding.handle(provider, &withdrawal(provider, n)) else {
+pub fn answers_as(
+    platform: &mut Platform<TestWorld>,
+    provider: &str,
+    version: &str,
+    n: usize,
+) -> bool {
+    let types::Handled::Answered(result) = platform.handle(provider, &withdrawal(provider, n))
+    else {
         return false;
     };
     let expected = format!("{provider}-{version}");

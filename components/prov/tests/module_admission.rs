@@ -133,6 +133,10 @@ fn a_part_importing_anything_beyond_its_parts_interface_is_refused_at_admission(
         matches!(admitted, Admitted::Artefact(_)),
         "the control was refused: {admitted:?}"
     );
+    // Accepted, so the releases below aren't refused for being admitted while it waits.
+    binding
+        .accept(&format!("importer-{language}"), "1.0.0", "test-reviewer")
+        .expect("the control waits for its acceptance");
     let mut cases: Vec<(&str, Parts<Vec<u8>>, PartName)> = vec![
         (
             "the outside part's interface, as the sandboxed part",

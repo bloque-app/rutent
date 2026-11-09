@@ -20,14 +20,16 @@ use rutent_contracts::module_interface::{
     CallOutcome, CallRefusalReason, CallRefused, Capabilities, CrossModuleCall, CrossModuleOutcome,
     Declaration, Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name,
     Nothing, OperationKind, OutboundCallRecord, OutsideOutcome, OutsideRequest, OutsideResponse,
-    PartName, Parts, RefusalReason, Refused, ReleaseAssertion, RouteReference, SPECIAL_PURPOSE,
-    Scheme, SecretLookup, SecretRefusalReason, Time, validate_lookup, widening,
+    PartName, Parts, RefusalReason, Refused, RouteReference, SPECIAL_PURPOSE, Scheme, SecretLookup,
+    SecretRefusalReason, Time, validate_artefact, validate_lookup, validate_release, widening,
 };
 use rutent_contracts::provider_role::{
     Operation, RESULT_SHAPE, ResultBody, Signature, SignatureScheme, Statement,
 };
 use serde_json::Value;
 
+use crate::catalogue::Instant as Clock;
+use crate::module::admission::{self, ReleaseJudge, Unverified};
 use crate::module::children::{
     CompileError, Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
 };
@@ -867,18 +869,78 @@ impl<W: World> Platform<W> {
         self.output_limit = bytes;
     }
 
-    /// Admits a release: the provider's signed assertion and the binaries it received. Each provider's history
-    /// is kept, and a release that needs only an automatic acceptance is started.
+    /// Admits a release: the provider's signed assertion, as the bytes it arrived in, and the binaries it received
+    /// (`REQ-MDL-1`). The assertion is read from those bytes and judged by `judge` at the caller's clock `at`; its
+    /// digest is of those bytes. Every refusal but the compiler's is judged before the admitting compiler runs:
+    /// the assertion, the binaries against the digests it states, their format and size, and a release of the
+    /// provider admitted under that version or waiting for an acceptance, under any. Each provider's history is
+    /// kept, and a release that needs only an automatic acceptance is started.
     pub fn admit(
         &mut self,
-        assertion: &Statement<ReleaseAssertion>,
+        received_assertion: &[u8],
         binaries: &Parts<Vec<u8>>,
+        judge: &mut impl ReleaseJudge,
+        at: Clock,
     ) -> Admitted {
+        let assertion = match admission::read(received_assertion, &self.envelope) {
+            Ok(assertion) => assertion,
+            Err(why) => return Admitted::Unverified(why),
+        };
         let received = Parts {
             sandboxed: digest(&sha256(&binaries.sandboxed)),
             outside: digest(&sha256(&binaries.outside)),
         };
-        let asserted = &assertion.statement.parts;
+        let declaration = assertion.statement.declaration.clone();
+        let provider = declaration.provider.as_str().to_owned();
+        let version = declaration.version.as_str().to_owned();
+        let previous = self
+            .providers
+            .get(&provider)
+            .and_then(|slot| slot.accepted.last().cloned());
+        let widenings = previous
+            .as_ref()
+            .map(|p| widening(p.declaration(), &declaration))
+            .unwrap_or_default();
+        let fresh = previous.is_none() || !widenings.is_empty();
+        let history = previous
+            .as_ref()
+            .map(|p| {
+                let mut history = p.history.clone();
+                history.extend(p.as_history_entry());
+                history
+            })
+            .unwrap_or_default();
+        let Some(platform_version) = Identifier::new(engine::platform_version()) else {
+            return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+        };
+        // The artefact as it will be recorded, its machine code filled in once compiled.
+        let mut artefact = AdmissionArtefact {
+            assertion,
+            assertion_digest: digest(&sha256(received_assertion)),
+            received: received.clone(),
+            build: Build {
+                platform_version,
+                machine_code: received.clone(),
+            },
+            history,
+            capabilities: Capabilities {
+                compared_with: previous.as_ref().map(|p| p.declaration().version.clone()),
+                widenings,
+            },
+            acceptance: Acceptance {
+                required: if fresh {
+                    AcceptanceMode::Fresh
+                } else {
+                    AcceptanceMode::Automatic
+                },
+                accepted: None,
+            },
+        };
+        // Who vouches for it: the signature and the keys, against the advertisement the judge accepted.
+        if let Err(why) = judge.judge(received_assertion, &artefact, at) {
+            return Admitted::Unverified(why);
+        }
+        let asserted = &artefact.assertion.statement.parts;
         if received.sandboxed != asserted.sandboxed.digest {
             return Admitted::Refused(AdmissionRefusal::PartAltered(PartName::Sandboxed));
         }
@@ -895,23 +957,26 @@ impl<W: World> Platform<W> {
             return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
         }
         // A version already admitted, accepted or waiting, is never admitted again: its machine code and artefact
-        // stay what they are (`AdmissionRefusal::VersionAlreadyAdmitted`).
-        let (provider, version) = (
-            assertion.statement.declaration.provider.as_str(),
-            assertion.statement.declaration.version.as_str(),
-        );
-        if let Some(slot) = self.providers.get(provider) {
+        // stay what they are. While a release waits for its acceptance, no other is admitted, under any version:
+        // the one waiting is what its acceptance is given to (`AdmissionRefusal::VersionAlreadyAdmitted`).
+        if let Some(slot) = self.providers.get(&provider) {
             let accepted = slot
                 .accepted
                 .iter()
                 .any(|a| a.declaration().version.as_str() == version);
-            let pending = slot
-                .pending
-                .as_ref()
-                .is_some_and(|(a, _)| a.declaration().version.as_str() == version);
-            if accepted || pending {
+            if accepted || slot.pending.is_some() {
                 return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted);
             }
+        }
+        // The contract's rules on the release, and against the release it follows: an assertion signed with a
+        // statement key an earlier release declared is refused (`THR-4`).
+        if let Err(violations) = validate_artefact(&artefact) {
+            return Admitted::Unverified(Unverified::Release(violations));
+        }
+        if let Some(previous) = &previous
+            && let Err(violations) = validate_release(previous, &artefact)
+        {
+            return Admitted::Unverified(Unverified::Release(violations));
         }
         let machine = match compile(
             &self.paths,
@@ -940,59 +1005,20 @@ impl<W: World> Platform<W> {
             [binaries.sandboxed.len(), binaries.outside.len()],
             [machine.sandboxed.len(), machine.outside.len()],
         ));
-        let declaration = assertion.statement.declaration.clone();
-        let provider = declaration.provider.as_str().to_owned();
-        let version = declaration.version.as_str().to_owned();
-        let previous = self
-            .providers
-            .get(&provider)
-            .and_then(|slot| slot.accepted.last().cloned());
-        let widenings = previous
-            .as_ref()
-            .map(|p| widening(p.declaration(), &declaration))
-            .unwrap_or_default();
-        let fresh = previous.is_none() || !widenings.is_empty();
-        let history = previous
-            .as_ref()
-            .map(|p| {
-                let mut history = p.history.clone();
-                history.extend(p.as_history_entry());
-                history
-            })
-            .unwrap_or_default();
-        let assertion_bytes = serde_json::to_vec(assertion).unwrap_or_default();
-        let accepted = (!fresh).then(|| Accepted {
-            by: None,
-            at: self.now(),
-        });
-        let Some(platform_version) = Identifier::new(engine::platform_version()) else {
-            return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+        artefact.build.machine_code = Parts {
+            sandboxed: digest(&sha256(&machine.sandboxed)),
+            outside: digest(&sha256(&machine.outside)),
         };
-        let artefact = AdmissionArtefact {
-            assertion: assertion.clone(),
-            assertion_digest: digest(&sha256(&assertion_bytes)),
-            received,
-            build: Build {
-                platform_version,
-                machine_code: Parts {
-                    sandboxed: digest(&sha256(&machine.sandboxed)),
-                    outside: digest(&sha256(&machine.outside)),
-                },
-            },
-            history,
-            capabilities: Capabilities {
-                compared_with: previous.as_ref().map(|p| p.declaration().version.clone()),
-                widenings,
-            },
-            acceptance: Acceptance {
-                required: if fresh {
-                    AcceptanceMode::Fresh
-                } else {
-                    AcceptanceMode::Automatic
-                },
-                accepted,
-            },
-        };
+        // From now on the declared statement key is a statements key everywhere (`THR-4`).
+        if let Err(why) = judge.record_statement_key(&declaration.outside.statement_key) {
+            return Admitted::Unverified(why);
+        }
+        if !fresh {
+            artefact.acceptance.accepted = Some(Accepted {
+                by: None,
+                at: self.now(),
+            });
+        }
         let slot = self.providers.entry(provider.clone()).or_default();
         if fresh {
             slot.pending = Some((artefact.clone(), machine));
@@ -1004,24 +1030,44 @@ impl<W: World> Platform<W> {
         Admitted::Artefact(Box::new(artefact))
     }
 
-    /// Gives a fresh acceptance, by `by`, to a provider's release that waits for one, and starts it. The accepted
-    /// artefact, or `None` if no such release waits.
-    pub fn accept(&mut self, provider: &str, version: &str, by: &str) -> Option<AdmissionArtefact> {
+    /// Gives a fresh acceptance, by `by`, to the provider's release that waits for one, and starts it. The
+    /// acceptance is of one assertion: `assertion_digest` must be the waiting artefact's, the digest of its
+    /// assertion as received (`REQ-MDL-1`). The accepted artefact, or `None` if no release waits under that digest
+    /// or `by` names no one; the waiting release then stays as it was.
+    pub fn accept(
+        &mut self,
+        provider: &str,
+        assertion_digest: &Digest,
+        by: &str,
+    ) -> Option<AdmissionArtefact> {
+        let by = Identifier::new(by)?;
+        let waits = self
+            .providers
+            .get(provider)?
+            .pending
+            .as_ref()
+            .is_some_and(|(a, _)| &a.assertion_digest == assertion_digest);
+        if !waits {
+            return None;
+        }
         let at = self.now();
         let slot = self.providers.get_mut(provider)?;
         let (mut artefact, machine) = slot.pending.take()?;
-        if artefact.declaration().version.as_str() != version {
-            slot.pending = Some((artefact, machine));
-            return None;
-        }
-        artefact.acceptance.accepted = Some(Accepted {
-            by: Identifier::new(by),
-            at,
-        });
+        let version = artefact.declaration().version.as_str().to_owned();
+        artefact.acceptance.accepted = Some(Accepted { by: Some(by), at });
         slot.accepted.push(artefact.clone());
-        slot.machines.insert(version.to_owned(), machine);
-        self.start(provider, version);
+        slot.machines.insert(version.clone(), machine);
+        self.start(provider, &version);
         Some(artefact)
+    }
+
+    /// The provider's release waiting for a fresh acceptance, if one waits.
+    pub fn pending(&self, provider: &str) -> Option<&AdmissionArtefact> {
+        self.providers
+            .get(provider)?
+            .pending
+            .as_ref()
+            .map(|(a, _)| a)
     }
 
     /// The version of the provider's module now running, if any.
