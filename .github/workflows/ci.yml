@@ -51,6 +51,30 @@ jobs:
         run: cargo build -p rutent-contracts --no-default-features --target riscv32imac-unknown-none-elf
       - name: Test (includes the boundary check)
         run: cargo test --workspace
+      - name: Live resolver test against OpenBao and Vault (T-014-01)
+        # The credential proxy's resolvers against real servers (DEC-9, ADR-0004). Each server runs apart, in its
+        # own dev-mode container pinned by digest, so neither enters a lockfile or licences/RECORD. The tokens are
+        # dev-mode root tokens for these throwaway containers, not secrets. RUTENT_LIVE_REQUIRED makes the test
+        # fail, not skip, if a server isn't configured.
+        run: |
+          docker run -d --name openbao -p 127.0.0.1:8210:8200 -e BAO_DEV_ROOT_TOKEN_ID=ci-dev-token \
+            openbao/openbao:2.4.1@sha256:597f62847dd382382056a1d6704d50465908c2040038c4611832a23269a67112
+          docker run -d --name vault -p 127.0.0.1:8200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=ci-dev-token \
+            hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
+          for port in 8210 8200; do
+            for _ in $(seq 1 30); do
+              curl -sf "http://127.0.0.1:$port/v1/sys/health" >/dev/null && break
+              sleep 1
+            done
+            curl -sf "http://127.0.0.1:$port/v1/sys/health" >/dev/null
+          done
+          cargo test -p rutent-prov --test proxy live_servers_resolve_and_rotate_a_secret_when_configured -- --exact --nocapture
+        env:
+          RUTENT_LIVE_REQUIRED: "1"
+          RUTENT_LIVE_OPENBAO_ADDR: 127.0.0.1:8210
+          RUTENT_LIVE_OPENBAO_TOKEN: ci-dev-token
+          RUTENT_LIVE_VAULT_ADDR: 127.0.0.1:8200
+          RUTENT_LIVE_VAULT_TOKEN: ci-dev-token
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Format

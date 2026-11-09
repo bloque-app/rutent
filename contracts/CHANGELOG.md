@@ -25,3 +25,7 @@ directory (see `README.md`).
 - Guard rules from the `M1` security review: a shared file needs this changelog's entry, not a contract's bump; a root
   `Cargo.lock` change that moves a package the crate reaches needs every contract's bump; a changelog entry naming a
   `DEC-*` that `PLAN.md` does not define fails. (DEC-4, DEC-20, T-010-02)
+- The contract changes `M1` routed to `M2`, one bump each: provider-role 2.3.0 (one RFC 8785 canonical JSON
+  encoder, `provider_role::canonical`) and 2.4.0 (a signed statement's bytes as received, for the verifier);
+  module-interface 2.2.0 (`validate_call_against` and `undeclared_kind`), 2.3.0 (closer refusal reasons) and 3.0.0
+  (`delivered` only when the callee answered). No file shared by the contracts changed. (DEC-4, DEC-20, T-010-03)

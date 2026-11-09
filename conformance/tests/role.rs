@@ -3,18 +3,22 @@
 use std::collections::BTreeSet;
 
 use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
+use std::cell::RefCell;
+
 use rutent_conformance::role::{
-    Check, DeferredVerifier, Exercised, Report, RoleHarness, SignatureVerifier, SuiteContext,
-    Verification, WithoutHooks, run_role_suite,
+    Check, DeferredVerifier, Exercised, Received, Report, RoleHarness, RoleProvider,
+    SignatureVerifier, SuiteContext, Verification, WithoutHooks, run_role_suite,
 };
-use rutent_contracts::provider_role::Signature;
+use rutent_contracts::provider_role::{
+    Advertisement, Operation, ResultBody, Signature, Statement, signing_input, to_canonical,
+};
 
 fn run(provider: &mut dyn RoleHarness) -> Report {
     run_role_suite(provider, &SuiteContext::default(), &DeferredVerifier)
 }
 
-/// Signatures are deferred until `M2`, so a stand-in passes but for that one check, and only a verifier that
-/// concludes lets it pass whole.
+/// With no verifier, signatures are deferred, so a stand-in passes but for that one check, and only a verifier
+/// that concludes lets it pass whole.
 fn assert_passes(name: &str, provider: &dyn Fn() -> Box<dyn RoleHarness>) {
     let report = run(provider().as_mut());
     assert!(
@@ -159,7 +163,7 @@ fn stand_in_that_refuses_everything_fails_on_coverage_alone() {
 struct Accepting;
 
 impl SignatureVerifier for Accepting {
-    fn verify(&self, _maker: &str, _signature: &Signature) -> Verification {
+    fn verify(&self, _maker: &str, _signature: &Signature, _received: &[u8]) -> Verification {
         Verification::Verified
     }
 }
@@ -168,7 +172,7 @@ impl SignatureVerifier for Accepting {
 struct Rejecting;
 
 impl SignatureVerifier for Rejecting {
-    fn verify(&self, _maker: &str, _signature: &Signature) -> Verification {
+    fn verify(&self, _maker: &str, _signature: &Signature, _received: &[u8]) -> Verification {
         Verification::Failed("rejected".to_owned())
     }
 }
@@ -408,4 +412,138 @@ fn stand_in_with_internal_steps_passes() {
         !ramp.internal_steps().is_empty(),
         "the ramp took no internal steps"
     );
+}
+
+/// A provider that sends a stand-in's statements pretty-printed, with their members reversed: other bytes than a
+/// re-serialisation of the parsed statement would give, with the same signing input.
+struct Reformatting<P>(P);
+
+fn reformat<T: serde::Serialize + serde::de::DeserializeOwned>(sent: &Received<T>) -> Received<T> {
+    // Write reversed objects by hand, so the text is neither sorted nor `serde_json`'s own.
+    fn write(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(map) => {
+                out.push_str("{ ");
+                for (index, (name, value)) in map.iter().rev().enumerate() {
+                    if index > 0 {
+                        out.push_str(",\n  ");
+                    }
+                    out.push_str(&serde_json::to_string(name).expect("json"));
+                    out.push_str(" : ");
+                    write(value, out);
+                }
+                out.push_str(" }");
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let value: serde_json::Value = serde_json::from_slice(sent.bytes()).expect("json");
+    let mut text = String::new();
+    write(&value, &mut text);
+    Received::from_bytes(text.into_bytes()).expect("the reformatted statement reads back")
+}
+
+impl<P: RoleProvider> RoleProvider for Reformatting<P> {
+    fn advertisement(&self) -> Received<Advertisement> {
+        reformat(&self.0.advertisement())
+    }
+
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
+        reformat(&self.0.handle(operation))
+    }
+
+    fn state(&self) -> String {
+        self.0.state()
+    }
+
+    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
+        self.0.status(transaction).map(|r| reformat(&r))
+    }
+}
+
+impl<P: RoleHarness> RoleHarness for Reformatting<P> {
+    fn force_outcome_unknown(&mut self) -> bool {
+        self.0.force_outcome_unknown()
+    }
+
+    fn force_failure(&mut self) -> bool {
+        self.0.force_failure()
+    }
+
+    fn credit_reversal(&mut self, segment: &str, node: &str, asset: &str, amount: &str) -> bool {
+        self.0.credit_reversal(segment, node, asset, amount)
+    }
+}
+
+/// A verifier that keeps every statement it is handed, as received, with the signature's maker.
+#[derive(Default)]
+struct Recording(RefCell<Vec<(String, Vec<u8>)>>);
+
+impl SignatureVerifier for Recording {
+    fn verify(&self, maker: &str, _signature: &Signature, received: &[u8]) -> Verification {
+        self.0
+            .borrow_mut()
+            .push((maker.to_owned(), received.to_vec()));
+        Verification::Verified
+    }
+}
+
+// verifies: REQ-PRT-1, REQ-CAT-8
+#[test]
+fn verifier_is_given_each_statement_as_received() {
+    let context = SuiteContext::default();
+    for (name, mut provider) in [
+        (
+            "the verifier",
+            Box::new(Reformatting(Verifier::new(&context))) as Box<dyn RoleHarness>,
+        ),
+        (
+            "the reserve",
+            Box::new(Reformatting(Reserve::new(&context))),
+        ),
+    ] {
+        let recording = Recording::default();
+        let report = run_role_suite(provider.as_mut(), &context, &recording);
+        assert!(report.passed(), "{name}: {:?}", report.findings);
+        let handed = recording.0.into_inner();
+        assert!(
+            !handed.is_empty(),
+            "{name}: nothing was handed to the verifier"
+        );
+        let mut nested = 0;
+        for (maker, received) in &handed {
+            let text = std::str::from_utf8(received).expect("UTF-8");
+            // The bytes are the provider's own, reformatted, never the suite's re-serialisation.
+            assert!(text.starts_with("{ "), "{name}: {maker} handed {text:.60}");
+            let value: serde_json::Value = serde_json::from_slice(received).expect("json");
+            let mut unsigned = value.clone();
+            unsigned["signature"]
+                .as_object_mut()
+                .expect("a signature")
+                .remove("value");
+            assert_eq!(
+                signing_input(received),
+                to_canonical(&unsigned),
+                "{name}: the signing input of what {maker} sent"
+            );
+            nested += usize::from(
+                value["shape"] != "urn:rutent:provider-role:result"
+                    && value["shape"] != "urn:rutent:provider-role:advertisement",
+            );
+        }
+        assert!(
+            nested > 0,
+            "{name}: no nested statement was handed over as its own text"
+        );
+    }
 }
