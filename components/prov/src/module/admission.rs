@@ -2,7 +2,8 @@
 //! in, the judge of a release assertion, and the catalogue as that judge.
 //!
 //! The platform admits a release only on the word of a [`ReleaseJudge`], and has none of its own: every
-//! admission names one. The production judge is the [`Catalogue`], which holds each provider's accepted
+//! admission names one, and the trait is sealed (`T-010-10`), so the only judge there is, in production and in
+//! tests, is the [`Catalogue`], which holds each provider's accepted
 //! advertisements and the key history behind them (`T-012-02`). It judges an assertion, given as the bytes it
 //! arrived in, by:
 //!
@@ -60,9 +61,39 @@ pub enum Unverified {
     StatementKey(CatalogueError),
 }
 
-/// Who vouches for a release's assertion. The platform asks it before it reads the binaries, and records the
-/// release's statement key with it once the release is admitted.
-pub trait ReleaseJudge {
+/// Who may vouch for a release's assertion: the [`Catalogue`], and no one else. The trait is sealed, so a crate
+/// can't write a judge that trusts every assertion (`T-010-10`; `REQ-MDL-1`, `THR-4`): the platform asks the
+/// catalogue's verifier, which checks each assertion's signature over the contract's signing input, and tests
+/// bring their own catalogue, with the keys and advertisements they need.
+///
+/// The platform asks it before it reads the binaries, and records the release's statement key with it once the
+/// release is admitted.
+///
+/// ```compile_fail,E0277
+/// use rutent_prov::catalogue::Instant;
+/// use rutent_prov::module::admission::{ReleaseJudge, Unverified};
+///
+/// struct TrustsEveryAssertion;
+///
+/// impl ReleaseJudge for TrustsEveryAssertion {
+///     fn judge(
+///         &self,
+///         _: &[u8],
+///         _: &rutent_contracts::module_interface::AdmissionArtefact,
+///         _: Instant,
+///     ) -> Result<(), Unverified> {
+///         Ok(())
+///     }
+///
+///     fn record_statement_key(
+///         &mut self,
+///         _: &rutent_contracts::provider_role::PublicKey,
+///     ) -> Result<(), Unverified> {
+///         Ok(())
+///     }
+/// }
+/// ```
+pub trait ReleaseJudge: sealed::Sealed {
     /// Judges the assertion of `artefact`, which the platform read from `received`, the assertion's bytes as they
     /// arrived, at the caller's clock `at`. `artefact`'s build is not yet filled in.
     fn judge(
@@ -74,6 +105,13 @@ pub trait ReleaseJudge {
 
     /// Records the statement key an admitted release declared.
     fn record_statement_key(&mut self, key: &PublicKey) -> Result<(), Unverified>;
+}
+
+/// The seal: only the catalogue implements it, and it can't be named outside this module.
+mod sealed {
+    pub trait Sealed {}
+
+    impl Sealed for crate::catalogue::Catalogue {}
 }
 
 impl ReleaseJudge for Catalogue {

@@ -23,7 +23,8 @@ use rutent_contracts::module_interface::{
     Widening, validate_lookup, widening,
 };
 use rutent_contracts::provider_role::{
-    Operation, RESULT_SHAPE, ResultBody, Signature, SignatureScheme, Statement,
+    Advertisement, KeyPurpose, Operation, PublicKey, RESULT_SHAPE, ResultBody, Signature,
+    SignatureScheme, Statement,
 };
 use serde_json::{Value, json};
 
@@ -33,6 +34,7 @@ use super::{
     LookupOutcome, ModuleBinding, ModuleSpec, Output, PlatformRefusal, ProcessId, StateEvent, Step,
 };
 use crate::role::placeholder_signature;
+use crate::signing;
 
 /// The platform version the double says made its machine code.
 pub const PLATFORM_VERSION: &str = "reference-double-0.1.0";
@@ -66,6 +68,7 @@ struct Breaks {
     refuses_at_the_limit: bool,
     pads_short: bool,
     skips_digest_check: bool,
+    trusts_every_assertion: bool,
     checks_only_the_outside_digest: bool,
     accepts_widening_automatically: bool,
     ignores_secret_widenings: bool,
@@ -93,6 +96,13 @@ struct Slot {
     process: Option<ProcessId>,
 }
 
+/// The keys a provider's advertisement lists, which vouch for its releases.
+#[derive(Debug, Clone)]
+struct Listed {
+    advertising: PublicKey,
+    statements: PublicKey,
+}
+
 /// An in-process format binding, correct unless built with one of its breakers.
 #[derive(Debug, Clone)]
 pub struct ReferenceDouble {
@@ -108,6 +118,7 @@ pub struct ReferenceDouble {
     received: BTreeMap<Endpoint, Vec<String>>,
     operations_received: BTreeMap<String, usize>,
     providers: BTreeMap<String, Slot>,
+    advertised: BTreeMap<String, Listed>,
     next_process: ProcessId,
     clock: u32,
     events: Events,
@@ -148,6 +159,7 @@ impl ReferenceDouble {
             received: BTreeMap::new(),
             operations_received: BTreeMap::new(),
             providers: BTreeMap::new(),
+            advertised: BTreeMap::new(),
             next_process: 1000,
             clock: 0,
             events: Events::default(),
@@ -225,6 +237,8 @@ impl ReferenceDouble {
         padding_output_short => pads_short;
         /// It admits binaries whatever their digests.
         skipping_the_digest_check => skips_digest_check;
+        /// It admits a release whatever its assertion's signature, and whichever key signed it.
+        trusting_every_assertion => trusts_every_assertion;
         /// It compares the outside part's digest only.
         checking_only_the_outside_digest => checks_only_the_outside_digest;
         /// It accepts a widening release automatically.
@@ -743,6 +757,9 @@ impl ModuleBinding for ReferenceDouble {
         assertion: &Statement<ReleaseAssertion>,
         binaries: &Parts<Vec<u8>>,
     ) -> Admitted {
+        if !self.breaks.trusts_every_assertion && !self.vouched_for(assertion) {
+            return Admitted::Refused(AdmissionRefusal::AssertionUnverified);
+        }
         let received = Parts {
             sandboxed: digest(&binaries.sandboxed),
             outside: digest(&binaries.outside),
@@ -1050,7 +1067,59 @@ impl ModuleBinding for ReferenceDouble {
     }
 }
 
+impl ReferenceDouble {
+    /// Whether the assertion verifies, strictly, under a key its provider's advertisement lists for advertising,
+    /// and declares a statements key that advertisement lists (`THR-4`).
+    fn vouched_for(&self, assertion: &Statement<ReleaseAssertion>) -> bool {
+        let Some(listed) = self
+            .advertised
+            .get(assertion.statement.declaration.provider.as_str())
+        else {
+            return false;
+        };
+        let received = serde_json::to_vec(assertion).expect("json");
+        signing::verify(&received).is_ok()
+            && assertion.maker == assertion.statement.declaration.provider.as_str()
+            && assertion.signature.key == listed.advertising
+            && assertion.statement.declaration.outside.statement_key == listed.statements
+    }
+}
+
 impl BoundaryHarness for ReferenceDouble {
+    fn list_provider(&mut self, advertisement: &[u8]) -> bool {
+        let Ok(statement) = serde_json::from_slice::<Statement<Advertisement>>(advertisement)
+        else {
+            return false;
+        };
+        if signing::verify(advertisement).is_err() {
+            return false;
+        }
+        let key = |purpose| {
+            statement
+                .statement
+                .keys
+                .iter()
+                .find(|k| k.purpose == purpose)
+                .map(|k| k.public_key.clone())
+        };
+        let (Some(advertising), Some(statements)) =
+            (key(KeyPurpose::Advertising), key(KeyPurpose::Statements))
+        else {
+            return false;
+        };
+        if statement.signature.key != advertising {
+            return false;
+        }
+        self.advertised.insert(
+            statement.statement.provider.clone(),
+            Listed {
+                advertising,
+                statements,
+            },
+        );
+        true
+    }
+
     fn build(&mut self, spec: &ModuleSpec, language: &str) -> Option<Parts<Vec<u8>>> {
         if !self.languages.iter().any(|l| l == language) {
             return None;
@@ -1098,7 +1167,10 @@ impl BoundaryHarness for ReferenceDouble {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::role::{SuiteContext, placeholder_key};
+    use crate::role::SuiteContext;
+    use crate::signing::{
+        advertisement, advertising_key, public_key, sign_statement, statements_key,
+    };
     use rutent_contracts::module_interface::{BinaryFormat, BinaryPart, RELEASE_ASSERTION_SHAPE};
     use rutent_contracts::provider_role::OPERATION_SHAPE;
 
@@ -1115,7 +1187,7 @@ mod tests {
                 "destinations": [],
                 "secrets": [],
                 "calls": [],
-                "statement_key": placeholder_key(1),
+                "statement_key": public_key(&statements_key(PROVIDER)),
             },
         }))
         .expect("a declaration");
@@ -1135,6 +1207,7 @@ mod tests {
     /// Builds `spec` in the double and asks for its admission.
     fn admit(double: &mut ReferenceDouble, spec: &ModuleSpec) -> Admitted {
         let binaries = double.build(spec, "reference-a").expect("built");
+        double.list_provider(&advertisement(PROVIDER, &SuiteContext::default()));
         let part = |bytes: &[u8]| BinaryPart {
             format: BinaryFormat::new(double.format()).expect("a format"),
             digest: Digest {
@@ -1151,7 +1224,7 @@ mod tests {
             made_at: "2026-11-09T00:00:00Z".to_owned(),
             signature: Signature {
                 scheme: SignatureScheme::Ed25519,
-                key: placeholder_key(2),
+                key: public_key(&advertising_key(PROVIDER)),
                 value: placeholder_signature(),
             },
             statement: ReleaseAssertion {
@@ -1162,7 +1235,10 @@ mod tests {
                 },
             },
         };
-        double.admit(&assertion, &binaries)
+        double.admit(
+            &sign_statement(&assertion, &advertising_key(PROVIDER)),
+            &binaries,
+        )
     }
 
     fn withdrawal() -> Statement<Operation> {

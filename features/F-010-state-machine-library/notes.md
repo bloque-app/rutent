@@ -450,3 +450,55 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   (`admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names`) and tagged `DEC-4`.
 - For `T-014-05`, in the F-014 notes: `platform.rs`'s lookup reply sends every reason but `not_found` as
   `"undeclared_secret"`, so `store_unavailable` needs its own arm when `World::secret` changes.
+
+## T-010-10: the conformance suites sign for real
+
+`DEC-20` paths: `conformance/` and, with it, module admission (`components/prov/src/module/admission.rs`, sealed).
+
+- **Keys and signing live in `conformance/src/signing.rs`** (feature `signing`; `test-support` implies it), built on
+  `ed25519-dalek` 2.2.0 with default features off (BSD-3-Clause, already in `licences/RECORD`, so no new line; the
+  licence check passes). Keys are derived from a label and a number through the suite's own SHA-256, so a run is
+  the same everywhere and no random source is needed. The feature is off by default so the role stand-ins the
+  guests compile for `wasm32` stay free of it; `boundary` and `signing` need it. Nothing imports `components/prov`
+  (`DEC-2`).
+- **Boundary suite.** Each provider's declaration names its real statements key; its release assertions are signed
+  with its advertising key over `signing_input`; before a provider's first release the suite hands the binding its
+  signed advertisement through a new `BoundaryHarness::list_provider`. `BoundaryHarness` gains a required method,
+  so `experiments/` bindings (not in the workspace, and still on placeholders) need it if they are revived.
+- **A forged assertion fails the suite.** New fixture `Exercised::ForgedReleaseRefused` (ordinal 41, 42 in all):
+  an assertion signed by a key no advertisement lists, and one altered after it was signed, must each be refused
+  as `AssertionUnverified`, and the same release signed right admitted. A binding that trusts every assertion is
+  flagged by `AdmissionRecordsWhatItAdmits` alone (`ReferenceDouble::trusting_every_assertion`).
+- **Role suite.** `signing::Signing` (moved from `components/prov/tests/role_suite.rs`) signs every statement a
+  stand-in sends, nested ones first, with the key its placeholder stands for; `signing::Ed25519Verifier` verifies
+  strictly. The suite passes with `signatures_deferred == 0` and nothing deferred, and flags a statement signed by
+  another key (`MakerAndKey`) or altered after signing (`SignatureVerifies`).
+- **Reading: what "role suite passes with every statement verified" covers.** The stand-ins sign for real
+  in-process (through `Signing`) and the suite's own verifier checks all of them; through the platform
+  (`module_role.rs`) the role modules' release assertions and advertisements are signed for real and admitted by the
+  catalogue, but the results the platform sends still carry the platform's placeholder signatures, since the
+  platform holds no private key for a statement key. That run keeps `SignatureVerifies` deferred. Result signing
+  is outside this row.
+- **Left alone.** The suites' operation statements still carry the operator's placeholder signature: no platform
+  verifies an operator's statement yet, and the operator key is a deployment's, not a provider's.
+- **Test-first.** The ordinal list, the forged fixture and the double's breaker were built together, so no test ran
+  against a stub; the test that shows the suite failing is the one that runs the trusting double and asserts it is
+  flagged, with both forgeries named. Before this task the same double could not be flagged, as the suite never
+  submitted a signed assertion.
+- **Tests.** `conformance/tests/boundary.rs`: `boundary_suite_refuses_a_release_whose_assertion_is_signed_by_another_key`,
+  and the trusting double in `every_broken_boundary_is_flagged_by_its_own_check_only`.
+  `conformance/tests/role_signed.rs`: `role_suite_passes_with_every_statement_verified` and
+  `role_suite_flags_a_statement_signed_by_another_key_or_altered_after_signing`.
+- **Also in `components/prov/tests/module_boundary.rs`:** the same-named test runs the forged assertion through the
+  Wasm binding and its catalogue, and each category's run must exercise `ForgedReleaseRefused` in both languages.
+  `signing::signed_inside` re-signs only the statements nested in a platform's answer (a verifier's judgement), as
+  the platform signs its own result.
+
+## T-010-10: answering the review
+
+- The bindings under `experiments/` need the `signing` feature of `rutent-conformance` (the `boundary` module is
+  behind it), as well as `list_provider`, if they are revived.
+- CI's build and documentation steps pass `--features rutent-conformance/signing`, so `boundary` and `signing` are
+  built and documented in the existing `ci` job. `signing::signature_bytes` now takes only canonical signatures
+  (`role::is_canonical_signature`), so a final character with unused bits set is rejected.
+- `ReleaseJudge`'s doctest is pinned to `E0277`.
