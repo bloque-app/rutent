@@ -549,3 +549,27 @@ fn path_whose_step_delivers_nothing_before_the_destination_is_recorded_with_its_
         );
     }
 }
+
+// verifies: REQ-AUD-4
+#[test]
+fn path_that_delivers_nothing_where_no_tuple_goes_on_is_still_recorded_with_its_drop_reason() {
+    // As above, but with no `r-eur`: from E's EUR at `n2` no tuple goes on, so the path ends there either way, and
+    // it is still named for delivering nothing.
+    let exact = json!({
+        "fee": fee("1200", "0", "1"),
+        "rate": { "kind": "fixed", "rate": "0.9" },
+        "settlement_seconds": 60,
+    });
+    let mut net = owners_example_with(&exact);
+    net.figures
+        .retain(|f| !["r-eur", "r-eur-price"].contains(&f["figure_id"].as_str().unwrap_or("")));
+    for record in owners_rounds_over(&net) {
+        assert_eq!(
+            on(&record, &["r-thin", "ex-e"]).dropped,
+            Some(DropReason::NothingDelivered {
+                part: 0,
+                operation: 1
+            })
+        );
+    }
+}

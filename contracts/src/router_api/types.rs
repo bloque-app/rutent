@@ -499,9 +499,10 @@ pub enum CeilingScope {
 
 /// Why a candidate was dropped (`REQ-AUD-4`).
 ///
-/// Non-exhaustive since 3.0.0 (`DEC-4`, `T-011-05`): a match outside this crate needs a wildcard arm, so a reason
-/// added later breaks no Rust build. It still widens the schema's `reason` enum, so it is still a contract change
-/// with its own bump, and the router suite pins the reasons it knows.
+/// Non-exhaustive since 3.0.0 (`DEC-4`, `T-011-05`): a match outside this crate needs a wildcard arm, which spares
+/// Rust callers when a reason is added. The contract is language-neutral, and a reader on an older schema rejects a
+/// reason it doesn't know, so a new wire value is still a major under `DEC-4`; the router suite pins the reasons
+/// it knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]

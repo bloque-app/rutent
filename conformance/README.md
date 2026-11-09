@@ -244,8 +244,8 @@ ramp whose fee is above what reaches it and one that keeps all that enters; and 
 
 The suite can't see a candidate a router left out; the cases' expected routes and expected drops catch that on its
 own inputs only. `DROP_REASONS` lists the drop reasons the suite knows, router-api 3.0.0's; `DropReason` is
-`#[non_exhaustive]` from 3.0.0, so a test holds the list to the contract's schema, and a reason added later fails
-it until the suite is reviewed for it. A candidate
+`#[non_exhaustive]` from 3.0.0, which spares Rust callers a broken match, so a test holds the list to the contract's
+schema, and a reason added later (still a major under `DEC-4`) fails it until the suite is reviewed for it. A candidate
 cut short at an operation beyond its price's levels (`beyond_levels`) is recomputed like any other: its fee from
 the price, and nothing out. In a choice round, an accepted answer made before the shortlist round's `taken_at`
 binds nothing, as one past its validity; a refusal or a judgement binds whenever made. The suite reads each

@@ -189,8 +189,9 @@ Recorded since 3.0.0 (ruled by the owner, 2026-11-09, item `aud4-unstateable-can
 with no price is listed up to that operation and dropped as `no_price`, and one through an operation whose fee is
 above what reaches it, as `fee_above_amount`, and one through an operation that delivers nothing short of the
 destination, as `nothing_delivered`, each shaped as `beyond_levels`, so a decision record names every path the
-search reaches that ends anywhere (`REQ-AUD-4`). `DropReason` is `#[non_exhaustive]` from 3.0.0: a reason added later
-breaks no match outside the crate, but it still widens the schema and needs its own bump.
+search reaches that ends anywhere (`REQ-AUD-4`). `DropReason` is `#[non_exhaustive]` from 3.0.0, which spares Rust
+callers a broken match; the contract is language-neutral, though, and a reader on an older schema rejects a reason it
+doesn't know, so a new wire value is still a major under `DEC-4`.
 
 ## Tests
 

@@ -89,6 +89,9 @@ struct Network {
     providers: Vec<String>,
     /// The tuples no operation can state, by id, with the drop reason a path through them must carry.
     unstatable: BTreeMap<String, &'static str>,
+    /// The tuples whose fee takes all that enters: a path through one ends there, a candidate whatever comes
+    /// before it (`nothing_delivered` short of the destination, `no_positive_outcome` at it).
+    drains: BTreeSet<String>,
 }
 
 fn network(draw: &mut Draw, shape: Shape) -> Network {
@@ -110,6 +113,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
     let mut bands = BTreeMap::new();
     let mut stale = BTreeSet::new();
     let mut unstatable = BTreeMap::new();
+    let mut drains = BTreeSet::new();
     let count = 3 + draw.below(7);
     for t in 0..count {
         let id = format!("t{t:02}");
@@ -127,6 +131,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
             fee("1000000000000000000000000", "0", "1")
         } else if shape.unstatable && draw.one_in(6) {
             // All that enters: statable, but nothing comes out.
+            drains.insert(id.clone());
             fee("0", "1", "1")
         } else if shape.priced {
             let mut f = fee(
@@ -253,6 +258,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         bands,
         stale,
         unstatable,
+        drains,
         providers,
     }
 }
@@ -1055,7 +1061,8 @@ fn same_end(end: &End, endpoint: &rutent_contracts::router_api::Endpoint) -> boo
 }
 
 /// Whether, from a path `taken` that ends at `at` with `hops` operations left, no path of the network's tuples can
-/// end in a candidate: none reaches the destination, and none takes a tuple no operation can state. The amounts don't
+/// end in a candidate: none reaches the destination, takes a tuple no operation can state, or takes one whose fee
+/// takes all that enters. The amounts don't
 /// matter here: a step the search walks always gets an operation, and whatever it delivers, it ends in a candidate
 /// at the destination, at a tuple it can't state, or where it delivers nothing; only a path that runs out of tuples
 /// or hops first ends in none.
@@ -1073,7 +1080,7 @@ fn leads_nowhere(
         if from != at || taken.contains(id) {
             return true;
         }
-        if next == to || network.unstatable.contains_key(id) {
+        if next == to || ends_a_path(network, id) {
             return false;
         }
         taken.push(id.clone());
@@ -1081,6 +1088,12 @@ fn leads_nowhere(
         taken.pop();
         nowhere
     })
+}
+
+/// Whether a path through the tuple ends there in a candidate, whatever comes before it: no operation can state
+/// it, or its fee takes all that enters.
+fn ends_a_path(network: &Network, id: &str) -> bool {
+    network.unstatable.contains_key(id) || network.drains.contains(id)
 }
 
 fn end_of(endpoint: &rutent_contracts::router_api::Endpoint, network: &Network) -> Option<End> {
@@ -1159,7 +1172,7 @@ fn every_path_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
                     let mut taken = prefix.clone();
                     taken.push(id.clone());
                     let nowhere = next != &to
-                        && !network.unstatable.contains_key(id)
+                        && !ends_a_path(&network, id)
                         && leads_nowhere(&network, &to, &mut taken, next, hops - prefix.len() - 1);
                     assert!(
                         nowhere,

@@ -15,8 +15,9 @@
   operation doesn't end at the destination, where such a part is `no_positive_outcome`, and its terms are
   recomputed as any operation's. Before, a router left such a path out of the record, which then couldn't say why
   a tuple wasn't used. A new Rust variant breaks an exhaustive match and the schema's `reason` enum grows, so this
-  is a major. `DropReason` is `#[non_exhaustive]` from here, as `Objective` is: a reason added later breaks no
-  match outside the crate, though it still widens the schema and needs its own bump. Two valid fixtures carry the
+  is a major. `DropReason` is `#[non_exhaustive]` from here, as `Objective` is: that spares Rust callers, whose
+  matches need a wildcard arm, but the contract is language-neutral, and a reader on an older schema rejects a
+  reason it doesn't know, so a new wire value is still a major under `DEC-4`. Two valid fixtures carry the
   three reasons; eleven invalid ones break their rules. (DEC-4, DEC-8, DEC-20, T-011-05)
 
 ## 2.1.0

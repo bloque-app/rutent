@@ -157,9 +157,9 @@ impl Part {
 
 impl Candidate {
     /// Checks every part, that a drop reason's indices name an operation of the candidate, that a `beyond_levels`,
-    /// `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives with nothing (stating
-    /// a fee of `0` for `no_price`, its amount in for `fee_above_amount`), and that a candidate isn't outranked by
-    /// itself.
+    /// `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives
+    /// with nothing (stating a fee of `0` for `no_price`, its amount in for `fee_above_amount`), and that a
+    /// candidate isn't outranked by itself.
     pub fn check(&self) -> Result<(), Violation> {
         for part in self.parts.iter() {
             part.check()?;

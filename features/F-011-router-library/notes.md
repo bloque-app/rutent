@@ -333,14 +333,16 @@ items, that a candidate is a path of statable operations only.
   doesn't carry, so the router suite checks it with its own arithmetic (`DEC-5`).
 - **A major, and `#[non_exhaustive]` from here.** A new variant breaks an exhaustive match and the schema's enum
   grows, so router-api is 3.0.0, following module-interface 3.0.0 (`T-010-03`). `DropReason` is now
-  `#[non_exhaustive]`, as `Objective` already is: a reason added later breaks no match outside the crate. It still
-  widens the schema's `reason` enum, so it still needs a contract bump; the router suite's `DROP_REASONS` is held
-  to the schema by a test, so the suite is reviewed for any new reason.
+  `#[non_exhaustive]`, as `Objective` already is, which spares Rust callers a broken match. The contract is
+  language-neutral, though, and a JSON reader on an older schema rejects a reason it doesn't know, so a new wire
+  value is still a major under `DEC-4` (after review, as `T-010-09`'s review found). The router suite's
+  `DROP_REASONS` is held to the schema by a test, so the suite is reviewed for any new reason.
 - **The pin.** No router-api version was pinned in `conformance/`. Rather than an exact `VERSION ==`, which a patch
   bump would break, the suite pins the reasons it knows against the schema's enum, and the major, 3.
-- **Which reason wins.** A path cut short (beyond levels, no price, fee above amount) is dropped for that before
-  any other reason, in the router and in the suite's double: only these three let a part stop short of the
-  destination, so any other reason on such a part would fail the contract.
+- **Which reason wins.** A path cut short (beyond levels, no price, fee above amount, nothing delivered) is dropped
+  for that before any other reason, in the router and in the suite's double: only these four, `beyond_levels`,
+  `no_price`, `fee_above_amount` and `nothing_delivered`, let a part stop short of the destination, so any other
+  reason on such a part would fail the contract.
 - **An unpriced tuple with an answer.** An operation cites one price, so a tuple with none is `no_price` even if a
   usable answer about it were in the snapshot (none is asked for, since no kept candidate takes it). Over a
   priced tuple, a usable answer at the amount binds and the operation is statable; only with none does a fee
@@ -410,3 +412,11 @@ items, that a candidate is a path of statable operations only.
   state (amounts don't matter there: a walked step always ends in a candidate if anything after it can). The
   `UNSTATABLE` shape adds tuples whose fee takes all that enters. Against the router before the fix it failed at
   seed 6 (`t06` reached after `t00`, no candidate); it now also counts more than ten drops of each new reason.
+- **After review (fresh reviewer, 2026-11-09).** The reach property treated the tuples whose fee takes all that
+  enters as ordinary, so a dead-end path through one counted as leading nowhere, and a router omitting its
+  `nothing_delivered` candidate passed. They are now path-ending in `leads_nowhere` and in the check beside it, as
+  the unstatable ones are; against a router with `nothing_delivered` switched off the property now fails at seed 2,
+  not 6. A fixed case joins it, written first and seen failing against that router:
+  `path_that_delivers_nothing_where_no_tuple_goes_on_is_still_recorded_with_its_drop_reason`, the owner's example
+  with E charging exactly what reaches it and no `r-eur`, so nothing goes on from E either way. The router was then
+  restored unchanged.
