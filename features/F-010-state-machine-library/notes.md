@@ -368,3 +368,16 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   `.cargo/config.toml` has one flag for x86_64 Linux, `-C target-cpu=native`, none under `[build]`, and an aarch64
   section with none; so nothing else is lost. The build now checks that before it builds and fails if the file gains
   another flag, so the substitution can't drop one unnoticed.
+
+## T-010-08: the userfaultfd probe's struct sizes (CI runs 42694618063 and 42696178411)
+
+- **Cause.** `ctypes.create_string_buffer(bytes)` allocates one byte more than it is given, for a NUL, so the
+  24-byte `uffdio_api` came back as a 25-byte `.raw` and `struct.unpack("QQQ", ...)` raised. The runner's kernel was
+  fine; the probe's own bug read as "not allowed". Runs `5850eda` and `403705f` both failed there.
+- **Fix.** The probe is now `uffd-probe.py`; every ioctl buffer is built with its exact size (24, 32, 24) and the
+  result read from that size. Exit 0 means write-protect works, 1 means the host does not allow it (EPERM, EACCES,
+  ENOSYS, EINVAL or the feature bit missing), 2 means the probe itself failed on any other errno or any Python
+  exception; `host-check.sh` fails on 2 and says "script error", so a bug can no longer pass for a verdict on the host.
+- **Tests.** `UFFD_PROBE_FAKE` runs the same code against a fake kernel that asserts each ioctl's buffer has its
+  struct's exact size, which the old code fails; four new tests cover success, a refusal and a missing feature bit
+  as 1, an unexpected errno as 2, and `host-check.sh`'s message for a failed probe. Not run on Linux here.

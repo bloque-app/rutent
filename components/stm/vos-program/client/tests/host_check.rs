@@ -114,3 +114,45 @@ fn host_check_without_a_build_fails_for_want_of_a_perf_map() {
     assert!(!output.status.success(), "{}", said(&output));
     assert!(said(&output).contains("perf map"), "{}", said(&output));
 }
+
+/// The userfaultfd probe against a fake kernel that checks the size of every ioctl's struct (`uffd-probe.py`).
+fn probe(mode: &str) -> Output {
+    let probe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../uffd-probe.py");
+    Command::new("python3")
+        .arg(probe)
+        .env("UFFD_PROBE_FAKE", mode)
+        .output()
+        .expect("python3 runs the probe")
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn uffd_probe_passes_on_a_kernel_that_answers_every_ioctl_in_its_exact_struct() {
+    let output = probe("ok");
+    assert_eq!(output.status.code(), Some(0), "{}", said(&output));
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn uffd_probe_reports_not_allowed_for_a_refusal_and_for_a_missing_feature_bit() {
+    for mode in ["eperm", "nofeature"] {
+        let output = probe(mode);
+        assert_eq!(output.status.code(), Some(1), "{mode}: {}", said(&output));
+    }
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn uffd_probe_reports_its_own_error_apart_from_a_host_that_does_not_allow_it() {
+    let output = probe("errno");
+    assert_eq!(output.status.code(), Some(2), "{}", said(&output));
+    assert!(said(&output).contains("SCRIPT ERROR"), "{}", said(&output));
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn host_check_says_a_failed_probe_is_a_script_error_and_still_fails() {
+    let output = check(&[("HOST_CHECK_UFFD", "exit 2")]);
+    assert!(!output.status.success(), "{}", said(&output));
+    assert!(said(&output).contains("script error"), "{}", said(&output));
+}
