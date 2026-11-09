@@ -5,10 +5,10 @@ paths of `DEC-20` that wait for the owner's click, the tag syntax for Rust tests
 2026-11-06 on how construction is integrated and of 2026-11-08 on the branch model. Every brief to an agent carries
 this file in full.
 
-Where this file and `PLAN.md` disagree, this file's owner's rulings
+`PLAN.md` 0.2.0 carries both owner's rulings below
 ([2026-11-06](#the-owners-ruling-of-2026-11-06-construction-autonomy),
-[2026-11-08](#the-owners-ruling-of-2026-11-08-branch-model)) win until `PLAN.md` is amended, and where the two rulings
-differ the later one wins; everywhere else `SPEC.md` and `PLAN.md` decide, and this file never edits them.
+[2026-11-08](#the-owners-ruling-of-2026-11-08-branch-model)) in `DEC-20`, `DEC-22` and `DEC-25`. Where the two rulings
+differ, the later one wins. Everywhere else `SPEC.md` and `PLAN.md` decide, and this file never edits them.
 
 ## What this file changes from Narthex's defaults
 
@@ -31,17 +31,19 @@ The owner gave this ruling in chat on 2026-11-06 and it is recorded on the decis
   locally and do not push.
 - There is **no cap on parallel agents**.
 
-This overrides the per-task pull requests of `PLAN.md` `DEC-20` and the two-helper cap of `DEC-22`, pending an
-amendment to `PLAN.md`. The branch and commit naming below still holds for each task; only the pull request moves up
-to the milestone. The `DEC-20` paths still wait for the owner's click, which now happens on the milestone pull request,
-after a separate security review of those paths.
+This replaced the per-task pull requests of `PLAN.md` `DEC-20` and the two-helper cap of `DEC-22`; `PLAN.md` 0.2.0
+states it. The branch and commit naming below still holds for each task; only the pull request moves up
+to the milestone. The `DEC-20` paths still wait for the owner's click, after a separate security review of those paths.
+This ruling put the click on the milestone pull request; `branch-model` later moved it to the release into `main`.
 
 ## The owner's ruling of 2026-11-08 (`branch-model`)
 
 The owner gave this ruling in chat on 2026-11-08 and it is recorded on the decision form as `branch-model`. It
 replaces the "no agent merges" part of the ruling above:
 
-- Work is developed against **`develop`**. Each milestone pull request targets `develop`, not `main`.
+- Work is developed against **`develop`**. Each milestone pull request targets `develop`, not `main`. `main` stays the
+  repository's default branch (form item `default-branch`, 2026-11-09), so open every pull request with its base set:
+  `gh pr create --base develop`.
 - Review follows [REVIEW-WORKFLOW.md](REVIEW-WORKFLOW.md). An agent may answer a review even when the review was
   posted from the same GitHub account as the pull request.
 - Once the reviewer approves and every check passes, the orchestrating session merges the milestone pull request into
