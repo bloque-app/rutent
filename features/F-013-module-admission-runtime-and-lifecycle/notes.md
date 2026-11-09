@@ -147,3 +147,31 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Signing and the DEC-20 click.** The platform signs results with a placeholder, as the suite does. Admission here
   checks the digests the assertion states, not a signature: that is `T-013-04`, with `T-012-02`'s verifier. This task
   touches module admission, a `DEC-20` path, so the click comes with the release into `main`.
+
+## T-013-01, review round and the contracts at 3.0
+
+- **Merged `m2` (2cbbf38).** `module-interface` is 3.0.0 and `provider-role` gained `Received<T>`. The platform now
+  uses the contract's `AdmissionRefusal` and `PlatformRefusal` (its own copies are gone; `types` re-exports them),
+  and the tests' binding passes them to the suite as they are.
+- **Refusal reasons.** A part importing what its kind may not, or in a type the binding doesn't serve, is refused as
+  `DisallowedImport(part)`; the compiler marks it (`Compiled::disallowed_import`) and `children::CompileError` carries
+  it, since a bare string told the platform nothing. A malformed, oversized or precompiled binary stays
+  `UnreadableBinary`. A version already admitted or waiting is `VersionAlreadyAdmitted`, judged before the binaries
+  are read, so each release of a test needs a version of its own. `LimitReached` is given when a part ran out of fuel
+  or the operation's deadline passed. Reading: a guest that traps by itself, a refused memory growth the guest turns
+  into a trap included, is still `Unavailable`; the store limiter does not report a refused growth to the platform.
+  `T-013-02` owns limit reporting.
+- **A call is delivered only when its callee answered.** A cross-module call that passed the checks is recorded
+  `Delivered` if the callee's `handle` gave an answer, and `Unanswered` if not. The guest still sees `refused` for an
+  unanswered call: the WIT has two outcomes and the interface is outside the contract (`DEC-4`). `T-013-02` carries
+  the test of an unanswered callee.
+- **`Received<T>`.** Only the role suite's `RoleProvider` uses it. The through-the-binding test wraps the platform's
+  statement with `Received::sent`, the JSON `serde_json` writes for it; the platform signs nothing yet, so there are
+  no signed bytes to keep. The role guest returns the body of `statement()`.
+- **DEC-20 paths.** The credential proxy's path is touched too: `platform.rs`'s `lookup` and the `World::secret`
+  resolver hook decide which secret a provider's outside part is handed.
+- **Left as it is.** The result's `made_at` is the operation's, the recorded placeholder (see above).
+- **Skipped on the coordinator's word.** The licence check reading every lock in the tree is `T-010-05`'s; it covers
+  `module-guests/Cargo.lock`, and `tools/licence-check/` is untouched here.
+- **CI.** The `ci` job also checks the guests' format and lints (the host tool, and the stand-ins for wasm32), and no
+  longer installs `lld`: the guests link with the toolchain's `rust-lld`.

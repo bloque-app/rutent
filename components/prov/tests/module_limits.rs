@@ -39,7 +39,7 @@ fn a_guest_that_loops_is_stopped_when_its_fuel_runs_out() {
         let took = started.elapsed();
         assert_eq!(
             handled,
-            Handled::Refused(PlatformRefusal::Unavailable),
+            Handled::Refused(PlatformRefusal::LimitReached),
             "a looping guest answered"
         );
         assert_eq!(
@@ -198,7 +198,7 @@ fn a_provider_process_that_misses_the_operation_deadline_is_killed_and_started_a
         binding.set_deadline(OPERATION_DEADLINE);
         assert_eq!(
             handled,
-            Handled::Refused(PlatformRefusal::Unavailable),
+            Handled::Refused(PlatformRefusal::LimitReached),
             "an operation past its deadline was answered"
         );
         let why = binding.measurements.last_trap.clone().unwrap_or_default();

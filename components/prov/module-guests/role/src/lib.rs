@@ -39,7 +39,8 @@ impl Guest for Part {
         };
         PROVIDER.with(|p| match p.borrow_mut().as_mut() {
             Some(provider) => {
-                serde_json::to_vec(&provider.handle(&operation).statement).unwrap_or_default()
+                serde_json::to_vec(&provider.handle(&operation).statement().statement)
+                    .unwrap_or_default()
             }
             None => b"not started".to_vec(),
         })

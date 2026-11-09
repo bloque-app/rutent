@@ -38,30 +38,7 @@ pub enum Admitted {
     Refused(AdmissionRefusal),
 }
 
-/// Why a release was refused at admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdmissionRefusal {
-    /// This part's binary differs from the digest its assertion states (`REQ-MDL-1`).
-    PartAltered(PartName),
-    /// The binaries aren't a module the platform can read.
-    UnreadableBinary,
-    /// The platform judged at admission that the module won't start.
-    WontStart,
-}
-
-/// Why the platform refused to pass a module's answer on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PlatformRefusal {
-    /// The output isn't a result of the operation's shape: unparseable, of another kind, for another transaction,
-    /// or with an unknown field (`REQ-MDL-12`).
-    MalformedOutput,
-    /// The output is longer than the limit the platform was configured with (`REQ-MDL-12`).
-    OversizedOutput,
-    /// No module of the provider is running.
-    Unavailable,
-    /// The module doesn't handle the operation's kind.
-    NotHandled,
-}
+pub use rutent_contracts::module_interface::{AdmissionRefusal, PlatformRefusal};
 
 /// What handling one operation gave.
 #[derive(Debug, Clone, PartialEq, Eq)]

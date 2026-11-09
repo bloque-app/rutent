@@ -380,34 +380,60 @@ impl Platform for Nowhere {
 
 /// Checks a compiled part against the binding's interface: every import is one the part may name, of the type the
 /// binding serves, and its exports are the world's. Nothing runs.
-pub fn check_part(engine: &Engine, part: &str, component: &Component) -> Result<(), String> {
+pub fn check_part(engine: &Engine, part: &str, component: &Component) -> Result<(), PartRefusal> {
+    check_part_why(engine, part, component).map_err(|(import, why)| PartRefusal { import, why })
+}
+
+/// Why a part was refused by [`check_part`], and whether it was for an import the part may not name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartRefusal {
+    /// Whether the part imports something its kind may not, or imports it in a type the binding doesn't serve
+    /// (`AdmissionRefusal::DisallowedImport`).
+    pub import: bool,
+    /// The reason, for the admission log; never a guest's string.
+    pub why: String,
+}
+
+fn check_part_why(
+    engine: &Engine,
+    part: &str,
+    component: &Component,
+) -> Result<(), (bool, String)> {
     let allowed = allowed_imports(part);
     let ty = component.component_type();
     for (name, _) in ty.imports(engine) {
         if !allowed.contains(&name) {
-            return Err(format!("it imports {name}, which its part may not"));
+            return Err((true, format!("it imports {name}, which its part may not")));
         }
     }
     match part {
         "sandboxed" => {
             let mut linker: Linker<SandboxedState> = Linker::new(engine);
             sandboxed::Sandboxed::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| (false, e.to_string()))?;
             let pre = linker
                 .instantiate_pre(component)
-                .map_err(|e| format!("its imports aren't the binding's: {e}"))?;
-            sandboxed::SandboxedPre::new(pre)
-                .map_err(|e| format!("its exports aren't the sandboxed world's: {e}"))?;
+                .map_err(|e| (true, format!("its imports aren't the binding's: {e}")))?;
+            sandboxed::SandboxedPre::new(pre).map_err(|e| {
+                (
+                    false,
+                    format!("its exports aren't the sandboxed world's: {e}"),
+                )
+            })?;
         }
         _ => {
             let mut linker: Linker<OutsideState> = Linker::new(engine);
             outside::Outside::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| (false, e.to_string()))?;
             let pre = linker
                 .instantiate_pre(component)
-                .map_err(|e| format!("its imports aren't the binding's: {e}"))?;
-            outside::OutsidePre::new(pre)
-                .map_err(|e| format!("its exports aren't the outside world's: {e}"))?;
+                .map_err(|e| (true, format!("its imports aren't the binding's: {e}")))?;
+            outside::OutsidePre::new(pre).map_err(|e| {
+                (
+                    false,
+                    format!("its exports aren't the outside world's: {e}"),
+                )
+            })?;
         }
     }
     Ok(())

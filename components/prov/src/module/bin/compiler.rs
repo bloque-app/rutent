@@ -75,6 +75,7 @@ fn compile(engine: &Engine, part: &str, binary: &[u8]) -> (Compiled, Vec<u8>) {
     let mut verdict = Compiled {
         part: part.to_owned(),
         refusal: None,
+        disallowed_import: false,
         imports: Vec::new(),
         exports: Vec::new(),
     };
@@ -106,8 +107,9 @@ fn compile(engine: &Engine, part: &str, binary: &[u8]) -> (Compiled, Vec<u8>) {
     let ty = component.component_type();
     verdict.imports = ty.imports(engine).map(|(n, _)| n.to_owned()).collect();
     verdict.exports = ty.exports(engine).map(|(n, _)| n.to_owned()).collect();
-    if let Err(why) = host::check_part(engine, part, &component) {
-        return refuse(verdict, why);
+    if let Err(refusal) = host::check_part(engine, part, &component) {
+        verdict.disallowed_import = refusal.import;
+        return refuse(verdict, refusal.why);
     }
     match component.serialize() {
         Ok(machine_code) => (verdict, machine_code),

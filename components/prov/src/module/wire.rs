@@ -156,6 +156,9 @@ pub struct Compiled {
     pub part: String,
     /// Why it was refused, if it was.
     pub refusal: Option<String>,
+    /// Whether the refusal was for an import the part may not name (`AdmissionRefusal::DisallowedImport`).
+    #[serde(default)]
+    pub disallowed_import: bool,
     /// Every import the component names.
     pub imports: Vec<String>,
     /// Every export it names.

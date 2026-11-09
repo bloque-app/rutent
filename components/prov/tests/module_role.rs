@@ -9,8 +9,8 @@ use common::{CATEGORIES, WasmBinding, assertion, declaration, paths, standins};
 use rutent_conformance::boundary::{Admitted, Handled, ModuleBinding, ModuleSpec, Output};
 use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
-    Check, DeferredVerifier, Exercised, RoleHarness, RoleProvider, SuiteContext, WithoutHooks,
-    run_role_suite,
+    Check, DeferredVerifier, Exercised, Received, RoleHarness, RoleProvider, SuiteContext,
+    WithoutHooks, run_role_suite,
 };
 use rutent_contracts::module_interface::Parts;
 use rutent_contracts::provider_role::{
@@ -40,28 +40,29 @@ struct Through {
 }
 
 impl RoleProvider for Through {
-    fn advertisement(&self) -> Statement<Advertisement> {
+    fn advertisement(&self) -> Received<Advertisement> {
         self.twin.advertisement()
     }
 
-    fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody> {
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         let expected = self.twin.handle(operation);
         let Handled::Answered(answered) = self.binding.handle(&self.provider, operation) else {
             panic!("the platform refused an operation of the role suite");
         };
         assert_eq!(
             serde_json::to_value(&answered.statement).expect("JSON"),
-            serde_json::to_value(&expected.statement).expect("JSON"),
+            serde_json::to_value(&expected.statement().statement).expect("JSON"),
             "the module answered otherwise than the stand-in does in process"
         );
-        *answered
+        // As the platform sends it: the JSON of the statement it signs.
+        Received::sent(&answered)
     }
 
     fn state(&self) -> String {
         self.twin.state()
     }
 
-    fn status(&mut self, transaction: &str) -> Option<Statement<ResultBody>> {
+    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.twin.status(transaction)
     }
 }
@@ -72,11 +73,11 @@ impl RoleHarness for Through {}
 struct InProcess(Box<dyn RoleProvider>);
 
 impl RoleProvider for InProcess {
-    fn advertisement(&self) -> Statement<Advertisement> {
+    fn advertisement(&self) -> Received<Advertisement> {
         self.0.advertisement()
     }
 
-    fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody> {
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         self.0.handle(operation)
     }
 
@@ -84,7 +85,7 @@ impl RoleProvider for InProcess {
         self.0.state()
     }
 
-    fn status(&mut self, transaction: &str) -> Option<Statement<ResultBody>> {
+    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
     }
 }
@@ -104,7 +105,7 @@ fn in_process(category: &str) -> Box<dyn RoleProvider> {
 /// stand-in's outside part, with a declaration that names the advertisement's own provider and statements key.
 fn through(category: &str) -> Through {
     let twin = in_process(category);
-    let advertisement = twin.advertisement().statement;
+    let advertisement = twin.advertisement().into_statement().statement;
     let statements_key = advertisement
         .keys
         .iter()

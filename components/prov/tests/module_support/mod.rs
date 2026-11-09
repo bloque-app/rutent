@@ -282,15 +282,7 @@ impl ModuleBinding for WasmBinding {
     ) -> suite::Admitted {
         match self.platform.admit(assertion, binaries) {
             types::Admitted::Artefact(artefact) => suite::Admitted::Artefact(artefact),
-            types::Admitted::Refused(refusal) => suite::Admitted::Refused(match refusal {
-                types::AdmissionRefusal::PartAltered(part) => {
-                    suite::AdmissionRefusal::PartAltered(part)
-                }
-                types::AdmissionRefusal::UnreadableBinary => {
-                    suite::AdmissionRefusal::UnreadableBinary
-                }
-                types::AdmissionRefusal::WontStart => suite::AdmissionRefusal::WontStart,
-            }),
+            types::Admitted::Refused(refusal) => suite::Admitted::Refused(refusal),
         }
     }
 
@@ -313,12 +305,7 @@ impl ModuleBinding for WasmBinding {
     fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         match self.platform.handle(provider, operation) {
             types::Handled::Answered(result) => Handled::Answered(result),
-            types::Handled::Refused(refusal) => Handled::Refused(match refusal {
-                types::PlatformRefusal::MalformedOutput => suite::PlatformRefusal::MalformedOutput,
-                types::PlatformRefusal::OversizedOutput => suite::PlatformRefusal::OversizedOutput,
-                types::PlatformRefusal::Unavailable => suite::PlatformRefusal::Unavailable,
-                types::PlatformRefusal::NotHandled => suite::PlatformRefusal::NotHandled,
-            }),
+            types::Handled::Refused(refusal) => Handled::Refused(refusal),
         }
     }
 

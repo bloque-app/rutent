@@ -29,7 +29,7 @@ use rutent_contracts::provider_role::{
 use serde_json::Value;
 
 use crate::module::children::{
-    Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
+    CompileError, Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
 };
 use crate::module::engine::{self, FORMAT, MAX_BINARY};
 use crate::module::types::{
@@ -652,9 +652,11 @@ impl<W: World> Platform<W> {
                 refusal = Some(CallRefusalReason::CalleeUnavailable);
             }
         }
+        // Only an answer makes a call delivered (`REQ-MDL-21`): the callee answers on its own credentials, in its
+        // own process, and a callee that stopped, hit a limit or gave no readable answer leaves the call unanswered.
+        let mut answered = false;
         if refusal.is_none() {
-            // The callee answers on its own credentials, in its own process.
-            let _ = self.handle(callee, &asked);
+            answered = matches!(self.handle(callee, &asked), Handled::Answered(_));
         }
         let (Some(transaction), Some(caller), Some(caller_version), Some(callee_id)) = (
             Identifier::new(transaction),
@@ -672,7 +674,8 @@ impl<W: World> Platform<W> {
                 kind,
                 reason,
             }),
-            None => CrossModuleOutcome::Delivered(Nothing {}),
+            None if answered => CrossModuleOutcome::Delivered(Nothing {}),
+            None => CrossModuleOutcome::Unanswered(Nothing {}),
         };
         let delivered = matches!(outcome, CrossModuleOutcome::Delivered(_));
         self.events.calls.push(CrossModuleCall {
@@ -738,12 +741,17 @@ impl<W: World> Platform<W> {
                         self.deadline
                     ));
                     alive = false;
+                    outcome = Err(PlatformRefusal::LimitReached);
                 }
                 Received::Message(FromProvider::Done { output }) => {
                     outcome = unhex(&output).ok_or(PlatformRefusal::MalformedOutput);
                     break;
                 }
                 Received::Message(FromProvider::Trapped { message }) => {
+                    // Fuel running out is a limit; any other trap is the guest's own failure.
+                    if message.contains("all fuel consumed") {
+                        outcome = Err(PlatformRefusal::LimitReached);
+                    }
                     self.measurements.last_trap = Some(message);
                     break;
                 }
@@ -886,7 +894,7 @@ impl<W: World> Platform<W> {
             return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
         }
         // A version already admitted, accepted or waiting, is never admitted again: its machine code and artefact
-        // stay what they are. The suite's refusals have no reason for it; it is refused as unreadable.
+        // stay what they are (`AdmissionRefusal::VersionAlreadyAdmitted`).
         let (provider, version) = (
             assertion.statement.declaration.provider.as_str(),
             assertion.statement.declaration.version.as_str(),
@@ -901,7 +909,7 @@ impl<W: World> Platform<W> {
                 .as_ref()
                 .is_some_and(|(a, _)| a.declaration().version.as_str() == version);
             if accepted || pending {
-                return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
+                return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted);
             }
         }
         let machine = match compile(
@@ -912,6 +920,18 @@ impl<W: World> Platform<W> {
             &self.stderrs,
         ) {
             Ok(machine) => Rc::new(machine),
+            Err(CompileError::Refused {
+                part,
+                disallowed_import: true,
+                ..
+            }) => {
+                let part = if part == "sandboxed" {
+                    PartName::Sandboxed
+                } else {
+                    PartName::Outside
+                };
+                return Admitted::Refused(AdmissionRefusal::DisallowedImport(part));
+            }
             Err(_) => return Admitted::Refused(AdmissionRefusal::UnreadableBinary),
         };
         self.measurements.compiles.push((

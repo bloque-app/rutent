@@ -115,6 +115,43 @@ pub struct Machine {
     pub took: Duration,
 }
 
+/// Why a release's binaries weren't compiled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompileError {
+    /// The compiler refused a part: for an import it may not name, or otherwise.
+    Refused {
+        /// The part, `sandboxed` or `outside`.
+        part: String,
+        /// Whether it was for a disallowed import.
+        disallowed_import: bool,
+        /// The compiler's reason, for the admission log.
+        why: String,
+    },
+    /// The compiler didn't give a verdict: it failed to start, crashed or was stopped.
+    Failed(String),
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused { part, why, .. } => write!(f, "the {part} part was refused: {why}"),
+            Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for CompileError {
+    fn from(why: String) -> Self {
+        Self::Failed(why)
+    }
+}
+
+impl From<&str> for CompileError {
+    fn from(why: &str) -> Self {
+        Self::Failed(why.to_owned())
+    }
+}
+
 /// Compiles a release's two portable binaries in a fresh, isolated compiler process. The machine code, or why it
 /// was refused.
 pub fn compile(
@@ -123,7 +160,7 @@ pub fn compile(
     sandboxed: &[u8],
     outside: &[u8],
     stderrs: &Stderrs,
-) -> Result<Machine, String> {
+) -> Result<Machine, CompileError> {
     let started = Instant::now();
     let own = Workdir::new(workdir)?;
     let mut child = isolated(&paths.compiler, &[], &own.0, Limits::COMPILER)
@@ -162,13 +199,17 @@ pub fn compile(
     let status = child.wait().map_err(|e| e.to_string())?;
     let mut parts = result?;
     if !status.success() {
-        return Err(format!("the compiler exited with {status}"));
+        return Err(format!("the compiler exited with {status}").into());
     }
     let (outside_verdict, outside_code) = parts.pop().ok_or("no outside part")?;
     let (sandboxed_verdict, sandboxed_code) = parts.pop().ok_or("no sandboxed part")?;
     for verdict in [&sandboxed_verdict, &outside_verdict] {
         if let Some(why) = &verdict.refusal {
-            return Err(format!("the {} part was refused: {why}", verdict.part));
+            return Err(CompileError::Refused {
+                part: verdict.part.clone(),
+                disallowed_import: verdict.disallowed_import,
+                why: why.clone(),
+            });
         }
     }
     Ok(Machine {

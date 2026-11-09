@@ -6,7 +6,7 @@ mod common;
 
 use common::{alive, answers_as, assertion, binding, install, languages, spec};
 use rutent_conformance::boundary::{AdmissionRefusal, Admitted, ModuleBinding};
-use rutent_contracts::module_interface::{Parts, validate_artefact};
+use rutent_contracts::module_interface::{PartName, Parts, validate_artefact};
 use rutent_prov::module::children::compile;
 use rutent_prov::module::engine;
 use rutent_prov::module::wire::sha256;
@@ -133,13 +133,14 @@ fn a_part_importing_anything_beyond_its_parts_interface_is_refused_at_admission(
         matches!(admitted, Admitted::Artefact(_)),
         "the control was refused: {admitted:?}"
     );
-    let mut cases: Vec<(&str, Parts<Vec<u8>>)> = vec![
+    let mut cases: Vec<(&str, Parts<Vec<u8>>, PartName)> = vec![
         (
             "the outside part's interface, as the sandboxed part",
             Parts {
                 sandboxed: honest.outside.clone(),
                 outside: honest.outside.clone(),
             },
+            PartName::Sandboxed,
         ),
         (
             "the sandboxed part's interface, as the outside part",
@@ -147,6 +148,7 @@ fn a_part_importing_anything_beyond_its_parts_interface_is_refused_at_admission(
                 sandboxed: honest.sandboxed.clone(),
                 outside: honest.sandboxed.clone(),
             },
+            PartName::Outside,
         ),
     ];
     for (what, import) in [
@@ -161,14 +163,23 @@ fn a_part_importing_anything_beyond_its_parts_interface_is_refused_at_admission(
                 sandboxed: hostile(import),
                 outside: honest.outside.clone(),
             },
+            PartName::Sandboxed,
         ));
     }
-    for (what, binaries) in cases {
-        let admitted = binding.admit(&assertion(&base.declaration, &binaries), &binaries);
+    for (index, (what, binaries, part)) in cases.into_iter().enumerate() {
+        // Each case is a release of its own: a version already admitted is refused before it is read.
+        let declaration = spec(
+            &format!("importer-{language}"),
+            &format!("2.{index}.0"),
+            Vec::new(),
+            true,
+        )
+        .declaration;
+        let admitted = binding.admit(&assertion(&declaration, &binaries), &binaries);
         assert_eq!(
             admitted,
-            Admitted::Refused(AdmissionRefusal::UnreadableBinary),
-            "a part importing {what} was admitted"
+            Admitted::Refused(AdmissionRefusal::DisallowedImport(part)),
+            "a part importing {what} wasn't refused for its import"
         );
     }
 }
@@ -402,4 +413,32 @@ fn the_compiler_and_every_provider_process_reach_no_network_no_home_file_no_othe
     }
     drop((held, listener));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// verifies: REQ-MDL-1
+#[test]
+fn a_version_already_admitted_is_refused_as_such_and_changes_nothing() {
+    let mut binding = binding("reserve");
+    let language = languages().remove(0);
+    let provider = format!("twice-{language}");
+    let module = spec(&provider, "1.0.0", Vec::new(), true);
+    let binaries = binding
+        .build_with(&module, &language, "reserve", &[])
+        .expect("a stand-in");
+    assert!(matches!(
+        install(&mut binding, &module, &language, "reserve", &[]),
+        Admitted::Artefact(_)
+    ));
+    let pid = binding.process(&provider);
+    let again = binding.admit(&assertion(&module.declaration, &binaries), &binaries);
+    assert_eq!(
+        again,
+        Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+    );
+    assert_eq!(
+        binding.process(&provider),
+        pid,
+        "the running process changed"
+    );
+    assert!(answers_as(&mut binding, &provider, "1.0.0", 1));
 }
