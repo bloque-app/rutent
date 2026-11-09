@@ -8,6 +8,8 @@
 //! - [`platform`]: the platform. It admits releases, runs one OS process per provider, and checks everything a
 //!   module asks for against its running declaration, attributing each request to the provider whose process it
 //!   came from (`DEC-9`).
+//! - [`admission`]: reading a release assertion from the bytes it arrived in, and who vouches for it: the
+//!   [`ReleaseJudge`](admission::ReleaseJudge), the catalogue in production (`REQ-MDL-1`, `THR-4`).
 //! - [`engine`]: the one Wasmtime configuration the compiler and every provider process share: an explicit compile
 //!   target, only the WebAssembly features the modules need, fuel for CPU, and the memory limits per part.
 //! - [`children`]: the platform's side of its children, the admitting compiler (one fresh process per admission)
@@ -26,6 +28,7 @@
 //!
 //! This module admits modules, so a change to it is on a `DEC-20` path.
 
+pub mod admission;
 pub mod children;
 pub mod engine;
 pub mod host;
