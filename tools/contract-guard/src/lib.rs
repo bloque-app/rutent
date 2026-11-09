@@ -9,15 +9,22 @@
 //! - A contract's version is the first `## <semver>` heading of its `CHANGELOG.md`, at the base and at the head.
 //! - A change to a touched contract needs a greater head version, or the contract is new (absent from the base
 //!   `CONTRACTS`). The new top section needs a bullet that the base's top section does not have.
-//! - Every new bullet in any changelog names a `DEC-<n>`.
+//! - Every new bullet in any changelog, the shared one included, names a `DEC-<n>`, and every `DEC-<n>` it names is
+//!   defined in `PLAN.md`'s decisions table.
 //! - A change to a shared file (under `contracts/`, owned by no contract) needs a new bullet naming a `DEC-<n>` in
-//!   `contracts/CHANGELOG.md`, or a version bump of some contract in the same change.
+//!   `contracts/CHANGELOG.md`. A contract's version bump does not stand in for it.
+//! - A change to the root `Cargo.lock` that moves a package the contracts crate reaches (the crate itself, its
+//!   dependencies and theirs, dev-dependencies included) touches every contract, since they ship as one crate.
 
 use std::collections::BTreeSet;
 
 const CONTRACTS_PATH: &str = "contracts/CONTRACTS";
 const SHARED: &str = "shared";
 const SHARED_CHANGELOG: &str = "contracts/CHANGELOG.md";
+const PLAN_PATH: &str = "PLAN.md";
+const LOCK_PATH: &str = "Cargo.lock";
+/// The package whose dependencies the lockfile rule follows.
+const CONTRACTS_CRATE: &str = "rutent-contracts";
 
 /// One contract, as `contracts/CONTRACTS` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,22 +201,172 @@ fn semver(text: &str) -> Option<(u64, u64, u64)> {
     Some((numbers[0], numbers[1], numbers[2]))
 }
 
-/// Whether a bullet names a `DEC-<n>`: `DEC-` stands alone (no letter, digit or underscore just before it), at least
-/// one digit follows, and the digits end the token (no letter, digit or underscore just after them).
-fn names_decision(bullet: &str) -> bool {
+/// The `DEC-<n>` tokens a bullet names, as numbers: `DEC-` stands alone (no letter, digit or underscore just before
+/// it), at least one digit follows, and the digits end the token (no letter, digit or underscore just after them).
+fn decisions_named(bullet: &str) -> Vec<String> {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    bullet.match_indices("DEC-").any(|(index, _)| {
+    let mut out: Vec<String> = Vec::new();
+    for (index, _) in bullet.match_indices("DEC-") {
         let standalone = !bullet[..index].chars().next_back().is_some_and(is_word);
-        let digits = bullet[index + 4..]
+        let digits: String = bullet[index + 4..]
             .chars()
             .take_while(char::is_ascii_digit)
-            .count();
-        let ends_token = !bullet[index + 4 + digits..]
+            .collect();
+        let ends_token = !bullet[index + 4 + digits.len()..]
             .chars()
             .next()
             .is_some_and(is_word);
-        standalone && digits > 0 && ends_token
-    })
+        if standalone && !digits.is_empty() && ends_token {
+            out.push(digits);
+        }
+    }
+    out
+}
+
+/// The decisions `PLAN.md` defines: the rows of its decisions table, which start with ``| `DEC-<n>` ``.
+fn defined_decisions(plan: &str) -> BTreeSet<String> {
+    plan.lines()
+        .filter_map(|line| line.strip_prefix("| `DEC-"))
+        .filter_map(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            (!digits.is_empty() && rest[digits.len()..].starts_with('`')).then_some(digits)
+        })
+        .collect()
+}
+
+/// A bullet is decided when it names at least one `DEC-<n>` and every one it names is in `defined`. `Err` is the
+/// sentence that says why not.
+fn check_decisions(bullet: &str, defined: &BTreeSet<String>) -> Result<(), String> {
+    let first = bullet.lines().next().unwrap_or(bullet);
+    let named = decisions_named(bullet);
+    if named.is_empty() {
+        return Err(format!(
+            "changelog entry names no DEC-<n> (no plan decision): {first}"
+        ));
+    }
+    if let Some(unknown) = named.iter().find(|n| !defined.contains(*n)) {
+        return Err(format!(
+            "changelog entry names DEC-{unknown}, which {PLAN_PATH} does not define: {first}"
+        ));
+    }
+    Ok(())
+}
+
+/// A package of `Cargo.lock`, reduced to what a move of it changes.
+struct LockPackage {
+    name: String,
+    version: String,
+    /// Name, version, source, checksum and dependency entries, joined: equal exactly when nothing moved.
+    identity: String,
+    /// Dependency entries: a name, or a name and a version.
+    dependencies: Vec<(String, Option<String>)>,
+}
+
+/// The bodies of the `[[package]]` blocks. Any other header (`[[patch.unused]]`, `[metadata]`) ends the block before
+/// it and is dropped.
+fn package_blocks(text: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut in_package = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with('[') {
+            in_package = line.trim() == "[[package]]";
+            if in_package {
+                blocks.push(String::new());
+            }
+        } else if in_package && let Some(block) = blocks.last_mut() {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    blocks
+}
+
+fn lock_packages(text: &str) -> Vec<LockPackage> {
+    let mut out: Vec<LockPackage> = Vec::new();
+    for block in package_blocks(text) {
+        let mut name = String::new();
+        let mut version = String::new();
+        let mut dependencies: Vec<(String, Option<String>)> = Vec::new();
+        let mut in_dependencies = false;
+        let mut identity = String::new();
+        for line in block.lines() {
+            let line = line.trim();
+            if in_dependencies {
+                if line == "]" {
+                    in_dependencies = false;
+                } else if let Some(entry) = line.trim_end_matches(',').strip_prefix('"') {
+                    let entry = entry.trim_end_matches('"');
+                    let mut parts = entry.split_whitespace();
+                    let dep = parts.next().unwrap_or_default().to_string();
+                    dependencies.push((dep, parts.next().map(str::to_string)));
+                }
+            } else if line.starts_with("dependencies = [") {
+                in_dependencies = !line.ends_with(']');
+            } else if let Some(value) = line.strip_prefix("name = ") {
+                name = value.trim_matches('"').to_string();
+            } else if let Some(value) = line.strip_prefix("version = ") {
+                version = value.trim_matches('"').to_string();
+            }
+            if !line.is_empty() && !line.starts_with('[') {
+                identity.push_str(line);
+                identity.push('\n');
+            }
+        }
+        if !name.is_empty() {
+            out.push(LockPackage {
+                name,
+                version,
+                identity,
+                dependencies,
+            });
+        }
+    }
+    out
+}
+
+/// The identities of every package the contracts crate reaches in a lockfile, itself included.
+fn contracts_closure(text: &str) -> BTreeSet<String> {
+    let packages = lock_packages(text);
+    let mut reached: BTreeSet<usize> = BTreeSet::new();
+    let mut queue: Vec<usize> = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.name == CONTRACTS_CRATE)
+        .map(|(i, _)| i)
+        .collect();
+    while let Some(index) = queue.pop() {
+        if !reached.insert(index) {
+            continue;
+        }
+        for (dep, version) in &packages[index].dependencies {
+            for (i, candidate) in packages.iter().enumerate() {
+                if &candidate.name == dep
+                    && version.as_ref().is_none_or(|v| v == &candidate.version)
+                {
+                    queue.push(i);
+                }
+            }
+        }
+    }
+    reached
+        .into_iter()
+        .map(|i| {
+            format!(
+                "{} {}\n{}",
+                packages[i].name, packages[i].version, packages[i].identity
+            )
+        })
+        .collect()
+}
+
+/// The names of the packages the contracts crate reaches that differ between two lockfiles.
+fn moved_dependencies(base: Option<&str>, head: Option<&str>) -> BTreeSet<String> {
+    let before = base.map(contracts_closure).unwrap_or_default();
+    let after = head.map(contracts_closure).unwrap_or_default();
+    before
+        .symmetric_difference(&after)
+        .map(|entry| entry.lines().next().unwrap_or_default().to_string())
+        .collect()
 }
 
 /// Bullets present in the head changelog but not the base one.
@@ -230,6 +387,10 @@ pub fn check(
     files: &dyn Files,
 ) -> Result<Vec<Violation>, String> {
     let head_contracts = parse_contracts(contracts_text)?;
+    let plan = files
+        .head(PLAN_PATH)
+        .ok_or_else(|| format!("cannot read {PLAN_PATH}, which defines the decisions"))?;
+    let defined = defined_decisions(&plan);
     let base_contracts = match files.base(CONTRACTS_PATH) {
         Some(text) => parse_contracts(&text).map_err(|error| format!("base {error}"))?,
         None => Vec::new(),
@@ -249,6 +410,15 @@ pub fn check(
             shared_paths.push(path);
         }
         touched.extend(in_head.into_iter().chain(in_base));
+    }
+
+    // The contracts ship as one crate, so a moved dependency of it touches every contract.
+    let moved = moved_dependencies(
+        files.base(LOCK_PATH).as_deref(),
+        files.head(LOCK_PATH).as_deref(),
+    );
+    if !moved.is_empty() {
+        touched.extend(head_contracts.iter().map(|c| c.name.clone()));
     }
 
     let mut names: Vec<String> = head_contracts.iter().map(|c| c.name.clone()).collect();
@@ -275,8 +445,8 @@ pub fn check(
         let head_text = head_log.as_deref().and_then(|path| files.head(path));
         let base_text = base_log.as_deref().and_then(|path| files.base(path));
         for bullet in new_bullets(base_text.as_deref(), head_text.as_deref()) {
-            if !names_decision(&bullet) {
-                violations.push(entry_violation(name, &bullet));
+            if let Err(message) = check_decisions(&bullet, &defined) {
+                violations.push(violation(name, message));
             }
         }
         if !touched.contains(name) {
@@ -365,19 +535,41 @@ pub fn check(
         }
     }
 
-    if !shared_paths.is_empty() {
-        let decided = new_bullets(
-            files.base(SHARED_CHANGELOG).as_deref(),
-            files.head(SHARED_CHANGELOG).as_deref(),
-        )
-        .iter()
-        .any(|bullet| names_decision(bullet));
-        if !decided && bumped.is_empty() {
+    let shared_base = files.base(SHARED_CHANGELOG);
+    let shared_head = files.head(SHARED_CHANGELOG);
+    let shared_new = new_bullets(shared_base.as_deref(), shared_head.as_deref());
+    let mut shared_decided = false;
+    for bullet in &shared_new {
+        match check_decisions(bullet, &defined) {
+            Ok(()) => shared_decided = true,
+            Err(message) => violations.push(violation(SHARED, message)),
+        }
+    }
+    if !shared_paths.is_empty() && !shared_decided {
+        violations.push(violation(
+            SHARED,
+            format!(
+                "{} changed without a new {SHARED_CHANGELOG} entry naming a DEC-<n> that {PLAN_PATH} defines; a contract's version bump does not stand in for it",
+                shared_paths.join(", ")
+            ),
+        ));
+    }
+    if !moved.is_empty() {
+        let unbumped: Vec<&str> = base_contracts
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|name| {
+                head_contracts.iter().any(|c| c.name == *name) && !bumped.contains(*name)
+            })
+            .collect();
+        if !unbumped.is_empty() {
             violations.push(violation(
-                SHARED,
+                LOCK_PATH,
                 format!(
-                    "{} changed without a new {SHARED_CHANGELOG} entry naming a DEC-<n>, or a version bump of a contract",
-                    shared_paths.join(", ")
+                    "{LOCK_PATH} moves {}, which the contracts crate reaches, and {} {} not bumped",
+                    moved.iter().cloned().collect::<Vec<_>>().join(", "),
+                    unbumped.join(", "),
+                    if unbumped.len() == 1 { "is" } else { "are" }
                 ),
             ));
         }
@@ -390,14 +582,6 @@ fn violation(subject: &str, message: String) -> Violation {
         subject: subject.to_string(),
         message,
     }
-}
-
-fn entry_violation(subject: &str, bullet: &str) -> Violation {
-    let first = bullet.lines().next().unwrap_or(bullet);
-    violation(
-        subject,
-        format!("changelog entry names no DEC-<n> (no plan decision): {first}"),
-    )
 }
 
 #[cfg(test)]

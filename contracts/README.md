@@ -71,7 +71,10 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
   bump, only a bullet naming a `DEC-*`. A contract that owns base files still needs a base changelog.
 - Files under `contracts/` that belong to no contract (`Cargo.toml`, `src/lib.rs`, this README, `CONTRACTS`, and
   any file under `contracts/tests/` that names no contract) are shared. A change to them needs a bullet in
-  `contracts/CHANGELOG.md` naming a `DEC-*`, or a version bump of some contract in the same change.
+  `contracts/CHANGELOG.md` naming a `DEC-*`; a contract's version bump does not stand in for it.
+- Every `DEC-*` a changelog bullet names, in any changelog, is a decision `PLAN.md` defines.
+- A change to the root `Cargo.lock` that moves a package the contracts crate reaches (its dependencies, theirs, and
+  the dev-dependency) needs a bump of every contract, since they ship as one crate.
 
 The contract guard (`T-001-05`) checks exactly these rules against a base ref passed as an argument (default
 `origin/main`).
