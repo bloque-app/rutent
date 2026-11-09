@@ -75,6 +75,9 @@ struct Shape {
     exchanges: bool,
     /// Prices past their validity, exclusions and ceilings.
     faults: bool,
+    /// Tuples no operation can state: some advertised with no price, some whose flat fee is above any amount; and
+    /// some whose fee takes all that enters, so nothing comes out.
+    unstatable: bool,
 }
 
 /// A generated network: its snapshot, its tuples as edges, and each tuple's band, by figure id.
@@ -84,6 +87,11 @@ struct Network {
     bands: BTreeMap<String, (u128, u128)>,
     stale: BTreeSet<String>,
     providers: Vec<String>,
+    /// The tuples no operation can state, by id, with the drop reason a path through them must carry.
+    unstatable: BTreeMap<String, &'static str>,
+    /// The tuples whose fee takes all that enters: a path through one ends there, a candidate whatever comes
+    /// before it (`nothing_delivered` short of the destination, `no_positive_outcome` at it).
+    drains: BTreeSet<String>,
 }
 
 fn network(draw: &mut Draw, shape: Shape) -> Network {
@@ -104,6 +112,8 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
     let mut edges = Vec::new();
     let mut bands = BTreeMap::new();
     let mut stale = BTreeSet::new();
+    let mut unstatable = BTreeMap::new();
+    let mut drains = BTreeSet::new();
     let count = 3 + draw.below(7);
     for t in 0..count {
         let id = format!("t{t:02}");
@@ -115,7 +125,15 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         let kind = *draw.pick(kinds);
         let asset = *draw.pick(&ASSETS);
         let a = draw.pick(&INNER).to_string();
-        let price_fee = if shape.priced {
+        let price_fee = if shape.unstatable && draw.one_in(6) {
+            // Above any amount the generator reaches: 10^24 against at most 10^21 units.
+            unstatable.insert(id.clone(), "fee_above_amount");
+            fee("1000000000000000000000000", "0", "1")
+        } else if shape.unstatable && draw.one_in(6) {
+            // All that enters: statable, but nothing comes out.
+            drains.insert(id.clone());
+            fee("0", "1", "1")
+        } else if shape.priced {
             let mut f = fee(
                 &draw.below(1000).to_string(),
                 &draw.below(30).to_string(),
@@ -221,7 +239,11 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
                 (from, to)
             }
         };
-        if shape.faults && draw.one_in(8) {
+        if shape.unstatable && draw.one_in(6) {
+            // Advertised with no price: the price `tuple` just added is its last figure.
+            net.figures.pop();
+            unstatable.insert(id.clone(), "no_price");
+        } else if shape.faults && draw.one_in(8) {
             let at = net.figures.len() - 1;
             net.figures[at]["valid_for_seconds"] = json!(draw.below(120));
             stale.insert(format!("{id}-price"));
@@ -235,6 +257,8 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         edges,
         bands,
         stale,
+        unstatable,
+        drains,
         providers,
     }
 }
@@ -297,12 +321,22 @@ const ANY: Shape = Shape {
     priced: true,
     exchanges: true,
     faults: true,
+    unstatable: false,
+};
+
+/// As [`ANY`], with tuples no operation can state (router-api 3.0.0).
+const UNSTATABLE: Shape = Shape {
+    unstatable: true,
+    ..ANY
 };
 
 // verifies: AC-2, REQ-AUD-4, REQ-QTE-11, DEC-18
 #[test]
 fn every_record_passes_the_contract_and_recomputes_from_itself() {
-    for (seed, network, request, bounds) in generated(300, ANY) {
+    let cases = generated(300, ANY)
+        .into_iter()
+        .chain(generated(300, UNSTATABLE));
+    for (seed, network, request, bounds) in cases {
         let record = routed(&request, &network.snapshot, &bounds);
         let recomputed = recompute(&record);
         assert!(
@@ -430,6 +464,7 @@ fn every_destination_the_tuples_reach_within_the_hop_limit_gets_a_route() {
         priced: false,
         exchanges: false,
         faults: false,
+        unstatable: false,
     };
     let mut routes = 0;
     for (seed, network, _, bounds) in generated(150, free) {
@@ -617,6 +652,7 @@ fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_ch
         priced: true,
         exchanges: false,
         faults: true,
+        unstatable: false,
     };
     let (mut chosen, mut refusals, mut unasked) = (0, 0, 0);
     for (seed, network, request, bounds) in generated(600, shape) {
@@ -945,10 +981,35 @@ fn changing_the_objective_changes_no_drop_but_outranked() {
     );
 }
 
+/// A candidate as a reader names it apart from its id: the tuples it takes, its operations, and its drop, an
+/// outranking candidate named by its tuples too, since ids shift as candidates are added.
+fn by_path(record: &DecisionRecord) -> BTreeSet<String> {
+    use rutent_contracts::router_api::DropReason;
+    let path_of = |id: &rutent_contracts::router_api::Id| {
+        record
+            .candidates
+            .iter()
+            .find(|c| &c.candidate_id == id)
+            .map(common::tuples)
+    };
+    record
+        .candidates
+        .iter()
+        .map(|c| {
+            let dropped = match &c.dropped {
+                Some(DropReason::Outranked { by }) => format!("outranked by {:?}", path_of(by)),
+                other => format!("{other:?}"),
+            };
+            format!("{:?} {:?} {dropped}", common::tuples(c), c.parts)
+        })
+        .collect()
+}
+
 // verifies: REQ-AUD-4, AC-2, DEC-18
 #[test]
-fn a_tuple_with_no_price_changes_no_record_beyond_its_own_figure() {
-    let mut unpriced = 0;
+fn a_tuple_with_no_price_adds_only_candidates_dropped_for_it() {
+    use rutent_contracts::router_api::DropReason;
+    let mut named = 0;
     for (seed, network, request, bounds) in generated(200, ANY) {
         let mut draw = Draw(seed ^ 0x7E1D);
         let (tuple, ..) = draw.pick(&network.edges).clone();
@@ -960,16 +1021,171 @@ fn a_tuple_with_no_price_changes_no_record_beyond_its_own_figure() {
                 .retain(|f| !drop.contains(&f.figure_id.as_str()));
             snapshot
         };
-        // Unpriced, the tuple is in the record's snapshot, but nothing the router finds takes it: as if absent.
-        let kept = routed(&request, &without(&[&price]), &bounds);
+        let unpriced = routed(&request, &without(&[&price]), &bounds);
         let absent = routed(&request, &without(&[&price, &tuple]), &bounds);
-        assert!(recompute(&kept).passes(), "seed {seed}");
-        assert_eq!(kept.candidates, absent.candidates, "seed {seed}");
-        unpriced +=
-            usize::from(routed(&request, &network.snapshot, &bounds).candidates != kept.candidates);
+        assert!(recompute(&unpriced).passes(), "seed {seed}");
+        // Every candidate that takes the unpriced tuple ends at it, dropped for it; the others are the record
+        // without the tuple, and so is the choice.
+        let mut rest = unpriced.clone();
+        rest.candidates.retain(|c| {
+            let takes = common::tuples(c).iter().any(|t| t == &tuple);
+            if takes {
+                let last = c.parts[0].operations.len() - 1;
+                assert_eq!(
+                    c.dropped,
+                    Some(DropReason::NoPrice {
+                        part: 0,
+                        operation: last as u32
+                    }),
+                    "seed {seed}: {}",
+                    c.candidate_id.as_str()
+                );
+                assert_eq!(common::tuples(c)[last], tuple, "seed {seed}");
+                named += 1;
+            }
+            !takes
+        });
+        assert_eq!(by_path(&rest), by_path(&absent), "seed {seed}");
+        assert_eq!(
+            unpriced.chosen().map(common::tuples),
+            absent.chosen().map(common::tuples),
+            "seed {seed}"
+        );
     }
-    assert!(
-        unpriced > 20,
-        "removing a price changed only {unpriced} records"
-    );
+    assert!(named > 20, "only {named} candidates took an unpriced tuple");
+}
+
+/// Whether a candidate's operation leaves at, or a generated edge starts from, the same endpoint.
+fn same_end(end: &End, endpoint: &rutent_contracts::router_api::Endpoint) -> bool {
+    end.json() == serde_json::to_value(endpoint).unwrap()
+}
+
+/// Whether, from a path `taken` that ends at `at` with `hops` operations left, no path of the network's tuples can
+/// end in a candidate: none reaches the destination, takes a tuple no operation can state, or takes one whose fee
+/// takes all that enters. The amounts don't
+/// matter here: a step the search walks always gets an operation, and whatever it delivers, it ends in a candidate
+/// at the destination, at a tuple it can't state, or where it delivers nothing; only a path that runs out of tuples
+/// or hops first ends in none.
+fn leads_nowhere(
+    network: &Network,
+    to: &End,
+    taken: &mut Vec<String>,
+    at: &End,
+    hops: usize,
+) -> bool {
+    if hops == 0 {
+        return true;
+    }
+    network.edges.iter().all(|(id, from, next)| {
+        if from != at || taken.contains(id) {
+            return true;
+        }
+        if next == to || ends_a_path(network, id) {
+            return false;
+        }
+        taken.push(id.clone());
+        let nowhere = leads_nowhere(network, to, taken, next, hops - 1);
+        taken.pop();
+        nowhere
+    })
+}
+
+/// Whether a path through the tuple ends there in a candidate, whatever comes before it: no operation can state
+/// it, or its fee takes all that enters.
+fn ends_a_path(network: &Network, id: &str) -> bool {
+    network.unstatable.contains_key(id) || network.drains.contains(id)
+}
+
+fn end_of(endpoint: &rutent_contracts::router_api::Endpoint, network: &Network) -> Option<End> {
+    network
+        .edges
+        .iter()
+        .flat_map(|(_, from, to)| [from, to])
+        .find(|e| same_end(e, endpoint))
+        .cloned()
+}
+
+// verifies: REQ-AUD-4, DEC-18
+#[test]
+fn every_path_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
+    use rutent_conformance::router::reason_name;
+    let mut named: BTreeMap<String, usize> = BTreeMap::new();
+    for (seed, network, request, bounds) in generated(300, UNSTATABLE) {
+        let mut draw = Draw(seed ^ 0xC10E);
+        let shortlisted = routed(&request, &network.snapshot, &bounds);
+        let mut records = vec![shortlisted];
+        if !records[0].shortlist().is_empty() {
+            let (choice, snapshot) = choice_round(&mut draw, &network, &records[0]);
+            records.push(routed(&choice, &snapshot, &bounds));
+        }
+        let hops = usize::from(bounds.max_hops.get());
+        for record in &records {
+            assert!(recompute(record).passes(), "seed {seed}");
+            let Some(to) = end_of(&record.request.to, &network) else {
+                continue;
+            };
+            // Every candidate is ranked (kept, or chosen) or dropped with a reason, and a path through a tuple no
+            // operation can state is dropped for it.
+            for candidate in &record.candidates {
+                let ranked = candidate.dropped.is_none()
+                    && (record.chosen.is_none()
+                        || record.chosen.as_ref() == Some(&candidate.candidate_id));
+                assert!(ranked || candidate.dropped.is_some(), "seed {seed}");
+                let path = common::tuples(candidate);
+                if let Some(reason) = network.unstatable.get(path.last().unwrap()) {
+                    assert_eq!(
+                        candidate.dropped.as_ref().map(reason_name).as_deref(),
+                        Some(*reason),
+                        "seed {seed}: {path:?}"
+                    );
+                }
+                if let Some(d) = &candidate.dropped {
+                    *named.entry(reason_name(d)).or_default() += 1;
+                }
+            }
+            // Where the search goes on, from the origin or past an operation that delivered something within the
+            // hop limit, every tuple leaving there is taken by a candidate, unless no path from it can end in one.
+            let paths: Vec<Vec<String>> = record.candidates.iter().map(common::tuples).collect();
+            let continued = |prefix: &[String], id: &str| {
+                paths.iter().any(|p| {
+                    p.len() > prefix.len() && p[..prefix.len()] == *prefix && p[prefix.len()] == id
+                })
+            };
+            let origin =
+                end_of(&record.request.from, &network).expect("the request starts at a tuple");
+            let mut ends: Vec<(Vec<String>, End)> = vec![(Vec::new(), origin)];
+            for candidate in &record.candidates {
+                let path = common::tuples(candidate);
+                let operations = &candidate.parts[0].operations;
+                for k in 1..=path.len().min(hops - 1) {
+                    if !operations[k - 1].amount_out.is_zero() {
+                        let at = end_of(&operations[k - 1].to, &network).expect("a tuple's end");
+                        ends.push((path[..k].to_vec(), at));
+                    }
+                }
+            }
+            for (prefix, at) in &ends {
+                for (id, from, next) in &network.edges {
+                    if from != at || prefix.contains(id) || continued(prefix, id) {
+                        continue;
+                    }
+                    let mut taken = prefix.clone();
+                    taken.push(id.clone());
+                    let nowhere = next != &to
+                        && !ends_a_path(&network, id)
+                        && leads_nowhere(&network, &to, &mut taken, next, hops - prefix.len() - 1);
+                    assert!(
+                        nowhere,
+                        "seed {seed}: the search reaches {id} after {prefix:?}, and no candidate takes it"
+                    );
+                }
+            }
+        }
+    }
+    for reason in ["no_price", "fee_above_amount", "nothing_delivered"] {
+        assert!(
+            named.get(reason).is_some_and(|&n| n > 10),
+            "too few {reason} drops: {named:?}"
+        );
+    }
 }

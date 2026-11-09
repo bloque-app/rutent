@@ -156,8 +156,10 @@ impl Part {
 }
 
 impl Candidate {
-    /// Checks every part, that a drop reason's indices name an operation of the candidate, and that a candidate
-    /// isn't outranked by itself.
+    /// Checks every part, that a drop reason's indices name an operation of the candidate, that a `beyond_levels`,
+    /// `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives
+    /// with nothing (stating a fee of `0` for `no_price`, its amount in for `fee_above_amount`), and that a
+    /// candidate isn't outranked by itself.
     pub fn check(&self) -> Result<(), Violation> {
         for part in self.parts.iter() {
             part.check()?;
@@ -188,6 +190,52 @@ impl Candidate {
                 {
                     return Err(Violation(
                         "a beyond-levels reason names its part's last operation, which arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::NothingDelivered { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation of its candidate",
+                    ));
+                };
+                if *operation as usize + 1 != p.operations.len()
+                    || !p.operations.last().amount_out.is_zero()
+                {
+                    return Err(Violation(
+                        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::NoPrice { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a no-price reason names an operation of its candidate",
+                    ));
+                };
+                let last = p.operations.last();
+                if *operation as usize + 1 != p.operations.len()
+                    || !last.amount_out.is_zero()
+                    || last.fee.amount != "0"
+                {
+                    return Err(Violation(
+                        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::FeeAboveAmount { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a fee-above-amount reason names an operation of its candidate",
+                    ));
+                };
+                let last = p.operations.last();
+                if *operation as usize + 1 != p.operations.len()
+                    || !last.amount_out.is_zero()
+                    || last.fee.amount != last.amount_in.amount().as_str()
+                {
+                    return Err(Violation(
+                        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
                     ));
                 }
             }
@@ -647,7 +695,12 @@ impl DecisionRecord {
     ///   shortlist's stated `taken_at` is not usable; a refusal or a judgement binds whenever it was made. That
     ///   `taken_at` is at or before the choice round's snapshot.
     /// - A `beyond_levels` candidate's named part ends at the named operation, whose net is above its price's last
-    ///   levels and which arrives with nothing; that part alone needn't reach the destination.
+    ///   levels and which arrives with nothing; that part alone needn't reach the destination. So do a `no_price`
+    ///   and a `fee_above_amount` candidate's (3.0.0): a `no_price` operation cites its tuple and no price, and the
+    ///   snapshot holds none for that tuple; a `fee_above_amount` operation cites no usable accepted answer at its
+    ///   amount in. That its price's fee is above its amount in is the router suite's. So does a
+    ///   `nothing_delivered` candidate's, whose named operation ends short of the destination.
+    /// - Every operation but a `no_price` one cites one price.
     /// - Every operation cites one tuple figure, and every other figure it cites names that tuple.
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
     ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
@@ -833,15 +886,8 @@ impl DecisionRecord {
             .flat_map(|p| p.operations.iter())
             .filter(|o| o.figures.contains(figure))
             .any(|o| {
-                let Ok(tuple) = self.tuple_of(o) else {
-                    return false;
-                };
-                self.accepted_answers().any(|(f, t, amount_in, ..)| {
-                    t == &tuple.figure_id
-                        && amount_in == o.amount_in.amount().as_str()
-                        && o.figures.contains(&f.figure_id)
-                        && self.is_usable(f)
-                })
+                self.tuple_of(o)
+                    .is_ok_and(|tuple| self.cites_a_usable_answer(o, &tuple.figure_id))
             })
     }
 
@@ -910,8 +956,9 @@ impl DecisionRecord {
     }
 
     /// The one tuple figure an operation cites. It must be its own provider's, with the operation's two ends in
-    /// their units, and every other figure the operation cites must be about that tuple: its one price, a fresh
-    /// quote, a dry run for the operation's amount in, or an eligibility judgement that names it.
+    /// their units, and every other figure the operation cites must be about that tuple: its price, a fresh quote,
+    /// a dry run for the operation's amount in, or an eligibility judgement that names it. That it cites one price,
+    /// or none where a `no_price` reason names it, is [`DecisionRecord::check_candidate`]'s, which knows the drop.
     fn tuple_of(&self, operation: &Operation) -> Result<&Figure, Violation> {
         let cited: Vec<&Figure> = operation
             .figures
@@ -957,17 +1004,35 @@ impl DecisionRecord {
                 ));
             }
         }
-        if cited
+        Ok(tuple)
+    }
+
+    /// The prices an operation cites. Each names its own tuple, as [`DecisionRecord::tuple_of`] checks.
+    fn prices_cited(&self, operation: &Operation) -> usize {
+        operation
+            .figures
             .iter()
+            .filter_map(|id| self.figure(id))
             .filter(|f| matches!(f.value, FigureValue::Price { .. }))
             .count()
-            != 1
-        {
-            return Err(Violation(
-                "every operation cites one price, for its own tuple",
-            ));
-        }
-        Ok(tuple)
+    }
+
+    /// Whether the snapshot holds a price for a tuple figure.
+    fn has_price(&self, tuple: &Id) -> bool {
+        self.snapshot
+            .figures
+            .iter()
+            .any(|f| matches!(&f.value, FigureValue::Price { tuple: t, .. } if t == tuple))
+    }
+
+    /// Whether an operation cites a usable accepted answer for its tuple at its amount in.
+    fn cites_a_usable_answer(&self, operation: &Operation, tuple: &Id) -> bool {
+        self.accepted_answers().any(|(f, t, amount_in, ..)| {
+            t == tuple
+                && amount_in == operation.amount_in.amount().as_str()
+                && operation.figures.contains(&f.figure_id)
+                && self.is_usable(f)
+        })
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
@@ -1022,7 +1087,12 @@ impl DecisionRecord {
             }
             let cut_short = matches!(
                 candidate.dropped,
-                Some(DropReason::BeyondLevels { part, .. }) if part as usize == p
+                Some(
+                    DropReason::BeyondLevels { part, .. }
+                    | DropReason::NoPrice { part, .. }
+                    | DropReason::FeeAboveAmount { part, .. }
+                    | DropReason::NothingDelivered { part, .. }
+                ) if part as usize == p
             );
             if last.to != request.to && !cut_short {
                 return Err(Violation("every part ends at the request's destination"));
@@ -1045,6 +1115,21 @@ impl DecisionRecord {
                     ));
                 }
                 let tuple = self.tuple_of(operation)?;
+                let unpriced = matches!(
+                    candidate.dropped,
+                    Some(DropReason::NoPrice { part, operation }) if (part as usize, operation as usize) == (p, o)
+                );
+                if unpriced {
+                    if self.prices_cited(operation) != 0 || self.has_price(&tuple.figure_id) {
+                        return Err(Violation(
+                            "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+                        ));
+                    }
+                } else if self.prices_cited(operation) != 1 {
+                    return Err(Violation(
+                        "every operation cites one price, for its own tuple",
+                    ));
+                }
                 self.check_citations(candidate, operation, &tuple.figure_id)?;
                 if !self.is_confirmed(operation, &tuple.figure_id) {
                     unconfirmed.push((p, o));
@@ -1187,6 +1272,26 @@ impl DecisionRecord {
                 if !self.beyond_levels(named) {
                     return Err(Violation(
                         "a beyond-levels reason names an operation whose net is above its price's last level",
+                    ));
+                }
+                Ok(())
+            }
+            DropReason::NoPrice { .. } => Ok(()),
+            DropReason::NothingDelivered { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                if named.to == request.to {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation short of the destination",
+                    ));
+                }
+                Ok(())
+            }
+            DropReason::FeeAboveAmount { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                let tuple = self.tuple_of(named)?;
+                if self.cites_a_usable_answer(named, &tuple.figure_id) {
+                    return Err(Violation(
+                        "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
                     ));
                 }
                 Ok(())

@@ -1,0 +1,17 @@
+{
+  "base": "decision-record-shortlist-with-a-tuple-of-no-price-and-a-fee-above-its-amount",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/3/parts/0/operations/1/provider",
+      "value": "ramp-x"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/candidates/3/parts/0/operations/1/figures",
+      "value": [
+        "f-ramp"
+      ]
+    }
+  ]
+}

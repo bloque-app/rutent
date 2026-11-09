@@ -1,6 +1,10 @@
 //! Why a path is dropped before ranking (`REQ-AUD-4`): the first of these that holds, in this order.
 //!
-//! Excluded by policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
+//! First, a path cut short at an operation that can't be followed: its net beyond its price's levels, its tuple
+//! with no price, its price's fee above what reaches it, or nothing delivered short of the destination
+//! (router-api 3.0.0). Such a path's last part needn't reach the destination, which only these four reasons
+//! allow, so they come before every other. Then excluded by
+//! policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
 //! judgement of no; an operation outside its band or its price's levels, judged on what enters it after the fees
 //! before it, in its own unit (`REQ-QTE-12`); over a ceiling, counting what its operations produce and the
 //! exposure already in flight (`REQ-ORD-8`); arriving with nothing (`REQ-QTE-13`); below the floor; a rate cycle
@@ -13,7 +17,7 @@ use rutent_contracts::router_api::{
 };
 
 use crate::price::{deepest, whole};
-use crate::search::{Path, Search, refuses};
+use crate::search::{Cut, Path, Search, refuses};
 
 fn amount_of(text: &str) -> BigUint {
     whole(text).unwrap_or_default()
@@ -26,11 +30,33 @@ fn index(i: usize) -> u32 {
 impl Search<'_> {
     /// Why `path` is dropped before ranking, or `None` if it may be ranked.
     pub(crate) fn fault(&self, path: &Path) -> Option<DropReason> {
-        if path.beyond_levels {
-            return Some(DropReason::BeyondLevels {
-                part: 0,
-                operation: index(path.steps.len() - 1),
-            });
+        let last = index(path.steps.len() - 1);
+        match path.cut {
+            Some(Cut::BeyondLevels) => {
+                return Some(DropReason::BeyondLevels {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::NoPrice) => {
+                return Some(DropReason::NoPrice {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::FeeAboveAmount) => {
+                return Some(DropReason::FeeAboveAmount {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            Some(Cut::NothingDelivered) => {
+                return Some(DropReason::NothingDelivered {
+                    part: 0,
+                    operation: last,
+                });
+            }
+            None => {}
         }
         let operations: Vec<&Operation> = path.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations
