@@ -31,6 +31,7 @@ mod judge;
 mod network;
 mod price;
 mod search;
+pub mod shortlist;
 
 use std::cmp::Ordering;
 
