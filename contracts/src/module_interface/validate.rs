@@ -7,7 +7,7 @@ use core::net::IpAddr;
 use super::admission::PartName;
 use super::types::{
     Addresses, CallOutcome, CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration,
-    OperationKind, OutboundCallRecord, SecretLookup,
+    Hop, OperationKind, OutboundCallRecord, SecretLookup,
 };
 use crate::provider_role::{Advertisement, KeyPurpose, ResultBody, Statement};
 
@@ -79,8 +79,9 @@ pub enum RuleViolation {
     CallToOwnProvider,
     /// A cross-module call whose operation names another transaction than the call (`REQ-MDL-8`).
     TransactionMismatch,
-    /// A hop that didn't match a declared destination or didn't connect, in a call that wasn't refused, or
-    /// before the last hop (ADR-0004: every hop is checked, and a failed check ends the call).
+    /// A hop that didn't match a declared destination or didn't connect, before the last hop, or as the last hop
+    /// of a call that was neither refused nor `unknown` after a failed dial to a declared destination (ADR-0004:
+    /// every hop is checked, and a failed check ends the call).
     HopNotConnected {
         /// Index into `hops`.
         hop: usize,
@@ -328,15 +329,20 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
 }
 
 /// Checks an outbound call record's rule the schema can't express: every hop matched a declared destination
-/// and connected, except the last hop of a refused call.
+/// and connected, except the last hop of a refused call, and the last hop of an `unknown` call that matched a
+/// declared destination and connected to nothing (its dial failed, so nothing was sent).
 pub fn validate_record(record: &OutboundCallRecord) -> Result<(), Vec<RuleViolation>> {
-    let refused = matches!(record.outcome, CallOutcome::Refused(_));
     let last = record.hops.len().saturating_sub(1);
+    let may_end_unconnected = |hop: &Hop| match record.outcome {
+        CallOutcome::Refused(_) => true,
+        CallOutcome::Unknown(_) => hop.destination.is_some(),
+        _ => false,
+    };
     let violations = record
         .hops
         .iter()
         .enumerate()
-        .filter(|(i, hop)| !hop.connected() && !(refused && *i == last))
+        .filter(|(i, hop)| !hop.connected() && !(*i == last && may_end_unconnected(hop)))
         .map(|(hop, _)| RuleViolation::HopNotConnected { hop })
         .collect();
     done(violations)
@@ -422,8 +428,9 @@ pub fn validate_call(call: &CrossModuleCall) -> Result<(), Vec<RuleViolation>> {
 /// - the call is the declared module's, by provider and version;
 /// - a call passed on, delivered or unanswered, has its callee and kind declared (`REQ-MDL-21`);
 /// - a refused call's reason is the first check it fails, in the order the platform checks: an undeclared
-///   callee, then an undeclared kind. A refusal because the route doesn't name the call or the callee isn't
-///   running is for a call whose callee and kind are declared.
+///   callee, then an undeclared kind. A refusal because the route doesn't name the call, a limit was reached,
+///   the callee isn't running or too little of the caller's deadline is left is for a call whose callee and kind
+///   are declared.
 /// - a call whose callee and kind are declared may still be refused as `undeclared_kind`: the record names the
 ///   kind of the operation forwarded, and the caller's own code may have named another, undeclared one, which
 ///   the platform refuses without passing anything on (`EXP-2`'s bindings). An `undeclared_callee` refusal of a

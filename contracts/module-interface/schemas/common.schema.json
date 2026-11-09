@@ -56,14 +56,15 @@
       "maxLength": 43
     },
     "refusal_reason": {
-      "description": "Why the platform refused an outside call before or while making it: an operation, destination or secret the module didn't declare (REQ-MDL-7, REQ-MDL-8); a connected address outside the destination's declared addresses, the first connection's or a redirect's (ADR-0004); a redirect to a destination the operation doesn't declare; or a limit reached (REQ-MDL-11).",
+      "description": "Why the platform refused an outside call before or while making it: an operation, destination or secret the module didn't declare (REQ-MDL-7, REQ-MDL-8); a connected address outside the destination's declared addresses, the first connection's or a redirect's (ADR-0004); a redirect to a destination the operation doesn't declare; a limit reached (REQ-MDL-11); or a peer that didn't prove over TLS that it is the declared host, before any byte of the call was sent (peer_not_verified, REQ-MDL-7).",
       "enum": [
         "undeclared_operation",
         "undeclared_destination",
         "undeclared_secret",
         "address_not_allowed",
         "redirect_to_undeclared_destination",
-        "limit_reached"
+        "limit_reached",
+        "peer_not_verified"
       ]
     },
     "digest": {
@@ -104,12 +105,14 @@
       }
     },
     "call_refusal_reason": {
-      "description": "Why the platform refused a cross-module call, in the order it checks: the caller doesn't declare the callee; it declares the callee but not the kind asked; the route doesn't name the call (REQ-MDL-21, THR-86); or the callee's module isn't running.",
+      "description": "Why the platform refused a cross-module call, in the order it checks: the caller doesn't declare the callee; it declares the callee but not the kind asked; the route doesn't name the call (REQ-MDL-21, THR-86); the caller reached a limit on its calls, their count or depth (limit_reached, REQ-MDL-11); the callee's module isn't running; or too little of the caller's deadline is left for the callee to answer in it (deadline_too_near, REQ-MDL-11).",
       "enum": [
         "undeclared_callee",
         "undeclared_kind",
         "not_named_by_route",
-        "callee_unavailable"
+        "limit_reached",
+        "callee_unavailable",
+        "deadline_too_near"
       ]
     }
   }

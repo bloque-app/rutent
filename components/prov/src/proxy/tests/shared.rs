@@ -450,9 +450,43 @@ fn a_new_admission_replaces_the_running_release() {
     );
 }
 
-// verifies: REQ-MDL-6, DEC-9
+// verifies: DEC-4, REQ-MDL-6
 #[test]
-fn refusals_map_onto_the_contracts_two_reasons() {
+fn secret_store_that_gave_no_answer_is_not_reported_as_not_found() {
+    let (mut proxy, stores) = proxy();
+    let internal = &stores["internal"];
+    internal.write(&secret_path("internal", "alpha", SECRET), "alpha-value");
+    admit(&mut proxy, "alpha");
+    in_flight(&mut proxy, "alpha", "tx-alpha");
+    let wanted = lookup("tx-alpha", OPERATION, SECRET);
+
+    // Sealed, overloaded, refusing the token, or answering what the resolver doesn't expect: the secret is there,
+    // and the store didn't say so.
+    for status in [503, 429, 403, 418] {
+        internal.fail_with(Some(status));
+        let result = proxy.lookup(&caller("alpha"), &wanted);
+        assert!(
+            matches!(result, Err(Refusal::Store(_))),
+            "{status}: {result:?}"
+        );
+        let answered = answer(&wanted, &result);
+        let refused = serde_json::to_value(&answered).unwrap()["outcome"].clone();
+        assert_eq!(refused["status"], "refused", "{status}");
+        assert_ne!(refused["reason"], "not_found", "{status}");
+        assert_eq!(refused["reason"], "store_unavailable", "{status}");
+    }
+
+    // The control: the same lookup resolves once the store answers.
+    internal.fail_with(None);
+    assert_eq!(
+        proxy.lookup(&caller("alpha"), &wanted).unwrap().as_str(),
+        "alpha-value"
+    );
+}
+
+// verifies: REQ-MDL-6, DEC-9, DEC-4
+#[test]
+fn refusals_map_onto_the_contracts_three_reasons() {
     let wanted = lookup("tx-1", OPERATION, SECRET);
     let undeclared = [
         Refusal::NoRole,
@@ -466,20 +500,34 @@ fn refusals_map_onto_the_contracts_two_reasons() {
     for refusal in undeclared {
         assert_eq!(
             refusal.wire_reason(),
-            Some(SecretRefusalReason::UndeclaredSecret),
+            SecretRefusalReason::UndeclaredSecret,
             "{refusal:?}"
         );
     }
     assert_eq!(
         Refusal::NotFound.wire_reason(),
-        Some(SecretRefusalReason::NotFound)
+        SecretRefusalReason::NotFound
     );
-    // A store failure has no reason on the wire: the outside part learns no answer came.
-    let failed = Refusal::Store(ResolveError::Denied);
-    assert_eq!(failed.wire_reason(), None);
-    assert_eq!(answer(&wanted, &Err(failed)), None);
+    // Every store failure is one reason on the wire, so the module learns nothing about the store.
+    for failed in [
+        ResolveError::InvalidName,
+        ResolveError::Denied,
+        ResolveError::Unavailable { status: 503 },
+        ResolveError::Unexpected { status: 418 },
+        ResolveError::Malformed,
+    ] {
+        assert_eq!(
+            Refusal::Store(failed.clone()).wire_reason(),
+            SecretRefusalReason::StoreUnavailable,
+            "{failed:?}"
+        );
+    }
+    assert!(matches!(
+        answer(&wanted, &Err(Refusal::Store(ResolveError::Denied))).outcome,
+        SecretOutcome::Refused(r) if r.reason == SecretRefusalReason::StoreUnavailable
+    ));
 
-    let refused = answer(&wanted, &Err(Refusal::NotTheRequestInFlight)).unwrap();
+    let refused = answer(&wanted, &Err(Refusal::NotTheRequestInFlight));
     assert_eq!(
         (refused.transaction, refused.operation, refused.name),
         (
@@ -494,7 +542,7 @@ fn refusals_map_onto_the_contracts_two_reasons() {
     ));
     let value = rutent_contracts::module_interface::SecretValue::new("v").unwrap();
     assert!(matches!(
-        answer(&wanted, &Ok(value)).unwrap().outcome,
+        answer(&wanted, &Ok(value)).outcome,
         SecretOutcome::Resolved(_)
     ));
 }

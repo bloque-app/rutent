@@ -37,7 +37,10 @@
 //!   `advertising`.
 //! - **Refusals** (`REQ-MDL-1`, `REQ-MDL-11`, `REQ-MDL-12`). A platform refuses a release at admission with an
 //!   [`AdmissionRefusal`], and an operation's answer with a [`PlatformRefusal`], each naming its own reason: a
-//!   limit hit, a disallowed import and a re-admitted version among them.
+//!   limit hit, a disallowed import, a re-admitted version, a release while another waits for acceptance and an
+//!   assertion that doesn't verify among them. The reasons a platform gives, here and in the outbound call
+//!   record, the secret answer and the cross-module call, are `#[non_exhaustive]`, so a later reason is a minor
+//!   version.
 //!
 //! `contracts/module-interface/README.md` lists which rule lives where.
 
@@ -57,4 +60,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "3.0.0";
+pub const VERSION: &str = "4.0.0";

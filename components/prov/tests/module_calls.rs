@@ -178,7 +178,7 @@ fn call_with_too_little_deadline_left_is_refused() {
         assert!(
             matches!(
                 &call.outcome,
-                CrossModuleOutcome::Refused(r) if r.reason == CallRefusalReason::CalleeUnavailable
+                CrossModuleOutcome::Refused(r) if r.reason == CallRefusalReason::DeadlineTooNear
             ),
             "{language}: the call wasn't refused: {:?}",
             call.outcome

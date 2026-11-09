@@ -257,12 +257,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   and what the endpoint received is what completed. A call over the limit is recorded too, one hop, refused as
   `LimitReached` (`RefusalReason` has it). Each hit is a `LimitEvent` (provider, transaction, which bound and which
   budget), which the suite's events have no place for, so the tests' binding keeps them apart.
-- **Gap: the contract has no limit reason for a cross-module call.** `CallRefusalReason` is `undeclared_callee`,
-  `undeclared_kind`, `not_named_by_route`, `callee_unavailable`, and the contract is frozen at 3.0.0. A call refused
-  because the caller hit a count or depth bound, and a call refused because too little of the caller's deadline was
-  left, are both recorded as `callee_unavailable`, which `validate_call_against` accepts for a declared callee. A
-  deadline refusal leaves the caller's operation going (the guest sees `refused`); a count or depth bound ends it as a
-  limit. `T-010-09` adds the reason to the contract; this placeholder stays until it lands.
+- **Gap: the contract has no limit reason for a cross-module call (closed by `T-010-09`).** `CallRefusalReason` was
+  `undeclared_callee`, `undeclared_kind`, `not_named_by_route`, `callee_unavailable`, frozen at 3.0.0, so a call
+  refused because the caller hit a count or depth bound, and one refused because too little of the caller's
+  deadline was left, were both recorded as `callee_unavailable`. A deadline refusal leaves the caller's operation
+  going (the guest sees `refused`); a count or depth bound ends it as a limit. Module-interface 4.0.0 (`T-010-09`)
+  gives each its own reason, `limit_reached` and `deadline_too_near`, and `module/platform.rs` now records them;
+  `callee_unavailable` is only a callee that isn't running.
 - **The caller's deadline.** A cross-module call needs `MIN_CALL_BUDGET` (1 second, settable) of the caller's
   deadline left, else the callee isn't started. The number is this task's reading: the callee would be killed at the
   caller's deadline before it answered, and the caller's own answer lost with it.

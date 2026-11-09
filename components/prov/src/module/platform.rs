@@ -907,9 +907,9 @@ impl<W: World> Platform<W> {
             Some(_) => None,
         };
         // Every call is counted, refused ones too, and a call that passed the declaration's checks is bounded in depth.
-        // The contract has no refusal reason for a limit (`T-010-09` adds one), so a call over a bound keeps the
-        // reason it already has, or is recorded as `callee_unavailable`; the caller's operation ends as a limit,
-        // which is where the bound is recorded (`LimitEvent`).
+        // A call over a bound keeps the reason it already has, the first check it failed, or is refused as
+        // `limit_reached`; the caller's operation ends as a limit, which is where the bound is recorded
+        // (`LimitEvent`).
         let mut limited = false;
         let hit = counted.and_then(|()| {
             if refusal.is_none() {
@@ -921,7 +921,7 @@ impl<W: World> Platform<W> {
         if let Err(hit) = hit {
             self.limit(hit);
             limited = true;
-            refusal = refusal.or(Some(CallRefusalReason::CalleeUnavailable));
+            refusal = refusal.or(Some(CallRefusalReason::LimitReached));
         }
         if refusal.is_none() {
             let running = self
@@ -929,13 +929,14 @@ impl<W: World> Platform<W> {
                 .get(callee)
                 .is_some_and(|s| s.active.is_some() && s.process.is_some());
             // The callee runs inside the caller's deadline: with less than it needs left, it is not started
-            // (`REQ-MDL-11`). It is refused as unavailable, as the contract has no reason for time, and the
-            // caller's operation goes on.
+            // (`REQ-MDL-11`). It is refused as `deadline_too_near`, and the caller's operation goes on.
             let left = self.stack.last().map_or(Duration::ZERO, |c| {
                 c.due.saturating_duration_since(Instant::now())
             });
-            if !running || callee == caller || left < self.call_budget {
+            if !running || callee == caller {
                 refusal = Some(CallRefusalReason::CalleeUnavailable);
+            } else if left < self.call_budget {
+                refusal = Some(CallRefusalReason::DeadlineTooNear);
             }
         }
         // Only an answer makes a call delivered (`REQ-MDL-21`): the callee answers on its own credentials, in its

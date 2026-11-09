@@ -574,10 +574,7 @@ fn tls_probe<C: Connector>(
         assert_eq!(outcome, Outcome::Refused(Refusal::NotVerified), "{served}");
         assert_eq!(resolver.asked().len(), 1, "no other address tried");
         let record = &log[0];
-        assert_eq!(
-            record.outcome,
-            refused(RefusalReason::UndeclaredDestination)
-        );
+        assert_eq!(record.outcome, refused(RefusalReason::PeerNotVerified));
         assert_eq!(record.hops.len(), 1);
         assert_eq!(record.hops[0].destination, Some(name("api")));
         assert_eq!(record.hops[0].address, None, "no verified connection");
@@ -714,11 +711,42 @@ fn every_outbound_call_is_recorded_with_destination_version_and_transaction() {
     );
 }
 
-/// A connection that drops after the request may have left is recorded as unknown, and one that can't be made at
-/// all is recorded with the address dialled, so the record says where the call went.
-// verifies: REQ-MDL-8
+/// A call whose peer fails the TLS check is refused for that, not as an undeclared destination: the destination
+/// is declared, and the record says which check failed.
+// verifies: DEC-4, REQ-MDL-6
 #[test]
-fn call_with_no_answer_is_recorded_as_unknown_with_the_address_dialled() {
+fn outbound_call_that_failed_its_tls_check_names_its_own_reason() {
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &[API]);
+    let connector = ScriptedConnector::default();
+    connector.answer(API, Err(ConnectError::NotVerified));
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-13");
+    let mut log = Vec::new();
+
+    let outcome = egress.send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+
+    assert_eq!(outcome, Outcome::Refused(Refusal::NotVerified));
+    let record = &log[0];
+    let reason = serde_json::to_value(&record.outcome).unwrap()["reason"].clone();
+    assert_ne!(reason, "undeclared_destination");
+    assert_eq!(reason, "peer_not_verified");
+    assert_eq!(record.hops[0].destination, Some(name("api")));
+    assert_eq!(record.hops[0].address, None, "no verified connection");
+    valid(record);
+}
+
+/// A connection that drops after the request may have left is recorded as unknown with the address it connected
+/// to. One that can't be made at all is recorded as unknown too, its hop naming the destination it matched and no
+/// address, since nothing connected.
+// verifies: REQ-MDL-8, REQ-AUD-1, DEC-4
+#[test]
+fn call_with_no_answer_is_recorded_as_unknown_and_one_that_connected_to_nothing_names_no_address() {
     let resolver = TableResolver::default();
     resolver
         .then("api.acme.example", &[API])
@@ -744,9 +772,12 @@ fn call_with_no_answer_is_recorded_as_unknown_with_the_address_dialled() {
 
     assert_eq!(dropped, Outcome::NoAnswer);
     assert_eq!(unreachable, Outcome::Unreachable);
-    for (record, dialled) in log.iter().zip([API, FILES]) {
+    for (record, (destination, connected)) in
+        log.iter().zip([("api", address(API)), ("files", None)])
+    {
         assert_eq!(record.outcome, CallOutcome::Unknown(Nothing {}));
-        assert_eq!(record.hops[0].address, address(dialled));
+        assert_eq!(record.hops[0].destination, Some(name(destination)));
+        assert_eq!(record.hops[0].address, connected);
         valid(record);
     }
 }

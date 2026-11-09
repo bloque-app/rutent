@@ -419,9 +419,11 @@ pub struct Refused {
     pub reason: RefusalReason,
 }
 
-/// Why the platform refused an outside call.
+/// Why the platform refused an outside call. A later minor version may add a reason, so a match needs a wildcard
+/// arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RefusalReason {
     /// The operation isn't declared (`REQ-MDL-8`).
     UndeclaredOperation,
@@ -435,6 +437,10 @@ pub enum RefusalReason {
     RedirectToUndeclaredDestination,
     /// A limit was reached (`REQ-MDL-11`).
     LimitReached,
+    /// The peer at the checked address didn't prove over TLS that it is the declared host: an untrusted, expired
+    /// or mismatched certificate, none, or too low a version. Nothing of the request was sent (`REQ-MDL-7`,
+    /// ADR-0004).
+    PeerNotVerified,
 }
 
 /// The outside part's request to resolve one declared secret by name, at call time
@@ -492,14 +498,19 @@ pub struct SecretRefused {
     pub reason: SecretRefusalReason,
 }
 
-/// Why a secret lookup was refused.
+/// Why a secret lookup was refused. A later minor version may add a reason, so a match needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SecretRefusalReason {
     /// The module doesn't declare the name, or the named operation doesn't.
     UndeclaredSecret,
     /// The caller's provider holds no secret by that name.
     NotFound,
+    /// The secret store couldn't be asked or gave no usable answer, so whether the provider holds a secret by that
+    /// name isn't known. It is never reported as `not_found`, and it tells the module nothing about the store
+    /// (`REQ-MDL-6`, `REQ-MDL-9`).
+    StoreUnavailable,
 }
 
 /// The platform's record of one outbound call (`urn:rutent:module-interface:outbound-call-record`,
@@ -616,9 +627,11 @@ pub struct CallRefused {
     pub reason: CallRefusalReason,
 }
 
-/// Why the platform refused a cross-module call, in the order it checks.
+/// Why the platform refused a cross-module call, in the order it checks. A later minor version may add a reason,
+/// so a match needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CallRefusalReason {
     /// The caller doesn't declare the callee (`REQ-MDL-21`).
     UndeclaredCallee,
@@ -626,8 +639,14 @@ pub enum CallRefusalReason {
     UndeclaredKind,
     /// The route doesn't name the call (`REQ-MDL-21`, `THR-86`).
     NotNamedByRoute,
+    /// The caller reached a limit on its cross-module calls, their count or their depth (`REQ-MDL-11`). The
+    /// caller's operation ends as a limit.
+    LimitReached,
     /// The callee's module isn't running.
     CalleeUnavailable,
+    /// Too little of the caller's deadline is left for the callee to answer inside it, so the callee isn't started
+    /// (`REQ-MDL-11`). The caller's operation goes on.
+    DeadlineTooNear,
 }
 
 impl CrossModuleCall {
