@@ -15,6 +15,8 @@
 //! - [`host`]: the world's imports on the process side, each one a request to the platform.
 //! - [`limits`]: the bounds on what a module's parts may ask of the platform, per operation and per provider, and
 //!   the pure checks the platform makes against them (`REQ-MDL-11`).
+//! - [`output`]: the check of a module's output against its schema, patterns and lengths, and what the platform
+//!   keeps of a guest's failure (`REQ-MDL-12`).
 //! - [`sandbox`]: the operating system's jail for a child, and the frames the platform and a child exchange.
 //! - [`wire`]: the messages in those frames.
 //! - [`types`]: what the platform answers with.
@@ -28,6 +30,7 @@ pub mod children;
 pub mod engine;
 pub mod host;
 pub mod limits;
+pub mod output;
 pub mod platform;
 pub mod sandbox;
 pub mod types;

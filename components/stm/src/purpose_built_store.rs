@@ -126,6 +126,8 @@ use rutent_contracts::state_machine::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::open_retry::{OpenRetry, is_open_elsewhere, retry_open};
+
 /// The name of the log file inside a store's directory.
 pub const LOG_FILE: &str = "log";
 
@@ -390,7 +392,7 @@ fn open_log(store: &DiskStore) -> Result<File, HostError> {
         .open(&path)
         .map_err(|e| io_failed("opening the log", e))?;
     file.try_lock().map_err(|e| match e {
-        fs::TryLockError::WouldBlock => unavailable("the store is open in another host"),
+        fs::TryLockError::WouldBlock => unavailable(crate::open_retry::STORE_OPEN_ELSEWHERE),
         fs::TryLockError::Error(e) => io_failed("locking the log", e),
     })?;
     // No test reaches this: a missing directory sync only shows after a power cut, which needs tooling this
@@ -720,7 +722,10 @@ impl<M: StateMachine> Host<M> for PurposeBuiltHost<M> {
     type Store = DiskStore;
 
     fn open(store: DiskStore) -> Result<Self, HostError> {
-        let file = open_log(&store)?;
+        // A child being spawned beside this open can hold a just-dropped host's lock for a moment (`open_retry`).
+        let file = retry_open(OpenRetry::SPAWN_WINDOW, is_open_elsewhere, || {
+            open_log(&store)
+        })?;
         Self::open_locked(store, file)
     }
 

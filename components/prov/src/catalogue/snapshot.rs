@@ -73,8 +73,8 @@ impl Catalogue {
     /// A tuple is in it when its provider has a grant in force covering it and the operator hasn't restricted it,
     /// a module version is recorded, every inner node on it is on the public list or declared private and has a
     /// holding account, and its provider's declared evidence grade meets the operator's floor for the tuple.
-    /// Everything else is in [`SnapshotBuild::left_out`] with its reason. Each figure's age counts from when its
-    /// advertisement was joined, and it states no validity: an advertisement holds until replaced.
+    /// Everything else is in [`SnapshotBuild::left_out`] with its reason. Each figure's age counts from its
+    /// advertisement's `made_at`, and it states no validity: an advertisement holds until replaced.
     pub fn snapshot(&self, id: &str, at: Instant) -> Result<SnapshotBuild, SnapshotError> {
         let snapshot_id = Id::new(id).ok_or(SnapshotError::BadId)?;
         let taken_at = timestamp_of(at).ok_or(SnapshotError::TimeOutOfRange)?;
@@ -82,7 +82,7 @@ impl Catalogue {
         let mut left_out = Vec::new();
         for (provider, joined) in &self.joined {
             let ad = &joined.advertisement;
-            let age = at.0.saturating_sub(joined.stated_at.0);
+            let age = at.0.saturating_sub(joined.made_at.0);
             for (tuple, value) in values_of(ad) {
                 let verdict = self.admit(provider, &tuple, at).and_then(|()| {
                     origin_of(
@@ -209,25 +209,5 @@ fn values_of(ad: &Advertisement) -> Vec<(TupleKey, FigureValue)> {
 
 /// An instant as an RFC 3339 UTC timestamp.
 fn timestamp_of(at: Instant) -> Option<Timestamp> {
-    let days = i64::try_from(at.0 / 86_400).ok()?;
-    let secs = at.0 % 86_400;
-    // Days since 1970-01-01 to a civil date (proleptic Gregorian).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    if !(0..=9_999).contains(&year) {
-        return None;
-    }
-    Timestamp::new(format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        secs / 3_600,
-        secs % 3_600 / 60,
-        secs % 60
-    ))
+    Timestamp::new(at.rfc3339()?)
 }

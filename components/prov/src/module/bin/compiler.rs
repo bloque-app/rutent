@@ -97,12 +97,8 @@ fn compile(engine: &Engine, part: &str, binary: &[u8]) -> (Compiled, Vec<u8>) {
     }
     let component = match Component::new(engine, binary) {
         Ok(component) => component,
-        Err(e) => {
-            return refuse(
-                verdict,
-                format!("it isn't a component Wasmtime takes: {e:#}"),
-            );
-        }
+        // The parser's message may quote the binary's own names: a reason never carries a guest's string.
+        Err(_) => return refuse(verdict, "it isn't a component Wasmtime takes".to_owned()),
     };
     let ty = component.component_type();
     verdict.imports = ty.imports(engine).map(|(n, _)| n.to_owned()).collect();

@@ -45,7 +45,7 @@ fn node_neither_public_nor_declared_private_cannot_be_on_a_route() {
     catalogue
         .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
         .unwrap();
-    catalogue.join(&ad, JOINED_AT).unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).unwrap();
     catalogue.set_module_version(
         &ad.provider,
         rutent_contracts::router_api::Version::new("1").unwrap(),
@@ -84,7 +84,7 @@ fn node_cannot_be_both_public_and_declared_private() {
     catalogue
         .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
         .unwrap();
-    catalogue.join(&ad, JOINED_AT).unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).unwrap();
     assert_eq!(
         catalogue.add_public_node("acme-ledger"),
         Err(NodeError::DeclaredPrivate("acme-ledger".into()))
@@ -96,7 +96,7 @@ fn node_cannot_be_both_public_and_declared_private() {
         .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
         .unwrap();
     assert_eq!(
-        catalogue.join(&ad, JOINED_AT),
+        join(&mut catalogue, &ad, JOINED_AT),
         Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into()))
     );
 }
@@ -138,7 +138,7 @@ fn tuple_with_no_evidence_floor_is_left_out_of_the_snapshot() {
     catalogue
         .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
         .unwrap();
-    catalogue.join(&ad, JOINED_AT).unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).unwrap();
     catalogue.set_module_version(
         &ad.provider,
         rutent_contracts::router_api::Version::new("1").unwrap(),
@@ -247,7 +247,7 @@ fn node_without_a_holding_account_cannot_be_on_a_route() {
     catalogue
         .grant(grant("g-1", &ad.provider, keys.clone(), 100_000))
         .unwrap();
-    catalogue.join(&ad, JOINED_AT).unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).unwrap();
     catalogue.set_module_version(
         &ad.provider,
         rutent_contracts::router_api::Version::new("1").unwrap(),
@@ -508,7 +508,7 @@ fn provider_of_another_publisher_cannot_route_through_a_private_node() {
     catalogue
         .grant(grant("g-rival", "rival-pay", keys.clone(), 100_000))
         .unwrap();
-    catalogue.join(&other, JOINED_AT).unwrap();
+    join(&mut catalogue, &other, JOINED_AT).unwrap();
     catalogue.set_module_version(
         "rival-pay",
         rutent_contracts::router_api::Version::new("1").unwrap(),

@@ -226,3 +226,90 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   quote.
 - **`Question`'s doc** now says that a question names no rival per question, and that the set a provider receives
   is kept clean by the one-amount rule.
+
+## T-011-04
+
+- **What was already there.** `T-011-01` built the ranking by objective, the record and the one part per
+  candidate, since the router suite needed them. This task adds the row's named tests and properties on that code,
+  documents the objective and the record in `lib.rs`, and settles the three items the earlier notes left open. No
+  file under `src/` changes but `lib.rs`'s docs, and `VERSION` stays, since no record changes.
+- **The default objective (`REQ-QTE-11`).** The request always names its objective, and the contract has whoever
+  builds it write `lowest_total_cost` when the customer chose none (`Objective`'s doc). So the router has no
+  default of its own to apply. `Objective` is `#[non_exhaustive]`, and an objective the contract adds later is
+  ranked as lowest total cost until the router learns it, which keeps the default the fallback. Giving `Objective`
+  a `Default` would be a `contracts/` change, and nothing here needs it.
+- **Changed objective (`AC-2`).** The test is `AC-2`'s shape: a withdrawal, two exchanges at one rate, one cheaper
+  and one faster, and a ramp. Its choice round answers every kept operation at every amount a kept candidate takes
+  it at, so one snapshot serves both objectives and no provider is asked again between them. That is more than
+  Core asks under the one-amount rule (`T-011-02`'s review); the router doesn't care which answers were asked for.
+  Lowest total cost chooses the cheaper exchange, fastest settlement the faster one, and each drops the other as
+  outranked by its choice.
+- **Recomputing with no provider call (`AC-2`, `REQ-AUD-4`).** No provider call is structural: `route` takes the
+  request, the snapshot and the bounds and nothing else, and the record holds all three verbatim. The test keeps
+  only the record's bytes, reads them back, and has the router suite's `recompute` (its own arithmetic, `DEC-5`)
+  find the record's choice under both objectives; every candidate but the chosen one names its drop, and routing
+  the record's own inputs gives its bytes again.
+- **One part (`REQ-QTE-16`, `DEC-8`).** The test allows three parts where two cheap ramps each serve only 600 of
+  the 1,000 asked, so a splitting router would send 500 through each. Every candidate in both rounds is one part,
+  the cheap ramps are dropped as `outside_band`, and the dear ramp that serves it all is chosen.
+- **Seeing the tests fail.** All four named tests passed on first run, since they pin down existing behaviour. Each
+  was run against a mutated router, then the source restored unchanged: ranking ignoring the objective failed the
+  objective and recompute tests (the suite's ranking check); a candidate split in two when `max_parts` is above 1
+  failed the one-part test (the contract refuses the record); and an operation stated with its fee capped at what
+  enters it failed the unstatable-tuples test.
+- **Property tests (`DEC-18`), appended to `tests/properties.rs`.** Over generated networks, exchanges included: the
+  choice round over every kept operation answered always chooses, and the suite's `recompute`, from the record's
+  bytes alone, finds the same choice (the existing property ran shortlist rounds and checked only `passes`); every
+  candidate is one part with `max_parts` drawn from 1 to 8; changing the objective changes no candidate, part or
+  drop but `outranked` and the choice; and a tuple whose price is removed changes no candidate beyond the record's
+  snapshot, as if the tuple were absent. Each failed under a mutation, then restored: ranking ignoring the objective
+  (seed 117), the split in two, the band checked before validity under one objective only (seed 9), and an unpriced
+  tuple borrowing another's price.
+
+### The open items
+
+- **Paths the contract can't state, the reading recorded as the contract's (`REQ-AUD-4`).** A candidate is a path
+  whose every operation the contract can state. A tuple with no price is no operation (`Operation` cites one
+  price), nor is one whose fee would be above what enters it (`Operation::check`), so neither appears as a
+  candidate, and "every candidate considered" means every path of statable operations. The choice still
+  recomputes from the record alone: both stay in the record's snapshot verbatim, and the rule that drops them reads
+  nothing else. This matches the contract README, whose "Unchecked by either" already says the record isn't
+  checked to list every candidate. A test and a property pin it down.
+- **Why not a `DEC-4` bump now.** A drop reason for them is a new `DropReason` variant, which breaks an exhaustive
+  match, so it is a major under the precedent of module-interface 3.0.0: router-api 3.0.0. `PLAN.md` has `F-011`
+  build `route` "as router-api 2.0.0 defines it", which 2.1.0 still meets and 3.0.0 wouldn't, and this task can't
+  edit `PLAN.md`. M3's Core contract task may reopen router-api anyway, for the inputs below, so one major there can
+  carry both. The contract also only adds amounts, so it couldn't check an over-fee claim itself: the router suite
+  would.
+- **Item to raise, for M3's contract task.** A drop reason for paths that can't be stated, shaped as
+  `beyond_levels` (0.7.0): the part listed up to and including the operation that can't be stated, which arrives
+  with 0, the part needn't reach the destination, and the reason names `{part, operation}`. For an unpriced tuple,
+  that operation cites its tuple and no price, with a fee of 0, and the contract checks the snapshot holds no price
+  for it. For a fee above the amount, the fee is stated as the amount in, and the suite checks the formula's fee on
+  it is above it. The suite's `amounts-follow-their-figures` check skips the named operation.
+- **`quote_voided`, still unowned.** This row doesn't serve `REQ-QTE-1`, and neither it nor the suite needs the
+  reason: the suite checks the route chosen, not the drop reasons, and an operation whose answer was asked at
+  another amount is truthfully `unconfirmed`. The likely owner is `F-020`, which asks again at the shifted amount
+  (`T-011-02`'s notes). The contract already allows it: in a choice round, an unconfirmed operation for which a
+  usable fresh quote of its tuple at another amount lists `amount_changes` may cite that quote and be dropped as
+  `quote_voided` for `amount_changes` instead. For `validity_passes` the router keeps `stale_figure`, which is as
+  true and needs no condition listed.
+- **The inputs the contract doesn't carry, open for M3's Core contract task.** The decision record needs none of
+  the operator's fee formula (`REQ-QTE-2`), the slippage limits (`REQ-QTE-9`), the history of stated terms
+  (`REQ-QTE-6`), the actual settlement times (`REQ-QTE-3`) or the held quote (`REQ-QTE-15`) to recompute the
+  choice: `Objective` ranks on the providers' last `amount_out` and declared seconds, before the operator's fee.
+  So `PolicyBounds` is unchanged. One consequence to note: the operator's fee is taken the same way from every
+  candidate, at the destination, and where its proportion is at most one, what the customer receives after it
+  never falls as what arrives grows. Ranking after it could then differ from ranking before it only where it turns
+  a difference into a tie, which goes to the lowest `candidate_id`. All
+  five, and whether the ranking should be net of the operator's fee, stay open for that task, together with how
+  Core reaches the `quote` module's types under `DEC-2`.
+
+## REQ-AUD-4 partly met until router-api 3.0.0 (review of T-011-04, 2026-11-09)
+
+A path through an unpriced tuple, or through an operation whose fee exceeds what enters it, is a candidate in
+`REQ-AUD-4`'s sense ("every candidate and why each was dropped"), but the router leaves it out with no drop reason,
+because router-api 2.0.0's `DropReason` has no variant for it and isn't `#[non_exhaustive]`, so adding one is a major
+bump. `REQ-AUD-4` is therefore partly met. The orchestrator's default, reversible and on the decision form
+(item `aud4-unstateable-candidates`): the drop reasons come with M3's Core contract task as router-api 3.0.0, under
+`DEC-4` and the owner's click at the release into `main`.
