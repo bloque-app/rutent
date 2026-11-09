@@ -10,8 +10,8 @@ review, not how a language does. What is specific to rutent is marked **Here**.
 
 - Work is developed against **`develop`**. A milestone pull request (`m1`, `m2`, …) targets `develop`.
 - **`main` is for releases.** A `develop` → `main` pull request is opened when a release is cut, and the owner merges it.
-- **Here:** a change touching a `DEC-20` path (HOUSE-RULES.md) waits for the owner's click on `develop` too. GitHub does
-  not stop an agent there; the agent stops itself.
+- **Here:** a merge into `develop` needs no human. A change touching a `DEC-20` path (HOUSE-RULES.md) waits for the
+  owner's click on the release into `main`, where `main`'s code-owner rule enforces it.
 
 ## Roles
 
@@ -137,7 +137,10 @@ produced.
 
 - A milestone pull request merges into `develop` with a merge commit, never a squash, and its branches are kept
   (HOUSE-RULES.md).
-- **Here:** before merging, check the diff against the `DEC-20` paths. If it touches one, stop: the owner merges it.
+- **Here:** the orchestrating session merges into `develop` once the reviewer approves and every check passes. Because
+  a review posted from the author's own account can't approve on GitHub, the reviewer approves in the review's text,
+  and says nothing is left open.
+- A release pull request lists the `DEC-20` paths it carries, for the owner's click.
 - A `develop` → `main` pull request is always the owner's.
 
 ## Anti-patterns
@@ -182,4 +185,5 @@ Before merge:
 - [ ] Fixes re-verified at the merged head
 - [ ] CI read by check name
 - [ ] Base is `develop`, unless this is a release
-- [ ] No `DEC-20` path in the diff, or the owner has clicked
+- [ ] The reviewer has approved, in a review or a comment, with nothing left open
+- [ ] A release into `main`: its `DEC-20` paths are listed, and the owner has clicked

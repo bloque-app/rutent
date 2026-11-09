@@ -18,7 +18,7 @@ differ the later one wins; everywhere else `SPEC.md` and `PLAN.md` decide, and t
 | An agent merges its own pull request when its task says so | The orchestrating session integrates each task into the milestone branch and pushes it. A milestone pull request targets `develop` and goes through the [review workflow](REVIEW-WORKFLOW.md); `main` takes only releases, merged by the owner |
 | At most two helpers at once (`PLAN.md` `DEC-22`) | No cap on parallel agents (the ruling below) |
 | A generic tag syntax for tests | Rust tests use a `// verifies: ID, ID` comment on the line directly above the test (attributes may sit between) |
-| No path always waits for the lead | The `DEC-20` paths always wait for the owner's click |
+| No path always waits for the lead | The `DEC-20` paths always wait for the owner's click, given on the release into `main` |
 
 Everything else below is Narthex's default, carried unchanged.
 
@@ -44,9 +44,11 @@ replaces the "no agent merges" part of the ruling above:
 - Work is developed against **`develop`**. Each milestone pull request targets `develop`, not `main`.
 - Review follows [REVIEW-WORKFLOW.md](REVIEW-WORKFLOW.md). An agent may answer a review even when the review was
   posted from the same GitHub account as the pull request.
-- Once the review is closed and every check passes, the orchestrating session may merge a milestone pull request into
-  `develop`, **unless its diff touches a `DEC-20` path**: those still wait for the owner's click.
-- **`main` is for releases.** A `develop` → `main` pull request is merged by the owner, never by an agent.
+- Once the reviewer approves and every check passes, the orchestrating session merges the milestone pull request into
+  `develop`. **A merge into `develop` needs no human**, whatever paths it touches (the owner, in chat, later on
+  2026-11-08).
+- **`main` is for releases.** A `develop` → `main` pull request is merged by the owner, never by an agent. The owner's
+  `DEC-20` click is given there.
 
 ## Identity and signing
 
@@ -71,8 +73,8 @@ replaces the "no agent merges" part of the ruling above:
 
 ## Paths that wait for the owner's click (`DEC-20`)
 
-A change to any of these is never merged on an agent's own judgement. It waits for the owner's click on the pull
-request, after a separate security review:
+A change to any of these reaches `main` only with the owner's click on the release pull request, after a separate
+security review. It may land on `develop` before that, once the reviewer approves (the `branch-model` ruling):
 
 - `contracts/`, including each version bump;
 - the credential proxy and its resolvers;
@@ -98,12 +100,11 @@ A task whose diff touches one of these says so in its commit body.
 
 - The orchestrating session integrates tasks into the milestone branch. A task is integrated only when its checks pass
   and a fresh reviewer agent (not the author) finds nothing.
-- A milestone pull request targets `develop`. After the review in [REVIEW-WORKFLOW.md](REVIEW-WORKFLOW.md) closes and
-  every check passes, the orchestrating session may merge it, with a merge commit, never a squash. The milestone
+- A milestone pull request targets `develop`. Once the reviewer approves under [REVIEW-WORKFLOW.md](REVIEW-WORKFLOW.md)
+  and every check passes, the orchestrating session merges it, without waiting for anyone, with a merge commit, never a squash. The milestone
   branch and its task branches are kept, because run notes cite their commits.
-- The `DEC-20` paths wait for the owner's click, as above, on `develop` as on `main`. GitHub does not enforce this on
-  `develop`: agents act with the owner's credentials, so a code-owner rule there would stop nothing. The rule holds
-  because agents keep it.
+- The `DEC-20` paths wait for the owner's click on the release into `main`, where `main`'s code-owner rule enforces
+  it. A release pull request lists every `DEC-20` path it carries since the last release.
 - `main` takes only releases: a `develop` → `main` pull request, merged by the owner. `main`'s protection requires
   code-owner review; `develop`'s requires a pull request and the four checks (`ci`, `records`, `contract-guard`,
   `dependency licence record`), with no approval count, since a review posted from the author's own account cannot
