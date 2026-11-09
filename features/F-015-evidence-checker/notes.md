@@ -43,3 +43,29 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - A checkpoint covers the movements recorded before it, by order of recording, not by block: a movement recorded
   after a checkpoint, even into the same tip block, is not final until the next checkpoint. A reorged-out id may come
   back only with the movement it first named, since a transaction id fixes its content (`ContentChanged` otherwise).
+
+## T-015-03
+
+- The contracts define no record of a private node's inner segments, so `components/evidence` defines one
+  (`replay::RecordedSegment`): asset and amount in, asset and amount out, and the fee in the asset that went in.
+  Amounts are canonical decimal integer strings; anything else (`1e3`, a leading zero, a sign) is recorded as
+  malformed rather than guessed at.
+- Replay checks what can be checked without a rate: each segment takes in what the one before gave out, and where
+  the asset stays the same, amount in equals amount out plus the fee. In every segment the fee may not exceed the
+  amount in. Where the asset changes, the exchange rate itself stays unchecked: it is the node's own.
+- A route across several private nodes is replayed node by node in route order; what one node hands on must be what
+  the next records taking in. Only the last node's output is compared with the public movement out and the stated
+  outcome. A fault inside a node does not stop the later comparisons: they run on what the record says,
+  and every mismatch is recorded (`REQ-ORD-41`: record any mismatch). An empty record is a `NoSegments` mismatch from
+  `replay_node`; `replay_route` still reports it as `Unreplayable`.
+- The comparison with the public movement reuses `verify_movement` with the replayed value as the expectation, so
+  the network alone decides finality (`T-015-01` reading). An unknown, pending or reorged-out exit is recorded as a
+  `PublicExit` mismatch: there is no final public movement out to be consistent with.
+- A public exit with no node recorded, or a node with no segments, is `Unreplayable`, neither a match nor a
+  mismatch: `REQ-ORD-41` makes recording a SHOULD, so its absence is reported, not punished.
+- A match is `Replay::Consistent` and produces no `Check`, so it cannot lift a grade; `proves_segments_happened`
+  is always false (`THR-131`: a provider can invent segments to fit its exit). A route ending inside the node is
+  `Replay::PublishersWord`, whatever was recorded.
+- The module is `pub mod replay` and its items are not re-exported at the crate root, to keep `lib.rs` clear of
+  `T-015-02`'s edits. One movement evidences one exit; reuse across routes is `distinct_movements`' job at the
+  caller.
