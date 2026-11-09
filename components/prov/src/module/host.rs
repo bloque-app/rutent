@@ -403,10 +403,14 @@ fn check_part_why(
 ) -> Result<(), (bool, String)> {
     let allowed = allowed_imports(part);
     let ty = component.component_type();
-    for (name, _) in ty.imports(engine) {
+    for (index, (name, _)) in ty.imports(engine).enumerate() {
         if !allowed.contains(&name) {
-            // The import's name is the guest's: it is never put in a reason (`REQ-MDL-12`).
-            return Err((true, "it imports what its part may not".to_owned()));
+            // The import's name is the guest's: it is never put in a reason (`REQ-MDL-12`), but its place among the
+            // part's imports is, so an operator can find it in the binary.
+            return Err((
+                true,
+                format!("import #{index} is one its part may not name"),
+            ));
         }
     }
     match part {

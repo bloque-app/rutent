@@ -8,6 +8,9 @@ mod common;
 use common::Probe;
 use common::{answers_as, binding, install, spec, withdrawal};
 use rutent_conformance::boundary::{Handled, ModuleBinding, PlatformRefusal};
+use rutent_prov::module::children::{CompileError, ProviderProcess, Stderrs, compile};
+use rutent_prov::module::platform::OPERATION_DEADLINE;
+use rutent_prov::module::wire::sha256;
 
 const RUST: &str = "rs";
 const CANARY: &str = "canary-8f3a1c9e";
@@ -151,4 +154,89 @@ fn refused_output_leaves_the_provider_answering() {
         );
     }
     assert_eq!(binding.process(provider), pid, "the process was replaced");
+}
+
+const NAMED: &str = "canary-zq7kx4";
+
+// verifies: REQ-MDL-12, REQ-MDL-9
+#[test]
+fn an_imports_name_never_appears_in_the_reason_admission_gives() {
+    let dir = std::env::temp_dir().join(format!("rutent-output-canary-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a work directory");
+    let read = |name: &str| std::fs::read(common::standins().join(name)).expect("a stand-in");
+    let stderrs = Stderrs::default();
+    let refused = compile(
+        &common::paths(),
+        &dir,
+        &read("hostile-canary.wasm"),
+        &read("rs-reserve-outside.wasm"),
+        &stderrs,
+    );
+    let Err(CompileError::Refused {
+        disallowed_import,
+        why,
+        ..
+    }) = refused
+    else {
+        panic!("a part importing a canary-named interface was not refused");
+    };
+    assert!(disallowed_import);
+    assert!(!why.contains(NAMED), "the import's name is in: {why}");
+    // The operator can still find which import it was, by its place among the part's imports.
+    assert!(why.contains("import #"), "no index in: {why}");
+    for stderr in stderrs.lock().expect("a lock").iter() {
+        let text = String::from_utf8_lossy(&stderr.bytes);
+        assert!(
+            !text.contains(NAMED),
+            "the import's name is in stderr: {text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// verifies: REQ-MDL-12, REQ-MDL-9
+#[test]
+fn a_start_error_the_guest_wrote_never_appears_in_why_the_release_did_not_start() {
+    let mut binding = binding("reserve");
+    let provider = "start-canary";
+    install(
+        &mut binding,
+        &spec(provider, "1.0.0", Vec::new(), false),
+        RUST,
+        "reserve",
+        &[Probe::StartError(CANARY.to_owned())],
+    );
+    let machine = binding
+        .machine(provider, "1.0.0")
+        .expect("its machine code");
+    let dir = std::env::temp_dir().join(format!("rutent-start-canary-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a work directory");
+    let stderrs = Stderrs::default();
+    let started = ProviderProcess::spawn(
+        &common::paths(),
+        &dir,
+        provider,
+        &machine,
+        [&sha256(&machine.sandboxed), &sha256(&machine.outside)],
+        &stderrs,
+        OPERATION_DEADLINE,
+    );
+    let Err(why) = started else {
+        panic!("a release whose start fails was started");
+    };
+    assert!(
+        why.contains("didn't start"),
+        "refused for another reason: {why}"
+    );
+    let mut seen = vec![why, format!("{:?}", binding.take_events())];
+    for stderr in stderrs.lock().expect("a lock").iter() {
+        seen.push(String::from_utf8_lossy(&stderr.bytes).into_owned());
+    }
+    for stderr in binding.stderrs() {
+        seen.push(String::from_utf8_lossy(&stderr.bytes).into_owned());
+    }
+    for text in seen {
+        assert!(!text.contains(CANARY), "the guest's string is in {text}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }

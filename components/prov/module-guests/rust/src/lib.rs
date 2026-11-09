@@ -9,7 +9,7 @@
 //!
 //! The program's lines, after the slot's magic line, up to `end`:
 //!
-//! - `provider <id>`, `version <v>`, `starts <0|1>`, `serves <operation>`;
+//! - `provider <id>`, `version <v>`, `starts <0|1> [error text]`, `serves <operation>`;
 //! - `output honest | padded <n> | unparseable | another-kind | another-transaction | unknown-field |
 //!   set <JSON pointer> <JSON value>` (the honest result with one value replaced: the output tests' one way to
 //!   break a pattern or a length; the C stand-ins have no such mode);
@@ -131,6 +131,7 @@ struct Program {
     provider: String,
     version: String,
     starts: bool,
+    start_error: Option<String>,
     serves: String,
     output: Vec<String>,
     steps: Vec<Step>,
@@ -142,6 +143,7 @@ fn program() -> Option<Program> {
         provider: String::new(),
         version: String::new(),
         starts: false,
+        start_error: None,
         serves: String::new(),
         output: Vec::new(),
         steps: Vec::new(),
@@ -153,6 +155,10 @@ fn program() -> Option<Program> {
             ["provider", p] => program.provider = (*p).to_owned(),
             ["version", v] => program.version = (*v).to_owned(),
             ["starts", s] => program.starts = *s == "1",
+            ["starts", s, message @ ..] => {
+                program.starts = *s == "1";
+                program.start_error = Some(message.join(" "));
+            }
             ["serves", o] => program.serves = (*o).to_owned(),
             ["output", rest @ ..] => {
                 program.output = rest.iter().map(|w| (*w).to_owned()).collect()
@@ -196,7 +202,9 @@ fn program() -> Option<Program> {
 fn start() -> Result<(), String> {
     match program() {
         None => Err("the program slot holds no program".to_owned()),
-        Some(p) if !p.starts => Err("this release does not start".to_owned()),
+        Some(p) if !p.starts => Err(p
+            .start_error
+            .unwrap_or_else(|| "this release does not start".to_owned())),
         Some(_) => Ok(()),
     }
 }

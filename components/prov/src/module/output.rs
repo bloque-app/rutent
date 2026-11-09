@@ -80,11 +80,14 @@ pub fn check(output: &[u8], limit: usize) -> Result<ResultBody, PlatformRefusal>
 }
 
 /// Why a part's call stopped, as a platform may keep it: wasmtime's words for the kind of trap, or a fixed
-/// sentence. A trap's backtrace, a guest's error string and the names in a binary are the guest's to choose, so none
+/// sentence for each other kind of error it knows. A trap's backtrace, a guest's error string and the names in a binary are the guest's to choose, so none
 /// of them is kept.
 pub fn trap_reason(error: &wasmtime::Error) -> String {
-    match error.downcast_ref::<wasmtime::Trap>() {
-        Some(trap) => trap.to_string(),
-        None => "the part failed".to_owned(),
+    if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
+        return trap.to_string();
     }
+    if error.downcast_ref::<wasmtime::OutOfMemory>().is_some() {
+        return "resource limit: out of memory".to_owned();
+    }
+    "the part failed".to_owned()
 }

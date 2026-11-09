@@ -38,6 +38,8 @@ pub enum Probe {
         /// The JSON it becomes.
         value: String,
     },
+    /// The release's start fails with this error string, which the part itself chose. The Rust stand-ins only.
+    StartError(String),
     /// Hostile: asked through an outside request for the operation the module serves first, the outside part
     /// looks up `secret` and calls `endpoint` naming the operation `claimed` instead.
     Forge {
@@ -118,6 +120,7 @@ pub fn encode(spec: &ModuleSpec, probes: &[Probe]) -> String {
             Probe::Spin => "spin".to_owned(),
             Probe::Grow(pages) => format!("grow {pages}"),
             Probe::Trap => "trap".to_owned(),
+            Probe::StartError(message) => format!("starts 0 {message}"),
             Probe::Output { pointer, value } => format!("output set {pointer} {value}"),
             Probe::Burn { iterations, times } => {
                 vec![format!("burn {iterations}"); *times].join("\n")

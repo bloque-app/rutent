@@ -147,6 +147,8 @@ fn the_check_refuses_arbitrary_bytes_without_panicking_and_over_the_limit_as_ove
 fn a_trap_reason_never_carries_what_the_guest_named() {
     let stopped = trap_reason(&wasmtime::Error::from(wasmtime::Trap::OutOfFuel));
     assert!(stopped.contains("fuel"), "{stopped}");
+    let memory = trap_reason(&wasmtime::Error::from(wasmtime::OutOfMemory::new(8)));
+    assert!(memory.contains("out of memory"), "{memory}");
     for seed in 0..CASES {
         let mut rng = Rng::new(seed);
         let named = format!("guest-{}-{}", rng.next(), text(&mut rng, 8));
