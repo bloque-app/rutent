@@ -11,7 +11,7 @@ use common::{binding, install, languages, withdrawal};
 use rutent_conformance::boundary::{
     BoundaryHarness, Endpoint, Handled, LookupOutcome, ModuleBinding, ModuleSpec, Output,
 };
-use rutent_conformance::role::placeholder_key;
+use rutent_conformance::signing::{public_key, statements_key};
 use rutent_contracts::module_interface::{
     CallOutcome, Declaration, RefusalReason, SecretRefusalReason, validate_record,
 };
@@ -44,7 +44,7 @@ fn declaration(provider: &str, first: &str) -> Declaration {
             "destinations": [destination("api"), destination("admin")],
             "secrets": ["admin.key"],
             "calls": [],
-            "statement_key": placeholder_key(1),
+            "statement_key": public_key(&statements_key(provider)),
         },
     }))
     .expect("a valid declaration")

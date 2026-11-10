@@ -8,91 +8,13 @@
 mod common;
 
 use common::*;
-use ed25519_dalek::SigningKey;
 use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
-    Check, Received, RoleHarness, RoleProvider, SignatureVerifier, SuiteContext, Verification,
-    run_role_suite,
+    Check, RoleHarness, RoleProvider, SignatureVerifier, SuiteContext, Verification, run_role_suite,
 };
-use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, Advertisement, Operation, PublicKey, ResultBody, Signature, Statement,
-};
+use rutent_conformance::signing::Signing;
+use rutent_contracts::provider_role::Signature;
 use rutent_prov::catalogue::{Catalogue, Grant, GrantTerms, Instant, tuples_of};
-use serde_json::Value;
-
-/// The signing key a placeholder key stands for: its bytes are the seed.
-fn real(placeholder: &str) -> SigningKey {
-    SigningKey::from_bytes(&PublicKey::new(placeholder).expect("a key").bytes())
-}
-
-/// Signs `value` and every statement inside it, innermost first, with the keys its placeholders stand for.
-fn resign(value: &mut Value) {
-    match value {
-        Value::Array(items) => items.iter_mut().for_each(resign),
-        Value::Object(map) => {
-            map.values_mut().for_each(resign);
-            let is_statement = map.get("signature").is_some_and(|s| s["key"].is_string())
-                && map.contains_key("maker")
-                && map.contains_key("shape");
-            if !is_statement {
-                return;
-            }
-            let key = real(map["signature"]["key"].as_str().expect("a key"));
-            if map["shape"] == ADVERTISEMENT_SHAPE {
-                for entry in map["statement"]["keys"].as_array_mut().expect("keys") {
-                    let own = real(entry["public_key"].as_str().expect("a key"));
-                    entry["public_key"] = public_key(&own).as_str().into();
-                }
-            }
-            sign_value(value, &key);
-        }
-        _ => {}
-    }
-}
-
-/// The bytes of a statement as sent, signed anew.
-fn signed(sent: &[u8]) -> Vec<u8> {
-    let mut value: Value = serde_json::from_slice(sent).expect("json");
-    resign(&mut value);
-    serde_json::to_vec(&value).unwrap()
-}
-
-/// A provider whose statements carry real signatures.
-struct Signing<P>(P);
-
-impl<P: RoleProvider> RoleProvider for Signing<P> {
-    fn advertisement(&self) -> Received<Advertisement> {
-        Received::from_bytes(signed(self.0.advertisement().bytes())).expect("reads back")
-    }
-
-    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
-        Received::from_bytes(signed(self.0.handle(operation).bytes())).expect("reads back")
-    }
-
-    fn state(&self) -> String {
-        self.0.state()
-    }
-
-    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
-        self.0
-            .status(transaction)
-            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
-    }
-}
-
-impl<P: RoleHarness> RoleHarness for Signing<P> {
-    fn force_outcome_unknown(&mut self) -> bool {
-        self.0.force_outcome_unknown()
-    }
-
-    fn force_failure(&mut self) -> bool {
-        self.0.force_failure()
-    }
-
-    fn credit_reversal(&mut self, segment: &str, node: &str, asset: &str, amount: &str) -> bool {
-        self.0.credit_reversal(segment, node, asset, amount)
-    }
-}
 
 /// The catalogue as the suite's verifier.
 struct CatalogueVerifier<'a> {
