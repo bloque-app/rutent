@@ -131,6 +131,7 @@ fn provider_below_the_tuples_evidence_floor_is_left_out_of_the_snapshot() {
 fn tuple_with_no_evidence_floor_is_left_out_of_the_snapshot() {
     let mut catalogue = Catalogue::new();
     catalogue.add_public_node("polygon").unwrap();
+    catalogue.publish_operator_module("wallet").unwrap();
     catalogue
         .register_public_holding("polygon", "wallet")
         .unwrap();
@@ -264,6 +265,7 @@ fn node_without_a_holding_account_cannot_be_on_a_route() {
             .all(|r| matches!(r, LeftOutReason::NoHoldingAccount(_)))
     );
 
+    catalogue.publish_operator_module("wallet").unwrap();
     catalogue
         .register_public_holding("polygon", "wallet")
         .unwrap();
@@ -273,6 +275,34 @@ fn node_without_a_holding_account_cannot_be_on_a_route() {
         .register_private_holding("acme-ledger", "acme", "record-interface")
         .unwrap();
     assert!(left_out_reasons(&catalogue).is_empty());
+}
+
+// verifies: REQ-CAT-23
+#[test]
+fn public_nodes_holding_account_is_only_a_module_the_operator_publishes() {
+    let mut catalogue = acme_catalogue(&[ramp_advertisement()]);
+    catalogue.add_public_node("ethereum").unwrap();
+
+    // A provider's module, and a module no one has published, are never a public node's holding account.
+    for reference in ["bridge-pay", "unpublished-wallet"] {
+        assert_eq!(
+            catalogue.register_public_holding("ethereum", reference),
+            Err(NodeError::NotOperatorModule(reference.into())),
+            "{reference}"
+        );
+    }
+    assert!(catalogue.nodes().holding("ethereum").is_none());
+
+    // A module the operator publishes is.
+    catalogue
+        .publish_operator_module("unpublished-wallet")
+        .unwrap();
+    catalogue
+        .register_public_holding("ethereum", "unpublished-wallet")
+        .unwrap();
+    let account = catalogue.nodes().holding("ethereum").unwrap();
+    assert_eq!(account.reference, "unpublished-wallet");
+    assert_eq!(account.source, HoldingSource::Operator);
 }
 
 // verifies: REQ-CAT-23

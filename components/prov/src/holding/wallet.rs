@@ -1,12 +1,13 @@
 //! The plain wallet as a node's holding account (`T-016-02`; `REQ-CAT-23`, `INV-5`, `REQ-MDL-1`).
 //!
-//! A public node's holding account is, by default, a plain wallet: a Wasm component (`guests/plain-wallet/`)
-//! admitted through [`Platform::admit`] like any module, on a signed release assertion, and registered for the node
-//! by the operator. This file is the operator's side of it:
+//! A public node's holding account is, by default, a plain wallet: a Wasm component (`guests/plain-wallet/`) the
+//! operator publishes, admitted through [`Platform::admit`] on the operator's own signed release assertion, with no
+//! provider advertisement behind it, and registered for the node by the operator. This file is the operator's side of it:
 //!
-//! - [`Holdings::register`] records a wallet as a node's holding account, and refuses unless the node is on the
-//!   operator's public list and the platform runs that wallet (a release that waits for its fresh acceptance, or one
-//!   never admitted, does not run);
+//! - [`Holdings::register`] records a wallet as a node's holding account, and refuses unless the wallet is a module
+//!   the operator publishes (`T-016-04`: admitted on the operator's own release, never a provider's module), the
+//!   node is on the operator's public list and the platform runs that wallet (a release that waits for its fresh
+//!   acceptance, or one never admitted, does not run);
 //! - [`WalletHolding`] is the account as the host keeps it: it binds the account to one node and one asset, writes
 //!   each landing and release as the provider-role contract's own `deposit` and `withdrawal`, and records only what
 //!   the wallet confirmed in its result, so its [`HoldingReading`] is the wallet's word, per order;
@@ -57,9 +58,9 @@ pub enum RegisterError {
     Node(NodeError),
     /// The asset is blank.
     BlankAsset,
-    /// The provider's accepted advertisement offers no reserve, so its module is not one the wallet's role fits: a
-    /// holding account is a reserve-category module (the plain wallet is one).
-    NotReserve(String),
+    /// The catalogue doesn't record the operator as the module's publisher: a provider's module, admitted on its
+    /// provider's advertisement, is never a node's holding account (`REQ-CAT-23`).
+    NotOperatorPublished(String),
     /// The node already has a holding account.
     NodeTaken(String),
     /// This wallet is already the account of another node: a wallet is one node's.
@@ -329,9 +330,10 @@ pub struct Holdings {
 
 impl Holdings {
     /// Registers the wallet of `provider`, holding `asset`, as the holding account of the public node `node`
-    /// (`REQ-CAT-23`). The platform must run that wallet, admitted on its signed release assertion and accepted,
-    /// and the node must be on the operator's public list; the way to the account is recorded in the catalogue.
-    /// Nothing is registered otherwise.
+    /// (`REQ-CAT-23`). The wallet must be a module the operator publishes, as the catalogue records
+    /// ([`Catalogue::publish_operator_module`]), never a provider's (`T-016-04`); the platform must run it, admitted
+    /// on the operator's own signed release and accepted; and the node must be on the operator's public list. The
+    /// way to the account is recorded in the catalogue. Nothing is registered otherwise.
     pub fn register<W: World>(
         &mut self,
         catalogue: &mut Catalogue,
@@ -346,11 +348,8 @@ impl Holdings {
         if platform.active_version(provider).is_none() {
             return Err(RegisterError::NotRunning(provider.to_owned()));
         }
-        let reserve = catalogue
-            .accepted_advertisement(provider)
-            .is_some_and(|ad| ad.statement.offers.reserve.is_some());
-        if !reserve {
-            return Err(RegisterError::NotReserve(provider.to_owned()));
+        if !catalogue.publishers().published_by_operator(provider) {
+            return Err(RegisterError::NotOperatorPublished(provider.to_owned()));
         }
         if self.accounts.contains_key(node) {
             return Err(RegisterError::NodeTaken(node.to_owned()));

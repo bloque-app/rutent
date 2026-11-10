@@ -120,6 +120,9 @@ pub enum StatementRefusal {
     NoContext,
     /// The signature doesn't verify.
     BadSignature(SignatureError),
+    /// A statement the operator must make isn't signed with the operator key of the deployment the catalogue
+    /// serves (`T-016-04`).
+    NotSignedByOperator,
 }
 
 impl Catalogue {
@@ -170,6 +173,12 @@ impl Catalogue {
         }
         self.statements_seen.insert(key.clone());
         Ok(())
+    }
+
+    /// Whether `key` is an advertising key somewhere: listed for `advertising` by an accepted advertisement, or
+    /// trusted for advertising under a grant (`THR-4`).
+    pub fn is_advertising_key(&self, key: &PublicKey) -> bool {
+        self.advertising_seen.contains(key)
     }
 
     /// The advertisement last accepted for a provider.

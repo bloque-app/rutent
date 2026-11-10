@@ -140,6 +140,9 @@ pub enum RuleViolation {
     AssertionKeyNotAdvertised,
     /// A release assertion signed with the deployment's `operator_key` (`THR-8`).
     AssertionKeyIsOperatorKey,
+    /// The assertion of a module the operator publishes isn't signed with the `operator_key` of the deployment
+    /// the platform serves (`REQ-MDL-1`, 4.0.0).
+    OperatorAssertionNotSignedWithOperatorKey,
     /// A release assertion signed with a key the advertisement lists for `statements`, which a module's outside
     /// part can resolve, so running code could sign a release (`THR-4`).
     AssertionKeyNotForAdvertising,

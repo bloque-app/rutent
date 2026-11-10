@@ -11,6 +11,9 @@ pub enum NodeError {
     DeclaredPrivate(String),
     /// The node isn't on the operator's public list.
     NotPublic(String),
+    /// A public node's holding account is a module the operator publishes, and this one isn't (`T-016-04`): a
+    /// provider's module, or one no one has published, is never a node's holding account (`REQ-CAT-23`).
+    NotOperatorModule(String),
     /// No provider declares this private node.
     NotDeclaredPrivate(String),
     /// A private node's holding account comes from its publisher, and this isn't the one on record.
@@ -59,12 +62,20 @@ impl NodeBook {
         Ok(())
     }
 
-    pub(super) fn hold_public(&mut self, node: &str, reference: &str) -> Result<(), NodeError> {
+    pub(super) fn hold_public(
+        &mut self,
+        node: &str,
+        reference: &str,
+        operators: bool,
+    ) -> Result<(), NodeError> {
         if reference.trim().is_empty() {
             return Err(NodeError::Blank);
         }
         if !self.public.contains(node) {
             return Err(NodeError::NotPublic(node.to_owned()));
+        }
+        if !operators {
+            return Err(NodeError::NotOperatorModule(reference.to_owned()));
         }
         self.holdings.insert(
             node.to_owned(),

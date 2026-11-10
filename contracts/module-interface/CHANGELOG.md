@@ -18,6 +18,13 @@
   account's total, which for a node holding one order is that order's balance. `validate_declaration` refuses it
   (`DeclaredCallOfHoldingBalance`, with an invalid fixture), and the platform's call judgement refuses it however it
   is named. (DEC-4, DEC-20, T-016-02)
+- A module the operator publishes, such as a public node's holding account (`REQ-CAT-23`), is admitted on the
+  operator's own release, with no provider advertisement: `validate_operator_assertion(artefact, deployment)` checks
+  that its assertion belongs to the deployment the platform serves, is signed with that deployment's `operator_key`
+  (`OperatorAssertionNotSignedWithOperatorKey`, a new `RuleViolation`), and declares a `statement_key` other than the
+  `operator_key`. The deployment is the platform's own, from its settings, never the one the assertion names. A new
+  `operator-artefact` bundle (the deployment and the artefact) has a valid fixture and three invalid ones. A new Rust
+  variant breaks an exhaustive match, and 4.0.0 is not released, so it joins this major. (DEC-4, DEC-20, T-016-04)
 - `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
   nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
   ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)

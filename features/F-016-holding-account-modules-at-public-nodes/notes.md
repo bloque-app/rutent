@@ -194,3 +194,84 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   routes asserts that for the other refusals.
 - **A wrong asset is `ValueNotAtStart`.** The contract's reason covers the asset too, so a route whose first
   segment is in an asset the account does not hold is `ValueNotAtStart(node)`, before the wallet is asked anything.
+
+## T-016-04
+
+- **What "operator-published" is.** The operator records a module's name in the catalogue
+  (`Catalogue::publish_operator_module`), and from then on the catalogue names the operator as its publisher
+  (`PublisherIndex::publisher` gives `Publisher::Operator`). The record is kept apart from the publishers that
+  advertisements name, not as a reserved publisher string, so no advertisement can claim it. The two exclude each
+  other: an advertisement naming a module the operator publishes is refused (`PublisherError::ProviderIsTheOperators`),
+  and the operator can't publish under a provider a publisher stands behind (`ProviderOfAPublisher`). So neither
+  can release the other's module (`REQ-MDL-1`). A repeat changes nothing. `publisher_of_provider` still gives only an
+  advertisement's publisher; the snapshot and `providers_of` never see the operator's modules.
+- **Which rules hold is the catalogue's record, never the assertion's.** `Catalogue`'s judge
+  (`module/admission.rs`) takes a module the operator publishes only on the operator's own release, and every other
+  module only on its provider's. The operator's release has three checks. `Catalogue::verify_operator_statement`
+  (`catalogue/operator.rs`) checks the context and the clock skew, that the signing key is the `operator_key` of the
+  deployment the catalogue serves, and that the Ed25519 signature verifies strictly. Then the contract's
+  `validate_operator_assertion` runs against that same deployment. Last, a check before compiling that the declared
+  statement key signs no advertisement anywhere (`Catalogue::is_advertising_key`); recording the key after compiling
+  would catch the same thing. A provider's module signed with the operator key still fails the provider's rules
+  (`NoAdvertisementThen` or `KeyNotInForce`). A module the operator publishes, signed with any other key, is
+  `NotSignedByOperator`.
+- **The operator key comes from the deployment settings.** It is the catalogue's context
+  (`Catalogue::set_context`), the deployment the operator configures, and is never taken from the assertion or from
+  an advertisement. The platform's `read` checks the assertion against its own envelope too, so the two settings
+  must agree. This is the same arrangement `T-014-02` made for the proxy's operator key.
+- **The contract.** No provider-role shape was needed. Module-interface 4.0.0 (unreleased, `m2` only) gains
+  `validate_operator_assertion(artefact, deployment)` and the `RuleViolation` variant
+  `OperatorAssertionNotSignedWithOperatorKey`. It also gains an `operator-artefact` fixture bundle: the deployment
+  (schema `statement-envelope#/properties/deployment`) and the artefact, with one valid fixture and three invalid
+  ones. The README's rule table and the changelog say so.
+- **Reading: the maker of an operator release.** The deployment names the operator's key but not its party, so
+  neither the contract nor the judge checks `maker`; the key is what binds the release to the operator, as
+  `check_signed_by_operator` binds an operation. The tests use `rutent-operator`.
+- **Reading: the statement key of an operator module.** The operator chooses it, its own release vouches for it,
+  and it must not be the operator key or an advertising key. No advertisement lists it, so the credential proxy
+  (`proxy/shared.rs`), which resolves a statement key only when an advertisement lists it, would not resolve one
+  for an operator module. The plain wallet declares no secrets and its results are placeholders today, so nothing
+  asks. `proxy/` is `T-014-05`'s and is untouched; resolving an operator module's key is left to a later row.
+- **Registration.** `Holdings::register` now refuses a module the catalogue doesn't record as the operator's
+  (`RegisterError::NotOperatorPublished`). That replaces `T-016-02`'s interim `NotReserve` check, which looked
+  for a reserve in the provider's accepted advertisement and is now gone.
+- **The catalogue holds the rule too.** `Catalogue::register_public_holding` was public and took any reference,
+  so a caller with the catalogue could still make a provider's module a node's account without `Holdings`. It now
+  refuses a reference the catalogue doesn't record as the operator's (`NodeError::NotOperatorModule`), checked after
+  the node checks. `Holdings::register` keeps its own check as the earlier error. The catalogue tests that register
+  an account publish it first. `public_nodes_holding_account_is_only_a_module_the_operator_publishes`
+  (`tests/catalogue_snapshot.rs`) covers a provider's module and an unpublished one. It was seen failing (a
+  provider's module accepted) before the check was added.
+- **Tests.** `tests/holding_operator.rs` has three tests:
+  - `operator_published_holding_module_is_admitted_on_the_operators_own_release`: the publisher record. It checks
+    refusals before compiling: a provider's or a statements key, an operator key declared as the statement key, and
+    an altered assertion. Then it admits, accepts (judged again), runs, registers and lands value.
+  - `operator_and_providers_cannot_release_each_others_modules`: a provider's module signed with the operator key,
+    the operator publishing under a provider's name, and a provider advertising under the operator's module.
+  - `provider_module_cannot_be_registered_as_a_holding_account`: a reserve's and a ramp's own wallets, running, are
+    refused.
+
+  The contract has `operator_release_is_signed_with_the_operator_key_of_the_platforms_deployment`. Every release is
+  signed for real. The tests' deployment `operator_key` is now the public half of a test signing key
+  (`tests/common::operator_key`), where it used to be a literal no one held the private half of. The whole `prov`
+  suite passed after that one change.
+- **No test registers a provider's module.** `holding_support` publishes each wallet as the operator's
+  (`plain-wallet-polygon`, `plain-wallet-ethereum`) and signs its release with the operator key, and
+  `add_reserve_provider` is gone. `holding_wallet.rs` and `holding_handed_on.rs` register only those wallets.
+  `provider_that_is_not_a_reserve_is_not_registered_as_a_holding_account` is removed: its ramp case is now part of
+  the provider-module test.
+- **Test-first.** The new tests first failed to compile against the missing API. Next came the publisher record
+  and the error variants, with the judge's operator path and the registration check still missing. On that run the
+  first test failed on `NoAdvertisementThen` where `NotSignedByOperator` was expected, and the third failed on a
+  reserve's module being registered. The second passed at once: the publisher record it checks was already in
+  place. The contract test failed with the rule disabled (an operator assertion from another deployment was
+  accepted), and passed with it restored.
+- **`DEC-20`.** This task touches four `DEC-20` paths:
+  - module admission and signature checking: `module/admission.rs` (the judge's operator path);
+  - the catalogue's verifier, `catalogue/operator.rs` (`verify_operator_statement`), with `is_advertising_key` and
+    the `NotSignedByOperator` reason in `catalogue/advertisements.rs`;
+  - the publisher record admission relies on, `catalogue/publisher.rs`, and the holding-account gate on it,
+    `catalogue/mod.rs` and `catalogue/nodes.rs`;
+  - `contracts/` (module-interface 4.0.0).
+
+  `module/platform.rs` is untouched.

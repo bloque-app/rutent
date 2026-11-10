@@ -35,9 +35,9 @@ versions, times, operation kinds and operations (`urn:rutent:provider-role:commo
 network. A fixture's file name starts with its shape: `declaration-`, `outside-request-`, `outside-response-`,
 `secret-lookup-`, `secret-answer-`, `outbound-call-record-`, `cross-module-call-`, `signed-result-`,
 `declared-secret-lookup-`, `declared-outbound-call-record-`, `declared-cross-module-call-`, `release-assertion-`,
-`admission-artefact-`, `advertised-artefact-` or `successive-releases-`. `signed-result-`, `declared-secret-lookup-`,
-`declared-outbound-call-record-`, `declared-cross-module-call-`, `advertised-artefact-` and `successive-releases-`
-are bundles, not shapes of their own, for rules that relate several values. A `declared-cross-module-call-` fixture
+`admission-artefact-`, `advertised-artefact-`, `operator-artefact-` or `successive-releases-`. `signed-result-`,
+`declared-secret-lookup-`, `declared-outbound-call-record-`, `declared-cross-module-call-`, `advertised-artefact-`,
+`operator-artefact-` and `successive-releases-` are bundles, not shapes of their own, for rules that relate several values. A `declared-cross-module-call-` fixture
 holds a caller's `declaration` and a cross-module `call` it made, for the rules that relate the call's outcome to
 the declaration.
 Each member is checked against its own schema and its own contract's rules, so an invalid bundle breaks only the
@@ -52,6 +52,8 @@ rule it is named for:
   for the rule that a record's secrets are its operation's;
 - an `advertised-artefact-` fixture holds an admission `artefact` and its provider's enveloped `advertisement`, for
   the release-assertion key rules;
+- an `operator-artefact-` fixture holds the `deployment` the platform serves (the envelope's `deployment`) and the
+  admission `artefact` of a module the operator publishes, for the operator's release rules (4.0.0);
 - a `successive-releases-` fixture holds an admitted `previous` release's artefact and the `next` one's, for the
   rules that relate a release to the one it follows, widening included.
 
@@ -183,6 +185,11 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
     listed for `statements`, never for `advertising`, and isn't the `operator_key`, so a release can't hand its
     outside part a key that signs advertisements or releases. `validate_statement_key` holds the same rules for a
     signed result, but a release has none yet, so `validate_assertion_key` holds them at admission.
+  - **A module the operator publishes** (4.0.0), such as a public node's holding account (`REQ-CAT-23`), has no
+    advertisement. Its assertion is the operator's own release, signed with the `operator_key` of the deployment
+    the platform serves, the key its deployment settings name, never one an advertisement lists. Its declared
+    `statement_key` isn't the `operator_key`. The platform takes this path only for a module its catalogue records
+    as the operator's, and holds every other release to the provider's rules above, which refuse the `operator_key`.
   - A statement key could once mint the next release key: sign a new advertisement listing a fresh key, then sign
     the successor's assertion with it. Since 2.0.0 that fails in provider-role, where a later advertisement must be
     signed with a key the accepted one lists for `advertising` (`validate_successor`), and here, where the
@@ -226,6 +233,9 @@ Added in 0.3.0 (`DEC-4`, `T-003-02`). A release is admitted in two steps.
   - `validate_assertion_key(artefact, advertisement)` checks the assertion's maker, deployment and key against the
     provider's enveloped advertisement, the one the catalogue (`F-012`) accepted, never one that arrives with the
     release, and the declared `statement_key` against it.
+  - `validate_operator_assertion(artefact, deployment)` checks the assertion of a module the operator publishes
+    against the deployment the platform serves: of that deployment, signed with its `operator_key`, declaring
+    another `statement_key`.
   - `validate_release(previous, next)` checks that a release follows the one before it:
     - both are one provider's module, so a publisher can't replace another's, in one deployment and protocol
       version;
@@ -400,6 +410,7 @@ governs.
 | Each part is received as asserted; the history names no version twice, nor its own | Rust, `PartAltered`, `VersionAlreadyAdmitted` | `admission-artefact-of-an-altered-outside-part`, `admission-artefact-whose-history-names-its-own-version`, `admission-artefact-whose-history-lists-an-earlier-version-twice` |
 | A release assertion is the provider's, of the advertisement's deployment, signed with a key advertised for `advertising` that is neither the operator's nor the statement-signing key | Rust, `validate_assertion_key`: `AdvertisementOfAnotherProvider`, `AssertionOfAnotherMaker`, `AssertionOfAnotherDeployment`, `AssertionKeyNotAdvertised`, `AssertionKeyNotForAdvertising`, `AssertionKeyIsOperatorKey`, `AssertionSignedWithStatementKey` | `advertised-artefact-checked-against-another-providers-advertisement`, `advertised-artefact-asserted-by-another-maker`, `advertised-artefact-from-another-deployment`, `advertised-artefact-asserted-with-an-unadvertised-key`, `advertised-artefact-asserted-with-an-advertised-statements-key`, `advertised-artefact-asserted-with-the-operator-key`, `advertised-artefact-asserted-with-the-statement-key` (which breaks both `AssertionKeyNotForAdvertising` and `AssertionSignedWithStatementKey`: since 2.0.0 the older rule is a second line, as a statement key listed for `advertising` is refused below) |
 | At admission, the declared `statement_key` is listed in the accepted advertisement for `statements`, and isn't the `operator_key` | Rust, `validate_assertion_key`: `StatementKeyNotAdvertised`, `StatementKeyNotForStatements`, `StatementKeyIsOperatorKey` | `advertised-artefact-declaring-an-unadvertised-statement-key`, `advertised-artefact-declaring-an-advertising-key-as-its-statement-key`, `advertised-artefact-declaring-the-operator-key-as-its-statement-key` |
+| A module the operator publishes is asserted by the operator: of the platform's deployment, signed with its `operator_key`, declaring another `statement_key` | Rust, `validate_operator_assertion`: `AssertionOfAnotherDeployment`, `OperatorAssertionNotSignedWithOperatorKey`, `StatementKeyIsOperatorKey` | `operator-artefact-asserted-with-the-operator-key` (valid), `operator-artefact-asserted-with-a-providers-key`, `operator-artefact-from-another-deployment`, `operator-artefact-declaring-the-operator-key-as-its-statement-key` |
 | A key is in its one canonical encoding, so an alias of the statement key with nonzero unused bits is no key | schema, and Rust (`PublicKey`) | `advertised-artefact-asserted-with-a-non-canonical-alias-of-the-statement-key` |
 | A release follows an accepted release of the same module, in the same deployment and protocol version, extends its history and records exactly the computed widenings | Rust, `validate_release`: `ReleaseOfAnotherModule`, `ReleaseOfAnotherDeployment`, `ReleaseUnderAnotherProtocolVersion`, `PreviousNotAdmitted`, `HistoryNotExtended`, `WideningsMisrecorded` | `successive-releases-of-another-providers-module`, `successive-releases-of-another-deployment`, `successive-releases-under-another-protocol-version`, `successive-releases-after-a-release-not-yet-accepted`, `successive-releases-with-the-history-not-extended`, `successive-releases-widening-with-no-widening-recorded`, `successive-releases-handling-a-new-kind-with-no-widening-recorded` |
 | A release isn't asserted with a statement-signing key any earlier release declared | Rust, `validate_release`, `AssertionSignedWithPreviousStatementKey` | `successive-releases-asserted-with-the-previous-statement-key` |

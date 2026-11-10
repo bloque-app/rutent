@@ -127,6 +127,7 @@ pub fn acme_catalogue(ads: &[Advertisement]) -> Catalogue {
 pub fn acme_catalogue_made_at(ads: &[Advertisement], made_at: Instant) -> Catalogue {
     let mut catalogue = Catalogue::new();
     catalogue.add_public_node("polygon").unwrap();
+    catalogue.publish_operator_module("wallet-module").unwrap();
     catalogue
         .register_public_holding("polygon", "wallet-module")
         .unwrap();
@@ -177,12 +178,19 @@ pub fn origins(
 
 // Signing ------------------------------------------------------------------------------------------------------
 
-/// The deployment the tests' catalogues serve.
+/// The deployment the tests' catalogues serve. Its operator key is [`operator_key`]'s, so the tests can sign as
+/// the operator (`T-016-04`).
 pub fn deployment() -> Deployment {
     Deployment {
         name: "rutent-test".into(),
-        operator_key: PublicKey::new("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA").expect("a key"),
+        operator_key: public_key(&operator_key()),
     }
+}
+
+/// The operator's own signing key, whose public half is the tests' deployment's `operator_key`: the deployment
+/// settings' key, never one an advertisement lists.
+pub fn operator_key() -> SigningKey {
+    signing_key("operator", 1)
 }
 
 /// The base64url text of bytes, unpadded.

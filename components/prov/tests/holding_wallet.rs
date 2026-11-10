@@ -1,6 +1,6 @@
-//! The plain wallet (`T-016-02`; `REQ-CAT-23`, `INV-5`, `REQ-MDL-1`): a Wasm component admitted like any module and
-//! registered by the operator as a public node's holding account, which keeps the value resting at its node for
-//! each order.
+//! The plain wallet (`T-016-02`; `REQ-CAT-23`, `INV-5`, `REQ-MDL-1`): a Wasm component the operator publishes,
+//! admitted on the operator's own signed release (`T-016-04`), and registered by the operator as a public node's
+//! holding account, which keeps the value resting at its node for each order.
 
 #[path = "module_support/mod.rs"]
 mod common;
@@ -18,10 +18,8 @@ use rutent_prov::holding::{
 use rutent_prov::module::admission::Unverified;
 use rutent_prov::module::types::{Admitted, Handled};
 use serde_json::json;
-use signed::{RAMP, RESERVE, Signed};
-use support::{
-    ETHEREUM_WALLET, TestOperator, add_reserve_provider, admit_wallet, covers, run_wallet,
-};
+use signed::Signed;
+use support::{ETHEREUM_WALLET, POLYGON_WALLET, TestOperator, admit_wallet, covers, run_wallet};
 
 use signed::catalogue_support::{CASES, Rng};
 
@@ -70,16 +68,22 @@ fn deposit_answer(
 #[test]
 fn operator_registers_a_plain_wallet_as_a_nodes_holding_account() {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     assert!(s.catalogue.nodes().holding("polygon").is_none());
 
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("the operator registers the wallet");
 
     let account = s.catalogue.nodes().holding("polygon").expect("registered");
-    assert_eq!(account.reference, RESERVE);
+    assert_eq!(account.reference, POLYGON_WALLET);
     assert_eq!(account.source, HoldingSource::Operator);
 
     // The wallet is the account: value landing at the node is recorded by it, and read back as its reading.
@@ -121,21 +125,33 @@ fn operator_registers_a_plain_wallet_as_a_nodes_holding_account() {
 #[test]
 fn wallet_that_does_not_run_is_not_registered_and_neither_is_a_node_the_operator_does_not_list() {
     let mut s = Signed::new();
-    add_reserve_provider(&mut s, ETHEREUM_WALLET);
+    support::publish(&mut s, ETHEREUM_WALLET);
     let mut holdings = Holdings::default();
 
     // Never admitted.
     assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC"),
-        Err(RegisterError::NotRunning(RESERVE.to_owned()))
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC"
+        ),
+        Err(RegisterError::NotRunning(POLYGON_WALLET.to_owned()))
     );
 
     // Admitted, but waiting for its fresh acceptance: it doesn't run.
-    let admitted = admit_wallet(&mut s, RESERVE, "1.0.0");
+    let admitted = admit_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     assert!(matches!(&admitted, Admitted::Artefact(a) if a.acceptance.accepted.is_none()));
     assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC"),
-        Err(RegisterError::NotRunning(RESERVE.to_owned()))
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC"
+        ),
+        Err(RegisterError::NotRunning(POLYGON_WALLET.to_owned()))
     );
 
     // Its assertion doesn't verify, so it was never admitted (signed with the statements key).
@@ -182,10 +198,10 @@ fn wallet_that_does_not_run_is_not_registered_and_neither_is_a_node_the_operator
 #[test]
 fn wallet_answers_in_the_contracts_types_and_checks_a_balance_for_an_order() {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
 
     let ResultBody::Deposit(result) =
-        deposit_answer(&mut s, RESERVE, "polygon", "USDC", "o-1", "100")
+        deposit_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", "o-1", "100")
     else {
         panic!("not a deposit's result");
     };
@@ -198,10 +214,10 @@ fn wallet_answers_in_the_contracts_types_and_checks_a_balance_for_an_order() {
     );
     assert_eq!(settled.fee.amount, "0");
 
-    assert!(covers(&mut s, RESERVE, "USDC", "o-1", 100));
-    assert!(!covers(&mut s, RESERVE, "USDC", "o-1", 101));
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 100));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 101));
     assert!(
-        !covers(&mut s, RESERVE, "USDC", "o-2", 1),
+        !covers(&mut s, POLYGON_WALLET, "USDC", "o-2", 1),
         "an order that landed nothing holds nothing"
     );
 }
@@ -210,10 +226,16 @@ fn wallet_answers_in_the_contracts_types_and_checks_a_balance_for_an_order() {
 #[test]
 fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_them() {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     holdings
         .land(
@@ -227,7 +249,7 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
         .expect("lands");
 
     // The host binds the account to its asset and node before it asks the wallet anything.
-    let sent = s.platform.operations_received(RESERVE);
+    let sent = s.platform.operations_received(POLYGON_WALLET);
     assert_eq!(
         holdings.land(
             &mut s.platform,
@@ -269,14 +291,15 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
         );
     }
     assert_eq!(
-        s.platform.operations_received(RESERVE),
+        s.platform.operations_received(POLYGON_WALLET),
         sent,
         "nothing was asked of the wallet"
     );
 
     // The wallet binds itself too: asked directly, it refuses another asset and another node.
     for (node, asset) in [("polygon", "EURC"), ("ethereum", "USDC")] {
-        let ResultBody::Deposit(result) = deposit_answer(&mut s, RESERVE, node, asset, "o-9", "5")
+        let ResultBody::Deposit(result) =
+            deposit_answer(&mut s, POLYGON_WALLET, node, asset, "o-9", "5")
         else {
             panic!("not a deposit's result");
         };
@@ -295,15 +318,15 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
         let statement = TestOperator.statement(operation(json!({
             "kind": "withdrawal",
             "transaction": format!("tx-out-{order}"),
-            "provider": RESERVE,
-            "origin": { "network": RESERVE },
+            "provider": POLYGON_WALLET,
+            "origin": { "network": POLYGON_WALLET },
             "destination": "polygon",
             "asset": "USDC",
             "amount": amount,
             "dry_run": false,
             "inputs": { "order": order },
         })));
-        let Handled::Answered(result) = s.platform.handle(RESERVE, &statement) else {
+        let Handled::Answered(result) = s.platform.handle(POLYGON_WALLET, &statement) else {
             panic!("not answered");
         };
         let ResultBody::Withdrawal(result) = result.statement else {
@@ -331,10 +354,16 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
 #[test]
 fn release_above_what_an_order_holds_is_refused_and_changes_nothing() {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     holdings
         .land(
@@ -396,10 +425,16 @@ fn release_above_what_an_order_holds_is_refused_and_changes_nothing() {
 #[test]
 fn account_whose_wallet_lost_its_record_is_read_short_of_what_the_host_attributed() {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     for (order, amount) in [("o-1", "100"), ("o-2", "50")] {
         holdings
@@ -421,7 +456,7 @@ fn account_whose_wallet_lost_its_record_is_read_short_of_what_the_host_attribute
 
     // The provider's process restarts, and the wallet's record, which lives in its instance, is gone. The host
     // still attributes 150 to two orders; the balance is read from the wallet, which now holds nothing.
-    assert!(s.platform.restart(RESERVE));
+    assert!(s.platform.restart(POLYGON_WALLET));
     let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!(reading.balance, 0);
     assert_eq!(reading.source, BalanceSource::Module);
@@ -445,15 +480,21 @@ fn account_whose_wallet_lost_its_record_is_read_short_of_what_the_host_attribute
 #[test]
 fn account_whose_wallet_cannot_be_read_shows_its_failure_and_not_a_missing_account() {
     let mut s = Signed::new();
-    add_reserve_provider(&mut s, ETHEREUM_WALLET);
+    support::publish(&mut s, ETHEREUM_WALLET);
     s.catalogue
         .add_public_node("ethereum")
         .expect("a public node");
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     holdings
         .register(
@@ -480,32 +521,23 @@ fn account_whose_wallet_cannot_be_read_shows_its_failure_and_not_a_missing_accou
 
 // verifies: REQ-CAT-23
 #[test]
-fn provider_that_is_not_a_reserve_is_not_registered_as_a_holding_account() {
-    let mut s = Signed::new();
-    // A ramp, admitted and running, is not a holding account: its advertisement offers no reserve.
-    run_wallet(&mut s, RAMP, "1.0.0");
-    let mut holdings = Holdings::default();
-    assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "polygon", RAMP, "USDC"),
-        Err(RegisterError::NotReserve(RAMP.to_owned()))
-    );
-    assert!(s.catalogue.nodes().holding("polygon").is_none());
-    assert!(holdings.account("polygon").is_none());
-}
-
-// verifies: REQ-CAT-23
-#[test]
 fn registering_is_refused_for_a_taken_node_a_taken_wallet_a_blank_asset_and_a_private_node() {
     let mut s = Signed::new();
-    add_reserve_provider(&mut s, ETHEREUM_WALLET);
+    support::publish(&mut s, ETHEREUM_WALLET);
     s.catalogue
         .add_public_node("ethereum")
         .expect("a public node");
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
 
     // The node already has an account; the wallet is already another node's; the asset is blank.
@@ -520,9 +552,15 @@ fn registering_is_refused_for_a_taken_node_a_taken_wallet_a_blank_asset_and_a_pr
         Err(RegisterError::NodeTaken("polygon".into()))
     );
     assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "ethereum", RESERVE, "USDC"),
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "ethereum",
+            POLYGON_WALLET,
+            "USDC"
+        ),
         Err(RegisterError::WalletTaken {
-            provider: RESERVE.into(),
+            provider: POLYGON_WALLET.into(),
             node: "polygon".into()
         })
     );
@@ -560,20 +598,20 @@ fn registering_is_refused_for_a_taken_node_a_taken_wallet_a_blank_asset_and_a_pr
 fn wallet_whose_first_operation_was_refused_is_not_fixed_to_its_node_and_asset() {
     use rutent_prov::holding::wallet::Operator as _;
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     // A release of what nothing holds, at another node and in another asset: refused, and it must fix nothing.
     let statement = TestOperator.statement(operation(json!({
         "kind": "withdrawal",
         "transaction": "tx-first",
-        "provider": RESERVE,
-        "origin": { "network": RESERVE },
+        "provider": POLYGON_WALLET,
+        "origin": { "network": POLYGON_WALLET },
         "destination": "ethereum",
         "asset": "EURC",
         "amount": "5",
         "dry_run": false,
         "inputs": { "order": "o-1" },
     })));
-    let Handled::Answered(result) = s.platform.handle(RESERVE, &statement) else {
+    let Handled::Answered(result) = s.platform.handle(POLYGON_WALLET, &statement) else {
         panic!("not answered");
     };
     let ResultBody::Withdrawal(result) = result.statement else {
@@ -582,7 +620,7 @@ fn wallet_whose_first_operation_was_refused_is_not_fixed_to_its_node_and_asset()
     assert!(matches!(result.outcome, ReserveMovementOutcome::Refused(_)));
     // The wallet's first real operation is still free to name the node and asset it is for.
     let ResultBody::Deposit(result) =
-        deposit_answer(&mut s, RESERVE, "polygon", "USDC", "o-1", "10")
+        deposit_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", "o-1", "10")
     else {
         panic!("not a deposit's result");
     };
@@ -603,12 +641,18 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
     s.catalogue
         .add_public_node("stellar")
         .expect("a public node");
-    add_reserve_provider(&mut s, ETHEREUM_WALLET);
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    support::publish(&mut s, ETHEREUM_WALLET);
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     holdings
         .register(
@@ -730,7 +774,7 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
         // touched at a registered node holds what the model says, and not one unit more.
         if registered {
             let provider = if node == "polygon" {
-                RESERVE
+                POLYGON_WALLET
             } else {
                 ETHEREUM_WALLET
             };
