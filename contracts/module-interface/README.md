@@ -365,10 +365,14 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
   (`UnreadableBinary`), a part importing what the binding doesn't offer it (`DisallowedImport`), a version the
   provider already has admitted or waiting (`VersionAlreadyAdmitted`), a module judged unable to start
   (`WontStart`), and since 4.0.0 a new release while another waits for its acceptance (`AdmissionPending`) or one
-  whose signed assertion doesn't verify (`AssertionUnverified`).
+  whose signed assertion doesn't verify (`AssertionUnverified`), a new release while another is staged on a share
+  of the provider's traffic (`ReleaseStaged`, `REQ-MDL-4`, ADR-0014), and a release whose assertion was made before
+  the provider's last accepted one (`OlderRelease`, `THR-17`).
 - `PlatformRefusal`, for an operation's answer: malformed or oversized output (`REQ-MDL-12`), a part stopped by a
   limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running
-  (`Unavailable`), or a kind the module doesn't handle (`NotHandled`).
+  (`Unavailable`), or a kind the module doesn't handle (`NotHandled`), and since 4.0.0 a transaction identifier a
+  segment at another provider holds or an ended segment held (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), or a
+  segment whose version was declared actively exploited (`VersionExploited`, `REQ-MDL-20`).
 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.

@@ -10,6 +10,9 @@
 //!   came from (`DEC-9`).
 //! - [`admission`]: reading a release assertion from the bytes it arrived in, and who vouches for it: the
 //!   [`ReleaseJudge`](admission::ReleaseJudge), sealed to the catalogue (`REQ-MDL-1`, `THR-4`, `T-010-10`).
+//! - [`lifecycle`]: each provider's accepted releases once admitted: the version in force, a release staged beside
+//!   it on a share of new segments, the version each segment in flight runs on, the operator's marks and decisions
+//!   (`REQ-MDL-4`, `REQ-MDL-5`, `REQ-MDL-19`, `REQ-MDL-20`, ADR-0014).
 //! - [`engine`]: the one Wasmtime configuration the compiler and every provider process share: an explicit compile
 //!   target, only the WebAssembly features the modules need, fuel for CPU, and the memory limits per part.
 //! - [`children`]: the platform's side of its children, the admitting compiler (one fresh process per admission)
@@ -32,6 +35,7 @@ pub mod admission;
 pub mod children;
 pub mod engine;
 pub mod host;
+pub mod lifecycle;
 pub mod limits;
 pub mod output;
 pub mod platform;

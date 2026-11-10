@@ -10,6 +10,15 @@
   and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
   the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
   Rust test. (DEC-4, DEC-20, T-010-09)
+- The release lifecycle's refusals (`T-013-06`). `AdmissionRefusal` gains `ReleaseStaged` (a new release while
+  another is staged on a share of the provider's traffic, ADR-0014) and `OlderRelease` (a release whose assertion
+  was made before the provider's last accepted one, so publishing an older signed release never reinstates it,
+  `THR-17`). `PlatformRefusal` gains `DuplicateTransaction` (a transaction identifier a segment at another provider
+  holds, or an ended segment held, `REQ-MDL-14`, `INV-8`) and `VersionExploited` (a segment on a version declared
+  actively exploited, `REQ-MDL-20`). `VersionAlreadyAdmitted` also names a version withdrawn while it waited. All
+  four are Rust only, as the other platform reasons are, with a Rust test.
+  Staging, stale marks and segment records stay `CMP-PROV`'s, not shaped here. New Rust variants of
+  `#[non_exhaustive]` enums, and 4.0.0 is not released, so they join this major. (DEC-4, DEC-20, T-013-06)
 - A new refusal reason, `request_not_allowed`: an outbound call whose request the platform won't send whatever the
   destination, since its method isn't allowed, its target isn't a path or a header names the host or frames the
   message, is recorded as refused with it, so such an attempt leaves an audit record (`REQ-MDL-8`). The record holds

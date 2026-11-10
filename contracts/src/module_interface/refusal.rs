@@ -17,8 +17,8 @@ pub enum AdmissionRefusal {
     /// interface, or a feature turned off. The binding's own reason goes to its admission log, never a guest's
     /// string (`REQ-MDL-2`).
     DisallowedImport(PartName),
-    /// The provider already has this version admitted, or waiting for its acceptance: a version names one
-    /// release (`REQ-MDL-1`).
+    /// The provider already has this version admitted, waiting for its acceptance, or withdrawn while it waited:
+    /// a version names one release (`REQ-MDL-1`).
     VersionAlreadyAdmitted,
     /// The binding judged at admission that the module won't start.
     WontStart,
@@ -28,6 +28,12 @@ pub enum AdmissionRefusal {
     /// The release's signed assertion doesn't verify: its signature, its signing key, or the deployment or
     /// protocol version it names. Nothing of the release is judged further (`REQ-MDL-1`).
     AssertionUnverified,
+    /// Another release of the provider is staged on a share of its traffic, so no new one is admitted until that
+    /// staging ends, promoted or rolled back (`REQ-MDL-4`, ADR-0014).
+    ReleaseStaged,
+    /// The release's assertion was made before that of the provider's last accepted release: publishing an older
+    /// signed release never reinstates it, which only a recorded decision does (`REQ-MDL-4`, `THR-17`).
+    OlderRelease,
 }
 
 /// Why a platform refused to pass a module's answer on. A Rust match on it needs a wildcard arm.
@@ -46,4 +52,11 @@ pub enum PlatformRefusal {
     Unavailable,
     /// The module doesn't handle the operation's kind.
     NotHandled,
+    /// The operation's transaction is one a segment already began at another provider, or one whose segment
+    /// ended: a transaction is identified once, and repeating its identifier moves nothing (`REQ-MDL-14`,
+    /// `INV-8`).
+    DuplicateTransaction,
+    /// The version the operation's segment runs on was declared actively exploited: it runs nothing more, and the
+    /// segment isn't moved to another (`REQ-MDL-20`).
+    VersionExploited,
 }
