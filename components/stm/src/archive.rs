@@ -64,6 +64,38 @@ pub fn seal_due(live_bytes: usize, ends: bool) -> bool {
 /// for the entry that passes it and for the index rows.
 pub const STEP_BUDGET: usize = 200 << 10;
 
+/// The write budget of one import step: entries are admitted while their charges (`import_cost`) keep the step
+/// under [`STEP_BUDGET`], and the first is always admitted. The program's `import_chunk` and the tests drive the
+/// same rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepBudget {
+    spent: usize,
+    taken: usize,
+}
+
+impl StepBudget {
+    /// A step that has taken nothing.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes an entry that will write at most `cost` bytes, if the step has room for it; false means stop here, and
+    /// the entry goes in the next step.
+    pub fn admit(&mut self, cost: usize) -> bool {
+        if self.taken > 0 && self.spent + cost > STEP_BUDGET {
+            return false;
+        }
+        self.spent += cost;
+        self.taken += 1;
+        true
+    }
+
+    /// What the entries admitted so far charge in all.
+    pub fn spent(&self) -> usize {
+        self.spent
+    }
+}
+
 /// What an index row put or a delete is charged beyond its value: its key and the row's framing.
 pub const INDEX_PUT: usize = 48;
 

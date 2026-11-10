@@ -79,7 +79,7 @@ use rutent_probe::Probe as Machine;
 #[cfg(not(feature = "probe-machine"))]
 use rutent_stm::Stm as Machine;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, Held, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len, import_cost,
+    CHUNK_BYTES, Entry, Held, StepBudget, chunk_of, entry_fits, entry_in, entry_len, import_cost,
     is_archivable, pack, seal_due, split, unpack,
 };
 use serde::Serialize;
@@ -809,8 +809,8 @@ impl Rutent {
             ));
         }
         let mut ended = false;
-        let mut spent = 0;
-        for (taken, line) in entries.iter().enumerate() {
+        let mut budget = StepBudget::new();
+        for line in &entries {
             if ended {
                 return Err(Refused::Import(b"nothing follows a stream's end".to_vec()));
             }
@@ -821,10 +821,9 @@ impl Rutent {
                 }
             };
             let cost = self.import_cost_of(&entry, line.len());
-            if taken > 0 && spent + cost > STEP_BUDGET {
+            if !budget.admit(cost) {
                 break;
             }
-            spent += cost;
             match self.take(entry) {
                 Ok(end) => ended = end,
                 Err(why) => return Err(Refused::Import(why)),

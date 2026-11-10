@@ -7,8 +7,8 @@ use common::generator::{Rng, Trace, traces};
 use rutent_contracts::state_machine::{Order, OrderState, RecordedInput, StateMachine};
 use rutent_stm::Stm;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, Held, INDEX_PUT, MAX_ENTRY, STEP_BUDGET, chunk_of, entry_fits, entry_in,
-    entry_len, import_cost, is_archivable, pack, replay, seal_due, split, unpack,
+    CHUNK_BYTES, Entry, Held, INDEX_PUT, MAX_ENTRY, STEP_BUDGET, StepBudget, chunk_of, entry_fits,
+    entry_in, entry_len, import_cost, is_archivable, pack, replay, seal_due, split, unpack,
 };
 
 const SEEDS: u64 = 600;
@@ -329,8 +329,7 @@ fn a_record_too_large_for_an_archive_row_does_not_fit() {
 fn import_steps(records: &[(usize, usize, bool)]) -> Vec<usize> {
     let mut live = std::collections::BTreeMap::<usize, usize>::new();
     let mut steps = Vec::new();
-    let mut spent = 0;
-    let mut taken = 0;
+    let mut budget = StepBudget::new();
     for &(order, weight, ends) in records {
         let held = live.get(&order).copied().unwrap_or(0);
         let cost = import_cost(
@@ -341,20 +340,21 @@ fn import_steps(records: &[(usize, usize, bool)]) -> Vec<usize> {
             weight,
             ends,
         );
-        if taken > 0 && spent + cost > STEP_BUDGET {
-            steps.push(spent);
-            spent = 0;
-            taken = 0;
+        if !budget.admit(cost) {
+            steps.push(budget.spent());
+            budget = StepBudget::new();
+            assert!(budget.admit(cost));
         }
-        spent += cost;
-        taken += 1;
-        if seal_due(held + weight, ends) {
-            live.insert(order, 0);
-        } else {
-            live.insert(order, held + weight);
-        }
+        live.insert(
+            order,
+            if seal_due(held + weight, ends) {
+                0
+            } else {
+                held + weight
+            },
+        );
     }
-    steps.push(spent);
+    steps.push(budget.spent());
     steps
 }
 
@@ -431,22 +431,23 @@ fn a_late_record_to_an_ended_order_is_charged_for_rewriting_its_last_row() {
         .map(|_| import_cost(Held::Ended { last_row }, 1000, false))
         .sum();
     assert!(together > 256 << 10, "{together}");
-    // The budget therefore splits them over several steps.
-    let mut steps = 0;
-    let mut spent = 0;
+    // The program's own budget, driven over the eight entries of the chunk, splits them over several steps, and
+    // every step's charged writes stay under VOS's 256 KiB cap.
+    let mut steps = Vec::new();
+    let mut budget = StepBudget::new();
     for _ in 0..8 {
-        if spent > 0 && spent + cost > STEP_BUDGET {
-            steps += 1;
-            spent = 0;
+        let cost = import_cost(Held::Ended { last_row }, 1000, false);
+        if !budget.admit(cost) {
+            steps.push(budget.spent());
+            budget = StepBudget::new();
+            assert!(budget.admit(cost), "a step always takes one entry");
         }
-        spent += cost;
     }
-    steps += 1;
-    assert!(steps >= 2, "{steps} steps");
-    assert!(
-        (0..8).map(|_| cost).sum::<usize>() / steps < 256 << 10,
-        "each step is under the cap"
-    );
+    steps.push(budget.spent());
+    assert!(steps.len() >= 2, "{} steps", steps.len());
+    for spent in &steps {
+        assert!(*spent < 256 << 10, "a step is charged {spent}");
+    }
     // A row that is full already starts a new one: its cost is its own record's.
     assert!(import_cost(Held::Ended { last_row: 0 }, 1000, false) < 3000);
 }
