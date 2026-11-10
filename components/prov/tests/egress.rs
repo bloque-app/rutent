@@ -1162,3 +1162,107 @@ fn credentials_never_return_to_the_first_host_after_a_redirect_away() {
     }
     assert_eq!(dials[2].name, "api.acme.example", "back at the first host");
 }
+
+/// A resolver that hangs on every lookup until released, for the threaded resolver's tests.
+#[derive(Default)]
+struct Hanging(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl rutent_prov::egress::NameResolver for Hanging {
+    fn resolve(
+        &self,
+        _: &rutent_contracts::module_interface::Host,
+        _: std::num::NonZeroU16,
+    ) -> Vec<IpAddr> {
+        let (released, wake) = &*self.0;
+        let mut done = released.lock().unwrap();
+        let started = std::time::Instant::now();
+        while !*done && started.elapsed() < Duration::from_secs(20) {
+            done = wake
+                .wait_timeout(done, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+        vec![ip(API)]
+    }
+}
+
+/// A lookup that never answers is given up at its deadline and its thread abandoned; abandoned lookups are bounded
+/// per provider, so a provider at its cap is refused a new one at once, and recorded as `limit_reached`, while
+/// another provider's lookups go on. Released, the abandoned threads end and give their places back.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
+    use rutent_prov::egress::{Lookup, LookupRefused, NameResolver, ThreadedResolver};
+
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let resolver = ThreadedResolver::new(Hanging(gate.clone())).with_cap(1);
+    let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
+    let port = std::num::NonZeroU16::new(443).unwrap();
+    let (acme, other) = (
+        rutent_contracts::module_interface::Identifier::new(PROVIDER).unwrap(),
+        rutent_contracts::module_interface::Identifier::new("other").unwrap(),
+    );
+    let lookup = |provider| Lookup {
+        host: &host,
+        port,
+        provider,
+        due: Some(std::time::Instant::now() + Duration::from_millis(300)),
+    };
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        resolver.resolve_for(&lookup(&acme)),
+        Err(LookupRefused::DeadlinePassed)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        resolver.in_flight(&acme),
+        1,
+        "the abandoned lookup still counts"
+    );
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        resolver.resolve_for(&lookup(&acme)),
+        Err(LookupRefused::TooManyInFlight)
+    );
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(
+        resolver.resolve_for(&lookup(&other)),
+        Err(LookupRefused::DeadlinePassed),
+        "another provider's lookup isn't refused"
+    );
+
+    // Through the egress layer: the call at its cap is refused before anything is dialled, and recorded.
+    let connector = ScriptedConnector::default();
+    let flight = Flight::payout("tx-cap");
+    let mut call = flight.call();
+    call.due = Some(std::time::Instant::now() + Duration::from_millis(300));
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &call,
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(outcome, Outcome::Refused(Refusal::LimitReached));
+    assert_eq!(log[0].outcome, refused(RefusalReason::LimitReached));
+    assert!(connector.dials().is_empty());
+    valid(&log[0]);
+
+    // Released, the abandoned lookups end and give their places back.
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    let started = std::time::Instant::now();
+    while resolver.in_flight(&acme) + resolver.in_flight(&other) > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the threads didn't end"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

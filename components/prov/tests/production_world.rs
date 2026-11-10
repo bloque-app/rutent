@@ -32,7 +32,7 @@ use rutent_contracts::module_interface::{
 };
 use rutent_contracts::provider_role::VERSION;
 use rutent_prov::catalogue::{Catalogue, Instant, tuples_of};
-use rutent_prov::egress::{NameResolver, TlsConnector};
+use rutent_prov::egress::{NameResolver, ThreadedResolver, TlsConnector};
 use rutent_prov::module::platform::Platform;
 use rutent_prov::module::types::{self, Admitted, Events, Handled, LookupOutcome};
 use rutent_prov::proxy::{
@@ -88,6 +88,9 @@ impl Resolver for Store {
 struct Names {
     answers: Arc<Mutex<BTreeMap<String, VecDeque<Vec<IpAddr>>>>>,
     asked: Arc<Mutex<Vec<String>>>,
+    /// Hosts whose lookup never answers, as a resolver that hangs: each waits until the test releases them (or
+    /// 20 seconds pass), then answers nothing.
+    hanging: Arc<(Mutex<Option<String>>, std::sync::Condvar)>,
 }
 
 impl Names {
@@ -106,6 +109,17 @@ impl Names {
         self
     }
 
+    /// Makes every lookup of `host` hang.
+    fn hang(&self, host: &str) {
+        *self.hanging.0.lock().unwrap() = Some(host.to_owned());
+    }
+
+    /// Ends every hanging lookup.
+    fn release(&self) {
+        *self.hanging.0.lock().unwrap() = None;
+        self.hanging.1.notify_all();
+    }
+
     fn asked(&self, host: &str) -> usize {
         self.asked
             .lock()
@@ -119,6 +133,21 @@ impl Names {
 impl NameResolver for Names {
     fn resolve(&self, host: &Host, _: NonZeroU16) -> Vec<IpAddr> {
         self.asked.lock().unwrap().push(host.as_str().to_owned());
+        let (gate, released) = &*self.hanging;
+        let mut hanging = gate.lock().unwrap();
+        let started = std::time::Instant::now();
+        while hanging.as_deref() == Some(host.as_str())
+            && started.elapsed() < Duration::from_secs(20)
+        {
+            hanging = released
+                .wait_timeout(hanging, Duration::from_millis(200))
+                .unwrap()
+                .0;
+        }
+        if hanging.as_deref() == Some(host.as_str()) {
+            return Vec::new();
+        }
+        drop(hanging);
         let mut answers = self.answers.lock().unwrap();
         let Some(queue) = answers.get_mut(host.as_str()) else {
             return Vec::new();
@@ -131,7 +160,9 @@ impl NameResolver for Names {
     }
 }
 
-type World = ProductionWorld<Store, Names, TlsConnector<tls::MappedDialer>>;
+/// The production world as deployed, with the tests' seams: the store, the names behind the threaded resolver that
+/// bounds each lookup by the deadline, and the dialer under the TLS connector.
+type World = ProductionWorld<Store, ThreadedResolver<Names>, TlsConnector<tls::MappedDialer>>;
 
 /// A running platform over the production world, and the catalogue it admits against.
 struct Running {
@@ -203,7 +234,8 @@ impl Running {
         let connector = TlsConnector::with_dialer(&pki.roots_pem(), dialer.clone())
             .expect("a connector")
             .with_timeout(Duration::from_secs(5));
-        let mut world = ProductionWorld::new(proxy, names.clone(), connector);
+        let mut world =
+            ProductionWorld::new(proxy, ThreadedResolver::new(names.clone()), connector);
         for provider in [RESERVE, RAMP] {
             world
                 .advertise(
@@ -861,4 +893,46 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     let (handled, _) = running.run(RAMP, 1);
     assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
     assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+/// A name lookup that never answers is given up at the operation's deadline (`REQ-MDL-11`): the platform doesn't
+/// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, the operation ends as a
+/// limit, and another provider's operation runs right after.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs() {
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    running.platform.set_deadline(Duration::from_secs(2));
+    running.names.hang(&api(RESERVE));
+    running.install(&release(RESERVE, &[]), vec![call(&api(RESERVE))]);
+    running.install(&release(RAMP, &[]), Vec::new());
+
+    let started = std::time::Instant::now();
+    let (handled, events) = running.run(RESERVE, 1);
+    let took = started.elapsed();
+
+    assert!(took < Duration::from_secs(4), "held for {took:?}");
+    assert!(
+        matches!(
+            handled,
+            Handled::Refused(types::PlatformRefusal::LimitReached)
+        ),
+        "{handled:?}"
+    );
+    assert_eq!(events.records.len(), 1, "{:?}", events.records);
+    assert!(
+        matches!(events.records[0].outcome, CallOutcome::Unknown(_)),
+        "{:?}",
+        events.records[0]
+    );
+    assert_eq!(events.records[0].hops[0].address, None);
+    assert_eq!(validate_record(&events.records[0]), Ok(()));
+    assert!(running.dialer.dialled().is_empty(), "nothing was dialled");
+
+    let started = std::time::Instant::now();
+    let (handled, _) = running.run(RAMP, 1);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert!(started.elapsed() < Duration::from_secs(4));
+    running.names.release();
 }

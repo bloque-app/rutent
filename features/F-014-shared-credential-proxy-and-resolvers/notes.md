@@ -588,3 +588,31 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - re-entrance and revocation, against their old code.
 - **`DEC-20`.** The credential proxy (`proxy/`), its egress (`egress/`), and the platform's credential path in
   `module/platform.rs`.
+
+## T-014-05, the name lookup bounded by the deadline
+
+- **The orchestrator's follow-up.** The lookup through the operating system's resolver was the one step the
+  deadline didn't bound. `getaddrinfo` takes no timeout, so a slow or hanging DNS answer held the platform, and
+  every other provider, past `OPERATION_DEADLINE`.
+- **How it is bounded now.** `NameResolver::resolve_for` takes the lookup with its provider and the operation's
+  `due`, and the egress layer asks it. `egress::ThreadedResolver` runs each lookup that has a deadline on a thread
+  of its own, and waits on a channel with `recv_timeout(due - now)`.
+  - Past the deadline the lookup is given up (`LookupRefused::DeadlinePassed`). Its thread is abandoned: it ends
+    when the resolver returns, and its answer is dropped. The call is recorded `unknown`, with the destination
+    matched and no address, and nothing is dialled. The operation then ends by the deadline's own path, as
+    `LimitReached`.
+  - Threads are bounded per provider: at most `MAX_LOOKUPS_IN_FLIGHT` (4), abandoned ones included. One more is
+    refused at once (`TooManyInFlight`) and recorded as refused `limit_reached`. A thread that can't be spawned is
+    refused the same way.
+
+  The production resolver is `ThreadedResolver::new(SystemResolver)`. The default `resolve_for` waits on
+  `resolve`, which suits a resolver that answers from memory.
+- **Tests.**
+  - `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`, on the running
+    platform: the tests' resolver hangs a host behind the threaded resolver. It was written first and held the
+    platform for 20 s, until the hang's own limit. It is cut at the 2 s deadline now, and the other provider's
+    operation runs at once.
+  - `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`: the cap, a provider at it refused while
+    another's lookups go on, the record, and the places given back once the hang ends.
+
+  Every `production_world` test now runs its names through the threaded resolver.

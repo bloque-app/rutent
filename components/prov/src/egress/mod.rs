@@ -34,7 +34,9 @@ pub use connector::{
     CREDENTIALS, ConnectError, Connector, Dial, Header, InvalidRequest, Method, Request, Response,
 };
 pub use layer::{Call, CallLog, Egress, Endpoint, MAX_HOPS, Outcome, Refusal};
-pub use resolve::{NameResolver, SystemResolver};
+pub use resolve::{
+    Lookup, LookupRefused, MAX_LOOKUPS_IN_FLIGHT, NameResolver, SystemResolver, ThreadedResolver,
+};
 pub use tls::{
     DEFAULT_MAX_ANSWER, DEFAULT_TIMEOUT, Dialer, DirectDialer, InvalidRoots, TlsConnector,
 };

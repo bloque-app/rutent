@@ -7,7 +7,8 @@
 //! answered only inside the outside request in flight, for that request's transaction and operation, from the
 //! caller's own provider's keys (`DEC-9`, `REQ-MDL-6`, `REQ-MDL-9`, `REQ-MDL-17`). Every lookup the platform
 //! serves leaves one [`Use`](super::Use), refused ones included. Outbound calls go through [`Egress`] over a
-//! [`NameResolver`] and a [`Connector`], in production the operating system's resolver and
+//! [`NameResolver`] and a [`Connector`], in production the operating system's resolver behind a
+//! [`ThreadedResolver`](crate::egress::ThreadedResolver), so each lookup is given up at the deadline, and
 //! [`TlsConnector`](crate::egress::TlsConnector): each host is resolved once per connection, only the checked
 //! address is dialled (`B-17`), and a peer not verified over TLS is refused (`B-18`).
 //!

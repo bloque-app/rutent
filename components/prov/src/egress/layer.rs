@@ -9,7 +9,7 @@ use rutent_contracts::module_interface::{
 };
 
 use super::connector::{ConnectError, Connector, Dial, Request, Response, origin_form};
-use super::resolve::NameResolver;
+use super::resolve::{Lookup, LookupRefused, NameResolver};
 
 /// The most connections one outbound call makes, the first and each redirect followed.
 pub const MAX_HOPS: usize = 5;
@@ -73,6 +73,8 @@ pub enum Refusal {
     AddressNotAllowed,
     /// The peer was not verified as the declared host over TLS (`B-18`).
     NotVerified,
+    /// The provider had as many name lookups in flight as it may (`REQ-MDL-11`).
+    LimitReached,
 }
 
 impl Refusal {
@@ -87,6 +89,7 @@ impl Refusal {
                 RefusalReason::RedirectToUndeclaredDestination
             }
             Refusal::AddressNotAllowed => RefusalReason::AddressNotAllowed,
+            Refusal::LimitReached => RefusalReason::LimitReached,
         }
     }
 }
@@ -98,7 +101,8 @@ pub enum Outcome {
     Completed(Response),
     /// The last destination answered otherwise, or redirected once more than [`MAX_HOPS`] allows.
     Failed(Response),
-    /// No connection was established to the checked address; nothing was sent.
+    /// No connection was established to the checked address, or the name's lookup was given up at the
+    /// operation's deadline; nothing was sent.
     Unreachable,
     /// A connection was made and no complete answer came; the effect is not known.
     NoAnswer,
@@ -194,8 +198,24 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
                 address: None,
             };
 
-            // Resolved once for this connection; the connector gets the address checked, never the name.
-            let answer = self.resolver.resolve(&destination.host, destination.port);
+            // Resolved once for this connection; the connector gets the address checked, never the name. The lookup
+            // is given up at the operation's deadline, and nothing is dialled then (`REQ-MDL-11`).
+            let answer = match self.resolver.resolve_for(&Lookup {
+                host: &destination.host,
+                port: destination.port,
+                provider: &call.declaration.provider,
+                due: call.due,
+            }) {
+                Ok(answer) => answer,
+                Err(LookupRefused::DeadlinePassed) => {
+                    hops.push(hop);
+                    return (hops, Outcome::Unreachable);
+                }
+                Err(LookupRefused::TooManyInFlight) => {
+                    hops.push(hop);
+                    return (hops, Outcome::Refused(Refusal::LimitReached));
+                }
+            };
             let checked = answer
                 .first()
                 .copied()
