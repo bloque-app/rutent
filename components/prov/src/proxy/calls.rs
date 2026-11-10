@@ -134,7 +134,7 @@ pub struct CallJudgement {
 /// - `undeclared_callee`: `release`, the caller's own running release, doesn't declare the callee. A release of
 ///   another provider than the caller declares nothing for it;
 /// - `undeclared_kind`: it declares the callee, but not the kind forwarded, or the caller's code named another
-///   kind than the one forwarded;
+///   kind than the one forwarded, or the kind is `holding_balance`, which is never a call;
 /// - `not_named_by_route`: no outside request of the caller's is in flight, or no segment of the transaction's
 ///   route names the caller's call to the callee for that kind.
 ///
@@ -144,7 +144,13 @@ pub fn judge_call(
     routes: &RouteCalls,
     asked: &CallAsked<'_>,
 ) -> CallJudgement {
-    let naming = routes.naming(asked.transaction, asked.caller, asked.callee, asked.kind);
+    // `holding_balance` is the operator's own question to a holding account, so that only the operator's audit reads
+    // an account's balance through the host: a module may not declare it as a call, and a route may not name it. It
+    // is never a call that is declared, and never one a route names (`REQ-AUD-15`).
+    let barred = asked.kind == OperationKind::HoldingBalance;
+    let naming = routes
+        .naming(asked.transaction, asked.caller, asked.callee, asked.kind)
+        .filter(|_| !barred);
     let declared = release
         .outside
         .calls
@@ -153,7 +159,9 @@ pub fn judge_call(
         .find(|c| c.callee.as_str() == asked.callee);
     let refusal = match declared {
         None => Some(CallRefusalReason::UndeclaredCallee),
-        Some(c) if !c.kinds.contains(&asked.kind) || asked.claimed != Some(asked.kind) => {
+        Some(c)
+            if barred || !c.kinds.contains(&asked.kind) || asked.claimed != Some(asked.kind) =>
+        {
             Some(CallRefusalReason::UndeclaredKind)
         }
         Some(_) if !asked.in_flight || naming.is_none() => Some(CallRefusalReason::NotNamedByRoute),

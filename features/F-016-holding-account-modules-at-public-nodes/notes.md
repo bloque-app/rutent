@@ -140,3 +140,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `RegisterError`; the guest's bind and holding-balance behaviour was exercised through the rebuilt wallet.
 - **`DEC-20`.** `contracts/` (provider-role 3.0.0, module-interface 4.0.0) and `.github/` (a new CI guest step, a
   `CODEOWNERS` path) are `DEC-20` paths this round touches; the click comes with the release into `main`.
+- **`holding_balance` is not a cross-module call.** A module could declare a call of that kind and a route could name
+  it, and `judge_call` let it through, so a module could read an account's total, which for a node holding one order
+  is that order's balance. `judge_call` now refuses the kind as `undeclared_kind` however it is declared or named, so
+  only the operator's audit reads it through the host. The change is in `proxy/calls.rs` (a barred kind and a filter
+  on the route's naming); the property's kinds no longer include it, and a test covers a declared call, a named
+  call, both, and an ordinary call as the control. The contract's own declaration check still accepts the kind in a
+  `calls` list; refusing it at admission needs a contract rule, left to a later bump.
