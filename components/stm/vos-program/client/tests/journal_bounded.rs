@@ -254,7 +254,7 @@ fn archived_order_replays_to_the_same_states_on_one_node() {
 // verifies: REQ-OPS-3, NFR-4
 #[test]
 fn an_order_whose_journal_passes_a_steps_write_cap_still_ends_and_replays() {
-    // VOS caps a step's writes at 256 KiB. A hundred and twenty records of a few KB each are about half a megabyte,
+    // VOS caps a step's writes at 256 KiB. Two hundred and sixty records are over a third of a megabyte,
     // so an ending that wrote the whole journal in its step could not be recorded; sealing as records arrive does.
     let (_base, mut host) = start("steps", 3);
     let inputs = probe::order_inputs("ord-huge", 0);
@@ -264,7 +264,8 @@ fn an_order_whose_journal_passes_a_steps_write_cap_still_ends_and_replays() {
         input
     };
     submit_all(&mut host, &inputs[..2]);
-    let filler: Vec<RecordedInput> = (0..120).map(again).collect();
+    // About 1.3 KB a record in the journal, so two hundred and sixty pass 256 KiB with room to spare.
+    let filler: Vec<RecordedInput> = (0..260).map(again).collect();
     submit_all(&mut host, &filler);
     let journal = Host::<Stm>::journal(&host, &id("ord-huge")).unwrap();
     let weight: usize = journal
@@ -285,7 +286,7 @@ fn an_order_whose_journal_passes_a_steps_write_cap_still_ends_and_replays() {
     assert_eq!(host.status().unwrap().archived_orders, 1);
     assert_eq!(host.status().unwrap().live_records, 0);
     let rows = assert_replays(&host, "ord-huge", inputs.len() + filler.len());
-    assert!(rows >= 8, "{rows} archive rows");
+    assert!(rows >= 6, "{rows} archive rows");
     prove_backend();
 }
 
@@ -351,4 +352,72 @@ fn the_struct_of_a_format_one_instance_still_decodes_so_the_format_check_can_ref
     assert_eq!(used, v1.len());
     assert_eq!(state.stored_format(), 1, "it is a format-1 instance");
     assert_ne!(state.stored_format(), rutent_stm_vos_program::FORMAT);
+}
+
+// verifies: REQ-OPS-3, NFR-6
+#[test]
+fn an_export_of_orders_that_each_seal_in_a_row_imports_in_steps_under_the_write_cap() {
+    // Orders that sit just under a row's worth of live records, each sealed by its next record, one after another in
+    // the export: taken eight to a step they would write over VOS's 256 KiB, so the program takes fewer and the
+    // client resumes where it stopped.
+    let base = Base::new("import-source");
+    let mut harness = VosHarness::<Stm>::new(config(1), base.0.clone(), "i");
+    let store = harness.fresh_store().unwrap();
+    let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
+    const ORDERS: usize = 14;
+    let name = |n: usize| format!("ord-{n:02}");
+    let again = |order: &str, n: u32| {
+        let mut input = probe::order_inputs(order, 0)[1].clone();
+        input.record_id = RecordId::new(format!("again-{order}-{n}")).unwrap();
+        input
+    };
+    for n in 0..ORDERS {
+        let order = name(n);
+        submit_all(&mut host, &probe::order_inputs(&order, 0)[..2]);
+    }
+    // Round after round, one more record to each order, until the first one's records are sealed: then every order
+    // is one record short of sealing, in the same shape.
+    let mut round = 0u32;
+    let sealed_at = loop {
+        let before = host.status().unwrap().live_records;
+        submit_all(&mut host, &[again(&name(0), round)]);
+        if host.status().unwrap().live_records < before {
+            break round;
+        }
+        for n in 1..ORDERS {
+            submit_all(&mut host, &[again(&name(n), round)]);
+        }
+        round += 1;
+        assert!(round < 200, "the first order never sealed");
+    };
+    // The others now each take the record that seals them, one after another.
+    for n in 1..ORDERS {
+        submit_all(&mut host, &[again(&name(n), sealed_at)]);
+    }
+    let status = host.status().unwrap();
+    Host::<Stm>::halt(&mut host).unwrap();
+    let entries: Vec<_> = Host::<Stm>::export(&host)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(host);
+
+    let base2 = Base::new("import-target");
+    let mut harness2 = VosHarness::<Stm>::new(config(1), base2.0.clone(), "j");
+    let store2 = harness2.fresh_store().unwrap();
+    let imported: VosHost = <VosHarness<Stm> as Harness<Stm>>::import(
+        &mut harness2,
+        store2,
+        Box::new(entries.into_iter().map(Ok)),
+    )
+    .expect("the export imports");
+    let after = imported.status().unwrap();
+    assert_eq!(after.records, status.records);
+    assert_eq!(after.live_records, status.live_records);
+    for n in 0..ORDERS {
+        let journal = Host::<Stm>::journal(&imported, &id(&name(n))).unwrap();
+        assert_eq!(journal.len() as u32, 2 + sealed_at + 1, "{}", name(n));
+    }
+    drop(imported);
+    prove_backend();
 }

@@ -677,3 +677,17 @@ force. The item waits on the form; nothing else of F-010 waits on it.
   with sealing at the end only: 1.2 MB in one step) and the record-size edge. Gated: an order of about half a megabyte
   ends and replays (written first; not seen failing, as no node was run here). The format-1 decode test asserts the
   stored format is 1.
+
+### T-010-07: the third review
+
+- **An import step has a write budget.** An import chunk of eight entries could seal eight different orders, each
+  writing its live records again as archive rows, and pass VOS's 256 KiB cap on a step's writes: such an export
+  could never be imported, and import is the total-loss path. `import_chunk` now charges each entry
+  (`archive::import_cost`: its row, and the order's live bytes again if it seals) and stops before the step's total
+  would pass `STEP_BUDGET` (200 KiB), always taking at least one. It returns a partial `next`; the client's chunk
+  sender resends what was not taken from there and fails if a step takes nothing. No contract changes: the chunk
+  call's shape is the same, and a chunk it takes whole behaves as before.
+- **The long-order test now reaches the cap.** It submits 260 filler records (about 1.3 KB each in the journal) and
+  asserts the journal weighs over 256 KiB before it ends the order. A new gated test exports fourteen orders that
+  each seal on consecutive records and imports the export. Neither gated test was seen failing here: no node was run.
+  The native budget test was seen failing with `import_cost` stubbed to zero.

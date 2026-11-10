@@ -7,8 +7,8 @@ use common::generator::{Rng, Trace, traces};
 use rutent_contracts::state_machine::{Order, OrderState, RecordedInput, StateMachine};
 use rutent_stm::Stm;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, MAX_ENTRY, chunk_of, entry_fits, entry_in, entry_len, is_archivable, pack,
-    replay, seal_due, split, unpack,
+    CHUNK_BYTES, Entry, MAX_ENTRY, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len,
+    import_cost, is_archivable, pack, replay, seal_due, split, unpack,
 };
 
 const SEEDS: u64 = 600;
@@ -322,4 +322,80 @@ fn a_record_too_large_for_an_archive_row_does_not_fit() {
     assert!(!seal_due(0, false), "an empty live journal is not sealed");
     assert!(seal_due(CHUNK_BYTES, false));
     assert!(seal_due(1, true));
+}
+
+/// An import step, as the program takes it: entries in the stream's order, each charged `import_cost` against the
+/// order's live bytes, stopping before the budget is passed (but always taking one). Returns each step's total.
+fn import_steps(records: &[(usize, usize, bool)]) -> Vec<usize> {
+    let mut live = std::collections::BTreeMap::<usize, usize>::new();
+    let mut steps = Vec::new();
+    let mut spent = 0;
+    let mut taken = 0;
+    for &(order, weight, ends) in records {
+        let held = live.get(&order).copied().unwrap_or(0);
+        let cost = import_cost(held, weight, ends);
+        if taken > 0 && spent + cost > STEP_BUDGET {
+            steps.push(spent);
+            spent = 0;
+            taken = 0;
+        }
+        spent += cost;
+        taken += 1;
+        if seal_due(held + weight, ends) {
+            live.insert(order, 0);
+        } else {
+            live.insert(order, held + weight);
+        }
+    }
+    steps.push(spent);
+    steps
+}
+
+// verifies: REQ-OPS-3, NFR-6
+#[test]
+fn an_import_step_stops_before_its_writes_pass_the_budget() {
+    // Orders just under a row's worth of live records, each sealed by its next record: eight of them in a row, the
+    // stream a busy export gives. Taken eight at a time they write over VOS's 256 KiB step cap.
+    let weight = 4 << 10;
+    let near = CHUNK_BYTES - weight + 1;
+    let orders = 40;
+    let mut records = Vec::new();
+    for order in 0..orders {
+        for _ in 0..(near / weight) {
+            records.push((order, weight, false));
+        }
+    }
+    let first_seals = records.len();
+    for order in 0..orders {
+        records.push((order, weight, false)); // fills the row: sealed
+    }
+    let eight_at_a_time: usize = (first_seals..first_seals + 8)
+        .map(|at| {
+            let (_, weight, ends) = records[at];
+            import_cost(near / 4096 * 4096, weight, ends)
+        })
+        .sum();
+    assert!(
+        eight_at_a_time > 256 << 10,
+        "eight seals in one step are {eight_at_a_time} bytes"
+    );
+    let steps = import_steps(&records);
+    let most = *steps.iter().max().unwrap();
+    assert!(
+        most <= STEP_BUDGET + CHUNK_BYTES + MAX_ENTRY,
+        "a step wrote {most}"
+    );
+    assert!(most < 256 << 10);
+    assert!(steps.len() >= 2 + orders / 6, "{} steps", steps.len());
+    // A single entry is always taken, however it weighs.
+    assert_eq!(import_steps(&[(0, MAX_ENTRY, true)]).len(), 1);
+    assert_eq!(import_steps(&[]).len(), 1);
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn an_entry_that_seals_costs_its_live_records_and_one_that_does_not_costs_itself() {
+    assert!(import_cost(0, 1000, false) < 2000);
+    assert!(import_cost(CHUNK_BYTES - 500, 1000, false) > CHUNK_BYTES);
+    assert!(import_cost(5000, 1000, true) > 6000);
 }

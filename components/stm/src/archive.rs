@@ -60,6 +60,23 @@ pub fn seal_due(live_bytes: usize, ends: bool) -> bool {
     live_bytes >= CHUNK_BYTES || (ends && live_bytes > 0)
 }
 
+/// The most one step of an import aims to write, in bytes: under VOS's 256 KiB cap on a step's writes, with room
+/// for the entry that passes it and for the index rows.
+pub const STEP_BUDGET: usize = 200 << 10;
+
+/// What taking one record into an import step writes, at most: its own row and its indices, and, when it seals
+/// (`seal_due`), the order's live records `live_bytes` and `weight` packed again into archive rows. A host stops
+/// taking entries before the step's total would pass [`STEP_BUDGET`], so a run of entries that each seal a
+/// different order cannot pass the cap.
+pub fn import_cost(live_bytes: usize, weight: usize, ends: bool) -> usize {
+    let own = weight + 128;
+    if seal_due(live_bytes + weight, ends) {
+        own + live_bytes + weight + 128
+    } else {
+        own
+    }
+}
+
 /// What `entry` adds to a packed row.
 pub fn entry_len(entry: &Entry) -> usize {
     9 + entry.input.len() + entry.state.as_ref().map_or(0, Vec::len)

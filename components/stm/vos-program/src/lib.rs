@@ -79,8 +79,8 @@ use rutent_probe::Probe as Machine;
 #[cfg(not(feature = "probe-machine"))]
 use rutent_stm::Stm as Machine;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, chunk_of, entry_fits, entry_in, entry_len, is_archivable, pack, seal_due,
-    split, unpack,
+    CHUNK_BYTES, Entry, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len, import_cost,
+    is_archivable, pack, seal_due, split, unpack,
 };
 use serde::Serialize;
 use vos_sdk::prelude::*;
@@ -505,6 +505,23 @@ impl Rutent {
             .map_err(|e| alloc::format!("a stored state: {e}").into_bytes())
     }
 
+    /// What taking `entry`, which came as a line of `line` bytes, writes at most (`rutent_stm::archive::import_cost`):
+    /// a record is charged its row and, if it seals its order's live records, those packed again.
+    fn import_cost_of(&self, entry: &SnapshotEntry, line: usize) -> usize {
+        match entry {
+            SnapshotEntry::Record(record) => {
+                let order = record.order_id.as_str().as_bytes().to_vec();
+                let live = self
+                    .place_of(&order)
+                    .and_then(|place| self.orders.get(&place))
+                    .map_or(0, |row| row.live_bytes as usize);
+                let ends = record.state_after.as_ref().is_some_and(is_archivable);
+                import_cost(live, line, ends)
+            }
+            _ => line + 256,
+        }
+    }
+
     fn new_row(input: Vec<u8>, state: Option<Vec<u8>>) -> RecordRow {
         RecordRow { input, state }
     }
@@ -752,7 +769,9 @@ impl Rutent {
     /// be the import's next. Each entry is checked as `StreamCheck` checks it, against what the import took
     /// before it. A chunk that fails is refused whole: the handler returns its error, which fails the step, so VOS
     /// keeps none of the chunk's writes, and the import can go on from `at`. The end entry closes the import,
-    /// leaving the host halted.
+    /// leaving the host halted. The step takes entries only while its writes, the archive rows sealed in it
+    /// included, stay under [`STEP_BUDGET`] (VOS caps a step's writes at 256 KiB): it may take fewer than it was
+    /// given, and the `next` it returns is where the client resumes. It always takes at least one.
     #[msg(gas = 100_000_000)]
     pub async fn import_chunk(
         &mut self,
@@ -772,7 +791,8 @@ impl Rutent {
             ));
         }
         let mut ended = false;
-        for line in &entries {
+        let mut spent = 0;
+        for (taken, line) in entries.iter().enumerate() {
             if ended {
                 return Err(Refused::Import(b"nothing follows a stream's end".to_vec()));
             }
@@ -782,6 +802,11 @@ impl Rutent {
                     return Err(Refused::Import(alloc::format!("{e}").into_bytes()));
                 }
             };
+            let cost = self.import_cost_of(&entry, line.len());
+            if taken > 0 && spent + cost > STEP_BUDGET {
+                break;
+            }
+            spent += cost;
             match self.take(entry) {
                 Ok(end) => ended = end,
                 Err(why) => return Err(Refused::Import(why)),
