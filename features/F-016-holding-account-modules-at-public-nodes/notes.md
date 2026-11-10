@@ -145,5 +145,6 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   is that order's balance. `judge_call` now refuses the kind as `undeclared_kind` however it is declared or named, so
   only the operator's audit reads it through the host. The change is in `proxy/calls.rs` (a barred kind and a filter
   on the route's naming); the property's kinds no longer include it, and a test covers a declared call, a named
-  call, both, and an ordinary call as the control. The contract's own declaration check still accepts the kind in a
-  `calls` list; refusing it at admission needs a contract rule, left to a later bump.
+  call, both, and an ordinary call as the control. The contract's declaration check refuses it too:
+  `validate_declaration` returns `DeclaredCallOfHoldingBalance` for a `calls` list that names it, folded into the
+  unreleased module-interface 4.0.0 with an invalid fixture and a changelog line.
