@@ -78,7 +78,8 @@ impl<R: Resolver, N: NameResolver, C: Connector, S: StateStore> ProductionWorld<
     /// Holds `advertisement`, the one the catalogue accepted for its provider, for the proxy to admit the
     /// provider's releases against when they start. A later one replaces it, and the release already running is
     /// judged against its keys from the next signing on: a statement key it revokes signs nothing more, with no
-    /// restart. An advertisement of another deployment is refused, and nothing is held.
+    /// restart. An advertisement of another deployment is refused, and nothing is held; so is one naming a module
+    /// whose running release is the operator's own (`T-016-04`).
     pub fn advertise(&mut self, advertisement: Statement<Advertisement>) -> Result<(), Refusal> {
         self.proxy.advertise(&advertisement)?;
         self.advertisements
@@ -125,10 +126,18 @@ impl<R: Resolver, N: NameResolver, C: Connector, S: StateStore> World
 
     fn running(&mut self, artefact: &AdmissionArtefact) {
         let provider = artefact.declaration().provider.clone();
+        // The operator's own release, signed with the operator key the proxy's settings name, is a module the
+        // operator publishes, such as a public node's holding account (`T-016-04`): it is admitted with no
+        // advertisement, whatever advertisement the world holds under its name, and that one is dropped. Any other
+        // release is admitted against the advertisement the catalogue accepted for its provider.
+        let operators = self.proxy.is_operators_release(artefact);
         let admitted = match self.advertisements.get(provider.as_str()) {
-            Some(advertisement) => self.proxy.admit(artefact, advertisement),
-            None => Err(Refusal::NoRelease),
+            Some(advertisement) if !operators => self.proxy.admit(artefact, advertisement),
+            _ => self.proxy.admit_operator(artefact),
         };
+        if operators && admitted.is_ok() {
+            self.advertisements.remove(provider.as_str());
+        }
         if let Err(refusal) = admitted {
             // The proxy keeps no release of the provider's then, so it refuses every lookup until one is admitted.
             self.proxy.retire(&provider);

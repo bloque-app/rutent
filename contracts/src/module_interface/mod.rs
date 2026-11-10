@@ -34,7 +34,9 @@
 //!   release's capabilities widen the previous one's, a newly handled operation kind included; a widening
 //!   release, and a first release, require a fresh acceptance. [`validate_artefact`], [`validate_assertion_key`]
 //!   and [`validate_release`] check them; an assertion is signed with a key the accepted advertisement lists for
-//!   `advertising`.
+//!   `advertising`. A module the operator publishes, such as a public node's holding account, has no
+//!   advertisement: its assertion is the operator's own, signed with the deployment's `operator_key`, and
+//!   [`validate_operator_assertion`] checks it against the deployment the platform serves (4.0.0).
 //! - **Refusals** (`REQ-MDL-1`, `REQ-MDL-11`, `REQ-MDL-12`). A platform refuses a release at admission with an
 //!   [`AdmissionRefusal`], and an operation's answer with a [`PlatformRefusal`], each naming its own reason: a
 //!   limit hit, a disallowed import, a re-admitted version, a release while another waits for acceptance and an

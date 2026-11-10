@@ -13,8 +13,8 @@ use rutent_contracts::provider_role::{EvidenceGrade, EvidencePiece};
 use rutent_contracts::state_machine::{Endpoint, Id, OperationKind, SegmentPlan};
 use rutent_prov::holding::wallet::{Holdings, StartError, proof_of_withdrawal};
 use rutent_prov::holding::{Reconciliation, reconcile};
-use signed::{RESERVE, Signed};
-use support::{TestOperator, covers, run_wallet};
+use signed::Signed;
+use support::{POLYGON_WALLET, TestOperator, covers, run_wallet};
 
 use signed::catalogue_support::{CASES, Rng};
 
@@ -59,10 +59,16 @@ fn handed_on_from(node: &str) -> Vec<SegmentPlan> {
 /// A wallet registered at `polygon`, with `100` of `USDC` landed for `o-1`.
 fn polygon_with_value() -> (Signed, Holdings) {
     let mut s = Signed::new();
-    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
-        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
         .expect("registered");
     holdings
         .land(
@@ -92,21 +98,21 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         .expect("the route starts");
 
     // The holding account is the route's starting reserve, and its own record is the proof of the withdrawal.
-    assert_eq!(start.reserve, RESERVE);
+    assert_eq!(start.reserve, POLYGON_WALLET);
     assert_eq!(start.node, "polygon");
     assert_eq!(start.first_segment, Id::new("s1").unwrap());
     assert_eq!(start.record.amount, 60);
-    assert_eq!(start.record.by, RESERVE);
+    assert_eq!(start.record.by, POLYGON_WALLET);
     assert!(
-        start.record.reference.starts_with(RESERVE)
+        start.record.reference.starts_with(POLYGON_WALLET)
             && start.record.reference.contains("withdrawal"),
         "the proof is the wallet's own record of a withdrawal: {}",
         start.record.reference
     );
 
     // The value left the account for the route: the order holds what is left, by the wallet's own word too.
-    assert!(covers(&mut s, RESERVE, "USDC", "o-1", 40));
-    assert!(!covers(&mut s, RESERVE, "USDC", "o-1", 41));
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 40));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 41));
     let readings = holdings.readings(&mut s.platform, &TestOperator);
     let reading = readings[0].1.as_ref().expect("a reading");
     assert_eq!(reading.balance, 40);
@@ -160,7 +166,7 @@ fn route_that_is_not_handed_on_or_not_at_a_holding_account_does_not_start() {
     );
 
     assert_eq!(holdings.attributions(), before);
-    assert!(covers(&mut s, RESERVE, "USDC", "o-1", 100));
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 100));
 }
 
 // verifies: INV-5

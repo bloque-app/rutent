@@ -6,7 +6,10 @@
 //! - `reversal`: each grant's reversal-capacity check, the ceiling that follows the bond (`DEC-11`), and the
 //!   reversals a provider owes (`REQ-CAT-7`).
 //! - `declaration`: reserve declarations, recorded once and shown before acceptance (`REQ-CAT-6`).
-//! - `publisher`: the publisher behind each provider and node (`REQ-CAT-20`).
+//! - `publisher`: the publisher behind each provider and node (`REQ-CAT-20`), and the modules the operator
+//!   publishes itself, such as a public node's holding account (`REQ-CAT-23`).
+//! - `operator`: the operator's own signed statements, verified against the operator key of the deployment the
+//!   catalogue serves (`T-016-04`; `REQ-MDL-1`).
 //! - `nodes`: the operator's public nodes, and every node's holding account (`REQ-CAT-22`, `REQ-CAT-23`).
 //! - `balance`: balance checks, bounded and logged per account, and a silent reserve's ineligibility
 //!   (`REQ-CAT-3`, `REQ-CAT-4`, `REQ-CAT-19`).
@@ -33,6 +36,7 @@ mod bounds;
 mod declaration;
 mod grant;
 mod nodes;
+mod operator;
 mod publisher;
 mod reversal;
 mod segments;
@@ -53,7 +57,7 @@ pub use declaration::{
 };
 pub use grant::{Endpoint, Grant, GrantError, GrantTerms, Instant, Standing, TupleKey, tuples_of};
 pub use nodes::{HoldingAccount, HoldingSource, NodeBook, NodeError};
-pub use publisher::{PublisherError, PublisherIndex};
+pub use publisher::{Publisher, PublisherError, PublisherIndex};
 pub use reversal::{
     Bond, Observation, Owed, OwedError, OwedReversals, ReversalCapacity, ReversalError,
 };
@@ -311,13 +315,15 @@ impl Catalogue {
     }
 
     /// Registers a public node's holding account, by default a plain wallet, as a module outside the core
-    /// (`REQ-CAT-23`).
+    /// (`REQ-CAT-23`). `reference` must be a module the operator publishes ([`Self::publish_operator_module`]):
+    /// a provider's module is never a node's holding account (`T-016-04`).
     pub fn register_public_holding(
         &mut self,
         node: &str,
         reference: &str,
     ) -> Result<(), NodeError> {
-        self.nodes.hold_public(node, reference)
+        let operators = self.publishers.published_by_operator(reference);
+        self.nodes.hold_public(node, reference, operators)
     }
 
     /// Records the way a private node's publisher gave the operator to its holding account (`REQ-CAT-23`).

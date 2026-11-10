@@ -56,6 +56,7 @@ fn random_catalogue(rng: &mut Rng) -> Catalogue {
         if rng.chance(2) {
             catalogue.add_public_node(node).unwrap();
             if rng.chance(3) {
+                catalogue.publish_operator_module("wallet").unwrap();
                 catalogue.register_public_holding(node, "wallet").unwrap();
             }
         }

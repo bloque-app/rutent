@@ -126,6 +126,72 @@ fn lookup_for_an_operation_with_no_request_in_flight_is_refused() {
     assert_eq!(stores["internal"].seen().len(), 1);
 }
 
+// verifies: REQ-CAT-23, REQ-MDL-1, THR-4
+#[test]
+fn operators_own_release_is_admitted_with_no_advertisement_and_never_resolves_the_operator_key() {
+    let (mut proxy, stores) = proxy();
+    let internal = &stores["internal"];
+    for key in [KEY_B, OPERATOR_KEY] {
+        internal.write(&key_path("internal", "alpha", key), "private-half");
+    }
+    let alpha = caller("alpha");
+    let operator_key =
+        rutent_contracts::provider_role::PublicKey::new(OPERATOR_KEY).expect("a key");
+    let operators = |statement_key: &str| {
+        let mut artefact = release("alpha", "1.0.0", &[], statement_key);
+        artefact.assertion.signature.key = operator_key.clone();
+        artefact
+    };
+
+    // Not the operator's: signed with a provider's key, or of another deployment. Nor accepted yet.
+    let mut elsewhere = operators(KEY_B);
+    elsewhere.assertion.deployment.name = "rutent-elsewhere".into();
+    for (artefact, refusal) in [
+        (
+            release("alpha", "1.0.0", &[], KEY_B),
+            Refusal::NotTheOperatorsRelease,
+        ),
+        (elsewhere, Refusal::NotTheOperatorsRelease),
+        (unaccepted(operators(KEY_B)), Refusal::NotAccepted),
+    ] {
+        assert_eq!(proxy.admit_operator(&artefact), Err(refusal));
+    }
+    assert_eq!(
+        proxy.begin_operation(&alpha, &id("tx-1")),
+        Err(Refusal::NoRelease)
+    );
+
+    // The operator's release declaring the operator key as its statement key: it is never resolved.
+    proxy.admit_operator(&operators(OPERATOR_KEY)).unwrap();
+    proxy.begin_operation(&alpha, &id("tx-1")).unwrap();
+    assert_eq!(
+        proxy.statement_key(&alpha, &id("tx-1")),
+        Err(Refusal::StatementKeyIsOperatorKey)
+    );
+    assert!(
+        internal.seen().is_empty(),
+        "a refused key reached the store"
+    );
+
+    // The control: the key it declares resolves, with no advertisement listing it.
+    proxy.admit_operator(&operators(KEY_B)).unwrap();
+    proxy.begin_operation(&alpha, &id("tx-2")).unwrap();
+    assert_eq!(
+        proxy.statement_key(&alpha, &id("tx-2")).unwrap().as_str(),
+        "private-half"
+    );
+    // An advertisement naming the operator's module is refused and changes nothing: no advertisement vouches for
+    // its keys.
+    assert_eq!(
+        proxy.advertise(&advertisement("alpha", &[(KEY_B, "advertising")])),
+        Err(Refusal::AdvertisementOfAnOperatorsModule)
+    );
+    assert_eq!(
+        proxy.statement_key(&alpha, &id("tx-2")).unwrap().as_str(),
+        "private-half"
+    );
+}
+
 // verifies: REQ-MDL-6, THR-4
 #[test]
 fn advertising_key_is_never_resolved() {
