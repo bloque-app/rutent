@@ -79,8 +79,8 @@ pub const FEATURES: WasmFeatures = WasmFeatures::FLOATS
 /// check could otherwise still read past it: the heap mitigation makes an out-of-bounds address resolve to a null
 /// address by a conditional select, not by a branch alone. The table mitigation does the same for indirect-call
 /// tables. Both are Wasmtime's defaults; they are set here so that a change of default in a later Wasmtime, or a
-/// setting someone adds beside them, can't turn them off unseen: an engine that asks for them turned off is refused
-/// by Wasmtime itself when signal-based traps are on (they are). The cost is a select for each access, not measured.
+/// setting someone adds beside them, can't turn them off unseen: [`engine_from`] refuses an engine whose settings
+/// differ from [`config`]'s, these two included. The cost is a select for each access, not measured.
 /// Not covered: speculation out of the module's own code across the host boundary, and the processor's own
 /// predictors, which the process jail and the one-process-per-provider rule (`DEC-7`) bound instead.
 pub const SPECTRE: [(&str, &str); 2] = [
@@ -126,7 +126,25 @@ pub fn feature_names() -> Vec<String> {
 
 /// The engine both the compiler and the provider processes use.
 pub fn engine() -> wasmtime::Result<Engine> {
-    Engine::new(&config()?)
+    engine_from(&config()?)
+}
+
+/// An engine made from `config`, refused unless it would make and accept exactly the machine code [`config`]'s
+/// engine does: Wasmtime's compatibility hash covers every compiler setting, the Spectre mitigations ([`SPECTRE`])
+/// among them, so an engine with one turned off, or any other setting changed, is an error (`G-09`).
+pub fn engine_from(config: &Config) -> wasmtime::Result<Engine> {
+    use std::hash::BuildHasher;
+    fn digest(engine: &Engine) -> u64 {
+        std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default()
+            .hash_one(engine.precompile_compatibility_hash())
+    }
+    let engine = Engine::new(config)?;
+    if digest(&engine) != digest(&Engine::new(&self::config()?)?) {
+        wasmtime::bail!(
+            "the engine's settings differ from the binding's, the Spectre mitigations among them"
+        );
+    }
+    Ok(engine)
 }
 
 /// Every setting [`config`] makes, for the run note.

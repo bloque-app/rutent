@@ -464,7 +464,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   vendor as this machine (two Intel runners compare nothing across vendors; the `ci` job, a required check, takes no
   vendor rule so it never fails at random), on a platform version that differs and on any part whose digest differs,
   and writes this CPU's vendor, model and digests. **GitHub gives `ubuntu-latest` either
-  vendor, so the job fails on an AMD machine, or on the same vendor as the reference's, and has to be re-run**: this is the reading of `T-012-01`'s writer that it
+  vendor, so the job skips on an AMD machine or the same vendor as the reference's and has to be re-run (see the review round)**: this is the reading of `T-012-01`'s writer that it
   can't count as a second AMD run, kept. Run unconfigured (no reference, as locally on macOS) the named test passes
   doing nothing and says so; the pieces it uses are tested always (`a_cpu_is_named_by_its_vendor_and_amd_is_told_apart`,
   `a_derivation_records_its_cpu_and_...`).
@@ -484,3 +484,37 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   compiler binary are untouched. Tests are in `tests/module_hardening.rs` with `tests/module_support/fuzz.rs` and
   `cpu.rs`, which `module_support/mod.rs` doesn't declare (the test includes them by path), so the shared support
   module is unchanged.
+
+## T-013-05, review round
+
+- **`rederive` skips instead of failing on a bad draw.** When this runner is AMD's or unreadable, or the reference
+  records no vendor or the same one, the job's CPU step sets `skip=true`, writes a warning and a line to the step
+  summary, and the later steps don't run: green, but not a re-derivation, and the summary says so. It is red only when
+  the vendors differ and the digests don't (or the platform version differs). This replaces the earlier "fails on an
+  AMD machine" reading above; the test's own vendor rule stays as a backstop. The plan row's Done-when now reads that the
+  re-derivation has run on a CPU of another vendor at least once, its run id recorded; a green skipped run does not
+  count.
+- **Re-runs.** Both uploads (`rederivation-reference`, `fuzz-findings-…`) set `overwrite: true`, so a full "Re-run all
+  jobs" no longer fails with a 409 on the duplicate name; the fuzz step has `timeout-minutes: 15`.
+- **A guard on the engine's settings.** `engine::engine_from(config)` refuses an engine whose Wasmtime compatibility
+  hash differs from the binding's own `config()`'s, which covers the Spectre mitigations and every other compiler
+  setting; `engine::engine()` goes through it. The earlier claim in `engine.rs` that Wasmtime itself refuses an engine
+  with the mitigations off was wrong and is gone. Test:
+  `engine_settings_that_turn_a_spectre_mitigation_off_are_refused_when_the_engine_is_built` (it failed first to compile,
+  `engine_from` missing).
+- **The fuzzer goes inside nested core modules.** `fuzz::mutate_nested` splits the component, then a nested core module,
+  into sections and changes one with the framing rebuilt, so lengths hold: a custom section added or filled, a data
+  segment changed, a constant in a function body changed, a name's letter swapped, or a plain byte edit of any section
+  (imports, types, code); also names and custom sections of the component itself. Half the pairs of the long run change
+  one part only, so a refused part doesn't hide the other. Test first:
+  `most_fuzzed_binaries_are_still_components_the_compiler_goes_on_to_check` (seeded, 300 mutants of the hostile
+  components, at least 40% must be components): 11 of 300 before; 203 of 300 after. The 90 s local run (seed 20261109)
+  before: 2,636 of 2,711 pairs refused as "not a component" (97%). After: 827 pairs, 276 refused as "not a component"
+  (33%), 68 compiled, 483 refused for an import or an export the part may not have; none crashed the compiler.
+- **Corpus.** `mutated-23`, `-25`, `-27` were copies of hostile seeds. The corpus is made again with the new fuzzer, the
+  generator skipping any case equal to a seed or one kept: 30 files, none identical to another or to a seed.
+- **Run ids.** CI run 42754273532 (branch `m2-ci-t01305`, commit `0bb16a3`): the `ci` job, fuzz step included, and the
+  `rederive` job passed. The reference was made on AuthenticAMD (AMD EPYC 9V45 96-Core Processor) and re-derived on
+  GenuineIntel (INTEL(R) XEON(R) PLATINUM 8573C); the digests matched. That meets the Done-when's re-derivation on a CPU
+  of another vendor. That run used the first fuzzer; the run id of the fuzz step with the deeper fuzzer is to be added by
+  the orchestrator once CI has run on this commit.

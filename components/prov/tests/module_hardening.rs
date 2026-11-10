@@ -82,6 +82,45 @@ fn fuzz_corpus_never_crashes_the_admitting_compiler() {
     assert!(crashes.is_empty(), "the compiler failed on: {crashes:#?}");
 }
 
+// Most of what the fuzzer makes must get past the parser, or it tests the parser and nothing after it.
+// verifies: THR-85
+#[test]
+fn most_fuzzed_binaries_are_still_components_the_compiler_goes_on_to_check() {
+    let engine = engine::engine().expect("an engine");
+    let seeds: Vec<Vec<u8>> = ["control", "clock", "file", "socket", "undeclared", "canary"]
+        .iter()
+        .map(|n| std::fs::read(common::standins().join(format!("hostile-{n}.wasm"))).unwrap())
+        .collect();
+    let mut rng = fuzz::Rng(7);
+    let (mut read, total) = (0, 300);
+    for _ in 0..total {
+        let at = rng.below(seeds.len());
+        let input = fuzz::mutate(&mut rng, &seeds[at], 64 * 1024);
+        if wasmtime::component::Component::new(&engine, &input).is_ok() {
+            read += 1;
+        }
+    }
+    eprintln!("{read} of {total} mutated binaries are components");
+    assert!(
+        read * 100 >= total * 40,
+        "only {read} of {total} reach past the parser"
+    );
+}
+
+// verifies: THR-85
+#[test]
+fn engine_settings_that_turn_a_spectre_mitigation_off_are_refused_when_the_engine_is_built() {
+    let mut config = engine::config().expect("the configuration");
+    // SAFETY: a Cranelift setting, set to see the guard refuse it.
+    unsafe { config.cranelift_flag_set("enable_heap_access_spectre_mitigation", "false") };
+    let refused = engine::engine_from(&config);
+    assert!(
+        refused.is_err(),
+        "an engine without the mitigation was built"
+    );
+    assert!(engine::engine_from(&engine::config().unwrap()).is_ok());
+}
+
 // verifies: THR-85
 #[test]
 fn fuzzed_binaries_are_refused_or_admitted_at_admission_and_a_good_release_is_admitted_after() {
@@ -124,9 +163,9 @@ fn fuzzed_binaries_are_refused_or_admitted_at_admission_and_a_good_release_is_ad
     );
 }
 
-/// Seeds for the long run: the stand-ins in the smallest language and the corpus.
+/// Seeds for the long run and the corpus: the hostile components and the stand-ins, all valid.
 fn seeds() -> Vec<Vec<u8>> {
-    let mut seeds: Vec<Vec<u8>> = corpus().into_iter().map(|(_, b)| b).collect();
+    let mut seeds: Vec<Vec<u8>> = Vec::new();
     for name in ["control", "clock", "file", "socket", "undeclared", "canary"] {
         if let Ok(bytes) = std::fs::read(common::standins().join(format!("hostile-{name}.wasm"))) {
             seeds.push(bytes);
@@ -183,7 +222,12 @@ fn fuzzing_for_a_while_never_crashes_the_admitting_compiler() {
         };
         let second = {
             let at = rng.below(seeds.len());
-            fuzz::mutate(&mut rng, &seeds[at], cap)
+            // Half the pairs change one part only, so that a part the parser refuses doesn't hide the other.
+            if rng.below(2) == 0 {
+                seeds[at].clone()
+            } else {
+                fuzz::mutate(&mut rng, &seeds[at], cap)
+            }
         };
         runs += 1;
         let result = compile(
@@ -291,8 +335,12 @@ fn the_corpus_is_written_when_asked() {
             Err(CompileError::Refused { why, .. }) => why.chars().take(40).collect(),
             Err(other) => format!("CRASH {other}"),
         };
+        // A case that is a seed, or a copy of one kept, adds nothing.
+        if chosen.iter().any(|(_, b)| *b == input) {
+            continue;
+        }
         let kept = classes.entry(class.clone()).or_default();
-        if *kept < 5 && input.len() <= 8 * 1024 {
+        if *kept < 4 && input.len() <= 8 * 1024 {
             *kept += 1;
             chosen.push((format!("mutated-{}", chosen.len()), input));
         }
