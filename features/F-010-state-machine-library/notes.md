@@ -507,7 +507,7 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
 
 - **What it does.** The VOS program archives an order when a record ends it (`rutent_stm::archive::is_archivable`:
   complete, failed, handed on, or ended without completing, which is `is_ended`). The step that writes that record
-  packs the order's whole journal into one row of a new `archive` table and deletes its live `records` rows. A
+  packs the order's whole journal into rows of a new `chunks` table, each at most 32 KiB, and deletes its live `records` rows. A
   record written to an archived order afterwards (a repeat, a late input, the undo of a complete part, which
   `machine.rs` still allows) is appended to the row. Stuck and waiting orders stay live: someone can still resolve them.
 - **Library.** `rutent_stm::archive` (`no_std` + `alloc`, no new dependency): `Entry`, `pack`, `unpack` (refuses a
@@ -526,19 +526,28 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   total storage still grows with the stream; it grows by the compact archive, and the hot tables the program reads
   and writes on every submit stay small. Bounding the rest needs a cold store outside the actor (copy archive
   rows out, then drop them), which changes what `journal` can answer for a dropped order. That is a host-contract
-  question for the owner, not done here. `G-33` is closed for the live journal only.
-- **Format.** The program's `FORMAT` is 2 and `PROGRAM` 2: a new table changes the actor's struct and `Status`
-  gained two fields. No running instance is upgraded by this task (v0; the `next` versions were not carried over, as
-  `T-010-05` recorded), so a version-1 instance is refused, never misread.
-- **Cost.** An archived order is read by unpacking its row, so reading one record costs the order's length, and a
-  late input rewrites the row. Orders are short (seven inputs for a normal one); the archive step moves one order's
-  rows inside one step under the 100M-gas cap. A `released_from` page over archived orders unpacks per record.
+  question for the owner, not done here. `G-33` is not closed: the live journal is bounded, and total storage awaits the owner's item `vos-storage-bound`.
+- **Format.** The program's `FORMAT` is 2 and `PROGRAM` 2: the rows changed (new tables). The struct itself is
+  the same as format 1's: the new tables are skipped fields, and the two counters (`live_records`,
+  `archived_orders`) live in a table row, so a format-1 instance still decodes in `state::load` and every handler
+  and query refuses it by the format check, instead of trapping on load. A test decodes a format-1 struct row.
+  No running instance is upgraded by this task (v0; the `next` versions were not carried over, as `T-010-05` recorded).
+- **Rows of bounded size (review).** VOS caps a stored value at 64 KiB and one state is a few KB, so one row for
+  a whole order could not be written once its journal passed ten or twenty records. An archive is now several rows
+  of at most `CHUNK_BYTES` (32 KiB, `rutent_stm::archive::split`), found through a head of each row's first sequence
+  number; a late record goes into the last row or a new one. The `archived` query serves one row at a time. A test
+  ends an order after forty filler records and appends twenty more.
+- **A damaged archive is an error.** `row_in` returns an error for a missing, damaged or short row, which the
+  queries refuse as `Refused::Archive` and a submit as `Invalid`: never a record that reads as absent. A page of
+  reads unpacks each row once. The `archived` reply is compared with 60 KiB, under the 64 KiB reply cap. The
+  damage cases of the lookup (`chunk_of`, `entry_in`) are native tests; the node-level refusal is not exercised
+  because the program offers no way to damage a row.
+- **Cost.** A late input rewrites the last archive row (at most 32 KiB). The archive step moves one order's rows
+  inside one step under the 100M-gas cap.
 - **Tests.** `components/stm/tests/archive.rs` (native, in `cargo test --workspace`): an archive replays to the
   journal's recorded states over 600 seeded orders; inputs after the ending are appended and still replay; a damaged
   archive is refused (every cut, trailing byte, wrong header); arbitrary entries round-trip; `is_archivable` is
-  `is_ended`. `vos-program/client/tests/journal_bounded.rs` (needs the `vos` feature, three nodes):
-  `live_journal_stays_bounded_under_a_stream_of_completed_orders` and `archived_order_replays_to_the_same_states`,
-  which also appends a late input to an archived order. The tests were written first; the native ones failed to
+  `is_ended`. `vos-program/client/tests/journal_bounded.rs` (needs the `vos` feature): `live_journal_stays_bounded_under_a_stream_of_completed_orders` and `archived_order_replays_to_the_same_states` on three nodes, each again on one, the long-journal order, and the format-1 struct row. `stm-vos.yml` runs the file in its own step (a `DEC-20` path). The tests were written first; the native ones failed to
   compile until the module existed.
 - **Not proved here.** The VOS tests pass on three nodes with the JIT only in CI (`stm-vos.yml`); the run id goes
   here once the branch is pushed.

@@ -35,7 +35,8 @@
 //!
 //! A record is kept in the live `records` table until its order ends ([`is_archivable`]: complete, failed, handed on
 //! or ended without completing). The step that writes the record that ends it packs the order's whole journal into
-//! one row of `archive`, with the library's [`pack`], and deletes the order's live rows; a record written to an
+//! rows of `chunks`, each at most [`CHUNK_BYTES`] (the library's [`split`] and [`pack`]; VOS caps a stored value at
+//! 64 KiB), and deletes the order's live rows; a record written to an
 //! archived order afterwards (a repeat, a late input, the undo of a complete part) is appended to its row. So the
 //! live journal holds only orders still open, and stays bounded under a stream of completed orders.
 //!
@@ -73,7 +74,9 @@ use rutent_contracts::state_machine::{
 use rutent_probe::Probe as Machine;
 #[cfg(not(feature = "probe-machine"))]
 use rutent_stm::Stm as Machine;
-use rutent_stm::archive::{Entry, is_archivable, pack, unpack};
+use rutent_stm::archive::{
+    CHUNK_BYTES, Entry, chunk_of, entry_in, entry_len, is_archivable, pack, split, unpack,
+};
 use serde::Serialize;
 use vos_sdk::prelude::*;
 
@@ -85,6 +88,9 @@ pub const PROGRAM: u32 = 2;
 
 /// The most a page of reads carries, in stored bytes, so its reply stays under VOS's 64 KiB reply cap.
 pub const PAGE_BYTES: usize = 40 << 10;
+
+/// The most a reply carries, in bytes: VOS's 64 KiB reply cap less framing.
+pub const REPLY_BYTES: usize = 60 << 10;
 
 /// `value` as canonical JSON: serde_json's value model (an object's keys in a `BTreeMap`, so sorted by their UTF-8
 /// bytes) written with no whitespace. The adapter's corpus checks it against the native build, byte for byte.
@@ -146,7 +152,7 @@ pub enum Refused {
     /// An import is open, or the store is not empty, or an entry is out of place: the reason.
     #[codec(index = 2)]
     Import(Vec<u8>),
-    /// An archive row is not one the library reads, or is too large for one reply.
+    /// An archive row is missing or damaged, or is too large for one reply: the reason.
     #[codec(index = 3)]
     Archive(Vec<u8>),
 }
@@ -158,6 +164,29 @@ pub struct OrderRow {
     pub id: Vec<u8>,
     pub len: u64,
     pub latest_state: u64,
+}
+
+/// Where an archived order's rows begin: the sequence number of the first record of each.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct ArchiveHead {
+    pub starts: Vec<u64>,
+}
+
+/// The program's two archive counters.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct Counters {
+    /// The records still in the live journal.
+    pub live_records: u64,
+    /// The orders whose journal is archived.
+    pub archived_orders: u64,
+}
+
+/// An archive row read and unpacked, kept while a page of reads goes through it.
+pub struct Opened {
+    place: u64,
+    chunk: u64,
+    first: u64,
+    entries: Vec<Entry>,
 }
 
 /// A record as stored: its input and its state as canonical JSON.
@@ -225,18 +254,21 @@ pub struct Rutent {
     order_count: u64,
     record_count: u64,
     refusal_count: u64,
-    /// The records of orders not archived, which the live `records` table holds.
-    live_records: u64,
-    /// The orders in `archive`.
-    archived_orders: u64,
     /// Each order by its place, from 1, in the order its first record was written.
     orders: Table<u64, OrderRow, Ordered>,
     /// Each order's place, by its id.
     places: Table<Vec<u8>, u64>,
     /// Each record, by its order's place and its sequence number.
     records: Table<(u64, u64), RecordRow, Ordered>,
-    /// An ended order's whole journal, packed (`rutent_stm::archive`), by its place.
-    archive: Table<u64, Vec<u8>>,
+    /// An archived order's rows: the sequence number each begins at, by the order's place. An order is archived
+    /// exactly when it has a row here.
+    archive: Table<u64, ArchiveHead>,
+    /// An archived order's journal, packed (`rutent_stm::archive`) in rows of at most `CHUNK_BYTES`, by its place
+    /// and the row's number.
+    chunks: Table<(u64, u64), Vec<u8>>,
+    /// The two counters, under key 0. They live in a table, not in the struct, so the struct's encoding is the
+    /// same as format 1's, and a format-1 instance is refused by the format check instead of failing to load.
+    meta: Table<u8, Counters>,
     /// Each record's order place and sequence number, by its place in write order, from 1.
     written: Table<u64, (u64, u64), Ordered>,
     /// Where each record id is recorded.
@@ -258,16 +290,53 @@ impl Rutent {
         self.places.get(order)
     }
 
+    fn counters(&self) -> Counters {
+        self.meta.get(&0).unwrap_or_default()
+    }
+
     /// A record, from the live journal or else from its order's archive: the one place a record is read.
-    fn row_of(&self, place: u64, seq: u64) -> Option<RecordRow> {
+    /// `open` keeps the archive row last read, so a page of reads unpacks each row once. A row that is missing or
+    /// damaged is an error, never a record that is not there.
+    fn row_in(
+        &self,
+        open: &mut Option<Opened>,
+        place: u64,
+        seq: u64,
+    ) -> Result<Option<RecordRow>, Vec<u8>> {
         if let Some(row) = self.records.get(&(place, seq)) {
-            return Some(row);
+            return Ok(Some(row));
         }
-        let entries = unpack(&self.archive.get(&place)?).ok()?;
-        let Entry { input, state } = entries
-            .into_iter()
-            .nth(usize::try_from(seq).ok()?.checked_sub(1)?)?;
-        Some(RecordRow { input, state })
+        let Some(head) = self.archive.get(&place) else {
+            return Ok(None);
+        };
+        let chunk = chunk_of(&head.starts, seq).map_err(|e| e.0.as_bytes().to_vec())? as u64;
+        if !open
+            .as_ref()
+            .is_some_and(|o| o.place == place && o.chunk == chunk)
+        {
+            let packed = self
+                .chunks
+                .get(&(place, chunk))
+                .ok_or_else(|| b"an archive row is missing".to_vec())?;
+            let entries = unpack(&packed).map_err(|e| e.0.as_bytes().to_vec())?;
+            *open = Some(Opened {
+                place,
+                chunk,
+                first: head.starts[chunk as usize],
+                entries,
+            });
+        }
+        let opened = open.as_ref().expect("opened above");
+        let entry =
+            entry_in(&opened.entries, opened.first, seq).map_err(|e| e.0.as_bytes().to_vec())?;
+        Ok(Some(RecordRow {
+            input: entry.input.clone(),
+            state: entry.state.clone(),
+        }))
+    }
+
+    fn row_of(&self, place: u64, seq: u64) -> Result<Option<RecordRow>, Vec<u8>> {
+        self.row_in(&mut None, place, seq)
     }
 
     /// Writes one record at the order's next place; the caller checked the record id and the sequence.
@@ -299,17 +368,12 @@ impl Rutent {
         }
         let seq = order_row.len;
         match self.archive.get(&place) {
-            Some(packed) => {
-                let mut entries = unpack(&packed).map_err(|e| e.0.as_bytes().to_vec())?;
-                entries.push(Entry {
-                    input: row.input.clone(),
-                    state: row.state.clone(),
-                });
-                self.archive.insert(&place, &pack(&entries));
-            }
+            Some(head) => self.append_archived(place, head, seq, &row)?,
             None => {
                 self.records.insert(&(place, seq), &row);
-                self.live_records += 1;
+                let mut counters = self.counters();
+                counters.live_records += 1;
+                self.meta.insert(&0, &counters);
             }
         }
         self.ids.insert(&record_id, &(place, seq));
@@ -317,29 +381,70 @@ impl Rutent {
         self.record_count += 1;
         self.written.insert(&self.record_count, &(place, seq));
         if ends && !self.archive.contains(&place) {
-            self.archive_order(place, seq);
+            self.archive_order(place, seq)?;
         }
         Ok(seq)
     }
 
-    /// Moves the live rows of the order at `place`, of `len` records, into one archive row.
-    fn archive_order(&mut self, place: u64, len: u64) {
+    /// Adds the record at `seq` to the last archive row of the order at `place`, or to a new row when that one
+    /// would pass `CHUNK_BYTES`.
+    fn append_archived(
+        &mut self,
+        place: u64,
+        mut head: ArchiveHead,
+        seq: u64,
+        row: &RecordRow,
+    ) -> Result<(), Vec<u8>> {
+        let entry = Entry {
+            input: row.input.clone(),
+            state: row.state.clone(),
+        };
+        let last = head.starts.len() as u64 - 1;
+        let packed = self
+            .chunks
+            .get(&(place, last))
+            .ok_or_else(|| b"an archive row is missing".to_vec())?;
+        let mut entries = unpack(&packed).map_err(|e| e.0.as_bytes().to_vec())?;
+        if packed.len() + entry_len(&entry) > CHUNK_BYTES {
+            head.starts.push(seq);
+            self.chunks.insert(&(place, last + 1), &pack(&[entry]));
+            self.archive.insert(&place, &head);
+        } else {
+            entries.push(entry);
+            self.chunks.insert(&(place, last), &pack(&entries));
+        }
+        Ok(())
+    }
+
+    /// Moves the live rows of the order at `place`, of `len` records, into archive rows of at most `CHUNK_BYTES`.
+    fn archive_order(&mut self, place: u64, len: u64) -> Result<(), Vec<u8>> {
         let mut entries = Vec::new();
         for seq in 1..=len {
-            if let Some(row) = self.records.get(&(place, seq)) {
-                entries.push(Entry {
-                    input: row.input,
-                    state: row.state,
-                });
-            }
+            let row = self
+                .records
+                .get(&(place, seq))
+                .ok_or_else(|| b"a live record is missing".to_vec())?;
+            entries.push(Entry {
+                input: row.input,
+                state: row.state,
+            });
         }
-        // Written before anything is deleted, though a step commits whole or not at all.
-        self.archive.insert(&place, &pack(&entries));
+        let mut head = ArchiveHead { starts: Vec::new() };
+        let mut next = 1;
+        for (number, rows) in split(&entries, CHUNK_BYTES).iter().enumerate() {
+            head.starts.push(next);
+            next += rows.len() as u64;
+            self.chunks.insert(&(place, number as u64), &pack(rows));
+        }
+        self.archive.insert(&place, &head);
         for seq in 1..=len {
             self.records.remove(&(place, seq));
         }
-        self.live_records -= entries.len() as u64;
-        self.archived_orders += 1;
+        let mut counters = self.counters();
+        counters.live_records -= len;
+        counters.archived_orders += 1;
+        self.meta.insert(&0, &counters);
+        Ok(())
     }
 
     fn latest_state(&self, place: u64) -> Result<Option<Order>, Vec<u8>> {
@@ -350,7 +455,7 @@ impl Rutent {
             return Ok(None);
         }
         let state = self
-            .row_of(place, row.latest_state)
+            .row_of(place, row.latest_state)?
             .and_then(|r| r.state)
             .ok_or_else(|| b"an order's latest state is missing".to_vec())?;
         serde_json::from_slice(&state)
@@ -463,12 +568,12 @@ impl Rutent {
             order_count: 0,
             record_count: 0,
             refusal_count: 0,
-            live_records: 0,
-            archived_orders: 0,
             orders: Table::default(),
             places: Table::default(),
             records: Table::default(),
             archive: Table::default(),
+            chunks: Table::default(),
+            meta: Table::default(),
             written: Table::default(),
             ids: Table::default(),
             refusals: Table::default(),
@@ -500,7 +605,11 @@ impl Rutent {
         };
         if let Some((place, at)) = self.ids.get(&record_id) {
             let order = self.orders.get(&place).map(|o| o.id).unwrap_or_default();
-            if let Some(row) = self.row_of(place, at)
+            let held = match self.row_of(place, at) {
+                Ok(held) => held,
+                Err(e) => return Submitted::Invalid(e),
+            };
+            if let Some(row) = held
                 && row.input == bytes
             {
                 return Submitted::Already {
@@ -659,8 +768,8 @@ impl Rutent {
             orders: self.order_count,
             records: self.record_count,
             refusals: self.refusal_count,
-            live_records: self.live_records,
-            archived_orders: self.archived_orders,
+            live_records: self.counters().live_records,
+            archived_orders: self.counters().archived_orders,
         }
     }
 
@@ -709,25 +818,29 @@ impl Rutent {
         if row.latest_state == 0 {
             return Ok(None);
         }
-        Ok(self.row_of(place, row.latest_state).and_then(|r| r.state))
+        Ok(self
+            .row_of(place, row.latest_state)
+            .map_err(Refused::Archive)?
+            .and_then(|r| r.state))
     }
 
-    /// An order's archive row as the library packs it, if the order is archived: the journal to replay it from
-    /// (`rutent_stm::archive::unpack` and `replay`). Refused if the row is more than a reply holds.
+    /// Row number `chunk` (from 0) of an archived order's journal, as the library packs it: the journal to
+    /// replay it from (`rutent_stm::archive::unpack` and `replay`). `None` past the last row, or for an order
+    /// that is not archived. A row larger than a reply holds is refused.
     #[msg]
-    pub async fn archived(&self, order: Vec<u8>) -> Result<Option<Vec<u8>>, Refused> {
+    pub async fn archived(&self, order: Vec<u8>, chunk: u64) -> Result<Option<Vec<u8>>, Refused> {
         if let Some((stored, expected)) = self.format_error() {
             return Err(Refused::Format { stored, expected });
         }
         let Some(place) = self.place_of(&order) else {
             return Ok(None);
         };
-        let Some(packed) = self.archive.get(&place) else {
+        let Some(packed) = self.chunks.get(&(place, chunk)) else {
             return Ok(None);
         };
-        if packed.len() > 2 * PAGE_BYTES {
+        if packed.len() > REPLY_BYTES {
             return Err(Refused::Archive(
-                b"the archive is more than a reply holds".to_vec(),
+                b"an archive row is more than a reply holds".to_vec(),
             ));
         }
         Ok(Some(packed))
@@ -749,8 +862,12 @@ impl Rutent {
         let mut out = Vec::new();
         let mut bytes = 0;
         let mut seq = from.max(1);
+        let mut open = None;
         while seq <= row.len && out.len() < 64 {
-            let Some(record) = self.row_of(place, seq) else {
+            let Some(record) = self
+                .row_in(&mut open, place, seq)
+                .map_err(Refused::Archive)?
+            else {
                 break;
             };
             bytes += record.input.len() + record.state.as_ref().map_or(0, Vec::len);
@@ -803,12 +920,16 @@ impl Rutent {
         let mut out = Vec::new();
         let mut bytes = 0;
         let mut index = from.max(1);
+        let mut open = None;
         while index <= self.record_count && out.len() < 64 {
             let Some((place, seq)) = self.written.get(&index) else {
                 break;
             };
-            let (Some(order), Some(row)) = (self.orders.get(&place), self.row_of(place, seq))
-            else {
+            let (Some(order), Some(row)) = (
+                self.orders.get(&place),
+                self.row_in(&mut open, place, seq)
+                    .map_err(Refused::Archive)?,
+            ) else {
                 break;
             };
             bytes += row.input.len() + row.state.as_ref().map_or(0, Vec::len) + order.id.len();

@@ -80,10 +80,10 @@ holds every node's commits.
 
 ## Archiving (`T-010-07`, `G-33`)
 
-An order that ended is packed into one row of an `archive` table by the step that writes its ending record, and its
+An order that ended is packed into rows of at most 32 KiB (VOS caps a stored value at 64 KiB) by the step that writes its ending record, and its
 live rows are deleted, so the live journal holds only open orders. Every read goes through one function that falls
 back to the archive, so the host contract sees a complete journal. `Status` reports `live_records` and
-`archived_orders`; the query `archived` serves an order's packed row for replay (`rutent_stm::archive`). The rows'
+`archived_orders`; the query `archived` serves an order's packed rows, one at a time, for replay (`rutent_stm::archive`). The rows'
 layout is `FORMAT` 2. `client/tests/journal_bounded.rs` has the two tests. The `written` and `ids` indices and the
 archive rows still grow with the stream: see the F-010 notes.
 

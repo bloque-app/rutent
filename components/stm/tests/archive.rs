@@ -6,7 +6,9 @@ mod common;
 use common::generator::{Rng, Trace, traces};
 use rutent_contracts::state_machine::{Order, OrderState, RecordedInput, StateMachine};
 use rutent_stm::Stm;
-use rutent_stm::archive::{Entry, is_archivable, pack, replay, unpack};
+use rutent_stm::archive::{
+    CHUNK_BYTES, Entry, chunk_of, entry_in, entry_len, is_archivable, pack, replay, split, unpack,
+};
 
 const SEEDS: u64 = 600;
 
@@ -129,25 +131,68 @@ fn an_order_is_archivable_exactly_when_it_has_ended() {
 
 // verifies: NFR-4, REQ-STM-3
 #[test]
-fn replaying_nothing_gives_nothing_and_replay_is_the_hosts_own_fold() {
+fn replay_reaches_the_states_the_state_machine_reaches_when_a_host_folds_the_inputs() {
     assert!(replay(&[]).is_empty());
     for trace in traces(SEEDS) {
-        // The generator re-sends recorded inputs, which a host answers from its record without a new entry, so
-        // only the journal's inputs are folded here.
-        let journal_inputs = inputs_of(&entries(trace));
-        let mut state: Option<Order> = None;
-        let folded: Vec<Option<Order>> = journal_inputs
-            .iter()
-            .map(|input| {
-                state = match &state {
-                    Some(order) => Some(Stm::transition(order, input)),
-                    None => Stm::open(input),
-                };
-                state.clone()
-            })
-            .collect();
-        assert_eq!(replay(&journal_inputs), folded);
+        let inputs = inputs_of(&entries(trace));
+        // The state machine's own fold, written out step by step against its contract: `open` until an input
+        // opens the order, `transition` after.
+        let mut expected: Vec<Option<Order>> = Vec::new();
+        for input in &inputs {
+            let next = match expected.last().cloned().flatten() {
+                Some(order) => Some(Stm::transition(&order, input)),
+                None => Stm::open(input),
+            };
+            expected.push(next);
+        }
+        assert_eq!(replay(&inputs), expected, "seed {}", trace.seed);
+        // And it is the states the reference host recorded, which `Stm` computed there.
+        assert_eq!(
+            replay(&inputs),
+            states_of(&entries(trace)),
+            "seed {}",
+            trace.seed
+        );
     }
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn an_archive_splits_into_rows_of_bounded_size_that_join_back() {
+    for trace in traces(SEEDS) {
+        let all = entries(trace);
+        for limit in [1usize, 4 << 10, 12 << 10, 32 << 10] {
+            let rows = split(&all, limit);
+            let joined: Vec<Entry> = rows.iter().flatten().cloned().collect();
+            assert_eq!(joined, all, "seed {} limit {limit}", trace.seed);
+            for row in &rows {
+                assert!(!row.is_empty(), "no row is empty");
+                assert!(
+                    pack(row).len() <= limit || row.len() == 1,
+                    "seed {} limit {limit}: a row over the limit holds more than one entry",
+                    trace.seed
+                );
+            }
+        }
+    }
+    assert!(split(&[], 100).is_empty());
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn a_journal_larger_than_a_stored_row_is_split_into_several_rows() {
+    // A state is a few KB, so a journal of this length is more than the 64 KiB a stored row holds.
+    let trace = traces(SEEDS)
+        .iter()
+        .max_by_key(|t| entries(t).iter().map(entry_len).sum::<usize>())
+        .unwrap();
+    let mut all = entries(trace);
+    while all.iter().map(entry_len).sum::<usize>() < 200 << 10 {
+        all.extend(entries(trace));
+    }
+    let rows = split(&all, CHUNK_BYTES);
+    assert!(rows.len() >= 4, "{} rows", rows.len());
+    assert!(rows.iter().all(|r| pack(r).len() <= 64 << 10));
 }
 
 // verifies: NFR-4
@@ -165,4 +210,36 @@ fn any_entries_come_back_from_their_archive_byte_for_byte() {
             .collect();
         assert_eq!(unpack(&pack(&entries)), Ok(entries), "seed {seed}");
     }
+}
+
+// verifies: NFR-4, REQ-STM-3
+#[test]
+fn a_record_is_found_in_the_row_that_holds_it_and_a_damaged_archive_is_an_error() {
+    let trace = traces(SEEDS)
+        .iter()
+        .max_by_key(|t| t.journal.len())
+        .unwrap();
+    let all = entries(trace);
+    let rows = split(&all, 1);
+    let mut starts = Vec::new();
+    let mut next = 1;
+    for row in &rows {
+        starts.push(next);
+        next += row.len() as u64;
+    }
+    for (at, entry) in all.iter().enumerate() {
+        let seq = at as u64 + 1;
+        let row = chunk_of(&starts, seq).expect("a record has a row");
+        assert_eq!(entry_in(&rows[row], starts[row], seq), Ok(entry), "{seq}");
+    }
+    // A head that does not begin at record 1, or a row shorter than its head says, is an error: never a record
+    // that is simply not there.
+    assert!(chunk_of(&[], 1).is_err());
+    assert!(chunk_of(&[2, 3], 1).is_err());
+    let row = &rows[0];
+    assert!(entry_in(row, starts[0], starts[0] + row.len() as u64).is_err());
+    assert!(
+        entry_in(row, 5, 4).is_err(),
+        "a record before the row begins"
+    );
 }

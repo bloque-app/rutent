@@ -40,6 +40,53 @@ pub struct Entry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArchiveError(pub &'static str);
 
+/// The most a stored archive row aims to hold, in packed bytes: half of VOS's 64 KiB cap on a stored value
+/// (`cap::VALUE`), so a row never nears it. A journal longer than this is split across rows ([`split`]).
+pub const CHUNK_BYTES: usize = 32 << 10;
+
+/// What `entry` adds to a packed row.
+pub fn entry_len(entry: &Entry) -> usize {
+    9 + entry.input.len() + entry.state.as_ref().map_or(0, Vec::len)
+}
+
+/// `entries` in order, as rows that each pack to at most `limit` bytes, or hold one entry alone (an entry larger
+/// than the limit is never cut). No row is empty, and joining the rows gives `entries` back.
+pub fn split(entries: &[Entry], limit: usize) -> Vec<Vec<Entry>> {
+    let mut rows: Vec<Vec<Entry>> = Vec::new();
+    let mut size = 0;
+    for entry in entries {
+        let add = entry_len(entry);
+        match rows.last_mut() {
+            Some(row) if size + add + 8 <= limit => {
+                row.push(entry.clone());
+                size += add;
+            }
+            _ => {
+                rows.push(alloc::vec![entry.clone()]);
+                size = add;
+            }
+        }
+    }
+    rows
+}
+
+/// The number of the row, among rows that begin at `starts` (the first record each holds), that holds record `seq`.
+/// An error if `starts` does not begin at or before `seq`: a head that is damaged, not a record that is absent.
+pub fn chunk_of(starts: &[u64], seq: u64) -> Result<usize, ArchiveError> {
+    starts
+        .iter()
+        .rposition(|start| *start <= seq)
+        .ok_or(ArchiveError("an archive does not begin at record 1"))
+}
+
+/// Record `seq` of a row whose first record is `first`. An error if the row is shorter than that.
+pub fn entry_in(entries: &[Entry], first: u64, seq: u64) -> Result<&Entry, ArchiveError> {
+    seq.checked_sub(first)
+        .and_then(|at| usize::try_from(at).ok())
+        .and_then(|at| entries.get(at))
+        .ok_or(ArchiveError("an archive row is shorter than its head says"))
+}
+
 /// Whether an order is one a host archives: it has ended (`REQ-STM-6`). Stuck and waiting orders are not
 /// archived: someone can still resolve them, and they take inputs.
 pub fn is_archivable(order: &Order) -> bool {

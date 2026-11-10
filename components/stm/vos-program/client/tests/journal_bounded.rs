@@ -1,7 +1,7 @@
 //! The VOS program keeps its live journal bounded (`T-010-07`, `G-33`): an order that ended is packed into one
 //! archive row, and stays readable and replayable from it. These need the VOS node, the agent and the program,
 //! built by `../build.sh`, and the paths of `../test.sh`; without the `vos` feature this file is empty. Both tests
-//! run on three nodes, as the task's `Done when` has it.
+//! run on three nodes, as the task's `Done when` has it, and again on one.
 
 #![cfg(feature = "vos")]
 
@@ -13,11 +13,12 @@ use rutent_contracts::state_machine::host::testing::Harness;
 use rutent_contracts::state_machine::host::{Delivery, Host};
 use rutent_contracts::state_machine::{Id, Order, RecordId, RecordedInput};
 use rutent_stm::Stm;
-use rutent_stm::archive::{self, unpack};
+use rutent_stm::archive::{CHUNK_BYTES, Entry, replay, unpack};
 use rutent_stm_vos::cluster::{ClusterConfig, NodeBuild};
 use rutent_stm_vos::host::{VosHarness, VosHost};
 use rutent_stm_vos::platform::{Backend, Facts, backend_proof};
-use vos_wire::Encode;
+use rutent_stm_vos_program::Rutent;
+use vos_wire::{Decode, Encode};
 
 fn var(name: &str) -> PathBuf {
     PathBuf::from(
@@ -29,8 +30,8 @@ fn development() -> bool {
     std::env::var("VOS_DEV").is_ok_and(|v| v == "1")
 }
 
-/// Three nodes running the program that ships, after the platform assertion (fail closed).
-fn config() -> ClusterConfig {
+/// `replicas` nodes running the program that ships, after the platform assertion (fail closed).
+fn config(replicas: usize) -> ClusterConfig {
     let facts = Facts::read();
     let backend = if development() {
         Backend::Interpreter
@@ -47,9 +48,13 @@ fn config() -> ClusterConfig {
         },
         agent_elf: var("VOS_AGENT_ELF"),
         program_elf: var("STM_PROGRAM_ELF"),
-        replicas: 3,
+        replicas,
         spares: 0,
-        executors: (facts.vcpus / 3).max(1),
+        executors: if replicas > 1 {
+            (facts.vcpus / 3).max(1)
+        } else {
+            facts.vcpus.saturating_sub(1).max(1)
+        },
         backend,
         settings: String::new(),
         wait: Duration::from_secs(60),
@@ -75,9 +80,9 @@ impl Drop for Base {
     }
 }
 
-fn start(name: &str) -> (Base, VosHost) {
+fn start(name: &str, replicas: usize) -> (Base, VosHost) {
     let base = Base::new(name);
-    let mut harness = VosHarness::<Stm>::new(config(), base.0.clone(), "j");
+    let mut harness = VosHarness::<Stm>::new(config(replicas), base.0.clone(), "j");
     let store = harness.fresh_store().unwrap();
     let host = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
     (base, host)
@@ -112,21 +117,19 @@ fn submit_all(host: &mut VosHost, inputs: &[RecordedInput]) {
 const COMPLETED: u32 = 30;
 const INPUTS_OF_AN_ORDER: u64 = 7;
 
-// verifies: REQ-OPS-3
-#[test]
-fn live_journal_stays_bounded_under_a_stream_of_completed_orders() {
-    let (_base, mut host) = start("bounded");
+fn bounded_on(replicas: usize) {
+    let (_base, mut host) = start(&format!("bounded-{replicas}"), replicas);
     // One order that stays open: its records stay live however many others complete.
     let open = probe::order_inputs("ord-open", 50_000);
     submit_all(&mut host, &open[..2]);
-    let mut most_live = 0;
     for n in 0..COMPLETED {
         let inputs = probe::order_inputs(&format!("ord-done-{n}"), 1_000 * (n + 1));
         submit_all(&mut host, &inputs);
         let status = host.status().unwrap();
-        most_live = most_live.max(status.live_records);
+        // The bound does not move with the stream: it is the open order's records, not the completed orders'.
         assert_eq!(
-            status.live_records, 2,
+            status.live_records,
+            2,
             "after {} orders completed only the open order's records are live",
             n + 1
         );
@@ -137,8 +140,6 @@ fn live_journal_stays_bounded_under_a_stream_of_completed_orders() {
             "no record is lost to archiving"
         );
     }
-    // The bound does not move with the stream: it is the open orders' records, not the completed orders'.
-    assert!(most_live <= 2 + INPUTS_OF_AN_ORDER);
     // An order that is still open keeps taking inputs, and completes into the archive too.
     submit_all(&mut host, &open[2..]);
     let status = host.status().unwrap();
@@ -147,17 +148,77 @@ fn live_journal_stays_bounded_under_a_stream_of_completed_orders() {
     prove_backend();
 }
 
-// verifies: NFR-4, REQ-STM-3
+// verifies: REQ-OPS-3
 #[test]
-fn archived_order_replays_to_the_same_states() {
-    let (_base, mut host) = start("replays");
+fn live_journal_stays_bounded_under_a_stream_of_completed_orders() {
+    bounded_on(3);
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn live_journal_stays_bounded_under_a_stream_of_completed_orders_on_one_node() {
+    bounded_on(1);
+}
+
+/// The archived rows of `order`, read one at a time as the program serves them.
+fn archived_entries(host: &VosHost, order: &str) -> Vec<Vec<Entry>> {
+    let mut rows = Vec::new();
+    loop {
+        let packed: Option<Vec<u8>> = host
+            .query(
+                host.methods.archived,
+                &[
+                    order.as_bytes().to_vec().encode(),
+                    (rows.len() as u64).encode(),
+                ]
+                .concat(),
+            )
+            .unwrap();
+        let Some(packed) = packed else { break };
+        assert!(packed.len() <= 64 << 10, "a row is under the stored cap");
+        rows.push(unpack(&packed).expect("the archive unpacks"));
+    }
+    rows
+}
+
+/// Checks that `order`'s archive replays to the states its journal recorded, and returns the number of rows.
+fn assert_replays(host: &VosHost, order: &str, expected_len: usize) -> usize {
+    let journal = Host::<Stm>::journal(host, &id(order)).unwrap();
+    assert_eq!(journal.len(), expected_len);
+    let rows = archived_entries(host, order);
+    let entries: Vec<Entry> = rows.iter().flatten().cloned().collect();
+    assert_eq!(entries.len(), journal.len());
+    let inputs: Vec<RecordedInput> = entries
+        .iter()
+        .map(|e| serde_json::from_slice(&e.input).unwrap())
+        .collect();
+    let recorded: Vec<Option<Order>> = journal.iter().map(|r| r.state_after.clone()).collect();
+    assert_eq!(replay(&inputs), recorded);
+    let archived: Vec<Option<Order>> = entries
+        .iter()
+        .map(|e| e.state.as_ref().map(|s| serde_json::from_slice(s).unwrap()))
+        .collect();
+    assert_eq!(archived, recorded);
+    assert_eq!(
+        Host::<Stm>::state(host, &id(order)).unwrap(),
+        recorded.last().cloned().flatten()
+    );
+    rows.len()
+}
+
+fn replays_on(replicas: usize) {
+    let (_base, mut host) = start(&format!("replays-{replicas}"), replicas);
     let inputs = probe::order_inputs("ord-a", 0);
-    submit_all(&mut host, &inputs);
     let order = id("ord-a");
+    // Six inputs leave the order open, so its journal is live; the seventh ends it into the archive.
+    submit_all(&mut host, &inputs[..6]);
     let before = Host::<Stm>::journal(&host, &order).unwrap();
-    assert_eq!(before.len(), inputs.len());
+    assert_eq!(host.status().unwrap().live_records, 6);
+    submit_all(&mut host, &inputs[6..]);
     assert_eq!(host.status().unwrap().archived_orders, 1, "it was archived");
     assert_eq!(host.status().unwrap().live_records, 0);
+    let journal = Host::<Stm>::journal(&host, &order).unwrap();
+    assert_eq!(&journal[..before.len()], &before[..], "no record moved");
 
     // A late input to the archived order is recorded, into its archive.
     let mut late = probe::order_inputs("ord-a", 100)[1].clone();
@@ -167,41 +228,87 @@ fn archived_order_replays_to_the_same_states() {
         matches!(delivered, Ok(Delivery::Recorded(_))),
         "{delivered:?}"
     );
-    let again = Host::<Stm>::submit(&mut host, late.clone());
+    let again = Host::<Stm>::submit(&mut host, late);
     assert!(
         matches!(again, Ok(Delivery::AlreadyRecorded(_))),
         "{again:?}"
     );
-
-    // The journal is whole, read through the host's own reads.
-    let journal = Host::<Stm>::journal(&host, &order).unwrap();
-    assert_eq!(journal.len(), inputs.len() + 1);
-    assert_eq!(&journal[..before.len()], &before[..], "no record moved");
     assert_eq!(host.status().unwrap().live_records, 0);
-
-    // The archive itself replays to the states the journal recorded.
-    let packed: Option<Vec<u8>> = host
-        .query(
-            host.methods.archived,
-            &"ord-a".as_bytes().to_vec().encode(),
-        )
-        .unwrap();
-    let entries = unpack(&packed.expect("the order is archived")).expect("the archive unpacks");
-    assert_eq!(entries.len(), journal.len());
-    let replayed_inputs: Vec<RecordedInput> = entries
-        .iter()
-        .map(|e| serde_json::from_slice(&e.input).unwrap())
-        .collect();
-    let recorded: Vec<Option<Order>> = journal.iter().map(|r| r.state_after.clone()).collect();
-    assert_eq!(archive::replay(&replayed_inputs), recorded);
-    let archived_states: Vec<Option<Order>> = entries
-        .iter()
-        .map(|e| e.state.as_ref().map(|s| serde_json::from_slice(s).unwrap()))
-        .collect();
-    assert_eq!(archived_states, recorded);
-    assert_eq!(
-        Host::<Stm>::state(&host, &order).unwrap(),
-        recorded.last().cloned().flatten()
-    );
+    assert_replays(&host, "ord-a", inputs.len() + 1);
     prove_backend();
+}
+
+// verifies: NFR-4, REQ-STM-3
+#[test]
+fn archived_order_replays_to_the_same_states() {
+    replays_on(3);
+}
+
+// verifies: NFR-4, REQ-STM-3
+#[test]
+fn archived_order_replays_to_the_same_states_on_one_node() {
+    replays_on(1);
+}
+
+/// Many inputs that change nothing but are recorded, with a state each, before and after the order ends.
+fn long_order_on(replicas: usize) {
+    let (_base, mut host) = start(&format!("long-{replicas}"), replicas);
+    let inputs = probe::order_inputs("ord-long", 0);
+    let again = |n: u32| {
+        let mut input = inputs[1].clone();
+        input.record_id = RecordId::new(format!("again-{n}")).unwrap();
+        input
+    };
+    // The order is open for forty records, each with a state of a few KB, so its journal is well over the 64 KiB a
+    // stored row holds when it ends: ending it must write more than one row.
+    submit_all(&mut host, &inputs[..2]);
+    let filler: Vec<RecordedInput> = (0..40).map(again).collect();
+    submit_all(&mut host, &filler);
+    submit_all(&mut host, &inputs[2..]);
+    let status = host.status().unwrap();
+    assert_eq!(status.archived_orders, 1, "the order ended");
+    assert_eq!(status.live_records, 0);
+    let rows = assert_replays(&host, "ord-long", inputs.len() + filler.len());
+    assert!(
+        rows >= 2,
+        "{rows} archive row(s) for a journal over the stored cap (chunks of {CHUNK_BYTES} bytes)"
+    );
+    // And it still takes inputs once archived, into the last row or a new one.
+    let late: Vec<RecordedInput> = (40..60).map(again).collect();
+    submit_all(&mut host, &late);
+    assert_replays(&host, "ord-long", inputs.len() + filler.len() + late.len());
+    prove_backend();
+}
+
+// verifies: REQ-OPS-3, NFR-4
+#[test]
+fn an_order_with_a_long_journal_ends_into_several_archive_rows_and_replays() {
+    long_order_on(3);
+}
+
+// verifies: REQ-OPS-3, NFR-4
+#[test]
+fn an_order_with_a_long_journal_ends_into_several_archive_rows_and_replays_on_one_node() {
+    long_order_on(1);
+}
+
+// verifies: REQ-OPS-3, DEC-26
+#[test]
+fn the_struct_of_a_format_one_instance_still_decodes_so_the_format_check_can_refuse_it() {
+    // Format 1's struct row, field by field, as `T-010-05` wrote it: the format, then the flags and counts. A
+    // program whose struct had more fields could not decode this and would trap in `state::load`, before any
+    // handler could refuse the format.
+    let v1 = [
+        1u32.encode(),
+        false.encode(),
+        false.encode(),
+        0u64.encode(),
+        0u64.encode(),
+        0u64.encode(),
+        0u64.encode(),
+    ]
+    .concat();
+    let (state, used) = Rutent::decode(&v1).expect("a format-1 struct row decodes");
+    assert_eq!(used, v1.len());
+    drop(state);
 }
