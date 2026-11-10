@@ -74,6 +74,20 @@ pub const FEATURES: WasmFeatures = WasmFeatures::FLOATS
     .union(WasmFeatures::REFERENCE_TYPES)
     .union(WasmFeatures::COMPONENT_MODEL);
 
+/// The Spectre mitigations Cranelift is told to use, chosen on purpose (`G-09`, `THR-85`). With no guard region
+/// ([`MEMORY_RESERVATION`]) every linear-memory access is checked against the memory's size, and a misspeculated
+/// check could otherwise still read past it: the heap mitigation makes an out-of-bounds address resolve to a null
+/// address by a conditional select, not by a branch alone. The table mitigation does the same for indirect-call
+/// tables. Both are Wasmtime's defaults; they are set here so that a change of default in a later Wasmtime, or a
+/// setting someone adds beside them, can't turn them off unseen: an engine that asks for them turned off is refused
+/// by Wasmtime itself when signal-based traps are on (they are). The cost is a select for each access, not measured.
+/// Not covered: speculation out of the module's own code across the host boundary, and the processor's own
+/// predictors, which the process jail and the one-process-per-provider rule (`DEC-7`) bound instead.
+pub const SPECTRE: [(&str, &str); 2] = [
+    ("enable_heap_access_spectre_mitigation", "true"),
+    ("enable_table_access_spectre_mitigation", "true"),
+];
+
 /// The configuration, every setting the binding makes stated here and in [`settings`].
 pub fn config() -> wasmtime::Result<Config> {
     let mut config = Config::new();
@@ -94,6 +108,11 @@ pub fn config() -> wasmtime::Result<Config> {
         .memory_reservation(MEMORY_RESERVATION)
         .memory_reservation_for_growth(0)
         .memory_guard_size(0);
+    for (name, value) in SPECTRE {
+        // SAFETY: these two Cranelift settings are Wasmtime's own Spectre mitigations, set to the values it
+        // validates against its other settings when the engine is made; neither can make the code unsound.
+        unsafe { config.cranelift_flag_set(name, value) };
+    }
     Ok(config)
 }
 
@@ -138,6 +157,14 @@ pub fn settings() -> Vec<(&'static str, String)> {
             format!(
                 "{MEMORY_RESERVATION} bytes / 0 / 0: no address space beyond the memory a part may hold"
             ),
+        ),
+        (
+            "spectre mitigations (G-09)",
+            SPECTRE
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(", "),
         ),
         (
             "store limits (StoreLimits)",

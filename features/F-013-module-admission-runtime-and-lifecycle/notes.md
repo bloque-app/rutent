@@ -423,3 +423,64 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   placeholders; see F-010's notes for the reading.
 - **Signed admission is still tested apart** (`module_admission_signed.rs`, with its own catalogue and keys); the
   boundary suite's run now exercises the same verifier for every release, including a forged one.
+
+## T-013-05, hardening the admitting compiler
+
+- **Fuzzing (`B-09`, `THR-85`).** No fuzzing crate: nothing enters `Cargo.lock` or `licences/RECORD`. A seeded mutation
+  fuzzer (`tests/module_support/fuzz.rs`: bit and byte changes, truncation, deletion, duplication, LEB128 edge values,
+  and section-aware steps that corrupt, drop or swap a top-level section) makes the binaries; the same seed makes the
+  same binaries. Each pair goes to the real admitting compiler, in its own isolated process (`children::compile`); a
+  verdict, accepted or refused, is what it is for, and a compiler that failed or passed its deadline is a finding.
+  - The checked-in corpus is `tests/fuzz-corpus/`: 30 files, under 120 KiB, made by the ignored test
+    `the_corpus_is_written_when_asked` from eleven edge cases (empty, header only, a core module, an ELF header, a
+    section length past the end, an overlong LEB128, and so on), the six hostile components and mutations of them,
+    keeping a few of each kind of verdict. `fuzz_corpus_never_crashes_the_admitting_compiler` runs every file; the
+    second test runs each as either part of a release through `Platform::admit` and then admits an honest release.
+  - `fuzzing_for_a_while_never_crashes_the_admitting_compiler` is `#[ignore]`d and CI runs it for 120 s with the run
+    id as the seed. Locally it is held to 120 s and the inputs to 512 KiB; the compiler's own jail bounds its memory on
+    Linux (`RLIMIT_AS`), which macOS does not enforce, so a local run is bounded by the input size alone.
+  - A local 90 s run (seed 20261109, macOS) made 2,711 pairs: 2,636 refused as not a component, 65 refused for an
+    import or an export, 1 compiled, none crashed the compiler. Most mutations die at the parser, as expected of a
+    byte-level fuzzer; coverage-guided fuzzing would reach deeper and
+    is left to `F-025`'s review if it wants it.
+- **Spectre settings (`G-09`, `THR-85`).** Chosen: `enable_heap_access_spectre_mitigation=true` and
+  `enable_table_access_spectre_mitigation=true`, in `engine::SPECTRE`, set on the Cranelift configuration and listed in
+  `engine::settings()`, with the reason in the constant's documentation. Both are Wasmtime's defaults, so the machine
+  code is unchanged and `BINDING_VERSION` stays `0.2.0`; setting them stops a change of default in a later Wasmtime
+  turning them off unseen. The settings test compares machine code: the engine's equals one with each flag set `true`
+  and differs from one with it `false` (so each mitigation is in the code the compiler makes). Setting the flag takes
+  an `unsafe` call (`cranelift_flag_set`), commented. Not claimed: protection against speculation across the host
+  boundary or the processor's predictors; those rest on the process jail and one process per provider (`DEC-7`). The
+  cost of the mitigations is not measured.
+- **Re-derivation on another vendor (`B-11`, `G-04`).** "Another vendor" is read as an x86_64 CPU whose `vendor_id` is not
+  `AuthenticAMD` (nor `HygonGenuine`, the licensed AMD design): the compiler's target is fixed (`engine::TARGET`), so
+  machine code from an arm64 runner (`ubuntu-24.04-arm`) is for another target and would compare nothing, whatever its
+  vendor. In `ci.yml` the existing `ci` job records, after its Test step, the stand-ins it built and the digest of
+  each part's machine code with its CPU (`a_derivation_records_...`), and uploads them; a new job `rederive`
+  (`needs: ci`, in the same workflow, no required check name added, which is why it is a job and not a step: it must
+  run on another runner) first fails if `/proc/cpuinfo` names an AMD vendor or none, then runs
+  `re_derived_machine_code_matches_on_a_cpu_of_another_vendor` with `RUTENT_REDERIVE_REQUIRED=1` against the very
+  binaries the first job built. The test fails on an AMD or unreadable CPU, on a reference that records no vendor or the same
+  vendor as this machine (two Intel runners compare nothing across vendors; the `ci` job, a required check, takes no
+  vendor rule so it never fails at random), on a platform version that differs and on any part whose digest differs,
+  and writes this CPU's vendor, model and digests. **GitHub gives `ubuntu-latest` either
+  vendor, so the job fails on an AMD machine, or on the same vendor as the reference's, and has to be re-run**: this is the reading of `T-012-01`'s writer that it
+  can't count as a second AMD run, kept. Run unconfigured (no reference, as locally on macOS) the named test passes
+  doing nothing and says so; the pieces it uses are tested always (`a_cpu_is_named_by_its_vendor_and_amd_is_told_apart`,
+  `a_derivation_records_its_cpu_and_...`).
+- **Red steps.** The settings test failed first to compile (`engine::SPECTRE` did not exist); its behavioural halves
+  passed on their first run, since the mitigations are Wasmtime's defaults. The re-derivation test with
+  `RUTENT_REDERIVE_REQUIRED=1` fails with no reference and, on macOS, with no `/proc/cpuinfo`; its vendor rule
+  (`cpu::crosses_vendors`) is tested on fixed vendor pairs and, with the corpus and fuzz tests, passed on first run.
+  The corpus tests passed at once: the compiler had no crash to find. Setting the flags changes no machine code
+  (checked: the digests of all sixteen parts, the same binaries, with and without the explicit flags, are identical
+  on macOS arm64), so `BINDING_VERSION` stays `0.2.0`.
+- **What only CI shows.** The fuzz step and the `rederive` job have not run: their run ids are to be added here when
+  they do, which the orchestrator does once CI has run (`T-013-05`'s Done-when, not met until then). Also whether a
+  re-run of the `rederive` job alone can download the artefact its first attempt's workflow run uploaded. Not run on Linux here: the compiler's jail with fuzzed input (seccomp, Landlock,
+  `RLIMIT_AS`), and `/proc/cpuinfo`.
+- **`DEC-20` paths touched.** Module admission (the admitting compiler's engine configuration, `module/engine.rs`) and
+  `.github/workflows/ci.yml`. `module/platform.rs`, `module/admission.rs`, `holding/`, `proxy/`, `egress/` and the
+  compiler binary are untouched. Tests are in `tests/module_hardening.rs` with `tests/module_support/fuzz.rs` and
+  `cpu.rs`, which `module_support/mod.rs` doesn't declare (the test includes them by path), so the shared support
+  module is unchanged.
