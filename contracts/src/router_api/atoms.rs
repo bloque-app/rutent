@@ -418,6 +418,23 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// Deserialises a present list that the schemas require non-empty, refusing `null` and `[]`: the schemas leave an
+/// empty list out, so an explicit empty one is not one of its forms. Used with `#[serde(default)]`, so an absent
+/// field is the empty list.
+pub(super) fn non_empty_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let items = Vec::<T>::deserialize(deserializer)?;
+    if items.is_empty() {
+        return Err(serde::de::Error::custom(
+            "a list present on the wire is not empty",
+        ));
+    }
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

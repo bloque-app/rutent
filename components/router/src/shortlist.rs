@@ -155,7 +155,8 @@ impl Asks {
             .unwrap_or_default()
     }
 
-    /// Whether `figure` may enter the choice round's snapshot. An advertised figure or an exposure always may. A
+    /// Whether `figure` may enter the choice round's snapshot. An advertised figure, a calls figure or an exposure
+    /// always may. A
     /// provider's answer may only if it answers a question: made by the provider asked, about the tuple asked, at
     /// the amount asked, in the form asked. A question that wants a fresh quote is answered by the accepted quote, or
     /// by a refused dry run, which is how a ramp or exchange refuses (a fresh quote is always accepted; the contract
@@ -191,6 +192,7 @@ impl Asks {
             | FigureValue::ExchangeTuple { .. }
             | FigureValue::RampTuple { .. }
             | FigureValue::Price { .. }
+            | FigureValue::Calls { .. }
             | FigureValue::Exposure { .. } => true,
         }
     }

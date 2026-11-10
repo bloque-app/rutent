@@ -26,7 +26,43 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 111] = [
+const RUST_RULES: [(&str, &str); 120] = [
+    (
+        "decision-record-naming-an-undeclared-call",
+        "every call an operation names is one its provider's module declares",
+    ),
+    (
+        "decision-record-naming-a-call-to-a-provider-off-its-part",
+        "every call an operation names is to the provider of another operation of its part",
+    ),
+    (
+        "decision-record-naming-a-call-without-its-calls-figure",
+        "an operation cites one calls figure when it names a call, and none otherwise",
+    ),
+    (
+        "decision-record-citing-a-calls-figure-and-naming-no-call",
+        "an operation cites one calls figure when it names a call, and none otherwise",
+    ),
+    (
+        "decision-record-naming-calls-of-another-release",
+        "an operation's calls come from its own module release's calls figure",
+    ),
+    (
+        "catalogue-snapshot-calls-figure-calling-its-own-provider",
+        "a calls figure names no call to its own provider",
+    ),
+    (
+        "catalogue-snapshot-calls-figure-listing-a-callee-twice",
+        "a calls figure lists each callee once",
+    ),
+    (
+        "catalogue-snapshot-two-calls-figures-for-one-provider",
+        "a snapshot holds at most one calls figure per provider",
+    ),
+    (
+        "operation-naming-a-call-to-its-own-provider",
+        "an operation names no call to its own provider",
+    ),
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -475,7 +511,43 @@ const RUST_RULES: [(&str, &str); 111] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 62] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 71] = [
+    (
+        "catalogue-snapshot-calls-figure-from-the-operator",
+        &[("/figures/37/origin/kind", "const")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-with-validity",
+        &[("/figures/37", "not")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-calling-no-kind",
+        &[("/figures/37/value/calls/0/kinds", "minItems")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-of-an-unknown-kind-of-call",
+        &[("/figures/37/value/calls/0/kinds/0", "enum")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-listing-a-kind-twice",
+        &[("/figures/37/value/calls/0/kinds", "uniqueItems")],
+    ),
+    (
+        "operation-naming-an-empty-list-of-calls",
+        &[("/calls", "minItems")],
+    ),
+    (
+        "operation-naming-a-call-twice",
+        &[("/calls", "uniqueItems")],
+    ),
+    (
+        "operation-naming-a-call-of-an-unknown-kind",
+        &[("/calls/0/kind", "enum")],
+    ),
+    (
+        "operation-naming-a-call-without-its-kind",
+        &[("/calls/0", "required")],
+    ),
     (
         "operation-citing-a-figure-twice",
         &[("/figures", "uniqueItems")],

@@ -428,3 +428,31 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `proxy::NO_ROUTE_RECORD` and `NO_ROUTE_SEGMENT`. A decision record's id is its request's, and no router may issue
   one by that id. A call refused as `not_named_by_route` is always recorded against it. Before, a call with no
   request in flight could name a segment beside `not_named_by_route`. The property test checks this.
+
+## T-011-06: `RouteCalls` filled from the router's decision
+
+- **The gap closed.** router-api 3.0.0 now carries the calls each segment names (`Operation.calls`, from the
+  snapshot's calls figure of its release; see the F-011 notes). `RouteCalls::name_segment(transaction, record,
+  (part, operation), segment)` names one segment's calls from a decision record: its chosen candidate's operation at
+  that place, the operation's provider as the caller, each callee once with the kinds the segment names, against
+  the record's id and `segment`. `judge_call` is unchanged.
+- **Fails closed.** It names nothing, and says why (`RouteNotNamed`), when the record breaks its contract, chooses
+  nothing (a shortlist round, or no route), or has no operation there. Only the chosen candidate is a route; a kept or
+  dropped one names nothing.
+- **The segment id.** The caller passes it: the state machine's `segment_id` for that operation, which Core assigns
+  in its plan. Nothing in a decision record names a segment, and inventing an id scheme here would give a call record
+  a segment no plan knows. Reading, recorded.
+- **Who calls it.** Core (`M3`), when it hands the platform a segment's operation, as `T-014-05`'s notes say for
+  `Platform::routes`. The module-boundary suite's binding (`tests/module_support`) still names every declared call
+  under `conformance-route`, since that suite has no routes; nothing there changed.
+- **Test.** `call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router` (`tests/route_calls.rs`, a
+  file of its own so it doesn't meet `T-014-05`'s edits to `tests/proxy_calls.rs`), on
+  the running platform in every language: `p-r1` declares calls to `p-r2` and `p-z` and makes both; filled from
+  `decision-record-naming-the-calls-each-segment-makes`, the router's own record (its test shows it), the call to
+  `p-r2` is delivered and recorded against that record and segment, and the call to `p-z`, declared but on no
+  segment, is refused as `not_named_by_route`, with nothing handed to `p-z`. `p-r2`'s segment names nothing of
+  `p-r1`'s; a shortlist record and a segment past the route name nothing, and both calls are then refused. Every
+  call record passes `validate_call` and `validate_call_against`. Written first: it failed to compile against the
+  missing `name_segment` and `RouteNotNamed`.
+- **`DEC-20`.** `proxy/calls.rs` and the re-export in `proxy/mod.rs` are the credential proxy's path; the commit
+  says so.

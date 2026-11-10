@@ -700,7 +700,8 @@ fn policy_case() -> Case {
 }
 
 /// Two exchanges with the same price, so the two routes tie under either objective; the lower `candidate_id`
-/// must win. The destination is the inner ledger itself.
+/// must win. The destination is the inner ledger itself. The exchanges' modules declare cross-module calls, some
+/// to a provider on their route and some not.
 fn tie_case() -> Case {
     let mut s = Snapshot::new("snap-tie", CHOICE_AT, 3600);
     withdrawal(&mut s);
@@ -718,6 +719,22 @@ fn tie_case() -> Case {
         ("exchange-t2", "t2-co"),
         cop_to_usdc(),
         same,
+    );
+    // The calls the exchanges' modules declare (router-api 3.0.0, `T-011-06`): `exchange-t1`'s to the reserve, on
+    // its route, and to `exchange-t2`, on none of its routes; so its segment names only the reserve's. A router
+    // must name each call a segment's provider declares to another provider of its part.
+    s.advertised(
+        "f-ex-t1-calls",
+        ("exchange-t1", "t1-co"),
+        json!({ "kind": "calls", "calls": [
+            { "callee": RESERVE_BANK.0, "kinds": ["withdrawal", "balance_verification"] },
+            { "callee": "exchange-t2", "kinds": ["conversion"] },
+        ] }),
+    );
+    s.advertised(
+        "f-ex-t2-calls",
+        ("exchange-t2", "t2-co"),
+        json!({ "kind": "calls", "calls": [{ "callee": "exchange-t1", "kinds": ["conversion"] }] }),
     );
     let now = (MADE_AT, VALID_UNTIL, (5, Some(120)));
     s.reserve_answer(

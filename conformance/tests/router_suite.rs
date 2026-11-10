@@ -5,8 +5,8 @@ mod router_double;
 
 use router_double::{
     BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FOLLOWS_RATE_CYCLES,
-    IGNORES_DECIMALS, IGNORES_OBJECTIVE, OMITS_UNSTATABLE, OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL,
-    Reference,
+    IGNORES_DECIMALS, IGNORES_OBJECTIVE, LEAVES_OUT_CALLS, OMITS_UNSTATABLE, OUTRANKS_UNCONFIRMED,
+    ROUNDS_EACH_LEVEL, Reference,
 };
 use rutent_conformance::router::{
     Case, Cell, Check, DROP_REASONS, cases, path, reason_name, recompute, run,
@@ -450,6 +450,25 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<OUTRANKS_UNCONFIRMED>>()));
     assert!(fails(run::<Reference<FEE_ROUNDS_DOWN>>()));
     assert!(fails(run::<Reference<OMITS_UNSTATABLE>>()));
+    assert!(fails(run::<Reference<LEAVES_OUT_CALLS>>()));
+}
+
+// verifies: REQ-MDL-21, REQ-MDL-9, DEC-5
+#[test]
+fn a_router_that_names_no_calls_fails_only_on_recomputing_them() {
+    let report = run::<Reference<LEAVES_OUT_CALLS>>();
+    let failed: Vec<(&str, Cell)> = report.failures().iter().map(|o| (o.case, o.cell)).collect();
+    assert_eq!(
+        failed,
+        vec![("tie-choice", Cell::RecomputesFromTheRecordAlone)],
+        "{}",
+        report.summary()
+    );
+    let record = routed::<Reference<LEAVES_OUT_CALLS>>(&case("tie-choice"));
+    assert_eq!(
+        recompute(&record).failed_checks(),
+        vec![Check::CallsFollowTheDeclarations]
+    );
 }
 
 // verifies: REQ-AUD-4, DEC-4

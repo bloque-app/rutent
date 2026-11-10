@@ -78,6 +78,9 @@ struct Shape {
     /// Tuples no operation can state: some advertised with no price, some whose flat fee is above any amount; and
     /// some whose fee takes all that enters, so nothing comes out.
     unstatable: bool,
+    /// Calls figures: some providers' modules declare calls to other providers, on a route or not, and some of
+    /// another release than their tuples' (router-api 3.0.0, `T-011-06`).
+    calls: bool,
 }
 
 /// A generated network: its snapshot, its tuples as edges, and each tuple's band, by figure id.
@@ -92,7 +95,22 @@ struct Network {
     /// The tuples whose fee takes all that enters: a path through one ends there, a candidate whatever comes
     /// before it (`nothing_delivered` short of the destination, `no_positive_outcome` at it).
     drains: BTreeSet<String>,
+    /// The calls each provider's module declares, `(callee, kind)`, in the release its tuples come from; a
+    /// provider whose calls figure is of another release, or that has none, declares none here.
+    declared: BTreeMap<String, BTreeSet<(String, String)>>,
 }
+
+/// The provider-role operation kinds a call may ask for, as module-interface names them.
+const CALL_KINDS: [&str; 8] = [
+    "withdrawal",
+    "deposit",
+    "transfer",
+    "conversion",
+    "balance_verification",
+    "judgement",
+    "reversal",
+    "reversal_confirmation",
+];
 
 fn network(draw: &mut Draw, shape: Shape) -> Network {
     // Each asset at each node in one unit, so the generated tuples connect.
@@ -251,7 +269,62 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         bands.insert(id.clone(), (min, max.parse().unwrap_or(u128::MAX)));
         edges.push((id, from, to));
     }
-    let providers = edges.iter().map(|(id, ..)| format!("p-{id}")).collect();
+    let providers: Vec<String> = edges.iter().map(|(id, ..)| format!("p-{id}")).collect();
+    // Drawn after every tuple, so the other shapes' draws are unchanged.
+    let mut declared = BTreeMap::new();
+    if shape.calls {
+        for (i, provider) in providers.iter().enumerate() {
+            if draw.one_in(4) {
+                continue;
+            }
+            let mut calls: Vec<(String, Vec<&str>)> = Vec::new();
+            for _ in 0..2 + draw.below(5) {
+                let callee = if draw.one_in(6) {
+                    "p-outsider".to_owned()
+                } else {
+                    draw.pick(&providers).clone()
+                };
+                if &callee == provider || calls.iter().any(|(c, _)| c == &callee) {
+                    continue;
+                }
+                let mut kinds = Vec::new();
+                for _ in 0..1 + draw.below(3) {
+                    let kind = *draw.pick(&CALL_KINDS);
+                    if !kinds.contains(&kind) {
+                        kinds.push(kind);
+                    }
+                }
+                calls.push((callee, kinds));
+            }
+            if calls.is_empty() {
+                continue;
+            }
+            let other_release = draw.one_in(5);
+            let listed: Vec<Value> = calls
+                .iter()
+                .map(|(callee, kinds)| json!({ "callee": callee, "kinds": kinds }))
+                .collect();
+            let mut origin = Net::origin(provider);
+            if other_release {
+                origin["module_version"] = json!("2.0.0");
+            }
+            net.figures.push(json!({
+                "figure_id": format!("calls-{i:02}"),
+                "origin": origin,
+                "age_seconds": 120,
+                "value": { "kind": "calls", "calls": listed },
+            }));
+            if !other_release {
+                declared.insert(
+                    provider.clone(),
+                    calls
+                        .iter()
+                        .flat_map(|(c, kinds)| kinds.iter().map(|k| (c.clone(), (*k).to_owned())))
+                        .collect(),
+                );
+            }
+        }
+    }
     Network {
         snapshot: net.build(),
         edges,
@@ -260,6 +333,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         unstatable,
         drains,
         providers,
+        declared,
     }
 }
 
@@ -322,6 +396,7 @@ const ANY: Shape = Shape {
     exchanges: true,
     faults: true,
     unstatable: false,
+    calls: false,
 };
 
 /// As [`ANY`], with tuples no operation can state (router-api 3.0.0).
@@ -330,12 +405,83 @@ const UNSTATABLE: Shape = Shape {
     ..ANY
 };
 
+/// As [`UNSTATABLE`], with calls figures (router-api 3.0.0, `T-011-06`).
+const CALLS: Shape = Shape {
+    calls: true,
+    ..UNSTATABLE
+};
+
+// verifies: REQ-MDL-9, REQ-MDL-21, DEC-18
+#[test]
+fn every_call_a_route_names_is_one_its_provider_s_declaration_allows() {
+    let (mut named, mut unnamed) = (0, 0);
+    for (seed, network, request, bounds) in generated(600, CALLS) {
+        let record = routed(&request, &network.snapshot, &bounds);
+        for candidate in &record.candidates {
+            for part in candidate.parts.iter() {
+                let providers: Vec<&str> = part
+                    .operations
+                    .iter()
+                    .map(|o| o.provider.as_str())
+                    .collect();
+                for (i, operation) in part.operations.iter().enumerate() {
+                    let provider = operation.provider.as_str();
+                    let declared = network.declared.get(provider).cloned().unwrap_or_default();
+                    let on_the_part = |callee: &str| {
+                        providers
+                            .iter()
+                            .enumerate()
+                            .any(|(j, p)| j != i && *p == callee)
+                    };
+                    let calls: BTreeSet<(String, String)> = operation
+                        .calls
+                        .iter()
+                        .map(|c| {
+                            let kind = serde_json::to_value(c.kind).unwrap();
+                            (
+                                c.callee.as_str().to_owned(),
+                                kind.as_str().unwrap().to_owned(),
+                            )
+                        })
+                        .collect();
+                    assert_eq!(
+                        calls.len(),
+                        operation.calls.len(),
+                        "seed {seed}: a call twice"
+                    );
+                    // Every call named is one the provider's release declares, to a provider on the part.
+                    for call in &calls {
+                        assert!(
+                            declared.contains(call) && on_the_part(&call.0),
+                            "seed {seed}: {provider} names {call:?}, which its declaration {declared:?} doesn't allow on {providers:?}"
+                        );
+                    }
+                    // And every such call is named: the declared calls off the part are the ones left out.
+                    let expected: BTreeSet<_> = declared
+                        .iter()
+                        .filter(|(c, _)| on_the_part(c))
+                        .cloned()
+                        .collect();
+                    assert_eq!(calls, expected, "seed {seed}: {provider} on {providers:?}");
+                    named += calls.len();
+                    unnamed += declared.len() - expected.len();
+                }
+            }
+        }
+    }
+    assert!(
+        named > 50 && unnamed > 50,
+        "named {named}, left unnamed {unnamed}"
+    );
+}
+
 // verifies: AC-2, REQ-AUD-4, REQ-QTE-11, DEC-18
 #[test]
 fn every_record_passes_the_contract_and_recomputes_from_itself() {
     let cases = generated(300, ANY)
         .into_iter()
-        .chain(generated(300, UNSTATABLE));
+        .chain(generated(300, UNSTATABLE))
+        .chain(generated(300, CALLS));
     for (seed, network, request, bounds) in cases {
         let record = routed(&request, &network.snapshot, &bounds);
         let recomputed = recompute(&record);
@@ -461,6 +607,7 @@ fn in_one_asset_and_unit_a_route_costs_exactly_the_sum_of_its_segments_fees() {
 #[test]
 fn every_destination_the_tuples_reach_within_the_hop_limit_gets_a_route() {
     let free = Shape {
+        calls: false,
         priced: false,
         exchanges: false,
         faults: false,
@@ -649,6 +796,7 @@ fn only_providers_of_kept_candidates_are_asked_each_about_its_own_tuples_at_one_
 #[test]
 fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_choice() {
     let shape = Shape {
+        calls: false,
         priced: true,
         exchanges: false,
         faults: true,

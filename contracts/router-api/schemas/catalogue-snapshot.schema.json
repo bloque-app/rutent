@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:catalogue-snapshot",
   "title": "Catalogue snapshot",
-  "description": "The catalogue as the router reads it, at one time: every figure it may use, each with its age at that time and its origin (REQ-QTE-4). A figure is an advertised tuple (the provider-role shapes, by reference), an advertised price, a fresh quote or dry run (the provider's signed result, urn:rutent:provider-role:result), an eligibility judgement (a verifier's, urn:rutent:provider-role:judgement), or in-flight exposure from the operator's records (REQ-ORD-8). Ages are whole seconds rounded up and validities whole seconds rounded down, so a figure whose age is at most its validity is never past its valid_until. Every provider has one publisher across the snapshot, exposures included; one tuple figure per provider and ends, and at most one price per tuple; all judgements about one relying provider's tuples are about one subject (ADR-0012); dry-run answers (fresh quotes included) for one tuple and amount agree, as do judgements of one subject for one tuple. These and other rules a schema can't express are checked by the contract's Rust types; see the contract's README.",
+  "description": "The catalogue as the router reads it, at one time: every figure it may use, each with its age at that time and its origin (REQ-QTE-4). A figure is an advertised tuple (the provider-role shapes, by reference), an advertised price, a fresh quote or dry run (the provider's signed result, urn:rutent:provider-role:result), an eligibility judgement (a verifier's, urn:rutent:provider-role:judgement), a provider's module's declared cross-module calls (REQ-MDL-21), or in-flight exposure from the operator's records (REQ-ORD-8). Ages are whole seconds rounded up and validities whole seconds rounded down, so a figure whose age is at most its validity is never past its valid_until. Every provider has one publisher across the snapshot, exposures included; one tuple figure per provider and ends, at most one price per tuple, and at most one calls figure per provider; all judgements about one relying provider's tuples are about one subject (ADR-0012); dry-run answers (fresh quotes included) for one tuple and amount agree, as do judgements of one subject for one tuple. These and other rules a schema can't express are checked by the contract's Rust types; see the contract's README.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -155,6 +155,7 @@
                 "fresh_quote",
                 "dry_run",
                 "eligibility",
+                "calls",
                 "exposure"
               ]
             }
@@ -272,6 +273,21 @@
                 ],
                 "properties": {
                   "kind": {
+                    "const": "calls"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/calls"
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
                     "const": "exposure"
                   }
                 }
@@ -349,6 +365,32 @@
                   }
                 }
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "calls"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "valid_for_seconds"
+              ]
             }
           }
         }
@@ -546,6 +588,27 @@
         "judgement": {
           "description": "A verifier's signed judgement of the customer, carried whole; the verifier is the figure's provider.",
           "$ref": "urn:rutent:provider-role:judgement"
+        }
+      }
+    },
+    "calls": {
+      "description": "The cross-module calls a provider's admitted module declares, as its release's outside.calls lists them (module-interface, REQ-MDL-21). From the provider: the origin's module_version names the release. It states no validity: it holds until the release is replaced. At most one per provider; each callee listed once, each kind once per callee, and none the provider itself, which the contract's Rust types check. A route segment names only calls its provider declares here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "calls"
+      ],
+      "properties": {
+        "kind": {
+          "const": "calls"
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "urn:rutent:router-api:common#/$defs/declared_call"
+          }
         }
       }
     },

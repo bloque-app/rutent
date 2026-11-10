@@ -1,0 +1,38 @@
+{
+  "kind": "route",
+  "provider": "ramp-x",
+  "from": {
+    "node": "ledger-in",
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
+  },
+  "to": {
+    "node": "ledger-b",
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
+  },
+  "amount_in": "99900000",
+  "fee": {
+    "asset": "COP",
+    "amount": "5000"
+  },
+  "amount_out": "99895000",
+  "figures": [
+    "f-ramp",
+    "f-ramp-price"
+  ],
+  "calls": [
+    {
+      "callee": "exchange-b",
+      "kind": "conversion"
+    },
+    {
+      "callee": "reserve-wallet",
+      "kind": "balance_verification"
+    }
+  ]
+}

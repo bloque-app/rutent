@@ -36,6 +36,14 @@
 //! is no candidate. Listing the others costs at most one candidate per path prefix the search already walks and
 //! per tuple leaving its end, since each ends its path; no cap is needed.
 //!
+//! # The calls a route makes
+//!
+//! Each segment names the cross-module calls it makes (router-api 3.0.0, `REQ-MDL-21`): those its provider's
+//! module declares, in the snapshot's calls figure of the release its tuple comes from, to the provider of another
+//! segment of its part, every kind declared for that callee (the `calls` module). A declared call to a provider on no
+//! segment of the part stays unnamed, so the platform refuses it (`not_named_by_route`). The calls change neither
+//! the search nor the ranking.
+//!
 //! # The objective
 //!
 //! The request names it (`REQ-QTE-11`). `lowest_total_cost`, which whoever builds the request writes when the
@@ -45,6 +53,7 @@
 //! outranked, never another drop. The choice reads the request, the snapshot and the bounds alone; the operator's
 //! own fee is taken afterwards, at the destination ([`quote`]), and doesn't enter it.
 
+mod calls;
 mod judge;
 mod network;
 mod price;
@@ -64,8 +73,8 @@ use search::{Path, Search, answer_of};
 
 /// The version every record this router makes names in its `router_version`.
 /// `0.2.0` since router-api 3.0.0 (`T-011-05`): the same inputs now give a record that also names the candidates
-/// the contract couldn't state before.
-pub const VERSION: &str = "rutent-router-0.2.0";
+/// the contract couldn't state before. `0.3.0` since `T-011-06`: each segment also names the calls it makes.
+pub const VERSION: &str = "rutent-router-0.3.0";
 
 /// The route finder: the router API's [`Router`], as ADR-0006 and `DEC-8` decide it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -100,7 +109,8 @@ impl Router for RouteFinder {
             .zip(dropped)
             .enumerate()
             .map(|(i, (path, dropped))| {
-                let operations = path.steps.into_iter().map(|s| s.operation).collect();
+                let mut operations: Vec<_> = path.steps.into_iter().map(|s| s.operation).collect();
+                calls::name(snapshot, &mut operations);
                 let part = Part {
                     operations: NonEmpty::new(operations).expect("a path takes a segment"),
                 };
