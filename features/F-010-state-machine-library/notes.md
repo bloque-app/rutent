@@ -560,22 +560,25 @@ ADR-0002), for it and for the memory it held.
   unchanged store the same test failed: it retained 0.7, 13.4 and 26.9 MB, and peaked at twice that.
 - **DEC-20 path touched:** `.github/workflows/stm-vos.yml` (a step, below).
 
-### `G-54` on VOS: what the test found (a development run; the scored run is CI's)
+### `G-54` on VOS: what the test found (scored: Linux x86_64, the JIT, CI run 42758365383)
 
 `G-54` (`scoring.md`): damage to the last frame of a store that returned its acknowledgement, **its length intact**,
 and a refusal or the entry kept. The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a
 `continue-on-error` step of `stm-vos.yml`, its lines in `g54.txt` of the run's artifact) writes one order's inputs
 through the real program, measures the journal's length when the node is quiet before the last submit and after it, so
-the bytes that submit wrote are a range (`store/0.jnl`, about 6.3 KB, in which the last record id sits 14 times: the
-append's batch and everything derived from it), kills every node, and damages the range, on one node and on the leader
-of three. Each damage is followed by starting the damaged node alone and asking its own replica (an applied-consistency
-query), with its log kept.
+the bytes that submit wrote are a range (`store/0.jnl`, in which the last record id, `rec-ord-g54-7`, sits 14 times:
+the append's batch and what is derived from it), kills every node, and damages the range, on one node and on the
+leader of three. Each damage is followed by starting the damaged node alone and asking its own replica (an
+applied-consistency query), with its log kept.
+
+The scored run: workflow `STM on VOS`, run 42758365383, at `20567be`, branch `m2-ci-t01006`; green, the `G-54` step
+being allowed to fail. On one node the last submit wrote bytes 40582..46840 of `store/0.jnl`.
 
 | Damage, inside the last submit's bytes | One node | Leader of three (started alone) |
 |---|---|---|
-| One byte flipped at the id's first place (length intact; later frames of that submit behind it) | **refused**: the node exits, `Store(JournalRecovery(ChecksumMismatch))` | **refused**, the same |
-| The range's last byte flipped | recovered, 7 of 7 records | could not answer until the others joined ("behind"), then whole: undetermined |
-| The journal cut just after the id's first place (a torn tail) | **cut silently**: 6 of 7 records, nothing in the log | **cut silently** locally (6 of 7), repaired by replication once the others started |
+| One byte flipped at the id's first place (length intact; later frames of that submit behind it) | **refused**: the node does not start, `Store(JournalRecovery(ChecksumMismatch))` | **refused**, the same |
+| The range's last byte flipped | recovered, 7 of 7 records, nothing in the log | undetermined: the lone node answered `Rejected(Behind)`; with the others up it held all 7, so a loss, if any, was repaired by replication |
+| The journal cut just after the id's first place (a torn tail) | **cut silently**: 6 of 7 records, no log line naming damage | **cut silently** locally (6 of 7, no log line), then repaired by replication: it caught up from the others |
 
 - **What the test can and cannot target.** It does not read fjall's frame boundaries, so it cannot isolate "the frame
   that holds the append" or put length-intact damage on a final frame with nothing behind it. The first place of the id
@@ -585,20 +588,17 @@ query), with its log kept.
 - **Reading.** A byte flipped inside the append's batch with frames behind it is refused (the journal's recovery reports
   a checksum mismatch and the node does not start). A torn tail is cut and the node starts without a word, losing an
   acknowledged record. The case `G-54` names, length-intact damage to the acknowledged batch with nothing behind it, is
-  **not shown** by this run: for it there is only the code reading that `EXP-1-vos-20261107-1` recorded (fjall's
+  **not shown** by the run: for it there is only the code reading that `EXP-1-vos-20261107-1` recorded (fjall's
   `TolerateCorruptTail` recovery discards a corrupt tail without an error).
-- **What this run is.** macOS arm64, the interpreter (`VOS_DEV=1`), at the pinned `vos-core` `5c78975`: provisional. The
-  scored run is Linux x86_64 with the JIT, CI run 42756087621 on branch `m2-ci-t01006`. **Its result and its `g54.txt`
-  lines go here: pending.** The storage path does not depend on the PVM backend, so the same lines are expected. The
-  test's two VOS tests fail on a silent cut by design (they need not pass).
-- **Not tried.** Power loss (a real torn write); a cut at a frame boundary.
+- **Not tried.** Power loss (a real torn write); a cut at a frame boundary. The two VOS tests fail on a silent cut by
+  design (they need not pass); they did in this run, and the job stayed green.
 
-### Owner's item (draft, provisional until the scored run): `vos-g54-silent-tail-cut`
+### Owner's item: `vos-g54-silent-tail-cut` (confirmed by the scored run)
 
-Evidence: torn tail, **shown**: a journal cut inside the acknowledged append's bytes is cut silently by VOS on one
-node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it. Length-intact
-damage to the acknowledged batch with nothing behind it: **code reading only** (`EXP-1-vos-20261107-1`). Damage with
-frames behind it is refused (shown). Choose:
+Evidence: torn tail, **shown** in run 42758365383: a journal cut inside the acknowledged append's bytes is cut silently
+by VOS on one node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it.
+Length-intact damage to the acknowledged batch with nothing behind it: **code reading only** (`EXP-1-vos-20261107-1`).
+Damage with frames behind it is refused (shown). Choose:
 
 1. **Fix it upstream** (recommended): ask VOS's maintainers for a refusal or a log line and a node status flag when
    journal recovery cuts a tail, and for an option to fail instead of cut; or, as a program-side guard, a watermark the

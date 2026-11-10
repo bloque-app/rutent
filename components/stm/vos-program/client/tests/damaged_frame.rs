@@ -164,17 +164,6 @@ struct Place {
     after: usize,
 }
 
-impl Place {
-    fn describe(&self, data: &Path) -> String {
-        format!(
-            "{}@{} ({} bytes after)",
-            self.file.strip_prefix(data).unwrap_or(&self.file).display(),
-            self.offset,
-            self.after
-        )
-    }
-}
-
 /// Where the id's bytes sit in the node's journal files: every file under its data directory whose path says
 /// `journal`, or, if none does, every file that holds them.
 fn places(data: &Path, needle: &[u8]) -> Vec<Place> {
@@ -308,7 +297,6 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
     // An order's inputs, all acknowledged; the last one's record id is the one to find on disk.
     let inputs: Vec<RecordedInput> = probe::order_inputs("ord-g54", 0);
     let mut acknowledged = 0u64;
-    let last = inputs.last().unwrap().record_id.as_str().to_owned();
     assert_eq!(host.status().unwrap().records, acknowledged);
 
     // The append itself is measured: the journal's length when the node is quiet before the last submit, and again
