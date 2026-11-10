@@ -19,6 +19,11 @@
   four are Rust only, as the other platform reasons are, with a Rust test.
   Staging, stale marks and segment records stay `CMP-PROV`'s, not shaped here. New Rust variants of
   `#[non_exhaustive]` enums, and 4.0.0 is not released, so they join this major. (DEC-4, DEC-20, T-013-06)
+- A new refusal reason, `request_not_allowed`: an outbound call whose request the platform won't send whatever the
+  destination, since its method isn't allowed, its target isn't a path or a header names the host or frames the
+  message, is recorded as refused with it, so such an attempt leaves an audit record (`REQ-MDL-8`). The record holds
+  none of the request. In the schema's enum, `RefusalReason::RequestNotAllowed` (a variant, breaking an exhaustive
+  match, which joins this major), and a valid fixture. (DEC-4, DEC-20, T-013-07)
 - `OperationKind` gains `HoldingBalance`, the provider-role operation kind `holding_balance` (provider-role 3.0.0),
   which a holding account's module declares it handles. The declaration schema takes its kinds from the provider-role
   operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant, which breaks an

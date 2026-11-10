@@ -9,12 +9,15 @@ name: STM on VOS
 # node built without native codegen with the host-contract suite run on it, and the recovery drill (a test of
 # vos_node.rs, so the full-suite step runs it). The default build and `cargo test --workspace` never need VOS;
 # this workflow is the only place the package under components/stm/vos-program is built and run. A change to this file is a DEC-20 path.
+# T-010-06 adds a step that damages the frame holding the last acknowledged append, on one node and on the leader of
+# three, and records what VOS did (G-54). It records and need not pass, so the step continues on error.
 # GitHub runs a workflow_dispatch only for a workflow file on the default branch, so until this file reaches main
 # the run is the push of this task's branch; the run id goes in F-010's notes.
 on:
   push:
     branches:
       - "f-010/t-010-05-vos-program"
+      - "f-010/t-010-06-g54-damaged-frame"
       - "f-010/t-010-08-production-host-check"
       - "m*"
       - "develop"
@@ -130,6 +133,12 @@ jobs:
           ln -s "$BUILD/client-target" "$BUILD-portable/client-target"
           cp "$BUILD-portable/node-build.log" "$OUT/node-build-portable.log" || true
           RUN_ID="T-010-08-$GITHUB_RUN_ID" $PROGRAM/test.sh "$BUILD-portable" --test vos_node the_host_contract_suite 2>&1 | tee "$OUT/vos-tests-portable.txt"
+
+      - name: G-54, a damaged last acknowledged append on one node and on the leader of three; its result is recorded and need not pass
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          G54_OUT="$OUT/g54.txt" RUST_TEST_NOCAPTURE=1 $PROGRAM/test.sh "$BUILD" --test damaged_frame 2>&1 | tee "$OUT/g54-tests.txt"
 
       - name: Upload the notes
         if: always()

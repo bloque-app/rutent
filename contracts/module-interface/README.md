@@ -301,6 +301,9 @@ The checks run per hop: the first connection, then each redirect.
   resolution" in `REQ-MDL-7` is tested against.
 - **TLS:** the peer at that address must prove it is the declared host. Otherwise the call is refused before any
   byte of it is sent (`peer_not_verified`, since 4.0.0).
+- **Request:** a request whose method isn't allowed, whose target isn't a path or one of whose headers names the host
+  or frames the message is refused before any connection (`request_not_allowed`, since 4.0.0). Its record has one
+  hop and holds none of the request.
 
 The outbound call record shows each check was made. Each hop records the scheme, host and port asked for, the
 declared destination it matched, and the address connected to. Every hop matched and connected, but the last of a

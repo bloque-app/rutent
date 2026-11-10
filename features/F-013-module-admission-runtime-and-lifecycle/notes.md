@@ -556,3 +556,172 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - the one line in `cross_module`.
 
   `host.rs`, the lookup and egress paths, `engine.rs` and the compiler are untouched.
+
+## T-013-05, hardening the admitting compiler
+
+- **Fuzzing (`B-09`, `THR-85`).** No fuzzing crate: nothing enters `Cargo.lock` or `licences/RECORD`. A seeded mutation
+  fuzzer (`tests/module_support/fuzz.rs`: bit and byte changes, truncation, deletion, duplication, LEB128 edge values,
+  and section-aware steps that corrupt, drop or swap a top-level section) makes the binaries; the same seed makes the
+  same binaries. Each pair goes to the real admitting compiler, in its own isolated process (`children::compile`); a
+  verdict, accepted or refused, is what it is for, and a compiler that failed or passed its deadline is a finding.
+  - The checked-in corpus is `tests/fuzz-corpus/`: 30 files, under 120 KiB, made by the ignored test
+    `the_corpus_is_written_when_asked` from eleven edge cases (empty, header only, a core module, an ELF header, a
+    section length past the end, an overlong LEB128, and so on), the six hostile components and mutations of them,
+    keeping a few of each kind of verdict. `fuzz_corpus_never_crashes_the_admitting_compiler` runs every file; the
+    second test runs each as either part of a release through `Platform::admit` and then admits an honest release.
+  - `fuzzing_for_a_while_never_crashes_the_admitting_compiler` is `#[ignore]`d and CI runs it for 120 s with the run
+    id as the seed. Locally it is held to 120 s and the inputs to 512 KiB; the compiler's own jail bounds its memory on
+    Linux (`RLIMIT_AS`), which macOS does not enforce, so a local run is bounded by the input size alone.
+  - A local 90 s run (seed 20261109, macOS) made 2,711 pairs: 2,636 refused as not a component, 65 refused for an
+    import or an export, 1 compiled, none crashed the compiler. Most mutations die at the parser, as expected of a
+    byte-level fuzzer; coverage-guided fuzzing would reach deeper and
+    is left to `F-025`'s review if it wants it.
+- **Spectre settings (`G-09`, `THR-85`).** Chosen: `enable_heap_access_spectre_mitigation=true` and
+  `enable_table_access_spectre_mitigation=true`, in `engine::SPECTRE`, set on the Cranelift configuration and listed in
+  `engine::settings()`, with the reason in the constant's documentation. Both are Wasmtime's defaults, so the machine
+  code is unchanged and `BINDING_VERSION` stays `0.2.0`; setting them stops a change of default in a later Wasmtime
+  turning them off unseen. The settings test compares machine code: the engine's equals one with each flag set `true`
+  and differs from one with it `false` (so each mitigation is in the code the compiler makes). Setting the flag takes
+  an `unsafe` call (`cranelift_flag_set`), commented. Not claimed: protection against speculation across the host
+  boundary or the processor's predictors; those rest on the process jail and one process per provider (`DEC-7`). The
+  cost of the mitigations is not measured.
+- **Re-derivation on another vendor (`B-11`, `G-04`).** "Another vendor" is read as an x86_64 CPU whose `vendor_id` is not
+  `AuthenticAMD` (nor `HygonGenuine`, the licensed AMD design): the compiler's target is fixed (`engine::TARGET`), so
+  machine code from an arm64 runner (`ubuntu-24.04-arm`) is for another target and would compare nothing, whatever its
+  vendor. In `ci.yml` the existing `ci` job records, after its Test step, the stand-ins it built and the digest of
+  each part's machine code with its CPU (`a_derivation_records_...`), and uploads them; a new job `rederive`
+  (`needs: ci`, in the same workflow, no required check name added, which is why it is a job and not a step: it must
+  run on another runner) first fails if `/proc/cpuinfo` names an AMD vendor or none, then runs
+  `re_derived_machine_code_matches_on_a_cpu_of_another_vendor` with `RUTENT_REDERIVE_REQUIRED=1` against the very
+  binaries the first job built. The test fails on an AMD or unreadable CPU, on a reference that records no vendor or the same
+  vendor as this machine (two Intel runners compare nothing across vendors; the `ci` job, a required check, takes no
+  vendor rule so it never fails at random), on a platform version that differs and on any part whose digest differs,
+  and writes this CPU's vendor, model and digests. **GitHub gives `ubuntu-latest` either
+  vendor, so the job skips on an AMD machine or the same vendor as the reference's and has to be re-run (see the review round)**: this is the reading of `T-012-01`'s writer that it
+  can't count as a second AMD run, kept. Run unconfigured (no reference, as locally on macOS) the named test passes
+  doing nothing and says so; the pieces it uses are tested always (`a_cpu_is_named_by_its_vendor_and_amd_is_told_apart`,
+  `a_derivation_records_its_cpu_and_...`).
+- **Red steps.** The settings test failed first to compile (`engine::SPECTRE` did not exist); its behavioural halves
+  passed on their first run, since the mitigations are Wasmtime's defaults. The re-derivation test with
+  `RUTENT_REDERIVE_REQUIRED=1` fails with no reference and, on macOS, with no `/proc/cpuinfo`; its vendor rule
+  (`cpu::crosses_vendors`) is tested on fixed vendor pairs and, with the corpus and fuzz tests, passed on first run.
+  The corpus tests passed at once: the compiler had no crash to find. Setting the flags changes no machine code
+  (checked: the digests of all sixteen parts, the same binaries, with and without the explicit flags, are identical
+  on macOS arm64), so `BINDING_VERSION` stays `0.2.0`.
+- **What only CI shows.** The fuzz step and the `rederive` job have not run: their run ids are to be added here when
+  they do, which the orchestrator does once CI has run (`T-013-05`'s Done-when, not met until then). Also whether a
+  re-run of the `rederive` job alone can download the artefact its first attempt's workflow run uploaded. Not run on Linux here: the compiler's jail with fuzzed input (seccomp, Landlock,
+  `RLIMIT_AS`), and `/proc/cpuinfo`.
+- **`DEC-20` paths touched.** Module admission (the admitting compiler's engine configuration, `module/engine.rs`) and
+  `.github/workflows/ci.yml`. `module/platform.rs`, `module/admission.rs`, `holding/`, `proxy/`, `egress/` and the
+  compiler binary are untouched. Tests are in `tests/module_hardening.rs` with `tests/module_support/fuzz.rs` and
+  `cpu.rs`, which `module_support/mod.rs` doesn't declare (the test includes them by path), so the shared support
+  module is unchanged.
+
+## T-013-05, review round
+
+- **`rederive` skips instead of failing on a bad draw.** When this runner is AMD's or unreadable, or the reference
+  records no vendor or the same one, the job's CPU step sets `skip=true`, writes a warning and a line to the step
+  summary, and the later steps don't run: green, but not a re-derivation, and the summary says so. It is red only when
+  the vendors differ and the digests don't (or the platform version differs). This replaces the earlier "fails on an
+  AMD machine" reading above; the test's own vendor rule stays as a backstop. The plan row's Done-when now reads that the
+  re-derivation has run on a CPU of another vendor at least once, its run id recorded; a green skipped run does not
+  count.
+- **Re-runs.** Both uploads (`rederivation-reference`, `fuzz-findings-…`) set `overwrite: true`, so a full "Re-run all
+  jobs" no longer fails with a 409 on the duplicate name; the fuzz step has `timeout-minutes: 15`.
+- **A guard on the engine's settings.** `engine::engine_from(config)` refuses an engine whose Wasmtime compatibility
+  hash differs from the binding's own `config()`'s, which covers the Spectre mitigations and every other compiler
+  setting; `engine::engine()` goes through it. The earlier claim in `engine.rs` that Wasmtime itself refuses an engine
+  with the mitigations off was wrong and is gone. Test:
+  `engine_settings_that_turn_a_spectre_mitigation_off_are_refused_when_the_engine_is_built` (it failed first to compile,
+  `engine_from` missing).
+- **The fuzzer goes inside nested core modules.** `fuzz::mutate_nested` splits the component, then a nested core module,
+  into sections and changes one with the framing rebuilt, so lengths hold: a custom section added or filled, a data
+  segment changed, a constant in a function body changed, a name's letter swapped, or a plain byte edit of any section
+  (imports, types, code); also names and custom sections of the component itself. Half the pairs of the long run change
+  one part only, so a refused part doesn't hide the other. Test first:
+  `most_fuzzed_binaries_are_still_components_the_compiler_goes_on_to_check` (seeded, 300 mutants of the hostile
+  components, at least 40% must be components): 11 of 300 before; 203 of 300 after. The 90 s local run (seed 20261109)
+  before: 2,636 of 2,711 pairs refused as "not a component" (97%). After: 827 pairs, 276 refused as "not a component"
+  (33%), 68 compiled, 483 refused for an import or an export the part may not have; none crashed the compiler.
+- **Corpus.** `mutated-23`, `-25`, `-27` were copies of hostile seeds. The corpus is made again with the new fuzzer, the
+  generator skipping any case equal to a seed or one kept: 30 files, none identical to another or to a seed.
+- **Run ids.** CI run 42754273532 (branch `m2-ci-t01305`, commit `0bb16a3`): the `ci` job, fuzz step included, and the
+  `rederive` job passed. The reference was made on AuthenticAMD (AMD EPYC 9V45 96-Core Processor) and re-derived on
+  GenuineIntel (INTEL(R) XEON(R) PLATINUM 8573C); the digests matched. That meets the Done-when's re-derivation on a CPU
+  of another vendor. That run used the first fuzzer. The deeper fuzzer ran in CI run 42756806042 (branch
+  `m2-ci-t01305`, commit `1bfb734`): the `ci` job, its fuzz step included, and the `rederive` job passed.
+
+## T-013-07
+
+- **The two gaps `T-014-05` found are closed in the binding's world** (`wit/binding.wit`, package `0.2.0`,
+  `BINDING_VERSION` `0.3.0`):
+  - `proxy.secret-refusal` gains `store-unavailable`; `host.rs` maps the wire reason `store_unavailable` to it, so a
+    guest is no longer told `undeclared-secret` for a store that is down.
+  - `egress.call` takes a `request` record: a `method` (`get`, `post`, `put`, `patch`, `delete`), a `path`, a list of
+    `header` records (name, value, `sensitive`) and a `body`. `FromProvider::Egress` carries the same fields
+    (`WireHeader`). The sandboxed interfaces are unchanged; the package number moved with the rest, so the allowed
+    imports in `host.rs` and the hostile components in the guests' tool name `0.2.0`.
+- **The platform checks the request, never the guest.** `host.rs` only transcribes. `platform.rs`'s `egress`
+  builds `egress::Request::new`, the one place that checks the target is an origin-form path, each header is a token
+  with no control character, and none is a header the connector sets (`Host`, `Content-Length`, ...). Path and
+  header bytes count with the body against `MAX_BODY` and the `OutboundBytes` budget, and the header count against
+  the new `MAX_HEADERS` (64), so headers are no way round `REQ-MDL-11`.
+- **Credential headers from a guest follow the rule `T-014-03` set.** The guest's `sensitive` flag becomes
+  `Header::sensitive`, and a header named `authorization`, `proxy-authorization` or `cookie` is a credential by
+  name, whatever the flag says. A redirect to another endpoint drops both; the test shows a flagged `X-Api-Key` and
+  an unflagged `Authorization` dropped while a plain header and the method follow a `307`.
+- **Superseded by the review round below:** a request the platform cannot build is now recorded.
+- **(Earlier reading) a request the platform cannot build is refused unrecorded.** An unknown method, a target that is not
+  origin-form or a framing header has no reason in module-interface 4.0.0 to be recorded under (no refusal stands in
+  another's name), and no destination was judged. It is refused the way an unknown scheme is, with the outcome
+  `refused` and no record. If a record of it is wanted, it needs a reason in the contract: an item for `F-010`.
+- **Reading: "records" is the call's record, not the request's content.** Every call leaves its one
+  `OutboundCallRecord`, refused ones included, as before. The record does not carry the path, the headers or the
+  body: a query string or a header can hold a secret, and `outbound-call-record-carrying-a-secret-value` is the
+  contract saying the record names no value. `contracts/` is untouched.
+- **`World::receive`**, a new defaulted hook, is where the default `World::send` hands a request to the world it
+  serves (method, target, headers, body); its default passes the body to `deliver`, so `deliver`'s signature, the
+  production world in `proxy/` and the conformance trait's `received` are unchanged. The suite's `call` step and
+  `Forge` still send `POST /` with no headers, so the evidence references the suite compares are unchanged.
+- **Guests, both languages.** The Rust and C stand-ins send the new request shape for every existing step, and read
+  two binding-only program lines the tests use: `fetch <operation> <host> <port> <method> <path> <headers>` and
+  `reason <operation> <name>`. `Probe::Fetch` and `Probe::Reason` write them. The C step type gained a
+  constructor (`mk`) so that adding fields does not touch every initializer.
+- **Tests** (`tests/module_wit_shapes.rs`, each in Rust and C): `guest_tells_an_unreachable_secret_store_from_a_missing_secret`,
+  `outbound_requests_method_path_and_headers_reach_only_its_declared_destination` and
+  `outbound_request_naming_another_host_in_its_path_or_headers_is_refused_before_it_is_sent`. Shown red by mutation
+  (the host mapping dropped to `undeclared-secret`; the `sensitive` flag ignored), since the stand-ins and the world
+  were written together.
+- **`DEC-20`.** The module boundary (`wit/binding.wit`, `module/host.rs`, `module/wire.rs`) and the platform's
+  outbound-call path in `module/platform.rs`. Shared edits: the `BINDING_VERSION` line in `module/engine.rs`
+  (`T-013-05`'s file) and the new `MAX_HEADERS` in `module/limits.rs`.
+
+## T-013-07, review round
+
+- **A refused request is recorded (blocker).** A request the platform won't send (an unknown method, a target that
+  is not a path, a header that is not a token or that frames the message) was refused with no record, though the
+  call was already charged and `REQ-MDL-8` wants every call recorded. module-interface 4.0.0 (unreleased) gains the
+  reason `request_not_allowed`: the schema's `refusal_reason`, `RefusalReason::RequestNotAllowed`, a valid fixture,
+  a contract test, the README and the changelog. The platform records it with one hop (the endpoint asked for) and
+  none of the request, as it records a call refused for a limit (`record_refused_call`). `contracts/` is a `DEC-20`
+  path, and this commit touches it.
+- **Forwarding headers.** `Forwarded`, `X-Forwarded-Host`, `X-Forwarded-For`, `X-Forwarded-Proto`,
+  `X-Forwarded-Port`, `X-Real-IP`, `X-Original-URL`, `X-Rewrite-URL` and `X-Original-Host` join the headers a request
+  may not set, for the reason `Host` is one.
+- **Limits tested.** Past `MAX_HEADERS`, and past `MAX_BODY` in a path, in a header value and in a body and a path
+  together, the operation is refused as a limit with a `MessageSize` event, a record refused `limit_reached` and
+  nothing sent; the bound itself sends. The stand-ins' `fetch` line takes a trailing `*N` on a path or value (N bytes
+  of `x`) so a program in an 8 KiB slot can make a large request; the C stand-in's header cap is 256.
+- **`WireHeader`'s `Debug`** hides the value of a flagged header and of one named `authorization`,
+  `proxy-authorization` or `cookie` (`THR-50`). `limits.rs`'s docs say what is counted now.
+- **Shown red:** the record tests failed with no record; the two limit tests failed with the header count and the
+  header and path bytes taken out of the check.
+
+## Which reason wins for a bad request to an undeclared host (re-review of T-013-07, 2026-11-10)
+
+The platform checks a guest's request (method, path, framing and forwarding headers, size) before it judges the
+operation's declared destinations. So a request that is both malformed and aimed at an undeclared host is recorded as
+`request_not_allowed`, not `undeclared_destination`, and its hop looks the same as one to a declared host. It is still
+recorded and still refused; only the reason differs. Left as it is, and stated here, so an audit reads
+`request_not_allowed` as "refused before any destination was judged".

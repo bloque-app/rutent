@@ -51,6 +51,45 @@ jobs:
         run: cargo build -p rutent-contracts --no-default-features --target riscv32imac-unknown-none-elf
       - name: Test (includes the boundary check)
         run: cargo test --workspace
+      # T-013-05 (B-09): seeded, time-bounded mutation fuzzing of the admitting compiler, every binary through its
+      # own isolated process. The checked-in corpus runs in the Test step above; this runs on beyond it. The run id
+      # goes to the step summary and F-013's notes cite it. A crash writes its binaries to the findings artefact.
+      - name: Fuzz the admitting compiler (T-013-05)
+        timeout-minutes: 15
+        run: |
+          echo "fuzz run ${RUN_ID}, attempt ${RUN_ATTEMPT}, commit ${GITHUB_SHA}" | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo test -p rutent-prov --test module_hardening -- --ignored --exact \
+            fuzzing_for_a_while_never_crashes_the_admitting_compiler --nocapture
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUTENT_FUZZ_SECONDS: "120"
+          RUTENT_FUZZ_SEED: ${{ github.run_id }}
+          RUTENT_FUZZ_FINDINGS: ${{ runner.temp }}/fuzz-findings
+      - name: Keep what the fuzzer found
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-findings-${{ github.run_id }}
+          overwrite: true
+          path: ${{ runner.temp }}/fuzz-findings
+          if-no-files-found: ignore
+      # T-013-05 (B-11, G-04): the reference for the `rederive` job below: the stand-ins this run built and the
+      # digest of the machine code a fresh compiler makes of each part, with the CPU that made it.
+      - name: Record the machine code of the stand-ins (T-013-05)
+        run: |
+          mkdir -p "$RUNNER_TEMP/rederive"
+          cp -r target/rutent-wasm-standins "$RUNNER_TEMP/rederive/standins"
+          RUTENT_REDERIVE_OUT="$RUNNER_TEMP/rederive/reference.txt" cargo test -p rutent-prov --test module_hardening -- \
+            --exact a_derivation_records_its_cpu_and_one_digest_for_each_part_and_tells_a_changed_part
+          head -3 "$RUNNER_TEMP/rederive/reference.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep the reference for the re-derivation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rederivation-reference
+          path: ${{ runner.temp }}/rederive
+          overwrite: true
+          if-no-files-found: error
       - name: Live resolver test against OpenBao and Vault (T-014-01)
         # The credential proxy's resolvers against real servers (DEC-9, ADR-0004). Each server runs apart, in its
         # own dev-mode container pinned by digest, so neither enters a lockfile or licences/RECORD. The tokens are
@@ -112,3 +151,63 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Test, purpose-built store
         run: cargo test -p rutent-stm --features rutent-stm/purpose-built-store
+
+  # T-013-05 (B-11, G-04, REQ-MDL-2, THR-18, ADR-0014): the machine code of every stand-in part, made again on a CPU of
+  # another vendor than the one that made the reference, from the very binaries the `ci` job built, must have the
+  # digests the `ci` job recorded. The code is made for a fixed x86_64 target whatever the CPU, so the machines
+  # compared are x86_64 ones; an arm64 runner would compile for another target and compare nothing. GitHub gives
+  # `ubuntu-latest` either vendor, so when this runner is AMD's, or the reference came from the same vendor as this
+  # runner, nothing would be compared across vendors: the job then skips its later steps with a warning in its
+  # summary and stays green. It is red only when the two vendors differ and the digests do not. The vendor rules
+  # live here and never in `ci`, a required check. Re-running only this job reuses the reference `ci` uploaded; the
+  # re-derivation counts once it has run on another vendor, and its run id is recorded in F-013's notes.
+  rederive:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rederivation-reference
+          path: ${{ runner.temp }}/rederive
+      - name: The CPUs, which must be of two vendors, neither of them skipped
+        id: cpu
+        run: |
+          vendor=$(awk -F': *' '/^vendor_id/ {print $2; exit}' /proc/cpuinfo)
+          model=$(awk -F': *' '/^model name/ {print $2; exit}' /proc/cpuinfo)
+          reference=$(sed -n 's/^# vendor_id: //p' "$RUNNER_TEMP/rederive/reference.txt" | head -1)
+          echo "re-derivation run ${RUN_ID}, attempt ${RUN_ATTEMPT}: ${vendor} / ${model}; reference made on ${reference}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          why=""
+          case "$vendor" in AuthenticAMD|HygonGenuine|"") why="this runner's CPU is '${vendor}': AMD's or unreadable" ;; esac
+          case "$reference" in unknown|"") why="the reference records no CPU vendor" ;; esac
+          if [ -z "$why" ] && [ "$vendor" = "$reference" ]; then why="the reference was made on ${reference} too"; fi
+          if [ -n "$why" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::re-derivation skipped, nothing would be compared across vendors: ${why}; re-run the job"
+            echo "SKIPPED, not a re-derivation on another vendor: ${why}. Re-run this job." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.cpu.outputs.skip != 'true'
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.cpu.outputs.skip != 'true'
+        with:
+          toolchain: stable
+      - name: Allow unprivileged user namespaces on this runner
+        if: steps.cpu.outputs.skip != 'true'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Re-derive the machine code
+        if: steps.cpu.outputs.skip != 'true'
+        run: |
+          cargo test -p rutent-prov --test module_hardening -- --exact --nocapture \
+            re_derived_machine_code_matches_on_a_cpu_of_another_vendor
+          head -3 "$RUNNER_TEMP/rederive/this-cpu.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          RUTENT_WASM_STANDINS: ${{ runner.temp }}/rederive/standins
+          RUTENT_REDERIVE_REFERENCE: ${{ runner.temp }}/rederive/reference.txt
+          RUTENT_REDERIVE_OUT: ${{ runner.temp }}/rederive/this-cpu.txt
+          RUTENT_REDERIVE_REQUIRED: "1"

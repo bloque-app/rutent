@@ -46,13 +46,14 @@ static const char MAGIC[] = "RUTENT-PROGRAM-SLOT-V1\n";
 #endif
 __attribute__((used)) RUTENT_NONSTRING static const volatile char PROGRAM[RUTENT_SLOT_SIZE] = RUTENT_SLOT_INIT;
 
-enum step_kind { SECRET, STATE, CALL, MODULE, SPIN, GROW, TRAP, FORGE, BURN };
+enum step_kind { SECRET, STATE, CALL, MODULE, SPIN, GROW, TRAP, FORGE, BURN, FETCH, REASON };
 
 typedef struct {
     enum step_kind kind;
     bool sandboxed;
     char *a, *b, *c, *d; /* the step's words after its kind and part */
     long n;
+    char *e, *f; /* a fetch's headers; its path is f */
 } step;
 
 typedef struct {
@@ -80,6 +81,19 @@ static long to_long(const char *s) {
         n = n * 10 + (*s - '0');
     }
     return n;
+}
+
+static step mk(enum step_kind kind, bool sandboxed, char *a, char *b, char *c, char *d, long n) {
+    step s;
+    memset(&s, 0, sizeof(s));
+    s.kind = kind;
+    s.sandboxed = sandboxed;
+    s.a = a;
+    s.b = b;
+    s.c = c;
+    s.d = d;
+    s.n = n;
+    return s;
 }
 
 /* Reads the program from the slot; false if the slot holds none. */
@@ -137,25 +151,32 @@ static bool load(program *p) {
             p->output_arg = count > 2 ? W[2] : "";
         } else if (p->count < 64) {
             if (count == 4 && eq(W[0], "secret")) {
-                *s = (step){SECRET, eq(W[1], "sandboxed"), W[2], W[3], 0, 0, 0};
+                *s = mk(SECRET, eq(W[1], "sandboxed"), W[2], W[3], 0, 0, 0);
             } else if (count == 3 && eq(W[0], "state")) {
-                *s = (step){STATE, eq(W[1], "sandboxed"), W[2], 0, 0, 0, 0};
+                *s = mk(STATE, eq(W[1], "sandboxed"), W[2], 0, 0, 0, 0);
             } else if (count == 5 && eq(W[0], "call")) {
-                *s = (step){CALL, false, W[1], W[2], W[3], W[4], to_long(W[4])};
+                *s = mk(CALL, false, W[1], W[2], W[3], W[4], to_long(W[4]));
             } else if (count == 3 && eq(W[0], "module")) {
-                *s = (step){MODULE, false, W[1], W[2], 0, 0, 0};
+                *s = mk(MODULE, false, W[1], W[2], 0, 0, 0);
             } else if (count == 1 && eq(W[0], "spin")) {
-                *s = (step){SPIN, true, 0, 0, 0, 0, 0};
+                *s = mk(SPIN, true, 0, 0, 0, 0, 0);
             } else if (count == 2 && eq(W[0], "grow")) {
-                *s = (step){GROW, true, 0, 0, 0, 0, to_long(W[1])};
+                *s = mk(GROW, true, 0, 0, 0, 0, to_long(W[1]));
             } else if (count == 1 && eq(W[0], "trap")) {
-                *s = (step){TRAP, true, 0, 0, 0, 0, 0};
+                *s = mk(TRAP, true, 0, 0, 0, 0, 0);
             } else if (count == 2 && eq(W[0], "burn")) {
                 /* The outside part counts to W[1], then obtains `burned`: a probe of its fuel. */
-                *s = (step){BURN, false, 0, 0, 0, 0, to_long(W[1])};
+                *s = mk(BURN, false, 0, 0, 0, 0, to_long(W[1]));
+            } else if (count == 7 && eq(W[0], "fetch")) {
+                /* The outside part sends a whole request: operation, host, port, method, path, headers. */
+                *s = mk(FETCH, false, W[1], W[2], W[4], 0, to_long(W[3]));
+                s->e = W[6];
+                s->f = W[5];
+            } else if (count == 3 && eq(W[0], "reason")) {
+                *s = mk(REASON, false, W[1], W[2], 0, 0, 0);
             } else if (count == 6 && eq(W[0], "forge")) {
                 /* Hostile: the outside part names W[1] to the platform, not the operation it serves. */
-                *s = (step){FORGE, false, W[1], W[2], W[3], W[4], to_long(W[5])};
+                *s = mk(FORGE, false, W[1], W[2], W[3], W[4], to_long(W[5]));
             } else {
                 return false;
             }
@@ -297,9 +318,10 @@ static void run(program *p, const char *transaction, values *got) {
     for (size_t i = 0; i < p->count; i++) {
         step *s = &p->steps[i];
         bool outside = (s->kind == SECRET || s->kind == STATE) ? !s->sandboxed
-                                                               : (s->kind == CALL || s->kind == MODULE || s->kind == FORGE || s->kind == BURN);
+                                                               : (s->kind == CALL || s->kind == MODULE || s->kind == FORGE || s->kind == BURN ||
+                                                                s->kind == FETCH || s->kind == REASON);
         if (outside) {
-            const char *operation = (s->kind == SECRET || s->kind == CALL) ? s->a : p->serves;
+            const char *operation = (s->kind == SECRET || s->kind == CALL || s->kind == FETCH || s->kind == REASON) ? s->a : p->serves;
             text request = {0};
             puts_(&request, "{\"transaction\":");
             put_s(&request, transaction);
@@ -419,6 +441,82 @@ void exports_sandboxed_handle(sandboxed_string_t *operation, sandboxed_list_u8_t
 
 #else /* PART_OUTSIDE */
 
+static outside_string_t str_of(const char *s) {
+    outside_string_t r = {(uint8_t *)s, strlen(s)};
+    return r;
+}
+
+/* `text` with a trailing `*N` replaced by N bytes of `x`. */
+static const char *expand(const char *text, size_t len, size_t *out_len) {
+    size_t star = len;
+    while (star > 0 && text[star - 1] >= '0' && text[star - 1] <= '9') {
+        star--;
+    }
+    if (star == len || star == 0 || text[star - 1] != '*') {
+        *out_len = len;
+        return word_dup(text, len);
+    }
+    size_t head = star - 1, n = (size_t)to_long(text + star);
+    char *r = malloc(head + n + 1);
+    memcpy(r, text, head);
+    for (size_t i = 0; i < n; i++) {
+        r[head + i] = 'x';
+    }
+    r[head + n] = 0;
+    *out_len = head + n;
+    return r;
+}
+
+/* A request with the method named (POST for anything but the other four), the path and the body. */
+static rutent_binding_egress_request_t plain_request(const char *method, const char *path, const text *body) {
+    rutent_binding_egress_request_t r;
+    memset(&r, 0, sizeof(r));
+    r.method = eq(method, "GET")      ? RUTENT_BINDING_EGRESS_METHOD_GET
+               : eq(method, "PUT")    ? RUTENT_BINDING_EGRESS_METHOD_PUT
+               : eq(method, "PATCH")  ? RUTENT_BINDING_EGRESS_METHOD_PATCH
+               : eq(method, "DELETE") ? RUTENT_BINDING_EGRESS_METHOD_DELETE
+                                      : RUTENT_BINDING_EGRESS_METHOD_POST;
+    size_t path_len;
+    r.path.ptr = (uint8_t *)expand(path, strlen(path), &path_len);
+    r.path.len = path_len;
+    r.body.ptr = (uint8_t *)(body->p ? body->p : "");
+    r.body.len = body->len;
+    return r;
+}
+
+/* Reads `name=value` items joined by commas into the request's headers; a `!` before a name flags the value as a
+ * credential, and `-` is none. */
+static void read_headers(rutent_binding_egress_request_t *r, const char *list) {
+    static rutent_binding_egress_header_t headers[256];
+    size_t count = 0;
+    if (!eq(list, "-")) {
+        const char *at = list;
+        while (*at && count < 256) {
+            const char *end = at;
+            while (*end && *end != ',') {
+                end++;
+            }
+            bool sensitive = *at == '!';
+            const char *name = sensitive ? at + 1 : at;
+            const char *eqs = name;
+            while (eqs < end && *eqs != '=') {
+                eqs++;
+            }
+            headers[count].name.ptr = (uint8_t *)word_dup(name, (size_t)(eqs - name));
+            headers[count].name.len = (size_t)(eqs - name);
+            const char *value = eqs < end ? eqs + 1 : end;
+            size_t value_len;
+            headers[count].value.ptr = (uint8_t *)expand(value, (size_t)(end - value), &value_len);
+            headers[count].value.len = value_len;
+            headers[count].sensitive = sensitive;
+            count++;
+            at = *end ? end + 1 : end;
+        }
+    }
+    r->headers.ptr = headers;
+    r->headers.len = count;
+}
+
 bool exports_outside_start(outside_string_t *err) { return start_program(err); }
 
 void exports_outside_perform(outside_string_t *outside_request, outside_string_t *ret) {
@@ -476,10 +574,29 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
             }
             case CALL: {
                 outside_string_t host = {(uint8_t *)s->c, strlen(s->c)};
-                outside_string_t body = {(uint8_t *)(carried.p ? carried.p : ""), carried.len};
+                rutent_binding_egress_request_t request = plain_request("POST", "/", &carried);
                 rutent_binding_egress_scheme_t scheme =
                     eq(s->b, "wss") ? RUTENT_BINDING_EGRESS_SCHEME_WSS : RUTENT_BINDING_EGRESS_SCHEME_HTTPS;
-                rutent_binding_egress_call(&o, scheme, &host, (uint16_t)s->n, &body);
+                rutent_binding_egress_call(&o, scheme, &host, (uint16_t)s->n, &request);
+                break;
+            }
+            case FETCH: {
+                outside_string_t host = str_of(s->b);
+                rutent_binding_egress_request_t request = plain_request(s->c, s->f, &carried);
+                read_headers(&request, s->e);
+                rutent_binding_egress_call(&o, RUTENT_BINDING_EGRESS_SCHEME_HTTPS, &host, (uint16_t)s->n, &request);
+                break;
+            }
+            case REASON: {
+                outside_string_t name = str_of(s->b);
+                rutent_binding_proxy_secret_refusal_t refusal;
+                if (!rutent_binding_proxy_look_up(&t, &o, &name, &value, &refusal)) {
+                    const char *why = refusal == RUTENT_BINDING_PROXY_SECRET_REFUSAL_NOT_FOUND ? "not-found"
+                                      : refusal == RUTENT_BINDING_PROXY_SECRET_REFUSAL_STORE_UNAVAILABLE
+                                          ? "store-unavailable"
+                                          : "undeclared-secret";
+                    put_string(&obtained, why, strlen(why));
+                }
                 break;
             }
             case FORGE: {
@@ -490,10 +607,10 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
                     put_string(&obtained, (const char *)value.ptr, value.len);
                 }
                 outside_string_t host = {(uint8_t *)s->d, strlen(s->d)};
-                outside_string_t body = {(uint8_t *)(carried.p ? carried.p : ""), carried.len};
+                rutent_binding_egress_request_t request = plain_request("POST", "/", &carried);
                 rutent_binding_egress_scheme_t scheme =
                     eq(s->c, "wss") ? RUTENT_BINDING_EGRESS_SCHEME_WSS : RUTENT_BINDING_EGRESS_SCHEME_HTTPS;
-                rutent_binding_egress_call(&claimed, scheme, &host, (uint16_t)s->n, &body);
+                rutent_binding_egress_call(&claimed, scheme, &host, (uint16_t)s->n, &request);
                 break;
             }
             case MODULE: {

@@ -1865,6 +1865,22 @@ fn outbound_call_record_refused_for_a_failed_tls_check_has_its_own_reason() {
     assert_schema_rejects("outbound-call-record-refused-for-an-unknown-reason");
 }
 
+// verifies: DEC-4, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn outbound_call_record_refused_for_a_request_not_allowed_has_its_own_reason() {
+    let name = "outbound-call-record-refused-as-the-request-was-not-allowed";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(
+        record.outcome,
+        CallOutcome::Refused(module_interface::Refused {
+            reason: RefusalReason::RequestNotAllowed
+        })
+    );
+    assert_eq!(wire_reason(name, "/outcome/reason"), "request_not_allowed");
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+}
+
 // verifies: DEC-4, REQ-MDL-6
 #[test]
 fn secret_answer_for_a_store_that_gave_no_answer_has_its_own_reason() {
