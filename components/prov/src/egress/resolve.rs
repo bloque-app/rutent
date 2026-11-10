@@ -127,6 +127,19 @@ impl<R: NameResolver + Send + Sync + 'static> ThreadedResolver<R> {
     }
 }
 
+/// One of a provider's places among its lookups in flight, given back when it drops: when the lookup's thread
+/// ends, whether its resolver returned or panicked.
+struct Place {
+    in_flight: Arc<Mutex<BTreeMap<String, usize>>>,
+    provider: String,
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        give_back(&self.in_flight, &self.provider);
+    }
+}
+
 /// Gives back one of `provider`'s lookups in flight.
 fn give_back(in_flight: &Mutex<BTreeMap<String, usize>>, provider: &str) {
     if let Ok(mut counts) = in_flight.lock()
@@ -164,28 +177,30 @@ impl<R: NameResolver + Send + Sync + 'static> NameResolver for ThreadedResolver<
             *count += 1;
         }
         let (sender, answer) = mpsc::channel();
-        let (inner, in_flight, host, port) = (
-            Arc::clone(&self.inner),
-            Arc::clone(&self.in_flight),
-            lookup.host.clone(),
-            lookup.port,
-        );
-        let held = provider.clone();
+        let (inner, host, port) = (Arc::clone(&self.inner), lookup.host.clone(), lookup.port);
+        let place = Place {
+            in_flight: Arc::clone(&self.in_flight),
+            provider,
+        };
+        // The thread owns the place, so it is given back however the thread ends, a panic included; a thread that
+        // can't be spawned drops it here.
         let spawned = std::thread::Builder::new()
             .name("rutent-name-lookup".to_owned())
             .spawn(move || {
+                let _place = place;
                 let addresses = inner.resolve(&host, port);
                 // The receiver is gone if the lookup was given up; the answer is dropped.
                 let _ = sender.send(addresses);
-                give_back(&in_flight, &held);
             });
         if spawned.is_err() {
-            give_back(&self.in_flight, &provider);
             return Err(LookupRefused::TooManyInFlight);
         }
-        answer
-            .recv_timeout(due.saturating_duration_since(Instant::now()))
-            .map_err(|_| LookupRefused::DeadlinePassed)
+        match answer.recv_timeout(due.saturating_duration_since(Instant::now())) {
+            Ok(addresses) => Ok(addresses),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(LookupRefused::DeadlinePassed),
+            // The resolver's thread ended with no answer, as a panic ends it: the name resolved to nothing.
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(Vec::new()),
+        }
     }
 }
 

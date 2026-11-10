@@ -136,6 +136,12 @@ impl TlsServer {
         TlsServer::start(config, "200 OK", &[], Some(gap))
     }
 
+    /// Serves with `config`, and after each handshake reads nothing for 20 seconds: a peer that stalls while the
+    /// request is written, once the socket's buffers are full.
+    pub fn stalling_after_handshake(config: Arc<ServerConfig>) -> TlsServer {
+        TlsServer::start(config, "200 OK", &[], Some(Duration::ZERO))
+    }
+
     fn start(
         config: Arc<ServerConfig>,
         status: &str,
@@ -180,6 +186,10 @@ impl TlsServer {
                     continue;
                 }
                 shook.fetch_add(1, Ordering::SeqCst);
+                if dribble == Some(Duration::ZERO) {
+                    std::thread::sleep(Duration::from_secs(20));
+                    continue;
+                }
                 let Some(request) = read_request(&mut tls, &read) else {
                     continue;
                 };
@@ -290,5 +300,48 @@ impl Dialer for MappedDialer {
             Some(server) => TcpStream::connect_timeout(&server, timeout),
             None => Err(io::Error::from(io::ErrorKind::ConnectionRefused)),
         }
+    }
+}
+
+/// A TCP listener on loopback that accepts each connection and never answers, never reading either: a peer that
+/// stalls the TLS handshake. Each connection is held for 20 seconds.
+pub struct Silent {
+    /// The loopback address it listens on.
+    pub address: SocketAddr,
+    accepted: Arc<AtomicUsize>,
+}
+
+impl Silent {
+    /// Listens on a fresh loopback port.
+    pub fn listen() -> Silent {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let address = listener.local_addr().expect("its address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let count = accepted.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                count.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(20));
+                    drop(stream);
+                });
+            }
+        });
+        Silent { address, accepted }
+    }
+
+    /// How many connections it accepted.
+    pub fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+impl MappedDialer {
+    /// Maps `public`, port 443, to the silent listener.
+    pub fn with_silent(self, public: &str, server: &Silent) -> Self {
+        let public = SocketAddr::new(public.parse().expect("an address"), 443);
+        self.map.lock().unwrap().insert(public, server.address);
+        self
     }
 }

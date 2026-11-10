@@ -1266,3 +1266,111 @@ fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// A resolver that panics on every lookup.
+struct Panicking;
+
+impl rutent_prov::egress::NameResolver for Panicking {
+    fn resolve(
+        &self,
+        _: &rutent_contracts::module_interface::Host,
+        _: std::num::NonZeroU16,
+    ) -> Vec<IpAddr> {
+        panic!("the resolver failed");
+    }
+}
+
+/// A lookup whose resolver panics gives its place back: the provider is never left at its cap by a thread that
+/// died, and the lookup gives no address.
+// verifies: REQ-MDL-11, REQ-MDL-7
+#[test]
+fn a_lookup_whose_resolver_panics_gives_its_place_back() {
+    use rutent_prov::egress::{Lookup, NameResolver, ThreadedResolver};
+
+    let resolver = ThreadedResolver::new(Panicking).with_cap(1);
+    let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
+    let acme = rutent_contracts::module_interface::Identifier::new(PROVIDER).unwrap();
+    for attempt in 0..3 {
+        let answer = resolver.resolve_for(&Lookup {
+            host: &host,
+            port: std::num::NonZeroU16::new(443).unwrap(),
+            provider: &acme,
+            due: Some(std::time::Instant::now() + Duration::from_secs(2)),
+        });
+        assert_eq!(answer, Ok(Vec::new()), "attempt {attempt}");
+        let started = std::time::Instant::now();
+        while resolver.in_flight(&acme) > 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "attempt {attempt}: the slot stayed taken"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// A peer that stalls the TLS handshake, or stops reading while the request is written, is cut off at the
+/// operation's deadline (`REQ-MDL-11`), whatever each step's own timeout: before the handshake finished nothing was
+/// sent, and the call is unknown with no address; after it, the request may have reached the peer, and the call is
+/// unknown with the address connected to.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline() {
+    let pki = tls::Pki::new();
+    let silent = tls::Silent::listen();
+    let deaf = tls::TlsServer::stalling_after_handshake(pki.server_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with_silent("93.184.216.38", &silent)
+        .with("93.184.216.39", &deaf);
+    // Each step may take 10 s; the deadline is what cuts.
+    let connector = rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer)
+        .expect("a connector")
+        .with_timeout(Duration::from_secs(10));
+    let flight = Flight::payout("tx-stall");
+    // A body far larger than the sockets' buffers, so its write blocks once the peer stops reading.
+    let large =
+        Request::new(Method::Post, "/p", Vec::new(), vec![b'x'; 16 << 20]).expect("a request");
+
+    for (address, request, connected) in [
+        ("93.184.216.38", post("/p"), false),
+        ("93.184.216.39", large, true),
+    ] {
+        let resolver = TableResolver::default();
+        resolver.then("api.acme.example", &[address]);
+        let mut call = flight.call();
+        let started = std::time::Instant::now();
+        call.due = Some(started + Duration::from_millis(800));
+        let mut log = Vec::new();
+        let outcome = Egress::new(&resolver, &connector).send(
+            &call,
+            https("api.acme.example"),
+            request,
+            &mut log,
+        );
+        let took = started.elapsed();
+
+        assert!(
+            took < Duration::from_secs(2),
+            "{address}: held for {took:?}"
+        );
+        let expected = if connected {
+            Outcome::NoAnswer
+        } else {
+            Outcome::Unreachable
+        };
+        assert_eq!(outcome, expected, "{address}");
+        assert_eq!(
+            log[0].outcome,
+            CallOutcome::Unknown(Nothing {}),
+            "{address}"
+        );
+        assert_eq!(
+            log[0].hops[0].address.is_some(),
+            connected,
+            "{address}: {:?}",
+            log[0].hops[0]
+        );
+        valid(&log[0]);
+    }
+    assert_eq!((silent.accepted(), deaf.handshakes()), (1, 1));
+}

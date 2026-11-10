@@ -7,7 +7,8 @@
 //! operator's own.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,8 +17,11 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
+use rutent_contracts::module_interface::{Host, Identifier};
+
 use super::settings::{RoleSettings, StoreAddress, StoreScheme};
 use super::transport::{Request, Response, Transport, TransportError};
+use crate::egress::{Lookup, LookupRefused, NameResolver, SystemResolver, ThreadedResolver};
 
 /// The default for each of connecting, sending and reading.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,6 +39,9 @@ pub struct HttpsTransport {
     tls: Option<(ServerName<'static>, Arc<ClientConfig>)>,
     timeout: Duration,
     max_answer: usize,
+    /// Resolves the store's host, each lookup given up at the deadline of the operation it serves and the lookups
+    /// in flight capped, as the egress layer's are (`REQ-MDL-11`).
+    names: Arc<dyn NameResolver + Send + Sync>,
 }
 
 impl core::fmt::Debug for HttpsTransport {
@@ -88,6 +95,7 @@ impl HttpsTransport {
             tls,
             timeout: DEFAULT_TIMEOUT,
             max_answer: DEFAULT_MAX_ANSWER,
+            names: Arc::new(ThreadedResolver::new(SystemResolver)),
         })
     }
 
@@ -110,6 +118,13 @@ impl HttpsTransport {
         self
     }
 
+    /// The same transport, resolving the store's host with `names`; by default the operating system's resolver
+    /// behind a [`ThreadedResolver`], so a lookup is given up at the deadline.
+    pub fn with_resolver(mut self, names: impl NameResolver + Send + Sync + 'static) -> Self {
+        self.names = Arc::new(names);
+        self
+    }
+
     /// The same transport, refusing an answer, head and body, longer than `bytes`.
     pub fn with_max_body(mut self, bytes: usize) -> Self {
         self.max_answer = bytes;
@@ -117,10 +132,36 @@ impl HttpsTransport {
     }
 
     fn connect(&self, due: Option<Instant>) -> Result<Bounded, TransportError> {
-        let addresses: Vec<SocketAddr> = (self.host.as_str(), self.port)
-            .to_socket_addrs()
-            .map_err(|_| TransportError::new("the store's host did not resolve"))?
+        let (Some(host), Some(port), Some(store)) = (
+            Host::new(self.host.clone()),
+            NonZeroU16::new(self.port),
+            Identifier::new(format!("rutent:store:{}", self.host)),
+        ) else {
+            return Err(TransportError::new("the store's host did not resolve"));
+        };
+        // The store's lookups are capped as one provider's are, under the store's own name.
+        let addresses: Vec<SocketAddr> = self
+            .names
+            .resolve_for(&Lookup {
+                host: &host,
+                port,
+                provider: &store,
+                due,
+            })
+            .map_err(|refused| match refused {
+                LookupRefused::DeadlinePassed => {
+                    TransportError::new("the store's host did not resolve before the deadline")
+                }
+                LookupRefused::TooManyInFlight => {
+                    TransportError::new("too many lookups of the store's host are in flight")
+                }
+            })?
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, self.port))
             .collect();
+        if addresses.is_empty() {
+            return Err(TransportError::new("the store's host did not resolve"));
+        }
         if self.tls.is_none() && !addresses.iter().all(|a| a.ip().is_loopback()) {
             return Err(TransportError::new(
                 "plain HTTP is allowed only to a loopback address",

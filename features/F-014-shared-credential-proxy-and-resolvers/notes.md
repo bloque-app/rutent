@@ -616,3 +616,26 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
     another's lookups go on, the record, and the places given back once the hang ends.
 
   Every `production_world` test now runs its names through the threaded resolver.
+
+## T-014-05, the store's lookup bounded too
+
+- **The store's host name.** `HttpsTransport` resolved the store's host with a bare `to_socket_addrs`, so that
+  lookup had no deadline. It now asks a `NameResolver` through `resolve_for`, with the deadline the proxy carries.
+  The default is the operating system's resolver behind a `ThreadedResolver`, the one egress uses, and
+  `with_resolver` replaces it. The store's lookups are capped under the store's own name
+  (`rutent:store:<host>`), since the transport serves every provider of its role. A lookup given up at the
+  deadline, or refused at the cap, is a transport failure, so the lookup is refused as `store_unavailable`.
+  Test: `store_whose_name_lookup_hangs_is_unavailable_at_the_deadline`, which injects a hanging resolver.
+- **A panicking resolver gives its place back.** Each lookup's thread now owns its place among the provider's
+  lookups in flight, a drop guard (`Place`), so the place is given back however the thread ends, a panic
+  included. A lookup whose thread ended with no answer resolved to nothing, so no address is dialled. Before, it
+  read as a passed deadline. Test: `a_lookup_whose_resolver_panics_gives_its_place_back`, which failed before the
+  guard: the slot stayed taken.
+- **Stalls in every phase.** `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline` covers
+  the two phases besides the answer:
+  - a peer that accepts and never answers the handshake is `unknown` with no address;
+  - one that completes the handshake, then stops reading under a 16 MiB body, is `unknown` with the address
+    connected to.
+
+  Both are cut at the deadline while each step may take 10 s. They pass with `Bounded` as it is, and failed when
+  `Bounded` ignored the deadline.
