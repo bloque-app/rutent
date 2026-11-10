@@ -1604,6 +1604,35 @@
           }
         }
       }
+    },
+    {
+      "figure_id": "f-ramp-calls",
+      "origin": {
+        "kind": "provider",
+        "provider": "ramp-x",
+        "publisher": "ramp-x",
+        "provider_version": "1.0.0",
+        "module_version": "1.0.0"
+      },
+      "age_seconds": 1800,
+      "value": {
+        "kind": "calls",
+        "calls": [
+          {
+            "callee": "exchange-b",
+            "kinds": [
+              "conversion"
+            ]
+          },
+          {
+            "callee": "reserve-wallet",
+            "kinds": [
+              "deposit",
+              "balance_verification"
+            ]
+          }
+        ]
+      }
     }
   ]
 }

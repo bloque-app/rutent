@@ -45,8 +45,8 @@ mod transport;
 mod tests;
 
 pub use calls::{
-    CallAsked, CallJudgement, NO_ROUTE_RECORD, NO_ROUTE_SEGMENT, NamedCall, RouteCalls, judge_call,
-    no_route,
+    CallAsked, CallJudgement, NO_ROUTE_RECORD, NO_ROUTE_SEGMENT, NamedCall, RouteCalls,
+    RouteNotNamed, judge_call, no_route,
 };
 pub use https::HttpsTransport;
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};

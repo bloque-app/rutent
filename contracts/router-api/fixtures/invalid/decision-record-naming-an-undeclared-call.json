@@ -1,0 +1,412 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+  },
+  "made_at": "2026-11-06T15:02:01Z",
+  "maker": "rutent-core",
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:router-api:decision-record",
+  "signature": {
+    "key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA",
+    "scheme": "ed25519",
+    "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+  },
+  "statement": {
+    "bounds": {
+      "deployment": {
+        "name": "rutent-test",
+        "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+      },
+      "excluded_providers": [],
+      "excluded_tuples": [],
+      "max_hops": 2,
+      "max_parts": 1,
+      "policy_version": "policy-1",
+      "protocol_version": "2.0.1",
+      "provider_ceilings": [],
+      "publisher_ceilings": []
+    },
+    "candidates": [
+      {
+        "candidate_id": "c001",
+        "parts": [
+          {
+            "operations": [
+              {
+                "amount_in": "100000000",
+                "amount_out": "99000000",
+                "calls": [
+                  {
+                    "callee": "p-r2",
+                    "kind": "withdrawal"
+                  },
+                  {
+                    "callee": "p-r2",
+                    "kind": "deposit"
+                  }
+                ],
+                "fee": {
+                  "amount": "1000000",
+                  "asset": "USDC"
+                },
+                "figures": [
+                  "r1",
+                  "r1-price",
+                  "q-r1",
+                  "r1-calls"
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "hub"
+                },
+                "kind": "route",
+                "provider": "p-r1",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "hub-b"
+                }
+              },
+              {
+                "amount_in": "99000000",
+                "amount_out": "98010000",
+                "fee": {
+                  "amount": "990000",
+                  "asset": "USDC"
+                },
+                "figures": [
+                  "r2",
+                  "r2-price",
+                  "q-r2"
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "hub-b"
+                },
+                "kind": "route",
+                "provider": "p-r2",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "hub-c"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "chosen": "c001",
+    "request": {
+      "amount": "100000000",
+      "from": {
+        "asset": {
+          "decimals": 6,
+          "id": "USDC"
+        },
+        "node": "hub"
+      },
+      "objective": {
+        "kind": "lowest_total_cost"
+      },
+      "request_id": "r-calls",
+      "round": {
+        "kind": "choice",
+        "refines": {
+          "request_id": "r-calls-shortlist",
+          "taken_at": "2026-11-06T15:00:00Z"
+        }
+      },
+      "to": {
+        "asset": {
+          "decimals": 6,
+          "id": "USDC"
+        },
+        "node": "hub-c"
+      }
+    },
+    "router_version": "rutent-router-0.3.0",
+    "snapshot": {
+      "figures": [
+        {
+          "age_seconds": 120,
+          "figure_id": "r1",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r1",
+            "provider_version": "1.0.0",
+            "publisher": "p-r1-group"
+          },
+          "value": {
+            "kind": "ramp_tuple",
+            "tuple": {
+              "asset": "USDC",
+              "decimals": {
+                "destination": 6,
+                "origin": 6
+              },
+              "destination": "hub-b",
+              "origin": "hub",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "1000000000000000000000000000000",
+                    "min": "1"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 120,
+          "figure_id": "r1-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r1",
+            "provider_version": "1.0.0",
+            "publisher": "p-r1-group"
+          },
+          "value": {
+            "fee": {
+              "flat": "0",
+              "proportional": {
+                "denominator": "100",
+                "numerator": "1"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 60,
+            "tuple": "r1"
+          }
+        },
+        {
+          "age_seconds": 120,
+          "figure_id": "r2",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r2",
+            "provider_version": "1.0.0",
+            "publisher": "p-r2-group"
+          },
+          "value": {
+            "kind": "ramp_tuple",
+            "tuple": {
+              "asset": "USDC",
+              "decimals": {
+                "destination": 6,
+                "origin": 6
+              },
+              "destination": "hub-c",
+              "origin": "hub-b",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "1000000000000000000000000000000",
+                    "min": "1"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 120,
+          "figure_id": "r2-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r2",
+            "provider_version": "1.0.0",
+            "publisher": "p-r2-group"
+          },
+          "value": {
+            "fee": {
+              "flat": "0",
+              "proportional": {
+                "denominator": "100",
+                "numerator": "1"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 60,
+            "tuple": "r2"
+          }
+        },
+        {
+          "age_seconds": 120,
+          "figure_id": "r1-calls",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r1",
+            "provider_version": "1.0.0",
+            "publisher": "p-r1-group"
+          },
+          "value": {
+            "calls": [
+              {
+                "callee": "p-r2",
+                "kinds": [
+                  "withdrawal",
+                  "transfer"
+                ]
+              },
+              {
+                "callee": "p-z",
+                "kinds": [
+                  "withdrawal"
+                ]
+              }
+            ],
+            "kind": "calls"
+          }
+        },
+        {
+          "age_seconds": 120,
+          "figure_id": "r2-calls",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r2",
+            "provider_version": "1.0.0",
+            "publisher": "p-r2-group"
+          },
+          "value": {
+            "calls": [
+              {
+                "callee": "p-z",
+                "kinds": [
+                  "withdrawal"
+                ]
+              }
+            ],
+            "kind": "calls"
+          }
+        },
+        {
+          "age_seconds": 20,
+          "figure_id": "q-r1",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r1",
+            "provider_version": "1.0.0",
+            "publisher": "p-r1-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T15:01:40Z",
+              "maker": "p-r1",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "transfer",
+                "outcome": {
+                  "amount_in": "100000000",
+                  "amount_out": "99000000",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 30,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:03:40Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-q-r1"
+              }
+            },
+            "tuple": "r1"
+          }
+        },
+        {
+          "age_seconds": 20,
+          "figure_id": "q-r2",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "p-r2",
+            "provider_version": "1.0.0",
+            "publisher": "p-r2-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T15:01:40Z",
+              "maker": "p-r2",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "transfer",
+                "outcome": {
+                  "amount_in": "99000000",
+                  "amount_out": "98010000",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "990000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 30,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:03:40Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-q-r2"
+              }
+            },
+            "tuple": "r2"
+          }
+        }
+      ],
+      "snapshot_id": "snap-calls",
+      "taken_at": "2026-11-06T15:02:00Z"
+    }
+  }
+}

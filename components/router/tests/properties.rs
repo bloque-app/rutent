@@ -12,7 +12,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use common::{Net, WIDE, bounds, endpoint, fee, outer, parse, request, routed, shortlist};
 use rutent_conformance::router::recompute;
-use rutent_contracts::router_api::{DecisionRecord, OperationKind, PolicyBounds, Request, Router};
+use rutent_contracts::router_api::{
+    CallKind, CatalogueSnapshot, DecisionRecord, DeclaredCall, FigureValue, Id, NonEmpty,
+    OperationKind, PolicyBounds, Request, Router,
+};
 use rutent_router::RouteFinder;
 use rutent_router::shortlist::{Question, Refusal, Wanted, asks};
 use serde_json::{Value, json};
@@ -78,6 +81,9 @@ struct Shape {
     /// Tuples no operation can state: some advertised with no price, some whose flat fee is above any amount; and
     /// some whose fee takes all that enters, so nothing comes out.
     unstatable: bool,
+    /// Calls figures: some providers' modules declare calls to other providers, on a route or not, and some of
+    /// another release than their tuples' (router-api 3.0.0, `T-011-06`).
+    calls: bool,
 }
 
 /// A generated network: its snapshot, its tuples as edges, and each tuple's band, by figure id.
@@ -92,7 +98,27 @@ struct Network {
     /// The tuples whose fee takes all that enters: a path through one ends there, a candidate whatever comes
     /// before it (`nothing_delivered` short of the destination, `no_positive_outcome` at it).
     drains: BTreeSet<String>,
+    /// The calls each provider's module declares, `(callee, kind)`, in the release its tuples come from; a
+    /// provider whose calls figure is of another release, or that has none, declares none here.
+    declared: BTreeMap<String, BTreeSet<(String, String)>>,
+    /// The callees each calls figure, by id, was drawn to call for `holding_balance`, kept out of the snapshot.
+    holding: BTreeMap<String, Vec<String>>,
 }
+
+/// The provider-role operation kinds a call may be drawn for, as module-interface names them. `holding_balance` is
+/// among them, though no calls figure may carry it (the operator's own question to a holding, never a module's):
+/// a draw of it is kept out of the snapshot and recorded in [`Network::holding`], for the property to put back.
+const CALL_KINDS: [&str; 9] = [
+    "holding_balance",
+    "withdrawal",
+    "deposit",
+    "transfer",
+    "conversion",
+    "balance_verification",
+    "judgement",
+    "reversal",
+    "reversal_confirmation",
+];
 
 fn network(draw: &mut Draw, shape: Shape) -> Network {
     // Each asset at each node in one unit, so the generated tuples connect.
@@ -251,7 +277,75 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         bands.insert(id.clone(), (min, max.parse().unwrap_or(u128::MAX)));
         edges.push((id, from, to));
     }
-    let providers = edges.iter().map(|(id, ..)| format!("p-{id}")).collect();
+    let providers: Vec<String> = edges.iter().map(|(id, ..)| format!("p-{id}")).collect();
+    // Drawn after every tuple, so the other shapes' draws are unchanged.
+    let mut declared = BTreeMap::new();
+    let mut holding = BTreeMap::new();
+    if shape.calls {
+        for (i, provider) in providers.iter().enumerate() {
+            if draw.one_in(4) {
+                continue;
+            }
+            let mut calls: Vec<(String, Vec<&str>)> = Vec::new();
+            for _ in 0..2 + draw.below(5) {
+                let callee = if draw.one_in(6) {
+                    "p-outsider".to_owned()
+                } else {
+                    draw.pick(&providers).clone()
+                };
+                if &callee == provider || calls.iter().any(|(c, _)| c == &callee) {
+                    continue;
+                }
+                let mut kinds = Vec::new();
+                for _ in 0..1 + draw.below(3) {
+                    let kind = *draw.pick(&CALL_KINDS);
+                    if !kinds.contains(&kind) {
+                        kinds.push(kind);
+                    }
+                }
+                calls.push((callee, kinds));
+            }
+            let asked_holding: Vec<String> = calls
+                .iter()
+                .filter(|(_, kinds)| kinds.contains(&"holding_balance"))
+                .map(|(callee, _)| callee.clone())
+                .collect();
+            for (_, kinds) in &mut calls {
+                kinds.retain(|k| *k != "holding_balance");
+            }
+            calls.retain(|(_, kinds)| !kinds.is_empty());
+            if calls.is_empty() {
+                continue;
+            }
+            if !asked_holding.is_empty() {
+                holding.insert(format!("calls-{i:02}"), asked_holding);
+            }
+            let other_release = draw.one_in(5);
+            let listed: Vec<Value> = calls
+                .iter()
+                .map(|(callee, kinds)| json!({ "callee": callee, "kinds": kinds }))
+                .collect();
+            let mut origin = Net::origin(provider);
+            if other_release {
+                origin["module_version"] = json!("2.0.0");
+            }
+            net.figures.push(json!({
+                "figure_id": format!("calls-{i:02}"),
+                "origin": origin,
+                "age_seconds": 120,
+                "value": { "kind": "calls", "calls": listed },
+            }));
+            if !other_release {
+                declared.insert(
+                    provider.clone(),
+                    calls
+                        .iter()
+                        .flat_map(|(c, kinds)| kinds.iter().map(|k| (c.clone(), (*k).to_owned())))
+                        .collect(),
+                );
+            }
+        }
+    }
     Network {
         snapshot: net.build(),
         edges,
@@ -260,6 +354,8 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         unstatable,
         drains,
         providers,
+        declared,
+        holding,
     }
 }
 
@@ -322,6 +418,7 @@ const ANY: Shape = Shape {
     exchanges: true,
     faults: true,
     unstatable: false,
+    calls: false,
 };
 
 /// As [`ANY`], with tuples no operation can state (router-api 3.0.0).
@@ -330,12 +427,153 @@ const UNSTATABLE: Shape = Shape {
     ..ANY
 };
 
+/// As [`UNSTATABLE`], with calls figures (router-api 3.0.0, `T-011-06`).
+const CALLS: Shape = Shape {
+    calls: true,
+    ..UNSTATABLE
+};
+
+// verifies: REQ-MDL-9, REQ-MDL-21, DEC-18
+#[test]
+fn every_call_a_route_names_is_one_its_provider_s_declaration_allows() {
+    let (mut named, mut unnamed) = (0, 0);
+    for (seed, network, request, bounds) in generated(600, CALLS) {
+        let record = routed(&request, &network.snapshot, &bounds);
+        for candidate in &record.candidates {
+            for part in candidate.parts.iter() {
+                let providers: Vec<&str> = part
+                    .operations
+                    .iter()
+                    .map(|o| o.provider.as_str())
+                    .collect();
+                for (i, operation) in part.operations.iter().enumerate() {
+                    let provider = operation.provider.as_str();
+                    let declared = network.declared.get(provider).cloned().unwrap_or_default();
+                    let on_the_part = |callee: &str| {
+                        providers
+                            .iter()
+                            .enumerate()
+                            .any(|(j, p)| j != i && *p == callee)
+                    };
+                    let calls: BTreeSet<(String, String)> = operation
+                        .calls
+                        .iter()
+                        .map(|c| {
+                            let kind = serde_json::to_value(c.kind).unwrap();
+                            (
+                                c.callee.as_str().to_owned(),
+                                kind.as_str().unwrap().to_owned(),
+                            )
+                        })
+                        .collect();
+                    assert_eq!(
+                        calls.len(),
+                        operation.calls.len(),
+                        "seed {seed}: a call twice"
+                    );
+                    // Every call named is one the provider's release declares, to a provider on the part.
+                    for call in &calls {
+                        assert!(
+                            declared.contains(call) && on_the_part(&call.0),
+                            "seed {seed}: {provider} names {call:?}, which its declaration {declared:?} doesn't allow on {providers:?}"
+                        );
+                    }
+                    // And every such call is named: the declared calls off the part are the ones left out.
+                    let expected: BTreeSet<_> = declared
+                        .iter()
+                        .filter(|(c, _)| on_the_part(c))
+                        .cloned()
+                        .collect();
+                    assert_eq!(calls, expected, "seed {seed}: {provider} on {providers:?}");
+                    named += calls.len();
+                    unnamed += declared.len() - expected.len();
+                }
+            }
+        }
+    }
+    assert!(
+        named > 50 && unnamed > 50,
+        "named {named}, left unnamed {unnamed}"
+    );
+}
+
+/// `network`'s snapshot with every `holding_balance` call the generator drew put back into its calls figure,
+/// built in Rust so no check runs; `None` when none was drawn.
+fn with_holding_balance(network: &Network) -> Option<CatalogueSnapshot> {
+    if network.holding.is_empty() {
+        return None;
+    }
+    let mut snapshot = network.snapshot.clone();
+    for figure in &mut snapshot.figures {
+        let Some(callees) = network.holding.get(figure.figure_id.as_str()) else {
+            continue;
+        };
+        let FigureValue::Calls { calls } = &figure.value else {
+            continue;
+        };
+        let mut calls: Vec<DeclaredCall> = calls.clone().into();
+        for callee in callees {
+            match calls.iter_mut().find(|c| c.callee.as_str() == callee) {
+                Some(call) => {
+                    let mut kinds: Vec<CallKind> = call.kinds.clone().into();
+                    kinds.push(CallKind::HoldingBalance);
+                    call.kinds = NonEmpty::new(kinds).expect("kinds");
+                }
+                None => calls.push(DeclaredCall {
+                    callee: Id::new(callee.as_str()).expect("an id"),
+                    kinds: NonEmpty::new(vec![CallKind::HoldingBalance]).expect("a kind"),
+                }),
+            }
+        }
+        figure.value = FigureValue::Calls {
+            calls: NonEmpty::new(calls).expect("calls"),
+        };
+    }
+    Some(snapshot)
+}
+
+// verifies: REQ-MDL-9, REQ-MDL-21, DEC-18
+#[test]
+fn no_route_names_a_call_for_a_holding_balance_and_no_snapshot_declares_one() {
+    let mut drawn = 0;
+    for (seed, network, request, bounds) in generated(600, CALLS) {
+        let Some(tainted) = with_holding_balance(&network) else {
+            continue;
+        };
+        drawn += 1;
+        // The contract refuses a calls figure that declares it.
+        assert!(
+            tainted.check().is_err(),
+            "seed {seed}: a calls figure declaring holding_balance passes the snapshot's check"
+        );
+        // And a router handed one anyway names it on no segment.
+        let record = RouteFinder::route(&request, &tainted, &bounds);
+        for operation in record
+            .candidates
+            .iter()
+            .flat_map(|c| c.parts.iter())
+            .flat_map(|p| p.operations.iter())
+        {
+            assert!(
+                operation
+                    .calls
+                    .iter()
+                    .all(|c| c.kind != CallKind::HoldingBalance),
+                "seed {seed}: {} names a call for a holding balance",
+                operation.provider
+            );
+        }
+    }
+    assert!(drawn > 50, "only {drawn} networks drew holding_balance");
+}
+
 // verifies: AC-2, REQ-AUD-4, REQ-QTE-11, DEC-18
 #[test]
 fn every_record_passes_the_contract_and_recomputes_from_itself() {
     let cases = generated(300, ANY)
         .into_iter()
-        .chain(generated(300, UNSTATABLE));
+        .chain(generated(300, UNSTATABLE))
+        .chain(generated(300, CALLS));
     for (seed, network, request, bounds) in cases {
         let record = routed(&request, &network.snapshot, &bounds);
         let recomputed = recompute(&record);
@@ -461,6 +699,7 @@ fn in_one_asset_and_unit_a_route_costs_exactly_the_sum_of_its_segments_fees() {
 #[test]
 fn every_destination_the_tuples_reach_within_the_hop_limit_gets_a_route() {
     let free = Shape {
+        calls: false,
         priced: false,
         exchanges: false,
         faults: false,
@@ -649,6 +888,7 @@ fn only_providers_of_kept_candidates_are_asked_each_about_its_own_tuples_at_one_
 #[test]
 fn a_refused_option_is_never_chosen_and_a_fully_confirmed_one_always_leaves_a_choice() {
     let shape = Shape {
+        calls: false,
         priced: true,
         exchanges: false,
         faults: true,

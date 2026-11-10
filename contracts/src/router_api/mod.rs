@@ -53,6 +53,15 @@
 //! statements, the recorded decision among them, to the deployment's `operator_key`
 //! (`contracts/router-api/README.md`, "Unchecked by either").
 //!
+//! # The calls a route makes
+//!
+//! Since 3.0.0 each segment names the cross-module calls it makes ([`Operation::calls`], `T-011-06`,
+//! `REQ-MDL-21`): calls its provider's module declares, in the snapshot's [`FigureValue::Calls`] figure of the
+//! release its tuple comes from, to the provider of another operation of the same part. The module platform lets a
+//! module call another only where its release declares the call and a segment of its route names it, so it fills
+//! what a route names from the decision record. A call's kind is the module interface's ([`CallKind`]), not the
+//! typed operation's.
+//!
 //! # The typed operation
 //!
 //! The router contract owns the typed operation of `REQ-ORD-37` (ruled by the orchestrator, 2026-11-06):

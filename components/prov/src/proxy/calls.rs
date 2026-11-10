@@ -4,6 +4,8 @@
 //! it. [`judge_call`] is that rule, in the contract's order of checks, and the module platform applies it to every
 //! call it routes. What the route names, the platform holds in a [`RouteCalls`]: whoever hands the platform a
 //! route segment's operation names the calls that segment makes, for its transaction, and ends them with the route.
+//! The router's decision record carries them (router-api 3.0.0, `T-011-06`): [`RouteCalls::name_segment`] names
+//! one segment's calls from the record's chosen candidate, so nobody names them by hand.
 //!
 //! The call carries no credentials. The callee answers in its own process, and every lookup it makes is
 //! attributed to that process ([`Caller`](super::Caller)), so it resolves only its own provider's secrets, for its
@@ -14,6 +16,20 @@ use std::collections::BTreeMap;
 use rutent_contracts::module_interface::{
     CallRefusalReason, Declaration, Identifier, OperationKind, RouteReference,
 };
+use rutent_contracts::router_api::{DecisionRecord, Violation};
+
+/// Why [`RouteCalls::name_segment`] named nothing. Every case fails closed: no call of that segment is named, so
+/// the platform refuses each as `not_named_by_route`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteNotNamed {
+    /// The record breaks the router contract.
+    Invalid(Violation),
+    /// The record chooses nothing: a shortlist round, or a choice round with no route. Only the chosen candidate
+    /// is a route; a kept or dropped one names nothing.
+    NothingChosen,
+    /// The chosen candidate has no operation at that part and position.
+    NoSuchSegment,
+}
 
 /// One call a route segment names: in its transaction, `caller`'s module may call `callee`'s for `kinds`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +58,54 @@ impl RouteCalls {
             .entry(transaction.as_str().to_owned())
             .or_default()
             .push(call);
+    }
+
+    /// Names, in `transaction`, the calls one segment of a router's decision makes: the operation at `(part,
+    /// operation)` of `record`'s chosen candidate, whose provider is the caller (router-api 3.0.0, `T-011-06`). Each
+    /// callee is named once, with the kinds the segment names for it, against `record`'s id and `segment`, the
+    /// segment's id in the order's plan (the state machine's `segment_id`, which Core assigns). Returns how many
+    /// callees it named; nothing is named when the record breaks its contract or chooses nothing, or the segment
+    /// isn't there.
+    pub fn name_segment(
+        &mut self,
+        transaction: &Identifier,
+        record: &DecisionRecord,
+        (part, operation): (usize, usize),
+        segment: &Identifier,
+    ) -> Result<usize, RouteNotNamed> {
+        record.check().map_err(RouteNotNamed::Invalid)?;
+        let chosen = record.chosen().ok_or(RouteNotNamed::NothingChosen)?;
+        let operation = chosen
+            .parts
+            .get(part)
+            .and_then(|p| p.operations.get(operation))
+            .ok_or(RouteNotNamed::NoSuchSegment)?;
+        let identifier =
+            |text: &str| Identifier::new(text).expect("a router-api id is an identifier");
+        let route = RouteReference {
+            decision_record: identifier(record.record_id().as_str()),
+            segment: segment.clone(),
+        };
+        let mut named: Vec<NamedCall> = Vec::new();
+        for call in &operation.calls {
+            match named
+                .iter_mut()
+                .find(|n| n.callee.as_str() == call.callee.as_str())
+            {
+                Some(n) => n.kinds.push(call.kind),
+                None => named.push(NamedCall {
+                    route: route.clone(),
+                    caller: identifier(operation.provider.as_str()),
+                    callee: identifier(call.callee.as_str()),
+                    kinds: vec![call.kind],
+                }),
+            }
+        }
+        let count = named.len();
+        for call in named {
+            self.name(transaction, call);
+        }
+        Ok(count)
     }
 
     /// Ends `transaction`'s route: no call is named in it any more.

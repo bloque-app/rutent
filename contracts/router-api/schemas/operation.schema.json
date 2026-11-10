@@ -29,13 +29,22 @@
       "$ref": "urn:rutent:provider-role:common#/$defs/amount"
     },
     "figures": {
-      "description": "The snapshot figures the operation was evaluated with, by id, each once (REQ-QTE-4): one tuple, of its own provider with its two ends, and one price for it; any fresh quote, dry run (for the operation's amount in) or judgement it cites names that tuple. Checked by the contract's Rust types.",
+      "description": "The snapshot figures the operation was evaluated with, by id, each once (REQ-QTE-4): one tuple, of its own provider with its two ends, and one price for it; any fresh quote, dry run (for the operation's amount in) or judgement it cites names that tuple; and, when it names calls, the one calls figure of its own module release. Checked by the contract's Rust types.",
       "type": "array",
       "minItems": 1,
       "items": {
         "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
       },
       "uniqueItems": true
+    },
+    "calls": {
+      "description": "The cross-module calls this segment makes, each once (REQ-MDL-21): each declared by its provider's module, in the one calls figure the operation cites, of the release its tuple comes from, to the provider of another operation of the same part, and none to its own provider. Absent when it names none. Checked by the contract's Rust types.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:router-api:common#/$defs/route_call"
+      }
     }
   },
   "unevaluatedProperties": false,
