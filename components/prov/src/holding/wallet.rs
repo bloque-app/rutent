@@ -13,19 +13,23 @@
 //! - [`Holdings::land`] is where value rests between segments: in a registered node's account, or nowhere. A node
 //!   with no holding account takes none, and rutent keeps none itself (`INV-5`).
 //!
-//! No provider-role shape carries a balance or a per-order reading, so the wallet's balance is read as the sum of
-//! what it confirmed to the host. The wallet's own figure for an order can be asked of it as a
-//! `balance_verification`, which this file does not do (see the feature's notes; the tests do). `reconcile` still
-//! checks the reading against its attribution.
+//! A reading has two halves that come from two places, which is what makes `reconcile` mean something
+//! (`REQ-AUD-15`, `INV-1`): the **balance** is the wallet's own figure, asked of it as a `holding_balance`
+//! (provider-role 3.0.0) and never computed from what the host sent it; the **attribution**, the value held for each
+//! order, is the host's own record of what the wallet confirmed. A wallet that lost value, a provider process
+//! restarted among other ways, shows as an account short of its attribution.
 
 use std::collections::BTreeMap;
 
 use rutent_contracts::provider_role::{
-    Deposit, Operation, OuterNode, ReserveMovementOutcome, ResultBody, Statement, Withdrawal,
+    Deposit, HoldingBalance, HoldingBalanceOutcome, Operation, OuterNode, ReserveMovementOutcome,
+    ResultBody, Statement, Withdrawal,
 };
 
 use crate::catalogue::{Catalogue, NodeError};
-use crate::holding::{BalanceSource, HoldingAccount, HoldingError, HoldingReading, OrderLedger};
+use crate::holding::{
+    BalanceSource, HeldForOrder, HoldingAccount as _, HoldingError, HoldingReading, OrderLedger,
+};
 use crate::module::platform::{Platform, World};
 use crate::module::types::{Handled, PlatformRefusal};
 
@@ -49,6 +53,9 @@ pub enum RegisterError {
     Node(NodeError),
     /// The asset is blank.
     BlankAsset,
+    /// The provider's accepted advertisement offers no reserve, so its module is not one the wallet's role fits: a
+    /// holding account is a reserve-category module (the plain wallet is one).
+    NotReserve(String),
     /// The node already has a holding account.
     NodeTaken(String),
     /// This wallet is already the account of another node: a wallet is one node's.
@@ -164,6 +171,53 @@ impl WalletHolding {
         self.movement(platform, operator, false, node, asset, order, amount)
     }
 
+    /// What the host recorded the wallet confirmed for each order: the attribution half of a reading, in order name
+    /// order. It is the host's own record, not the wallet's word, and its sum is not the account's balance.
+    pub fn attribution(&self) -> Vec<HeldForOrder> {
+        self.ledger
+            .reading()
+            .map(|reading| reading.held)
+            .unwrap_or_default()
+    }
+
+    /// The account as `CMP-CORE-AUDIT` reads it (`REQ-AUD-15`): the balance is the wallet's own figure, asked of it
+    /// as a `holding_balance`, and the value held for each order is the host's attribution, so a wallet that no
+    /// longer holds what the host attributed reads short of it. Nothing is changed.
+    pub fn read<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+    ) -> Result<HoldingReading, WalletError> {
+        let transaction = format!("{}-balance-{}", self.provider, self.sent + 1);
+        self.sent += 1;
+        let operation = Operation::HoldingBalance(HoldingBalance {
+            transaction: transaction.clone(),
+            provider: self.provider.clone(),
+            node: self.ledger.node().to_owned(),
+            asset: self.ledger.asset().to_owned(),
+        });
+        let answered = match platform.handle(&self.provider, &operator.statement(operation)) {
+            Handled::Answered(result) => result.statement,
+            Handled::Refused(why) => return Err(WalletError::NotAnswered(why)),
+        };
+        let ResultBody::HoldingBalance(result) = answered else {
+            return Err(WalletError::WrongResult);
+        };
+        if result.transaction != transaction {
+            return Err(WalletError::WrongResult);
+        }
+        let HoldingBalanceOutcome::Answered(answer) = result.outcome else {
+            return Err(WalletError::NotSucceeded);
+        };
+        Ok(HoldingReading {
+            node: self.ledger.node().to_owned(),
+            asset: self.ledger.asset().to_owned(),
+            balance: parse_amount(&answer.balance)?,
+            source: BalanceSource::Module,
+            held: self.attribution(),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn movement<W: World>(
         &mut self,
@@ -260,15 +314,6 @@ impl WalletHolding {
     }
 }
 
-impl HoldingAccount for WalletHolding {
-    fn reading(&self) -> Result<HoldingReading, HoldingError> {
-        self.ledger.reading().map(|reading| HoldingReading {
-            source: BalanceSource::Module,
-            ..reading
-        })
-    }
-}
-
 /// The holding accounts of the operator's public nodes: one plain wallet each.
 #[derive(Debug, Clone, Default)]
 pub struct Holdings {
@@ -293,6 +338,12 @@ impl Holdings {
         }
         if platform.active_version(provider).is_none() {
             return Err(RegisterError::NotRunning(provider.to_owned()));
+        }
+        let reserve = catalogue
+            .accepted_advertisement(provider)
+            .is_some_and(|ad| ad.statement.offers.reserve.is_some());
+        if !reserve {
+            return Err(RegisterError::NotReserve(provider.to_owned()));
         }
         if self.accounts.contains_key(node) {
             return Err(RegisterError::NodeTaken(node.to_owned()));
@@ -349,11 +400,26 @@ impl Holdings {
             .release(platform, operator, node, asset, order, amount)
     }
 
-    /// The reading of every registered account, in node order, for `CMP-CORE-AUDIT`.
-    pub fn readings(&self) -> Vec<HoldingReading> {
+    /// The attribution every registered account holds, by node, in node order: the host's own record (see
+    /// [`WalletHolding::attribution`]).
+    pub fn attributions(&self) -> Vec<(String, Vec<HeldForOrder>)> {
         self.accounts
-            .values()
-            .filter_map(|a| a.reading().ok())
+            .iter()
+            .map(|(node, account)| (node.clone(), account.attribution()))
+            .collect()
+    }
+
+    /// The reading of every registered account, by node in node order, for `CMP-CORE-AUDIT`: each account's own
+    /// result, so one whose wallet could not be read shows as the failure it is and is never left out
+    /// (`REQ-AUD-15`).
+    pub fn readings<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+    ) -> Vec<(String, Result<HoldingReading, WalletError>)> {
+        self.accounts
+            .iter_mut()
+            .map(|(node, account)| (node.clone(), account.read(platform, operator)))
             .collect()
     }
 }

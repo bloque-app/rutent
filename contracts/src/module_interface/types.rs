@@ -228,6 +228,8 @@ pub enum OperationKind {
     Reversal,
     /// A reserve's confirmation that one reversed credit arrived (ADR-0008).
     ReversalConfirmation,
+    /// A holding account's balance, asked by the operator (`REQ-AUD-15`).
+    HoldingBalance,
 }
 
 impl OperationKind {
@@ -242,6 +244,7 @@ impl OperationKind {
             Operation::Judgement(_) => Self::Judgement,
             Operation::Reversal(_) => Self::Reversal,
             Operation::ReversalConfirmation(_) => Self::ReversalConfirmation,
+            Operation::HoldingBalance(_) => Self::HoldingBalance,
         }
     }
 }
@@ -659,6 +662,7 @@ impl CrossModuleCall {
             Operation::Judgement(o) => &o.provider,
             Operation::Reversal(o) => &o.provider,
             Operation::ReversalConfirmation(o) => &o.provider,
+            Operation::HoldingBalance(o) => &o.provider,
         }
     }
 
@@ -673,6 +677,7 @@ impl CrossModuleCall {
             Operation::Judgement(_) => None,
             Operation::Reversal(o) => Some(&o.transaction),
             Operation::ReversalConfirmation(o) => Some(&o.transaction),
+            Operation::HoldingBalance(o) => Some(&o.transaction),
         }
     }
 }

@@ -29,7 +29,8 @@
             "balance_verification",
             "judgement",
             "reversal",
-            "reversal_confirmation"
+            "reversal_confirmation",
+            "holding_balance"
           ]
         }
       },
@@ -152,6 +153,21 @@
           },
           "then": {
             "$ref": "#/$defs/reversal_confirmation_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_balance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/holding_balance_result"
           }
         }
       ]
@@ -1497,6 +1513,92 @@
       "properties": {
         "class": {
           "const": "final"
+        }
+      }
+    },
+    "holding_balance_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_balance"
+        },
+        "transaction": {
+          "description": "The transaction this result answers; it counts only if it matches (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/holding_balance_outcome"
+        }
+      }
+    },
+    "holding_balance_outcome": {
+      "description": "A holding account's balance, or a refusal (REQ-AUD-15).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "answered",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "answered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/holding_balance_answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "holding_balance_answered": {
+      "description": "The balance the account holds at the node, in the asset asked: the module's own word (REQ-AUD-15).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "balance"
+      ],
+      "properties": {
+        "status": {
+          "const": "answered"
+        },
+        "balance": {
+          "description": "Whole units of the asset, which may be zero.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         }
       }
     }

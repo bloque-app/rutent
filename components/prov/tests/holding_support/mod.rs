@@ -19,7 +19,12 @@ use crate::common::declaration;
 use crate::signed::{self, Signed};
 
 /// The operations a plain wallet handles.
-pub const HANDLES: [&str; 3] = ["deposit", "withdrawal", "balance_verification"];
+pub const HANDLES: [&str; 4] = [
+    "deposit",
+    "withdrawal",
+    "balance_verification",
+    "holding_balance",
+];
 
 /// The wallet's two components, built once for the whole test run.
 pub fn wallet_binaries() -> Parts<Vec<u8>> {
@@ -193,4 +198,30 @@ pub fn covers(s: &mut Signed, provider: &str, asset: &str, account: &str, amount
         panic!("the wallet refused a balance verification");
     };
     answer.sufficient
+}
+
+/// The second wallet provider: a reserve of its own, for a second node.
+pub const ETHEREUM_WALLET: &str = "plain-wallet-ethereum";
+
+/// Adds a reserve provider named `name` to the catalogue of `s`: the reserve fixture's advertisement under its own
+/// name and no private nodes, with a grant, joined and signed with the provider's advertising key.
+pub fn add_reserve_provider(s: &mut Signed, name: &str) {
+    use rutent_prov::catalogue::tuples_of;
+    let mut ad = signed::catalogue_support::reserve_advertisement();
+    ad.provider = name.to_owned();
+    ad.private_nodes = Vec::new();
+    if let Some(reserve) = ad.offers.reserve.as_mut() {
+        reserve.declaration.maker = name.to_owned();
+    }
+    s.catalogue
+        .grant(signed::catalogue_support::grant(
+            &format!("g-{name}"),
+            name,
+            tuples_of(&ad),
+            4_000_000_000,
+        ))
+        .expect("a grant");
+    let advertised = rutent_prov::catalogue::Instant(signed::AT.0 - 86_400);
+    signed::catalogue_support::join_made_at(&mut s.catalogue, &ad, advertised, signed::AT)
+        .expect("the advertisement joins");
 }

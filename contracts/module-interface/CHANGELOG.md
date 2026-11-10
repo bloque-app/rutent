@@ -1,5 +1,12 @@
 # module-interface changelog
 
+## 5.0.0
+- Breaking: `OperationKind` gains `HoldingBalance`, the new provider-role operation kind `holding_balance` (provider-role
+  3.0.0), which a holding account's module declares it handles. The declaration schema takes its kinds from the
+  provider-role operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant,
+  which breaks an exhaustive match, so this is a major (`DEC-4`). Fixtures keep naming interface 2.0.1: nothing
+  compares it. (DEC-4, DEC-20, T-016-02)
+
 ## 4.0.0
 - Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module
   call refused because its caller reached a limit on its calls is `limit_reached`, and one refused because too little

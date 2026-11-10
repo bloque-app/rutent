@@ -13,15 +13,27 @@ use rutent_contracts::provider_role::{Operation, ReserveMovementOutcome, ResultB
 use rutent_prov::catalogue::{HoldingSource, NodeError};
 use rutent_prov::holding::wallet::{Holdings, RegisterError, WalletError};
 use rutent_prov::holding::{
-    BalanceSource, HoldingAccount, HoldingError, Reconciliation, reconcile,
+    BalanceSource, Difference, HoldingError, HoldingReading, Reconciliation, reconcile,
 };
 use rutent_prov::module::admission::Unverified;
 use rutent_prov::module::types::{Admitted, Handled};
 use serde_json::json;
 use signed::{RAMP, RESERVE, Signed};
-use support::{TestOperator, admit_wallet, covers, run_wallet};
+use support::{
+    ETHEREUM_WALLET, TestOperator, add_reserve_provider, admit_wallet, covers, run_wallet,
+};
 
 use signed::catalogue_support::{CASES, Rng};
+
+/// The reading of a node's account, asked of its wallet.
+fn read(s: &mut Signed, holdings: &mut Holdings, node: &str) -> HoldingReading {
+    let mut readings = holdings.readings(&mut s.platform, &TestOperator);
+    let at = readings
+        .iter()
+        .position(|(n, _)| n == node)
+        .expect("the node has an account");
+    readings.swap_remove(at).1.expect("the wallet's reading")
+}
 
 fn operation(value: serde_json::Value) -> Operation {
     serde_json::from_value(value).expect("a valid operation")
@@ -91,11 +103,7 @@ fn operator_registers_a_plain_wallet_as_a_nodes_holding_account() {
             "50",
         )
         .expect("the wallet takes the value");
-    let reading = holdings
-        .account("polygon")
-        .expect("the node's account")
-        .reading()
-        .expect("a reading");
+    let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!(reading.node, "polygon");
     assert_eq!(reading.asset, "USDC");
     assert_eq!(reading.balance, 150);
@@ -113,6 +121,7 @@ fn operator_registers_a_plain_wallet_as_a_nodes_holding_account() {
 #[test]
 fn wallet_that_does_not_run_is_not_registered_and_neither_is_a_node_the_operator_does_not_list() {
     let mut s = Signed::new();
+    add_reserve_provider(&mut s, ETHEREUM_WALLET);
     let mut holdings = Holdings::default();
 
     // Never admitted.
@@ -130,25 +139,37 @@ fn wallet_that_does_not_run_is_not_registered_and_neither_is_a_node_the_operator
     );
 
     // Its assertion doesn't verify, so it was never admitted (signed with the statements key).
-    let (declaration, binaries) = support::wallet_release(RAMP, "1.0.0");
+    let (declaration, binaries) = support::wallet_release(ETHEREUM_WALLET, "1.0.0");
     let wrongly_signed = signed::assertion(
         &declaration,
         &binaries,
-        &signed::catalogue_support::statements_key(RAMP),
+        &signed::catalogue_support::statements_key(ETHEREUM_WALLET),
     );
     assert!(matches!(
         s.admit(&wrongly_signed, &binaries),
         Admitted::Unverified(Unverified::Signature(_))
     ));
     assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "polygon", RAMP, "USDC"),
-        Err(RegisterError::NotRunning(RAMP.to_owned()))
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            ETHEREUM_WALLET,
+            "USDC"
+        ),
+        Err(RegisterError::NotRunning(ETHEREUM_WALLET.to_owned()))
     );
 
     // A running wallet at a node the operator doesn't list as public.
-    run_wallet(&mut s, RAMP, "1.0.0");
+    run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
     assert_eq!(
-        holdings.register(&mut s.catalogue, &s.platform, "unlisted", RAMP, "USDC"),
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "unlisted",
+            ETHEREUM_WALLET,
+            "USDC"
+        ),
         Err(RegisterError::Node(NodeError::NotPublic("unlisted".into())))
     );
     for node in ["polygon", "unlisted"] {
@@ -264,11 +285,7 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
             "{node} {asset}"
         );
     }
-    let reading = holdings
-        .account("polygon")
-        .expect("account")
-        .reading()
-        .expect("reading");
+    let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!((reading.balance, reading.held.len()), (100, 1));
 
     // Nor does it release what an order doesn't hold, asked directly: the order holds 100, and 101 is refused, as
@@ -357,11 +374,7 @@ fn release_above_what_an_order_holds_is_refused_and_changes_nothing() {
             )
             .is_err()
     );
-    let reading = holdings
-        .account("polygon")
-        .expect("account")
-        .reading()
-        .expect("reading");
+    let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!(reading.balance, 100);
 
     // A release within what the order holds goes through, and leaves the rest.
@@ -375,12 +388,208 @@ fn release_above_what_an_order_holds_is_refused_and_changes_nothing() {
             "40",
         )
         .expect("releases part");
-    let reading = holdings
-        .account("polygon")
-        .expect("account")
-        .reading()
-        .expect("reading");
+    let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!((reading.balance, reading.held[0].amount), (60, 60));
+}
+
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn account_whose_wallet_lost_its_record_is_read_short_of_what_the_host_attributed() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, RESERVE, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .expect("registered");
+    for (order, amount) in [("o-1", "100"), ("o-2", "50")] {
+        holdings
+            .land(
+                &mut s.platform,
+                &TestOperator,
+                "polygon",
+                "USDC",
+                order,
+                amount,
+            )
+            .expect("lands");
+    }
+    let whole = read(&mut s, &mut holdings, "polygon");
+    assert_eq!(
+        (whole.balance, reconcile(&whole)),
+        (150, Ok(Reconciliation::Matches))
+    );
+
+    // The provider's process restarts, and the wallet's record, which lives in its instance, is gone. The host
+    // still attributes 150 to two orders; the balance is read from the wallet, which now holds nothing.
+    assert!(s.platform.restart(RESERVE));
+    let reading = read(&mut s, &mut holdings, "polygon");
+    assert_eq!(reading.balance, 0);
+    assert_eq!(reading.source, BalanceSource::Module);
+    let held: Vec<(&str, u128)> = reading
+        .held
+        .iter()
+        .map(|h| (h.order.as_str(), h.amount))
+        .collect();
+    assert_eq!(held, [("o-1", 100), ("o-2", 50)]);
+    let Ok(Reconciliation::Differs(difference)) = reconcile(&reading) else {
+        panic!("the lost value wasn't raised");
+    };
+    assert!(
+        matches!(difference, Difference::Short { by: 150, .. }),
+        "{difference:?}"
+    );
+    assert_eq!(difference.node(), "polygon");
+}
+
+// verifies: REQ-AUD-15
+#[test]
+fn account_whose_wallet_cannot_be_read_shows_its_failure_and_not_a_missing_account() {
+    let mut s = Signed::new();
+    add_reserve_provider(&mut s, ETHEREUM_WALLET);
+    s.catalogue
+        .add_public_node("ethereum")
+        .expect("a public node");
+    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .expect("registered");
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "ethereum",
+            ETHEREUM_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+
+    // One wallet's process is stopped: its account is still listed, with the reason it could not be read.
+    assert!(s.platform.kill(ETHEREUM_WALLET));
+    let readings = holdings.readings(&mut s.platform, &TestOperator);
+    let nodes: Vec<&str> = readings.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(nodes, ["ethereum", "polygon"]);
+    assert!(
+        matches!(readings[0].1, Err(WalletError::NotAnswered(_))),
+        "{:?}",
+        readings[0].1
+    );
+    assert!(readings[1].1.is_ok());
+}
+
+// verifies: REQ-CAT-23
+#[test]
+fn provider_that_is_not_a_reserve_is_not_registered_as_a_holding_account() {
+    let mut s = Signed::new();
+    // A ramp, admitted and running, is not a holding account: its advertisement offers no reserve.
+    run_wallet(&mut s, RAMP, "1.0.0");
+    let mut holdings = Holdings::default();
+    assert_eq!(
+        holdings.register(&mut s.catalogue, &s.platform, "polygon", RAMP, "USDC"),
+        Err(RegisterError::NotReserve(RAMP.to_owned()))
+    );
+    assert!(s.catalogue.nodes().holding("polygon").is_none());
+    assert!(holdings.account("polygon").is_none());
+}
+
+// verifies: REQ-CAT-23
+#[test]
+fn registering_is_refused_for_a_taken_node_a_taken_wallet_a_blank_asset_and_a_private_node() {
+    let mut s = Signed::new();
+    add_reserve_provider(&mut s, ETHEREUM_WALLET);
+    s.catalogue
+        .add_public_node("ethereum")
+        .expect("a public node");
+    run_wallet(&mut s, RESERVE, "1.0.0");
+    run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
+        .expect("registered");
+
+    // The node already has an account; the wallet is already another node's; the asset is blank.
+    assert_eq!(
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            ETHEREUM_WALLET,
+            "USDC"
+        ),
+        Err(RegisterError::NodeTaken("polygon".into()))
+    );
+    assert_eq!(
+        holdings.register(&mut s.catalogue, &s.platform, "ethereum", RESERVE, "USDC"),
+        Err(RegisterError::WalletTaken {
+            provider: RESERVE.into(),
+            node: "polygon".into()
+        })
+    );
+    assert_eq!(
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            "ethereum",
+            ETHEREUM_WALLET,
+            "  "
+        ),
+        Err(RegisterError::BlankAsset)
+    );
+    // A private node, one a provider declares, is never the operator's to give an account (`REQ-CAT-23`).
+    let private = signed::catalogue_support::ramp_advertisement().private_nodes[0].clone();
+    assert!(!s.catalogue.nodes().is_public(&private));
+    assert_eq!(
+        holdings.register(
+            &mut s.catalogue,
+            &s.platform,
+            &private,
+            ETHEREUM_WALLET,
+            "USDC"
+        ),
+        Err(RegisterError::Node(NodeError::NotPublic(private.clone())))
+    );
+    for node in ["ethereum", private.as_str()] {
+        assert!(s.catalogue.nodes().holding(node).is_none(), "{node}");
+        assert!(holdings.account(node).is_none(), "{node}");
+    }
+}
+
+// verifies: REQ-CAT-23, INV-1
+#[test]
+fn wallet_whose_first_operation_was_refused_is_not_fixed_to_its_node_and_asset() {
+    use rutent_prov::holding::wallet::Operator as _;
+    let mut s = Signed::new();
+    run_wallet(&mut s, RESERVE, "1.0.0");
+    // A release of what nothing holds, at another node and in another asset: refused, and it must fix nothing.
+    let statement = TestOperator.statement(operation(json!({
+        "kind": "withdrawal",
+        "transaction": "tx-first",
+        "provider": RESERVE,
+        "origin": { "network": RESERVE },
+        "destination": "ethereum",
+        "asset": "EURC",
+        "amount": "5",
+        "dry_run": false,
+        "inputs": { "order": "o-1" },
+    })));
+    let Handled::Answered(result) = s.platform.handle(RESERVE, &statement) else {
+        panic!("not answered");
+    };
+    let ResultBody::Withdrawal(result) = result.statement else {
+        panic!("not a withdrawal's result");
+    };
+    assert!(matches!(result.outcome, ReserveMovementOutcome::Refused(_)));
+    // The wallet's first real operation is still free to name the node and asset it is for.
+    let ResultBody::Deposit(result) =
+        deposit_answer(&mut s, RESERVE, "polygon", "USDC", "o-1", "10")
+    else {
+        panic!("not a deposit's result");
+    };
+    assert!(matches!(
+        result.outcome,
+        ReserveMovementOutcome::Succeeded(_)
+    ));
 }
 
 // verifies: INV-5
@@ -394,14 +603,21 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
     s.catalogue
         .add_public_node("stellar")
         .expect("a public node");
+    add_reserve_provider(&mut s, ETHEREUM_WALLET);
     run_wallet(&mut s, RESERVE, "1.0.0");
-    run_wallet(&mut s, RAMP, "1.0.0");
+    run_wallet(&mut s, ETHEREUM_WALLET, "1.0.0");
     let mut holdings = Holdings::default();
     holdings
         .register(&mut s.catalogue, &s.platform, "polygon", RESERVE, "USDC")
         .expect("registered");
     holdings
-        .register(&mut s.catalogue, &s.platform, "ethereum", RAMP, "USDC")
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "ethereum",
+            ETHEREUM_WALLET,
+            "USDC",
+        )
         .expect("registered");
 
     let nodes = ["polygon", "ethereum", "stellar", "unlisted"];
@@ -418,7 +634,7 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
         let order = orders[rng.below(orders.len() as u64) as usize];
         let amount = 1 + rng.below(1_000) as u128;
         let registered = matches!(node, "polygon" | "ethereum");
-        let before = holdings.readings();
+        let before = holdings.attributions();
 
         match rng.below(4) {
             // Value lands at a node.
@@ -444,7 +660,7 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
                         "case {case}: value landed at {node}"
                     );
                     assert_eq!(
-                        holdings.readings(),
+                        holdings.attributions(),
                         before,
                         "case {case}: a refusal changed a record"
                     );
@@ -482,7 +698,7 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
                         "case {case}: {ask} left an order holding {held}"
                     );
                     assert_eq!(
-                        holdings.readings(),
+                        holdings.attributions(),
                         before,
                         "case {case}: a refusal changed a record"
                     );
@@ -503,7 +719,7 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
                     "case {case}: another asset landed at {node}"
                 );
                 assert_eq!(
-                    holdings.readings(),
+                    holdings.attributions(),
                     before,
                     "case {case}: a refusal changed a record"
                 );
@@ -513,7 +729,11 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
         // The wallet's own word, asked of the wallet and not read from the host's record: the order this step
         // touched at a registered node holds what the model says, and not one unit more.
         if registered {
-            let provider = if node == "polygon" { RESERVE } else { RAMP };
+            let provider = if node == "polygon" {
+                RESERVE
+            } else {
+                ETHEREUM_WALLET
+            };
             let model_held = model.get(&(node, order)).copied().unwrap_or(0);
             assert!(
                 covers(&mut s, provider, "USDC", order, model_held),
@@ -528,7 +748,11 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
         // After every step: each registered account holds exactly what the model says, per order, its balance is
         // the sum, and so every unit that landed and hasn't left rests in a holding account. rutent's own position,
         // what came in less what left less what rests in the accounts, is empty.
-        let readings = holdings.readings();
+        let readings: Vec<HoldingReading> = holdings
+            .readings(&mut s.platform, &TestOperator)
+            .into_iter()
+            .map(|(node, reading)| reading.unwrap_or_else(|e| panic!("case {case}: {node}: {e:?}")))
+            .collect();
         let mut resting = 0u128;
         for reading in &readings {
             assert_eq!(

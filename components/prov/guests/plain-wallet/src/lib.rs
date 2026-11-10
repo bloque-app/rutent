@@ -9,8 +9,11 @@
 //!   `destination` is the node.
 //! - `balance_verification`: whether the account of an order, named by `account`, holds at least the stated amount.
 //!
-//! The account is one node's and one asset's: the first operation it answers fixes both, and an operation naming
-//! another is refused. A request that is not well formed, a dry run, a zero amount or a release above what an order
+//! - `holding_balance`: the balance the account holds at its node, in whole units of its asset, which is the sum of
+//!   what its orders hold. The operator asks it so the balance is the wallet's own word (`REQ-AUD-15`).
+//!
+//! The account is one node's and one asset's: the first movement that succeeds fixes both, and an operation naming
+//! another is refused. A refused operation fixes nothing. A request that is not well formed, a dry run, a zero amount or a release above what an order
 //! holds is refused as final, and changes nothing. Its outside part has nothing to do: a plain wallet declares no
 //! outside operation, destination or secret.
 //!
@@ -26,8 +29,10 @@ mod sandboxed {
 
     use rutent_contracts::provider_role::{
         BalanceAnswer, BalanceOutcome, BalanceVerification, BalanceVerificationResult, Deposit,
-        EvidenceGrade, EvidencePiece, Fee, MovementSettlement, NoDetail, Operation, Refusal,
-        Refused, ReserveMovementOutcome, ReserveMovementResult, ResultBody, Statement, Withdrawal,
+        EvidenceGrade, EvidencePiece, Fee, HoldingBalance, HoldingBalanceAnswer,
+        HoldingBalanceOutcome, HoldingBalanceResult, MovementSettlement, NoDetail, Operation,
+        Refusal, Refused, ReserveMovementOutcome, ReserveMovementResult, ResultBody, Statement,
+        Withdrawal,
     };
 
     wit_bindgen::generate!({ world: "sandboxed", path: "../../src/module/wit" });
@@ -94,14 +99,12 @@ mod sandboxed {
     }
 
     impl Wallet {
-        /// Fixes the account to `node` and `asset` on the first operation, and refuses any other after it.
-        fn bind(&mut self, node: &str, asset: &str) -> bool {
+        /// Whether `node` and `asset` are the account's: the ones its first successful operation fixed, or any while
+        /// none has.
+        fn is_for(&self, node: &str, asset: &str) -> bool {
             match &self.fixed {
                 Some((n, a)) => n == node && a == asset,
-                None => {
-                    self.fixed = Some((node.to_owned(), asset.to_owned()));
-                    true
-                }
+                None => true,
             }
         }
 
@@ -109,7 +112,7 @@ mod sandboxed {
             let (Some(order), Some(units)) = (m.order, amount(m.amount)) else {
                 return refused();
             };
-            if m.dry_run || units == 0 || !self.bind(m.node, m.asset) {
+            if m.dry_run || units == 0 || !self.is_for(m.node, m.asset) {
                 return refused();
             }
             let held = self.held.get(order).copied().unwrap_or(0);
@@ -126,6 +129,10 @@ mod sandboxed {
             } else {
                 self.held.insert(order.clone(), held - units);
             }
+            // Only a movement that went through fixes the account to its node and asset: a refused first operation
+            // leaves it free.
+            self.fixed
+                .get_or_insert_with(|| (m.node.to_owned(), m.asset.to_owned()));
             let kind = if m.deposit { "deposit" } else { "withdrawal" };
             settled(m.provider, kind, m.transaction, units, m.asset)
         }
@@ -160,6 +167,22 @@ mod sandboxed {
             });
             ResultBody::Withdrawal(ReserveMovementResult {
                 transaction: w.transaction.clone(),
+                outcome,
+            })
+        }
+
+        fn balance(&self, h: &HoldingBalance) -> ResultBody {
+            let outcome = if self.is_for(&h.node, &h.asset) {
+                HoldingBalanceOutcome::Answered(HoldingBalanceAnswer {
+                    balance: self.held.values().sum::<u128>().to_string(),
+                })
+            } else {
+                HoldingBalanceOutcome::Refused(Refused {
+                    refusal: Refusal::Final(NoDetail {}),
+                })
+            };
+            ResultBody::HoldingBalance(HoldingBalanceResult {
+                transaction: h.transaction.clone(),
                 outcome,
             })
         }
@@ -203,6 +226,7 @@ mod sandboxed {
                     Operation::Deposit(d) => Some(wallet.deposit(d)),
                     Operation::Withdrawal(w) => Some(wallet.withdrawal(w)),
                     Operation::BalanceVerification(v) => Some(wallet.verification(v)),
+                    Operation::HoldingBalance(h) => Some(wallet.balance(h)),
                     _ => None,
                 }
             });

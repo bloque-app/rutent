@@ -16,7 +16,7 @@ use serde_json::json;
 
 const PROVIDERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
 const TRANSACTIONS: [&str; 3] = ["tx-1", "tx-2", "tx-3"];
-const KINDS: [OperationKind; 8] = [
+const KINDS: [OperationKind; 9] = [
     OperationKind::Withdrawal,
     OperationKind::Deposit,
     OperationKind::Transfer,
@@ -25,6 +25,7 @@ const KINDS: [OperationKind; 8] = [
     OperationKind::Judgement,
     OperationKind::Reversal,
     OperationKind::ReversalConfirmation,
+    OperationKind::HoldingBalance,
 ];
 
 /// The provider-role fixture of an operation of `kind`, asked of `callee` for `transaction`.
@@ -38,6 +39,7 @@ fn operation(kind: OperationKind, callee: &str, transaction: &str) -> Operation 
         OperationKind::Judgement => "operation-judgement-question",
         OperationKind::Reversal => "operation-reversal-of-a-failed-transfer",
         OperationKind::ReversalConfirmation => "operation-reversal-confirmation-for-one-credit",
+        OperationKind::HoldingBalance => "operation-holding-balance",
     };
     let mut value = fixture("provider-role", name);
     value["statement"]["provider"] = json!(callee);

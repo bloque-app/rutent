@@ -13,16 +13,16 @@ use rutent_contracts::provider_role::{
     BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band, BoundedAvailability,
     BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote, ConversionResult,
     ConversionSettlement, Declarations, Denomination, EndUnits, Evidence, EvidenceGrade,
-    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, Inputs, JUDGEMENT_SHAPE, Judged,
-    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
-    MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
-    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
-    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
-    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
-    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
-    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
-    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
-    VerifierOffer, VoidedBy,
+    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldingBalanceOutcome,
+    HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement, JudgementAnswer,
+    JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement, NoDetail, NodeRef,
+    Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, RampOffer,
+    RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
+    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
+    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
+    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
+    SigningKey, Slippage, Statement, Terms, Tracking, TransferOutcome, TransferQuote,
+    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
 };
 
 use super::{
@@ -304,6 +304,10 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
                 outcome: ReversalConfirmationOutcome::Refused(refused),
             })
         }
+        Operation::HoldingBalance(h) => ResultBody::HoldingBalance(HoldingBalanceResult {
+            transaction: h.transaction.clone(),
+            outcome: HoldingBalanceOutcome::Refused(refused),
+        }),
     }
 }
 
@@ -1617,5 +1621,6 @@ fn transaction_of(body: &ResultBody) -> Option<String> {
         ResultBody::Judgement(_) => None,
         ResultBody::Reversal(r) => Some(r.transaction.clone()),
         ResultBody::ReversalConfirmation(r) => Some(r.transaction.clone()),
+        ResultBody::HoldingBalance(r) => Some(r.transaction.clone()),
     }
 }
