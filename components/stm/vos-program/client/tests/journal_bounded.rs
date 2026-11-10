@@ -213,7 +213,8 @@ fn replays_on(replicas: usize) {
     // Six inputs leave the order open, so its journal is live; the seventh ends it into the archive.
     submit_all(&mut host, &inputs[..6]);
     let before = Host::<Stm>::journal(&host, &order).unwrap();
-    assert_eq!(host.status().unwrap().live_records, 6);
+    // Some of them may already be sealed into an archive row, if they filled one.
+    assert!(host.status().unwrap().live_records <= 6);
     submit_all(&mut host, &inputs[6..]);
     assert_eq!(host.status().unwrap().archived_orders, 1, "it was archived");
     assert_eq!(host.status().unwrap().live_records, 0);
@@ -248,6 +249,44 @@ fn archived_order_replays_to_the_same_states() {
 #[test]
 fn archived_order_replays_to_the_same_states_on_one_node() {
     replays_on(1);
+}
+
+// verifies: REQ-OPS-3, NFR-4
+#[test]
+fn an_order_whose_journal_passes_a_steps_write_cap_still_ends_and_replays() {
+    // VOS caps a step's writes at 256 KiB. A hundred and twenty records of a few KB each are about half a megabyte,
+    // so an ending that wrote the whole journal in its step could not be recorded; sealing as records arrive does.
+    let (_base, mut host) = start("steps", 3);
+    let inputs = probe::order_inputs("ord-huge", 0);
+    let again = |n: u32| {
+        let mut input = inputs[1].clone();
+        input.record_id = RecordId::new(format!("again-{n}")).unwrap();
+        input
+    };
+    submit_all(&mut host, &inputs[..2]);
+    let filler: Vec<RecordedInput> = (0..120).map(again).collect();
+    submit_all(&mut host, &filler);
+    let journal = Host::<Stm>::journal(&host, &id("ord-huge")).unwrap();
+    let weight: usize = journal
+        .iter()
+        .map(|r| {
+            serde_json::to_vec(&r.input).unwrap().len()
+                + r.state_after
+                    .as_ref()
+                    .map_or(0, |s| serde_json::to_vec(s).unwrap().len())
+        })
+        .sum();
+    assert!(weight > 256 << 10, "the journal weighs {weight} bytes");
+    assert!(
+        host.status().unwrap().live_records < 20,
+        "records were sealed while the order was open"
+    );
+    submit_all(&mut host, &inputs[2..]);
+    assert_eq!(host.status().unwrap().archived_orders, 1);
+    assert_eq!(host.status().unwrap().live_records, 0);
+    let rows = assert_replays(&host, "ord-huge", inputs.len() + filler.len());
+    assert!(rows >= 8, "{rows} archive rows");
+    prove_backend();
 }
 
 /// Many inputs that change nothing but are recorded, with a state each, before and after the order ends.
@@ -310,5 +349,6 @@ fn the_struct_of_a_format_one_instance_still_decodes_so_the_format_check_can_ref
     .concat();
     let (state, used) = Rutent::decode(&v1).expect("a format-1 struct row decodes");
     assert_eq!(used, v1.len());
-    drop(state);
+    assert_eq!(state.stored_format(), 1, "it is a format-1 instance");
+    assert_ne!(state.stored_format(), rutent_stm_vos_program::FORMAT);
 }

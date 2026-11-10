@@ -7,7 +7,8 @@ use common::generator::{Rng, Trace, traces};
 use rutent_contracts::state_machine::{Order, OrderState, RecordedInput, StateMachine};
 use rutent_stm::Stm;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, chunk_of, entry_in, entry_len, is_archivable, pack, replay, split, unpack,
+    CHUNK_BYTES, Entry, MAX_ENTRY, chunk_of, entry_fits, entry_in, entry_len, is_archivable, pack,
+    replay, seal_due, split, unpack,
 };
 
 const SEEDS: u64 = 600;
@@ -242,4 +243,83 @@ fn a_record_is_found_in_the_row_that_holds_it_and_a_damaged_archive_is_an_error(
         entry_in(row, 5, 4).is_err(),
         "a record before the row begins"
     );
+}
+
+/// A host's packing of one order as its records arrive: live bytes are counted, and when a record fills the live
+/// rows (or ends the order) they are sealed into archive rows. Returns the rows each step wrote.
+fn stream(all: &[Entry], ending: Option<usize>) -> (Vec<usize>, Vec<Entry>) {
+    let mut live: Vec<Entry> = Vec::new();
+    let mut live_bytes = 0;
+    let mut sealed: Vec<Entry> = Vec::new();
+    let mut written = Vec::new();
+    for (at, entry) in all.iter().enumerate() {
+        assert!(entry_fits(entry));
+        live.push(entry.clone());
+        live_bytes += entry_len(entry);
+        let ends = ending == Some(at);
+        let mut step = 0;
+        if seal_due(live_bytes, ends) {
+            for row in split(&live, CHUNK_BYTES) {
+                step += pack(&row).len();
+                sealed.extend(row);
+            }
+            live.clear();
+            live_bytes = 0;
+        }
+        written.push(step);
+    }
+    sealed.extend(live);
+    (written, sealed)
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn sealing_records_as_they_arrive_keeps_every_step_far_under_a_steps_write_cap() {
+    // VOS caps a step's writes at 256 KiB. A journal several times that, ended at its last record, must never
+    // write more than a few rows in one step, whatever the order and size of its records.
+    let trace = traces(SEEDS)
+        .iter()
+        .max_by_key(|t| t.journal.len())
+        .unwrap();
+    let base = entries(trace);
+    let mut all = Vec::new();
+    while all.iter().map(entry_len).sum::<usize>() < 1 << 20 {
+        all.extend(base.iter().cloned());
+    }
+    let (written, sealed) = stream(&all, Some(all.len() - 1));
+    assert_eq!(sealed, all, "nothing is lost or reordered");
+    assert!(written.iter().sum::<usize>() >= 1 << 20);
+    let most = *written.iter().max().unwrap();
+    assert!(
+        most <= CHUNK_BYTES + MAX_ENTRY + 64,
+        "a step wrote {most} bytes"
+    );
+    assert!(most < 128 << 10);
+    // Ending a journal of a megabyte writes no more than ending a short one.
+    let (short, _) = stream(&base, Some(base.len() - 1));
+    assert!(short.iter().max().unwrap() <= &(CHUNK_BYTES + MAX_ENTRY + 64));
+}
+
+// verifies: REQ-OPS-3
+#[test]
+fn a_record_too_large_for_an_archive_row_does_not_fit() {
+    let small = Entry {
+        input: vec![0; 100],
+        state: Some(vec![0; 100]),
+    };
+    assert!(entry_fits(&small));
+    let edge = Entry {
+        input: vec![0; MAX_ENTRY - 9 - 8 - 5],
+        state: Some(vec![0; 5]),
+    };
+    assert!(entry_fits(&edge));
+    assert!(pack(&[edge]).len() < 64 << 10);
+    let big = Entry {
+        input: vec![0; MAX_ENTRY],
+        state: None,
+    };
+    assert!(!entry_fits(&big));
+    assert!(!seal_due(0, false), "an empty live journal is not sealed");
+    assert!(seal_due(CHUNK_BYTES, false));
+    assert!(seal_due(1, true));
 }

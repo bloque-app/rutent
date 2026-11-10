@@ -659,3 +659,21 @@ force. The item waits on the form; nothing else of F-010 waits on it.
   compile until the module existed.
 - **Not proved here.** The VOS tests pass on three nodes with the JIT only in CI (`stm-vos.yml`); the run id goes
   here once the branch is pushed.
+
+### T-010-07: answering the second review
+
+- **Sealing as records arrive.** VOS caps a step's writes at 256 KiB, and ending an order wrote its whole journal.
+  Now an order's live records are sealed into archive rows (at most 32 KiB each) as soon as they weigh 32 KiB
+  (`archive::seal_due`), and the record that ends the order seals what is left, so no step writes more than a few
+  rows whatever the journal's length. `OrderRow` gains `live_bytes`; `ArchiveHead` gains `covered` and `ended`. An
+  order that is still open can therefore have archive rows; `archived` serves the sealed ones, and `Status::archived_orders`
+  counts ended orders only. The live journal now holds less than 32 KiB of an open order plus one record.
+- **A record too large to archive is refused.** Alone in a row, a record must pack under `archive::MAX_ENTRY`
+  (60 KiB; the stored cap is 64 KiB less framing). A larger record is refused when it arrives (`Submitted::Invalid`,
+  "the record is larger than an archive row holds, so it cannot be archived"), in any order, rather than capping
+  records below the cap: a record that near the cap would already be most of VOS's reply. A refused record is
+  never written. An import with such a record is refused the same way.
+- **Tests.** Native: the packing rule over a one-megabyte journal (the worst step writes under 128 KiB; seen failing
+  with sealing at the end only: 1.2 MB in one step) and the record-size edge. Gated: an order of about half a megabyte
+  ends and replays (written first; not seen failing, as no node was run here). The format-1 decode test asserts the
+  stored format is 1.

@@ -44,6 +44,22 @@ pub struct ArchiveError(pub &'static str);
 /// (`cap::VALUE`), so a row never nears it. A journal longer than this is split across rows ([`split`]).
 pub const CHUNK_BYTES: usize = 32 << 10;
 
+/// The most one record may weigh in an archive row, packed alone: under VOS's 64 KiB cap on a stored value with room
+/// for the row's framing. A host refuses a record above it when the record arrives.
+pub const MAX_ENTRY: usize = 60 << 10;
+
+/// Whether `entry` can be archived: alone in a row, it stays under [`MAX_ENTRY`].
+pub fn entry_fits(entry: &Entry) -> bool {
+    8 + entry_len(entry) <= MAX_ENTRY
+}
+
+/// Whether a host seals an order's live records into archive rows now: they have filled a row, or the record just
+/// written ends the order. Sealing as records arrive keeps the step that ends an order from writing its whole
+/// journal, which VOS caps at 256 KiB a step.
+pub fn seal_due(live_bytes: usize, ends: bool) -> bool {
+    live_bytes >= CHUNK_BYTES || (ends && live_bytes > 0)
+}
+
 /// What `entry` adds to a packed row.
 pub fn entry_len(entry: &Entry) -> usize {
     9 + entry.input.len() + entry.state.as_ref().map_or(0, Vec::len)

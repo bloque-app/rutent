@@ -33,12 +33,16 @@
 //!
 //! # Archiving ended orders (`T-010-07`, `G-33`)
 //!
-//! A record is kept in the live `records` table until its order ends ([`is_archivable`]: complete, failed, handed on
-//! or ended without completing). The step that writes the record that ends it packs the order's whole journal into
-//! rows of `chunks`, each at most [`CHUNK_BYTES`] (the library's [`split`] and [`pack`]; VOS caps a stored value at
-//! 64 KiB), and deletes the order's live rows; a record written to an
-//! archived order afterwards (a repeat, a late input, the undo of a complete part) is appended to its row. So the
-//! live journal holds only orders still open, and stays bounded under a stream of completed orders.
+//! A record is kept in the live `records` table until it is sealed into the order's archive rows. Records are sealed
+//! as they arrive: once an order's live records weigh [`CHUNK_BYTES`], and when the record that ends it
+//! ([`is_archivable`]: complete, failed, handed on or ended without completing) is written. Sealing packs them into
+//! rows of `chunks` of at most [`CHUNK_BYTES`] (the library's [`split`] and [`pack`]; VOS caps a stored value at
+//! 64 KiB and a step's writes at 256 KiB) and deletes their live rows. So no step writes more than a few rows,
+//! however long the journal: a step that ends an order seals what is live, under [`CHUNK_BYTES`] plus one record.
+//! A record written to an ended order afterwards (a repeat, a late input, the undo of a complete part) is appended
+//! to its last row. The live journal holds only the records of orders still open that have not filled a row, and
+//! stays bounded under a stream of completed orders. A record that alone would not fit a row
+//! ([`rutent_stm::archive::MAX_ENTRY`]) is refused when it arrives, with a reason.
 //!
 //! Archiving is invisible to the host contract: every read goes through `row_of`, which falls back to the archive,
 //! and the entries are the stored canonical JSON byte for byte, so `journal`, `state`, `export`, a refusal's
@@ -75,7 +79,8 @@ use rutent_probe::Probe as Machine;
 #[cfg(not(feature = "probe-machine"))]
 use rutent_stm::Stm as Machine;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, chunk_of, entry_in, entry_len, is_archivable, pack, split, unpack,
+    CHUNK_BYTES, Entry, chunk_of, entry_fits, entry_in, entry_len, is_archivable, pack, seal_due,
+    split, unpack,
 };
 use serde::Serialize;
 use vos_sdk::prelude::*;
@@ -157,19 +162,24 @@ pub enum Refused {
     Archive(Vec<u8>),
 }
 
-/// One order: its id, its last sequence number, and the sequence number of its latest record that has a state
-/// (0 for none).
+/// One order: its id, its last sequence number, the sequence number of its latest record that has a state (0 for
+/// none), and the packed weight of its records still in the live journal.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 pub struct OrderRow {
     pub id: Vec<u8>,
     pub len: u64,
     pub latest_state: u64,
+    pub live_bytes: u64,
 }
 
-/// Where an archived order's rows begin: the sequence number of the first record of each.
+/// Where an order's archive rows begin: the sequence number of the first record of each. Records are sealed into
+/// rows as they arrive, so an order that is still open can have a head: it covers the records up to `covered`, and
+/// the rest are live. Once `ended`, every record is covered and a new one is appended to the last row.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 pub struct ArchiveHead {
     pub starts: Vec<u64>,
+    pub covered: u64,
+    pub ended: bool,
 }
 
 /// The program's two archive counters.
@@ -278,6 +288,11 @@ pub struct Rutent {
 }
 
 impl Rutent {
+    /// The format the rows of this instance are in, as stored.
+    pub fn stored_format(&self) -> u32 {
+        self.format
+    }
+
     fn format_error(&self) -> Option<(u32, u32)> {
         (self.format != FORMAT).then_some((self.format, FORMAT))
     }
@@ -340,7 +355,7 @@ impl Rutent {
     }
 
     /// Writes one record at the order's next place; the caller checked the record id and the sequence.
-    /// With `ends`, the record's state is one an order has ended in, and the order is archived with it.
+    /// With `ends`, the record's state is one an order has ended in, and the order's live records are sealed with it.
     fn write_record(
         &mut self,
         order: Vec<u8>,
@@ -348,6 +363,16 @@ impl Rutent {
         row: RecordRow,
         ends: bool,
     ) -> Result<u64, Vec<u8>> {
+        let entry = Entry {
+            input: row.input.clone(),
+            state: row.state.clone(),
+        };
+        if !entry_fits(&entry) {
+            return Err(
+                b"the record is larger than an archive row holds, so it cannot be archived"
+                    .to_vec(),
+            );
+        }
         let place = match self.place_of(&order) {
             Some(place) => place,
             None => {
@@ -361,28 +386,33 @@ impl Rutent {
             id: order,
             len: 0,
             latest_state: 0,
+            live_bytes: 0,
         });
         order_row.len += 1;
         if row.state.is_some() {
             order_row.latest_state = order_row.len;
         }
         let seq = order_row.len;
-        match self.archive.get(&place) {
-            Some(head) => self.append_archived(place, head, seq, &row)?,
-            None => {
+        let head = self.archive.get(&place);
+        match head {
+            Some(head) if head.ended => self.append_archived(place, head, seq, &row)?,
+            _ => {
                 self.records.insert(&(place, seq), &row);
+                order_row.live_bytes += entry_len(&entry) as u64;
                 let mut counters = self.counters();
                 counters.live_records += 1;
                 self.meta.insert(&0, &counters);
+                // Sealed as they arrive, so the step that ends an order writes one row or two, never the journal.
+                if seal_due(order_row.live_bytes as usize, ends) {
+                    self.seal(place, seq, ends)?;
+                    order_row.live_bytes = 0;
+                }
             }
         }
         self.ids.insert(&record_id, &(place, seq));
         self.orders.insert(&place, &order_row);
         self.record_count += 1;
         self.written.insert(&self.record_count, &(place, seq));
-        if ends && !self.archive.contains(&place) {
-            self.archive_order(place, seq)?;
-        }
         Ok(seq)
     }
 
@@ -407,19 +437,29 @@ impl Rutent {
         let mut entries = unpack(&packed).map_err(|e| e.0.as_bytes().to_vec())?;
         if packed.len() + entry_len(&entry) > CHUNK_BYTES {
             head.starts.push(seq);
+            head.covered = seq;
             self.chunks.insert(&(place, last + 1), &pack(&[entry]));
             self.archive.insert(&place, &head);
         } else {
             entries.push(entry);
+            head.covered = seq;
             self.chunks.insert(&(place, last), &pack(&entries));
+            self.archive.insert(&place, &head);
         }
         Ok(())
     }
 
-    /// Moves the live rows of the order at `place`, of `len` records, into archive rows of at most `CHUNK_BYTES`.
-    fn archive_order(&mut self, place: u64, len: u64) -> Result<(), Vec<u8>> {
+    /// Moves the live records of the order at `place`, up to `len`, into archive rows of at most `CHUNK_BYTES`.
+    /// With `ends`, the order has ended and its head says so.
+    fn seal(&mut self, place: u64, len: u64, ends: bool) -> Result<(), Vec<u8>> {
+        let mut head = self.archive.get(&place).unwrap_or(ArchiveHead {
+            starts: Vec::new(),
+            covered: 0,
+            ended: false,
+        });
+        let from = head.covered + 1;
         let mut entries = Vec::new();
-        for seq in 1..=len {
+        for seq in from..=len {
             let row = self
                 .records
                 .get(&(place, seq))
@@ -429,20 +469,22 @@ impl Rutent {
                 state: row.state,
             });
         }
-        let mut head = ArchiveHead { starts: Vec::new() };
-        let mut next = 1;
-        for (number, rows) in split(&entries, CHUNK_BYTES).iter().enumerate() {
+        let mut next = from;
+        for rows in split(&entries, CHUNK_BYTES) {
+            self.chunks
+                .insert(&(place, head.starts.len() as u64), &pack(&rows));
             head.starts.push(next);
             next += rows.len() as u64;
-            self.chunks.insert(&(place, number as u64), &pack(rows));
         }
+        head.covered = len;
+        head.ended |= ends;
         self.archive.insert(&place, &head);
-        for seq in 1..=len {
+        for seq in from..=len {
             self.records.remove(&(place, seq));
         }
         let mut counters = self.counters();
-        counters.live_records -= len;
-        counters.archived_orders += 1;
+        counters.live_records -= len + 1 - from;
+        counters.archived_orders += u64::from(ends);
         self.meta.insert(&0, &counters);
         Ok(())
     }
