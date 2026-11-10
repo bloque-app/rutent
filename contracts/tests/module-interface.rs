@@ -11,7 +11,7 @@ use rutent_contracts::module_interface::{
     OutboundCallRecord, OutsideRequest, OutsideResponse, RefusalReason, ReleaseAssertion,
     RuleViolation, SecretAnswer, SecretLookup, SecretOutcome, SecretRefusalReason, Widening,
 };
-use rutent_contracts::provider_role::{self, Advertisement, ResultBody, Statement};
+use rutent_contracts::provider_role::{self, Advertisement, Deployment, ResultBody, Statement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,7 +44,7 @@ const SCHEMAS: [(&str, &str); 19] = [
 /// followed by `-`. `signed-result`, `declared-secret-lookup` and `declared-outbound-call-record` are bundles of
 /// values, not schemas of their own: see [`SignedResult`], [`DeclaredSecretLookup`] and
 /// [`DeclaredOutboundCallRecord`].
-const SHAPES: [&str; 15] = [
+const SHAPES: [&str; 16] = [
     "declaration",
     "outside-request",
     "outside-response",
@@ -59,6 +59,7 @@ const SHAPES: [&str; 15] = [
     "release-assertion",
     "admission-artefact",
     "advertised-artefact",
+    "operator-artefact",
     "successive-releases",
 ];
 
@@ -66,6 +67,17 @@ const SHAPES: [&str; 15] = [
 /// advertisement, for the release-assertion key rules (`validate_assertion_key`).
 const ADVERTISED_ARTEFACT_MEMBERS: [(&str, &str); 2] = [
     ("advertisement", "urn:rutent:provider-role:advertisement"),
+    ("artefact", "urn:rutent:module-interface:admission-artefact"),
+];
+
+/// The members of an `operator-artefact` bundle: the deployment the platform serves, from its settings, and the
+/// admission artefact of a module the operator publishes, for the operator's release rules
+/// (`validate_operator_assertion`).
+const OPERATOR_ARTEFACT_MEMBERS: [(&str, &str); 2] = [
+    (
+        "deployment",
+        "urn:rutent:provider-role:statement-envelope#/properties/deployment",
+    ),
     ("artefact", "urn:rutent:module-interface:admission-artefact"),
 ];
 
@@ -81,6 +93,14 @@ const SUCCESSIVE_RELEASES_MEMBERS: [(&str, &str); 2] = [
 #[serde(deny_unknown_fields)]
 struct AdvertisedArtefact {
     advertisement: Statement<Advertisement>,
+    artefact: AdmissionArtefact,
+}
+
+/// An `operator-artefact` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorArtefact {
+    deployment: Deployment,
     artefact: AdmissionArtefact,
 }
 
@@ -637,6 +657,18 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::AssertionOfAnotherDeployment),
         ),
         (
+            "operator-artefact-asserted-with-a-providers-key",
+            one(RuleViolation::OperatorAssertionNotSignedWithOperatorKey),
+        ),
+        (
+            "operator-artefact-from-another-deployment",
+            one(RuleViolation::AssertionOfAnotherDeployment),
+        ),
+        (
+            "operator-artefact-declaring-the-operator-key-as-its-statement-key",
+            one(RuleViolation::StatementKeyIsOperatorKey),
+        ),
+        (
             "admission-artefact-comparing-with-a-version-its-history-lacks",
             one(RuleViolation::ComparedWithNotLastAdmitted),
         ),
@@ -743,6 +775,14 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
             module_interface::validate_artefact(&bundle.artefact)
                 .map_err(|v| format!("artefact: {v:?}"))?;
             module_interface::validate_assertion_key(&bundle.artefact, &bundle.advertisement)
+                .map_err(|v| format!("{v:?}"))
+        }
+        "operator-artefact" => {
+            let bundle: OperatorArtefact =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            module_interface::validate_artefact(&bundle.artefact)
+                .map_err(|v| format!("artefact: {v:?}"))?;
+            module_interface::validate_operator_assertion(&bundle.artefact, &bundle.deployment)
                 .map_err(|v| format!("{v:?}"))
         }
         "successive-releases" => {
@@ -934,6 +974,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "declared-outbound-call-record" => &DECLARED_OUTBOUND_CALL_RECORD_MEMBERS,
         "declared-cross-module-call" => &DECLARED_CROSS_MODULE_CALL_MEMBERS,
         "advertised-artefact" => &ADVERTISED_ARTEFACT_MEMBERS,
+        "operator-artefact" => &OPERATOR_ARTEFACT_MEMBERS,
         "successive-releases" => &SUCCESSIVE_RELEASES_MEMBERS,
         _ => {
             return schema_errors(
@@ -991,6 +1032,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "release-assertion" => round_trip::<Statement<ReleaseAssertion>>(value),
         "admission-artefact" => round_trip::<AdmissionArtefact>(value),
         "advertised-artefact" => round_trip::<AdvertisedArtefact>(value),
+        "operator-artefact" => round_trip::<OperatorArtefact>(value),
         "successive-releases" => round_trip::<SuccessiveReleases>(value),
         other => Err(format!("no Rust type for {other}")),
     }
@@ -1353,6 +1395,18 @@ fn assert_rules_reject(names: &[&str]) {
 fn artefact_without_a_signed_assertion_is_invalid() {
     assert_schema_rejects("admission-artefact-without-a-signed-assertion");
     assert_schema_rejects("admission-artefact-with-an-unsigned-assertion");
+}
+
+// verifies: REQ-MDL-1, REQ-CAT-23
+#[test]
+fn operator_release_is_signed_with_the_operator_key_of_the_platforms_deployment() {
+    let valid = fixture("valid", "operator-artefact-asserted-with-the-operator-key");
+    assert_eq!(rust_rules("operator-artefact", &valid), Ok(()));
+    assert_rules_reject(&[
+        "operator-artefact-asserted-with-a-providers-key",
+        "operator-artefact-from-another-deployment",
+        "operator-artefact-declaring-the-operator-key-as-its-statement-key",
+    ]);
 }
 
 // verifies: REQ-MDL-1

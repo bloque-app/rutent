@@ -1,7 +1,8 @@
 //! What the plain wallet's tests share (`T-016-02`): the wallet's two components, built by
 //! `guests/plain-wallet/build.sh` into the build directory the first time a test asks and again when the guest's
-//! source, the WIT world's or a contract's is newer; a platform that has admitted wallets as signed releases, the
-//! way `T-013-04` admits any module; and the operator's operations with the tests' placeholder signature.
+//! source, the WIT world's or a contract's is newer; a platform that has admitted wallets on the operator's own
+//! signed releases (`T-016-04`), and a provider's wallet on its provider's, to show it is no holding account; and
+//! the operator's operations with the tests' placeholder signature.
 
 #![allow(dead_code)]
 
@@ -124,15 +125,39 @@ pub fn wallet_release(provider: &str, version: &str) -> (Declaration, Parts<Vec<
     (declaration, wallet_binaries())
 }
 
-/// Signs the wallet's release with the provider's advertising key and admits it, as a provider sends one.
+/// The operator's party, the maker of its own releases.
+pub const OPERATOR: &str = "rutent-operator";
+
+/// The plain wallet the operator publishes for the `polygon` node.
+pub const POLYGON_WALLET: &str = "plain-wallet-polygon";
+
+/// Records `provider` as a module the operator publishes, unless it is recorded already.
+pub fn publish(s: &mut Signed, provider: &str) {
+    s.catalogue
+        .publish_operator_module(provider)
+        .expect("the operator publishes the wallet");
+}
+
+/// Publishes the wallet of `provider` as the operator's, signs its release with the deployment's operator key and
+/// admits it, as the operator releases its own module.
 pub fn admit_wallet(s: &mut Signed, provider: &str, version: &str) -> Admitted {
+    publish(s, provider);
+    let (declaration, binaries) = wallet_release(provider, version);
+    let key = signed::catalogue_support::operator_key();
+    let assertion = signed::assertion_by(&declaration, &binaries, OPERATOR, &key);
+    s.admit(&assertion, &binaries)
+}
+
+/// Signs the wallet's release with `provider`'s advertising key and admits it, as a provider sends one: a
+/// provider's module, which is never a holding account.
+pub fn admit_providers_wallet(s: &mut Signed, provider: &str, version: &str) -> Admitted {
     let (declaration, binaries) = wallet_release(provider, version);
     let key = signed::catalogue_support::advertising_key(provider);
     let assertion = signed::assertion(&declaration, &binaries, &key);
     s.admit(&assertion, &binaries)
 }
 
-/// Admits the wallet and gives it its first release's fresh acceptance, so that it runs.
+/// Admits the operator's wallet and gives it its first release's fresh acceptance, so that it runs.
 pub fn run_wallet(s: &mut Signed, provider: &str, version: &str) {
     let admitted = admit_wallet(s, provider, version);
     let Admitted::Artefact(artefact) = admitted else {
@@ -200,28 +225,5 @@ pub fn covers(s: &mut Signed, provider: &str, asset: &str, account: &str, amount
     answer.sufficient
 }
 
-/// The second wallet provider: a reserve of its own, for a second node.
+/// The second wallet the operator publishes, for a second node.
 pub const ETHEREUM_WALLET: &str = "plain-wallet-ethereum";
-
-/// Adds a reserve provider named `name` to the catalogue of `s`: the reserve fixture's advertisement under its own
-/// name and no private nodes, with a grant, joined and signed with the provider's advertising key.
-pub fn add_reserve_provider(s: &mut Signed, name: &str) {
-    use rutent_prov::catalogue::tuples_of;
-    let mut ad = signed::catalogue_support::reserve_advertisement();
-    ad.provider = name.to_owned();
-    ad.private_nodes = Vec::new();
-    if let Some(reserve) = ad.offers.reserve.as_mut() {
-        reserve.declaration.maker = name.to_owned();
-    }
-    s.catalogue
-        .grant(signed::catalogue_support::grant(
-            &format!("g-{name}"),
-            name,
-            tuples_of(&ad),
-            4_000_000_000,
-        ))
-        .expect("a grant");
-    let advertised = rutent_prov::catalogue::Instant(signed::AT.0 - 86_400);
-    signed::catalogue_support::join_made_at(&mut s.catalogue, &ad, advertised, signed::AT)
-        .expect("the advertisement joins");
-}
