@@ -114,8 +114,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   so the gap is fixed in this milestone). `holding_balance` is the operator's question to a holding account's
   module, naming the provider, the node and the asset, and its result is the balance in whole units, zero included,
   or a refusal. It is provider-role **3.0.0** (a new operation kind and result kind on the wire: a major under
-  `DEC-4`) and module-interface **5.0.0** (`OperationKind::HoldingBalance`, a new variant on a closed enum; the
-  declaration schema takes its kinds from provider-role's, so it needed no edit). Each has valid and invalid
+  `DEC-4`) and module-interface **4.0.0** (`OperationKind::HoldingBalance`, a new variant on a closed enum, folded into the
+  unreleased 4.0.0 of `m2`: `develop` holds 2.0.1; the declaration schema takes its kinds from provider-role's, so it needed no edit). Each has valid and invalid
   fixtures, a changelog entry, Rust tests in `contracts/tests/`, and the role suite's version pin and `Kind` moved;
   the stand-ins refuse the new kind outside their role. `contracts/CHANGELOG.md` records both.
 - **A reading is two halves from two places.** `WalletHolding::read` asks the wallet for its balance and takes the
@@ -138,5 +138,5 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   The INV-5 property now reads each account's balance from its wallet and reconciles it after every step. Written
   first, they failed to compile against the old `Holdings` (no `read`, `readings` without a platform) and the old
   `RegisterError`; the guest's bind and holding-balance behaviour was exercised through the rebuilt wallet.
-- **`DEC-20`.** `contracts/` (provider-role 3.0.0, module-interface 5.0.0) and `.github/` (a new CI guest step, a
+- **`DEC-20`.** `contracts/` (provider-role 3.0.0, module-interface 4.0.0) and `.github/` (a new CI guest step, a
   `CODEOWNERS` path) are `DEC-20` paths this round touches; the click comes with the release into `main`.

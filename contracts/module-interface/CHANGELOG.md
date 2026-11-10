@@ -1,12 +1,5 @@
 # module-interface changelog
 
-## 5.0.0
-- Breaking: `OperationKind` gains `HoldingBalance`, the new provider-role operation kind `holding_balance` (provider-role
-  3.0.0), which a holding account's module declares it handles. The declaration schema takes its kinds from the
-  provider-role operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant,
-  which breaks an exhaustive match, so this is a major (`DEC-4`). Fixtures keep naming interface 2.0.1: nothing
-  compares it. (DEC-4, DEC-20, T-016-02)
-
 ## 4.0.0
 - Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module
   call refused because its caller reached a limit on its calls is `limit_reached`, and one refused because too little
@@ -17,6 +10,10 @@
   and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
   the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
   Rust test. (DEC-4, DEC-20, T-010-09)
+- `OperationKind` gains `HoldingBalance`, the provider-role operation kind `holding_balance` (provider-role 3.0.0),
+  which a holding account's module declares it handles. The declaration schema takes its kinds from the provider-role
+  operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant, which breaks an
+  exhaustive match, and 4.0.0 is not released, so the variant joins this major. (DEC-4, DEC-20, T-016-02)
 - `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
   nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
   ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)
