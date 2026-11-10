@@ -148,3 +148,35 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   call, both, and an ordinary call as the control. The contract's declaration check refuses it too:
   `validate_declaration` returns `DeclaredCallOfHoldingBalance` for a `calls` list that names it, folded into the
   unreleased module-interface 4.0.0 with an invalid fixture and a changelog line.
+
+## T-016-03
+
+- **What a handed-on start is.** `Holdings::start_handed_on(platform, operator, route, order, amount)` takes a route
+  whose first segment starts at an inner node, withdraws the order's `amount` from that node's holding account
+  through the wallet (the same `withdrawal` operation `release` sends), and returns a `HandedOnStart`: the starting
+  reserve (the account's provider), the node, the route's first segment, and a `WithdrawalRecord`. That record is the
+  proof of `REQ-ORD-40`, and it settles the first segment. The code is `holding/wallet/handed_on.rs`.
+- **Reading: the proof is the wallet's own evidence piece.** The record is accepted only when the wallet's succeeded
+  result carries a piece whose `by` is the wallet's provider and whose reference is that wallet's own withdrawal
+  reference. A success without one (`NoRecord`) leaves the account as it was. The plain wallet states its piece at
+  grade 3 (`SignedByProvider`); `REQ-ORD-40` makes the holding account's record the proof at a public node whatever
+  that grade, so the grade is not what makes it proof.
+- **Reading: the evidence checker is untouched.** `grade_outcome` grades a segment outcome from a provider the route
+  runs through (`REQ-ORD-39`); a handed-on route's withdrawal is not one, because the holding account is the host's
+  own registered module and the withdrawal is the host's own operation. So no interface was added to
+  `components/evidence`, and `DEC-2` holds (prov imports only the contracts). A private node's version, where the
+  record is its publisher's word and labelled so, is not built here: private nodes have no holding module.
+- **Refusals.** A route that is empty or starts at an outer node is `NotHandedOn`; one that starts at an inner node
+  with no registered account is `ValueNotAtStart(node)` (the state machine's reason for a route that does not start
+  where value sits); a withdrawal above what the order holds, of another asset, of zero, or one the wallet does not
+  confirm is `Wallet(..)`. In every refusal nothing moved: a failed withdrawal starts no route.
+- **What the host does not check.** That the node is where the first order's value sits is a rule across two orders
+  (`contracts/state-machine/README.md`); the host checks the order's attribution at the account, which is the
+  narrower and sufficient thing for the withdrawal.
+- **Refactor.** `WalletHolding::movement` now returns the would-be ledger and the wallet's settlement and no longer
+  replaces the ledger itself; `land` and `release` do, so their behaviour is unchanged.
+- **Tests** (`tests/holding_handed_on.rs`), written first (the first run failed to compile on the missing
+  `start_handed_on`): the proof test, the refusal test, and an `INV-5` property over 400 seeded steps of landings and
+  handed-on starts at one node, which after each step reads the balance from the wallet and checks that what landed,
+  less what was handed on, less what rests in the account is zero.
+- **`DEC-20`.** No `DEC-20` path is touched.
