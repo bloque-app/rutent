@@ -12,7 +12,7 @@ use wasmtime::{Engine, ResourceLimiter, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::module::engine::{FUEL_PER_PART, MEMORIES_PER_PART, MEMORY_PER_PART, TABLE_ELEMENTS};
 use crate::module::output::trap_reason;
-use crate::module::wire::{FromProvider, Reply};
+use crate::module::wire::{FromProvider, Reply, WireHeader};
 
 /// The sandboxed part's world, as `bindgen!` generates it.
 #[allow(missing_docs)]
@@ -38,14 +38,14 @@ pub mod outside {
 pub fn allowed_imports(part: &str) -> &'static [&'static str] {
     match part {
         "sandboxed" => &[
-            "rutent:binding/outside-requests@0.1.0",
-            "rutent:binding/denied@0.1.0",
+            "rutent:binding/outside-requests@0.2.0",
+            "rutent:binding/denied@0.2.0",
         ],
         _ => &[
-            "rutent:binding/proxy@0.1.0",
-            "rutent:binding/state@0.1.0",
-            "rutent:binding/egress@0.1.0",
-            "rutent:binding/modules@0.1.0",
+            "rutent:binding/proxy@0.2.0",
+            "rutent:binding/state@0.2.0",
+            "rutent:binding/egress@0.2.0",
+            "rutent:binding/modules@0.2.0",
         ],
     }
 }
@@ -321,6 +321,9 @@ impl proxy::Host for OutsideState {
             Reply::SecretRefused { reason } if reason == "not_found" => {
                 Err(proxy::SecretRefusal::NotFound)
             }
+            Reply::SecretRefused { reason } if reason == "store_unavailable" => {
+                Err(proxy::SecretRefusal::StoreUnavailable)
+            }
             _ => Err(proxy::SecretRefusal::UndeclaredSecret),
         })
     }
@@ -344,7 +347,7 @@ impl egress::Host for OutsideState {
         scheme: egress::Scheme,
         host: String,
         port: u16,
-        body: String,
+        request: egress::Request,
     ) -> wasmtime::Result<egress::Outcome> {
         let scheme = match scheme {
             egress::Scheme::Https => "https",
@@ -356,7 +359,25 @@ impl egress::Host for OutsideState {
                 scheme: scheme.to_owned(),
                 host,
                 port,
-                body,
+                method: match request.method {
+                    egress::Method::Get => "get",
+                    egress::Method::Post => "post",
+                    egress::Method::Put => "put",
+                    egress::Method::Patch => "patch",
+                    egress::Method::Delete => "delete",
+                }
+                .to_owned(),
+                path: request.path,
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|h| WireHeader {
+                        name: h.name,
+                        value: h.value,
+                        sensitive: h.sensitive,
+                    })
+                    .collect(),
+                body: request.body,
             },
             "an outbound call",
         )?;

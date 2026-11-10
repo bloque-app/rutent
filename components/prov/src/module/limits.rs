@@ -31,6 +31,9 @@ pub const MAX_OUTSIDE_MESSAGE: usize = 64 * 1024;
 /// The largest body one outbound call may carry, in bytes.
 pub const MAX_BODY: usize = 64 * 1024;
 
+/// The most headers one outbound request may carry.
+pub const MAX_HEADERS: usize = 64;
+
 /// The largest frame the platform reads from a provider's process, in bytes. A provider's output, hex-encoded, is
 /// the largest message it sends. The platform's reader refuses a longer frame from its length prefix, before
 /// it allocates room for it or reads a byte of it.

@@ -89,6 +89,12 @@ pub enum FromProvider {
         host: String,
         /// The port.
         port: u16,
+        /// The request's method, as the binding names it: `get`, `post`, `put`, `patch` or `delete`.
+        method: String,
+        /// The request's target, as the part wrote it; the platform checks that it is an origin-form path.
+        path: String,
+        /// The request's headers, as the part wrote them; the platform checks each.
+        headers: Vec<WireHeader>,
         /// The request body.
         body: String,
     },
@@ -99,6 +105,17 @@ pub enum FromProvider {
         /// The provider-role operation kind asked.
         kind: String,
     },
+}
+
+/// One request header as the outside part wrote it. Nothing here is checked: the platform builds the request from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireHeader {
+    /// The header's name.
+    pub name: String,
+    /// The header's value.
+    pub value: String,
+    /// Whether the part marked the value as a credential.
+    pub sensitive: bool,
 }
 
 /// The platform's answer to a request a provider's process made.
@@ -121,7 +138,7 @@ pub enum Reply {
     },
     /// The lookup was refused.
     SecretRefused {
-        /// `undeclared_secret` or `not_found`.
+        /// `undeclared_secret`, `not_found` or `store_unavailable`.
         reason: String,
     },
     /// The state entry, if the provider has one.

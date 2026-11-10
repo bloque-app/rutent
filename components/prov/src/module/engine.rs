@@ -12,7 +12,7 @@ pub const WASMTIME_VERSION: &str = "48.0.8";
 
 /// The binding's own version, which names, with the runtime and the target, what made a release's machine code
 /// (`build.platform_version`). It changed with `T-013-02`'s engine settings, which change the machine code.
-pub const BINDING_VERSION: &str = "0.2.0";
+pub const BINDING_VERSION: &str = "0.3.0";
 
 /// The compilation target, set explicitly so that the machine code doesn't depend on the compiling machine's CPU
 /// (ADR-0014, `G-03`). It is the build's own triple; no CPU feature is enabled beyond the triple's baseline.

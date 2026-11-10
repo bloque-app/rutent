@@ -423,3 +423,47 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   placeholders; see F-010's notes for the reading.
 - **Signed admission is still tested apart** (`module_admission_signed.rs`, with its own catalogue and keys); the
   boundary suite's run now exercises the same verifier for every release, including a forged one.
+
+## T-013-07
+
+- **The two gaps `T-014-05` found are closed in the binding's world** (`wit/binding.wit`, package `0.2.0`,
+  `BINDING_VERSION` `0.3.0`):
+  - `proxy.secret-refusal` gains `store-unavailable`; `host.rs` maps the wire reason `store_unavailable` to it, so a
+    guest is no longer told `undeclared-secret` for a store that is down.
+  - `egress.call` takes a `request` record: a `method` (`get`, `post`, `put`, `patch`, `delete`), a `path`, a list of
+    `header` records (name, value, `sensitive`) and a `body`. `FromProvider::Egress` carries the same fields
+    (`WireHeader`). The sandboxed interfaces are unchanged; the package number moved with the rest, so the allowed
+    imports in `host.rs` and the hostile components in the guests' tool name `0.2.0`.
+- **The platform checks the request, never the guest.** `host.rs` only transcribes. `platform.rs`'s `egress`
+  builds `egress::Request::new`, the one place that checks the target is an origin-form path, each header is a token
+  with no control character, and none is a header the connector sets (`Host`, `Content-Length`, ...). Path and
+  header bytes count with the body against `MAX_BODY` and the `OutboundBytes` budget, and the header count against
+  the new `MAX_HEADERS` (64), so headers are no way round `REQ-MDL-11`.
+- **Credential headers from a guest follow the rule `T-014-03` set.** The guest's `sensitive` flag becomes
+  `Header::sensitive`, and a header named `authorization`, `proxy-authorization` or `cookie` is a credential by
+  name, whatever the flag says. A redirect to another endpoint drops both; the test shows a flagged `X-Api-Key` and
+  an unflagged `Authorization` dropped while a plain header and the method follow a `307`.
+- **Reading: a request the platform cannot build is refused unrecorded.** An unknown method, a target that is not
+  origin-form or a framing header has no reason in module-interface 4.0.0 to be recorded under (no refusal stands in
+  another's name), and no destination was judged. It is refused the way an unknown scheme is, with the outcome
+  `refused` and no record. If a record of it is wanted, it needs a reason in the contract: an item for `F-010`.
+- **Reading: "records" is the call's record, not the request's content.** Every call leaves its one
+  `OutboundCallRecord`, refused ones included, as before. The record does not carry the path, the headers or the
+  body: a query string or a header can hold a secret, and `outbound-call-record-carrying-a-secret-value` is the
+  contract saying the record names no value. `contracts/` is untouched.
+- **`World::receive`**, a new defaulted hook, is where the default `World::send` hands a request to the world it
+  serves (method, target, headers, body); its default passes the body to `deliver`, so `deliver`'s signature, the
+  production world in `proxy/` and the conformance trait's `received` are unchanged. The suite's `call` step and
+  `Forge` still send `POST /` with no headers, so the evidence references the suite compares are unchanged.
+- **Guests, both languages.** The Rust and C stand-ins send the new request shape for every existing step, and read
+  two binding-only program lines the tests use: `fetch <operation> <host> <port> <method> <path> <headers>` and
+  `reason <operation> <name>`. `Probe::Fetch` and `Probe::Reason` write them. The C step type gained a
+  constructor (`mk`) so that adding fields does not touch every initializer.
+- **Tests** (`tests/module_wit_shapes.rs`, each in Rust and C): `guest_tells_an_unreachable_secret_store_from_a_missing_secret`,
+  `outbound_requests_method_path_and_headers_reach_only_its_declared_destination` and
+  `outbound_request_naming_another_host_in_its_path_or_headers_is_refused_before_it_is_sent`. Shown red by mutation
+  (the host mapping dropped to `undeclared-secret`; the `sensitive` flag ignored), since the stand-ins and the world
+  were written together.
+- **`DEC-20`.** The module boundary (`wit/binding.wit`, `module/host.rs`, `module/wire.rs`) and the platform's
+  outbound-call path in `module/platform.rs`. Shared edits: the `BINDING_VERSION` line in `module/engine.rs`
+  (`T-013-05`'s file) and the new `MAX_HEADERS` in `module/limits.rs`.

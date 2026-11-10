@@ -1,0 +1,232 @@
+//! What the binding's world says besides a bare call (`T-013-07`): a secret lookup tells a store that is down from a
+//! secret that isn't there, and an outbound call carries a whole request, which the egress layer checks hop by hop.
+
+#[path = "module_support/mod.rs"]
+mod common;
+
+use std::net::{IpAddr, Ipv4Addr};
+
+use common::{Probe, binding, install, languages, withdrawal};
+use rutent_conformance::boundary::{
+    BoundaryHarness, Endpoint, Handled, ModuleBinding, ModuleSpec, Output,
+};
+use rutent_conformance::signing::{public_key, statements_key};
+use rutent_contracts::module_interface::{
+    CallOutcome, Declaration, RefusalReason, Refused, validate_record,
+};
+use serde_json::json;
+
+/// A provider with one outside operation, `api.call`, reaching `api` and `other` and holding the secrets `down.key`
+/// and `missing.key`.
+fn declaration(provider: &str) -> Declaration {
+    let destination = |name: &str| {
+        json!({
+            "name": name, "scheme": "https", "host": format!("{name}.{provider}.example"), "port": 443,
+            "addresses": "public",
+        })
+    };
+    serde_json::from_value(json!({
+        "provider": provider,
+        "version": "1.0.0",
+        "interface": rutent_contracts::module_interface::VERSION,
+        "sandboxed": { "handles": ["withdrawal"] },
+        "outside": {
+            "operations": [{
+                "name": "api.call", "destinations": ["api", "other"],
+                "secrets": ["down.key", "missing.key"],
+            }],
+            "destinations": [destination("api"), destination("other")],
+            "secrets": ["down.key", "missing.key"],
+            "calls": [],
+            "statement_key": public_key(&statements_key(provider)),
+        },
+    }))
+    .expect("a valid declaration")
+}
+
+fn spec(provider: &str) -> ModuleSpec {
+    ModuleSpec {
+        declaration: declaration(provider),
+        steps: Vec::new(),
+        output: Output::Honest,
+        starts: true,
+    }
+}
+
+/// The evidence reference of the module's answer, which names each value its outside part obtained.
+fn reference(handled: Handled, provider: &str) -> String {
+    let Handled::Answered(result) = handled else {
+        panic!("{provider} didn't answer")
+    };
+    serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"][0]["reference"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+// verifies: REQ-MDL-17
+#[test]
+fn guest_tells_an_unreachable_secret_store_from_a_missing_secret() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("store-{language}");
+        binding.world.make_store_unavailable(&provider, "down.key");
+        let probes = ["down.key", "missing.key", "undeclared.key"].map(|name| Probe::Reason {
+            operation: "api.call".to_owned(),
+            name: name.to_owned(),
+        });
+        install(
+            &mut binding,
+            &spec(&provider),
+            &language,
+            "reserve",
+            &probes,
+        );
+        let reference = reference(
+            binding.handle(&provider, &withdrawal(&provider, 1)),
+            &provider,
+        );
+        assert_eq!(
+            reference,
+            format!("{provider}-1.0.0-store-unavailable-not-found-undeclared-secret"),
+            "{language}: the guest didn't get a reason of its own for each refusal"
+        );
+    }
+}
+
+// verifies: REQ-MDL-6
+#[test]
+fn outbound_requests_method_path_and_headers_reach_only_its_declared_destination() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("fetch-{language}");
+        let address = |last| IpAddr::V4(Ipv4Addr::new(185, 12, 64, last));
+        let other = Endpoint::https(&format!("other.{provider}.example"));
+        let api = Endpoint::https(&format!("api.{provider}.example"));
+        let undeclared = Endpoint::https(&format!("evil.{provider}.example"));
+        binding.serve(&other, address(41), None);
+        binding.serve(&api, address(40), Some(&other));
+        binding.serve(&undeclared, address(42), None);
+        let headers = vec![
+            (
+                "Authorization".to_owned(),
+                "Bearer-canary".to_owned(),
+                false,
+            ),
+            ("X-Api-Key".to_owned(), "key-canary".to_owned(), true),
+            ("X-Trace".to_owned(), "trace-1".to_owned(), false),
+        ];
+        let fetch = |endpoint: &Endpoint| Probe::Fetch {
+            operation: "api.call".to_owned(),
+            endpoint: endpoint.clone(),
+            method: "PUT".to_owned(),
+            path: "/v1/items?page=2".to_owned(),
+            headers: headers.clone(),
+        };
+        let probes = [fetch(&api), fetch(&undeclared)];
+        install(
+            &mut binding,
+            &spec(&provider),
+            &language,
+            "reserve",
+            &probes,
+        );
+        binding.take_events();
+        binding.handle(&provider, &withdrawal(&provider, 1));
+        let events = binding.take_events();
+
+        // The declared destination got the whole request, as the guest wrote it.
+        let at_api = binding.world.requests_received(&api);
+        assert_eq!(at_api.len(), 1, "{language}: api received {at_api:?}");
+        assert_eq!(at_api[0].method, "PUT");
+        assert_eq!(at_api[0].target, "/v1/items?page=2");
+        let names: Vec<_> = at_api[0].headers.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Authorization", "X-Api-Key", "X-Trace"],
+            "{language}"
+        );
+        // The redirect to another declared destination keeps the method and drops every credential, the one named
+        // `Authorization` and the one the guest flagged alike.
+        let at_other = binding.world.requests_received(&other);
+        assert_eq!(at_other.len(), 1, "{language}: other received {at_other:?}");
+        assert_eq!(at_other[0].method, "PUT");
+        assert_eq!(
+            at_other[0].headers,
+            [("X-Trace".to_owned(), "trace-1".to_owned())],
+            "{language}: a credential followed the redirect"
+        );
+        // An endpoint the operation doesn't declare received nothing, and the call is recorded as refused.
+        assert!(
+            binding.world.requests_received(&undeclared).is_empty(),
+            "{language}: an undeclared endpoint received the request"
+        );
+        assert_eq!(events.records.len(), 2, "{language}: a record per call");
+        for record in &events.records {
+            assert_eq!(
+                validate_record(record),
+                Ok(()),
+                "{language}: invalid record"
+            );
+        }
+        assert!(matches!(
+            events.records[0].outcome,
+            CallOutcome::Completed(_)
+        ));
+        assert_eq!(
+            events.records[1].outcome,
+            CallOutcome::Refused(Refused {
+                reason: RefusalReason::UndeclaredDestination
+            })
+        );
+        // The record names the secret-free request's destinations only, never a header's value.
+        let text = serde_json::to_string(&events.records).expect("JSON");
+        assert!(
+            !text.contains("canary"),
+            "{language}: a credential reached the record"
+        );
+    }
+}
+
+// verifies: REQ-MDL-6
+#[test]
+fn outbound_request_naming_another_host_in_its_path_or_headers_is_refused_before_it_is_sent() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("framing-{language}");
+        let api = Endpoint::https(&format!("api.{provider}.example"));
+        binding.serve(&api, IpAddr::V4(Ipv4Addr::new(185, 12, 64, 40)), None);
+        let fetch = |path: &str, headers: Vec<(String, String, bool)>| Probe::Fetch {
+            operation: "api.call".to_owned(),
+            endpoint: api.clone(),
+            method: "GET".to_owned(),
+            path: path.to_owned(),
+            headers,
+        };
+        let probes = [
+            // An authority in place of a path, a `Host` header and a body-framing header.
+            fetch("//elsewhere.example/x", Vec::new()),
+            fetch(
+                "/x",
+                vec![("Host".to_owned(), "elsewhere.example".to_owned(), false)],
+            ),
+            fetch(
+                "/x",
+                vec![("Content-Length".to_owned(), "0".to_owned(), false)],
+            ),
+        ];
+        install(
+            &mut binding,
+            &spec(&provider),
+            &language,
+            "reserve",
+            &probes,
+        );
+        binding.take_events();
+        binding.handle(&provider, &withdrawal(&provider, 1));
+        assert!(
+            binding.world.requests_received(&api).is_empty(),
+            "{language}: a request that names another host or frames itself was sent"
+        );
+    }
+}

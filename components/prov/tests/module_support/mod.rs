@@ -162,6 +162,10 @@ pub struct TestWorld {
     state: BTreeMap<(String, String), String>,
     endpoints: HashMap<types::Endpoint, (IpAddr, Option<types::Endpoint>)>,
     received: HashMap<types::Endpoint, Vec<String>>,
+    /// The whole request each endpoint received: its method, target, headers and body.
+    requests: HashMap<types::Endpoint, Vec<ReceivedRequest>>,
+    /// The secrets whose store is down: a lookup of one is `store_unavailable`, never `not_found`.
+    unavailable: BTreeSet<(String, String)>,
     /// Every state key the platform asked the world for, in order.
     pub state_asked: Vec<String>,
     /// The private half of each provider's statement key, as the store holds it: the base64url text of its seed.
@@ -171,7 +175,34 @@ pub struct TestWorld {
     derive: Option<fn(&str) -> Ed25519Key>,
 }
 
+/// A request an endpoint received, as the connector would have sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivedRequest {
+    /// The method's name on the wire.
+    pub method: String,
+    /// The origin-form target.
+    pub target: String,
+    /// The headers, in order, as name and value.
+    pub headers: Vec<(String, String)>,
+    /// The body.
+    pub body: String,
+}
+
 impl TestWorld {
+    /// Takes down the store holding `provider`'s secret `name`: a lookup of it is refused as `store_unavailable`.
+    pub fn make_store_unavailable(&mut self, provider: &str, name: &str) {
+        self.unavailable
+            .insert((provider.to_owned(), name.to_owned()));
+    }
+
+    /// The whole requests `endpoint` received, in order.
+    pub fn requests_received(&self, endpoint: &suite::Endpoint) -> Vec<ReceivedRequest> {
+        self.requests
+            .get(&endpoint_from(endpoint))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Derives each provider's statement key with `derive`, for the providers it holds no key of its own for.
     pub fn derive_statement_keys(&mut self, derive: fn(&str) -> Ed25519Key) {
         self.derive = Some(derive);
@@ -215,6 +246,46 @@ impl World for TestWorld {
             .entry(endpoint.clone())
             .or_default()
             .push(body.to_owned());
+    }
+
+    fn receive(&mut self, endpoint: &types::Endpoint, request: &rutent_prov::egress::Request) {
+        self.requests
+            .entry(endpoint.clone())
+            .or_default()
+            .push(ReceivedRequest {
+                method: request.method().as_str().to_owned(),
+                target: request.target().to_owned(),
+                headers: request
+                    .headers()
+                    .iter()
+                    .map(|h| (h.name().to_owned(), h.value().to_owned()))
+                    .collect(),
+                body: String::from_utf8_lossy(request.body()).into_owned(),
+            });
+        self.deliver(endpoint, &String::from_utf8_lossy(request.body()));
+    }
+
+    fn lookup(
+        &mut self,
+        caller: &rutent_prov::proxy::Caller,
+        lookup: &rutent_contracts::module_interface::SecretLookup,
+        judged: Result<(), rutent_prov::proxy::Refusal>,
+    ) -> Result<
+        rutent_contracts::module_interface::SecretValue,
+        rutent_contracts::module_interface::SecretRefusalReason,
+    > {
+        use rutent_contracts::module_interface::{SecretRefusalReason, SecretValue};
+        judged.map_err(|refusal| refusal.wire_reason())?;
+        let key = (
+            caller.provider().as_str().to_owned(),
+            lookup.name.as_str().to_owned(),
+        );
+        if self.unavailable.contains(&key) {
+            return Err(SecretRefusalReason::StoreUnavailable);
+        }
+        self.secret(&key.0, &key.1)
+            .and_then(SecretValue::new)
+            .ok_or(SecretRefusalReason::NotFound)
     }
 
     fn statement_key(

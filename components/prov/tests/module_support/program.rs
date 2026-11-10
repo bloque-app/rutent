@@ -50,6 +50,29 @@ pub enum Probe {
         /// Where it calls.
         endpoint: rutent_conformance::boundary::Endpoint,
     },
+    /// Hostile or honest, as the test says: the outside part sends a full request (a method, a path with its query
+    /// and headers) to `endpoint` under `operation`, and carries what the earlier steps obtained as its body
+    /// (`T-013-07`). A header's value holds no space and no comma.
+    Fetch {
+        /// The outside operation it is made under.
+        operation: String,
+        /// Where it goes (always `https`).
+        endpoint: rutent_conformance::boundary::Endpoint,
+        /// `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.
+        method: String,
+        /// The origin-form target.
+        path: String,
+        /// Each header as its name, its value and whether the guest flags the value as a credential.
+        headers: Vec<(String, String, bool)>,
+    },
+    /// The outside part looks up the secret `name` for `operation` and obtains the refusal's reason, by the name the
+    /// binding gives it, when the lookup is refused (`T-013-07`).
+    Reason {
+        /// The outside operation it asks under.
+        operation: String,
+        /// The secret.
+        name: String,
+    },
 }
 
 fn part(part: PartName) -> &'static str {
@@ -125,6 +148,28 @@ pub fn encode(spec: &ModuleSpec, probes: &[Probe]) -> String {
             Probe::Burn { iterations, times } => {
                 vec![format!("burn {iterations}"); *times].join("\n")
             }
+            Probe::Fetch {
+                operation,
+                endpoint,
+                method,
+                path,
+                headers,
+            } => {
+                let headers = headers
+                    .iter()
+                    .map(|(name, value, sensitive)| {
+                        format!("{}{name}={value}", if *sensitive { "!" } else { "" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "fetch {operation} {} {} {method} {path} {}",
+                    endpoint.host,
+                    endpoint.port,
+                    if headers.is_empty() { "-" } else { &headers }
+                )
+            }
+            Probe::Reason { operation, name } => format!("reason {operation} {name}"),
             Probe::Forge {
                 claimed,
                 secret,
