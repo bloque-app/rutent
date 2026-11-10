@@ -9,10 +9,9 @@ use common::{CATEGORIES, WasmBinding, assertion_signed_by, declaration, paths, s
 use rutent_conformance::boundary::{Admitted, Handled, ModuleBinding, ModuleSpec, Output};
 use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
-    Check, DeferredVerifier, Exercised, Received, RoleHarness, RoleProvider, SuiteContext,
-    WithoutHooks, run_role_suite,
+    Exercised, Received, RoleHarness, RoleProvider, SuiteContext, WithoutHooks, run_role_suite,
 };
-use rutent_conformance::signing::{Signing, real, signed_inside};
+use rutent_conformance::signing::{Ed25519Verifier, Signing, real, signed_inside};
 use rutent_contracts::module_interface::Parts;
 use rutent_contracts::provider_role::{
     Advertisement, KeyPurpose, Operation, ResultBody, Statement,
@@ -50,18 +49,22 @@ impl RoleProvider for Through {
 
     fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         let expected = self.twin.handle(operation);
-        let Handled::Answered(answered) = self.binding.handle(&self.provider, operation) else {
-            panic!("the platform refused an operation of the role suite");
+        let handled = self.binding.handle(&self.provider, operation);
+        let Handled::Answered(answered) = handled else {
+            panic!("the platform refused an operation of the role suite: {handled:?}");
         };
+        // The platform signs the result, and a judgement the module nested in it in the provider's name, with the
+        // provider's statements key, which the stand-in's placeholder stands for. Ed25519 is deterministic, so
+        // the body is the stand-in's own with its nested statements signed for real.
+        let twin_signed = Received::<ResultBody>::from_bytes(signed_inside(expected.bytes()))
+            .expect("reads back");
         assert_eq!(
             serde_json::to_value(&answered.statement).expect("JSON"),
-            serde_json::to_value(&expected.statement().statement).expect("JSON"),
+            serde_json::to_value(&twin_signed.statement().statement).expect("JSON"),
             "the module answered otherwise than the stand-in does in process"
         );
-        // As the platform sends it: the JSON of the statement it signs. A judgement the module nested in its answer
-        // is the stand-in's own statement, and carries the signature of the key its placeholder stands for.
-        let sent = Received::sent(&answered);
-        Received::from_bytes(signed_inside(sent.bytes())).expect("reads back")
+        // As the platform sends it: the JSON of the statement it signed, nothing re-signed here.
+        Received::sent(&answered)
     }
 
     fn state(&self) -> String {
@@ -126,6 +129,17 @@ fn through(category: &str) -> Through {
     declaration.outside.statement_key = statements_key;
     let mut binding = common::WasmBinding::new(paths(), &["rs"], category).expect("a binding");
     binding.set_output_limit(1 << 20);
+    // The world holds the private half of the statements key the declaration names, which the stand-in's
+    // placeholder stands for; the platform resolves it to sign the module's results.
+    let placeholder_statements = placeholders
+        .keys
+        .iter()
+        .find(|k| k.purpose == KeyPurpose::Statements)
+        .expect("a statements key");
+    binding.world.hold_statement_key(
+        &advertisement.provider,
+        &real(placeholder_statements.public_key.as_str()),
+    );
     // The outside part is the module stand-in's, as `M1`'s stand-ins have none of their own.
     let spec = ModuleSpec {
         declaration: declaration.clone(),
@@ -182,17 +196,14 @@ fn through(category: &str) -> Through {
 fn stand_in_of_each_category_passes_its_role_suite_through_the_binding() {
     for category in CATEGORIES {
         let mut provider = WithoutHooks(through(category));
-        let report = run_role_suite(&mut provider, &SuiteContext::default(), &DeferredVerifier);
-        // The first report of a certification, but for signatures: the platform's are placeholders until `M2`
-        // brings the verifier, so `SignatureVerifies` is the one check left deferred.
-        let only_signatures_deferred = report
-            .deferred
-            .iter()
-            .all(|c| *c == Check::SignatureVerifies);
+        let report = run_role_suite(&mut provider, &SuiteContext::default(), &Ed25519Verifier);
+        // The first report of a certification, with nothing deferred: every result the platform passed on, and
+        // each statement nested in it, verifies against the key it names (`T-014-05`).
         assert!(
             !report.hooks_used
                 && report.findings.is_empty()
-                && only_signatures_deferred
+                && report.deferred.is_empty()
+                && report.signatures_deferred == 0
                 && report.uncovered.iter().all(|u| u.answer.needs_a_hook()),
             "{category}: findings {:#?}\nuncovered {:#?}\ndeferred {:#?}",
             report.findings,
@@ -201,9 +212,9 @@ fn stand_in_of_each_category_passes_its_role_suite_through_the_binding() {
         );
         // The platform hid nothing and added nothing: the run is the stand-in's own run, in process.
         let bare = run_role_suite(
-            &mut WithoutHooks(InProcess(in_process(category))),
+            &mut WithoutHooks(Signing(InProcess(in_process(category)))),
             &SuiteContext::default(),
-            &DeferredVerifier,
+            &Ed25519Verifier,
         );
         assert_eq!(report.findings, bare.findings, "{category}: findings");
         assert_eq!(report.exercised, bare.exercised, "{category}: exercised");

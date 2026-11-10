@@ -13,6 +13,8 @@
 
 #[path = "egress_support/mod.rs"]
 mod support;
+#[path = "tls_support/mod.rs"]
+mod tls;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -606,6 +608,125 @@ fn failed_tls_check_to_a_declared_destination_is_refused() {
     assert_eq!((impostor.accepted(), bare.accepted()), (1, 1));
 }
 
+/// `B-18` with the production connector: [`tls_probe`] against `rustls` (`TlsConnector`) and real TLS servers on
+/// loopback, one certified by the deployment's authority for another name, one offering no certificate at all.
+/// Each is dialled once, its handshake fails, and it reads no byte of the request. The control, certified for the
+/// declared name, completes. The certificates are generated here.
+// verifies: REQ-MDL-7, REQ-MDL-6, THR-79
+#[test]
+fn tls_check_through_the_rustls_connector_refuses_a_wrong_name_and_no_certificate() {
+    let pki = tls::Pki::new();
+    let impostor = tls::TlsServer::serve(pki.server_for("collector.attacker.example"));
+    let bare = tls::TlsServer::serve(tls::server_with_no_certificate());
+    let genuine = tls::TlsServer::serve(pki.server_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with(API, &impostor)
+        .with("93.184.216.35", &bare)
+        .with("93.184.216.36", &genuine);
+    let connector =
+        rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer.clone())
+            .expect("a connector over the generated authority")
+            .with_timeout(Duration::from_secs(5));
+
+    tls_probe(&connector, API, "93.184.216.35", &|| {
+        impostor.bytes_received() + bare.bytes_received()
+    });
+
+    assert_eq!(
+        (impostor.accepted(), bare.accepted()),
+        (1, 1),
+        "each dialled once"
+    );
+    assert_eq!((impostor.handshakes(), bare.handshakes()), (0, 0));
+
+    // The control: the same connector reaches the server certified for the declared name.
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &["93.184.216.36"]);
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-10b");
+    let mut log = Vec::new();
+    let outcome = egress.send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert!(
+        matches!(outcome, Outcome::Completed(ref r) if r.status == 200),
+        "{outcome:?}"
+    );
+    let requests = genuine.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].starts_with("POST /p HTTP/1.0\r\nHost: api.acme.example\r\n"),
+        "{}",
+        requests[0]
+    );
+    assert_eq!(log[0].hops[0].address, Address::new("93.184.216.36"));
+    valid(&log[0]);
+    assert_eq!(
+        dialer.dialled().len(),
+        3,
+        "one dial per call, never retried"
+    );
+}
+
+/// The production connector returns a redirect rather than following it, and the egress layer, not the
+/// connector, refuses one to an undeclared host; a server certified by an authority the deployment doesn't trust
+/// is refused like one for a wrong name.
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn rustls_connector_returns_redirects_and_refuses_an_untrusted_chain() {
+    let pki = tls::Pki::new();
+    let mover = tls::TlsServer::answering(
+        pki.server_for("api.acme.example"),
+        "302 Found",
+        &[("Location", "https://collector.attacker.example/p")],
+    );
+    let untrusted = tls::TlsServer::serve(tls::self_signed_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with(API, &mover)
+        .with("93.184.216.37", &untrusted);
+    let connector =
+        rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer.clone())
+            .expect("a connector");
+    let flight = Flight::payout("tx-10c");
+
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &[API]);
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Refused(Refusal::RedirectToUndeclaredDestination)
+    );
+    assert_eq!(
+        mover.requests().len(),
+        1,
+        "the redirecting server answered once"
+    );
+    assert_eq!(dialer.dialled().len(), 1, "the connector followed nothing");
+    valid(&log[0]);
+
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &["93.184.216.37"]);
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(outcome, Outcome::Refused(Refusal::NotVerified));
+    assert_eq!(untrusted.bytes_received(), 0);
+    valid(&log[0]);
+}
+
 /// `REQ-MDL-8`: every call leaves exactly one record, whether it completed, failed, got no answer or was refused
 /// before any dial (another operation's destination, an undeclared host), naming the transaction, provider,
 /// module version and operation, the secrets' names, and each hop's destination and address.
@@ -1040,4 +1161,216 @@ fn credentials_never_return_to_the_first_host_after_a_redirect_away() {
         assert_eq!(names, ["X-Request-Id"], "dial {i} to {}", dial.name);
     }
     assert_eq!(dials[2].name, "api.acme.example", "back at the first host");
+}
+
+/// A resolver that hangs on every lookup until released, for the threaded resolver's tests.
+#[derive(Default)]
+struct Hanging(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl rutent_prov::egress::NameResolver for Hanging {
+    fn resolve(
+        &self,
+        _: &rutent_contracts::module_interface::Host,
+        _: std::num::NonZeroU16,
+    ) -> Vec<IpAddr> {
+        let (released, wake) = &*self.0;
+        let mut done = released.lock().unwrap();
+        let started = std::time::Instant::now();
+        while !*done && started.elapsed() < Duration::from_secs(20) {
+            done = wake
+                .wait_timeout(done, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+        vec![ip(API)]
+    }
+}
+
+/// A lookup that never answers is given up at its deadline and its thread abandoned; abandoned lookups are bounded
+/// per provider, so a provider at its cap is refused a new one at once, and recorded as `limit_reached`, while
+/// another provider's lookups go on. Released, the abandoned threads end and give their places back.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
+    use rutent_prov::egress::{Lookup, LookupRefused, NameResolver, ThreadedResolver};
+
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let resolver = ThreadedResolver::new(Hanging(gate.clone())).with_cap(1);
+    let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
+    let port = std::num::NonZeroU16::new(443).unwrap();
+    let (acme, other) = (
+        rutent_contracts::module_interface::Identifier::new(PROVIDER).unwrap(),
+        rutent_contracts::module_interface::Identifier::new("other").unwrap(),
+    );
+    let lookup = |provider| Lookup {
+        host: &host,
+        port,
+        provider,
+        due: Some(std::time::Instant::now() + Duration::from_millis(300)),
+    };
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        resolver.resolve_for(&lookup(&acme)),
+        Err(LookupRefused::DeadlinePassed)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        resolver.in_flight(&acme),
+        1,
+        "the abandoned lookup still counts"
+    );
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        resolver.resolve_for(&lookup(&acme)),
+        Err(LookupRefused::TooManyInFlight)
+    );
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(
+        resolver.resolve_for(&lookup(&other)),
+        Err(LookupRefused::DeadlinePassed),
+        "another provider's lookup isn't refused"
+    );
+
+    // Through the egress layer: the call at its cap is refused before anything is dialled, and recorded.
+    let connector = ScriptedConnector::default();
+    let flight = Flight::payout("tx-cap");
+    let mut call = flight.call();
+    call.due = Some(std::time::Instant::now() + Duration::from_millis(300));
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &call,
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(outcome, Outcome::Refused(Refusal::LimitReached));
+    assert_eq!(log[0].outcome, refused(RefusalReason::LimitReached));
+    assert!(connector.dials().is_empty());
+    valid(&log[0]);
+
+    // Released, the abandoned lookups end and give their places back.
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    let started = std::time::Instant::now();
+    while resolver.in_flight(&acme) + resolver.in_flight(&other) > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the threads didn't end"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A resolver that panics on every lookup.
+struct Panicking;
+
+impl rutent_prov::egress::NameResolver for Panicking {
+    fn resolve(
+        &self,
+        _: &rutent_contracts::module_interface::Host,
+        _: std::num::NonZeroU16,
+    ) -> Vec<IpAddr> {
+        panic!("the resolver failed");
+    }
+}
+
+/// A lookup whose resolver panics gives its place back: the provider is never left at its cap by a thread that
+/// died, and the lookup gives no address.
+// verifies: REQ-MDL-11, REQ-MDL-7
+#[test]
+fn a_lookup_whose_resolver_panics_gives_its_place_back() {
+    use rutent_prov::egress::{Lookup, NameResolver, ThreadedResolver};
+
+    let resolver = ThreadedResolver::new(Panicking).with_cap(1);
+    let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
+    let acme = rutent_contracts::module_interface::Identifier::new(PROVIDER).unwrap();
+    for attempt in 0..3 {
+        let answer = resolver.resolve_for(&Lookup {
+            host: &host,
+            port: std::num::NonZeroU16::new(443).unwrap(),
+            provider: &acme,
+            due: Some(std::time::Instant::now() + Duration::from_secs(2)),
+        });
+        assert_eq!(answer, Ok(Vec::new()), "attempt {attempt}");
+        let started = std::time::Instant::now();
+        while resolver.in_flight(&acme) > 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "attempt {attempt}: the slot stayed taken"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// A peer that stalls the TLS handshake, or stops reading while the request is written, is cut off at the
+/// operation's deadline (`REQ-MDL-11`), whatever each step's own timeout: before the handshake finished nothing was
+/// sent, and the call is unknown with no address; after it, the request may have reached the peer, and the call is
+/// unknown with the address connected to.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline() {
+    let pki = tls::Pki::new();
+    let silent = tls::Silent::listen();
+    let deaf = tls::TlsServer::stalling_after_handshake(pki.server_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with_silent("93.184.216.38", &silent)
+        .with("93.184.216.39", &deaf);
+    // Each step may take 10 s; the deadline is what cuts.
+    let connector = rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer)
+        .expect("a connector")
+        .with_timeout(Duration::from_secs(10));
+    let flight = Flight::payout("tx-stall");
+    // A body far larger than the sockets' buffers, so its write blocks once the peer stops reading.
+    let large =
+        Request::new(Method::Post, "/p", Vec::new(), vec![b'x'; 16 << 20]).expect("a request");
+
+    for (address, request, connected) in [
+        ("93.184.216.38", post("/p"), false),
+        ("93.184.216.39", large, true),
+    ] {
+        let resolver = TableResolver::default();
+        resolver.then("api.acme.example", &[address]);
+        let mut call = flight.call();
+        let started = std::time::Instant::now();
+        call.due = Some(started + Duration::from_millis(800));
+        let mut log = Vec::new();
+        let outcome = Egress::new(&resolver, &connector).send(
+            &call,
+            https("api.acme.example"),
+            request,
+            &mut log,
+        );
+        let took = started.elapsed();
+
+        assert!(
+            took < Duration::from_secs(2),
+            "{address}: held for {took:?}"
+        );
+        let expected = if connected {
+            Outcome::NoAnswer
+        } else {
+            Outcome::Unreachable
+        };
+        assert_eq!(outcome, expected, "{address}");
+        assert_eq!(
+            log[0].outcome,
+            CallOutcome::Unknown(Nothing {}),
+            "{address}"
+        );
+        assert_eq!(
+            log[0].hops[0].address.is_some(),
+            connected,
+            "{address}: {:?}",
+            log[0].hops[0]
+        );
+        valid(&log[0]);
+    }
+    assert_eq!((silent.accepted(), deaf.handshakes()), (1, 1));
 }

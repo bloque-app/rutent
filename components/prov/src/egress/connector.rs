@@ -4,6 +4,7 @@
 
 use core::fmt;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use rutent_contracts::module_interface::{Host, Scheme};
 
@@ -21,6 +22,9 @@ pub struct Dial<'a> {
     pub name: &'a Host,
     /// The checked address and the declared port.
     pub to: SocketAddr,
+    /// When the operation the call serves must end, if it has a deadline: every step of the exchange, the
+    /// connection, the handshake and each read and write, is bounded by what is left until then (`REQ-MDL-11`).
+    pub due: Option<Instant>,
 }
 
 /// Makes one exchange over one connection: dials an address the egress layer checked, verifies the peer, sends
@@ -42,7 +46,9 @@ pub struct Dial<'a> {
 ///   [`Request`] never carries one;
 /// - never follow a redirect: a `3xx` comes back as a [`Response`] with its `Location`, and the egress layer
 ///   decides whether to follow it;
-/// - bound the time and the size of what it reads, and give [`ConnectError::NoAnswer`] when a bound is reached.
+/// - bound the time and the size of what it reads, and give [`ConnectError::NoAnswer`] when a bound is reached;
+/// - give up at [`Dial::due`], whatever each step's own bound: as [`ConnectError::Unreachable`] before the
+///   handshake has finished, since nothing of the request was sent, and as [`ConnectError::NoAnswer`] after.
 ///
 /// One exchange is one HTTP request and one answer. A WebSocket session is not, so `wss` is not supported
 /// through a connector: a `wss` dial is checked like any other (destination, address, TLS), and then the
