@@ -475,3 +475,23 @@ changelog entry, as a second bullet; no second bump.
   provider-role bump (m2 moved it to 3.0.0 while this task ran) leaves the fixture and its equality test standing.
 - **The guard.** Run against `origin/develop`, as the coordinator now runs it for a milestone branch (m2
   `28f16cc`): router-api is 3.0.0 there against 2.x.
+
+## T-011-06, review round
+
+- **`holding_balance` is never a route's call** (fresh reviewer, should-fix). m2 added the provider-role kind
+  `holding_balance` while this task ran, and `CallKind` re-exports module-interface's enum without its Rust-only
+  `DeclaredCallOfHoldingBalance` rule, so a calls figure, an operation's calls and the router all let it through;
+  only `judge_call` refused it. Now router-api's `call_kind` schema excludes it (`not`), `CatalogueSnapshot::check`
+  refuses a calls figure that declares it, `Operation::check` refuses an operation that names it, and the router
+  skips it even in a snapshot built past its check. Folded into the unreleased 3.0.0's changelog bullet. Two invalid
+  fixtures, `catalogue-snapshot-calls-figure-asking-for-a-holding-balance` (made from a patch) and
+  `operation-naming-a-call-for-a-holding-balance`.
+- **The property.** The generator's `CALL_KINDS` draws `holding_balance` too; a draw of it is kept out of the
+  snapshot (no valid one may carry it) and put back by `with_holding_balance`, in Rust past the check.
+  `no_route_names_a_call_for_a_holding_balance_and_no_snapshot_declares_one` then asserts the snapshot's check
+  refuses it and that the router, handed it anyway, names it on no segment, over more than 50 networks. Seen
+  failing first twice: at seed 1, the check passing, before the contract fix; at seed 4, `p-t06` naming it, before
+  the router's skip. The two fixtures failed first too, accepted by both the schemas and Rust.
+- **`name_segment`'s other refusals** (nit). `tests/route_calls.rs` also asserts it names nothing for a choice
+  round with no route (`decision-record-with-no-route`, `NothingChosen`) and for a record that breaks its contract
+  (choosing a candidate it doesn't hold, `Invalid`). These pin behaviour already there, so they passed at once.

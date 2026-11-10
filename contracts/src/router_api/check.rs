@@ -7,8 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::atoms::{seconds_down, seconds_up};
 use super::types::{
-    Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason, Endpoint,
-    Figure, FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing, Round,
+    CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
+    Endpoint, Figure, FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing,
+    Round,
 };
 use super::{Amount, Id, Timestamp, Violation};
 use crate::provider_role::{
@@ -118,7 +119,7 @@ fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
 impl Operation {
     /// Checks the rules a field type can't carry: the bare typed operation's ([`check_typed_operation`]), then
     /// that its fee is in the from asset and at most the amount in, that it cites each figure once, and that it
-    /// names each call once and none to its own provider.
+    /// names each call once, none to its own provider and none for a holding balance.
     pub fn check(&self) -> Result<(), Violation> {
         check_typed_operation(self.kind, &self.from, &self.to)?;
         if repeats(&self.figures) {
@@ -131,6 +132,15 @@ impl Operation {
         }
         if self.calls.iter().any(|c| c.callee == self.provider) {
             return Err(Violation("an operation names no call to its own provider"));
+        }
+        if self
+            .calls
+            .iter()
+            .any(|c| c.kind == CallKind::HoldingBalance)
+        {
+            return Err(Violation(
+                "an operation names no call for a holding balance",
+            ));
         }
         if self.fee.asset != self.from.asset.id {
             return Err(Violation("an operation's fee is in its from asset"));
@@ -331,7 +341,8 @@ impl CatalogueSnapshot {
     /// - A statement figure's age runs from its `made_at` to `taken_at`, rounded up, and its validity from
     ///   `made_at` to its `valid_until`, rounded down (`REQ-QTE-4`).
     /// - A calls figure (3.0.0, `T-011-06`) states no validity, lists each callee once and each kind once per
-    ///   callee, and names no call to its own provider; a snapshot holds at most one per provider.
+    ///   callee, declares no call for a holding balance (module-interface refuses that declaration too) and names
+    ///   no call to its own provider; a snapshot holds at most one per provider.
     pub fn check(&self) -> Result<(), Violation> {
         for (i, figure) in self.figures.iter().enumerate() {
             if self.figures[..i]
@@ -600,6 +611,14 @@ impl CatalogueSnapshot {
                 let callees: Vec<&Id> = calls.iter().map(|c| &c.callee).collect();
                 if repeats(&callees) {
                     return Err(Violation("a calls figure lists each callee once"));
+                }
+                if calls
+                    .iter()
+                    .any(|c| c.kinds.contains(&CallKind::HoldingBalance))
+                {
+                    return Err(Violation(
+                        "a calls figure declares no call for a holding balance",
+                    ));
                 }
                 if calls.iter().any(|c| repeats(&c.kinds)) {
                     return Err(Violation(

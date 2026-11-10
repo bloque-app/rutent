@@ -81,6 +81,9 @@ fn decision(name: &str) -> DecisionRecord {
 fn call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router() {
     let routed = decision("decision-record-naming-the-calls-each-segment-makes");
     let shortlist = decision("decision-record-shortlist-round");
+    let no_route = decision("decision-record-with-no-route");
+    let mut broken = routed.clone();
+    broken.chosen = Some(rutent_contracts::router_api::Id::new("c999").expect("an id"));
     for language in languages() {
         let mut binding = binding("reserve");
         for callee in ["p-r2", "p-z"] {
@@ -172,6 +175,24 @@ fn call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router() {
                 .name_segment(&transaction, &routed, (0, 2), &segment),
             Err(RouteNotNamed::NoSuchSegment),
             "{language}: a segment past the route named a call"
+        );
+        // A choice round with no route chooses nothing, and a record that breaks its contract (here, choosing a
+        // candidate it doesn't hold) is refused before anything in it is read.
+        assert_eq!(
+            binding
+                .routes
+                .name_segment(&transaction, &no_route, (0, 0), &segment),
+            Err(RouteNotNamed::NothingChosen),
+            "{language}: a choice round with no route named a call"
+        );
+        assert!(
+            matches!(
+                binding
+                    .routes
+                    .name_segment(&transaction, &broken, (0, 0), &segment),
+                Err(RouteNotNamed::Invalid(_))
+            ),
+            "{language}: a record that breaks its contract named a call"
         );
         let (_, events) = run(&mut binding, "p-r1", 2);
         assert_eq!(events.calls.len(), 2, "{language}: {:?}", events.calls);

@@ -26,11 +26,13 @@
   release, with no validity, at most one per provider. A new optional field on the priced operation, `calls`: the
   `{callee, kind}` pairs the segment names, each once, never empty when present, none to its own provider. The kind
   is the module interface's, a provider-role operation kind, by `$ref` to provider-role's operation kind, and in Rust
-  `CallKind`, the module interface's `OperationKind`. The record's check: an operation cites one calls figure exactly
+  `CallKind`, the module interface's `OperationKind`, but never `holding_balance`, the operator's own question to a
+  holding, which module-interface already refuses in a declared call: the schema's `call_kind` excludes it, and
+  the Rust checks refuse it in a calls figure and in an operation's calls. The record's check: an operation cites one calls figure exactly
   when it names a call, its own module release's; each call is declared there and is to the provider of another
   operation of its part. That a router names every such call is the router suite's. A new figure kind and a new
   wire field are a major under `DEC-4` whatever Rust's `#[non_exhaustive]` spares: a reader on 2.x's schema rejects
-  both. Two new valid fixtures, a calls figure in the one of every kind of figure, and eighteen invalid ones; the new decision-record fixture is `rutent-router`'s own
+  both. Two new valid fixtures, a calls figure in the one of every kind of figure, and twenty invalid ones; the new decision-record fixture is `rutent-router`'s own
   record over its inputs, as its tests show. (DEC-4, DEC-8, DEC-20, T-011-06)
 
 ## 2.1.0

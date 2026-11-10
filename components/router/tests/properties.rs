@@ -12,7 +12,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use common::{Net, WIDE, bounds, endpoint, fee, outer, parse, request, routed, shortlist};
 use rutent_conformance::router::recompute;
-use rutent_contracts::router_api::{DecisionRecord, OperationKind, PolicyBounds, Request, Router};
+use rutent_contracts::router_api::{
+    CallKind, CatalogueSnapshot, DecisionRecord, DeclaredCall, FigureValue, Id, NonEmpty,
+    OperationKind, PolicyBounds, Request, Router,
+};
 use rutent_router::RouteFinder;
 use rutent_router::shortlist::{Question, Refusal, Wanted, asks};
 use serde_json::{Value, json};
@@ -98,10 +101,15 @@ struct Network {
     /// The calls each provider's module declares, `(callee, kind)`, in the release its tuples come from; a
     /// provider whose calls figure is of another release, or that has none, declares none here.
     declared: BTreeMap<String, BTreeSet<(String, String)>>,
+    /// The callees each calls figure, by id, was drawn to call for `holding_balance`, kept out of the snapshot.
+    holding: BTreeMap<String, Vec<String>>,
 }
 
-/// The provider-role operation kinds a call may ask for, as module-interface names them.
-const CALL_KINDS: [&str; 8] = [
+/// The provider-role operation kinds a call may be drawn for, as module-interface names them. `holding_balance` is
+/// among them, though no calls figure may carry it (the operator's own question to a holding, never a module's):
+/// a draw of it is kept out of the snapshot and recorded in [`Network::holding`], for the property to put back.
+const CALL_KINDS: [&str; 9] = [
+    "holding_balance",
     "withdrawal",
     "deposit",
     "transfer",
@@ -272,6 +280,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
     let providers: Vec<String> = edges.iter().map(|(id, ..)| format!("p-{id}")).collect();
     // Drawn after every tuple, so the other shapes' draws are unchanged.
     let mut declared = BTreeMap::new();
+    let mut holding = BTreeMap::new();
     if shape.calls {
         for (i, provider) in providers.iter().enumerate() {
             if draw.one_in(4) {
@@ -296,8 +305,20 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
                 }
                 calls.push((callee, kinds));
             }
+            let asked_holding: Vec<String> = calls
+                .iter()
+                .filter(|(_, kinds)| kinds.contains(&"holding_balance"))
+                .map(|(callee, _)| callee.clone())
+                .collect();
+            for (_, kinds) in &mut calls {
+                kinds.retain(|k| *k != "holding_balance");
+            }
+            calls.retain(|(_, kinds)| !kinds.is_empty());
             if calls.is_empty() {
                 continue;
+            }
+            if !asked_holding.is_empty() {
+                holding.insert(format!("calls-{i:02}"), asked_holding);
             }
             let other_release = draw.one_in(5);
             let listed: Vec<Value> = calls
@@ -334,6 +355,7 @@ fn network(draw: &mut Draw, shape: Shape) -> Network {
         drains,
         providers,
         declared,
+        holding,
     }
 }
 
@@ -473,6 +495,76 @@ fn every_call_a_route_names_is_one_its_provider_s_declaration_allows() {
         named > 50 && unnamed > 50,
         "named {named}, left unnamed {unnamed}"
     );
+}
+
+/// `network`'s snapshot with every `holding_balance` call the generator drew put back into its calls figure,
+/// built in Rust so no check runs; `None` when none was drawn.
+fn with_holding_balance(network: &Network) -> Option<CatalogueSnapshot> {
+    if network.holding.is_empty() {
+        return None;
+    }
+    let mut snapshot = network.snapshot.clone();
+    for figure in &mut snapshot.figures {
+        let Some(callees) = network.holding.get(figure.figure_id.as_str()) else {
+            continue;
+        };
+        let FigureValue::Calls { calls } = &figure.value else {
+            continue;
+        };
+        let mut calls: Vec<DeclaredCall> = calls.clone().into();
+        for callee in callees {
+            match calls.iter_mut().find(|c| c.callee.as_str() == callee) {
+                Some(call) => {
+                    let mut kinds: Vec<CallKind> = call.kinds.clone().into();
+                    kinds.push(CallKind::HoldingBalance);
+                    call.kinds = NonEmpty::new(kinds).expect("kinds");
+                }
+                None => calls.push(DeclaredCall {
+                    callee: Id::new(callee.as_str()).expect("an id"),
+                    kinds: NonEmpty::new(vec![CallKind::HoldingBalance]).expect("a kind"),
+                }),
+            }
+        }
+        figure.value = FigureValue::Calls {
+            calls: NonEmpty::new(calls).expect("calls"),
+        };
+    }
+    Some(snapshot)
+}
+
+// verifies: REQ-MDL-9, REQ-MDL-21, DEC-18
+#[test]
+fn no_route_names_a_call_for_a_holding_balance_and_no_snapshot_declares_one() {
+    let mut drawn = 0;
+    for (seed, network, request, bounds) in generated(600, CALLS) {
+        let Some(tainted) = with_holding_balance(&network) else {
+            continue;
+        };
+        drawn += 1;
+        // The contract refuses a calls figure that declares it.
+        assert!(
+            tainted.check().is_err(),
+            "seed {seed}: a calls figure declaring holding_balance passes the snapshot's check"
+        );
+        // And a router handed one anyway names it on no segment.
+        let record = RouteFinder::route(&request, &tainted, &bounds);
+        for operation in record
+            .candidates
+            .iter()
+            .flat_map(|c| c.parts.iter())
+            .flat_map(|p| p.operations.iter())
+        {
+            assert!(
+                operation
+                    .calls
+                    .iter()
+                    .all(|c| c.kind != CallKind::HoldingBalance),
+                "seed {seed}: {} names a call for a holding balance",
+                operation.provider
+            );
+        }
+    }
+    assert!(drawn > 50, "only {drawn} networks drew holding_balance");
 }
 
 // verifies: AC-2, REQ-AUD-4, REQ-QTE-11, DEC-18

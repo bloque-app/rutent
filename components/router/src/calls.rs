@@ -6,10 +6,11 @@
 //! is the provider of another segment of the same part: every kind declared for that callee, in the order the
 //! figure lists them. A declared call to a provider on no segment of the part stays unnamed, so a module can never
 //! reach a provider its route doesn't take, and a module whose release the snapshot doesn't state names nothing.
-//! A segment that names a call cites the calls figure; one that names none cites it not.
+//! A segment that names a call cites the calls figure; one that names none cites it not. No segment names a call
+//! for `holding_balance`, the operator's own question to a holding.
 
 use rutent_contracts::router_api::{
-    CatalogueSnapshot, Figure, FigureValue, Id, NonEmpty, Operation, Origin, RouteCall,
+    CallKind, CatalogueSnapshot, Figure, FigureValue, Id, NonEmpty, Operation, Origin, RouteCall,
 };
 
 /// A provider figure's module release: its provider and `module_version`.
@@ -52,7 +53,13 @@ pub(crate) fn name(snapshot: &CatalogueSnapshot, operations: &mut [Operation]) {
         };
         let mut named: Vec<RouteCall> = Vec::new();
         for call in calls.iter().filter(|c| on_the_part(&c.callee)) {
-            for &kind in call.kinds.iter() {
+            // Never `holding_balance`: the operator's own question to a holding, which no module may call for and
+            // the contract refuses in a calls figure; skipped even in a snapshot built past its check.
+            for &kind in call
+                .kinds
+                .iter()
+                .filter(|&&k| k != CallKind::HoldingBalance)
+            {
                 let route_call = RouteCall {
                     callee: call.callee.clone(),
                     kind,
