@@ -557,6 +557,53 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
   `host.rs`, the lookup and egress paths, `engine.rs` and the compiler are untouched.
 
+## T-013-06, review round
+
+- **The world is told which release handles each operation.** `launch` told the world that the staged release ran;
+  after a rollback or an exploited declaration the version in force kept its process, so the world was never told
+  again. The production proxy then judged lookups against the revoked release, recorded uses under its version,
+  and, for a changed statement key, refused every result as `Unavailable`. `run_in_process` now calls
+  `World::running` with the handling version's release, before `begin_operation`, whenever it isn't the last one
+  told for that provider (`Platform::told`). This replaces the earlier item for `F-014`.
+  `rolled_back_release_with_a_new_statement_key_leaves_the_version_in_force_signing_with_its_own`
+  (`tests/production_world.rs`) stages the operator's wallet with a new statement key. The version in force answers
+  signed with its own key while staged and after the rollback, and a segment on the staged release answers with the
+  new key. It failed with the re-telling disabled.
+- **Staging is on by default (reading).** `Lifecycle::default()` holds `DEFAULT_STAGING`: a 10 % share, a one-day
+  window and a minimum of 100 operations (`DEFAULT_SHARE`, `DEFAULT_WINDOW`, `DEFAULT_MINIMUM`). The values are
+  this task's reading. The deployment's settings may change them in `M4`, and `set_staging(None)` puts upgrades in
+  force at once. This replaces the earlier note's "off by default" and its item. The tests' platforms
+  (`WasmBinding::new`, `Signed::new`, `production_world.rs`'s `Running::new`) call `set_staging(None)`, since the
+  suites expect an accepted upgrade to run at once; the lifecycle's tests stage their own.
+  `platform_stages_upgrades_by_default` failed with the default `None`.
+- **A release follows the version in force.** Widenings, the history and `compared_with` were computed against the
+  last accepted release, even one rolled back or declared exploited. So a release widening as a rolled-back one did
+  passed as automatic. `admit` now follows the version in force, or else the newest accepted release neither
+  revoked nor exploited (`release_followed`), and the contract's `validate_release` judges against that.
+  - The history therefore leaves out a release that was withdrawn from use. Two checks still look at every accepted
+    release: `OlderRelease` against the newest accepted, and a new check refusing an assertion signed with a
+    statement key any accepted release declared (`Unverified::Release(AssertionSignedWithPreviousStatementKey)`).
+  - A release that never started is followed only if nothing is in force.
+  - This replaces the earlier reading on a failed upgrade's successor.
+  - `release_after_a_rolled_back_one_is_compared_with_the_version_in_force` failed when it compared with the last
+    accepted.
+- **Only operations a process ran are observed.** `NotHandled`, and an operation that found its process gone,
+  counted towards the minimum. A promotion could then drop the old process with no version in force. The platform
+  now counts an operation for a version only once its process took it and said something of it (`Platform::runs`).
+  `promote` is refused as `LifecycleRefusal::StagedNotRunning` while the staged version has no live process.
+  `only_operations_the_staged_version_ran_count_and_it_is_promoted_only_while_it_runs` failed with either part
+  disabled.
+- **A transaction holding `/` owns no per-transaction entry** (`state_readable`). So `transaction/a/b/x` is only
+  ever `a`'s entry `b/x`, never a transaction `a/b`'s. The owner was already the key's first segment, so this held
+  before: the unit test passed with the explicit check disabled, and the check now says it outright. No refusal
+  was added for such an identifier.
+- **The merge.** `m2` at `661ee1a` (`T-013-05`, `T-013-07`, `T-010-06`) was merged first. The notes and
+  module-interface's changelog conflicted on appended sections and bullets, and both sides were kept.
+- **`DEC-20`.** This round touches one `DEC-20` path, module admission: `module/platform.rs` (`admit`'s
+  `release_followed` and the statement-key check, `promote`, the re-telling in `run_in_process`, run counting) and
+  `module/lifecycle.rs`. The re-telling calls into the proxy, a `DEC-20` path, through `World::running`; the
+  proxy itself is unchanged.
+
 ## T-013-05, hardening the admitting compiler
 
 - **Fuzzing (`B-09`, `THR-85`).** No fuzzing crate: nothing enters `Cargo.lock` or `licences/RECORD`. A seeded mutation

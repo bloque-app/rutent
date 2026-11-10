@@ -74,6 +74,8 @@ impl Signed {
         )
         .expect("a platform");
         platform.set_output_limit(4096);
+        // Upgrades run at once here; the lifecycle's tests stage their own.
+        platform.set_staging(None);
         // The platform signs each result with the provider's statements key, which the world holds: these tests'
         // keys, for every provider they admit.
         platform.world.derive_statement_keys(statements_key);

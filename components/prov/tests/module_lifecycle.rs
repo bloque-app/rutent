@@ -13,9 +13,13 @@ mod support;
 
 use common::{TestWorld, WasmBinding, binding, install, languages, spec, withdrawal};
 use rutent_conformance::boundary::{BoundaryHarness, ModuleBinding, Output, Step};
-use rutent_contracts::module_interface::{AdmissionRefusal, Identifier, PartName, PlatformRefusal};
+use rutent_contracts::module_interface::{
+    AcceptanceMode, AdmissionRefusal, Identifier, PartName, PlatformRefusal,
+};
 use rutent_prov::catalogue::Instant;
-use rutent_prov::module::lifecycle::{DecisionKind, LifecycleRefusal, Mark, MoveReason, Staging};
+use rutent_prov::module::lifecycle::{
+    DEFAULT_STAGING, DecisionKind, LifecycleRefusal, Mark, MoveReason, Staging,
+};
 use rutent_prov::module::platform::Platform;
 use rutent_prov::module::types::{self, Admitted};
 use signed::{AT, RESERVE, Signed, release};
@@ -644,4 +648,151 @@ fn operator_published_module_upgrade_is_staged_and_rolled_back_as_a_providers_is
         .expect("its record");
     assert_eq!(record.runs_on, "1.1.0");
     assert!(s.platform.version_process(wallet, "1.1.0").is_none());
+}
+
+/// A deposit asked of `provider` in the transaction of [`withdrawal`] `n`: a kind the stand-ins don't handle.
+fn deposit(
+    provider: &str,
+    n: usize,
+) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
+    let mut value = serde_json::to_value(withdrawal(provider, n)).expect("JSON");
+    value["statement"] = serde_json::json!({
+        "kind": "deposit",
+        "transaction": tx(provider, n).as_str(),
+        "provider": provider,
+        "origin": "conformance-ledger",
+        "destination": { "network": "conformance-network" },
+        "asset": "COP",
+        "amount": "1000",
+        "dry_run": false,
+        "inputs": {},
+    });
+    serde_json::from_value(value).expect("a valid operation")
+}
+
+// verifies: REQ-MDL-4
+#[test]
+fn platform_stages_upgrades_by_default() {
+    let platform = Platform::new(
+        common::paths(),
+        TestWorld::default(),
+        types::Envelope {
+            deployment: signed::catalogue_support::deployment(),
+            protocol_version: rutent_contracts::provider_role::VERSION.to_owned(),
+        },
+    )
+    .expect("a platform");
+    let staging = platform.lifecycle().staging().expect("staging is on");
+    assert_eq!(staging, DEFAULT_STAGING);
+    assert_eq!(
+        (staging.share(), staging.window(), staging.minimum()),
+        (10, 86_400, 100)
+    );
+}
+
+// verifies: REQ-MDL-3, AC-21, REQ-MDL-4
+#[test]
+fn release_after_a_rolled_back_one_is_compared_with_the_version_in_force() {
+    let provider = "widening";
+    let mut binding = binding("reserve");
+    upgrade(&mut binding, provider, "1.0.0", true);
+    stage(&mut binding, 100, 0, 0);
+    let widened = |version: &str| {
+        let mut module = spec(provider, version, Vec::new(), true);
+        module.declaration = common::declaration(provider, version, &["withdrawal", "deposit"]);
+        module
+    };
+    // 1.1.0 widens, handling deposits too: accepted afresh, staged, and rolled back.
+    install(&mut binding, &widened("1.1.0"), &language(), "reserve", &[]);
+    assert_eq!(binding.lifecycle().staged(provider), Some("1.1.0"));
+    binding
+        .roll_back(provider, OPERATOR, AT)
+        .expect("rolled back");
+    // 1.2.0 widens as 1.1.0 did. Compared with 1.0.0, the version in force, it needs a fresh acceptance too.
+    let module = widened("1.2.0");
+    let binaries = binding
+        .build_with(&module, &language(), "reserve", &[])
+        .expect("a stand-in");
+    let admitted = ModuleBinding::admit(
+        &mut binding,
+        &common::assertion(&module.declaration, &binaries),
+        &binaries,
+    );
+    let rutent_conformance::boundary::Admitted::Artefact(artefact) = admitted else {
+        panic!("not admitted: {admitted:?}");
+    };
+    assert_eq!(
+        artefact
+            .capabilities
+            .compared_with
+            .as_ref()
+            .map(|v| v.as_str()),
+        Some("1.0.0")
+    );
+    assert!(!artefact.capabilities.widenings.is_empty());
+    assert_eq!(artefact.acceptance.required, AcceptanceMode::Fresh);
+    assert_eq!(artefact.acceptance.accepted, None);
+}
+
+// verifies: REQ-MDL-4
+#[test]
+fn only_operations_the_staged_version_ran_count_and_it_is_promoted_only_while_it_runs() {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let provider = "counted";
+    let mut binding = binding("reserve");
+    upgrade(&mut binding, provider, "1.0.0", true);
+    stage(&mut binding, 100, 0, 1);
+    upgrade(&mut binding, provider, "1.1.0", true);
+    assert_eq!(
+        binding.begin_segment(provider, &tx(provider, 1)).as_deref(),
+        Ok("1.1.0")
+    );
+    let handled = |binding: &WasmBinding| {
+        binding
+            .lifecycle()
+            .observation(provider)
+            .expect("staged")
+            .staged_counts
+            .handled()
+    };
+
+    // A kind it doesn't handle is refused before it reaches the module: not counted.
+    assert_eq!(
+        Platform::handle(&mut binding, provider, &deposit(provider, 1)),
+        types::Handled::Refused(PlatformRefusal::NotHandled)
+    );
+    assert_eq!(handled(&binding), 0);
+
+    // Its process killed, it isn't promoted, and an operation that finds the process gone isn't counted.
+    let pid = binding
+        .version_process(provider, "1.1.0")
+        .expect("its process");
+    // SAFETY: a signal to a child process this test's platform started.
+    assert_eq!(unsafe { kill(pid as i32, 9) }, 0);
+    let mut refused = Ok(String::new());
+    for _ in 0..200 {
+        refused = binding.promote(provider, OPERATOR, AT);
+        if refused == Err(LifecycleRefusal::StagedNotRunning) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(refused, Err(LifecycleRefusal::StagedNotRunning));
+    assert_eq!(binding.active_version(provider).as_deref(), Some("1.0.0"));
+    assert_eq!(
+        answer(&mut binding, provider, 1),
+        Err(PlatformRefusal::Unavailable)
+    );
+    assert_eq!(handled(&binding), 0);
+
+    // Started again in its place, it runs one, which counts, and it is promoted.
+    assert_eq!(answer(&mut binding, provider, 1).as_deref(), Ok("1.1.0"));
+    assert_eq!(handled(&binding), 1);
+    assert_eq!(
+        binding.promote(provider, OPERATOR, AT).as_deref(),
+        Ok("1.1.0")
+    );
+    assert_eq!(answer(&mut binding, provider, 9).as_deref(), Ok("1.1.0"));
 }

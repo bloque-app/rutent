@@ -43,18 +43,38 @@ pub const TRANSACTION_STATE: &str = "transaction/";
 
 /// Whether an operation of `transaction` may read the state entry `key`: a shared entry, or one of its own
 /// transaction's. The transaction is the one the platform is handling, never one the module names; an operation
-/// that names none (a verifier's judgement) reads no transaction's entry.
+/// that names none (a verifier's judgement) reads no transaction's entry, and nor does one whose identifier holds
+/// a `/`, which would make another transaction's entry look like its own (`a` and `a/b`).
 pub fn state_readable(key: &str, transaction: &str) -> bool {
     match key.strip_prefix(TRANSACTION_STATE) {
         None => true,
         Some(rest) => {
             !transaction.is_empty()
+                && !transaction.contains('/')
                 && rest
                     .split_once('/')
                     .is_some_and(|(owner, _)| owner == transaction)
         }
     }
 }
+
+/// The share of new segments a staged release takes by default: 10 percent.
+pub const DEFAULT_SHARE: u8 = 10;
+
+/// The time window a staged release is observed for by default, in seconds: one day.
+pub const DEFAULT_WINDOW: u64 = 86_400;
+
+/// The operations a staged release must have run, by default, before it may be put in force.
+pub const DEFAULT_MINIMUM: u64 = 100;
+
+/// The staging every platform starts with (ADR-0014): [`DEFAULT_SHARE`], [`DEFAULT_WINDOW`] and
+/// [`DEFAULT_MINIMUM`]. A deployment's settings may change it; no upgrade is put in force at once unless staging is
+/// turned off.
+pub const DEFAULT_STAGING: Staging = Staging {
+    share: DEFAULT_SHARE,
+    window: DEFAULT_WINDOW,
+    minimum: DEFAULT_MINIMUM,
+};
 
 /// How an upgrade is staged (ADR-0014): the share of new segments the staged release takes, and what must be
 /// observed of it before it may be put in force.
@@ -245,6 +265,8 @@ pub enum LifecycleRefusal {
     NoNewerVersion,
     /// The version is revoked, exploited or stale already.
     AlreadyMarked,
+    /// The staged version has no live process, so it can't be put in force.
+    StagedNotRunning,
 }
 
 #[derive(Debug, Clone)]
@@ -298,8 +320,9 @@ impl Releases {
     }
 }
 
-/// The lifecycle of every provider's releases on one platform. See the module's documentation.
-#[derive(Debug, Clone, Default)]
+/// The lifecycle of every provider's releases on one platform. See the module's documentation. It starts with
+/// [`DEFAULT_STAGING`].
+#[derive(Debug, Clone)]
 pub struct Lifecycle {
     policy: Option<Staging>,
     providers: BTreeMap<String, Releases>,
@@ -308,8 +331,21 @@ pub struct Lifecycle {
     decisions: Vec<Decision>,
 }
 
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self {
+            policy: Some(DEFAULT_STAGING),
+            providers: BTreeMap::new(),
+            segments: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            decisions: Vec::new(),
+        }
+    }
+}
+
 impl Lifecycle {
-    /// Sets how upgrades are staged; `None`, the default, puts an accepted release in force once it starts.
+    /// Sets how upgrades are staged, [`DEFAULT_STAGING`] at first; `None` puts an accepted release in force once
+    /// it starts.
     pub fn set_staging(&mut self, policy: Option<Staging>) {
         self.policy = policy;
     }
@@ -798,5 +834,9 @@ mod tests {
         assert!(!state_readable("transaction/tx-1x/nonce", "tx-1"));
         assert!(!state_readable("transaction//nonce", ""), "no transaction");
         assert!(!state_readable("transaction/tx-1/nonce", ""));
+        // A transaction holding a slash owns no entry, so `transaction/a/b/x` is only ever `a`'s entry `b/x`.
+        assert!(!state_readable("transaction/a/b/x", "a/b"));
+        assert!(!state_readable("transaction/a/b/", "a/b"));
+        assert!(state_readable("transaction/a/b/x", "a"));
     }
 }
