@@ -859,17 +859,10 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     );
 }
 
-/// A holding account the operator publishes (`T-016-04`) runs on the production world like any module: the proxy
-/// admits its release on the operator's own signature, with no advertisement, and resolves the statement key it
-/// declares, so its results are signed and value lands in it.
-// verifies: REQ-CAT-23, REQ-MDL-1, INV-5
-#[test]
-fn operator_wallets_results_are_signed_on_the_production_world() {
-    use rutent_prov::holding::wallet::{Holdings, Operator as _};
-    use support::{OPERATOR, POLYGON_WALLET, TestOperator, wallet_release};
-
-    let pki = tls::Pki::new();
-    let mut running = Running::new(&pki, tls::MappedDialer::default());
+/// Publishes the operator's `polygon` wallet, admits its release signed with the operator key and accepts it, and
+/// checks that the proxy admitted it.
+fn run_operator_wallet(running: &mut Running) {
+    use support::{OPERATOR, POLYGON_WALLET, wallet_release};
     running
         .catalogue
         .publish_operator_module(POLYGON_WALLET)
@@ -899,24 +892,30 @@ fn operator_wallets_results_are_signed_on_the_production_world() {
         )
         .expect("the release is accepted");
     assert_eq!(running.platform.world.take_unadmitted(), Vec::new());
+}
 
-    // Its answer is signed with the statement key it declares, resolved through the proxy.
+/// Asks the operator's `polygon` wallet for deposit `n` and checks that its answer is passed on, signed with the
+/// statement key it declares, resolved through the proxy.
+fn assert_wallet_answers_signed(running: &mut Running, n: usize) {
+    use rutent_prov::holding::wallet::Operator as _;
+    use support::{POLYGON_WALLET, TestOperator};
     let deposit = TestOperator.statement(
         serde_json::from_value(json!({
             "kind": "deposit",
-            "transaction": "tx-o-0",
+            "transaction": format!("tx-o-{n}"),
             "provider": POLYGON_WALLET,
             "origin": "polygon",
             "destination": { "network": POLYGON_WALLET },
             "asset": "USDC",
             "amount": "5",
             "dry_run": false,
-            "inputs": { "order": "o-0" },
+            "inputs": { "order": format!("o-{n}") },
         }))
         .expect("a valid operation"),
     );
-    let Handled::Answered(result) = running.platform.handle(POLYGON_WALLET, &deposit) else {
-        panic!("the wallet's answer wasn't passed on");
+    let handled = running.platform.handle(POLYGON_WALLET, &deposit);
+    let Handled::Answered(result) = handled else {
+        panic!("the wallet's answer wasn't passed on: {handled:?}");
     };
     assert_eq!(
         result.signature.key,
@@ -926,6 +925,60 @@ fn operator_wallets_results_are_signed_on_the_production_world() {
         rutent_conformance::signing::verify(&serde_json::to_vec(&*result).expect("JSON")),
         Ok(())
     );
+}
+
+/// No advertisement vouches for the keys of a module the operator publishes (`T-016-04`): one naming it, held by
+/// the world before its release starts, doesn't decide how that release is admitted, and one offered while it runs
+/// is refused. Either way its results stay signed with the key its own release declares.
+// verifies: REQ-MDL-1, REQ-CAT-23, THR-4
+#[test]
+fn advertisement_naming_an_operators_module_never_judges_its_release() {
+    use rutent_prov::proxy::Refusal;
+    use support::POLYGON_WALLET;
+
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    // An advertisement under the wallet's name, listing a provider's keys and not the wallet's statement key.
+    let mut impostor = running
+        .catalogue
+        .accepted_advertisement(RESERVE)
+        .expect("the reserve's advertisement")
+        .clone();
+    impostor.statement.provider = POLYGON_WALLET.to_owned();
+    impostor.maker = POLYGON_WALLET.to_owned();
+
+    // Held before the wallet's release starts: the release is still admitted as the operator's own.
+    running
+        .platform
+        .world
+        .advertise(impostor.clone())
+        .expect("no release of the wallet runs yet");
+    run_operator_wallet(&mut running);
+    assert_wallet_answers_signed(&mut running, 1);
+
+    // Offered while it runs: refused, and the wallet's key is unchanged.
+    assert_eq!(
+        running.platform.world.advertise(impostor),
+        Err(Refusal::AdvertisementOfAnOperatorsModule)
+    );
+    assert_wallet_answers_signed(&mut running, 2);
+}
+
+/// A holding account the operator publishes (`T-016-04`) runs on the production world like any module: the proxy
+/// admits its release on the operator's own signature, with no advertisement, and resolves the statement key it
+/// declares, so its results are signed and value lands in it.
+// verifies: REQ-CAT-23, REQ-MDL-1, INV-5
+#[test]
+fn operator_wallets_results_are_signed_on_the_production_world() {
+    use rutent_prov::holding::wallet::Holdings;
+    use support::{POLYGON_WALLET, TestOperator};
+
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    run_operator_wallet(&mut running);
+
+    // Its answer is signed with the statement key it declares, resolved through the proxy.
+    assert_wallet_answers_signed(&mut running, 0);
 
     // As a node's holding account, it takes value landing at its node.
     let mut holdings = Holdings::default();

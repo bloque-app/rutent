@@ -83,6 +83,9 @@ pub enum Refusal {
     /// A release offered with no advertisement isn't the operator's own: it isn't of the proxy's deployment, or
     /// isn't signed with the `operator_key` the proxy's settings name (`T-016-04`).
     NotTheOperatorsRelease,
+    /// An advertisement names a module whose running release is the operator's own: no advertisement vouches for
+    /// its keys (`T-016-04`).
+    AdvertisementOfAnOperatorsModule,
     /// The release's provider or one of its secret names isn't one plain path segment of at most 255 bytes, so
     /// the store can't address it under that provider's keys.
     UnaddressableName,
@@ -287,13 +290,18 @@ impl<R: Resolver> CredentialProxy<R> {
         if artefact.acceptance.accepted.is_none() {
             return Err(Refusal::NotAccepted);
         }
-        let assertion = &artefact.assertion;
-        if assertion.deployment != self.deployment
-            || assertion.signature.key != self.deployment.operator_key
-        {
+        if !self.is_operators_release(artefact) {
             return Err(Refusal::NotTheOperatorsRelease);
         }
         self.install(artefact, Vouched::Operator)
+    }
+
+    /// Whether `artefact`'s assertion is the operator's own: of the proxy's deployment, and signed with the
+    /// `operator_key` the proxy's settings name.
+    pub fn is_operators_release(&self, artefact: &AdmissionArtefact) -> bool {
+        let assertion = &artefact.assertion;
+        assertion.deployment == self.deployment
+            && assertion.signature.key == self.deployment.operator_key
     }
 
     /// Makes the release its provider's running one, vouched for by `vouched`, once its provider has a role and
@@ -328,20 +336,27 @@ impl<R: Resolver> CredentialProxy<R> {
     /// Takes `advertisement`, the one the catalogue now accepts for its provider, as the keys that provider's running
     /// release is judged against from the next statement key on: a key the new advertisement no longer lists for
     /// `statements`, or lists for `advertising`, stops being resolved at once, with no restart. An advertisement of
-    /// another deployment is refused, and one of a provider with no release admitted changes nothing here. Nor
-    /// does one naming a module the operator publishes: no advertisement vouches for its keys.
+    /// another deployment is refused, and one of a provider with no release admitted changes nothing here. One
+    /// naming a module whose running release is the operator's own is refused: no advertisement vouches for its
+    /// keys (`T-016-04`).
     pub fn advertise(&mut self, advertisement: &Statement<Advertisement>) -> Result<(), Refusal> {
         if advertisement.deployment != self.deployment {
             return Err(Refusal::AdvertisementOfAnotherDeployment);
         }
-        if let Some(Release {
-            vouched: Vouched::Advertisement(keys),
-            ..
-        }) = self.releases.get_mut(&advertisement.statement.provider)
-        {
-            *keys = advertisement.statement.keys.clone();
+        match self.releases.get_mut(&advertisement.statement.provider) {
+            Some(Release {
+                vouched: Vouched::Operator,
+                ..
+            }) => Err(Refusal::AdvertisementOfAnOperatorsModule),
+            Some(Release {
+                vouched: Vouched::Advertisement(keys),
+                ..
+            }) => {
+                *keys = advertisement.statement.keys.clone();
+                Ok(())
+            }
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Starts handling an operation for `transaction` in the caller's module. It replaces whatever that module was

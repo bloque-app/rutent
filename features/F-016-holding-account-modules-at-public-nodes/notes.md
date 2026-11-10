@@ -321,3 +321,22 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - the credential proxy: `proxy/shared.rs` (`admit_operator`, the vouched key) and `proxy/world.rs` (`running`);
   - module admission: `module/admission.rs` (the listed-key check);
   - the catalogue's key history: `catalogue/advertisements.rs` (`is_advertised_key`).
+
+## T-016-04, an advertisement can't name an operator's module
+
+- **The gap (a nit from review).** The production world held any advertisement it was given. If one named a module
+  the operator publishes, that module's next release was admitted against it, and its statement key was judged
+  against the advertisement's keys. Its results then went unsigned. That costs only availability, since the
+  catalogue refuses such an advertisement before it would be fed to the world.
+- **The fix.**
+  - `ProductionWorld::running` admits a release signed with the proxy's operator key
+    (`CredentialProxy::is_operators_release`) through `admit_operator`, whatever advertisement it holds under that
+    name, and then drops that advertisement.
+  - `CredentialProxy::advertise` refuses an advertisement naming a provider whose running release is the
+    operator's (`Refusal::AdvertisementOfAnOperatorsModule`), so the world doesn't hold it.
+- **Test.** `advertisement_naming_an_operators_module_never_judges_its_release` (`tests/production_world.rs`) feeds
+  the world an advertisement under the wallet's name. It does this once before the wallet's release starts and once
+  while it runs, and after each checks that the wallet's answer is still signed with its own key. Written first, it
+  failed: the answer was refused (`Unavailable`) because the release had been judged against the advertisement.
+  The proxy's unit test now expects the refusal, where it expected the advertisement to change nothing.
+- **`DEC-20`.** The credential proxy: `proxy/shared.rs` and `proxy/world.rs`.

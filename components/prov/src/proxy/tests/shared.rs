@@ -180,10 +180,12 @@ fn operators_own_release_is_admitted_with_no_advertisement_and_never_resolves_th
         proxy.statement_key(&alpha, &id("tx-2")).unwrap().as_str(),
         "private-half"
     );
-    // An advertisement naming the operator's module changes nothing: no advertisement vouches for its keys.
-    proxy
-        .advertise(&advertisement("alpha", &[(KEY_B, "advertising")]))
-        .unwrap();
+    // An advertisement naming the operator's module is refused and changes nothing: no advertisement vouches for
+    // its keys.
+    assert_eq!(
+        proxy.advertise(&advertisement("alpha", &[(KEY_B, "advertising")])),
+        Err(Refusal::AdvertisementOfAnOperatorsModule)
+    );
     assert_eq!(
         proxy.statement_key(&alpha, &id("tx-2")).unwrap().as_str(),
         "private-half"
