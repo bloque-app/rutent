@@ -444,6 +444,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::DeclaredCallToOwnProvider { call: 0 }),
         ),
         (
+            "declaration-call-of-holding-balance",
+            one(RuleViolation::DeclaredCallOfHoldingBalance { call: 0 }),
+        ),
+        (
             "declaration-call-declared-twice",
             one(RuleViolation::DeclaredTwice {
                 list: DeclaredList::Calls,

@@ -16,6 +16,8 @@ use serde_json::json;
 
 const PROVIDERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
 const TRANSACTIONS: [&str; 3] = ["tx-1", "tx-2", "tx-3"];
+/// The kinds one provider may call another with. `HoldingBalance` is not among them: it is the operator's own question
+/// to a holding account, never a cross-module call.
 const KINDS: [OperationKind; 8] = [
     OperationKind::Withdrawal,
     OperationKind::Deposit,
@@ -38,6 +40,7 @@ fn operation(kind: OperationKind, callee: &str, transaction: &str) -> Operation 
         OperationKind::Judgement => "operation-judgement-question",
         OperationKind::Reversal => "operation-reversal-of-a-failed-transfer",
         OperationKind::ReversalConfirmation => "operation-reversal-confirmation-for-one-credit",
+        OperationKind::HoldingBalance => "operation-holding-balance",
     };
     let mut value = fixture("provider-role", name);
     value["statement"]["provider"] = json!(callee);
@@ -241,6 +244,79 @@ fn a_call_is_allowed_exactly_when_declared_and_named_and_a_refusal_names_its_fir
             "too few {reason}: {by_reason:?}"
         );
     }
+}
+
+// verifies: REQ-MDL-21, REQ-AUD-15
+#[test]
+fn holding_balance_is_refused_as_a_declared_call_and_as_a_kind_a_route_names() {
+    let named = |kinds: Vec<OperationKind>| {
+        let mut routes = RouteCalls::default();
+        routes.name(
+            &id("tx-1"),
+            NamedCall {
+                route: reference(1),
+                caller: id("alpha"),
+                callee: id("beta"),
+                kinds,
+            },
+        );
+        routes
+    };
+    let asked = |kind| CallAsked {
+        caller: "alpha",
+        transaction: "tx-1",
+        callee: "beta",
+        kind,
+        claimed: Some(kind),
+        in_flight: true,
+    };
+    let declares = |kinds: Vec<OperationKind>| {
+        declaring(
+            "alpha",
+            vec![CallDeclaration {
+                callee: id("beta"),
+                kinds,
+            }],
+        )
+    };
+
+    // The control: a call of an ordinary kind that is declared and named is allowed.
+    let control = judge_call(
+        &declares(vec![OperationKind::Withdrawal]),
+        &named(vec![OperationKind::Withdrawal]),
+        &asked(OperationKind::Withdrawal),
+    );
+    assert_eq!(control.refusal, None);
+
+    // A module that declares the call, the route naming it too: refused.
+    let both = judge_call(
+        &declares(vec![
+            OperationKind::Withdrawal,
+            OperationKind::HoldingBalance,
+        ]),
+        &named(vec![OperationKind::HoldingBalance]),
+        &asked(OperationKind::HoldingBalance),
+    );
+    assert_eq!(both.refusal, Some(CallRefusalReason::UndeclaredKind));
+
+    // A module that declares it and a route that does not name it.
+    let declared_only = judge_call(
+        &declares(vec![OperationKind::HoldingBalance]),
+        &named(vec![OperationKind::Withdrawal]),
+        &asked(OperationKind::HoldingBalance),
+    );
+    assert_eq!(
+        declared_only.refusal,
+        Some(CallRefusalReason::UndeclaredKind)
+    );
+
+    // A route that names it for a module that declares only an ordinary kind.
+    let named_only = judge_call(
+        &declares(vec![OperationKind::Withdrawal]),
+        &named(vec![OperationKind::HoldingBalance]),
+        &asked(OperationKind::HoldingBalance),
+    );
+    assert_eq!(named_only.refusal, Some(CallRefusalReason::UndeclaredKind));
 }
 
 // verifies: REQ-MDL-21

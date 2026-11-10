@@ -199,7 +199,7 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
   - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
-    `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
+    `holding_balance` (a holding account's module, 3.0.0), `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
     (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008).
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
@@ -207,6 +207,10 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   - A withdrawal carries the holder's `session`, required on a dry run, since a dry run reveals sufficiency
     (`REQ-CAT-3`, `REQ-CAT-4`).
   - A balance verification names a session, an account, an asset and a stated amount, and is never a dry run.
+  - A holding balance (3.0.0) is the operator's own question to a node's holding account: the provider, the node and
+    the asset, with no session. Its result is the balance in whole units of the asset, zero included, or a refusal
+    with its class. It is the module's own figure, which `CMP-CORE-AUDIT` checks against the value held for each
+    order (`REQ-AUD-15`, `INV-1`); a balance verification stays a yes or no (`INV-9`).
   - A judgement question names the verifier, a subject reference and a class, and nothing else: no transaction
     (`REQ-CPL-4`).
   - A reversal names its own `transaction`, the `provider` asked, the transaction it `reverses`, and the segment's

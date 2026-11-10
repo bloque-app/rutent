@@ -6,7 +6,10 @@
 //! the operator and nothing more (the check only detects, as `REQ-ORD-9` does).
 //!
 //! The interface names no provider and imports nothing of ours (`DEC-2`): nodes, orders and assets are plain
-//! identifiers, amounts are whole units in the node's asset.
+//! identifiers, amounts are whole units in the node's asset. [`wallet`] binds it to the contracts' types and to the
+//! module runtime: the plain wallet, a Wasm component registered as a public node's holding account (`T-016-02`).
+
+pub mod wallet;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -54,6 +57,23 @@ pub enum HoldingError {
     DuplicateOrder(String),
     /// A hold or release of nothing.
     ZeroAmount,
+    /// An amount that is not a whole number of units, written as the contracts write one: digits only, no sign and
+    /// no leading zero, and no larger than a balance can state.
+    BadAmount(String),
+    /// A hold or release in another asset than the account's: one account, one asset.
+    WrongAsset {
+        /// The account's asset.
+        expected: String,
+        /// The asset asked.
+        found: String,
+    },
+    /// A hold or release at another node than the account's.
+    WrongNode {
+        /// The account's node.
+        expected: String,
+        /// The node asked.
+        found: String,
+    },
     /// A release asks for more than the order has held.
     ReleaseExceedsHeld {
         /// The order.
@@ -71,6 +91,13 @@ impl fmt::Display for HoldingError {
             Self::SumOverflow => f.write_str("the amounts held add up past the largest balance"),
             Self::DuplicateOrder(o) => write!(f, "order {o} appears twice in one reading"),
             Self::ZeroAmount => f.write_str("an amount of zero"),
+            Self::BadAmount(a) => write!(f, "{a:?} is not a whole number of units"),
+            Self::WrongAsset { expected, found } => {
+                write!(f, "the account holds {expected}, not {found}")
+            }
+            Self::WrongNode { expected, found } => {
+                write!(f, "the account is at {expected}, not {found}")
+            }
             Self::ReleaseExceedsHeld { order, held, asked } => {
                 write!(f, "order {order} holds {held} and {asked} was asked")
             }
@@ -218,6 +245,16 @@ impl OrderLedger {
             self.held.insert(order.to_owned(), held - amount);
         }
         Ok(())
+    }
+
+    /// The node the ledger is for.
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// The asset the ledger holds.
+    pub fn asset(&self) -> &str {
+        &self.asset
     }
 
     /// What one order has resting here; zero for an order that holds nothing.

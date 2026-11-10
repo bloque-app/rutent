@@ -10,6 +10,14 @@
   and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
   the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
   Rust test. (DEC-4, DEC-20, T-010-09)
+- `OperationKind` gains `HoldingBalance`, the provider-role operation kind `holding_balance` (provider-role 3.0.0),
+  which a holding account's module declares it handles. The declaration schema takes its kinds from the provider-role
+  operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant, which breaks an
+  exhaustive match, and 4.0.0 is not released, so the variant joins this major. A declaration's `calls` may not list
+  it: it is the operator's own question to a holding account, and a module asking it of another would read an
+  account's total, which for a node holding one order is that order's balance. `validate_declaration` refuses it
+  (`DeclaredCallOfHoldingBalance`, with an invalid fixture), and the platform's call judgement refuses it however it
+  is named. (DEC-4, DEC-20, T-016-02)
 - `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
   nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
   ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)

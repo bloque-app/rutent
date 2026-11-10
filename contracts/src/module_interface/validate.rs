@@ -43,6 +43,13 @@ pub enum RuleViolation {
         /// Index into `outside.calls`.
         call: usize,
     },
+    /// A declared call lists `holding_balance` among its kinds. It is the operator's own question to a holding
+    /// account, so a module may not ask it of another module: only the operator's audit reads an account's balance
+    /// (`REQ-AUD-15`).
+    DeclaredCallOfHoldingBalance {
+        /// Index into `outside.calls`.
+        call: usize,
+    },
     /// A pinned address block that overlaps a special-purpose range ([`SPECIAL_PURPOSE`]), so a connection could
     /// land on the platform's own network or nowhere routable (`REQ-MDL-7`, ADR-0004).
     SpecialPurposeAddressBlock {
@@ -323,6 +330,9 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
     for (i, call) in outside.calls.iter().enumerate() {
         if call.callee == declaration.provider {
             violations.push(RuleViolation::DeclaredCallToOwnProvider { call: i });
+        }
+        if call.kinds.contains(&OperationKind::HoldingBalance) {
+            violations.push(RuleViolation::DeclaredCallOfHoldingBalance { call: i });
         }
     }
     done(violations)

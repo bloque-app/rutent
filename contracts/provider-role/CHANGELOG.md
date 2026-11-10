@@ -1,5 +1,16 @@
 # provider-role changelog
 
+## 3.0.0
+- Breaking: a holding account's balance gets its own operation and result, `holding_balance`, so `CMP-CORE-AUDIT`
+  reads the balance from the account's module and not from the host's own record of what it sent it. Before, no
+  shape carried a balance (a `balance_verification` answers yes or no for a stated amount, `INV-9`), so the plain
+  wallet's host side could report only the sum it had itself recorded, and a wallet that lost its record (a
+  restarted provider process) still looked whole. The operation names the provider, the node and the asset, and no
+  session: it is the operator's own question and changes nothing. The result is the balance in whole units of the
+  asset, zero included, or a refusal with its class. `Operation` and `ResultBody` gain a variant and the schemas
+  gain the kind, so a reader on 2.x rejects it on the wire and an exhaustive Rust match breaks: a major (`DEC-4`).
+  Valid and invalid fixtures, and Rust tests. Fixtures keep naming protocol 2.0.1. (DEC-4, DEC-20, T-016-02)
+
 ## 2.4.0
 - A verifier gets the statement's bytes as received: `signing_input(received)` gives the bytes a maker signs under
   the signing rule, the RFC 8785 canonical form of the statement's text with only the top-level `signature.value`
