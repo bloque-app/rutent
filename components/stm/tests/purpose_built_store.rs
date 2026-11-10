@@ -356,19 +356,18 @@ fn written_store(harness: &mut PurposeBuiltHarness<Probe>) -> (Vec<RecordedInput
     (inputs, log, *starts.last().unwrap())
 }
 
-// A log with no mark beside it, as a log copied away from its store or written before marks existed is, has no record
-// of what was acknowledged: its damaged last frame can't be told from a torn append, so it is cut as one.
-// verifies: NFR-5, INV-7, REQ-STM-4, REQ-OPS-3
+// A log of several frames with no mark beside it has nothing to say what was acknowledged, so its last frame can't be
+// told torn from damaged: the store is refused, whatever the last frame looks like, and nothing is cut.
+// verifies: NFR-6, INV-7
 #[test]
-fn a_log_with_no_mark_torn_mid_record_reopens_at_its_last_whole_record() {
+fn a_log_with_no_mark_and_several_frames_is_refused_however_its_last_frame_looks() {
     let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
-    let (inputs, log, start) = written_store(&mut harness);
-    let last = inputs.last().unwrap();
+    let (_, log, start) = written_store(&mut harness);
     let whole = log.len();
     let mut flipped = log.clone();
     flipped[whole - 3] ^= 0x40;
-    let torn: Vec<(String, Vec<u8>)> = [
+    let variants: Vec<(String, Vec<u8>)> = [
         1,
         4,
         FRAME_HEADER,
@@ -383,33 +382,24 @@ fn a_log_with_no_mark_torn_mid_record_reopens_at_its_last_whole_record() {
             log[..start + keep].to_vec(),
         )
     })
-    .chain([("a byte of the last frame flipped".to_owned(), flipped)])
+    .chain([
+        ("a byte of the last frame flipped".to_owned(), flipped),
+        ("the log whole".to_owned(), log.clone()),
+    ])
     .collect();
-
-    for (what, bytes) in torn {
+    for (what, bytes) in variants {
         let store = store_with_log(&mut harness, &bytes);
-        let mut host =
-            Pb::open(store.clone()).unwrap_or_else(|e| panic!("{what}: open gave {e:?}"));
+        match Pb::open(store.clone()) {
+            Err(HostError::Unavailable { reason }) => {
+                assert!(reason.contains("mark"), "{what}: {reason}")
+            }
+            other => panic!("{what}: the store opened: {:?}", other.map(|_| ())),
+        }
         assert_eq!(
-            log_len(&store) as usize,
-            start,
-            "{what}: the tail wasn't cut"
+            fs::read(store.log_path()).unwrap(),
+            bytes,
+            "{what}: the store was changed"
         );
-        let found = records_by_id(&host);
-        assert_eq!(found.len(), inputs.len() - 1, "{what}");
-        assert!(!found.contains_key(last.record_id.as_str()), "{what}");
-        for input in &inputs[..inputs.len() - 1] {
-            assert_eq!(&found[input.record_id.as_str()][0].input, input, "{what}");
-        }
-        assert_journals_follow_the_probe(&host, &what);
-        match host.submit(last.clone()) {
-            Ok(Delivery::Recorded(r)) => assert_eq!(r.seq, 7, "{what}"),
-            other => panic!("{what}: submitting the torn input again gave {other:?}"),
-        }
-        let store = harness.kill(host).unwrap();
-        let host = Pb::open(store).unwrap();
-        assert_eq!(records_by_id(&host).len(), inputs.len(), "{what}");
-        assert_journals_follow_the_probe(&host, &format!("{what}, reopened"));
     }
 }
 
@@ -825,4 +815,28 @@ fn purpose_built_store_still_cuts_an_append_that_was_never_acknowledged() {
         Pb::open(lagging),
         Err(HostError::Unavailable { .. })
     ));
+}
+
+// verifies: NFR-6, INV-7
+#[test]
+fn purpose_built_store_with_history_refuses_a_deleted_or_emptied_mark() {
+    let _gate = stores_in_use();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let (_, killed, _, _) = killed_store(&mut harness);
+    let log = fs::read(killed.log_path()).unwrap();
+    for (what, emptied) in [("deleted", false), ("emptied", true)] {
+        let store = copy_store(&mut harness, &killed);
+        if emptied {
+            fs::write(store.mark_path(), b"").unwrap();
+        } else {
+            fs::remove_file(store.mark_path()).unwrap();
+        }
+        match Pb::open(store.clone()) {
+            Err(HostError::Unavailable { reason }) => {
+                assert!(reason.contains("mark"), "{what}: {reason}")
+            }
+            other => panic!("{what}: the store opened: {:?}", other.map(|_| ())),
+        }
+        assert_eq!(fs::read(store.log_path()).unwrap(), log, "{what}: changed");
+    }
 }

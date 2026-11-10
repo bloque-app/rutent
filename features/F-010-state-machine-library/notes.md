@@ -518,21 +518,23 @@ ADR-0002), for it and for the memory it held.
   and nothing is cut. A tail that starts at or after the mark's end is the append a crash cut short, and is cut as
   before. A mark that is behind the log (the crash fell between the log's sync and the mark's) leaves the frame
   present and the open moves the mark to it.
-- **Reading: a missing mark.** A store with no mark, such as a log copied away from its directory or written before this
-  task, has nothing to check against: the open reads it as before (its damaged last frame is cut as torn) and writes
-  the mark it lacked. The residual is stated in the module's docs: no mark, or a damaged log restored beside a mark
-  that went with an older copy, is not seen. An empty mark file is a new one; a mark of the wrong size or checksum
-  refuses the store, since it can't be checked and the operator can remove it after verifying the log.
+- **Format 2.** The store's format is now 2, to say it keeps a mark; format 1 never shipped and is not read. A log of
+  more than its format frame whose mark is missing or empty is refused (answering the review: deleting the mark must
+  not bring the silent cut back); a log of its format frame alone may lack one, and a finished import writes its own.
+- **A missing mark** is refused, as above, once the log holds history. The residual is stated in the module's docs:
+  damage to the log and the mark both, or a log restored beside a mark from an older copy, is not seen. An empty mark
+  file is a new one only beside a log of its format frame alone; a mark of the wrong size or checksum refuses the store.
 - **Reading: "acknowledged".** An append is acknowledged when `submit` returns it, which is after the mark's sync; so
   a write that fails at the mark is undone like one that fails at the log's sync, and the old mark goes back with the
-  cut (a unit test injects the failure), or a healthy log would be refused.
+  cut (a unit test writes the new mark's bytes, then fails the sync, and fails if the restore is deleted), or a healthy
+  log would be refused. A first append that fails leaves an empty log and an empty mark.
 - **Cost.** Two syncs per append where it was one. `measurements.rs` has no latency threshold on the store and its
   throughput row (`G-42`) is `#[ignore]`d; it was not re-run here, so the extra sync's price is unmeasured.
 - **Tests.** `purpose built store refuses a damaged acknowledged last frame` (six kinds of damage to the last frame,
   nothing cut each time, and the undamaged log opens) and `purpose built store still cuts an append that was never
   acknowledged` (a torn append beside the earlier mark is cut and can be made again; a whole frame ahead of the mark
-  is kept; damage after that is refused). The existing torn-tail test now says what it always held, a log with no
-  mark. Both new tests were seen failing against the unchanged store first (the store opened and cut the frame).
+  is kept; damage after that is refused). The existing torn-tail test is now a log with several frames and
+  no mark, which is refused (with a test that deletes or empties a real store's mark). Both new tests were seen failing against the unchanged store first (the store opened and cut the frame).
 
 ### The purpose-built store's memory is an index, not the log
 
@@ -560,41 +562,50 @@ ADR-0002), for it and for the memory it held.
 
 ### `G-54` on VOS: what the test found (a development run; the scored run is CI's)
 
-The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a `continue-on-error` step of
-`stm-vos.yml`, its lines in `g54.txt` of the run's artifact) writes one order's inputs through the real program, waits
-for quiet, kills every node, and damages a node's data directory, on one node and on the leader of three. `EXP-1`'s
-damage was probably on the unsynced batch after the acknowledged append, so this test finds the frame by content:
-the last acknowledged input's record id appears 14 times in the node's one journal file (`store/0.jnl`), once in the
-batch that holds the append and again in later batches. Three kinds of damage, each followed by starting the damaged
-node alone and asking its own replica (an applied-consistency query), with the log kept:
+`G-54` (`scoring.md`): damage to the last frame of a store that returned its acknowledgement, **its length intact**,
+and a refusal or the entry kept. The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a
+`continue-on-error` step of `stm-vos.yml`, its lines in `g54.txt` of the run's artifact) writes one order's inputs
+through the real program, measures the journal's length when the node is quiet before the last submit and after it, so
+the bytes that submit wrote are a range (`store/0.jnl`, about 6.3 KB, in which the last record id sits 14 times: the
+append's batch and everything derived from it), kills every node, and damages the range, on one node and on the leader
+of three. Each damage is followed by starting the damaged node alone and asking its own replica (an applied-consistency
+query), with its log kept.
 
-| Damage | One node | Leader of three (started alone) |
+| Damage, inside the last submit's bytes | One node | Leader of three (started alone) |
 |---|---|---|
-| A byte flipped in every place the id sits | **refused**: the node exits, `Store(JournalRecovery(ChecksumMismatch))` | **refused**, the same |
-| The journal's last byte flipped (a later frame) | recovered, 7 of 7 records | could not answer until the others joined ("behind"), then whole: undetermined |
-| The journal cut just after the id's first place (the acknowledged frame is the last, and torn) | **cut silently**: 6 of 7 records, nothing in the log | **cut silently** locally (6 of 7), repaired by replication once the others started |
+| One byte flipped at the id's first place (length intact; later frames of that submit behind it) | **refused**: the node exits, `Store(JournalRecovery(ChecksumMismatch))` | **refused**, the same |
+| The range's last byte flipped | recovered, 7 of 7 records | could not answer until the others joined ("behind"), then whole: undetermined |
+| The journal cut just after the id's first place (a torn tail) | **cut silently**: 6 of 7 records, nothing in the log | **cut silently** locally (6 of 7), repaired by replication once the others started |
 
-- **Reading.** A damaged frame with later frames behind it is refused by VOS (fjall's journal recovery reports a checksum
-  mismatch and the node does not start). A last frame that is torn or damaged with nothing after it is cut and the node
-  starts without a word: the loss of an acknowledged append, the `G-54` shape `pb` had. On three nodes the cut node is
-  repaired by the others, so the cluster loses nothing; the node's own store still cut silently.
-- **What this run is.** macOS arm64, the interpreter (`VOS_DEV=1`), at the pinned `vos-core` `5c78975`. Its result is
-  provisional: the scored run is Linux x86_64 with the JIT, in CI, and needs the branch pushed, which a task agent does
-  not do. **The run id goes here once CI has it: pending.** The storage path does not depend on the PVM backend, so I
-  expect the same lines. The test's two VOS tests fail on the silent cut by design (they need not pass).
-- **What it does not show.** The journal was cut at a place found by content, not at the frame's own boundary (fjall's
-  format was not read); a cut a few bytes later could differ. Power loss (a real torn write) was not tried.
+- **What the test can and cannot target.** It does not read fjall's frame boundaries, so it cannot isolate "the frame
+  that holds the append" or put length-intact damage on a final frame with nothing behind it. The first place of the id
+  is taken as inside the append's batch (the id's first byte in the range), not proven to be. The last-byte row
+  recovered all 7 records, so that byte belongs to a frame after the one that holds the record, or the tail was cut
+  without a word and the record sat earlier; the run cannot tell which.
+- **Reading.** A byte flipped inside the append's batch with frames behind it is refused (the journal's recovery reports
+  a checksum mismatch and the node does not start). A torn tail is cut and the node starts without a word, losing an
+  acknowledged record. The case `G-54` names, length-intact damage to the acknowledged batch with nothing behind it, is
+  **not shown** by this run: for it there is only the code reading that `EXP-1-vos-20261107-1` recorded (fjall's
+  `TolerateCorruptTail` recovery discards a corrupt tail without an error).
+- **What this run is.** macOS arm64, the interpreter (`VOS_DEV=1`), at the pinned `vos-core` `5c78975`: provisional. The
+  scored run is Linux x86_64 with the JIT, CI run 42756087621 on branch `m2-ci-t01006`. **Its result and its `g54.txt`
+  lines go here: pending.** The storage path does not depend on the PVM backend, so the same lines are expected. The
+  test's two VOS tests fail on a silent cut by design (they need not pass).
+- **Not tried.** Power loss (a real torn write); a cut at a frame boundary.
 
 ### Owner's item (draft, provisional until the scored run): `vos-g54-silent-tail-cut`
 
-VOS cuts a torn or damaged last journal frame silently, as `pb` did before this task. Choose:
+Evidence: torn tail, **shown**: a journal cut inside the acknowledged append's bytes is cut silently by VOS on one
+node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it. Length-intact
+damage to the acknowledged batch with nothing behind it: **code reading only** (`EXP-1-vos-20261107-1`). Damage with
+frames behind it is refused (shown). Choose:
 
-1. **Fix it upstream** (recommended): ask VOS's maintainers for a refusal or a log line and a node status flag when journal recovery
-   cuts a tail, and for an option to fail instead of cut; or, as a program-side guard, a watermark the program writes
-   outside the journal that a restart compares with what recovered.
+1. **Fix it upstream** (recommended): ask VOS's maintainers for a refusal or a log line and a node status flag when
+   journal recovery cuts a tail, and for an option to fail instead of cut; or, as a program-side guard, a watermark the
+   program writes outside the journal that a restart compares with what recovered.
 2. **Accept the residual for both candidates**: on three replicas a node that cut its tail is repaired by the others,
    so only a loss of every replica's tail together is unprotected; `pb` now refuses (this task) and VOS does not.
 3. Other (in notes).
 
-Reversible default: proceed with 2 for `M2` and carry 1 as the request upstream. The item waits on the form; nothing
-else of F-010 waits on it.
+Reversible default: option 1 (the recommendation), asked upstream while `M2` goes on with option 2's residual in
+force. The item waits on the form; nothing else of F-010 waits on it.

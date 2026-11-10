@@ -80,11 +80,15 @@
 //!   append, and nothing is cut. A mark that is itself damaged refuses the store too. A mark that is behind the
 //!   log (a whole frame follows the acknowledged one: the crash came after the log's sync and before the mark's)
 //!   is taken as the frame being present, like the window described under writing, and the open moves the mark to it.
-//! - **What it still can't tell apart, the residual.** A store with no mark, such as a log copied away from its
-//!   directory or written before marks existed, has no record of what was acknowledged, so its damaged last frame
-//!   is cut as a torn one, and its open writes the mark it lacks. So does a store whose mark was removed. The
-//!   damage must also be confined to the log: damage to the log and the mark both, or a log restored from an older
-//!   copy beside the mark that went with it, is not seen. Recovery never cuts more than one frame.
+//! - **A missing mark.** Store format 2 is the format that keeps a mark; no store of format 1 was ever in
+//!   production, and none is read. A log of more than its format frame whose mark is missing or empty is refused
+//!   with [`HostError::Unavailable`] naming the mark, and nothing is cut: deleting the mark must not turn a damaged
+//!   acknowledged frame back into a torn one. A log of its format frame alone may have no mark, since the crash
+//!   can fall between that frame's sync and the mark's, and its open writes one. A finished import writes the mark
+//!   too.
+//! - **What it still can't tell apart, the residual.** Damage to the log and the mark both, or a log restored from
+//!   an older copy beside the mark that went with it, is not seen, and an operator who removes the log's last frame
+//!   by hand and restores the mark takes that on. Recovery never cuts more than one frame.
 //! - **An unfinished import.** An import's log starts with a format entry that says it starts an import, written
 //!   and synced as one frame before anything else. Such a log with no import-complete entry refuses the store with
 //!   [`HostError::ImportIncomplete`], torn or corrupt bytes after it included: a crash during an import, whose
@@ -165,8 +169,9 @@ use crate::open_retry::{OpenRetry, is_open_elsewhere, retry_open};
 pub const LOG_FILE: &str = "log";
 
 /// The store format this module writes, and the only one it reads. A later format either reads this one or
-/// documents its upgrade path.
-pub const STORE_FORMAT: u32 = 1;
+/// documents its upgrade path. Format 2 is the format that keeps a mark ([`MARK_FILE`]) beside the log; format 1,
+/// which had none, was never in production and is not read.
+pub const STORE_FORMAT: u32 = 2;
 
 /// The name of the marker written beside the log when a failed append couldn't be undone. While it is there, the
 /// store is refused at open; an operator verifies the log and removes it.
@@ -394,6 +399,8 @@ struct Scan {
     end: u64,
     /// The last whole frame's checksum.
     last_crc: Option<u32>,
+    /// How many whole frames the log holds.
+    frames: u64,
     /// Damage at `end`, if the bytes from there are not a torn tail.
     damage: Option<Damage>,
     /// Whether an import-complete entry is in a whole frame past the damage, if there is damage.
@@ -496,6 +503,7 @@ fn scan_log(
     let mut reader = BufReader::with_capacity(1 << 16, At { file, pos: 0 });
     let mut at = 0u64;
     let mut last_crc = None;
+    let mut frames = 0u64;
     let mut mark_met = None;
     loop {
         let frame = next_frame(&mut reader).map_err(|e| io_failed("reading the log", e))?;
@@ -505,6 +513,7 @@ fn scan_log(
                     len,
                     end: at,
                     last_crc,
+                    frames,
                     damage: None,
                     import_completed_past_it: false,
                     mark_met,
@@ -531,6 +540,7 @@ fn scan_log(
                 len,
                 end: at,
                 last_crc,
+                frames,
                 damage,
                 import_completed_past_it: corrupt && import_completed_after(&tail, 1),
                 mark_met,
@@ -548,6 +558,7 @@ fn scan_log(
         visit(loc, entry)?;
         at = loc.end();
         last_crc = Some(sum);
+        frames += 1;
         if mark.is_some_and(|m| m.end == at) {
             mark_met = Some(mark.is_some_and(|m| m.crc == sum));
         }
@@ -689,8 +700,8 @@ enum Inject {
     SyncFails,
     /// The write succeeds, the sync fails, and so does the undo.
     SyncAndUndoFail,
-    /// The frame is written and synced, then writing the new mark fails; the undo can write the old one back.
-    MarkFails,
+    /// The frame is written and synced, and the new mark is written, then its sync fails: the new bytes are in the mark file, and only the undo's restore takes them out.
+    MarkSyncFails,
 }
 
 impl<M> PurposeBuiltHost<M> {
@@ -834,11 +845,11 @@ impl<M> PurposeBuiltHost<M> {
 
     /// Writes the mark, in place, and syncs it.
     fn write_mark(&self, mark: Mark) -> std::io::Result<()> {
-        #[cfg(test)]
-        if self.inject == Some(Inject::MarkFails) && mark.end > self.end {
-            return Err(std::io::Error::other("a mark failure a test injected"));
-        }
         self.mark.write_all_at(&mark.to_bytes(), 0)?;
+        #[cfg(test)]
+        if self.inject == Some(Inject::MarkSyncFails) && mark.end > self.end {
+            return Err(std::io::Error::other("a mark sync failure a test injected"));
+        }
         self.mark.sync_data()
     }
 
@@ -879,6 +890,9 @@ impl<M> PurposeBuiltHost<M> {
                 end: self.end,
                 crc: self.last_crc,
             })?;
+        } else {
+            // The failed append was the log's first frame: the log is empty, and so is the mark.
+            self.mark.set_len(0).and_then(|()| self.mark.sync_data())?;
         }
         Ok(())
     }
@@ -1010,6 +1024,17 @@ impl<M> PurposeBuiltHost<M> {
             }
             None => {}
         }
+        // A log with history and no mark has lost the record of what was acknowledged, by deletion or otherwise, and
+        // its damaged last frame would be cut as torn. Only a log of its format frame alone may have none: the
+        // crash fell between that frame's sync and the mark's.
+        if mark.is_none() && scan.frames > 1 {
+            return Err(unavailable(format!(
+                "the store's mark ({MARK_FILE}) is missing or empty, but the log holds {} frames: without it the \
+                 append acknowledged last can't be checked against the log; verify the log, then restore the mark \
+                 or remove the log's last frame by hand; nothing was cut",
+                scan.frames
+            )));
+        }
         // What was acknowledged last must be in the log, whole. A tail that is torn but starts where the mark says
         // an acknowledged frame ended is the one append a crash cut short; one that starts before it has eaten, or
         // is, an acknowledged frame, and no torn write explains that.
@@ -1054,8 +1079,8 @@ impl<M> PurposeBuiltHost<M> {
         }
         host.end = scan.end;
         host.last_crc = scan.last_crc.unwrap_or(0);
-        // A log with no mark (a copy of one, or one written before marks) or whose mark an append that was never
-        // acknowledged ran ahead of is acknowledged as it stands, once it has been read whole.
+        // A log whose mark an append that was never acknowledged ran ahead of, or whose only frame is its format
+        // frame and has no mark yet, is acknowledged as it stands, once it has been read whole.
         if scan.end > 0 && mark.is_none_or(|m| m.end != scan.end) {
             host.write_mark(Mark {
                 end: scan.end,
@@ -1259,18 +1284,21 @@ fn stream_header() -> SnapshotEntry {
     }
 }
 
-/// Writes one frame to an import's log without syncing it.
-fn write_frame(file: &mut File, entry: &LogEntry) -> Result<(), HostError> {
+/// Writes one frame to an import's log without syncing it; the frame's length and its checksum.
+fn write_frame(file: &mut File, entry: &LogEntry) -> Result<(u64, u32), HostError> {
     let mut buf = Vec::new();
     frame(entry, &mut buf)?;
     file.write_all(&buf)
-        .map_err(|e| io_failed("writing the import", e))
+        .map_err(|e| io_failed("writing the import", e))?;
+    let crc = u32::from_le_bytes(buf[4..8].try_into().expect("four bytes"));
+    Ok((count(buf.len()), crc))
 }
 
 /// Writes one frame to an import's log and syncs it: one of the import's marks.
-fn write_mark(file: &mut File, entry: &LogEntry) -> Result<(), HostError> {
-    write_frame(file, entry)?;
-    sync(file)
+fn write_mark(file: &mut File, entry: &LogEntry) -> Result<(u64, u32), HostError> {
+    let written = write_frame(file, entry)?;
+    sync(file)?;
+    Ok(written)
 }
 
 fn sync(file: &File) -> Result<(), HostError> {
@@ -1301,7 +1329,7 @@ fn import_onto(
     }
     // One frame, one write, one sync: there is no moment at which the log holds a format entry that doesn't say
     // it starts an import.
-    write_mark(&mut file, &format_entry(true))?;
+    let mut end = write_mark(&mut file, &format_entry(true))?.0;
     let mut check = StreamCheck::new();
     for (n, entry) in stream.enumerate() {
         if limit == Some(count(n)) {
@@ -1326,15 +1354,27 @@ fn import_onto(
                     )));
                 }
             }
-            SnapshotEntry::Record(r) => write_frame(&mut file, &LogEntry::Record(r))?,
-            SnapshotEntry::Refusal(r) => write_frame(&mut file, &LogEntry::Refusal(r))?,
+            SnapshotEntry::Record(r) => {
+                let (len, _) = write_frame(&mut file, &LogEntry::Record(r))?;
+                end += len;
+            }
+            SnapshotEntry::Refusal(r) => {
+                let (len, _) = write_frame(&mut file, &LogEntry::Refusal(r))?;
+                end += len;
+            }
             SnapshotEntry::End { .. } => {}
         }
     }
     check.finish().map_err(|e| refused(e.to_string()))?;
     sync(&file)?;
-    write_mark(&mut file, &LogEntry::Halted)?;
-    write_mark(&mut file, &LogEntry::ImportComplete)?;
+    end += write_mark(&mut file, &LogEntry::Halted)?.0;
+    let (len, crc) = write_mark(&mut file, &LogEntry::ImportComplete)?;
+    end += len;
+    // The finished import's mark, so a store that is opened after it holds the record of what it acknowledged.
+    let mark = open_mark(&store)?;
+    mark.write_all_at(&Mark { end, crc }.to_bytes(), 0)
+        .and_then(|()| mark.sync_data())
+        .map_err(|e| io_failed("writing the import's mark", e))?;
     Ok((store, file))
 }
 
@@ -1600,10 +1640,30 @@ mod tests {
 
     // verifies: NFR-6, INV-7
     #[test]
-    fn a_mark_that_fails_to_write_is_undone_so_a_healthy_log_is_not_refused() {
+    fn a_first_append_whose_mark_fails_to_sync_leaves_an_empty_log_and_an_empty_mark() {
+        let mut harness = PurposeBuiltHarness::<Probe>::new();
+        let store = harness.fresh_store().unwrap();
+        let mut host = Pb::open(store.clone()).unwrap();
+        host.inject = Some(Inject::MarkSyncFails);
+        let input = probe::order_inputs("ord-1", 0).remove(0);
+        assert!(matches!(
+            host.submit(input.clone()),
+            Err(HostError::Unavailable { .. })
+        ));
+        let store = harness.kill(host).unwrap();
+        assert_eq!(fs::metadata(store.log_path()).unwrap().len(), 0);
+        assert_eq!(fs::metadata(store.mark_path()).unwrap().len(), 0);
+        let mut host = Pb::open(store).unwrap();
+        assert!(matches!(host.submit(input), Ok(Delivery::Recorded(_))));
+    }
+
+    // verifies: NFR-6, INV-7
+    #[test]
+    fn a_mark_that_fails_to_sync_is_undone_so_a_healthy_log_is_not_refused() {
         let (mut harness, mut host, inputs, len) = three_records();
-        // The frame is written and synced, then the new mark fails; the undo cuts the log and writes the old mark back.
-        host.inject = Some(Inject::MarkFails);
+        // The frame is synced and the new mark's bytes are written, then the mark's sync fails; the undo cuts the log
+        // and must write the old mark back over them, or the reopen below finds a mark ahead of its log and refuses.
+        host.inject = Some(Inject::MarkSyncFails);
         assert!(matches!(
             host.submit(inputs[3].clone()),
             Err(HostError::Unavailable { .. })
@@ -1617,8 +1677,15 @@ mod tests {
         let store = harness.fresh_store().unwrap();
         let mut log = Vec::new();
         frame(&format, &mut log).unwrap();
+        let before = log.len();
         frame(&LogEntry::Halted, &mut log).unwrap();
+        // The mark of a store that kept one: the halt was the last append acknowledged.
+        let mark = Mark {
+            end: count(log.len()),
+            crc: u32::from_le_bytes(log[before + 4..before + 8].try_into().unwrap()),
+        };
         fs::write(store.log_path(), log).unwrap();
+        fs::write(store.mark_path(), mark.to_bytes()).unwrap();
         store
     }
 
@@ -1635,7 +1702,11 @@ mod tests {
         let ours = store_with_format(&mut harness, format_entry(false));
         assert!(Pb::open(ours).is_ok(), "the store's own format is refused");
         for (what, entry) in [
-            ("format 2", format(2, contract::VERSION, machine::VERSION)),
+            (
+                "format 1, which kept no mark",
+                format(1, contract::VERSION, machine::VERSION),
+            ),
+            ("format 3", format(3, contract::VERSION, machine::VERSION)),
             (
                 "another host contract",
                 format(STORE_FORMAT, "9.9.9", machine::VERSION),

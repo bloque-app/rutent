@@ -2,26 +2,28 @@
 //! leader of three, and record what VOS does with it: refuses it, recovers it, or cuts it silently.
 //!
 //! `EXP-1` could not say: its damage landed in fjall's newest journal file, most likely on the unsynced batch
-//! written after the acknowledged append, which the log replays over. So this test finds the acknowledged frame by
-//! its content. The last acknowledged input has a record id of its own; once the nodes are quiet and killed, the
-//! test searches the node's data directory for those bytes and flips one byte inside every place they sit in a
-//! journal file. A batch's checksum covers every byte of it, so that batch is damaged; the test records the file
-//! and offset of each place and how many bytes follow it, so a reader sees whether the damage hit a batch with
-//! later batches behind it.
+//! written after the acknowledged append, which the log replays over. So this test measures the append: it reads the
+//! length of the node's journal when the node is quiet before the last submit and again when it is quiet after it,
+//! so the bytes that submit wrote are a range, and it finds the last input's record id by content inside that range.
+//! It cannot read fjall's frame boundaries (the format was not read), so "the frame holding the append" is the
+//! range's first place of the id, and each kind of damage says where it fell in the range.
 //!
 //! On three nodes every node is killed and only the leader's data is damaged. The leader is then started alone,
 //! and its own replica is asked (an applied-consistency query, which a lone node of three answers from what it
 //! holds), before the other two start: what the node did with its own store is kept apart from what the cluster
 //! did after, since a follower catching a damaged node up is replication (`EXP-1`'s `R-04a`), not damage.
 //!
-//! The damage is one of three: a byte inside every place the id sits, the journal's last byte, or the journal cut just after
-//! the id (the acknowledged frame last and torn). The outcome is one of four, printed as a line beginning `G-54` and appended to the file `G54_OUT` names, if set:
-//! `refused` (the node did not start, or its log says it found damage), `recovered` (its own replica holds every
-//! acknowledged record), `cut and repaired by replication` (three nodes: its own replica lost the record and the
-//! cluster gave it back) and `cut silently` (the record is gone and nothing said so). The test passes on the first
-//! two, and on `undetermined, whole once the others joined` (a lone node of three that could not answer until the
-//! others started, then held every record), and fails on the others: it records the result and need not pass. It needs the VOS toolchain, built by
-//! `../build.sh`, and the paths of `../test.sh`; without the `vos` feature this file is empty.
+//! The damage is one of three, all in the bytes the last submit wrote: one byte flipped at the first place the id sits
+//! (the batch of the append, its length intact, with whatever the submit wrote after it behind), the range's last
+//! byte, or the journal cut just after the first place (a torn tail). The outcome is printed as a line beginning
+//! `G-54` and appended to the file `G54_OUT` names, if set: `refused` (the node did not start, or started and
+//! never answered with its log naming damage), `recovered` (its own replica holds every acknowledged record), `cut
+//! and repaired by replication` (three nodes: its own replica lost the record, said nothing, and the cluster gave it
+//! back), `cut and logged` (a loss that the node's log names) and `cut silently` (a loss nothing names). The test
+//! passes on `refused`, `recovered`, `cut and logged` and `undetermined, whole once the others joined` (a lone node
+//! of three that could not answer until the others started, then held every record), and fails on the others: it
+//! records the result and need not pass. It needs the VOS toolchain, built by `../build.sh`, and the paths of
+//! `../test.sh`; without the `vos` feature this file is empty.
 //!
 //! The nodes run the JIT on a Linux x86_64 machine that gives it, and the test fails closed elsewhere. `VOS_DEV=1`
 //! runs the interpreter instead, a development run whose result is not the task's.
@@ -115,7 +117,10 @@ impl Finding {
     fn acceptable(&self) -> bool {
         matches!(
             self.outcome,
-            "refused" | "recovered" | "undetermined, whole once the others joined"
+            "refused"
+                | "recovered"
+                | "cut and logged"
+                | "undetermined, whole once the others joined"
         )
     }
 }
@@ -203,6 +208,15 @@ fn places(data: &Path, needle: &[u8]) -> Vec<Place> {
     }
 }
 
+/// The length of each of the node's journal files (`*.jnl`).
+fn journal_lengths(data: &Path) -> std::collections::BTreeMap<PathBuf, usize> {
+    files_under(data)
+        .into_iter()
+        .filter(|f| f.extension().is_some_and(|e| e == "jnl"))
+        .filter_map(|f| std::fs::metadata(&f).ok().map(|m| (f, m.len() as usize)))
+        .collect()
+}
+
 /// Flips one byte inside each place's id.
 fn damage(places: &[Place]) {
     for place in places {
@@ -249,16 +263,9 @@ fn log_findings(host: &VosHost, n: usize) -> Vec<String> {
     log.lines()
         .filter(|l| {
             let l = l.to_lowercase();
-            [
-                "corrupt",
-                "checksum",
-                "crc",
-                "invalid journal",
-                "damaged",
-                "recovery",
-            ]
-            .iter()
-            .any(|w| l.contains(w))
+            ["corrupt", "checksum", "crc", "invalid journal", "damaged"]
+                .iter()
+                .any(|w| l.contains(w))
         })
         .map(|l| l.chars().take(200).collect())
         .collect()
@@ -268,22 +275,26 @@ fn log_findings(host: &VosHost, n: usize) -> Vec<String> {
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum Where {
-    /// A byte inside every place the last acknowledged record id sits in the journal.
+    /// One byte flipped in the first place the id sits in the bytes the last submit wrote: inside the batch of the
+    /// last acknowledged append, its length intact, with whatever that submit wrote after it still behind.
     InTheRecord,
-    /// The last byte of the journal file that holds it: the final frame, whatever it holds, with nothing after it
-    /// to show the damage is in the middle.
+    /// The last byte of what the last submit wrote: the end of its final frame, whatever that frame holds.
     LastByte,
-    /// The journal file cut short just after the first place the record id sits: the frame that holds it is the
-    /// last, and torn, with nothing after it. A torn tail is what a journal's recovery is built to cut.
+    /// The journal cut just after the first place the id sits in what the last submit wrote: a torn tail, whatever
+    /// frame boundary that is. A torn tail is what a journal's recovery is built to cut.
     TornInTheRecord,
 }
 
 impl Where {
     fn name(self) -> &'static str {
         match self {
-            Where::InTheRecord => "inside the record",
-            Where::LastByte => "last byte of the journal",
-            Where::TornInTheRecord => "journal cut just after the id's first place",
+            Where::InTheRecord => {
+                "one byte inside the first place of the id in the last submit's bytes"
+            }
+            Where::LastByte => "last byte of the last submit's bytes",
+            Where::TornInTheRecord => {
+                "journal cut just after the id's first place in the last submit's bytes"
+            }
         }
     }
 }
@@ -297,7 +308,19 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
     // An order's inputs, all acknowledged; the last one's record id is the one to find on disk.
     let inputs: Vec<RecordedInput> = probe::order_inputs("ord-g54", 0);
     let mut acknowledged = 0u64;
-    for input in &inputs {
+    let last = inputs.last().unwrap().record_id.as_str().to_owned();
+    assert_eq!(host.status().unwrap().records, acknowledged);
+
+    // The append itself is measured: the journal's length when the node is quiet before the last submit, and again
+    // when it is quiet after it, so what that submit wrote is a range of bytes, not a guess.
+    let target = if replicas > 1 {
+        host.cluster.leader().expect("a leader")
+    } else {
+        1
+    };
+    let data = host.cluster.data(target);
+    let (done, last_input) = inputs.split_at(inputs.len() - 1);
+    for input in done {
         let delivered = Host::<Stm>::submit(&mut host, input.clone());
         assert!(
             matches!(delivered, Ok(Delivery::Recorded(_))),
@@ -305,59 +328,63 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
         );
         acknowledged += 1;
     }
-    let last = inputs.last().unwrap().record_id.as_str().to_owned();
+    std::thread::sleep(Duration::from_secs(3));
+    let before = journal_lengths(&data);
+    let delivered = Host::<Stm>::submit(&mut host, last_input[0].clone());
+    assert!(
+        matches!(delivered, Ok(Delivery::Recorded(_))),
+        "{delivered:?}"
+    );
+    acknowledged += 1;
+    let last = last_input[0].record_id.as_str().to_owned();
     assert_eq!(host.status().unwrap().records, acknowledged);
-
     // Quiet, so the node has written whatever follows an append, then every node dies as a kill leaves it.
     std::thread::sleep(Duration::from_secs(3));
-    let target = if replicas > 1 {
-        host.cluster.leader().expect("a leader")
-    } else {
-        1
-    };
+    let after = journal_lengths(&data);
     host.cluster.kill_all();
 
-    let data = host.cluster.data(target);
-    let found = places(&data, last.as_bytes());
-    let where_it_sat = format!(
-        "{} places, the last at {}",
-        found.len(),
-        found.last().map_or(String::new(), |p| p.describe(&data))
-    );
+    // The newest journal file, and the bytes of it the last submit wrote.
+    let (file, end) = after
+        .iter()
+        .next_back()
+        .map(|(f, l)| (f.clone(), *l))
+        .expect("a journal file");
+    let begin = before.get(&file).copied().unwrap_or(0);
+    let found: Vec<Place> = places(&data, last.as_bytes())
+        .into_iter()
+        .filter(|p| p.file == file && (begin..end).contains(&p.offset))
+        .collect();
     assert!(
         !found.is_empty(),
-        "the last acknowledged record id is nowhere in node {target}'s data"
+        "the last acknowledged record id is nowhere in the {} bytes its submit wrote to node {target}'s journal",
+        end - begin
     );
-    let targets: Vec<Place> = match at {
-        Where::InTheRecord => found
-            .iter()
-            .map(|p| Place {
-                file: p.file.clone(),
-                offset: p.offset,
-                after: p.after,
-            })
-            .collect(),
-        Where::LastByte | Where::TornInTheRecord => {
-            let file = found.last().expect("a place").file.clone();
-            let size = std::fs::metadata(&file).expect("a journal file").len() as usize;
-            vec![Place {
-                file,
-                offset: size - 3,
-                after: 0,
-            }]
+    let where_it_sat = format!(
+        "the submit wrote bytes {begin}..{end} of {} and the id sits {} times in them, first at {}",
+        file.strip_prefix(&data).unwrap_or(&file).display(),
+        found.len(),
+        found[0].offset
+    );
+    match at {
+        Where::InTheRecord => {
+            // One byte of the first place: inside the batch the append wrote, its length intact.
+            damage(&found[..1]);
         }
-    };
-    if let Where::TornInTheRecord = at {
-        // The first place: the id sits in many frames, and the first is the one the append itself wrote.
-        let place = found.first().expect("a place");
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&place.file)
-            .expect("a journal file");
-        file.set_len((place.offset + last.len()) as u64)
-            .expect("cutting a journal file");
-    } else {
-        damage(&targets);
+        Where::LastByte => {
+            damage(&[Place {
+                file: file.clone(),
+                offset: end - 3,
+                after: 0,
+            }]);
+        }
+        Where::TornInTheRecord => {
+            let open = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .expect("a journal file");
+            open.set_len((found[0].offset + last.len()) as u64)
+                .expect("cutting a journal file");
+        }
     }
 
     // The damaged node starts alone, so its own store is what answers.
@@ -405,10 +432,8 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
                 }
             } else {
                 Finding {
-                    outcome: "cut silently",
-                    detail: report(format!(
-                        "the node started and never held every record, with nothing in its log: {e}"
-                    )),
+                    outcome: silence(&findings),
+                    detail: report(format!("the node started and never held every record: {e}")),
                 }
             }
         }
@@ -434,16 +459,20 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
             }
             if repaired {
                 Finding {
-                    outcome: "cut and repaired by replication",
+                    outcome: if findings.is_empty() {
+                        "cut and repaired by replication"
+                    } else {
+                        "cut and logged"
+                    },
                     detail: report(format!(
                         "its own replica held {first} then {settled} of {acknowledged} records, and caught up from the others"
                     )),
                 }
             } else {
                 Finding {
-                    outcome: "cut silently",
+                    outcome: silence(&findings),
                     detail: report(format!(
-                        "its own replica holds {first} then {settled} of {acknowledged} records, and nothing said so"
+                        "its own replica holds {first} then {settled} of {acknowledged} records"
                     )),
                 }
             }
@@ -451,6 +480,15 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
     };
     host.cluster.kill_all();
     finding
+}
+
+/// A loss is silent only if the node's log says nothing of damage.
+fn silence(findings: &[String]) -> &'static str {
+    if findings.is_empty() {
+        "cut silently"
+    } else {
+        "cut and logged"
+    }
 }
 
 fn record(setup: &str, finding: &Finding) {
