@@ -424,6 +424,186 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Signed admission is still tested apart** (`module_admission_signed.rs`, with its own catalogue and keys); the
   boundary suite's run now exercises the same verifier for every release, including a forged one.
 
+## T-013-06, the release lifecycle
+
+- **Where it lives.** `module/lifecycle.rs` is pure: which version is in force, the release staged beside it, the
+  segments in flight and the version each runs on, the operator's marks and every decision with its actor. It
+  starts no process. `platform.rs` asks it which version an operation runs on, and which versions must have a
+  process (`Lifecycle::wanted`), and makes it so (`reconcile`). The property tests run against it with no compile.
+- **Two versions of one provider at once (reading).** Staging, and a segment finishing on an older version, need
+  more than one process per provider. A provider's `Slot` keeps the version in force in its place and any other
+  version wanted in `others`, each in its own process. They are all the one provider's code, so `DEC-7`'s one
+  process per provider still holds between providers. A version nothing runs on any more stops as it leaves.
+  A crashed version restarts in its place (`respawn`), so a staged or draining version is never put in force by a
+  restart.
+- **Staging (ADR-0014, §6.2 risk 7).** `Platform::set_staging(Some(Staging::new(share, window, minimum)))`. Off by
+  default (`None`), so every suite and test that expects an accepted release to run at once is unchanged. Nothing
+  in the repository sets it yet: until a deployment's settings do, every automatically accepted release goes live
+  at once, the case ADR-0014 guards against. Item for whoever assembles the deployment (the operator's settings):
+  call `set_staging` from them, on by default. With it on, an accepted release of a provider that has a version in
+  force is staged, by the automatic path in `admit` as much as by `accept`. The share is in percent of the segments
+  that begin, taken in order: the `n`th takes the staged version if `(taken + 1) * 100 <= share * n`. That is
+  deterministic, so tests and an operator can predict it.
+- **Promotion and rollback.** `promote` is the operator's decision, refused until both the window has passed
+  (`WindowOpen`) and the staged version has handled the minimum (`TooFewObserved`). "Handled" means operations it
+  answered or the platform refused for it; `Observation` gives both counts and the version in force's beside them,
+  for `REQ-AUD-7`'s comparison, which is the operator's and not the platform's. `roll_back` revokes the staged
+  version and ends the staging; the version in force stays. Neither is ever automatic.
+- **A release while one is staged** is refused as `ReleaseStaged`, a new module-interface 4.0.0 reason, before
+  compiling.
+- **Segments (reading).** The platform is synchronous, and an operation names only its transaction, so a segment in
+  flight needs a caller-named start. `Platform::begin_segment(provider, transaction)` begins one and pins its
+  version. `handle` runs an operation of that transaction on the pinned version. `end_segment` ends it and hands
+  over its `SegmentRecord`: the version it began on, the one it ran on, and each move. That record is "recorded per
+  segment" (`REQ-MDL-5`); keeping it durably is Core's. An operation whose transaction no segment began runs on the
+  version in force, as before, and doesn't count towards staging. Core begins segments once it hands the platform
+  route segments; until then the suites keep calling `handle` directly. A cross-module call runs on the callee's
+  version in force: the caller's segment is the caller's, and names no version of the callee. This is a one-line
+  shared edit in `cross_module` (`handle_in(callee, &asked, None)`).
+- **Transactions (`REQ-MDL-14`, `INV-8`).** A transaction that a segment holds or held never begins another
+  segment, at any provider. An operation naming it at another provider, or after its segment ended, is refused as
+  `PlatformRefusal::DuplicateTransaction`, a new 4.0.0 reason, before any module sees it. Asked again inside its
+  segment it is the same transaction, a retry, and is answered. A refused begin records nothing. The set of ended
+  transactions lives in the platform's memory; the durable uniqueness is the state machine's journal (`F-010`).
+- **Stale (`REQ-MDL-5`, `REQ-MDL-19`).** `mark_stale` is the operator's decision. No input of a publisher's reaches
+  it: publishing newer releases moves no segment and marks nothing. That is how the test reads "a publisher can't
+  mark its own version stale", since the platform has no authorisation of its own (`REQ-AUZ-6` is
+  `CMP-CORE-AUTHZ`'s; the platform records who decided). It is refused while a release is staged
+  (`StagingInProgress`, ADR-0014's rule), and for the version in force (`NoNewerVersion`). Each segment on the stale
+  version moves at once to the version in force, which is the newest version available: the newer ones are staged,
+  revoked or never started. Each move is recorded with its reason and clock.
+- **Revoked and exploited (`REQ-MDL-20`).** A revoked version takes no new segment, and its segments finish on it.
+  Revoking the version in force puts the one in force before it back, if one is unmarked, recorded as `Reinstated`.
+  That is the only way back to an older version, so it is a recorded decision and never an effect of publishing
+  (`REQ-MDL-4`). A version declared exploited is revoked and runs nothing more. Its process stops, and its segments
+  are refused as `VersionExploited`, a new 4.0.0 reason. They are not moved: `THR-88` reads a false declaration as
+  stranding orders, and moving them onto a version they never ran on would be a second, unobserved upgrade. That
+  declaration is ADR-0014's emergency path; who may make it is `REQ-AUZ-6`'s.
+- **An older signed release (`REQ-MDL-4`, `THR-17`).** Versions are publisher names, not ordered, so the platform
+  orders by the assertion's `made_at`. A release asserted strictly before the provider's last accepted one is
+  refused as `OlderRelease`, a new 4.0.0 reason, before compiling. Equal times pass, since every test and suite
+  release shares one `made_at`. The same version again is still `VersionAlreadyAdmitted`.
+  `catalogue/mod.rs` gains `pub(crate) use time::Stamp` for this, one line, which admission now relies on.
+- **A failed upgrade.** A release whose process doesn't start is accepted but never placed: the version in force
+  stays, in its own process, and under staging nothing is staged. The failed release stays the last accepted one,
+  so the next release compares with it. Its capabilities were accepted, even though they never ran (reading).
+- **Withdrawal (`T-013-04`'s review).** `Platform::withdraw(provider, assertion_digest, by, at)` withdraws the
+  waiting release named by that digest, by someone. That includes one that acceptance refused when it judged it
+  again. The decision is recorded. Its version stays named, so it isn't admitted again; the provider's next
+  release is. While a release waits, a release under another version is now refused as `AdmissionPending`, the
+  4.0.0 reason `T-010-09` added for this; the same version is still `VersionAlreadyAdmitted`. Three expectations in
+  `module_admission_signed.rs` and its properties changed with it.
+- **Acceptance re-checks its assertion**, as `T-013-04`'s review built: `acceptance_after_the_signing_keys_rotation_is_refused`
+  and `T-016-04`'s operator-key change in `operator_published_holding_module_is_admitted_on_the_operators_own_release`.
+  It is not redone. The withdrawal test starts from such a refused release.
+- **Per-transaction and shared state (`REQ-MDL-10`).** There is no write in the WIT world, and the WIT is
+  `T-013-07`'s, so the scope is a key namespace the platform enforces. `transaction/<transaction>/<entry>` is that
+  transaction's alone, and any other key is shared. The scope comes from the transaction the platform is handling,
+  never from the module. Another transaction's key is answered as not found and is never asked of the world, so
+  neither `World::state` nor the production world changed. This is a one-edit change in `serve`'s state branch.
+  Item: "each change to shared state attributable to a transaction and a version" has nothing to attribute until a
+  state write exists. When one is added, it should carry `Context.transaction` and `Context.version`.
+- **Operator-published modules (`T-016-04`).** The lifecycle is keyed by module name and knows nothing of who
+  publishes. An operator's wallet upgrade is staged, takes segments and rolls back as a provider's does
+  (`operator_published_module_upgrade_is_staged_and_rolled_back_as_a_providers_is`).
+- **Item for `F-014` (the proxy).** `World::running` is told each version as it starts, so with two versions of one
+  provider running, the production world holds the one started last. If a staged release rotates its statement
+  key, the version in force's results go unsigned (`Unavailable`) until the staging ends. Telling the world which
+  release handles each operation, or holding one running release per version in the proxy, is `F-014`'s. Not
+  changed here.
+- **Tests.** `tests/module_lifecycle.rs`:
+  - `failed_upgrade_leaves_the_previous_version_in_force`, with a release that doesn't start, staged and not, and
+    a bad staged release, observed and rolled back;
+  - `upgrade_of_one_provider_interrupts_no_order_at_another`;
+  - `low_volume_release_stays_staged_until_its_minimum_is_observed`;
+  - `segment_on_a_revoked_version_finishes_on_it_unless_it_is_exploited`;
+  - `newer_release_never_moves_a_segment_and_a_stale_mark_moves_it_to_the_version_in_force`;
+  - `transaction_cannot_read_another_transactions_state`;
+  - `duplicate_transaction_identifier_is_refused`;
+  - `release_waiting_for_acceptance_can_be_withdrawn`;
+  - `publishing_an_older_signed_release_changes_nothing`;
+  - `operator_published_module_upgrade_is_staged_and_rolled_back_as_a_providers_is`.
+
+  `tests/module_lifecycle_properties.rs` (`DEC-18`, seeded, 400 cases each, no compile):
+  - a segment never runs a version that wasn't accepted and started, or one declared exploited, and moves only by
+    a recorded stale move to the version in force;
+  - a transaction identifier never begins two segments;
+  - a staged release takes its share exactly and is promoted only after its window and minimum.
+
+  The contract has `lifecycle_refusals_are_distinct_reasons_that_print_their_names`. The unit test
+  `a_transaction_reads_shared_state_and_its_own_only` is in `lifecycle.rs`. Putting the previous version back in
+  force when the one in force is revoked is covered only by the property test, not through the platform's
+  processes.
+- **Test-first.** The tests were written against the API, then run with each rule disabled: the duplicate check,
+  the exploited refusal, the minimum, the stale-while-staged refusal, the state scope, the pinned versions'
+  processes, `OlderRelease`, `AdmissionPending` and withdrawal. Nine of the ten integration tests and all three
+  properties failed on the disabled rule, and they passed once it was restored. The operator-module test passed at
+  once: no rule disabled was its own.
+- **`DEC-20`.** This task touches these `DEC-20` paths:
+  - module admission: `module/lifecycle.rs` (new), and `module/platform.rs`'s `admit` (`AdmissionPending`,
+    `ReleaseStaged`, `OlderRelease`, staging on the automatic path), `accept`, the new `withdraw` and the lifecycle
+    decisions;
+  - the catalogue that admission relies on: `catalogue/mod.rs`'s `Stamp` re-export, for `OlderRelease`;
+  - `contracts/`: module-interface 4.0.0 gains four Rust-only reasons, with the README, the changelog and a test,
+    and `VersionAlreadyAdmitted`'s doc names a withdrawn version too.
+
+  Shared edits in `platform.rs` outside admission:
+  - `Slot.others`;
+  - `start` split into `spawn`, `respawn`, `launch` and `reconcile`;
+  - `run_in_process` taking and returning the handling version's process;
+  - `handle` choosing the version (`handle_in`);
+  - the state branch's scope check;
+  - the one line in `cross_module`.
+
+  `host.rs`, the lookup and egress paths, `engine.rs` and the compiler are untouched.
+
+## T-013-06, review round
+
+- **The world is told which release handles each operation.** `launch` told the world that the staged release ran;
+  after a rollback or an exploited declaration the version in force kept its process, so the world was never told
+  again. The production proxy then judged lookups against the revoked release, recorded uses under its version,
+  and, for a changed statement key, refused every result as `Unavailable`. `run_in_process` now calls
+  `World::running` with the handling version's release, before `begin_operation`, whenever it isn't the last one
+  told for that provider (`Platform::told`). This replaces the earlier item for `F-014`.
+  `rolled_back_release_with_a_new_statement_key_leaves_the_version_in_force_signing_with_its_own`
+  (`tests/production_world.rs`) stages the operator's wallet with a new statement key. The version in force answers
+  signed with its own key while staged and after the rollback, and a segment on the staged release answers with the
+  new key. It failed with the re-telling disabled.
+- **Staging is on by default (reading).** `Lifecycle::default()` holds `DEFAULT_STAGING`: a 10 % share, a one-day
+  window and a minimum of 100 operations (`DEFAULT_SHARE`, `DEFAULT_WINDOW`, `DEFAULT_MINIMUM`). The values are
+  this task's reading. The deployment's settings may change them in `M4`, and `set_staging(None)` puts upgrades in
+  force at once. This replaces the earlier note's "off by default" and its item. The tests' platforms
+  (`WasmBinding::new`, `Signed::new`, `production_world.rs`'s `Running::new`) call `set_staging(None)`, since the
+  suites expect an accepted upgrade to run at once; the lifecycle's tests stage their own.
+  `platform_stages_upgrades_by_default` failed with the default `None`.
+- **A release follows the version in force.** Widenings, the history and `compared_with` were computed against the
+  last accepted release, even one rolled back or declared exploited. So a release widening as a rolled-back one did
+  passed as automatic. `admit` now follows the version in force, or else the newest accepted release neither
+  revoked nor exploited (`release_followed`), and the contract's `validate_release` judges against that.
+  - The history therefore leaves out a release that was withdrawn from use. Two checks still look at every accepted
+    release: `OlderRelease` against the newest accepted, and a new check refusing an assertion signed with a
+    statement key any accepted release declared (`Unverified::Release(AssertionSignedWithPreviousStatementKey)`).
+  - A release that never started is followed only if nothing is in force.
+  - This replaces the earlier reading on a failed upgrade's successor.
+  - `release_after_a_rolled_back_one_is_compared_with_the_version_in_force` failed when it compared with the last
+    accepted.
+- **Only operations a process ran are observed.** `NotHandled`, and an operation that found its process gone,
+  counted towards the minimum. A promotion could then drop the old process with no version in force. The platform
+  now counts an operation for a version only once its process took it and said something of it (`Platform::runs`).
+  `promote` is refused as `LifecycleRefusal::StagedNotRunning` while the staged version has no live process.
+  `only_operations_the_staged_version_ran_count_and_it_is_promoted_only_while_it_runs` failed with either part
+  disabled.
+- **A transaction holding `/` owns no per-transaction entry** (`state_readable`). So `transaction/a/b/x` is only
+  ever `a`'s entry `b/x`, never a transaction `a/b`'s. The owner was already the key's first segment, so this held
+  before: the unit test passed with the explicit check disabled, and the check now says it outright. No refusal
+  was added for such an identifier.
+- **The merge.** `m2` at `661ee1a` (`T-013-05`, `T-013-07`, `T-010-06`) was merged first. The notes and
+  module-interface's changelog conflicted on appended sections and bullets, and both sides were kept.
+- **`DEC-20`.** This round touches one `DEC-20` path, module admission: `module/platform.rs` (`admit`'s
+  `release_followed` and the statement-key check, `promote`, the re-telling in `run_in_process`, run counting) and
+  `module/lifecycle.rs`. The re-telling calls into the proxy, a `DEC-20` path, through `World::running`; the
+  proxy itself is unchanged.
+
 ## T-013-05, hardening the admitting compiler
 
 - **Fuzzing (`B-09`, `THR-85`).** No fuzzing crate: nothing enters `Cargo.lock` or `licences/RECORD`. A seeded mutation

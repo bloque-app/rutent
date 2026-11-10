@@ -347,17 +347,20 @@ impl WasmBinding {
         let context = SuiteContext::default();
         let mut catalogue = Catalogue::new();
         catalogue.set_context(context.deployment.clone(), &context.protocol_version);
+        let mut platform = Platform::new(
+            paths,
+            TestWorld::default(),
+            types::Envelope {
+                deployment: context.deployment,
+                protocol_version: context.protocol_version,
+            },
+        )?;
+        // The suite expects an accepted upgrade to run at once; the lifecycle's tests stage their own.
+        platform.set_staging(None);
         Ok(Self {
             catalogue,
             listed: BTreeSet::new(),
-            platform: Platform::new(
-                paths,
-                TestWorld::default(),
-                types::Envelope {
-                    deployment: context.deployment,
-                    protocol_version: context.protocol_version,
-                },
-            )?,
+            platform,
             languages: languages.iter().map(|l| (*l).to_owned()).collect(),
             category: category.to_owned(),
             standins: standins(),

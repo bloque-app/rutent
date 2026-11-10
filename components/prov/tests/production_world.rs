@@ -262,6 +262,8 @@ impl Running {
         )
         .expect("a platform");
         platform.set_output_limit(4096);
+        // Upgrades run at once here; a test that stages one sets its own staging.
+        platform.set_staging(None);
         Running {
             platform,
             catalogue,
@@ -894,12 +896,13 @@ fn run_operator_wallet(running: &mut Running) {
     assert_eq!(running.platform.world.take_unadmitted(), Vec::new());
 }
 
-/// Asks the operator's `polygon` wallet for deposit `n` and checks that its answer is passed on, signed with the
-/// statement key it declares, resolved through the proxy.
-fn assert_wallet_answers_signed(running: &mut Running, n: usize) {
+/// The operator's deposit `n` into its `polygon` wallet.
+fn wallet_deposit(
+    n: usize,
+) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
     use rutent_prov::holding::wallet::Operator as _;
     use support::{POLYGON_WALLET, TestOperator};
-    let deposit = TestOperator.statement(
+    TestOperator.statement(
         serde_json::from_value(json!({
             "kind": "deposit",
             "transaction": format!("tx-o-{n}"),
@@ -912,19 +915,112 @@ fn assert_wallet_answers_signed(running: &mut Running, n: usize) {
             "inputs": { "order": format!("o-{n}") },
         }))
         .expect("a valid operation"),
+    )
+}
+
+/// Asks the operator's `polygon` wallet for deposit `n` and checks that its answer is passed on, signed with the
+/// statement key it declares, resolved through the proxy.
+fn assert_wallet_answers_signed(running: &mut Running, n: usize) {
+    assert_wallet_answers_signed_with(
+        running,
+        n,
+        &public_key(&statements_key(support::POLYGON_WALLET)),
     );
-    let handled = running.platform.handle(POLYGON_WALLET, &deposit);
+}
+
+/// [`assert_wallet_answers_signed`], with the statement key `key`.
+fn assert_wallet_answers_signed_with(
+    running: &mut Running,
+    n: usize,
+    key: &rutent_contracts::provider_role::PublicKey,
+) {
+    let handled = running
+        .platform
+        .handle(support::POLYGON_WALLET, &wallet_deposit(n));
     let Handled::Answered(result) = handled else {
-        panic!("the wallet's answer wasn't passed on: {handled:?}");
+        panic!("the wallet's answer {n} wasn't passed on: {handled:?}");
     };
-    assert_eq!(
-        result.signature.key,
-        public_key(&statements_key(POLYGON_WALLET))
-    );
+    assert_eq!(&result.signature.key, key, "answer {n}");
     assert_eq!(
         rutent_conformance::signing::verify(&serde_json::to_vec(&*result).expect("JSON")),
         Ok(())
     );
+}
+
+/// A staged release that declares a new statement key, rolled back (`T-013-06`): the proxy is told which release
+/// handles each operation, so the version in force answers signed with its own key throughout, the staged one with
+/// the new key, and after the rollback the version in force still signs with its own.
+// verifies: REQ-MDL-4, REQ-MDL-6, THR-4
+#[test]
+fn rolled_back_release_with_a_new_statement_key_leaves_the_version_in_force_signing_with_its_own() {
+    use rutent_prov::module::lifecycle::Staging;
+    use support::{OPERATOR, POLYGON_WALLET, wallet_release};
+
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    run_operator_wallet(&mut running);
+    assert_wallet_answers_signed(&mut running, 1);
+
+    // 1.1.0 declares a new statement key, which the deployment stores; it is staged on every new segment.
+    let new_key = signed::catalogue_support::signing_key(POLYGON_WALLET, 7);
+    let new_public = public_key(&new_key);
+    running.keys.holds(
+        POLYGON_WALLET,
+        new_public.as_str(),
+        Ok(&base64url(new_key.as_bytes())),
+    );
+    running
+        .platform
+        .set_staging(Some(Staging::new(100, 0, 0).expect("a policy")));
+    let (mut declaration, binaries) = wallet_release(POLYGON_WALLET, "1.1.0");
+    declaration.outside.statement_key = new_public.clone();
+    let received = signed::assertion_by(
+        &declaration,
+        &binaries,
+        OPERATOR,
+        &signed::catalogue_support::operator_key(),
+    );
+    let Admitted::Artefact(artefact) =
+        running
+            .platform
+            .admit(&received, &binaries, &mut running.catalogue, AT)
+    else {
+        panic!("the wallet's 1.1.0 wasn't admitted");
+    };
+    if artefact.acceptance.accepted.is_none() {
+        running
+            .platform
+            .accept(
+                POLYGON_WALLET,
+                &artefact.assertion_digest,
+                "test-reviewer",
+                &running.catalogue,
+                AT,
+            )
+            .expect("accepted");
+    }
+    assert_eq!(
+        running.platform.lifecycle().staged(POLYGON_WALLET),
+        Some("1.1.0")
+    );
+
+    // While it is staged, the version in force signs with its own key and a segment on the staged one with the new.
+    assert_wallet_answers_signed(&mut running, 2);
+    running
+        .platform
+        .begin_segment(POLYGON_WALLET, &id("tx-o-3"))
+        .expect("a segment on the staged release");
+    assert_wallet_answers_signed_with(&mut running, 3, &new_public);
+    assert_wallet_answers_signed(&mut running, 4);
+
+    // Rolled back, the version in force still signs with its own key.
+    running
+        .platform
+        .roll_back(POLYGON_WALLET, OPERATOR, AT)
+        .expect("rolled back");
+    running.platform.end_segment("tx-o-3").expect("its record");
+    assert_wallet_answers_signed(&mut running, 5);
+    assert_eq!(running.platform.world.take_unadmitted(), Vec::new());
 }
 
 /// No advertisement vouches for the keys of a module the operator publishes (`T-016-04`): one naming it, held by
