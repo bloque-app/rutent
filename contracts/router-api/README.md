@@ -6,7 +6,7 @@ and their records serialise to the schemas here. The version is the first headin
 
 | Shape | Schema `$id` | Rust |
 |---|---|---|
-| Shared atoms | `urn:rutent:router-api:common` | `Endpoint`, `Ratio` |
+| Shared atoms | `urn:rutent:router-api:common` | `Endpoint`, `Ratio`, `DeclaredCall`, `RouteCall`, `CallKind` |
 | Request | `urn:rutent:router-api:request` | `Request` |
 | Catalogue snapshot | `urn:rutent:router-api:catalogue-snapshot` | `CatalogueSnapshot` |
 | Policy bounds | `urn:rutent:router-api:policy-bounds` | `PolicyBounds` |
@@ -33,6 +33,28 @@ withdrawal, route, exchange or deposit and no other (`REQ-PRT-5`), and its two e
 denomination. `urn:rutent:router-api:operation#/$defs/operation` is open, so that a schema embedding it, such as
 the state machine's segment plan, adds its own fields and closes it with `unevaluatedProperties: false`; the
 router's priced operation does just that.
+
+## The calls a route makes
+
+Since 3.0.0 (`T-011-06`, `REQ-MDL-21`, `THR-86`) each segment of a route names the cross-module calls it makes.
+The platform lets a module call another provider's module only where its release declares the call and a segment of
+its route names it (`judge_call`, `T-014-04`), so the route is what bounds a module to the providers it takes.
+
+- **The source.** A `calls` figure in the snapshot states what a provider's admitted module declares, as its
+  release's `outside.calls` lists them: each callee once, with the kinds that may be asked of it. It is the
+  provider's, its origin's `module_version` naming the release, and it states no validity, as an advertisement
+  doesn't. At most one per provider.
+- **The kind** is the module interface's: a provider-role operation kind (`withdrawal`, `transfer`,
+  `balance_verification`, …), as `validate_call_against` and the call record use it, by `$ref` to
+  `urn:rutent:provider-role:operation#/$defs/operation/properties/kind`; in Rust, `CallKind`, the module
+  interface's `OperationKind`. It is not the typed operation's kind, and it is never `holding_balance`, the
+  operator's own question to a holding, which no module may call for.
+- **The segment's calls.** An operation's `calls` lists `{callee, kind}` pairs, each once, none to its own provider,
+  and is absent when it names none. Each is declared in the one calls figure the operation cites, of the release its
+  tuple comes from (same provider and `module_version`), and its callee is the provider of another operation of the
+  same part. An operation cites a calls figure exactly when it names a call.
+- **What a router names.** The contract refuses any call outside that; the router suite checks a router names every
+  call it allows, every kind declared for every callee on the part, on every candidate.
 
 ## Two rounds
 
@@ -134,6 +156,9 @@ only records that pass theirs, so a stored record recomputes.
 | One tuple figure per provider and ends, and at most one price per tuple figure, so a copy can't dodge the agreement rules or the levels | can't be stated | `CatalogueSnapshot::check` |
 | All judgements in one snapshot about one relying provider's tuples are about one subject: the subject reference is the relying provider's (ADR-0012), and the relying provider is the provider of the tuple a judgement names, not the verifier | can't be stated | `CatalogueSnapshot::check` |
 | An operation cites each figure once | `uniqueItems` | `Operation::check` ("duplicate figure") |
+| An operation names each call once and none to its own provider; a present `calls` is never empty; a call's kind is a provider-role operation kind, never `holding_balance` (3.0.0) | `uniqueItems`, `minItems`, `enum` and `not` for the first, the third and the fourth | `Operation::check`, `non_empty_list`, `CallKind` |
+| A calls figure is a provider's, states no validity, lists each callee once and each kind once per callee, declares no call for `holding_balance`, and names no call to its own provider; a snapshot holds at most one per provider (3.0.0) | `const`, `not`, `uniqueItems` and `not` for the first, the second and the kinds | `CatalogueSnapshot::check` |
+| An operation cites one calls figure exactly when it names a call: its own module release's, by provider and `module_version`; each call it names is declared there, and is to the provider of another operation of its part (3.0.0, `REQ-MDL-21`) | can't be stated | `DecisionRecord::check` |
 | A bare typed operation's rules (ends' atoms, outer and inner ends, asset kept, two nodes or one) and a chain's continuity, checked once for the router's operations and the state machine's segment plans | can't be stated | `check_typed_operation`, `check_typed_chain` |
 | A `beyond_levels` reason names its part's last operation, which arrives with 0 and whose net is above its price's last level; that part alone needn't reach the destination | can't be stated | `Candidate::check`, `DecisionRecord::check` |
 | A choice round's `refines` carries the shortlist round's `taken_at`, at or before its own snapshot's; a confirming answer is made at or after it, and an accepted answer made before it isn't usable, while a refusal or a judgement binds whenever made | `required` | `Refines`, `DecisionRecord::check` |
@@ -154,6 +179,8 @@ the rest from the record alone; see `conformance/README.md`:
   `suspect_rate_cycle` not at all. The suite recomputes the ranking, checks that each outranked candidate could
   have been the choice, and that `suspect_rate_cycle` names a candidate that comes back somewhere with more.
 - That a shortlist round's snapshot holds advertised figures only. The suite checks it.
+- That a segment names every call its provider declares to another provider of its part (3.0.0): here only that it
+  names none outside them. The suite recomputes the calls from the calls figure.
 
 Unchecked by either:
 

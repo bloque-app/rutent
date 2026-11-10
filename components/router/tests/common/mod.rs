@@ -156,6 +156,16 @@ impl Net {
         );
     }
 
+    /// `provider`'s calls figure `id`: the cross-module calls its admitted module declares, `[(callee, [kind])]`,
+    /// from the same release as its tuples.
+    pub fn calls(&mut self, id: &str, provider: &str, calls: &[(&str, &[&str])]) {
+        let calls: Vec<Value> = calls
+            .iter()
+            .map(|(callee, kinds)| json!({ "callee": callee, "kinds": kinds }))
+            .collect();
+        self.advertised(id, provider, json!({ "kind": "calls", "calls": calls }));
+    }
+
     pub fn envelope(maker: &str, made_at: &str, shape: &str, body: Value) -> Value {
         json!({
             "deployment": deployment(),

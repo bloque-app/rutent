@@ -390,3 +390,37 @@ fn answer_without_a_length_is_refused_unless_tls_closed_cleanly() {
     assert_eq!(lookup(&resolver(transport)), Ok("over-tls".to_owned()));
     server.join().unwrap();
 }
+
+/// A store that answers one byte at a time, each within a read's own timeout, is cut off at the deadline the
+/// lookup carries, the operation's (`REQ-MDL-11`), not held for as long as it keeps dribbling.
+// verifies: REQ-MDL-11, REQ-MDL-17
+#[test]
+fn store_dribbling_its_answer_is_cut_off_at_the_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut tcp, _): (TcpStream, _) = listener.accept().unwrap();
+        let _ = tcp.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 100000\r\n\r\n");
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(6) {
+            std::thread::sleep(Duration::from_millis(100));
+            if tcp.write_all(b"x").is_err() {
+                break;
+            }
+        }
+    });
+    let transport = HttpsTransport::new(&http("127.0.0.1", port), None)
+        .unwrap()
+        .with_timeout(Duration::from_secs(2));
+
+    let started = std::time::Instant::now();
+    let due = started + Duration::from_millis(800);
+    let outcome = transport.get_until(&probe_request(), Some(due));
+    assert!(outcome.is_err());
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    server.join().unwrap();
+}

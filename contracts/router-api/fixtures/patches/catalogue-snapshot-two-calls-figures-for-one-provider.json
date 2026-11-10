@@ -1,0 +1,31 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/-",
+      "value": {
+        "figure_id": "f-ramp-calls-again",
+        "origin": {
+          "kind": "provider",
+          "provider": "ramp-x",
+          "publisher": "ramp-x",
+          "provider_version": "1.0.0",
+          "module_version": "1.0.0"
+        },
+        "age_seconds": 1800,
+        "value": {
+          "kind": "calls",
+          "calls": [
+            {
+              "callee": "exchange-a",
+              "kinds": [
+                "conversion"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

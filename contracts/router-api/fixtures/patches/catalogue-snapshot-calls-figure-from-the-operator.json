@@ -1,0 +1,13 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/37/origin",
+      "value": {
+        "kind": "operator",
+        "source": "admission-records"
+      }
+    }
+  ]
+}

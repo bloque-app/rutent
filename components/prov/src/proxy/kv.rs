@@ -151,13 +151,22 @@ impl<T: Transport> KvResolver<T> {
 
 impl<T: Transport> Resolver for KvResolver<T> {
     fn resolve(&self, provider: &Identifier, name: &Name) -> Result<SecretValue, ResolveError> {
+        self.resolve_until(provider, name, None)
+    }
+
+    fn resolve_until(
+        &self,
+        provider: &Identifier,
+        name: &Name,
+        due: Option<std::time::Instant>,
+    ) -> Result<SecretValue, ResolveError> {
         let (provider, name) = (provider.as_str(), name.as_str());
         if !plain_segment(provider) || !plain_segment(name) {
             return Err(ResolveError::InvalidName);
         }
         let response = self
             .transport
-            .get(&self.request(provider, name))
+            .get_until(&self.request(provider, name), due)
             .map_err(ResolveError::Transport)?;
         match response.status {
             200 => current_value(&response.body),

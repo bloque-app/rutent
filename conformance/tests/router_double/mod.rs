@@ -18,6 +18,9 @@
 //! the first by the objective and `candidate_id`, and drops the others as outranked by it; the shortlist round
 //! keeps them all.
 //!
+//! Each segment names the calls its provider's module declares, in the calls figure of the release its tuple comes
+//! from, to every other provider of its part, every kind declared, and cites that figure when it names any.
+//!
 //! Its arithmetic is its own, written apart from the suite's, so the suite's amount check isn't the double agreeing
 //! with itself. `Reference<FLAW>` with a flaw from below breaks one rule, to show the suite refuses it.
 
@@ -31,7 +34,8 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{
     Amount, Candidate, CatalogueSnapshot, CeilingScope, Decimal, DecisionRecord, DropReason,
     Endpoint, FeeFormula, Figure, FigureValue, Id, NonEmpty, Objective, Operation, OperationKind,
-    Part, PolicyBounds, PositiveAmount, Pricing, Request, Round, Router, Timestamp, Version,
+    Origin, Part, PolicyBounds, PositiveAmount, Pricing, Request, Round, RouteCall, Router,
+    Timestamp, Version,
 };
 
 /// No flaw: the reference double itself.
@@ -55,6 +59,8 @@ pub const FEE_ROUNDS_DOWN: u8 = 8;
 /// Leaves out the paths no operation can state, as router-api 2.x had routers do: through a tuple with no price,
 /// an operation whose fee is above what reaches it, or one that delivers nothing short of the destination.
 pub const OMITS_UNSTATABLE: u8 = 9;
+/// Names no cross-module call on any segment, as a router before router-api 3.0.0's calls did (`T-011-06`).
+pub const LEAVES_OUT_CALLS: u8 = 10;
 
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
@@ -412,6 +418,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
                 fee,
                 amount_out,
                 figures: NonEmpty::new(figures).expect("a tuple"),
+                calls: Vec::new(),
             },
             confirmed: is_confirmed,
             unstatable,
@@ -801,6 +808,56 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         }
     }
 
+    /// The part's operations, each naming the calls its provider declares to the part's other providers.
+    fn with_calls(&self, mut operations: Vec<Operation>) -> Vec<Operation> {
+        if FLAW == LEAVES_OUT_CALLS {
+            return operations;
+        }
+        let release = |f: &Figure| match &f.origin {
+            Origin::Provider {
+                provider,
+                module_version,
+                ..
+            } => Some((provider.clone(), module_version.clone())),
+            Origin::Operator { .. } => None,
+        };
+        let others: Vec<Vec<Id>> = (0..operations.len())
+            .map(|i| {
+                operations
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, o)| j != i && o.provider != operations[i].provider)
+                    .map(|(_, o)| o.provider.clone())
+                    .collect()
+            })
+            .collect();
+        for (operation, others) in operations.iter_mut().zip(others) {
+            let tuple = self.figure(operation.figures.first());
+            let Some(figure) = self.snapshot.figures.iter().find(|f| {
+                matches!(f.value, FigureValue::Calls { .. }) && release(f) == release(tuple)
+            }) else {
+                continue;
+            };
+            let FigureValue::Calls { calls } = &figure.value else {
+                continue;
+            };
+            for call in calls.iter().filter(|c| others.contains(&c.callee)) {
+                for &kind in call.kinds.iter() {
+                    operation.calls.push(RouteCall {
+                        callee: call.callee.clone(),
+                        kind,
+                    });
+                }
+            }
+            if !operation.calls.is_empty() {
+                let mut figures: Vec<Id> = operation.figures.clone().into();
+                figures.push(figure.figure_id.clone());
+                operation.figures = NonEmpty::new(figures).expect("a tuple");
+            }
+        }
+        operations
+    }
+
     fn record(self) -> DecisionRecord {
         let mut found = Vec::new();
         let origin = self.request.from.clone();
@@ -863,8 +920,10 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             .map(|(i, (f, dropped))| Candidate {
                 candidate_id: id(i),
                 parts: NonEmpty::new(vec![Part {
-                    operations: NonEmpty::new(f.steps.into_iter().map(|s| s.operation).collect())
-                        .expect("a path has an operation"),
+                    operations: NonEmpty::new(
+                        self.with_calls(f.steps.into_iter().map(|s| s.operation).collect()),
+                    )
+                    .expect("a path has an operation"),
                 }])
                 .expect("one part"),
                 dropped,

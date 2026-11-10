@@ -6,7 +6,7 @@ use core::num::NonZeroU8;
 
 use serde::{Deserialize, Serialize};
 
-use super::atoms::some;
+use super::atoms::{non_empty_list, some};
 use super::{
     Amount, Decimal, Distinct, Id, NonEmpty, PositiveAmount, ProtocolVersion, Timestamp, Version,
 };
@@ -292,6 +292,16 @@ pub enum FigureValue {
         /// The verifier's judgement, in its envelope.
         judgement: Box<Statement<Judgement>>,
     },
+    /// The cross-module calls a provider's admitted module declares, as its release's `outside.calls` lists them
+    /// (module-interface, `REQ-MDL-21`): which other providers' modules it may call, and for which provider-role
+    /// operation kinds. From the provider: the origin's `module_version` names the release that declares them.
+    /// It states no validity, as an advertisement doesn't: it holds until the release is replaced. At most one per
+    /// provider in a snapshot, each callee listed once and none the provider itself (router-api 3.0.0,
+    /// `T-011-06`). A route segment names only calls its provider declares here ([`Operation::calls`]).
+    Calls {
+        /// The declared calls, each callee once.
+        calls: NonEmpty<DeclaredCall>,
+    },
     /// Value already in flight at one provider, in one asset, from the operator's records (`REQ-ORD-8`).
     Exposure {
         /// The provider.
@@ -303,6 +313,37 @@ pub enum FigureValue {
         /// The value in flight.
         in_flight: Amount,
     },
+}
+
+/// The kind of a cross-module call: a provider-role operation kind, as `urn:rutent:provider-role:operation` names
+/// it, in the module interface's terms (`validate_call_against`, `REQ-MDL-21`). Not the typed operation's
+/// [`OperationKind`]: a call asks a module for one provider-role operation, such as a `transfer` or a
+/// `balance_verification`.
+pub use crate::module_interface::OperationKind as CallKind;
+
+/// One cross-module call a provider's module declares (module-interface `outside.calls`, `REQ-MDL-21`): the provider
+/// whose module it may call, and the kinds it may ask of it, each once. Schema:
+/// `urn:rutent:router-api:common#/$defs/declared_call`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredCall {
+    /// The provider whose module may be called.
+    pub callee: Id,
+    /// The kinds that may be asked of it, each once.
+    pub kinds: NonEmpty<CallKind>,
+}
+
+/// One cross-module call a route segment names (`REQ-MDL-21`, `THR-86`): in that segment, the operation's provider's
+/// module may call `callee`'s for `kind`. The platform's call rule (`judge_call`, `T-014-04`) lets a module call
+/// another only where its release declares the call and a segment of its route names it. Schema:
+/// `urn:rutent:router-api:common#/$defs/route_call`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCall {
+    /// The provider whose module may be called: the provider of another operation of the same part.
+    pub callee: Id,
+    /// The provider-role operation kind that may be asked of it.
+    pub kind: CallKind,
 }
 
 /// The shape of a decision record statement.
@@ -458,6 +499,16 @@ pub struct Operation {
     pub amount_out: Amount,
     /// The snapshot figures the operation was evaluated with, by id, each once (`REQ-QTE-4`).
     pub figures: NonEmpty<Id>,
+    /// The cross-module calls this segment makes, each once (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`): each is a
+    /// call its provider's module declares, in the one [`FigureValue::Calls`] figure the operation cites, of the
+    /// release its tuple comes from, to the provider of another operation of the same part. Empty, and absent on
+    /// the wire, when it names none; a present list is never empty, so an operation has one form.
+    #[serde(
+        default,
+        deserialize_with = "non_empty_list",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub calls: Vec<RouteCall>,
 }
 
 /// One part of a split: a route, an ordered list of typed operations from the request's origin to its destination

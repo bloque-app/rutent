@@ -14,6 +14,8 @@
 //! - no kept or outranked candidate follows a profitable rate cycle, and `suspect_rate_cycle` names only one that
 //!   does;
 //! - every `outranked` candidate would itself be a valid choice;
+//! - every segment names exactly the calls its provider's module declares to the other providers of its part
+//!   (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`);
 //! - the ranking follows the request's objective, ties going to the lowest `candidate_id`.
 //!
 //! # Running a router
@@ -34,6 +36,7 @@ mod price;
 pub use cases::{Case, Expected, cases};
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
@@ -41,7 +44,7 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, DropReason, Endpoint, Figure, FigureValue, Id, Objective, Operation,
-    Round, Router, Timestamp,
+    Origin, Round, Router, Timestamp,
 };
 
 /// The drop reasons this suite knows, as router-api 3.0.0 names them (`T-011-05`). `DropReason` is
@@ -86,6 +89,11 @@ pub enum Check {
     /// Every candidate dropped as `outranked` would itself pass the contract as the choice (or as kept, in a
     /// shortlist round): it was beaten, not faulty.
     OutrankedCandidatesAreEligible,
+    /// Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of
+    /// the release its tuple comes from, to the provider of another operation of its part, every kind declared,
+    /// and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`). The contract
+    /// already refuses a call outside that; this check finds one left out.
+    CallsFollowTheDeclarations,
     /// The kept candidates rank ahead of every outranked one by the objective and then `candidate_id`; each
     /// outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate
     /// chooses (`REQ-QTE-11`).
@@ -101,6 +109,7 @@ impl Check {
             Check::AmountsFollowTheirFigures => "amounts-follow-their-figures",
             Check::RateCyclesAreNotFollowed => "rate-cycles-are-not-followed",
             Check::OutrankedCandidatesAreEligible => "outranked-candidates-are-eligible",
+            Check::CallsFollowTheDeclarations => "calls-follow-the-declarations",
             Check::RankingFollowsTheObjective => "ranking-follows-the-objective",
         }
     }
@@ -162,6 +171,7 @@ pub fn recompute(record: &DecisionRecord) -> Recomputed {
     reader.amounts_follow_their_figures(&mut findings);
     reader.rate_cycles_are_not_followed(&mut findings);
     reader.outranked_candidates_are_eligible(&mut findings);
+    reader.calls_follow_the_declarations(&mut findings);
     let choice = reader.ranking_follows_the_objective(&mut findings);
     Recomputed { findings, choice }
 }
@@ -375,6 +385,73 @@ impl<'a> Reader<'a> {
                 .enumerate()
                 .map(move |(o, operation)| (p, o, operation))
         })
+    }
+
+    /// See [`Check::CallsFollowTheDeclarations`]. Calls are compared as sets: their order carries nothing.
+    fn calls_follow_the_declarations(&self, findings: &mut Vec<Finding>) {
+        let release = |figure: &Figure| match &figure.origin {
+            Origin::Provider {
+                provider,
+                module_version,
+                ..
+            } => Some((
+                provider.as_str().to_owned(),
+                module_version.as_str().to_owned(),
+            )),
+            Origin::Operator { .. } => None,
+        };
+        for candidate in &self.record.candidates {
+            for part in candidate.parts.iter() {
+                for (o, operation) in part.operations.iter().enumerate() {
+                    let tuple = self.figure(operation.figures.first());
+                    let declared = self.record.snapshot.figures.iter().find(|f| {
+                        matches!(f.value, FigureValue::Calls { .. })
+                            && release(f).is_some()
+                            && release(f) == release(tuple)
+                    });
+                    let mut expected = BTreeSet::new();
+                    if let Some(Figure {
+                        value: FigureValue::Calls { calls },
+                        ..
+                    }) = declared
+                    {
+                        for call in calls.iter() {
+                            let on_the_part = call.callee != operation.provider
+                                && part
+                                    .operations
+                                    .iter()
+                                    .enumerate()
+                                    .any(|(j, other)| j != o && other.provider == call.callee);
+                            if on_the_part {
+                                for kind in call.kinds.iter() {
+                                    expected.insert((
+                                        call.callee.as_str().to_owned(),
+                                        format!("{kind:?}"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let named: BTreeSet<(String, String)> = operation
+                        .calls
+                        .iter()
+                        .map(|c| (c.callee.as_str().to_owned(), format!("{:?}", c.kind)))
+                        .collect();
+                    let cites = declared.is_some_and(|f| operation.figures.contains(&f.figure_id));
+                    if named != expected || cites != !expected.is_empty() {
+                        findings.push(Finding {
+                            check: Check::CallsFollowTheDeclarations,
+                            candidate: Some(candidate.candidate_id.clone()),
+                            detail: format!(
+                                "{} names calls {named:?} and {} its calls figure; its declaration allows {expected:?} on its part",
+                                operation.provider,
+                                if cites { "cites" } else { "doesn't cite" }
+                            ),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn shortlist_reads_advertised_figures(&self, findings: &mut Vec<Finding>) {

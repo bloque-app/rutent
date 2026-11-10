@@ -32,6 +32,14 @@
 //! - [`judge_call`]: a call only where the caller's release declares it and the route names it ([`RouteCalls`]),
 //!   in the contract's order of checks, which the module platform applies to every call it routes. The callee's
 //!   lookups are its own process's, so it resolves only its own secrets.
+//!
+//! `T-014-05` makes them the module platform's production world:
+//!
+//! - [`ProductionWorld`]: the proxy and the egress layer as the platform's `World`, told what each provider's
+//!   module handles (`begin_*` and `end_*`), so every lookup is judged again by the proxy and recorded, and every
+//!   outbound call goes through the egress layer over a real resolver and TLS connector.
+//! - [`sign_result`]: the platform's results signed with the provider's statement key, resolved through the proxy
+//!   and never held by the module.
 
 mod calls;
 mod https;
@@ -39,20 +47,25 @@ mod kv;
 mod resolver;
 mod settings;
 mod shared;
+mod signing;
 mod transport;
+mod world;
 
 #[cfg(test)]
 mod tests;
 
 pub use calls::{
-    CallAsked, CallJudgement, NO_ROUTE_RECORD, NO_ROUTE_SEGMENT, NamedCall, RouteCalls, judge_call,
-    no_route,
+    CallAsked, CallJudgement, NO_ROUTE_RECORD, NO_ROUTE_SEGMENT, NamedCall, RouteCalls,
+    RouteNotNamed, judge_call, no_route,
 };
 pub use https::HttpsTransport;
+pub(crate) use https::{AnswerError, Bounded, client_config, exchange, handshake, left};
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};
 pub use resolver::{ResolveError, Resolver};
 pub use settings::{
     Bucket, InvalidSettings, ProxySettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,
 };
 pub use shared::{Caller, CredentialProxy, InFlight, Refusal, Use, UseOf, answer, judge};
+pub use signing::{Answering, SigningError, sign_result};
 pub use transport::{Header, Request, Response, Transport, TransportError};
+pub use world::{NoState, ProductionWorld, StateStore};

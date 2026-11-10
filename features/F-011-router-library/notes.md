@@ -420,3 +420,78 @@ items, that a candidate is a path of statable operations only.
   `path_that_delivers_nothing_where_no_tuple_goes_on_is_still_recorded_with_its_drop_reason`, the owner's example
   with E charging exactly what reaches it and no `r-eur`, so nothing goes on from E either way. The router was then
   restored unchanged.
+
+## T-011-06: a route names its calls (router-api 3.0.0)
+
+Each segment of a route now names the cross-module calls it makes, so the platform's `RouteCalls` (`T-014-04`) is
+filled from the router's decision, and the decision record carries the calls. Folded into the unreleased 3.0.0's
+changelog entry, as a second bullet; no second bump.
+
+- **Where the calls come from.** The router is pure, so they enter through the snapshot: a new figure kind, `calls`,
+  what a provider's admitted module declares, as its release's `outside.calls` lists them (`{callee, kinds}`). It
+  is the provider's, its origin's `module_version` naming the release; it states no validity, as an advertisement
+  doesn't; at most one per provider. Reading: Core (`M3`) writes it from the accepted release's declaration when it
+  builds the snapshot, as it writes exposures from its own records. Recorded, reversible.
+- **The kind.** The module interface's: a provider-role operation kind (`withdrawal`, `transfer`,
+  `balance_verification`, …), the terms `validate_call_against` and `judge_call` use. The schemas `$ref`
+  provider-role's operation kind, the target module-interface's `operation_kind` points at, so the router-api
+  schemas still load only provider-role's. In Rust it is `CallKind`, a re-export of `module_interface::OperationKind`:
+  provider-role has no Rust kind type, and `contracts/src/module_interface` is untouched, so module-interface isn't
+  bumped. This couples router-api's Rust to module-interface's enum inside one crate; recorded.
+- **The rule: callees on the part.** A segment names every call its provider declares, every kind, to the provider
+  of another operation of its part; a declared call to a provider on no segment stays unnamed, so the platform
+  refuses it as `not_named_by_route`. That bounds `THR-86` to the route: a module can only reach a provider its route
+  already takes. Kinds are not narrowed further. Considered and not taken: matching the kind to the callee's own
+  segment (a ramp's segment asks `transfer`). The platform today forwards the caller's own operation (`judge_call`'s
+  `kind` is the one the caller handles, `EXP-2`'s bindings), so that rule would name calls the platform never makes.
+  Any narrowing by kind waits for a ruling; recorded, reversible, fails closed.
+- **The contract.** `Operation.calls`: `{callee, kind}` pairs, each once, none to its own provider, absent when empty
+  and never `[]` on the wire (`non_empty_list`). The record's check: an operation cites one calls figure exactly when
+  it names a call, its own module release's (provider and `module_version` as its tuple's); each call is declared
+  there and is to the provider of another operation of its part. That a router names every such call is the router
+  suite's new check, `calls-follow-the-declarations`, so the contract stays a structure check. A new figure kind and
+  a new wire field are a major under `DEC-4`, whatever `#[non_exhaustive]` spares Rust (`FigureValue` isn't one); the
+  changelog says so.
+- **The router.** `calls::name` names each part's calls once the part is whole, since they depend on its other
+  segments; the search and the ranking don't read them. `rutent_router::VERSION` is `rutent-router-0.3.0`.
+- **Fixtures.** `catalogue-snapshot-of-every-kind-of-figure` gains a calls figure, appended so the existing patches'
+  indices hold; `operation-naming-its-calls` and `decision-record-naming-the-calls-each-segment-makes` are new. The
+  latter is this router's own record over its inputs: `the_fixture_naming_calls_is_this_router_s_own_record`
+  asserts it equal, so the platform's test fills `RouteCalls` from a route the router made. Eighteen invalid
+  fixtures: five operations, eight snapshots and five records, the last two kinds made from patches.
+- **The router suite.** The tie case's exchanges declare calls, `exchange-t1`'s to the reserve on its route and to
+  `exchange-t2` on none; the reference double names them, and a new flaw, `LEAVES_OUT_CALLS`, fails
+  `recomputes-from-the-record-alone` on the tie case alone, by `calls-follow-the-declarations` alone.
+- **Tests, each seen failing first.** `route_names_the_calls_each_segment_makes` failed with no calls named, against
+  the router with `calls::name` switched off. The property `every_call_a_route_names_is_one_its_provider_s_declaration_allows`
+  (`DEC-18`, a new generator shape `CALLS`, drawn after the tuples so the other shapes' draws are unchanged) checks
+  every call named is declared by the release its tuple comes from and is to a provider on the part, and that every
+  such call is named; it failed at seed 4 with naming off, and counts more than 50 calls named and 50 left unnamed.
+  `every_record_passes_the_contract_and_recomputes_from_itself` runs over `CALLS` too. The contract's new record
+  rules were seen failing: with the declared and on-the-part checks switched off, Rust accepted the two fixtures
+  that break them. The suite's flaw test first passed vacuously, because the calls figures had landed in another
+  case; it failed until they were moved to the tie case.
+- **The fixture's protocol version.** Pinned at 2.0.1, as the other decision-record fixtures pin theirs, so a
+  provider-role bump (m2 moved it to 3.0.0 while this task ran) leaves the fixture and its equality test standing.
+- **The guard.** Run against `origin/develop`, as the coordinator now runs it for a milestone branch (m2
+  `28f16cc`): router-api is 3.0.0 there against 2.x.
+
+## T-011-06, review round
+
+- **`holding_balance` is never a route's call** (fresh reviewer, should-fix). m2 added the provider-role kind
+  `holding_balance` while this task ran, and `CallKind` re-exports module-interface's enum without its Rust-only
+  `DeclaredCallOfHoldingBalance` rule, so a calls figure, an operation's calls and the router all let it through;
+  only `judge_call` refused it. Now router-api's `call_kind` schema excludes it (`not`), `CatalogueSnapshot::check`
+  refuses a calls figure that declares it, `Operation::check` refuses an operation that names it, and the router
+  skips it even in a snapshot built past its check. Folded into the unreleased 3.0.0's changelog bullet. Two invalid
+  fixtures, `catalogue-snapshot-calls-figure-asking-for-a-holding-balance` (made from a patch) and
+  `operation-naming-a-call-for-a-holding-balance`.
+- **The property.** The generator's `CALL_KINDS` draws `holding_balance` too; a draw of it is kept out of the
+  snapshot (no valid one may carry it) and put back by `with_holding_balance`, in Rust past the check.
+  `no_route_names_a_call_for_a_holding_balance_and_no_snapshot_declares_one` then asserts the snapshot's check
+  refuses it and that the router, handed it anyway, names it on no segment, over more than 50 networks. Seen
+  failing first twice: at seed 1, the check passing, before the contract fix; at seed 4, `p-t06` naming it, before
+  the router's skip. The two fixtures failed first too, accepted by both the schemas and Rust.
+- **`name_segment`'s other refusals** (nit). `tests/route_calls.rs` also asserts it names nothing for a choice
+  round with no route (`decision-record-with-no-route`, `NothingChosen`) and for a record that breaks its contract
+  (choosing a candidate it doesn't hold, `Invalid`). These pin behaviour already there, so they passed at once.

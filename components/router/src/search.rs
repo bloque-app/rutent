@@ -317,6 +317,8 @@ impl<'a> Search<'a> {
                 fee,
                 amount_out,
                 figures: NonEmpty::new(figures)?,
+                // Named once the part is whole, by `calls::name`: they depend on its other segments.
+                calls: Vec::new(),
             },
             confirmed: is_confirmed,
             unstatable,
