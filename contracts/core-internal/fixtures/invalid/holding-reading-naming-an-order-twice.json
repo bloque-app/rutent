@@ -1,0 +1,22 @@
+{
+  "account": "hold-7",
+  "provider": "fx-desk",
+  "node": "fx-desk-ledger",
+  "asset": {
+    "id": "USDC",
+    "decimals": 6
+  },
+  "balance": "3000000000",
+  "word": "publisher",
+  "held_for": [
+    {
+      "order": "ord-17",
+      "amount": "1000000000"
+    },
+    {
+      "order": "ord-17",
+      "amount": "2000000000"
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

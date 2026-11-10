@@ -1,0 +1,40 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "revoke_permission",
+    "change": {
+      "request": "req-r1",
+      "permission": "perm-reg-1",
+      "grantee": {
+        "party": "fin-regulator",
+        "acts": "examiner-3",
+        "role": "regulator",
+        "kind": "person"
+      },
+      "scope": {
+        "kind": "trail"
+      },
+      "by": {
+        "party": "operator",
+        "acts": "op-login-2",
+        "role": "operator",
+        "kind": "person"
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-r1"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

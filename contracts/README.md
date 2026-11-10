@@ -4,11 +4,12 @@ The contracts every later module and runtime is written against (`PLAN.md` `DEC-
 freeze at `C1` (`T-006-01`); from then on a change needs a version bump, a changelog entry naming a `DEC-*`, and the
 owner's click (`DEC-20`).
 
-## The five contracts
+## The six contracts
 
-All five live in one crate, `rutent-contracts`. Each has a directory for its language-neutral artefacts and a Rust
+All six live in one crate, `rutent-contracts`. Each has a directory for its language-neutral artefacts and a Rust
 module for its types. The host contract sits inside the state-machine package (`DEC-3`) but has its own version and
-changelog.
+changelog. The sixth, `core-internal`, is the interfaces between Core's three parts (`T-020-01`, `PLAN.md` §4.4):
+it came after `C1`, at 1.0.0, under the same rules.
 
 | Contract | Artefacts | Rust module | Feature |
 |---|---|---|---|
@@ -17,6 +18,7 @@ changelog.
 | `router-api` | `contracts/router-api/` | `contracts/src/router_api/` | `F-004` |
 | `state-machine` | `contracts/state-machine/` | `contracts/src/state_machine/` | `F-005` |
 | `host` | `contracts/state-machine/host/` | `contracts/src/state_machine/host/` | `F-005` |
+| `core-internal` | `contracts/core-internal/` | `contracts/src/core_internal/` | `F-020` |
 
 `contracts/CONTRACTS` lists the same mapping in a form tools read. A path belongs to the contract whose artefact or
 module directory is its longest matching prefix, so `contracts/state-machine/host/...` is the host contract's, not

@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:stated-entry",
+  "title": "Stated entry",
+  "description": "What a party stated, apart from anything rutent verified (REQ-AUD-2): who it is attributed to, its shape, the time the maker gives it, the key it says signed it, and a salted commitment to the statement's bytes as received. The bytes, the signature's value and the salt stay in the evidence store apart from the log, so the signature stays checkable against exactly what was signed, and nothing in the log lets anyone confirm a guess of a statement's content, such as a holding account's balance (REQ-AUD-6). Its time is the maker's own, labelled so. That a relay is a party other than the maker is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "attribution",
+    "what",
+    "when",
+    "received_at",
+    "outcome",
+    "signed_with",
+    "commitment"
+  ],
+  "properties": {
+    "kind": {
+      "description": "Stated: what a party said.",
+      "const": "stated"
+    },
+    "attribution": {
+      "$ref": "#/$defs/attribution"
+    },
+    "what": {
+      "description": "What it records: a statement of the shape its envelope names.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statement"
+      ],
+      "properties": {
+        "statement": {
+          "description": "The statement's shape, its envelope's shape.",
+          "$ref": "urn:rutent:provider-role:statement-envelope#/properties/shape"
+        }
+      }
+    },
+    "when": {
+      "description": "When the maker says it made it, its envelope's made_at.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/stated_when"
+    },
+    "received_at": {
+      "description": "When Core received it, by Core's clock.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "outcome": {
+      "description": "It was stated, and nothing more is claimed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "stated"
+        }
+      }
+    },
+    "signed_with": {
+      "$ref": "#/$defs/signed_with"
+    },
+    "commitment": {
+      "description": "The salted commitment to the statement's bytes as received: SHA-256 of the evidence store's salt followed by the bytes.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+    },
+    "about": {
+      "$ref": "#/$defs/about"
+    },
+    "relayed_by": {
+      "description": "Who passed it on, where someone other than its maker did: the statement stays its maker's.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    }
+  },
+  "$defs": {
+    "attribution": {
+      "description": "Who it is attributed to: its maker where its signature verified against a key of the maker's, and otherwise only the party it claims as maker, attributed to no one.",
+      "type": "object",
+      "required": [
+        "signature"
+      ],
+      "properties": {
+        "signature": {
+          "enum": [
+            "verified",
+            "unverified"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "signature"
+            ],
+            "properties": {
+              "signature": {
+                "const": "verified"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/attribution_verified"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "signature"
+            ],
+            "properties": {
+              "signature": {
+                "const": "unverified"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/attribution_unverified"
+          }
+        }
+      ]
+    },
+    "attribution_verified": {
+      "description": "The signature verified: the entry is the maker's.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature",
+        "who"
+      ],
+      "properties": {
+        "signature": {
+          "const": "verified"
+        },
+        "who": {
+          "description": "The maker.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        }
+      }
+    },
+    "attribution_unverified": {
+      "description": "It didn't, or couldn't be checked.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature",
+        "claimed_by"
+      ],
+      "properties": {
+        "signature": {
+          "const": "unverified"
+        },
+        "claimed_by": {
+          "description": "Who the statement claims made it.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        }
+      }
+    },
+    "signed_with": {
+      "description": "The key and scheme the statement says signed it, without the signature's value.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "key"
+      ],
+      "properties": {
+        "scheme": {
+          "$ref": "urn:rutent:provider-role:statement-envelope#/properties/signature/properties/scheme"
+        },
+        "key": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "about": {
+      "description": "What it is about, where Core knows it: at least one of an order, a segment or a transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "request": "req-105",
+  "decision": "dec-105",
+  "outcome": {
+    "answer": "not_known",
+    "cause": "policy_unreachable"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 44,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"
+    }
+  }
+}

@@ -469,6 +469,38 @@ fn transaction_cannot_read_another_transactions_state() {
     }
 }
 
+// verifies: REQ-MDL-8
+#[test]
+fn each_state_read_names_the_transaction_it_was_made_for() {
+    let provider = "stateful";
+    let mut binding = binding("reserve");
+    binding.seed_state(provider, "rates", "shared");
+    let module = spec(
+        provider,
+        "1.0.0",
+        vec![Step::ReadState {
+            part: PartName::Outside,
+            key: "rates".to_owned(),
+        }],
+        true,
+    );
+    install(&mut binding, &module, &language(), "reserve", &[]);
+    for n in [1, 2] {
+        Platform::take_events(&mut binding);
+        assert!(answer(&mut binding, provider, n).is_ok());
+        let reads: Vec<_> = Platform::take_events(&mut binding)
+            .state_reads
+            .into_iter()
+            .map(|r| (r.key, r.transaction))
+            .collect();
+        assert_eq!(
+            reads,
+            [("rates".to_owned(), tx(provider, n).as_str().to_owned())],
+            "transaction {n}"
+        );
+    }
+}
+
 // verifies: REQ-MDL-14, INV-8
 #[test]
 fn duplicate_transaction_identifier_is_refused() {

@@ -1,0 +1,23 @@
+{
+  "authorisation": "auth-19",
+  "order": "ord-19",
+  "origin_reserve": "us-bank",
+  "destination": {
+    "reserve": "bank-co",
+    "node": {
+      "network": "co-ach"
+    },
+    "account": "acct-ref-9"
+  },
+  "to_asset": {
+    "id": "COP",
+    "decimals": 2
+  },
+  "given_by": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

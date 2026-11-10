@@ -1,0 +1,32 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "what": {
+    "call": "open_session",
+    "request": {
+      "request": "req-300",
+      "account": "acct-ref-4",
+      "holder": "cust-1",
+      "requester": {
+        "party": "acme-treasury",
+        "acts": "agent-7",
+        "role": "customer",
+        "kind": "agent"
+      },
+      "until": "2026-11-10T09:15:00Z",
+      "at": "2026-11-10T09:00:00Z"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

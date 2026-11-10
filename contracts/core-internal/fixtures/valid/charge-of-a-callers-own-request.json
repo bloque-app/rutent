@@ -1,0 +1,13 @@
+{
+  "request": "req-501",
+  "party": "cust-1",
+  "caller": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "work": "request",
+  "count": 1,
+  "at": "2026-11-10T09:00:00Z"
+}

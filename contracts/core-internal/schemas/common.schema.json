@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:common",
+  "title": "Shared atoms of the core-internal contract",
+  "description": "Referenced by the other core-internal schemas; validates nothing on its own. Identifiers, amounts, timestamps, nodes and denominations are the provider-role contract's, and digests and names the module interface's, by reference.",
+  "$defs": {
+    "token": {
+      "description": "A reason or a bound's name, as the component that gives it names it: a lower-case word or words joined by _.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "maxLength": 64
+    },
+    "count": {
+      "description": "A count of one or more, no larger than 2^53 - 1.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "role": {
+      "description": "The role an actor acts in, each recorded apart even where one party holds several (REQ-AUD-8): a customer (requester, payer or beneficiary), the operator, a provider, a verifier, a regulator or a checker by an identified permission (REQ-AUZ-7), or one of Core's own parts acting on its own account. An agent acts in its party's role (REQ-OPS-5).",
+      "enum": [
+        "customer",
+        "operator",
+        "provider",
+        "verifier",
+        "regulator",
+        "checker",
+        "core"
+      ]
+    },
+    "actor_kind": {
+      "description": "What kind of actor acts: a person, an agent acting for its accountable party within the scope that party set (REQ-AUZ-8), or a component (a module, a reserve's system, one of Core's parts). Humans and agents use one contract, and the record says which acted (REQ-OPS-5, REQ-ORD-10).",
+      "enum": [
+        "person",
+        "agent",
+        "component"
+      ]
+    },
+    "decided": {
+      "description": "A decision a later call carries out.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "request": {
+          "description": "The request the decision answered.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decision": {
+          "description": "The decision.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "opened": {
+      "description": "A session policy opened.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "expires_at"
+      ],
+      "properties": {
+        "session": {
+          "description": "The session's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "expires_at": {
+          "description": "When it ends, by Core's clock: after the request's at, and no later than its until.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "actor": {
+      "description": "Who acts. Both identifiers are references, never an identity itself (REQ-AUD-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "party",
+        "acts",
+        "role",
+        "kind"
+      ],
+      "properties": {
+        "party": {
+          "description": "The accountable party it acts for: where limits bind and where actors are compared (REQ-AUZ-8, ADR-0011).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "acts": {
+          "description": "The actor, as external authentication established it (REQ-AUZ-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "kind": {
+          "$ref": "#/$defs/actor_kind"
+        }
+      }
+    },
+    "when": {
+      "description": "When a verified entry's action happened, and by whose clock (REQ-AUD-1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "source"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "source": {
+          "description": "Whose clock gave the time (REQ-AUD-1): Core's own, or the module platform's as a record it handed over states it.",
+          "enum": [
+            "core_clock",
+            "platform_clock"
+          ]
+        }
+      }
+    },
+    "stated_when": {
+      "description": "When a party says it made a statement (REQ-AUD-1, REQ-AUD-2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "source"
+      ],
+      "properties": {
+        "at": {
+          "description": "The time the maker states, its envelope's made_at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "source": {
+          "description": "Always the maker's own statement, which rutent has not verified.",
+          "const": "party_stated"
+        }
+      }
+    },
+    "destination": {
+      "description": "Where value goes (REQ-AUZ-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reserve",
+        "node",
+        "account"
+      ],
+      "properties": {
+        "reserve": {
+          "description": "The reserve: the provider of the route's last deposit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The outer node it deposits to.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "account": {
+          "description": "The account or address at the reserve, by reference; one the requester provides is part of the destination too (REQ-ORD-35).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "route_end": {
+      "description": "What a route that moves value ends at, as the action states it, so policy can hold it against the authorisation (REQ-AUZ-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination",
+        "to_asset",
+        "delivers"
+      ],
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/destination"
+        },
+        "to_asset": {
+          "description": "The asset it delivers.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "delivers": {
+          "description": "The amount it is expected to deliver, in the to asset's unit, to hold against any floor.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "catalogue_change": {
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate and withdraw_release are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it. The Rust types check both.",
+      "enum": [
+        "grant",
+        "revoke_grant",
+        "accept_module",
+        "revoke_release",
+        "mark_stale",
+        "declare_exploited",
+        "reinstate",
+        "withdraw_release",
+        "set_slippage"
+      ]
+    },
+    "action": {
+      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue or moves a stuck order's value (REQ-AUZ-1).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "move_value",
+            "post_route",
+            "change_catalogue",
+            "resolve_stuck"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "move_value"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_move_value"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "post_route"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_post_route"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "change_catalogue"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_change_catalogue"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "resolve_stuck"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_resolve_stuck"
+          }
+        }
+      ]
+    },
+    "action_move_value": {
+      "description": "Handing a segment's value-moving operation to its provider.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider",
+        "origin_reserve",
+        "authorisation",
+        "route"
+      ],
+      "properties": {
+        "kind": {
+          "const": "move_value"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The segment's provider.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin_reserve": {
+          "description": "The order's origin reserve: the provider of its first withdrawal, or the holding account's provider on a route handed on (REQ-AUZ-9).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "authorisation": {
+          "description": "The authorisation it acts under (REQ-AUZ-3).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "route": {
+          "description": "What the route it belongs to ends at, as it stands now.",
+          "$ref": "#/$defs/route_end"
+        }
+      }
+    },
+    "action_post_route": {
+      "description": "Posting a route, which only the operator may do (REQ-AUZ-2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "decision_record"
+      ],
+      "properties": {
+        "kind": {
+          "const": "post_route"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decision_record": {
+          "description": "The digest of the recorded decision that chose the route.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "suggested_by": {
+          "description": "Who suggested it, if anyone did; a suggestion has no standing until posted (REQ-AUZ-2).",
+          "$ref": "#/$defs/actor"
+        }
+      }
+    },
+    "action_change_catalogue": {
+      "description": "Changing the catalogue (REQ-AUZ-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "change",
+        "provider"
+      ],
+      "properties": {
+        "kind": {
+          "const": "change_catalogue"
+        },
+        "change": {
+          "$ref": "#/$defs/catalogue_change"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "version": {
+          "description": "The module release it is about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "tuple": {
+          "description": "The tuple it is about, where it is about one.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_resolve_stuck": {
+      "description": "Moving a stuck order's value as its decide step named, outside the order's authorisation (REQ-AUZ-4, ADR-0011).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "carries_out",
+        "resolution"
+      ],
+      "properties": {
+        "kind": {
+          "const": "resolve_stuck"
+        },
+        "order": {
+          "description": "The stuck order.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "carries_out": {
+          "description": "The decide step's decision it carries out.",
+          "$ref": "#/$defs/decided"
+        },
+        "resolution": {
+          "description": "The outcome it moves, exactly as the decide step named it, the provider that moves it included; the log admits it only so.",
+          "$ref": "urn:rutent:core-internal:stuck-decide#/$defs/resolution"
+        }
+      }
+    },
+    "refusal_class": {
+      "description": "Why policy refused, as a stable class: the actor's role or permissions don't allow it; an input the decision needs is missing (REQ-AUZ-5); it isn't inside the authorisation it names (REQ-AUZ-3); the accountable party is past its bound (REQ-OPS-1, REQ-AUZ-8, REQ-CPL-5); the actor acts for no identified accountable party (REQ-AUZ-8); or one accountable party would both decide a stuck order's outcome and move its value (REQ-AUZ-4).",
+      "enum": [
+        "not_permitted",
+        "missing_input",
+        "outside_authorisation",
+        "over_bound",
+        "no_accountable_party",
+        "same_actor"
+      ]
+    },
+    "not_known_cause": {
+      "description": "Why policy could not decide (REQ-AUZ-5); nothing moves on it.",
+      "enum": [
+        "policy_unreachable",
+        "verifier_unreachable"
+      ]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "kind": "limit",
+  "provider": "bridge-pay",
+  "transaction": "tx-003",
+  "limit": "count",
+  "scope": "outbound_calls"
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:report-pair",
+  "title": "Segment report pair",
+  "description": "A segment's pair of reports: what one party says it sent, and what the next says it received, each with the receipt of the stated entry holding its statement (REQ-ORD-9). That the two are different parties' is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order",
+    "segment",
+    "sent",
+    "received"
+  ],
+  "properties": {
+    "order": {
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "segment": {
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "sent": {
+      "description": "What the sending party reports.",
+      "$ref": "#/$defs/report"
+    },
+    "received": {
+      "description": "What the receiving party reports.",
+      "$ref": "#/$defs/report"
+    }
+  },
+  "$defs": {
+    "report": {
+      "description": "One party's report about a segment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "party",
+        "amount",
+        "asset",
+        "statement"
+      ],
+      "properties": {
+        "party": {
+          "description": "The party that reports.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "statement": {
+          "description": "The receipt of the stated entry that holds the party's statement.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    }
+  }
+}

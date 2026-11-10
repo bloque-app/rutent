@@ -1,0 +1,1800 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:verified-entry",
+  "title": "Verified entry",
+  "description": "What rutent itself did or saw: who, what, when by whose clock, and the outcome (REQ-AUD-1). Never a party's statement, which is a stated entry (REQ-AUD-2). Its what covers every record Core's parts write. That the outcome is one its call can have is checked by the Rust types: a policy call's is permitted, refused or not known; an effect's is to_take_effect, recorded before it takes place (INV-7); a result's is done, failed or unanswered; a raise's, a command's and an erasure's is done or failed; any other record's is observed. They also check that a session entry names the session exactly when it was opened, ending after it was asked for and no later than its until.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "who",
+    "what",
+    "when",
+    "outcome"
+  ],
+  "properties": {
+    "kind": {
+      "description": "Verified: what rutent itself did or saw.",
+      "const": "verified"
+    },
+    "who": {
+      "description": "Who acted.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "what": {
+      "$ref": "#/$defs/what"
+    },
+    "when": {
+      "description": "When, and by whose clock.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/when"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    }
+  },
+  "$defs": {
+    "what": {
+      "description": "What it records: one of the calls between Core's parts, orchestration's own records, or what the platform handed over.",
+      "type": "object",
+      "required": [
+        "call"
+      ],
+      "properties": {
+        "call": {
+          "enum": [
+            "decide",
+            "authorise",
+            "effect",
+            "result",
+            "stuck_decide",
+            "stuck_move",
+            "open_session",
+            "charge",
+            "ask_about_person",
+            "check_read",
+            "hand_over",
+            "report_pair",
+            "holding_check",
+            "measure",
+            "raise",
+            "grant_permission",
+            "revoke_permission",
+            "refiling",
+            "input",
+            "acceptance",
+            "order_refusal",
+            "destination_check",
+            "arrival",
+            "decision_record",
+            "shown",
+            "settlement",
+            "evidence",
+            "fee",
+            "stuck_call",
+            "afterwards",
+            "reliance",
+            "command",
+            "erasure"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "decide"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_decide"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "authorise"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_authorise"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "effect"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_effect"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "result"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "stuck_decide"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_stuck_decide"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "stuck_move"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_stuck_move"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "open_session"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_open_session"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "charge"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_charge"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "ask_about_person"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_ask_about_person"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "check_read"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_check_read"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "hand_over"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_hand_over"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "report_pair"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_report_pair"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "holding_check"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_holding_check"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "measure"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_measure"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "raise"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_raise"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "grant_permission"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_grant_permission"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "revoke_permission"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_revoke_permission"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "refiling"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_refiling"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "input"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_input"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "acceptance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_acceptance"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "order_refusal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_order_refusal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "destination_check"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_destination_check"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "arrival"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_arrival"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "decision_record"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_decision_record"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "shown"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_shown"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "settlement"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_settlement"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "evidence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_evidence"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "fee"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_fee"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "stuck_call"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_stuck_call"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "afterwards"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_afterwards"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "reliance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_reliance"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "command"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_command"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "erasure"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_erasure"
+          }
+        }
+      ]
+    },
+    "parties": {
+      "description": "An order's three parties, by reference, recorded apart (REQ-ORD-17); a third-party payer's details stay at the provider (REQ-CPL-11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requester",
+        "beneficiary",
+        "payer"
+      ],
+      "properties": {
+        "requester": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "beneficiary": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "settlement_account_at": {
+          "description": "Where the beneficiary is a settlement account whose holder pays several payees from its book: the reserve holding it, to which the payees' checks fall (REQ-ORD-17). Absent where the beneficiary is the payee.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "payer": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_decide": {
+      "description": "A decision call, and the decision's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "decide"
+        },
+        "request": {
+          "$ref": "urn:rutent:core-internal:decision-request"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_authorise": {
+      "description": "An authorisation registered, and the decision's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "authorisation",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "authorise"
+        },
+        "authorisation": {
+          "$ref": "urn:rutent:core-internal:authorisation"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_effect": {
+      "description": "An action about to take effect, before it does (INV-7). The log refuses it unless its permit's receipt names a permitting entry that decided the same action.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "action",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "effect"
+        },
+        "action": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/action"
+        },
+        "decision": {
+          "$ref": "urn:rutent:core-internal:effect#/$defs/permit"
+        }
+      }
+    },
+    "what_result": {
+      "description": "How an effect ended.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "effect"
+      ],
+      "properties": {
+        "call": {
+          "const": "result"
+        },
+        "effect": {
+          "description": "The receipt of the effect's entry.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    },
+    "what_stuck_decide": {
+      "description": "A stuck order's decide step, and the decision's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "stuck_decide"
+        },
+        "request": {
+          "$ref": "urn:rutent:core-internal:stuck-decide"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_stuck_move": {
+      "description": "A stuck order's move step, and the decision's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "stuck_move"
+        },
+        "request": {
+          "$ref": "urn:rutent:core-internal:stuck-move"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_open_session": {
+      "description": "A session request, and the session opened where one was.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request"
+      ],
+      "properties": {
+        "call": {
+          "const": "open_session"
+        },
+        "request": {
+          "$ref": "urn:rutent:core-internal:session-request"
+        },
+        "opened": {
+          "description": "The session, present exactly when the outcome is permitted.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/opened"
+        }
+      }
+    },
+    "what_charge": {
+      "description": "A charge of work.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "charge"
+      ],
+      "properties": {
+        "call": {
+          "const": "charge"
+        },
+        "charge": {
+          "$ref": "urn:rutent:core-internal:charge"
+        }
+      }
+    },
+    "what_ask_about_person": {
+      "description": "A question about a person.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "question"
+      ],
+      "properties": {
+        "call": {
+          "const": "ask_about_person"
+        },
+        "question": {
+          "$ref": "urn:rutent:core-internal:person-question"
+        }
+      }
+    },
+    "what_check_read": {
+      "description": "A read check.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "check"
+      ],
+      "properties": {
+        "call": {
+          "const": "check_read"
+        },
+        "check": {
+          "$ref": "urn:rutent:core-internal:read-check"
+        }
+      }
+    },
+    "what_grant_permission": {
+      "description": "A read permission granted, and the decision's id (REQ-AUZ-7, REQ-AUD-12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "change",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "grant_permission"
+        },
+        "change": {
+          "$ref": "urn:rutent:core-internal:permission-change"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_revoke_permission": {
+      "description": "A read permission revoked, and the decision's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "change",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "revoke_permission"
+        },
+        "change": {
+          "$ref": "urn:rutent:core-internal:permission-change"
+        },
+        "decision": {
+          "description": "The decision's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_refiling": {
+      "description": "An arrival that differed from its open order filed anew, by the operator or by the reserve it arrived at, which who names (REQ-ORD-23).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "arrival",
+        "order"
+      ],
+      "properties": {
+        "call": {
+          "const": "refiling"
+        },
+        "arrival": {
+          "description": "The receipt of the arrival's entry.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "order": {
+          "description": "The order it is filed against.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_hand_over": {
+      "description": "An item the platform or the proxy reported, at its place in its drain.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "item",
+        "drain",
+        "position"
+      ],
+      "properties": {
+        "call": {
+          "const": "hand_over"
+        },
+        "item": {
+          "$ref": "urn:rutent:core-internal:handover"
+        },
+        "drain": {
+          "description": "The drain that took it: one call of take_events or take_uses.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "position": {
+          "description": "Its place in that drain, from 0, so two identical events of one drain are two entries and a retried append of one is still one (REQ-MDL-8).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "what_report_pair": {
+      "description": "A segment's pair of reports, compared.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "pair"
+      ],
+      "properties": {
+        "call": {
+          "const": "report_pair"
+        },
+        "pair": {
+          "$ref": "urn:rutent:core-internal:report-pair"
+        }
+      }
+    },
+    "what_holding_check": {
+      "description": "A holding account checked, without its balance (REQ-AUD-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "account",
+        "provider",
+        "node",
+        "word",
+        "orders"
+      ],
+      "properties": {
+        "call": {
+          "const": "holding_check"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider whose module holds it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The inner node it is at.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+        },
+        "word": {
+          "description": "Whose word its balance was.",
+          "enum": [
+            "checked",
+            "publisher"
+          ]
+        },
+        "orders": {
+          "description": "The orders that held value there, each once.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "what_measure": {
+      "description": "A measure record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "record"
+      ],
+      "properties": {
+        "call": {
+          "const": "measure"
+        },
+        "record": {
+          "$ref": "urn:rutent:core-internal:measure-record"
+        }
+      }
+    },
+    "what_raise": {
+      "description": "A raise to the operator; done if it was delivered, failed if not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "raise"
+      ],
+      "properties": {
+        "call": {
+          "const": "raise"
+        },
+        "raise": {
+          "$ref": "urn:rutent:core-internal:raise"
+        }
+      }
+    },
+    "what_input": {
+      "description": "A recorded input of the state machine, the only thing that changes an order's state (REQ-STM-3): a route chosen or recalculated, a destination changed, no route, a provider bound, a segment settled, failed or of unknown outcome, a reversal completed, a withdrawal cancelled, an end requested, a part declared stuck or handed on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "input"
+      ],
+      "properties": {
+        "call": {
+          "const": "input"
+        },
+        "input": {
+          "$ref": "urn:rutent:state-machine:recorded-input"
+        }
+      }
+    },
+    "what_acceptance": {
+      "description": "An order accepted (REQ-ORD-10, REQ-ORD-34).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "acceptance",
+        "order",
+        "request",
+        "quote",
+        "authorisation",
+        "basis",
+        "parties",
+        "origin_reserve"
+      ],
+      "properties": {
+        "call": {
+          "const": "acceptance"
+        },
+        "acceptance": {
+          "description": "The acceptance's id: the one a state-machine input cites as its acceptance (destination_changed, handed_on), so the two point to each other (REQ-ORD-34, REQ-ORD-43).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "request": {
+          "description": "The request identifier it was opened under (REQ-ORD-19).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "quote": {
+          "description": "The digest of the quote shown and accepted.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "authorisation": {
+          "description": "The authorisation it gave.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "basis": {
+          "description": "How it was accepted: given by its customer or the customer's agent, as who says, or a reserve's automatic deposit, which counts as acceptance (REQ-ORD-13, REQ-ORD-15).",
+          "enum": [
+            "given",
+            "automatic_deposit"
+          ]
+        },
+        "parties": {
+          "$ref": "#/$defs/parties"
+        },
+        "origin_reserve": {
+          "description": "The order's origin reserve: the one whose yes it rests on, or whose automatic deposit started it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reserve_yes": {
+          "description": "The receipt of the origin reserve's stated yes to the route: present exactly when its basis is given (REQ-ORD-32), which the Rust types check.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "session": {
+          "description": "The user's session it was asked in: present exactly when its basis is given (REQ-ORD-32).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_order_refusal": {
+      "description": "A request or an order that can't proceed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "class"
+      ],
+      "properties": {
+        "call": {
+          "const": "order_refusal"
+        },
+        "request": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "order": {
+          "description": "The order, where one exists: absent means refused, nothing exists (REQ-ORD-19).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "class": {
+          "description": "The stable class its caller is told: what it asks of them, never a provider's text (REQ-ORD-18).",
+          "enum": [
+            "no_route_for_amount",
+            "no_route_right_now",
+            "destination_not_yet_resolved",
+            "destination_refused",
+            "refused_by_policy",
+            "over_bound",
+            "malformed_request"
+          ]
+        }
+      }
+    },
+    "what_destination_check": {
+      "description": "A destination resolved or confirmed (REQ-ORD-24).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "destination",
+        "outcome"
+      ],
+      "properties": {
+        "call": {
+          "const": "destination_check"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "destination": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/destination"
+        },
+        "outcome": {
+          "description": "How it came out: resolved, not yet (which is not a no), refused, or its owner changed, so the order waits for the customer.",
+          "enum": [
+            "resolved",
+            "not_yet",
+            "refused",
+            "owner_changed"
+          ]
+        }
+      }
+    },
+    "what_arrival": {
+      "description": "Value arriving at a reserve (REQ-ORD-14, REQ-ORD-23).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "reserve",
+        "node",
+        "asset",
+        "amount",
+        "matched",
+        "report"
+      ],
+      "properties": {
+        "call": {
+          "const": "arrival"
+        },
+        "reserve": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "amount": {
+          "description": "How much arrived, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "order": {
+          "description": "The open order it was held against, where one is.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "matched": {
+          "description": "How it met the open orders: none open, so it opens none; matching; or differing, so it settles nothing by itself.",
+          "enum": [
+            "no_order",
+            "matches",
+            "differs"
+          ]
+        },
+        "report": {
+          "description": "The receipt of the stated entry holding the reserve's report.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    },
+    "what_decision_record": {
+      "description": "One round's recorded decision, chained to the order's history (REQ-AUD-4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "decision_record",
+        "order",
+        "round",
+        "record"
+      ],
+      "properties": {
+        "call": {
+          "const": "decision_record"
+        },
+        "decision_record": {
+          "description": "The recorded decision's id: the one a state-machine input cites as its decision_record (route_chosen, route_recalculated, destination_changed, no_route).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "round": {
+          "enum": [
+            "shortlist",
+            "choice"
+          ]
+        },
+        "record": {
+          "description": "The digest of the recorded decision.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "previous": {
+          "description": "The receipt of the order's previous decision record entry; absent on its first.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "shortlisted": {
+          "description": "The providers a shortlist round shortlisted, at least one, each once: present exactly when the round is the shortlist (REQ-CPL-2, REQ-CPL-6), which the Rust types check.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "what_shown": {
+      "description": "What was shown to the customer, and how (REQ-QTE-2, REQ-QTE-7, REQ-QTE-10).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "shown",
+        "shown_as"
+      ],
+      "properties": {
+        "call": {
+          "const": "shown"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "shown": {
+          "description": "The digest of what was shown.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "shown_as": {
+          "description": "A quote, a quote with no firm rate for a route with a segment over three calendar days, or the price executed.",
+          "enum": [
+            "quote",
+            "quote_without_firm_rate",
+            "price"
+          ]
+        }
+      }
+    },
+    "what_settlement": {
+      "description": "A segment's declared and actual settlement times (REQ-QTE-3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "provider",
+        "declared_seconds",
+        "actual_seconds"
+      ],
+      "properties": {
+        "call": {
+          "const": "settlement"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "declared_seconds": {
+          "description": "The settlement time declared with its quote, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "actual_seconds": {
+          "description": "The time it took, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "what_evidence": {
+      "description": "A segment's evidence graded through CMP-EVIDENCE (REQ-ORD-39, REQ-ORD-33, REQ-ORD-41).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "evidence",
+        "order",
+        "segment",
+        "grade",
+        "whose",
+        "rests_on"
+      ],
+      "properties": {
+        "call": {
+          "const": "evidence"
+        },
+        "evidence": {
+          "description": "The evidence's id: the one a state-machine input cites as its evidence (segment_settled).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "grade": {
+          "description": "The grade: a statement alone grades as a statement.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
+        },
+        "whose": {
+          "description": "The party whose evidence it is.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "rests_on": {
+          "description": "The stated entries it rests on, at least one, each once.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:core-internal:receipt"
+          }
+        }
+      }
+    },
+    "what_fee": {
+      "description": "The fee captured on a settled segment, with no balance kept (REQ-AUD-11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "to",
+        "party",
+        "amount",
+        "asset",
+        "billed_separately"
+      ],
+      "properties": {
+        "call": {
+          "const": "fee"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "to": {
+          "description": "Who it is attributed to: a provider or the operator, and no one else.",
+          "enum": [
+            "provider",
+            "operator"
+          ]
+        },
+        "party": {
+          "description": "The provider or the operator, by id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The fee, in the asset's unit; a formula may charge zero.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "billed_separately": {
+          "description": "Whether it was billed separately, outside the amounts reported.",
+          "type": "boolean"
+        }
+      }
+    },
+    "what_stuck_call": {
+      "description": "The figures behind a stuck call, recorded when used (REQ-ORD-6, REQ-ORD-29).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "part",
+        "provider",
+        "basis",
+        "figure_seconds",
+        "held_seconds"
+      ],
+      "properties": {
+        "call": {
+          "const": "stuck_call"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "part": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider holding the funds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "basis": {
+          "description": "What the clock ran on: twice the p99, or twice the advertised time until a history.",
+          "enum": [
+            "twice_p99",
+            "twice_advertised"
+          ]
+        },
+        "figure_seconds": {
+          "description": "The figure it ran on, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "held_seconds": {
+          "description": "How long the funds had been held, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "what_afterwards": {
+      "description": "Something that came after the order ended (REQ-ORD-25, REQ-ORD-31).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "event",
+        "statement"
+      ],
+      "properties": {
+        "call": {
+          "const": "afterwards"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "event": {
+          "description": "A complete order's payment returned, the order staying complete; or an origin approval after the order ended, starting nothing.",
+          "enum": [
+            "returned",
+            "late_approval"
+          ]
+        },
+        "statement": {
+          "description": "The receipt of the stated entry that reports it.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    },
+    "what_reliance": {
+      "description": "Whose judgement was relied on, and by whom (REQ-CPL-12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "judgement",
+        "judge",
+        "relied_on_by"
+      ],
+      "properties": {
+        "call": {
+          "const": "reliance"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "judgement": {
+          "description": "The receipt of the stated entry holding the judgement.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "judge": {
+          "description": "Whose judgement it is: a verifier or a reserve.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "relied_on_by": {
+          "description": "The provider that relied on it, which carries the loss of a false one.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_command": {
+      "description": "An operator command that needs no decision, naming its operator in who.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "command"
+      ],
+      "properties": {
+        "call": {
+          "const": "command"
+        },
+        "command": {
+          "description": "The command: one of the few that need no decision, a closed list; an action policy decides, a catalogue change or a hand-on travels only through its own call (REQ-AUZ-1, REQ-AUZ-6).",
+          "enum": [
+            "appoint_checker"
+          ]
+        },
+        "order": {
+          "description": "The order it is about, where it is about one.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "subject": {
+          "description": "What else it is about, by reference.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_erasure": {
+      "description": "Evidence erased outside the log (REQ-AUD-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "evidence"
+      ],
+      "properties": {
+        "call": {
+          "const": "erasure"
+        },
+        "evidence": {
+          "description": "The commitment the erased bytes were kept under: the reference that stays.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
+    },
+    "outcome": {
+      "description": "How it came out.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "permitted",
+            "refused",
+            "not_known",
+            "to_take_effect",
+            "done",
+            "failed",
+            "unanswered",
+            "observed"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "permitted"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_permitted"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_not_known"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "to_take_effect"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_to_take_effect"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "done"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_done"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_failed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "unanswered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_unanswered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "observed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_observed"
+          }
+        }
+      ]
+    },
+    "outcome_permitted": {
+      "description": "Policy permitted it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "permitted"
+        }
+      }
+    },
+    "outcome_refused": {
+      "description": "Policy refused it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "class"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    },
+    "outcome_not_known": {
+      "description": "Policy couldn't decide.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "cause"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_known"
+        },
+        "cause": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/not_known_cause"
+        }
+      }
+    },
+    "outcome_to_take_effect": {
+      "description": "An effect, recorded before it takes place.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "to_take_effect"
+        }
+      }
+    },
+    "outcome_done": {
+      "description": "It completed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "done"
+        }
+      }
+    },
+    "outcome_failed": {
+      "description": "It failed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "failed"
+        }
+      }
+    },
+    "outcome_unanswered": {
+      "description": "The request went unanswered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "unanswered"
+        }
+      }
+    },
+    "outcome_observed": {
+      "description": "Something rutent saw or did on its own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "observed"
+        }
+      }
+    }
+  }
+}

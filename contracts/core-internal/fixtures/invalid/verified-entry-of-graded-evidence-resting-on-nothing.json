@@ -1,0 +1,25 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "evidence",
+    "evidence": "ev-0007",
+    "order": "ord-17",
+    "segment": "seg-4",
+    "grade": 2,
+    "whose": "bank-co",
+    "rests_on": []
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

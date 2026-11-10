@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:decision-request",
+  "title": "Decision request",
+  "description": "The one call to policy before any action that moves value, posts a route or changes the catalogue, so no path skips it (REQ-AUZ-1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "caller",
+    "action",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "caller": {
+      "description": "Who asks for the action.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "action": {
+      "description": "The action: never resolve_stuck, which travels only through the stuck move call, after its decide step (ADR-0011).",
+      "allOf": [
+        {
+          "$ref": "urn:rutent:core-internal:common#/$defs/action"
+        }
+      ],
+      "not": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "resolve_stuck"
+          }
+        }
+      }
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

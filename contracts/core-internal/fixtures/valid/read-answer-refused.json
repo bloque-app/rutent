@@ -1,0 +1,15 @@
+{
+  "request": "req-402",
+  "outcome": {
+    "answer": "refused",
+    "class": "not_permitted"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 53,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4343434343434343434343434343434343434343434343434343434343434343"
+    }
+  }
+}

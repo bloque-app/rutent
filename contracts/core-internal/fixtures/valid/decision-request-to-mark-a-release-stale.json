@@ -1,0 +1,16 @@
+{
+  "request": "req-102",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "mark_stale",
+    "provider": "bridge-pay",
+    "version": "2.1.0"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

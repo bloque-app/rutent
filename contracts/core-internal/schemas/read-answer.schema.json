@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:read-answer",
+  "title": "Read answer",
+  "description": "Policy's answer to a read check, recorded either way (REQ-AUZ-7, REQ-AUD-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "outcome",
+    "receipt"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request it answers.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "receipt": {
+      "description": "The receipt of its entry in the log.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "description": "The answer.",
+      "type": "object",
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "enum": [
+            "allowed",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "allowed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_allowed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_refused"
+          }
+        }
+      ]
+    },
+    "outcome_allowed": {
+      "description": "The read may go ahead.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "const": "allowed"
+        }
+      }
+    },
+    "outcome_refused": {
+      "description": "It may not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "class"
+      ],
+      "properties": {
+        "answer": {
+          "const": "refused"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    }
+  }
+}

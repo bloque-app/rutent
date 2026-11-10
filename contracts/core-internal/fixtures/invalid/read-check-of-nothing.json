@@ -1,0 +1,12 @@
+{
+  "request": "req-400",
+  "reader": {
+    "party": "fin-regulator",
+    "acts": "examiner-3",
+    "role": "regulator",
+    "kind": "person"
+  },
+  "reads": {},
+  "permission": "perm-reg-1",
+  "at": "2026-11-10T09:00:00Z"
+}

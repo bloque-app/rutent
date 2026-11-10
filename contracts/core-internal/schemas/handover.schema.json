@@ -1,0 +1,616 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:handover",
+  "title": "Handed over to the log",
+  "description": "One item.",
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "outbound_call",
+        "cross_module_call",
+        "secret_lookup",
+        "state_read",
+        "limit",
+        "secret_use",
+        "segment_record"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "outbound_call"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_outbound_call"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "cross_module_call"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_cross_module_call"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "secret_lookup"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_secret_lookup"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "state_read"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_state_read"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "limit"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_limit"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "secret_use"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_secret_use"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "segment_record"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_segment_record"
+      }
+    }
+  ],
+  "$defs": {
+    "part": {
+      "description": "A module's part.",
+      "enum": [
+        "sandboxed",
+        "outside"
+      ]
+    },
+    "lookup_outcome": {
+      "description": "A secret lookup's outcome, without its value.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "resolved",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "resolved"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/lookup_resolved"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/lookup_refused"
+          }
+        }
+      ]
+    },
+    "lookup_resolved": {
+      "description": "The proxy resolved it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "resolved"
+        }
+      }
+    },
+    "lookup_refused": {
+      "description": "The proxy refused it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "reason": {
+          "$ref": "urn:rutent:module-interface:secret-answer#/$defs/refused/properties/reason"
+        }
+      }
+    },
+    "use_of": {
+      "description": "What a use of the proxy asked for.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "secret",
+            "statement_key"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "secret"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/use_of_secret"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "statement_key"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/use_of_statement_key"
+          }
+        }
+      ]
+    },
+    "use_of_secret": {
+      "description": "A declared secret, by name.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "const": "secret"
+        },
+        "name": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/name"
+        }
+      }
+    },
+    "use_of_statement_key": {
+      "description": "The statement key's private half.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "statement_key"
+        }
+      }
+    },
+    "use_outcome": {
+      "description": "How a use of the proxy ended, without any value.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "resolved",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "resolved"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/use_resolved"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/use_refused"
+          }
+        }
+      ]
+    },
+    "use_resolved": {
+      "description": "Resolved.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "resolved"
+        }
+      }
+    },
+    "use_refused": {
+      "description": "Refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "refused"
+        },
+        "reason": {
+          "description": "Why, as the proxy names it.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/token"
+        }
+      }
+    },
+    "move": {
+      "description": "One move of a segment from a version to another (REQ-MDL-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "reason",
+        "at"
+      ],
+      "properties": {
+        "from": {
+          "description": "The module version it ran on.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "to": {
+          "description": "The module version it runs on from then on.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reason": {
+          "description": "Why: its version was marked stale (REQ-MDL-19).",
+          "enum": [
+            "stale"
+          ]
+        },
+        "at": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "item_outbound_call": {
+      "description": "An outbound call record, as the module interface shapes it; it names its transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "record"
+      ],
+      "properties": {
+        "kind": {
+          "const": "outbound_call"
+        },
+        "record": {
+          "$ref": "urn:rutent:module-interface:outbound-call-record"
+        }
+      }
+    },
+    "item_cross_module_call": {
+      "description": "A cross-module call's record, as the module interface shapes it; it names its transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "call"
+      ],
+      "properties": {
+        "kind": {
+          "const": "cross_module_call"
+        },
+        "call": {
+          "$ref": "urn:rutent:module-interface:cross-module-call"
+        }
+      }
+    },
+    "item_secret_lookup": {
+      "description": "A secret lookup a module's part made.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "part",
+        "lookup"
+      ],
+      "properties": {
+        "kind": {
+          "const": "secret_lookup"
+        },
+        "provider": {
+          "description": "The provider whose module made it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "part": {
+          "$ref": "#/$defs/part"
+        },
+        "lookup": {
+          "description": "The lookup, which names its transaction.",
+          "$ref": "urn:rutent:module-interface:secret-lookup"
+        },
+        "outcome": {
+          "description": "The proxy's answer, absent where the lookup never reached the proxy, as a sandboxed part's must not.",
+          "$ref": "#/$defs/lookup_outcome"
+        }
+      }
+    },
+    "item_state_read": {
+      "description": "A state read a module's part made.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "part",
+        "transaction",
+        "key",
+        "found"
+      ],
+      "properties": {
+        "kind": {
+          "const": "state_read"
+        },
+        "provider": {
+          "description": "The provider whose module made it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "part": {
+          "$ref": "#/$defs/part"
+        },
+        "transaction": {
+          "description": "The transaction it was handling.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "key": {
+          "description": "The entry asked for.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "found": {
+          "description": "Whether the read found a value.",
+          "type": "boolean"
+        }
+      }
+    },
+    "item_limit": {
+      "description": "A bound a module hit (REQ-MDL-11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "transaction",
+        "limit"
+      ],
+      "properties": {
+        "kind": {
+          "const": "limit"
+        },
+        "provider": {
+          "description": "The provider whose module hit it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The transaction it was handling.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "limit": {
+          "description": "Which bound, as the platform names it.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/token"
+        },
+        "scope": {
+          "description": "Which budget of it, where it was a count or a total.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/token"
+        }
+      }
+    },
+    "item_secret_use": {
+      "description": "One use of the credential proxy, resolved or refused, never with the value (REQ-MDL-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "transaction",
+        "of",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "secret_use"
+        },
+        "provider": {
+          "description": "The caller's provider.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "module_version": {
+          "description": "The version of the caller's admitted release, if one is admitted.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The transaction the use was for.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "operation": {
+          "description": "The outside operation it was for; absent for the statement key.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/name"
+        },
+        "of": {
+          "$ref": "#/$defs/use_of"
+        },
+        "outcome": {
+          "$ref": "#/$defs/use_outcome"
+        }
+      }
+    },
+    "item_segment_record": {
+      "description": "A segment's record, as the platform hands it over when the segment ends (REQ-MDL-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "began_on",
+        "runs_on",
+        "moves"
+      ],
+      "properties": {
+        "kind": {
+          "const": "segment_record"
+        },
+        "transaction": {
+          "description": "The segment's transaction.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "began_on": {
+          "description": "The module version it began on.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "runs_on": {
+          "description": "The module version it ran on at its end.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "moves": {
+          "description": "Its moves, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/move"
+          }
+        }
+      }
+    }
+  }
+}

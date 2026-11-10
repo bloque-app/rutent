@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:person-question",
+  "title": "Question about a person",
+  "description": "A question about a person, put to policy before it is asked of any provider or verifier: the asker, the person's reference, the authority it rests on, and the providers and verifiers already asked about the order across its recalculations (REQ-CPL-2, REQ-CPL-5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "asker",
+    "person",
+    "order",
+    "authority",
+    "ask",
+    "asked_before",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "asker": {
+      "description": "Who asks, identified.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "person": {
+      "description": "The person, by reference (REQ-AUD-6).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "order": {
+      "description": "The order it is about.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "authority": {
+      "$ref": "#/$defs/authority"
+    },
+    "ask": {
+      "description": "The providers and verifiers to be asked, at least one, each once.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+      }
+    },
+    "asked_before": {
+      "description": "The providers and verifiers already asked about the order, across its recalculations, each once: empty before the first question, never absent.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+      }
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "authority": {
+      "description": "The authority it rests on: the person's own, or a shortlisted route's (REQ-CPL-2).",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "person",
+            "shortlisted_route"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "person"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/authority_person"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "shortlisted_route"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/authority_shortlisted_route"
+          }
+        }
+      ]
+    },
+    "authority_person": {
+      "description": "The person's own consent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "consent"
+      ],
+      "properties": {
+        "kind": {
+          "const": "person"
+        },
+        "consent": {
+          "description": "The digest of the person's consent.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
+    },
+    "authority_shortlisted_route": {
+      "description": "A route the router shortlisted for the order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "shortlist",
+        "providers"
+      ],
+      "properties": {
+        "kind": {
+          "const": "shortlisted_route"
+        },
+        "shortlist": {
+          "description": "The digest of the shortlist round's recorded decision.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "providers": {
+          "description": "The shortlisted providers, at least one, each once, so policy can hold who is asked to them (REQ-CPL-6).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        }
+      }
+    }
+  }
+}
