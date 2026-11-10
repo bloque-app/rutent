@@ -22,9 +22,13 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::provider_role::{
-    Deposit, HoldingBalance, HoldingBalanceOutcome, Operation, OuterNode, ReserveMovementOutcome,
-    ResultBody, Statement, Withdrawal,
+    Deposit, HoldingBalance, HoldingBalanceOutcome, MovementSettlement, Operation, OuterNode,
+    ReserveMovementOutcome, ResultBody, Statement, Withdrawal,
 };
+
+mod handed_on;
+
+pub use handed_on::{HandedOnStart, StartError, WithdrawalRecord, proof_of_withdrawal};
 
 use crate::catalogue::{Catalogue, NodeError};
 use crate::holding::{
@@ -155,7 +159,9 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        self.movement(platform, operator, true, node, asset, order, amount)
+        let (next, ..) = self.movement(platform, operator, true, node, asset, order, amount)?;
+        self.ledger = next;
+        Ok(())
     }
 
     /// Value leaves the account for an order, up to what the order holds.
@@ -168,7 +174,9 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        self.movement(platform, operator, false, node, asset, order, amount)
+        let (next, ..) = self.movement(platform, operator, false, node, asset, order, amount)?;
+        self.ledger = next;
+        Ok(())
     }
 
     /// What the host recorded the wallet confirmed for each order: the attribution half of a reading, in order name
@@ -218,6 +226,8 @@ impl WalletHolding {
         })
     }
 
+    /// Asks the wallet for a movement and returns the account as it would then stand, with the settlement the wallet
+    /// stated. The account itself is not changed: the caller replaces it once it has what it needs.
     #[allow(clippy::too_many_arguments)]
     fn movement<W: World>(
         &mut self,
@@ -228,7 +238,7 @@ impl WalletHolding {
         asset: &str,
         order: &str,
         amount: &str,
-    ) -> Result<(), WalletError> {
+    ) -> Result<(OrderLedger, MovementSettlement, String), WalletError> {
         // The account's own rules, before the wallet is asked anything: its node and asset (the asset check
         // `T-016-01` left to the contract types), the amount, and what the order holds. The record is changed on a
         // copy, which replaces the account's only once the wallet has confirmed.
@@ -256,6 +266,7 @@ impl WalletHolding {
 
         let kind = if landing { "deposit" } else { "withdrawal" };
         let transaction = format!("{}-{kind}-{}", self.provider, self.sent + 1);
+        self.sent += 1;
         let network = OuterNode {
             network: self.provider.clone(),
         };
@@ -284,7 +295,6 @@ impl WalletHolding {
                 inputs,
             })
         };
-        self.sent += 1;
         let answered = match platform.handle(&self.provider, &operator.statement(operation)) {
             Handled::Answered(result) => result.statement,
             Handled::Refused(why) => return Err(WalletError::NotAnswered(why)),
@@ -297,20 +307,17 @@ impl WalletHolding {
             }
             _ => return Err(WalletError::WrongResult),
         };
-        match result.outcome {
-            ReserveMovementOutcome::Succeeded(settled) => {
-                let stated = units.to_string();
-                if settled.amount_in != stated || settled.amount_out != stated {
-                    return Err(WalletError::Disagrees {
-                        asked: units,
-                        stated: settled.amount_in,
-                    });
-                }
-            }
-            _ => return Err(WalletError::NotSucceeded),
+        let ReserveMovementOutcome::Succeeded(settled) = result.outcome else {
+            return Err(WalletError::NotSucceeded);
+        };
+        let stated = units.to_string();
+        if settled.amount_in != stated || settled.amount_out != stated {
+            return Err(WalletError::Disagrees {
+                asked: units,
+                stated: settled.amount_in,
+            });
         }
-        self.ledger = next;
-        Ok(())
+        Ok((next, settled, transaction))
     }
 }
 
