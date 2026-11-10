@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
     Advertisement, BalanceOutcome, BalanceRefusal, BalanceVerification, Category, Conversion,
-    ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee, Inputs,
-    JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE,
-    Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
-    ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
-    ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape, Terms,
-    Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, member, signing_input,
-    validate_statement,
+    ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee,
+    HoldingBalanceOutcome, Inputs, JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose,
+    NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome,
+    ResultBody, Reversal, ReversalConfirmationOutcome, ReversalConfirmationRequest,
+    ReversalConfirmationResult, ReversalOutcome, Signature, SignatureScheme, Slippage, Statement,
+    StatementShape, Terms, Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, member,
+    signing_input, validate_statement,
 };
 
 /// An operation, the result that answers it, and the terms of the tuple it runs through.
@@ -73,6 +73,7 @@ enum Kind {
     Judgement,
     Reversal,
     ReversalConfirmation,
+    HoldingBalance,
 }
 
 /// A refusal's class, whichever kind of refusal it is (`REQ-CAT-18`).
@@ -176,6 +177,7 @@ fn kind_of(operation: &Operation) -> (Kind, Option<&str>) {
         Operation::Judgement(_) => (Kind::Judgement, None),
         Operation::Reversal(o) => (Kind::Reversal, Some(&o.transaction)),
         Operation::ReversalConfirmation(o) => (Kind::ReversalConfirmation, Some(&o.transaction)),
+        Operation::HoldingBalance(o) => (Kind::HoldingBalance, Some(&o.transaction)),
     }
 }
 
@@ -262,6 +264,14 @@ fn view_of(body: &ResultBody) -> View {
             match &r.outcome {
                 BalanceOutcome::Answered(_) => Status::Answered,
                 BalanceOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+            },
+        ),
+        ResultBody::HoldingBalance(r) => (
+            Kind::HoldingBalance,
+            Some(&r.transaction),
+            match &r.outcome {
+                HoldingBalanceOutcome::Answered(_) => Status::Answered,
+                HoldingBalanceOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
             },
         ),
         ResultBody::Judgement(r) => (
@@ -1933,12 +1943,12 @@ mod tests {
     #[test]
     fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
         assert_eq!(
-            VERSION, "2.4.0",
+            VERSION, "3.0.0",
             "re-pin these values when the protocol version moves"
         );
         let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["3.0.0", "2.4.1", "2.3.0"]);
+        assert_eq!(versions, ["4.0.0", "3.0.1", "2.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),

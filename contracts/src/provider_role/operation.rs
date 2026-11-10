@@ -30,6 +30,8 @@ pub enum Operation {
     Reversal(Reversal),
     /// A question to a reversed segment's origin reserve about one credit (ADR-0008).
     ReversalConfirmation(ReversalConfirmationRequest),
+    /// The operator's question to a holding account's module: its balance at a node (`REQ-AUD-15`).
+    HoldingBalance(HoldingBalance),
 }
 
 impl StatementShape for Operation {
@@ -155,6 +157,23 @@ pub struct BalanceVerification {
     pub asset: String,
     /// The stated amount (`INV-9`).
     pub amount: String,
+}
+
+/// A holding account's balance: the operator asks the module that is a node's holding account for the balance it
+/// holds there, in one asset, so that `CMP-CORE-AUDIT` can check it against the value held for each order
+/// (`REQ-AUD-15`, `INV-1`). It is the operator's own question, not a customer's, so it carries no session; and it
+/// never changes anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldingBalance {
+    /// The transaction's identifier; every result names it.
+    pub transaction: String,
+    /// The holding account's provider.
+    pub provider: String,
+    /// The node the account is at.
+    pub node: String,
+    /// The asset.
+    pub asset: String,
 }
 
 /// A question to a verifier: a person, by subject reference, and a class only (`REQ-CPL-4`, ADR-0012).

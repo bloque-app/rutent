@@ -29,7 +29,8 @@
             "balance_verification",
             "judgement",
             "reversal",
-            "reversal_confirmation"
+            "reversal_confirmation",
+            "holding_balance"
           ]
         }
       },
@@ -152,6 +153,21 @@
           },
           "then": {
             "$ref": "#/$defs/reversal_confirmation"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_balance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/holding_balance"
           }
         }
       ]
@@ -548,6 +564,38 @@
         "amount": {
           "description": "The amount that should be back, in full.",
           "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    },
+    "holding_balance": {
+      "description": "The operator's question to a holding account's module: the balance it holds at a node, in one asset (REQ-AUD-15). The operator's own question, so it names no session. It changes nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "node",
+        "asset"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_balance"
+        },
+        "transaction": {
+          "description": "The transaction's identifier; every result names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The holding account's provider.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The node the account is at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     }

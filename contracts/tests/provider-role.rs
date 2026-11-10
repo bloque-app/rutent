@@ -313,6 +313,26 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement", "required")],
         ),
         (
+            "operation-holding-balance-naming-a-session",
+            vec![("/statement", "additionalProperties")],
+        ),
+        (
+            "operation-holding-balance-without-a-node",
+            vec![("/statement", "required")],
+        ),
+        (
+            "result-holding-balance-with-a-negative-balance",
+            vec![("/statement/outcome/balance", "pattern")],
+        ),
+        (
+            "result-holding-balance-with-a-leading-zero",
+            vec![("/statement/outcome/balance", "pattern")],
+        ),
+        (
+            "result-holding-balance-without-a-balance",
+            vec![("/statement/outcome", "required")],
+        ),
+        (
             "operation-with-a-fractional-amount",
             vec![("/statement/amount", "pattern")],
         ),
@@ -721,6 +741,14 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
             "pattern: the signature value is a string in Rust",
         ),
         (
+            "result-holding-balance-with-a-negative-balance",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "result-holding-balance-with-a-leading-zero",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
             "advertisement-without-offers",
             "minProperties: every offer is optional in Rust",
         ),
@@ -1084,6 +1112,50 @@ fn provider_without_an_identifier_or_status_query_is_invalid() {
 fn balance_answer_carrying_anything_but_yes_or_no_is_invalid() {
     assert_schema_rejects("result-balance-answer-carrying-an-amount");
     assert_schema_rejects("result-balance-answer-neither-yes-nor-no");
+}
+
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn holding_balance_is_the_operators_question_and_a_whole_figure() {
+    for name in [
+        "operation-holding-balance-naming-a-session",
+        "operation-holding-balance-without-a-node",
+        "result-holding-balance-with-a-negative-balance",
+        "result-holding-balance-with-a-leading-zero",
+        "result-holding-balance-without-a-balance",
+    ] {
+        assert_schema_rejects(name);
+    }
+}
+
+// verifies: REQ-AUD-15
+#[test]
+fn holding_balance_statements_read_into_their_rust_types() {
+    use rutent_contracts::provider_role::{
+        HoldingBalanceOutcome, Operation, ResultBody, Statement,
+    };
+    for (name, balance) in [
+        ("result-holding-balance-answered", Some("150")),
+        (
+            "result-holding-balance-answered-with-nothing-held",
+            Some("0"),
+        ),
+        ("result-holding-balance-refused-finally", None),
+    ] {
+        let value = fixture("valid", name);
+        let result: Statement<ResultBody> = serde_json::from_value(value).expect("a result");
+        let ResultBody::HoldingBalance(r) = result.statement else {
+            panic!("{name} isn't a holding balance result");
+        };
+        match (r.outcome, balance) {
+            (HoldingBalanceOutcome::Answered(a), Some(b)) => assert_eq!(a.balance, b),
+            (HoldingBalanceOutcome::Refused(_), None) => {}
+            _ => panic!("{name}"),
+        }
+    }
+    let value = fixture("valid", "operation-holding-balance");
+    let operation: Statement<Operation> = serde_json::from_value(value).expect("an operation");
+    assert!(matches!(operation.statement, Operation::HoldingBalance(_)));
 }
 
 // verifies: REQ-CAT-18

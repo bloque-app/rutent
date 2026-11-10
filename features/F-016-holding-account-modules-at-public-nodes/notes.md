@@ -36,3 +36,115 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Review round.** The tests added in answer to review were written first. The zero-entry test was seen failing
   before the code changed. The drifting-account test and the `Matches` coverage passed at once, since they exercise
   behaviour already present; they were added to pin it, not to drive new code.
+
+## T-016-02
+
+- **Layout.** The wallet's guest is `components/prov/guests/plain-wallet/` (the `F-016` goal line's path, which
+  `T-012-01`'s and `T-013-01`'s notes left to this task): a workspace of its own with its own `Cargo.lock`, one crate
+  with a `sandboxed` and an `outside` feature, as `module-guests/rust/` is. It depends on `wit-bindgen` (the pin
+  `module-guests` uses), `serde_json` and `rutent-contracts`, and nothing else; its lock was seeded from
+  `module-guests/Cargo.lock` and resolved offline, so every package has a `licences/RECORD` line at its locked
+  version. `tools/licence-check` walks `components/` for locks, so it reads the new one. `build.sh` builds the two
+  parts and wraps them with `module-guests`' tool (`RUTENT_GUEST_TOOL` names a built one), so no `wit-component` is
+  added. The host side is `src/holding/wallet.rs`; `catalogue/` and `module/` are untouched.
+- **What the wallet speaks.** The plain wallet is a reserve-category module over the provider-role contract's own
+  types (`ResultBody`, serialised by the guest, so the platform's output check and `result_matches` judge it like any
+  module's). Reading: a `deposit` places value resting at the node (`origin`) in the account, and a `withdrawal`
+  takes value out to the node (`destination`); the other side is the account's own outer node, named by its
+  provider. The order is the operation's `order` input (`ORDER_INPUT`), since no operation names an order. A
+  `balance_verification`'s `account` is an order: it answers whether that order holds the stated amount. A dry run,
+  a zero or malformed amount, a missing order, another node or asset than the first operation fixed, and a release
+  above what the order holds are refused as `final`, and change nothing. Its declaration declares no outside
+  operation, destination or secret.
+- **Where the balance comes from (superseded below).** The first version of this task read the balance as the sum of
+  what the host had recorded the wallet confirmed; see "Review round" for why that was wrong and what replaced it.
+- **A holding account does not advertise.** The provider-role README says so (`REQ-CAT-23`), yet admission judges a
+  release against the advertisement the catalogue accepted for the releasing provider (`T-013-04`), and finds none
+  (`Unverified::NoAdvertisement`) for a provider with no advertisement. Reading: the wallet's provider is admitted
+  as any provider is, with an accepted advertisement and a grant, and in the tests that is `Signed::new()`'s
+  reserve and ramp providers. A holding account that admits with no advertisement needs the contract and
+  `T-013-04`'s judge to say so; raised here, not done.
+- **Registration means something.** `Catalogue::register_public_holding` takes any string, so `Holdings::register`
+  refuses unless the platform runs the module (`active_version`: a release waiting for its fresh acceptance, or one
+  never admitted, does not run) and the node is on the operator's public list (the catalogue's `NodeError`). It
+  also refuses a node that has an account and a wallet that is already another node's. The check that the module
+  *is* a wallet is the operator's choice of provider; the platform does not show a running declaration.
+- **Asset and node checks.** `HoldingError` gained `BadAmount`, `WrongAsset` and `WrongNode` (additive), and
+  `OrderLedger` gained `node()` and `asset()`. `WalletHolding` checks the node, the asset and the amount (digits only,
+  no sign, no leading zero, within `u128`) before the wallet is asked anything, on a copy of the ledger that
+  replaces the account's only when the wallet's result confirms the same amount in and out. The wallet checks node
+  and asset again, so a host that did not would be refused by it.
+- **`INV-5`.** `Holdings::land` is where value rests between segments: in a registered node's account, or refused
+  (`NoHoldingAccount`); there is no other place in the type for it. rutent's own position is what the tests
+  compute as landed less released less what rests in the accounts, and the property keeps it at zero after every step.
+- **Admission refusals.** `Platform::admit` still answers an assertion that does not verify with
+  `Admitted::Unverified` and a release while another waits with `VersionAlreadyAdmitted`; the contract's
+  `AssertionUnverified` and `AdmissionPending` (`T-010-09`) are not yet mapped by `module/`, which this task does
+  not touch. The tests assert what the platform gives today.
+- **The tests.** `tests/holding_wallet.rs` signs the wallet's release for real, as `tests/module_admission_signed.rs`
+  does (`tests/holding_support/` builds the wallet like `built_standins` builds the stand-ins: into the build
+  directory, again when the guest's, the WIT's or a contract's source is newer; `RUTENT_PLAIN_WALLET` names a
+  prebuilt directory). The `INV-5` property runs 400 seeded cases as one history over two wallet nodes, one public
+  node with no account and one unlisted node, with one admission for the whole run; the refusal and landing branches
+  are asserted to be drawn.
+- **CI.** The `ci` job's guest steps named `module-guests/` only, so the wallet's guest had none; it now has a format
+  step and a clippy step for each part for `wasm32-unknown-unknown`.
+- **`DEC-20`.** Module admission is exercised, not edited: no `DEC-20` path is touched.
+- **The wallet's record lives in its instance.** A provider-process restart (`Platform::restart`) empties the wallet's
+  record while the host's `WalletHolding` keeps its own. Durable wallet state is outside this task; `T-016-03` or a
+  later task decides whether the wallet reads its record from the provider's state.
+- **The property asks the wallet.** After each step at a registered node, the `INV-5` property asks that node's wallet
+  a `balance_verification` for the order it touched and asserts that it covers the model's amount and not one unit
+  more, so the property is about the wallet's word and not only the host's mirror of it.
+- **Test-first.** The tests were written first. The first run failed on the unresolved `holding::wallet`, since
+  neither the module nor the guest existed, and the wallet and host were then written to meet them. The six tests
+  passed at once on the first complete run; the direct-withdrawal assertions of the refusal test were added after
+  and pass at once, since they pin behaviour already present (the wallet's own refusal of a release above what an
+  order holds, which the host's pre-check otherwise hides).
+- **A finding of the stronger property, fixed.** The first run of the wallet-asking property failed at its third
+  case: a wallet that had taken nothing yet answered a `balance_verification` of zero as not covered, because no
+  asset was fixed. It now covers a stated nothing and nothing more.
+
+## T-016-02, review round
+
+- **The blocker: the balance was the host's own sum.** `WalletHolding::reading` built both the balance and the
+  per-order split from the host's copy and labelled it `BalanceSource::Module`, so `reconcile` could never return
+  `Short`, and a wallet that lost its record (a restarted provider process) still looked whole (`INV-1`,
+  `REQ-AUD-15`). Fixed at the source: no provider-role shape carried a balance, so one is added now (pre-production,
+  so the gap is fixed in this milestone). `holding_balance` is the operator's question to a holding account's
+  module, naming the provider, the node and the asset, and its result is the balance in whole units, zero included,
+  or a refusal. It is provider-role **3.0.0** (a new operation kind and result kind on the wire: a major under
+  `DEC-4`) and module-interface **4.0.0** (`OperationKind::HoldingBalance`, a new variant on a closed enum, folded into the
+  unreleased 4.0.0 of `m2`: `develop` holds 2.0.1; the declaration schema takes its kinds from provider-role's, so it needed no edit). Each has valid and invalid
+  fixtures, a changelog entry, Rust tests in `contracts/tests/`, and the role suite's version pin and `Kind` moved;
+  the stand-ins refuse the new kind outside their role. `contracts/CHANGELOG.md` records both.
+- **A reading is two halves from two places.** `WalletHolding::read` asks the wallet for its balance and takes the
+  attribution (the value held for each order) from the host's record of what the wallet confirmed. The
+  `HoldingAccount` impl for `WalletHolding` is gone: its `reading(&self)` had no way to ask the wallet. The
+  trait stays for `OrderLedger`, the reference account. `Holdings::readings` now takes the platform and the
+  operator and returns one result per account, in node order, so an account whose wallet could not be read shows its
+  failure and is never dropped from the audit's view. `Holdings::attributions` is the host's own record, for tests.
+- **Registration checks the role.** `Holdings::register` also refuses (`NotReserve`) a provider whose accepted
+  advertisement offers no reserve. That is the declared category the platform lets us check without touching
+  `module/`; it does not see the running declaration's handled kinds, which a later task can pin. Full admission of
+  an operator-published holding account, with no provider advertisement, is the new row `T-016-04`. The tests now
+  register reserve providers only (`add_reserve_provider`).
+- **The wallet fixes its node and asset only on success.** A refused first operation (a release of what nothing
+  holds, in another asset at another node) used to fix the account to that node and asset, locking the wallet. It
+  now fixes them when a movement goes through.
+- **Tests added** (`tests/holding_wallet.rs`, and the contract tests): the restart test (`reconcile` reports `Short
+  { by: 150 }` for the orders the host thinks held), the unreadable account shown with its failure, a ramp not
+  registered, `NodeTaken`, `WalletTaken`, `BlankAsset` and a private node refused, and the refused first operation.
+  The INV-5 property now reads each account's balance from its wallet and reconciles it after every step. Written
+  first, they failed to compile against the old `Holdings` (no `read`, `readings` without a platform) and the old
+  `RegisterError`; the guest's bind and holding-balance behaviour was exercised through the rebuilt wallet.
+- **`DEC-20`.** `contracts/` (provider-role 3.0.0, module-interface 4.0.0) and `.github/` (a new CI guest step, a
+  `CODEOWNERS` path) are `DEC-20` paths this round touches; the click comes with the release into `main`.
+- **`holding_balance` is not a cross-module call.** A module could declare a call of that kind and a route could name
+  it, and `judge_call` let it through, so a module could read an account's total, which for a node holding one order
+  is that order's balance. `judge_call` now refuses the kind as `undeclared_kind` however it is declared or named, so
+  only the operator's audit reads it through the host. The change is in `proxy/calls.rs` (a barred kind and a filter
+  on the route's naming); the property's kinds no longer include it, and a test covers a declared call, a named
+  call, both, and an ordinary call as the control. The contract's declaration check refuses it too:
+  `validate_declaration` returns `DeclaredCallOfHoldingBalance` for a `calls` list that names it, folded into the
+  unreleased module-interface 4.0.0 with an invalid fixture and a changelog line.
