@@ -1,0 +1,16 @@
+{
+  "provider": "fx-desk",
+  "order": "ord-17",
+  "segment": "seg-3",
+  "measure": {
+    "kind": "quote",
+    "quoted": "2500000",
+    "executed": "2487500",
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
+  },
+  "cites": [],
+  "at": "2026-11-10T09:00:00Z"
+}

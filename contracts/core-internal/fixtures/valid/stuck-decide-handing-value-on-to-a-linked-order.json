@@ -1,0 +1,27 @@
+{
+  "request": "req-210",
+  "order": "ord-28",
+  "decider": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "resolution": {
+    "kind": "hand_on",
+    "by": "fx-desk",
+    "linked_order": "ord-29",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "amount": "1000000000"
+  },
+  "evidence": [
+    {
+      "algorithm": "sha-256",
+      "value": "3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:receipt",
+  "title": "Receipt",
+  "description": "The log's answer to an append: where the entry sits, and the digest of the entry as appended: SHA-256 of the entry's RFC 8785 canonical JSON, as this contract serialises it. A receipt exists only once the entry is durable, and an action takes effect only after its receipt (INV-7).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "log",
+    "index",
+    "entry"
+  ],
+  "properties": {
+    "log": {
+      "description": "The log.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "index": {
+      "description": "The entry's position in it, from 0.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+    },
+    "entry": {
+      "description": "The SHA-256 digest of the entry's RFC 8785 canonical JSON.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+    }
+  }
+}

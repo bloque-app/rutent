@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:read-check",
+  "title": "Read check",
+  "description": "A read check: who reads, in its role, and what. A customer reads only its own orders and a provider only its own segments; a regulator's or a checker's read rests on an identified permission. Any actor may ask, an agent in its party's role (REQ-OPS-5): policy answers, and each read is recorded, allowed or refused (REQ-AUZ-7, REQ-AUD-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "reader",
+    "reads",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "reader": {
+      "description": "Who reads, in its role.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "reads": {
+      "$ref": "#/$defs/reads"
+    },
+    "permission": {
+      "description": "The identified permission a regulator's or checker's read rests on.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "reads": {
+      "description": "What a read is of.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "order",
+            "segment",
+            "trail",
+            "resource",
+            "evidence"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "order"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_order"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "segment"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_segment"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "trail"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_trail"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "resource"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_resource"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "evidence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_evidence"
+          }
+        }
+      ]
+    },
+    "reads_evidence": {
+      "description": "A statement kept in the evidence store: a party's own, or a checker's by its permission (REQ-AUD-5, REQ-AUD-10).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "commitment"
+      ],
+      "properties": {
+        "kind": {
+          "const": "evidence"
+        },
+        "commitment": {
+          "description": "The commitment the stated entry names it by.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
+    },
+    "reads_order": {
+      "description": "One order: its customer's to read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order"
+      ],
+      "properties": {
+        "kind": {
+          "const": "order"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reads_segment": {
+      "description": "One segment of an order, with its provider: that provider's to read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider"
+      ],
+      "properties": {
+        "kind": {
+          "const": "segment"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The segment's provider.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reads_trail": {
+      "description": "The whole audit trail: a regulator's, by its permission (REQ-AUD-12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "trail"
+        }
+      }
+    },
+    "reads_resource": {
+      "description": "A named resource of the deployment, such as who its checker is (REQ-AUD-10).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "resource"
+      ],
+      "properties": {
+        "kind": {
+          "const": "resource"
+        },
+        "resource": {
+          "description": "The resource, by name.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/token"
+        }
+      }
+    }
+  }
+}

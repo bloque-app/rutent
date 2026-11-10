@@ -1,0 +1,13 @@
+{
+  "account": "hold-8",
+  "provider": "chain-wallet",
+  "node": "base-public",
+  "asset": {
+    "id": "USDC",
+    "decimals": 6
+  },
+  "balance": "0",
+  "word": "checked",
+  "held_for": [],
+  "at": "2026-11-10T09:00:00Z"
+}

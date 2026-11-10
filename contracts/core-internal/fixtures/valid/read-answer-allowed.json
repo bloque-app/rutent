@@ -1,0 +1,14 @@
+{
+  "request": "req-400",
+  "outcome": {
+    "answer": "allowed"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 52,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4242424242424242424242424242424242424242424242424242424242424242"
+    }
+  }
+}

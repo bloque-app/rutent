@@ -1,0 +1,28 @@
+{
+  "request": "req-200",
+  "order": "ord-21",
+  "decider": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "resolution": {
+    "kind": "deliver",
+    "by": "bank-co",
+    "to": {
+      "reserve": "bank-co",
+      "node": {
+        "network": "co-ach"
+      },
+      "account": "acct-ref-9"
+    },
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    },
+    "amount": "2500000"
+  },
+  "evidence": [],
+  "at": "2026-11-10T09:00:00Z"
+}

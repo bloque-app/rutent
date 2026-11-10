@@ -735,10 +735,13 @@ impl<W: World> Platform<W> {
                 ) {
                     return reply;
                 }
-                let provider = self.stack.last().expect("a context").provider.clone();
+                let context = self.stack.last().expect("a context");
+                let (provider, transaction) =
+                    (context.provider.clone(), context.transaction.clone());
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Sandboxed,
+                    transaction,
                     key,
                     found: false,
                 });
@@ -768,7 +771,11 @@ impl<W: World> Platform<W> {
                 // Only the shared entries and the handled transaction's own: another transaction's entry is never
                 // asked of the world (`REQ-MDL-10`).
                 let context = self.stack.last().expect("a context");
-                let (provider, serving) = (context.provider.clone(), context.serving.is_some());
+                let (provider, transaction, serving) = (
+                    context.provider.clone(),
+                    context.transaction.clone(),
+                    context.serving.is_some(),
+                );
                 let readable = lifecycle::state_readable(&key, &context.transaction);
                 let value = if serving && readable {
                     self.world.state(&provider, &key)
@@ -785,6 +792,7 @@ impl<W: World> Platform<W> {
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Outside,
+                    transaction,
                     key,
                     found: value.is_some(),
                 });

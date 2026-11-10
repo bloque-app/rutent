@@ -1490,6 +1490,7 @@ dependencies = [
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde_json",
 ]
 
 [[package]]
@@ -1501,6 +1502,7 @@ dependencies = [
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde_json",
 ]
 
 [[package]]
@@ -1558,6 +1560,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "rutent-scenarios"
+version = "0.0.0"
 
 [[package]]
 name = "rutent-stm"

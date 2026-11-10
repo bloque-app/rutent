@@ -1,0 +1,14 @@
+{
+  "request": "req-404",
+  "reader": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "reads": {
+    "kind": "resource",
+    "resource": "checker"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

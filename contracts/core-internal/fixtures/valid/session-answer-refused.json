@@ -1,0 +1,15 @@
+{
+  "request": "req-301",
+  "outcome": {
+    "answer": "refused",
+    "class": "not_permitted"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 51,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4141414141414141414141414141414141414141414141414141414141414141"
+    }
+  }
+}

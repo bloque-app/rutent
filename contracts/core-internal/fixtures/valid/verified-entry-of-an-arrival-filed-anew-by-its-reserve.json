@@ -1,0 +1,28 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "bank-co",
+    "acts": "bank-co",
+    "role": "provider",
+    "kind": "component"
+  },
+  "what": {
+    "call": "refiling",
+    "arrival": {
+      "log": "log-main",
+      "index": 126,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b"
+      }
+    },
+    "order": "ord-1"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

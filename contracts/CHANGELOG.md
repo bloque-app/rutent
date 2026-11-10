@@ -35,3 +35,7 @@ directory (see `README.md`).
   changelog's entry, not every contract's bump; a change to a package's name, version, source or checksum still needs
   every bump. (DEC-4, DEC-20, T-010-02)
 - Wasmtime 48.0.8 in `rutent-prov` turns on the `serde` and `allocator-api2` features of crates the contracts reach, which adds dependency edges to `bumpalo`, `hashbrown`, `referencing` and `smallvec` in the root `Cargo.lock`. No contract changed. (DEC-27, T-013-01)
+- A sixth contract, `core-internal`, the interfaces between Core's three parts: a line in `CONTRACTS`, `pub mod
+  core_internal` in `src/lib.rs`, and the sixth row of this README's table. Its own changelog opens at 1.0.0, and it
+  refers to the provider-role, module-interface and state-machine shapes it carries; no other contract changed.
+  (DEC-2, DEC-4, DEC-20, T-020-01)

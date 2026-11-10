@@ -1,0 +1,16 @@
+{
+  "request": "req-600",
+  "asker": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "person": "person-ref-8",
+  "order": "ord-17",
+  "ask": [
+    "kyc-check"
+  ],
+  "asked_before": [],
+  "at": "2026-11-10T09:00:00Z"
+}

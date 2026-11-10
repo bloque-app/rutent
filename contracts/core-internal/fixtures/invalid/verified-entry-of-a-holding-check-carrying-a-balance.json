@@ -1,0 +1,28 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-audit",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "holding_check",
+    "account": "hold-7",
+    "provider": "fx-desk",
+    "node": "fx-desk-ledger",
+    "word": "publisher",
+    "orders": [
+      "ord-17",
+      "ord-19"
+    ],
+    "balance": "3000000000"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

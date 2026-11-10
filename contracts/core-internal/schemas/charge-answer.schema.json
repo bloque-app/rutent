@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:charge-answer",
+  "title": "Charge answer",
+  "description": "Policy's answer to a charge, appended to the log before it is given. Over the bound, the work is not done.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "outcome",
+    "receipt"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request it answers.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "receipt": {
+      "description": "The receipt of its entry in the log.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "description": "The answer.",
+      "type": "object",
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "enum": [
+            "within",
+            "over"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "within"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_within"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "over"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_over"
+          }
+        }
+      ]
+    },
+    "outcome_within": {
+      "description": "Within the party's bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "remaining"
+      ],
+      "properties": {
+        "answer": {
+          "const": "within"
+        },
+        "remaining": {
+          "description": "What is left of the bound.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "outcome_over": {
+      "description": "Over the party's bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "bound"
+      ],
+      "properties": {
+        "answer": {
+          "const": "over"
+        },
+        "bound": {
+          "description": "The bound.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    }
+  }
+}

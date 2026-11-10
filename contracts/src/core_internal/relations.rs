@@ -1,0 +1,1804 @@
+//! The citation table: every relation an entry must hold to earlier entries of the log, each with the `SPEC.md` ids
+//! that demand it, and the one engine, [`admit_entry`], that reads it.
+//!
+//! A row names what in the citing entry points back ([`Relation::cites`]), what kind of earlier entry must answer it
+//! ([`Relation::answers`]), and the fields that must match. An `exists` row is refused when no earlier entry answers
+//! it; a `none other` row when one does. `contracts/core-internal/README.md` lists the same table, and
+//! `tests/core-internal.rs` holds an admitted and a refused case for every row and every matched field.
+
+use alloc::vec::Vec;
+
+use super::Violation;
+use super::types::*;
+use crate::provider_role::EvidenceGrade;
+use crate::router_api::Id;
+use crate::state_machine::Observed;
+
+/// Whether a row asks for an earlier entry that answers it, or for none that does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier {
+    /// Some earlier entry must answer each citation.
+    Exists,
+    /// No earlier entry, other than the citing entry itself retried, may answer it.
+    NoneOther,
+}
+
+/// One citation an entry makes under a row: the receipt it names, where it names one, and which of its citations it
+/// is (an index into a list, such as a statement among several).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cite {
+    /// The receipt cited, where the citation is by receipt; `None` where the answering entry is found by its fields.
+    pub receipt: Option<Receipt>,
+    /// Which citation of the entry this is.
+    pub index: usize,
+}
+
+/// How an earlier entry answers a citation: the relation table's own answer, not policy's [`Answer`](super::Answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Match {
+    /// It isn't the kind of entry, or doesn't carry the key, the row asks for.
+    NotTarget,
+    /// It is, but the row's field at this index doesn't match.
+    Mismatch(usize),
+    /// It answers the citation.
+    Holds,
+}
+
+/// The log's history: each entry it holds with its receipt, in order.
+pub type History = [(Receipt, Entry)];
+
+/// The citations an entry makes under a row, given the history.
+pub type Cites = fn(&VerifiedEntry, &History) -> Vec<Cite>;
+
+/// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
+pub type Answers = fn(&VerifiedEntry, &Cite, &Entry, &History) -> Match;
+
+/// One row of the citation table.
+pub struct Relation {
+    /// The row's name, which its fixtures are named after.
+    pub name: &'static str,
+    /// The `SPEC.md` ids that demand the relation.
+    pub spec: &'static [&'static str],
+    /// Exists or none other.
+    pub quantifier: Quantifier,
+    /// The refusal when no earlier entry answers (exists) or one does (none other).
+    pub refusal: &'static str,
+    /// The fields that must match, each with the refusal when the answering entry is found but that field differs.
+    pub fields: &'static [(&'static str, &'static str)],
+    /// The citations `entry` makes under this row, given the history; none where the row doesn't apply to it.
+    pub cites: Cites,
+    /// How `target`, an earlier entry, answers `cite` made by `entry`, given the whole history.
+    pub answers: Answers,
+}
+
+fn verified(entry: &Entry) -> Option<&VerifiedEntry> {
+    match entry {
+        Entry::Verified(v) => Some(v),
+        Entry::Stated(_) => None,
+    }
+}
+
+fn permitted(entry: &Entry) -> Option<&VerifiedEntry> {
+    verified(entry).filter(|v| v.outcome == (Outcome::Permitted {}))
+}
+
+fn stated(entry: &Entry) -> Option<&StatedEntry> {
+    match entry {
+        Entry::Stated(s) => Some(s),
+        Entry::Verified(_) => None,
+    }
+}
+
+/// `Holds` where `target` and every field hold, the first failing field's `Mismatch` where only fields fail.
+fn judge(target: bool, fields: &[bool]) -> Match {
+    if !target {
+        return Match::NotTarget;
+    }
+    match fields.iter().position(|ok| !ok) {
+        Some(i) => Match::Mismatch(i),
+        None => Match::Holds,
+    }
+}
+
+fn by_receipt(receipt: &Receipt, index: usize) -> Cite {
+    Cite {
+        receipt: Some(receipt.clone()),
+        index,
+    }
+}
+
+fn by_fields(index: usize) -> Vec<Cite> {
+    alloc::vec![Cite {
+        receipt: None,
+        index,
+    }]
+}
+
+fn none() -> Vec<Cite> {
+    Vec::new()
+}
+
+/// The requester of `order` as its first acceptance in `history` records it.
+fn requester_of<'a>(order: &str, history: &'a [(Receipt, Entry)]) -> Option<&'a Id> {
+    history.iter().find_map(|(_, e)| match &verified(e)?.what {
+        What::Acceptance {
+            order: o, parties, ..
+        } if o.as_str() == order => Some(&parties.requester),
+        _ => None,
+    })
+}
+
+/// The citing entry's effect action, if it records an effect.
+fn effect_action(entry: &VerifiedEntry) -> Option<(&Action, &Permit)> {
+    match &entry.what {
+        What::Effect { action, decision } => Some((action, decision)),
+        _ => None,
+    }
+}
+
+/// The citing entry's recorded input, if it records one.
+fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
+    match &entry.what {
+        What::Input { input } => Some(input),
+        _ => None,
+    }
+}
+
+/// The input's own order.
+fn input_order(entry: &VerifiedEntry) -> &str {
+    input(entry).map_or("", |i| i.subject.order.as_str())
+}
+
+/// The maker of a stated entry, attributed or claimed.
+fn maker(statement: &StatedEntry) -> &Id {
+    &statement.attribution.maker().party
+}
+
+/// A stated entry attributed to `party`: its signature verified, and `party` its maker. An unverified statement is
+/// attributed to no one (`REQ-AUD-2`).
+fn statement_by(target: &Entry, party: &Id) -> Match {
+    match stated(target) {
+        Some(s) => judge(
+            true,
+            &[
+                matches!(s.attribution, Attribution::Verified { .. }),
+                maker(s) == party,
+            ],
+        ),
+        None => Match::NotTarget,
+    }
+}
+
+/// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
+pub static RELATIONS: [Relation; 47] = [
+    Relation {
+        name: "effect-permits-a-decided-action",
+        spec: &["REQ-AUZ-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "an effect's permit names a permitted decide entry of this log",
+        fields: &[
+            (
+                "request",
+                "an effect's permit names its decide entry's request",
+            ),
+            (
+                "decision",
+                "an effect's permit names its decide entry's decision",
+            ),
+            (
+                "action",
+                "an effect's action is the one its decide entry decided",
+            ),
+        ],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::ResolveStuck { .. }, _)) | None => none(),
+            Some((_, permit)) => alloc::vec![by_receipt(permit.receipt(), 0)],
+        },
+        answers: |e, _, t, _| {
+            let (Some((action, permit)), Some(t)) = (effect_action(e), permitted(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Decide { request, decision } => judge(
+                    true,
+                    &[
+                        &request.request == permit.request(),
+                        decision == permit.decision(),
+                        &request.action == action,
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "stuck-effect-permits-a-stuck-move",
+        spec: &["REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck order's effect names a permitted stuck move of this log, never a decide",
+        fields: &[
+            (
+                "request",
+                "a stuck order's effect names its stuck move's request",
+            ),
+            (
+                "decision",
+                "a stuck order's effect names its stuck move's decision",
+            ),
+            (
+                "order",
+                "a stuck order's effect is for its stuck move's order",
+            ),
+            (
+                "carries_out",
+                "a stuck order's effect carries out its stuck move's decide step",
+            ),
+        ],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::ResolveStuck { .. }, permit)) => {
+                alloc::vec![by_receipt(permit.receipt(), 0)]
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                Some((
+                    Action::ResolveStuck {
+                        order, carries_out, ..
+                    },
+                    permit,
+                )),
+                Some(t),
+            ) = (effect_action(e), permitted(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::StuckMove { request, decision } => judge(
+                    true,
+                    &[
+                        &request.request == permit.request(),
+                        decision == permit.decision(),
+                        &request.order == order,
+                        &request.carries_out == carries_out,
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "permit-backs-one-effect",
+        spec: &["INV-8"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a permit backs one effect only",
+        fields: &[],
+        cites: |e, _| effect_action(e).map_or_else(none, |_| by_fields(0)),
+        answers: |e, _, t, _| {
+            let (Some((_, permit)), Some(t)) = (effect_action(e), verified(t)) else {
+                return Match::NotTarget;
+            };
+            judge(
+                t != e && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "move-rests-on-its-authorisation",
+        spec: &["REQ-AUZ-3"],
+        quantifier: Quantifier::Exists,
+        refusal: "a value-moving effect rests on a permitted authorisation of this log",
+        fields: &[
+            (
+                "order",
+                "a value-moving effect's authorisation is of its order",
+            ),
+            (
+                "destination",
+                "a value-moving effect's route ends at its authorisation's destination",
+            ),
+            (
+                "to_asset",
+                "a value-moving effect's route delivers its authorisation's to asset",
+            ),
+            (
+                "floor",
+                "a value-moving effect's route delivers at least its authorisation's floor",
+            ),
+        ],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::MoveValue { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                Some((
+                    Action::MoveValue {
+                        order,
+                        authorisation,
+                        route,
+                        ..
+                    },
+                    _,
+                )),
+                Some(t),
+            ) = (effect_action(e), permitted(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Authorise {
+                    authorisation: a, ..
+                } => judge(
+                    &a.authorisation == authorisation,
+                    &[
+                        &a.order == order,
+                        a.destination == route.destination,
+                        a.to_asset == route.to_asset,
+                        a.floor
+                            .as_ref()
+                            .is_none_or(|f| &route.delivers >= f.amount()),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "move-rests-on-its-orders-acceptance",
+        spec: &["REQ-ORD-34"],
+        quantifier: Quantifier::Exists,
+        refusal: "a value-moving effect rests on an acceptance of its order in this log",
+        fields: &[(
+            "authorisation",
+            "a value-moving effect's acceptance names its authorisation",
+        )],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::MoveValue { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                Some((
+                    Action::MoveValue {
+                        order,
+                        authorisation,
+                        ..
+                    },
+                    _,
+                )),
+                Some(t),
+            ) = (effect_action(e), verified(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Acceptance {
+                    order: o,
+                    authorisation: a,
+                    ..
+                } => judge(o == order, &[a == authorisation]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "stuck-effect-moves-the-decided-resolution",
+        spec: &["REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck order's effect carries out a permitted decide step of this log",
+        fields: &[
+            (
+                "order",
+                "a stuck order's effect is for its decide step's order",
+            ),
+            (
+                "resolution",
+                "a stuck order's effect moves exactly the resolution its decide step named",
+            ),
+        ],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::ResolveStuck { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                Some((
+                    Action::ResolveStuck {
+                        order,
+                        carries_out,
+                        resolution,
+                    },
+                    _,
+                )),
+                Some(t),
+            ) = (effect_action(e), permitted(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::StuckDecide { request, decision } => judge(
+                    request.request == carries_out.request && decision == &carries_out.decision,
+                    &[&request.order == order, &request.resolution == resolution],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "hand-on-rests-on-the-linked-orders-acceptance",
+        spec: &["REQ-ORD-13", "REQ-ORD-43"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck order's value is handed on only to an order accepted in this log",
+        fields: &[(
+            "requester",
+            "a linked order keeps the requester of the order handed on",
+        )],
+        cites: |e, _| match effect_action(e) {
+            Some((
+                Action::ResolveStuck {
+                    resolution: Resolution::HandOn { .. },
+                    ..
+                },
+                _,
+            )) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (
+                Some((
+                    Action::ResolveStuck {
+                        order,
+                        resolution: Resolution::HandOn { linked_order, .. },
+                        ..
+                    },
+                    _,
+                )),
+                Some(t),
+            ) = (effect_action(e), verified(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Acceptance {
+                    order: o, parties, ..
+                } => judge(
+                    o == linked_order,
+                    &[requester_of(order.as_str(), h) == Some(&parties.requester)],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "result-ends-an-effect",
+        spec: &["REQ-ORD-1", "INV-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a result ends an effect entry of this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Result { effect } => alloc::vec![by_receipt(effect, 0)],
+            _ => none(),
+        },
+        answers: |_, _, t, _| {
+            judge(
+                verified(t).is_some_and(|t| matches!(t.what, What::Effect { .. })),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "effect-has-one-result",
+        spec: &["REQ-ORD-1", "INV-7"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an effect has one result",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Result { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Result { effect }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            judge(
+                t != e && matches!(&t.what, What::Result { effect: other } if other == effect),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "stuck-move-carries-out-its-decide-step",
+        spec: &["REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck move carries out a permitted decide step of this log",
+        fields: &[
+            ("order", "a stuck move is for its decide step's order"),
+            (
+                "mover",
+                "a stuck order's value is moved by another accountable party than the one that decided",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::StuckMove { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::StuckMove { request: mv, .. }, Some(t)) = (&e.what, permitted(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::StuckDecide { request, decision } => judge(
+                    request.request == mv.carries_out.request
+                        && decision == &mv.carries_out.decision,
+                    &[
+                        request.order == mv.order,
+                        request.decider.party != mv.mover.party,
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "stuck-decision-is-of-a-stuck-order",
+        spec: &["REQ-ORD-28", "REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck order's decision is of an order this log has an input for",
+        fields: &[(
+            "observed",
+            "a stuck order's decision follows the order's input declaring it stuck or leaving it no route",
+        )],
+        cites: |e, _| match &e.what {
+            What::StuckDecide { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::StuckDecide { request, .. }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            match input(t) {
+                Some(i) => judge(
+                    i.subject.order.as_str() == request.order.as_str(),
+                    &[matches!(
+                        i.observed,
+                        Observed::StuckDeclared { .. } | Observed::NoRoute { .. }
+                    )],
+                ),
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "input-cites-its-decision-record",
+        spec: &["REQ-AUD-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a recorded input's decision record is an entry of this log",
+        fields: &[(
+            "order",
+            "a recorded input's decision record is of its order",
+        )],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(
+                Observed::RouteChosen { .. }
+                | Observed::RouteRecalculated { .. }
+                | Observed::DestinationChanged { .. }
+                | Observed::NoRoute { .. },
+            ) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (Some(i), Some(t)) = (input(e), verified(t)) else {
+                return Match::NotTarget;
+            };
+            let cited = match &i.observed {
+                Observed::RouteChosen {
+                    decision_record, ..
+                }
+                | Observed::RouteRecalculated {
+                    decision_record, ..
+                }
+                | Observed::DestinationChanged {
+                    decision_record, ..
+                }
+                | Observed::NoRoute { decision_record } => decision_record.as_str(),
+                _ => return Match::NotTarget,
+            };
+            match &t.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order,
+                    ..
+                } => judge(
+                    decision_record.as_str() == cited,
+                    &[order.as_str() == input_order(e)],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "chosen-route-rests-on-its-orders-acceptance",
+        spec: &["REQ-ORD-34"],
+        quantifier: Quantifier::Exists,
+        refusal: "a chosen route rests on an acceptance of its order in this log",
+        fields: &[],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::RouteChosen { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match verified(t).map(|t| &t.what) {
+            Some(What::Acceptance { order, .. }) => judge(order.as_str() == input_order(e), &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "changed-destination-rests-on-its-acceptance",
+        spec: &["REQ-ORD-43", "REQ-ORD-34"],
+        quantifier: Quantifier::Exists,
+        refusal: "a changed destination's acceptance is an entry of this log",
+        fields: &[(
+            "order",
+            "a changed destination's acceptance is of its order",
+        )],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::DestinationChanged { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let Some(Observed::DestinationChanged { acceptance, .. }) =
+                input(e).map(|i| &i.observed)
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::Acceptance {
+                    acceptance: a,
+                    order,
+                    ..
+                }) => judge(
+                    a.as_str() == acceptance.as_str(),
+                    &[order.as_str() == input_order(e)],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "hand-on-input-rests-on-the-linked-orders-acceptance",
+        spec: &["REQ-ORD-43", "REQ-ORD-13"],
+        quantifier: Quantifier::Exists,
+        refusal: "a hand-on's acceptance is an entry of this log",
+        fields: &[
+            ("order", "a hand-on's acceptance is of the linked order"),
+            (
+                "requester",
+                "a linked order keeps the requester of the order handed on",
+            ),
+        ],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::HandedOn { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some(Observed::HandedOn {
+                linked_order,
+                acceptance,
+            }) = input(e).map(|i| &i.observed)
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::Acceptance {
+                    acceptance: a,
+                    order,
+                    parties,
+                    ..
+                }) => judge(
+                    a.as_str() == acceptance.as_str(),
+                    &[
+                        order.as_str() == linked_order.as_str(),
+                        requester_of(input_order(e), h) == Some(&parties.requester),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "handed-on-route-points-back",
+        spec: &["REQ-ORD-43"],
+        quantifier: Quantifier::Exists,
+        refusal: "a route handed on follows the hand-on of the order it came from in this log",
+        fields: &[(
+            "linked_order",
+            "the order a route was handed on from names it as its linked order",
+        )],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::RouteChosen {
+                handed_on_from: Some(_),
+                ..
+            }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let Some(Observed::RouteChosen {
+                handed_on_from: Some(from),
+                ..
+            }) = input(e).map(|i| &i.observed)
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).and_then(input) {
+                Some(earlier) => match &earlier.observed {
+                    Observed::HandedOn { linked_order, .. } => judge(
+                        earlier.subject.order.as_str() == from.as_str(),
+                        &[linked_order.as_str() == input_order(e)],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "settlement-rests-on-its-evidence",
+        spec: &["REQ-ORD-33", "REQ-ORD-39"],
+        quantifier: Quantifier::Exists,
+        refusal: "a settled segment's evidence is an entry of this log",
+        fields: &[
+            ("order", "a settled segment's evidence is of its order"),
+            ("segment", "a settled segment's evidence is of its segment"),
+        ],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::SegmentSettled { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| evidence_answers(e, t),
+    },
+    Relation {
+        name: "reversal-rests-on-its-evidence",
+        spec: &["REQ-ORD-3"],
+        quantifier: Quantifier::Exists,
+        refusal: "a completed reversal's evidence is an entry of this log",
+        fields: &[
+            ("order", "a completed reversal's evidence is of its order"),
+            (
+                "segment",
+                "a completed reversal's evidence is of its segment",
+            ),
+            (
+                "whose",
+                "a completed reversal's evidence is another party's than the failed provider's, or the origin reserve's labelled its word",
+            ),
+        ],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::ReversalCompleted { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| reversal_answers(e, t, h),
+    },
+    Relation {
+        name: "decision-record-chains-to-its-orders-previous",
+        spec: &["REQ-AUD-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a decision record's previous is a decision record of this log",
+        fields: &[("order", "a decision record's previous is of its order")],
+        cites: |e, _| match &e.what {
+            What::DecisionRecord {
+                previous: Some(previous),
+                ..
+            } => alloc::vec![by_receipt(previous, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::DecisionRecord { order, .. }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::DecisionRecord { order: earlier, .. } => judge(true, &[earlier == order]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "posted-route-cites-its-decision-record",
+        spec: &["REQ-AUD-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a posted route's decision record is an entry of this log",
+        fields: &[("order", "a posted route's decision record is of its order")],
+        cites: |e, _| match &e.what {
+            What::Decide { request, .. } if matches!(request.action, Action::PostRoute { .. }) => {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::Decide {
+                    request:
+                        DecisionRequest {
+                            action:
+                                Action::PostRoute {
+                                    order,
+                                    decision_record,
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                },
+                Some(t),
+            ) = (&e.what, verified(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::DecisionRecord {
+                    record, order: o, ..
+                } => judge(record == decision_record, &[o == order]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "sent-report-is-its-partys-statement",
+        spec: &["REQ-ORD-9", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a sent report is a stated entry of this log",
+        fields: &[
+            ("verified", "a sent report is a verified statement"),
+            ("maker", "a sent report is its sending party's statement"),
+        ],
+        cites: |e, _| match &e.what {
+            What::ReportPair { pair } => alloc::vec![by_receipt(&pair.sent.statement, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match &e.what {
+            What::ReportPair { pair } => statement_by(t, &pair.sent.party),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "received-report-is-its-partys-statement",
+        spec: &["REQ-ORD-9", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a received report is a stated entry of this log",
+        fields: &[
+            ("verified", "a received report is a verified statement"),
+            (
+                "maker",
+                "a received report is its receiving party's statement",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::ReportPair { pair } => alloc::vec![by_receipt(&pair.received.statement, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match &e.what {
+            What::ReportPair { pair } => statement_by(t, &pair.received.party),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "arrival-rests-on-the-reserves-report",
+        spec: &["REQ-ORD-23"],
+        quantifier: Quantifier::Exists,
+        refusal: "an arrival's report is a stated entry of this log",
+        fields: &[
+            ("verified", "an arrival's report is a verified statement"),
+            ("maker", "an arrival's report is its reserve's statement"),
+        ],
+        cites: |e, _| match &e.what {
+            What::Arrival { report, .. } => alloc::vec![by_receipt(report, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match &e.what {
+            What::Arrival { reserve, .. } => statement_by(t, reserve),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "refiling-files-an-arrival-anew",
+        spec: &["REQ-ORD-23"],
+        quantifier: Quantifier::Exists,
+        refusal: "a refiling names an arrival of this log",
+        fields: &[
+            (
+                "order",
+                "a refiling files the arrival against the order it arrived for",
+            ),
+            (
+                "filer",
+                "an arrival is filed anew by the operator or by the reserve it arrived at",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::Refiling { arrival, .. } => alloc::vec![by_receipt(arrival, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Refiling { order, .. }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Arrival {
+                    reserve, order: o, ..
+                } => judge(
+                    true,
+                    &[
+                        o.as_ref() == Some(order),
+                        e.who.role == Role::Operator
+                            || (e.who.role == Role::Provider && &e.who.party == reserve),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "evidence-rests-on-statements",
+        spec: &["REQ-ORD-39"],
+        quantifier: Quantifier::Exists,
+        refusal: "graded evidence rests on stated entries of this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Evidence { rests_on, .. } => rests_on
+                .iter()
+                .enumerate()
+                .map(|(i, r)| by_receipt(r, i))
+                .collect(),
+            _ => none(),
+        },
+        answers: |_, _, t, _| judge(stated(t).is_some(), &[]),
+    },
+    Relation {
+        name: "afterwards-rests-on-a-statement",
+        spec: &["REQ-ORD-25", "REQ-ORD-31"],
+        quantifier: Quantifier::Exists,
+        refusal: "what came after an order ended rests on a stated entry of this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Afterwards { statement, .. } => alloc::vec![by_receipt(statement, 0)],
+            _ => none(),
+        },
+        answers: |_, _, t, _| judge(stated(t).is_some(), &[]),
+    },
+    Relation {
+        name: "reliance-names-its-judges-statement",
+        spec: &["REQ-CPL-12"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reliance names a stated judgement of this log",
+        fields: &[
+            ("verified", "a reliance's judgement is a verified statement"),
+            ("maker", "a reliance's judgement is its judge's statement"),
+        ],
+        cites: |e, _| match &e.what {
+            What::Reliance { judgement, .. } => alloc::vec![by_receipt(judgement, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match &e.what {
+            What::Reliance { judge, .. } => statement_by(t, judge),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "measure-cites-entries-of-the-log",
+        spec: &["REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a measure record cites entries of this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Measure { record } => record
+                .cites
+                .iter()
+                .enumerate()
+                .map(|(i, r)| by_receipt(r, i))
+                .collect(),
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::Holds,
+    },
+    Relation {
+        name: "raise-cites-entries-of-the-log",
+        spec: &["REQ-ORD-9", "REQ-AUD-15"],
+        quantifier: Quantifier::Exists,
+        refusal: "a raise cites entries of this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Raise { raise } => raise
+                .cites
+                .iter()
+                .enumerate()
+                .map(|(i, r)| by_receipt(r, i))
+                .collect(),
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::Holds,
+    },
+    Relation {
+        name: "erasure-names-a-kept-statement",
+        spec: &["REQ-AUD-13"],
+        quantifier: Quantifier::Exists,
+        refusal: "an erasure names a commitment a stated entry of this log holds",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Erasure { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, stated(t)) {
+            (What::Erasure { evidence }, Some(s)) => judge(&s.commitment == evidence, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "acceptance-is-of-the-quote-shown",
+        spec: &["REQ-ORD-34", "REQ-QTE-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance's quote was shown, as this log records",
+        fields: &[
+            ("order", "an acceptance's quote was shown for its order"),
+            (
+                "shown_as",
+                "an acceptance's quote was shown as a quote, not a price",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                basis: AcceptanceBasis::Given,
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Acceptance { order, quote, .. }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Shown {
+                    order: o,
+                    shown,
+                    shown_as,
+                } => judge(shown == quote, &[o == order, *shown_as != ShownAs::Price]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "shortlisted-authority-cites-its-shortlist",
+        spec: &["REQ-CPL-2", "REQ-CPL-6"],
+        quantifier: Quantifier::Exists,
+        refusal: "a shortlisted route's authority names a decision record of this log",
+        fields: &[
+            (
+                "order",
+                "a shortlisted route's authority is a shortlist of its order",
+            ),
+            (
+                "round",
+                "a shortlisted route's authority is a shortlist round",
+            ),
+            (
+                "providers",
+                "a shortlisted route's authority names only providers its shortlist shortlisted",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::AskAboutPerson { question }
+                if matches!(question.authority, Authority::ShortlistedRoute { .. }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::AskAboutPerson { question }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            let Authority::ShortlistedRoute {
+                shortlist,
+                providers,
+            } = &question.authority
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::DecisionRecord {
+                    record,
+                    order,
+                    round,
+                    shortlisted,
+                    ..
+                } => judge(
+                    record == shortlist,
+                    &[
+                        order == &question.order,
+                        *round == RoutingRound::Shortlist,
+                        shortlisted
+                            .as_ref()
+                            .is_some_and(|s| providers.iter().all(|p| s.contains(p))),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "provider-asked-before-was-asked",
+        spec: &["REQ-CPL-5"],
+        quantifier: Quantifier::Exists,
+        refusal: "each provider a question says was asked before was asked in a permitted question of this log",
+        fields: &[(
+            "order",
+            "a provider asked before was asked about the same order",
+        )],
+        cites: |e, _| match &e.what {
+            What::AskAboutPerson { question } => (0..question.asked_before.len())
+                .flat_map(by_fields)
+                .collect(),
+            _ => none(),
+        },
+        answers: |e, c, t, _| {
+            let (What::AskAboutPerson { question }, Some(t)) = (&e.what, permitted(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::AskAboutPerson { question: earlier } => judge(
+                    earlier.ask.contains(&question.asked_before[c.index]),
+                    &[earlier.order == question.order],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "asked-before-is-complete",
+        spec: &["REQ-CPL-5"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a question names every provider already asked about its order",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::AskAboutPerson { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::AskAboutPerson { question }, Some(t)) = (&e.what, permitted(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::AskAboutPerson { question: earlier } => judge(
+                    t != e
+                        && earlier.order == question.order
+                        && earlier
+                            .ask
+                            .iter()
+                            .any(|p| !question.asked_before.contains(p)),
+                    &[],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "revocation-revokes-a-grant",
+        spec: &["REQ-AUZ-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a revocation names a permission granted in this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::RevokePermission { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
+            (
+                What::RevokePermission { change, .. },
+                Some(What::GrantPermission { change: g, .. }),
+            ) => judge(g.permission == change.permission, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "permitted-read-rests-on-its-grant",
+        spec: &["REQ-AUZ-7", "REQ-AUD-12"],
+        quantifier: Quantifier::Exists,
+        refusal: "a permitted read's permission was granted in this log",
+        fields: &[
+            (
+                "grantee",
+                "a permitted read's permission was granted to its reader's party",
+            ),
+            (
+                "scope",
+                "a permitted read's permission covers what it reads: the trail covers every order and segment, an order its segments",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::CheckRead { check }
+                if check.permission.is_some() && e.outcome == (Outcome::Permitted {}) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
+            (What::CheckRead { check }, Some(What::GrantPermission { change, .. })) => judge(
+                Some(&change.permission) == check.permission.as_ref(),
+                &[
+                    change.grantee.party == check.reader.party,
+                    covers(&change.scope, &check.reads),
+                ],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "permitted-read-is-not-revoked",
+        spec: &["REQ-AUZ-7"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a permitted read's permission is not revoked in this log",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::CheckRead { check }
+                if check.permission.is_some() && e.outcome == (Outcome::Permitted {}) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
+            (What::CheckRead { check }, Some(What::RevokePermission { change, .. })) => {
+                judge(Some(&change.permission) == check.permission.as_ref(), &[])
+            }
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "customer-read-is-of-its-own-order",
+        spec: &["REQ-AUZ-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a customer's permitted read is of an order accepted in this log",
+        fields: &[(
+            "party",
+            "a customer's permitted read is of an order whose requester, beneficiary or payer it is",
+        )],
+        cites: |e, _| match (&e.what, read_of_order(e)) {
+            (What::CheckRead { check }, Some(_)) if check.reader.role == Role::Customer => {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::CheckRead { check }, Some(read)) = (&e.what, read_of_order(e)) else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::Acceptance { order, parties, .. }) => {
+                    let party = &check.reader.party;
+                    judge(
+                        order == read,
+                        &[[&parties.requester, &parties.beneficiary, &parties.payer]
+                            .contains(&party)],
+                    )
+                }
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "provider-read-is-of-its-own-segment",
+        spec: &["REQ-AUZ-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a provider's permitted read is of a segment this log moved value on",
+        fields: &[(
+            "provider",
+            "a provider's permitted read is of a segment it is the provider of",
+        )],
+        cites: |e, _| match &e.what {
+            What::CheckRead {
+                check:
+                    ReadCheck {
+                        reader,
+                        reads: Reads::Segment { .. },
+                        ..
+                    },
+            } if reader.role == Role::Provider && e.outcome == (Outcome::Permitted {}) => {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let What::CheckRead {
+                check:
+                    ReadCheck {
+                        reader,
+                        reads:
+                            Reads::Segment {
+                                order,
+                                segment,
+                                provider: read_provider,
+                            },
+                        ..
+                    },
+            } = &e.what
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).and_then(effect_action) {
+                Some((
+                    Action::MoveValue {
+                        order: o,
+                        segment: s,
+                        provider,
+                        ..
+                    },
+                    _,
+                )) => judge(
+                    o == order && s == segment,
+                    &[provider == &reader.party && read_provider == &reader.party],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "segment-belongs-to-one-order",
+        spec: &["REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a segment belongs to one order: no value moved on it under another",
+        fields: &[],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::MoveValue { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (Some((Action::MoveValue { order, segment, .. }, _)), Some(t)) =
+                (effect_action(e), verified(t))
+            else {
+                return Match::NotTarget;
+            };
+            match effect_action(t) {
+                Some((
+                    Action::MoveValue {
+                        order: o,
+                        segment: s,
+                        ..
+                    },
+                    _,
+                )) => judge(s == segment && o != order, &[]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "route-starts-on-the-withdrawal-proof",
+        spec: &["REQ-ORD-40"],
+        quantifier: Quantifier::Exists,
+        refusal: "a route's later segment moves only once its part's first segment, the withdrawal, has settled in this log",
+        fields: &[],
+        cites: |e, h| match first_segment_before(e, h) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| {
+            let (Some(first), Some((Action::MoveValue { order, .. }, _))) =
+                (first_segment_before(e, h), effect_action(e))
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).and_then(input) {
+                Some(i) => judge(
+                    matches!(i.observed, Observed::SegmentSettled { .. })
+                        && i.subject.order.as_str() == order.as_str()
+                        && i.subject.segment.as_ref().map(|s| s.as_str()) == Some(first),
+                    &[],
+                ),
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "fee-rests-on-a-settled-segment",
+        spec: &["REQ-AUD-11"],
+        quantifier: Quantifier::Exists,
+        refusal: "a fee is recorded only for a segment settled in this log",
+        fields: &[("order", "a fee's settled segment is of its order")],
+        cites: |e, _| match &e.what {
+            What::Fee { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let What::Fee { order, segment, .. } = &e.what else {
+                return Match::NotTarget;
+            };
+            match verified(t).and_then(input) {
+                Some(i) => judge(
+                    matches!(i.observed, Observed::SegmentSettled { .. })
+                        && i.subject.segment.as_ref().map(|s| s.as_str()) == Some(segment.as_str()),
+                    &[i.subject.order.as_str() == order.as_str()],
+                ),
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "acceptance-rests-on-the-reserves-yes",
+        spec: &["REQ-ORD-32"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance given rests on its reserve's yes, a stated entry of this log",
+        fields: &[
+            (
+                "verified",
+                "an acceptance's reserve's yes is a verified statement",
+            ),
+            (
+                "maker",
+                "an acceptance's reserve's yes is its origin reserve's statement",
+            ),
+            ("order", "an acceptance's reserve's yes is about its order"),
+        ],
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                reserve_yes: Some(receipt),
+                ..
+            } => alloc::vec![by_receipt(receipt, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::Acceptance {
+                    order,
+                    origin_reserve,
+                    ..
+                },
+                Some(statement),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(statement.attribution, Attribution::Verified { .. }),
+                    maker(statement) == origin_reserve,
+                    statement.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "acceptance-is-asked-in-the-users-session",
+        spec: &["REQ-ORD-32"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance given is asked in a session this log opened",
+        fields: &[
+            ("holder", "an acceptance's session is its requester's"),
+            (
+                "expires_at",
+                "an acceptance's session is still open when it is accepted",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                session: Some(_), ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::Acceptance {
+                    session: Some(session),
+                    parties,
+                    ..
+                },
+                Some(t),
+            ) = (&e.what, permitted(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::OpenSession {
+                    request,
+                    opened: Some(opened),
+                } => judge(
+                    &opened.session == session,
+                    &[
+                        request.holder == parties.requester,
+                        opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "move-segment-is-in-its-orders-plan",
+        spec: &["REQ-ORD-38", "REQ-ORD-40"],
+        quantifier: Quantifier::Exists,
+        refusal: "a value-moving effect's segment is in a route of its order this log recorded",
+        fields: &[(
+            "order",
+            "a value-moving effect's segment is in a route of its own order",
+        )],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::MoveValue { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (Some((Action::MoveValue { order, segment, .. }, _)), Some(i)) =
+                (effect_action(e), verified(t).and_then(input))
+            else {
+                return Match::NotTarget;
+            };
+            let planned = |plan: &[crate::state_machine::SegmentPlan]| {
+                plan.iter()
+                    .any(|s| s.segment_id.as_str() == segment.as_str())
+            };
+            let listed = match &i.observed {
+                Observed::RouteChosen { parts, .. } => parts.iter().any(|p| planned(&p.segments)),
+                Observed::RouteRecalculated { segments, .. }
+                | Observed::DestinationChanged { segments, .. } => planned(segments),
+                _ => return Match::NotTarget,
+            };
+            judge(listed, &[i.subject.order.as_str() == order.as_str()])
+        },
+    },
+    Relation {
+        name: "recalculation-starts-from-evidenced-value",
+        spec: &["REQ-ORD-2", "INV-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a recalculation starts from a segment settled in this log, where its value is evidenced",
+        fields: &[
+            (
+                "part",
+                "a recalculation starts from a settled segment of its own part",
+            ),
+            (
+                "node",
+                "a recalculation starts where its settled segment ended: that segment's end is the new route's start",
+            ),
+        ],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::RouteRecalculated { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (Some(recalculated), Some(i)) = (input(e), verified(t).and_then(input)) else {
+                return Match::NotTarget;
+            };
+            let Observed::RouteRecalculated { segments, .. } = &recalculated.observed else {
+                return Match::NotTarget;
+            };
+            let order = recalculated.subject.order.as_str();
+            let ended = i
+                .subject
+                .segment
+                .as_ref()
+                .and_then(|s| planned_end(order, s.as_str(), h));
+            judge(
+                matches!(i.observed, Observed::SegmentSettled { .. })
+                    && i.subject.order.as_str() == order,
+                &[
+                    i.subject.part.as_ref().map(|p| p.as_str())
+                        == recalculated.subject.part.as_ref().map(|p| p.as_str()),
+                    ended.is_some() && ended == segments.first().map(|s| &s.from),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "order-is-opened-once",
+        spec: &["REQ-ORD-19"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an order is opened once: no other chosen route of it is in this log",
+        fields: &[],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::RouteChosen { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match verified(t) {
+            Some(earlier) => match input(earlier) {
+                Some(i) => judge(
+                    earlier != e
+                        && matches!(i.observed, Observed::RouteChosen { .. })
+                        && i.subject.order.as_str() == input_order(e),
+                    &[],
+                ),
+                None => Match::NotTarget,
+            },
+            None => Match::NotTarget,
+        },
+    },
+];
+
+/// How an evidence entry answers a settled segment's or a completed reversal's citation.
+fn evidence_answers(entry: &VerifiedEntry, target: &Entry) -> Match {
+    let Some(i) = input(entry) else {
+        return Match::NotTarget;
+    };
+    let cited = match &i.observed {
+        Observed::SegmentSettled { evidence } | Observed::ReversalCompleted { evidence } => {
+            evidence.as_str()
+        }
+        _ => return Match::NotTarget,
+    };
+    match verified(target).map(|t| &t.what) {
+        Some(What::Evidence {
+            evidence,
+            order,
+            segment,
+            ..
+        }) => judge(
+            evidence.as_str() == cited,
+            &[
+                order.as_str() == i.subject.order.as_str(),
+                i.subject.segment.as_ref().map(|s| s.as_str()) == Some(segment.as_str()),
+            ],
+        ),
+        _ => Match::NotTarget,
+    }
+}
+
+/// The order a permitted read of an order or one of its segments is of.
+fn read_of_order(entry: &VerifiedEntry) -> Option<&Id> {
+    match &entry.what {
+        What::CheckRead { check } if entry.outcome == (Outcome::Permitted {}) => match &check.reads
+        {
+            Reads::Order { order } | Reads::Segment { order, .. } => Some(order),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Where `entry` moves value on a segment of a part's route, by the `route_chosen` plan `history` holds, and that
+/// segment isn't the part's first: the first segment's id.
+fn first_segment_before<'a>(entry: &VerifiedEntry, history: &'a History) -> Option<&'a str> {
+    let Some((Action::MoveValue { order, segment, .. }, _)) = effect_action(entry) else {
+        return None;
+    };
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        let Observed::RouteChosen { parts, .. } = &i.observed else {
+            return None;
+        };
+        if i.subject.order.as_str() != order.as_str() {
+            return None;
+        }
+        parts.iter().find_map(|part| {
+            let first = part.segments.first()?.segment_id.as_str();
+            let later = part
+                .segments
+                .iter()
+                .skip(1)
+                .any(|s| s.segment_id.as_str() == segment.as_str());
+            later.then_some(first)
+        })
+    })
+}
+
+/// Where `segment` of `order` ends, by the first plan in `history` that lists it: a `route_chosen`, a
+/// `route_recalculated` or a `destination_changed`.
+fn planned_end<'a>(
+    order: &str,
+    segment: &str,
+    history: &'a History,
+) -> Option<&'a crate::state_machine::Endpoint> {
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        if i.subject.order.as_str() != order {
+            return None;
+        }
+        let plan: alloc::vec::Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts.iter().flat_map(|p| &p.segments).collect(),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+            _ => return None,
+        };
+        plan.into_iter()
+            .find(|s| s.segment_id.as_str() == segment)
+            .map(|s| &s.to)
+    })
+}
+
+/// Whether a permission's `scope` covers `reads`: the trail covers every order and segment, an order its segments,
+/// and anything else only itself.
+pub fn covers(scope: &Reads, reads: &Reads) -> bool {
+    match (scope, reads) {
+        (Reads::Trail {}, Reads::Trail {} | Reads::Order { .. } | Reads::Segment { .. }) => true,
+        (Reads::Order { order }, Reads::Order { order: o })
+        | (Reads::Order { order }, Reads::Segment { order: o, .. }) => order == o,
+        _ => scope == reads,
+    }
+}
+
+/// How an evidence entry answers a completed reversal: as [`evidence_answers`], and its `whose` another party's than
+/// the failed segment's provider, unless it is the origin reserve's, labelled its word (`REQ-ORD-3`, ADR-0008).
+fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) -> Match {
+    let found = evidence_answers(entry, target);
+    if found == Match::NotTarget {
+        return found;
+    }
+    let (Some(i), Some(What::Evidence { whose, grade, .. })) =
+        (input(entry), verified(target).map(|t| &t.what))
+    else {
+        return Match::NotTarget;
+    };
+    let moved = history
+        .iter()
+        .find_map(|(_, e)| match verified(e).and_then(effect_action) {
+            Some((
+                Action::MoveValue {
+                    order,
+                    segment,
+                    provider,
+                    origin_reserve,
+                    ..
+                },
+                _,
+            )) if order.as_str() == i.subject.order.as_str()
+                && i.subject.segment.as_ref().map(|s| s.as_str()) == Some(segment.as_str()) =>
+            {
+                Some((provider, origin_reserve))
+            }
+            _ => None,
+        });
+    let another = moved.is_some_and(|(provider, origin)| {
+        whose != provider || (whose == origin && *grade == EvidenceGrade::Statement)
+    });
+    match found {
+        Match::Mismatch(i) => Match::Mismatch(i),
+        _ if another => Match::Holds,
+        _ => Match::Mismatch(2),
+    }
+}
+
+/// Whether the log admits `entry`, given its `history`: each entry it holds with its receipt, in order. The log runs
+/// it on every append ([`calls::Log::append`](super::calls::Log::append)), since a permit, a receipt or an id can be
+/// built or read from anywhere. It reads [`RELATIONS`] row by row, and refuses on the first row the entry breaks:
+///
+/// - an `exists` row breaks when no entry of `history` (at the cited receipt, where the citation is by receipt)
+///   answers a citation; its refusal names the field that failed on the entry that came closest, or the row's own
+///   refusal where none was even the kind asked for;
+/// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
+///
+/// A stated entry cites nothing and is admitted.
+pub fn admit_entry(history: &[(Receipt, Entry)], entry: &Entry) -> Result<(), Violation> {
+    let Entry::Verified(entry) = entry else {
+        return Ok(());
+    };
+    for row in &RELATIONS {
+        for cite in (row.cites)(entry, history) {
+            let candidates = history
+                .iter()
+                .filter(|(r, _)| cite.receipt.as_ref().is_none_or(|c| c == r))
+                .map(|(_, e)| (row.answers)(entry, &cite, e, history));
+            match row.quantifier {
+                Quantifier::Exists => {
+                    let mut closest: Option<usize> = None;
+                    let mut holds = false;
+                    for answer in candidates {
+                        match answer {
+                            Match::Holds => {
+                                holds = true;
+                                break;
+                            }
+                            Match::Mismatch(i) => closest = closest.max(Some(i)),
+                            Match::NotTarget => {}
+                        }
+                    }
+                    if !holds {
+                        return Err(Violation(closest.map_or(row.refusal, |i| row.fields[i].1)));
+                    }
+                }
+                Quantifier::NoneOther => {
+                    let mut candidates = candidates;
+                    if candidates.any(|a| a == Match::Holds) {
+                        return Err(Violation(row.refusal));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}

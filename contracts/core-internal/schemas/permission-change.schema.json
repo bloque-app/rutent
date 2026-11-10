@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:permission-change",
+  "title": "Permission change",
+  "description": "A read permission granted or revoked: who may read what, by an identified permission (REQ-AUZ-7, REQ-AUD-12). Policy answers it with a decision, and a permitted read naming the permission rests on its grant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "permission",
+    "grantee",
+    "scope",
+    "by",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "permission": {
+      "description": "The permission's id, which a read check names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "grantee": {
+      "description": "Who holds it: a regulator or a checker.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "scope": {
+      "description": "What it lets the grantee read.",
+      "$ref": "urn:rutent:core-internal:read-check#/$defs/reads"
+    },
+    "by": {
+      "description": "Who grants or revokes it.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

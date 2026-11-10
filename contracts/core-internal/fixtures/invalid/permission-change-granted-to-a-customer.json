@@ -1,0 +1,20 @@
+{
+  "request": "req-g1",
+  "permission": "perm-reg-1",
+  "grantee": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "scope": {
+    "kind": "trail"
+  },
+  "by": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}
