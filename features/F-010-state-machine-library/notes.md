@@ -617,7 +617,7 @@ being allowed to fail. On one node the last submit wrote bytes 40582..46840 of `
 - **The new test's run will be recorded here when it lands.** Until then the torn tail is shown only by run
   42758365383, before `T-010-07`.
 
-### Owner's item: `vos-g54-silent-tail-cut` (confirmed by the scored run)
+### Owner's item: `vos-g54-silent-tail-cut` (torn tail shown before `T-010-07`, not reproduced at the head)
 
 Evidence: torn tail, **shown** in run 42758365383 at `20567be` (not reproduced at the head, above): a journal cut inside the acknowledged append's bytes is cut silently
 by VOS on one node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it.

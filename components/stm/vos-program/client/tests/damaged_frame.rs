@@ -531,7 +531,7 @@ fn record(setup: &str, finding: &Finding) {
 }
 
 /// Every place of damage on `replicas` nodes, the last submit ending the order or not: every one is recorded, and
-/// every one must be refused or recovered.
+/// every one must be refused or recovered, and none may be cut silently or not reproduced.
 fn both(replicas: usize, setup: &str, ends_order: bool) {
     let setup = format!(
         "{setup}, last input {} the order",
@@ -555,28 +555,28 @@ fn both(replicas: usize, setup: &str, ends_order: bool) {
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_append_that_ends_an_order_on_one_vos_node_is_refused_or_recovered_and_never_cut_silently()
+fn damaged_last_append_that_ends_an_order_on_one_vos_node_is_refused_or_recovered_and_neither_cut_silently_nor_unreproduced()
  {
     both(1, "one node", true);
 }
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_append_that_leaves_an_order_running_on_one_vos_node_is_refused_or_recovered_and_never_cut_silently()
+fn damaged_last_append_that_leaves_an_order_running_on_one_vos_node_is_refused_or_recovered_and_neither_cut_silently_nor_unreproduced()
  {
     both(1, "one node", false);
 }
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_append_that_ends_an_order_on_the_vos_leader_of_three_is_refused_or_recovered_and_never_cut_silently()
+fn damaged_last_append_that_ends_an_order_on_the_vos_leader_of_three_is_refused_or_recovered_and_neither_cut_silently_nor_unreproduced()
  {
     both(3, "leader of three", true);
 }
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_append_that_leaves_an_order_running_on_the_vos_leader_of_three_is_refused_or_recovered_and_never_cut_silently()
+fn damaged_last_append_that_leaves_an_order_running_on_the_vos_leader_of_three_is_refused_or_recovered_and_neither_cut_silently_nor_unreproduced()
  {
     both(3, "leader of three", false);
 }

@@ -701,7 +701,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   (an AMD runner, so nothing was compared across vendors) and reported green. **Corrected 2026-11-10 (the review of
   `M2`'s pull request):** only 42754273532, at `0bb16a3`, compared across vendors. Both runs of the pull request's
   head (42772739775 and 42776086908) skipped too, so **there is no cross-vendor
-  comparison at the head yet**; the job now says SKIPPED in its step list, and re-running it until it lands on an
+  comparison at the head yet**; the job's skip is now a step of its own, "Note: no cross-vendor re-derivation on this runner", and re-running it until it lands on an
   Intel runner is what would give one.
 
 ## T-013-07
