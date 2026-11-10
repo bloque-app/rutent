@@ -443,7 +443,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `Header::sensitive`, and a header named `authorization`, `proxy-authorization` or `cookie` is a credential by
   name, whatever the flag says. A redirect to another endpoint drops both; the test shows a flagged `X-Api-Key` and
   an unflagged `Authorization` dropped while a plain header and the method follow a `307`.
-- **Reading: a request the platform cannot build is refused unrecorded.** An unknown method, a target that is not
+- **Superseded by the review round below:** a request the platform cannot build is now recorded.
+- **(Earlier reading) a request the platform cannot build is refused unrecorded.** An unknown method, a target that is not
   origin-form or a framing header has no reason in module-interface 4.0.0 to be recorded under (no refusal stands in
   another's name), and no destination was judged. It is refused the way an unknown scheme is, with the outcome
   `refused` and no record. If a record of it is wanted, it needs a reason in the contract: an item for `F-010`.
@@ -467,3 +468,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **`DEC-20`.** The module boundary (`wit/binding.wit`, `module/host.rs`, `module/wire.rs`) and the platform's
   outbound-call path in `module/platform.rs`. Shared edits: the `BINDING_VERSION` line in `module/engine.rs`
   (`T-013-05`'s file) and the new `MAX_HEADERS` in `module/limits.rs`.
+
+## T-013-07, review round
+
+- **A refused request is recorded (blocker).** A request the platform won't send (an unknown method, a target that
+  is not a path, a header that is not a token or that frames the message) was refused with no record, though the
+  call was already charged and `REQ-MDL-8` wants every call recorded. module-interface 4.0.0 (unreleased) gains the
+  reason `request_not_allowed`: the schema's `refusal_reason`, `RefusalReason::RequestNotAllowed`, a valid fixture,
+  a contract test, the README and the changelog. The platform records it with one hop (the endpoint asked for) and
+  none of the request, as it records a call refused for a limit (`record_refused_call`). `contracts/` is a `DEC-20`
+  path, and this commit touches it.
+- **Forwarding headers.** `Forwarded`, `X-Forwarded-Host`, `X-Forwarded-For`, `X-Forwarded-Proto`,
+  `X-Forwarded-Port`, `X-Real-IP`, `X-Original-URL`, `X-Rewrite-URL` and `X-Original-Host` join the headers a request
+  may not set, for the reason `Host` is one.
+- **Limits tested.** Past `MAX_HEADERS`, and past `MAX_BODY` in a path, in a header value and in a body and a path
+  together, the operation is refused as a limit with a `MessageSize` event, a record refused `limit_reached` and
+  nothing sent; the bound itself sends. The stand-ins' `fetch` line takes a trailing `*N` on a path or value (N bytes
+  of `x`) so a program in an 8 KiB slot can make a large request; the C stand-in's header cap is 256.
+- **`WireHeader`'s `Debug`** hides the value of a flagged header and of one named `authorization`,
+  `proxy-authorization` or `cookie` (`THR-50`). `limits.rs`'s docs say what is counted now.
+- **Shown red:** the record tests failed with no record; the two limit tests failed with the header count and the
+  header and path bytes taken out of the check.

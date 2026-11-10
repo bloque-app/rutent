@@ -898,7 +898,7 @@ impl<W: World> Platform<W> {
                 (Metered::OutboundBytes, size as u64),
             ],
         ) {
-            self.record_limited_call(scheme, &host, port);
+            self.record_refused_call(scheme, &host, port, RefusalReason::LimitReached);
             return reply;
         }
         let context = self.stack.last().expect("a context");
@@ -906,6 +906,7 @@ impl<W: World> Platform<W> {
         let Some(in_flight) = context.serving.as_ref().map(|s| s.operation.clone()) else {
             return refused();
         };
+        let scheme_name = scheme;
         let scheme = match scheme {
             "https" => Scheme::Https,
             "wss" => Scheme::Wss,
@@ -942,7 +943,15 @@ impl<W: World> Platform<W> {
             "put" => Method::Put,
             "patch" => Method::Patch,
             "delete" => Method::Delete,
-            _ => return refused(),
+            _ => {
+                self.record_refused_call(
+                    scheme_name,
+                    &host,
+                    port,
+                    RefusalReason::RequestNotAllowed,
+                );
+                return refused();
+            }
         };
         let headers = wire
             .headers
@@ -958,6 +967,7 @@ impl<W: World> Platform<W> {
         let Ok(request) =
             egress::Request::new(method, wire.path, headers, body.as_bytes().to_vec())
         else {
+            self.record_refused_call(scheme_name, &host, port, RefusalReason::RequestNotAllowed);
             return refused();
         };
         let outcome = self.world.send(
@@ -977,10 +987,11 @@ impl<W: World> Platform<W> {
         }
     }
 
-    /// Writes the outbound call record of a call refused because its module hit a bound: one hop, the endpoint it
-    /// asked for, and the refusal `limit_reached` (`REQ-MDL-8`). Nothing is written where no outside request is in
+    /// Writes the outbound call record of a call refused before the egress layer saw it, because its module hit a
+    /// bound (`limit_reached`) or its request isn't one the platform sends (`request_not_allowed`): one hop, the
+    /// endpoint it asked for, and the refusal; nothing of the request (`REQ-MDL-8`). Nothing is written where no outside request is in
     /// flight, or the endpoint isn't one a record can name.
-    fn record_limited_call(&mut self, scheme: &str, host: &str, port: u16) {
+    fn record_refused_call(&mut self, scheme: &str, host: &str, port: u16, reason: RefusalReason) {
         let context = self.stack.last().expect("a context");
         let Some(operation) = context.serving.as_ref().map(|s| s.operation.clone()) else {
             return;
@@ -1018,9 +1029,7 @@ impl<W: World> Platform<W> {
                 destination: None,
                 address: None,
             }],
-            outcome: CallOutcome::Refused(Refused {
-                reason: RefusalReason::LimitReached,
-            }),
+            outcome: CallOutcome::Refused(Refused { reason }),
         });
     }
 

@@ -17,7 +17,8 @@
 //!   `call <operation> <https|wss> <host> <port>`, `module <callee> <kind>`: the suite's steps;
 //! - `spin`, `grow <pages>`, `trap`: the binding's own probes of its limits, run by the sandboxed part;
 //! - `fetch <operation> <host> <port> <method> <path> <headers>`: a full request to `https` `host`, the headers as
-//!   `name=value` joined by `,` (a `!` before the name flags the value as a credential; `-` for none);
+//!   `name=value` joined by `,` (a `!` before the name flags the value as a credential; `-` for none; a path or a value ending in `*N` is
+//!   that text followed by `N` bytes of `x`, so a program of a few lines can make a request of any size);
 //! - `reason <operation> <name>`: looks the secret up and obtains the refusal's reason, if refused;
 //! - `forge <operation> <secret> <https|wss> <host> <port>`: the binding's hostile probe, an outside step asked for
 //!   under the `serves` operation, in which the outside part looks up the secret and calls the endpoint naming
@@ -451,6 +452,16 @@ mod outside {
 
     use super::{Step, program};
 
+    /// `text` with a trailing `*N` replaced by `N` bytes of `x`.
+    fn expand(text: &str) -> String {
+        match text.rsplit_once('*') {
+            Some((head, n)) if n.parse::<usize>().is_ok() => {
+                format!("{head}{}", "x".repeat(n.parse().unwrap_or(0)))
+            }
+            _ => text.to_owned(),
+        }
+    }
+
     wit_bindgen::generate!({ world: "outside", path: "../../src/module/wit" });
 
     use rutent::binding::egress::{self, Scheme};
@@ -534,7 +545,7 @@ mod outside {
                             };
                             Some(egress::Header {
                                 name: name.to_owned(),
-                                value: value.to_owned(),
+                                value: expand(value),
                                 sensitive,
                             })
                         })
@@ -546,7 +557,7 @@ mod outside {
                         port,
                         &egress::Request {
                             method,
-                            path,
+                            path: expand(&path),
                             headers,
                             body: carried.join("\n"),
                         },

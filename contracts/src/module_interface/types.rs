@@ -443,6 +443,10 @@ pub enum RefusalReason {
     /// or mismatched certificate, none, or too low a version. Nothing of the request was sent (`REQ-MDL-7`,
     /// ADR-0004).
     PeerNotVerified,
+    /// The request itself isn't one the platform sends, whatever the destination: a method not allowed, a target
+    /// that isn't a path (it would name a host of its own), or a header that names the host or frames the message.
+    /// Nothing was sent, and the record holds none of the request (`REQ-MDL-7`, `REQ-MDL-8`).
+    RequestNotAllowed,
 }
 
 /// The outside part's request to resolve one declared secret by name, at call time

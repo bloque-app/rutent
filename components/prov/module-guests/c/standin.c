@@ -446,6 +446,27 @@ static outside_string_t str_of(const char *s) {
     return r;
 }
 
+/* `text` with a trailing `*N` replaced by N bytes of `x`. */
+static const char *expand(const char *text, size_t len, size_t *out_len) {
+    size_t star = len;
+    while (star > 0 && text[star - 1] >= '0' && text[star - 1] <= '9') {
+        star--;
+    }
+    if (star == len || star == 0 || text[star - 1] != '*') {
+        *out_len = len;
+        return word_dup(text, len);
+    }
+    size_t head = star - 1, n = (size_t)to_long(text + star);
+    char *r = malloc(head + n + 1);
+    memcpy(r, text, head);
+    for (size_t i = 0; i < n; i++) {
+        r[head + i] = 'x';
+    }
+    r[head + n] = 0;
+    *out_len = head + n;
+    return r;
+}
+
 /* A request with the method named (POST for anything but the other four), the path and the body. */
 static rutent_binding_egress_request_t plain_request(const char *method, const char *path, const text *body) {
     rutent_binding_egress_request_t r;
@@ -455,7 +476,9 @@ static rutent_binding_egress_request_t plain_request(const char *method, const c
                : eq(method, "PATCH")  ? RUTENT_BINDING_EGRESS_METHOD_PATCH
                : eq(method, "DELETE") ? RUTENT_BINDING_EGRESS_METHOD_DELETE
                                       : RUTENT_BINDING_EGRESS_METHOD_POST;
-    r.path = str_of(path);
+    size_t path_len;
+    r.path.ptr = (uint8_t *)expand(path, strlen(path), &path_len);
+    r.path.len = path_len;
     r.body.ptr = (uint8_t *)(body->p ? body->p : "");
     r.body.len = body->len;
     return r;
@@ -464,11 +487,11 @@ static rutent_binding_egress_request_t plain_request(const char *method, const c
 /* Reads `name=value` items joined by commas into the request's headers; a `!` before a name flags the value as a
  * credential, and `-` is none. */
 static void read_headers(rutent_binding_egress_request_t *r, const char *list) {
-    static rutent_binding_egress_header_t headers[64];
+    static rutent_binding_egress_header_t headers[256];
     size_t count = 0;
     if (!eq(list, "-")) {
         const char *at = list;
-        while (*at && count < 64) {
+        while (*at && count < 256) {
             const char *end = at;
             while (*end && *end != ',') {
                 end++;
@@ -482,8 +505,9 @@ static void read_headers(rutent_binding_egress_request_t *r, const char *list) {
             headers[count].name.ptr = (uint8_t *)word_dup(name, (size_t)(eqs - name));
             headers[count].name.len = (size_t)(eqs - name);
             const char *value = eqs < end ? eqs + 1 : end;
-            headers[count].value.ptr = (uint8_t *)word_dup(value, (size_t)(end - value));
-            headers[count].value.len = (size_t)(end - value);
+            size_t value_len;
+            headers[count].value.ptr = (uint8_t *)expand(value, (size_t)(end - value), &value_len);
+            headers[count].value.len = value_len;
             headers[count].sensitive = sensitive;
             count++;
             at = *end ? end + 1 : end;

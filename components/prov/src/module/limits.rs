@@ -28,7 +28,7 @@ pub const MAX_HOST: usize = 253;
 /// The longest outside request or outside response the platform takes, in bytes of JSON.
 pub const MAX_OUTSIDE_MESSAGE: usize = 64 * 1024;
 
-/// The largest body one outbound call may carry, in bytes.
+/// The largest outbound request, in bytes: its body, its path and every header's name and value together.
 pub const MAX_BODY: usize = 64 * 1024;
 
 /// The most headers one outbound request may carry.
@@ -44,7 +44,7 @@ pub const MAX_PROVIDER_FRAME: usize = 4 * 1024 * 1024;
 pub enum Metered {
     /// Outbound calls the egress layer was asked for, refused ones included.
     OutboundCalls,
-    /// The bytes of the bodies those calls carried.
+    /// The bytes of the requests those calls carried: bodies, paths and headers.
     OutboundBytes,
     /// State reads, a denied read of a sandboxed part included.
     StateReads,

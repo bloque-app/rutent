@@ -108,7 +108,7 @@ pub enum FromProvider {
 }
 
 /// One request header as the outside part wrote it. Nothing here is checked: the platform builds the request from it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireHeader {
     /// The header's name.
     pub name: String,
@@ -116,6 +116,26 @@ pub struct WireHeader {
     pub value: String,
     /// Whether the part marked the value as a credential.
     pub sensitive: bool,
+}
+
+impl core::fmt::Debug for WireHeader {
+    /// Hides the value of a header the part flagged as a credential, and of one named as such (`THR-50`).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let credential = self.sensitive
+            || crate::egress::CREDENTIALS
+                .iter()
+                .any(|c| self.name.eq_ignore_ascii_case(c));
+        let value: &dyn core::fmt::Debug = if credential {
+            &"<redacted>"
+        } else {
+            &self.value
+        };
+        f.debug_struct("WireHeader")
+            .field("name", &self.name)
+            .field("value", value)
+            .field("sensitive", &self.sensitive)
+            .finish()
+    }
 }
 
 /// The platform's answer to a request a provider's process made.
