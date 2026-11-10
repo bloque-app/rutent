@@ -40,15 +40,18 @@ use crate::module::children::{
 };
 use crate::module::engine::{self, FORMAT, MAX_BINARY};
 use crate::module::limits::{
-    Bounds, LimitHit, LimitKind, MAX_BODY, MAX_HOST, MAX_KEY, MAX_MEASUREMENTS, MAX_NAME,
-    MAX_OUTSIDE_MESSAGE, Metered, Usage, charge, depth_allows, keep_last, within as within_bound,
+    Bounds, LimitHit, LimitKind, MAX_BODY, MAX_HEADERS, MAX_HOST, MAX_KEY, MAX_MEASUREMENTS,
+    MAX_NAME, MAX_OUTSIDE_MESSAGE, Metered, Usage, charge, depth_allows, keep_last,
+    within as within_bound,
 };
 use crate::module::output;
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent,
 };
-use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
+use crate::module::wire::{
+    FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, WireHeader, sha256, unhex,
+};
 use crate::proxy::{self, CallAsked, Caller, InFlight, RouteCalls};
 
 /// The longest one operation may take, from the platform handing it to a provider's process to that process's
@@ -145,6 +148,13 @@ pub trait World {
     /// [`World::route`] gave. Only the default [`World::send`] calls it.
     fn deliver(&mut self, endpoint: &Endpoint, body: &str);
 
+    /// Receives `request` at `endpoint`, which the egress layer has judged allowed and dialled at the address
+    /// [`World::route`] gave: its method, target, headers and body, as the connector would send them. The default
+    /// hands the body to [`World::deliver`]. Only the default [`World::send`] calls it.
+    fn receive(&mut self, endpoint: &Endpoint, request: &egress::Request) {
+        self.deliver(endpoint, &String::from_utf8_lossy(request.body()));
+    }
+
     /// The release `artefact` now runs for its provider: its process started.
     fn running(&mut self, artefact: &AdmissionArtefact) {
         let _ = artefact;
@@ -212,6 +222,14 @@ pub trait World {
     }
 }
 
+/// An outbound call's request as the outside part wrote it, before the platform checks it.
+struct WireRequest {
+    method: String,
+    path: String,
+    headers: Vec<WireHeader>,
+    body: String,
+}
+
 /// A world's [`World::route`] and [`World::deliver`] as the egress layer's resolver and connector, for the
 /// default [`World::send`]. A name resolves to the address its endpoint is served at; a dial to that address
 /// delivers the body and answers `200`, or `307` to the endpoint it redirects to, which keeps the method and the
@@ -252,7 +270,7 @@ impl<W: World + ?Sized> Connector for Served<'_, W> {
         if address != dial.to.ip() {
             return Err(ConnectError::Unreachable);
         }
-        world.deliver(&endpoint, &String::from_utf8_lossy(request.body()));
+        world.receive(&endpoint, request);
         Ok(match redirect {
             None => egress::Response {
                 status: 200,
@@ -647,8 +665,22 @@ impl<W: World> Platform<W> {
                 scheme,
                 host,
                 port,
+                method,
+                path,
+                headers,
                 body,
-            } => self.egress(&operation, &scheme, host, port, &body),
+            } => self.egress(
+                &operation,
+                &scheme,
+                host,
+                port,
+                WireRequest {
+                    method,
+                    path,
+                    headers,
+                    body,
+                },
+            ),
             FromProvider::Module { callee, kind } => self.cross_module(&callee, &kind),
             FromProvider::Ready
             | FromProvider::Failed { .. }
@@ -827,16 +859,27 @@ impl<W: World> Platform<W> {
     /// and dials only the address it checked (`B-17`), refuses a peer not verified over TLS (`B-18`), and writes the
     /// outbound call record, refused calls included (`REQ-MDL-7`, `REQ-MDL-8`). The operation is the outside
     /// request in flight, from the platform's own state: a call naming another is refused as
-    /// `undeclared_operation`, and its record names the operation in flight. The binding's call carries a body
-    /// only, so it is sent as a `POST` to `/`.
+    /// `undeclared_operation`, and its record names the operation in flight. The call carries a whole request (a
+    /// method, a path, headers and a body, `T-013-07`), which the platform builds with [`egress::Request::new`]: that
+    /// is the one place that checks the target is an origin-form path and no header is one the connector sets. A
+    /// request it refuses has no reason in the contract to be recorded under, so it is refused unrecorded, as an
+    /// unknown scheme is. Its bytes count against the call's bound and budget like the body's.
     fn egress(
         &mut self,
         operation: &str,
         scheme: &str,
         host: String,
         port: u16,
-        body: &str,
+        wire: WireRequest,
     ) -> Reply {
+        let body = wire.body.as_str();
+        let size = body.len()
+            + wire.path.len()
+            + wire
+                .headers
+                .iter()
+                .map(|h| h.name.len() + h.value.len())
+                .sum::<usize>();
         let refused = || Reply::Egress {
             outcome: "refused".to_owned(),
         };
@@ -847,14 +890,15 @@ impl<W: World> Platform<W> {
                 (LimitKind::NameLength, operation.len(), MAX_NAME),
                 (LimitKind::NameLength, host.len(), MAX_HOST),
                 (LimitKind::NameLength, scheme.len(), 8),
-                (LimitKind::MessageSize, body.len(), MAX_BODY),
+                (LimitKind::MessageSize, size, MAX_BODY),
+                (LimitKind::MessageSize, wire.headers.len(), MAX_HEADERS),
             ],
             &[
                 (Metered::OutboundCalls, 1),
-                (Metered::OutboundBytes, body.len() as u64),
+                (Metered::OutboundBytes, size as u64),
             ],
         ) {
-            self.record_limited_call(scheme, &host, port);
+            self.record_refused_call(scheme, &host, port, RefusalReason::LimitReached);
             return reply;
         }
         let context = self.stack.last().expect("a context");
@@ -862,6 +906,7 @@ impl<W: World> Platform<W> {
         let Some(in_flight) = context.serving.as_ref().map(|s| s.operation.clone()) else {
             return refused();
         };
+        let scheme_name = scheme;
         let scheme = match scheme {
             "https" => Scheme::Https,
             "wss" => Scheme::Wss,
@@ -892,9 +937,37 @@ impl<W: World> Platform<W> {
             started_at: &started_at,
             due: Some(due),
         };
+        let method = match wire.method.as_str() {
+            "get" => Method::Get,
+            "post" => Method::Post,
+            "put" => Method::Put,
+            "patch" => Method::Patch,
+            "delete" => Method::Delete,
+            _ => {
+                self.record_refused_call(
+                    scheme_name,
+                    &host,
+                    port,
+                    RefusalReason::RequestNotAllowed,
+                );
+                return refused();
+            }
+        };
+        let headers = wire
+            .headers
+            .iter()
+            .map(|h| {
+                if h.sensitive {
+                    egress::Header::sensitive(h.name.as_str(), h.value.as_str())
+                } else {
+                    egress::Header::plain(h.name.as_str(), h.value.as_str())
+                }
+            })
+            .collect();
         let Ok(request) =
-            egress::Request::new(Method::Post, "/", Vec::new(), body.as_bytes().to_vec())
+            egress::Request::new(method, wire.path, headers, body.as_bytes().to_vec())
         else {
+            self.record_refused_call(scheme_name, &host, port, RefusalReason::RequestNotAllowed);
             return refused();
         };
         let outcome = self.world.send(
@@ -914,10 +987,11 @@ impl<W: World> Platform<W> {
         }
     }
 
-    /// Writes the outbound call record of a call refused because its module hit a bound: one hop, the endpoint it
-    /// asked for, and the refusal `limit_reached` (`REQ-MDL-8`). Nothing is written where no outside request is in
+    /// Writes the outbound call record of a call refused before the egress layer saw it, because its module hit a
+    /// bound (`limit_reached`) or its request isn't one the platform sends (`request_not_allowed`): one hop, the
+    /// endpoint it asked for, and the refusal; nothing of the request (`REQ-MDL-8`). Nothing is written where no outside request is in
     /// flight, or the endpoint isn't one a record can name.
-    fn record_limited_call(&mut self, scheme: &str, host: &str, port: u16) {
+    fn record_refused_call(&mut self, scheme: &str, host: &str, port: u16, reason: RefusalReason) {
         let context = self.stack.last().expect("a context");
         let Some(operation) = context.serving.as_ref().map(|s| s.operation.clone()) else {
             return;
@@ -955,9 +1029,7 @@ impl<W: World> Platform<W> {
                 destination: None,
                 address: None,
             }],
-            outcome: CallOutcome::Refused(Refused {
-                reason: RefusalReason::LimitReached,
-            }),
+            outcome: CallOutcome::Refused(Refused { reason }),
         });
     }
 

@@ -518,3 +518,77 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   GenuineIntel (INTEL(R) XEON(R) PLATINUM 8573C); the digests matched. That meets the Done-when's re-derivation on a CPU
   of another vendor. That run used the first fuzzer. The deeper fuzzer ran in CI run 42756806042 (branch
   `m2-ci-t01305`, commit `1bfb734`): the `ci` job, its fuzz step included, and the `rederive` job passed.
+
+## T-013-07
+
+- **The two gaps `T-014-05` found are closed in the binding's world** (`wit/binding.wit`, package `0.2.0`,
+  `BINDING_VERSION` `0.3.0`):
+  - `proxy.secret-refusal` gains `store-unavailable`; `host.rs` maps the wire reason `store_unavailable` to it, so a
+    guest is no longer told `undeclared-secret` for a store that is down.
+  - `egress.call` takes a `request` record: a `method` (`get`, `post`, `put`, `patch`, `delete`), a `path`, a list of
+    `header` records (name, value, `sensitive`) and a `body`. `FromProvider::Egress` carries the same fields
+    (`WireHeader`). The sandboxed interfaces are unchanged; the package number moved with the rest, so the allowed
+    imports in `host.rs` and the hostile components in the guests' tool name `0.2.0`.
+- **The platform checks the request, never the guest.** `host.rs` only transcribes. `platform.rs`'s `egress`
+  builds `egress::Request::new`, the one place that checks the target is an origin-form path, each header is a token
+  with no control character, and none is a header the connector sets (`Host`, `Content-Length`, ...). Path and
+  header bytes count with the body against `MAX_BODY` and the `OutboundBytes` budget, and the header count against
+  the new `MAX_HEADERS` (64), so headers are no way round `REQ-MDL-11`.
+- **Credential headers from a guest follow the rule `T-014-03` set.** The guest's `sensitive` flag becomes
+  `Header::sensitive`, and a header named `authorization`, `proxy-authorization` or `cookie` is a credential by
+  name, whatever the flag says. A redirect to another endpoint drops both; the test shows a flagged `X-Api-Key` and
+  an unflagged `Authorization` dropped while a plain header and the method follow a `307`.
+- **Superseded by the review round below:** a request the platform cannot build is now recorded.
+- **(Earlier reading) a request the platform cannot build is refused unrecorded.** An unknown method, a target that is not
+  origin-form or a framing header has no reason in module-interface 4.0.0 to be recorded under (no refusal stands in
+  another's name), and no destination was judged. It is refused the way an unknown scheme is, with the outcome
+  `refused` and no record. If a record of it is wanted, it needs a reason in the contract: an item for `F-010`.
+- **Reading: "records" is the call's record, not the request's content.** Every call leaves its one
+  `OutboundCallRecord`, refused ones included, as before. The record does not carry the path, the headers or the
+  body: a query string or a header can hold a secret, and `outbound-call-record-carrying-a-secret-value` is the
+  contract saying the record names no value. `contracts/` is untouched.
+- **`World::receive`**, a new defaulted hook, is where the default `World::send` hands a request to the world it
+  serves (method, target, headers, body); its default passes the body to `deliver`, so `deliver`'s signature, the
+  production world in `proxy/` and the conformance trait's `received` are unchanged. The suite's `call` step and
+  `Forge` still send `POST /` with no headers, so the evidence references the suite compares are unchanged.
+- **Guests, both languages.** The Rust and C stand-ins send the new request shape for every existing step, and read
+  two binding-only program lines the tests use: `fetch <operation> <host> <port> <method> <path> <headers>` and
+  `reason <operation> <name>`. `Probe::Fetch` and `Probe::Reason` write them. The C step type gained a
+  constructor (`mk`) so that adding fields does not touch every initializer.
+- **Tests** (`tests/module_wit_shapes.rs`, each in Rust and C): `guest_tells_an_unreachable_secret_store_from_a_missing_secret`,
+  `outbound_requests_method_path_and_headers_reach_only_its_declared_destination` and
+  `outbound_request_naming_another_host_in_its_path_or_headers_is_refused_before_it_is_sent`. Shown red by mutation
+  (the host mapping dropped to `undeclared-secret`; the `sensitive` flag ignored), since the stand-ins and the world
+  were written together.
+- **`DEC-20`.** The module boundary (`wit/binding.wit`, `module/host.rs`, `module/wire.rs`) and the platform's
+  outbound-call path in `module/platform.rs`. Shared edits: the `BINDING_VERSION` line in `module/engine.rs`
+  (`T-013-05`'s file) and the new `MAX_HEADERS` in `module/limits.rs`.
+
+## T-013-07, review round
+
+- **A refused request is recorded (blocker).** A request the platform won't send (an unknown method, a target that
+  is not a path, a header that is not a token or that frames the message) was refused with no record, though the
+  call was already charged and `REQ-MDL-8` wants every call recorded. module-interface 4.0.0 (unreleased) gains the
+  reason `request_not_allowed`: the schema's `refusal_reason`, `RefusalReason::RequestNotAllowed`, a valid fixture,
+  a contract test, the README and the changelog. The platform records it with one hop (the endpoint asked for) and
+  none of the request, as it records a call refused for a limit (`record_refused_call`). `contracts/` is a `DEC-20`
+  path, and this commit touches it.
+- **Forwarding headers.** `Forwarded`, `X-Forwarded-Host`, `X-Forwarded-For`, `X-Forwarded-Proto`,
+  `X-Forwarded-Port`, `X-Real-IP`, `X-Original-URL`, `X-Rewrite-URL` and `X-Original-Host` join the headers a request
+  may not set, for the reason `Host` is one.
+- **Limits tested.** Past `MAX_HEADERS`, and past `MAX_BODY` in a path, in a header value and in a body and a path
+  together, the operation is refused as a limit with a `MessageSize` event, a record refused `limit_reached` and
+  nothing sent; the bound itself sends. The stand-ins' `fetch` line takes a trailing `*N` on a path or value (N bytes
+  of `x`) so a program in an 8 KiB slot can make a large request; the C stand-in's header cap is 256.
+- **`WireHeader`'s `Debug`** hides the value of a flagged header and of one named `authorization`,
+  `proxy-authorization` or `cookie` (`THR-50`). `limits.rs`'s docs say what is counted now.
+- **Shown red:** the record tests failed with no record; the two limit tests failed with the header count and the
+  header and path bytes taken out of the check.
+
+## Which reason wins for a bad request to an undeclared host (re-review of T-013-07, 2026-11-10)
+
+The platform checks a guest's request (method, path, framing and forwarding headers, size) before it judges the
+operation's declared destinations. So a request that is both malformed and aimed at an undeclared host is recorded as
+`request_not_allowed`, not `undeclared_destination`, and its hop looks the same as one to a declared host. It is still
+recorded and still refused; only the reason differs. Left as it is, and stated here, so an audit reads
+`request_not_allowed` as "refused before any destination was judged".

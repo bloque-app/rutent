@@ -56,7 +56,7 @@
       "maxLength": 43
     },
     "refusal_reason": {
-      "description": "Why the platform refused an outside call before or while making it: an operation, destination or secret the module didn't declare (REQ-MDL-7, REQ-MDL-8); a connected address outside the destination's declared addresses, the first connection's or a redirect's (ADR-0004); a redirect to a destination the operation doesn't declare; a limit reached (REQ-MDL-11); or a peer that didn't prove over TLS that it is the declared host, before any byte of the call was sent (peer_not_verified, REQ-MDL-7).",
+      "description": "Why the platform refused an outside call before or while making it: an operation, destination or secret the module didn't declare (REQ-MDL-7, REQ-MDL-8); a connected address outside the destination's declared addresses, the first connection's or a redirect's (ADR-0004); a redirect to a destination the operation doesn't declare; a limit reached (REQ-MDL-11); or a peer that didn't prove over TLS that it is the declared host, before any byte of the call was sent (peer_not_verified, REQ-MDL-7); or a request the platform won't send whatever the destination, because its method isn't one allowed, its target isn't a path, or a header names the host or frames the message (request_not_allowed, REQ-MDL-7, REQ-MDL-8).",
       "enum": [
         "undeclared_operation",
         "undeclared_destination",
@@ -64,7 +64,8 @@
         "address_not_allowed",
         "redirect_to_undeclared_destination",
         "limit_reached",
-        "peer_not_verified"
+        "peer_not_verified",
+        "request_not_allowed"
       ]
     },
     "digest": {

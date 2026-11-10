@@ -141,6 +141,17 @@ const FRAMING: &[&str] = &[
     "trailer",
     "keep-alive",
     "proxy-connection",
+    // Headers a proxy or an application behind the checked address may read as the host or the target, so a request
+    // that set one could reach another virtual host or path (the same reason as `Host`).
+    "forwarded",
+    "x-forwarded-host",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "x-original-url",
+    "x-rewrite-url",
+    "x-original-host",
 ];
 
 /// Headers that carry a credential whatever flag they were built with, matched in any case. A redirect to

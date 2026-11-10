@@ -118,7 +118,7 @@ fn hostile(out: &Path) -> Result<(), String> {
 fn hostile_component(imports: &str) -> Result<Vec<u8>, String> {
     use wit_parser_of_wit_component::{ManglingAndAbi, Resolve};
     let wit = format!(
-        r#"package rutent:binding@0.1.0;
+        r#"package rutent:binding@0.2.0;
 
 interface outside-requests {{ request: func(outside-request: string) -> string; }}
 interface denied {{
@@ -146,7 +146,7 @@ package wasi:sockets@0.2.0 {{ interface tcp {{ connect: func(host: string, port:
         .push_str("hostile.wit", &wit)
         .map_err(|e| format!("{e:#}"))?;
     let world = resolve
-        .select_world(&[package], Some("rutent:binding/sandboxed@0.1.0"))
+        .select_world(&[package], Some("rutent:binding/sandboxed@0.2.0"))
         .map_err(|e| format!("{e:#}"))?;
     let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
     wit_component::embed_component_metadata(
