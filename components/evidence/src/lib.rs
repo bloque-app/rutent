@@ -11,8 +11,9 @@ mod route;
 mod simnet;
 
 pub use grade::{
-    Check, Claim, GradeExt, Graded, GradedPiece, PublisherId, Refusal, distinct_movements,
-    grade_outcome, receipt_check,
+    Check, Claim, GradeExt, Graded, GradedPiece, PublisherId, Receipt, ReceiptRefused,
+    ReceiptVerifier, Refusal, VerifiedReceipt, distinct_movements, grade_outcome, receipt_check,
+    verify_receipt,
 };
 pub use network::{
     Expected, Finality, Movement, MovementId, NetworkRules, PublicNetwork, ReorgRule, Status,
