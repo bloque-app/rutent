@@ -78,6 +78,15 @@ probe's, over shuffled inputs among others, where `Stm` rightly differs. So the 
 `Stm`, and by the leader kill. The nodes are VOS's faults build, since the suite's stop after the program computed
 holds every node's commits.
 
+## Archiving (`T-010-07`, `G-33`)
+
+An order that ended is packed into rows of at most 32 KiB (VOS caps a stored value at 64 KiB) by the step that writes its ending record, and its
+live rows are deleted, so the live journal holds only open orders. Every read goes through one function that falls
+back to the archive, so the host contract sees a complete journal. `Status` reports `live_records` and
+`archived_orders`; the query `archived` serves an order's packed rows, one at a time, for replay (`rutent_stm::archive`). The rows'
+layout is `FORMAT` 2. `client/tests/journal_bounded.rs` has the two tests. The `written` and `ids` indices and the
+archive rows still grow with the stream: see the F-010 notes.
+
 ## How the program meets the contract
 
 As `EXP-1`'s re-score program did: one handler step a submit (format, import and halted checks, record-id dedup on

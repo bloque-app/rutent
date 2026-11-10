@@ -85,7 +85,9 @@ fn format_error(refusal: Refused) -> HostError {
             "the program reads format {expected}, and its rows are format {stored}: it refuses them"
         )),
         Refused::NotHalted => HostError::NotHalted,
-        Refused::Import(why) => unavailable(String::from_utf8_lossy(&why).into_owned()),
+        Refused::Import(why) | Refused::Archive(why) => {
+            unavailable(String::from_utf8_lossy(&why).into_owned())
+        }
     }
 }
 
@@ -104,6 +106,7 @@ pub struct Methods {
     pub records_from: MethodId,
     pub refusals_from: MethodId,
     pub released_from: MethodId,
+    pub archived: MethodId,
     pub canonical_of: MethodId,
 }
 
@@ -196,6 +199,7 @@ pub fn methods(cluster: &Cluster, agent: AgentId) -> Result<Methods, HostError> 
         records_from: id("records_from")?,
         refusals_from: id("refusals_from")?,
         released_from: id("released_from")?,
+        archived: id("archived")?,
         canonical_of: id("canonical_of")?,
     })
 }
@@ -414,15 +418,26 @@ impl VosHost {
             if chunk.is_empty() {
                 return Ok(false);
             }
-            let arguments = [at.encode(), chunk.encode()].concat();
-            match host.import_chunk(&arguments)? {
-                Imported::Taken { next, ended } => {
-                    *at = next;
-                    chunk.clear();
-                    Ok(ended)
+            // The program may take only a part of the chunk, to keep a step's writes under VOS's cap: what it did not
+            // take goes again from where it stopped.
+            let mut ended = false;
+            while !chunk.is_empty() {
+                let arguments = [at.encode(), chunk.encode()].concat();
+                match host.import_chunk(&arguments)? {
+                    Imported::Taken { next, ended: end } => {
+                        let taken = next
+                            .checked_sub(*at)
+                            .and_then(|n| usize::try_from(n).ok())
+                            .filter(|n| *n > 0 && *n <= chunk.len())
+                            .ok_or_else(|| unavailable("the program took no entry of a chunk"))?;
+                        chunk.drain(..taken);
+                        *at = next;
+                        ended = end;
+                    }
+                    Imported::Refused(why) => return Err(refused(format!("{why:?}"))),
                 }
-                Imported::Refused(why) => Err(refused(format!("{why:?}"))),
             }
+            Ok(ended)
         };
         for entry in stream {
             if limit == Some(sent) {

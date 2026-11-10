@@ -609,3 +609,95 @@ Damage with frames behind it is refused (shown). Choose:
 
 Reversible default: option 1 (the recommendation), asked upstream while `M2` goes on with option 2's residual in
 force. The item waits on the form; nothing else of F-010 waits on it.
+
+
+## T-010-07: journal growth bounded (`G-33`)
+
+- **What it does.** The VOS program archives an order when a record ends it (`rutent_stm::archive::is_archivable`:
+  complete, failed, handed on, or ended without completing, which is `is_ended`). The step that writes that record
+  packs the order's whole journal into rows of a new `chunks` table, each at most 32 KiB, and deletes its live `records` rows. A
+  record written to an archived order afterwards (a repeat, a late input, the undo of a complete part, which
+  `machine.rs` still allows) is appended to the row. Stuck and waiting orders stay live: someone can still resolve them.
+- **Library.** `rutent_stm::archive` (`no_std` + `alloc`, no new dependency): `Entry`, `pack`, `unpack` (refuses a
+  wrong header, a cut, a count the bytes cannot hold, trailing bytes), `is_archivable`, and `replay`, the host's own
+  fold of `open` and `transition` over archived inputs. The format (`RSA1`, length-prefixed entries) is the library's;
+  entries are the canonical JSON the program already stores, byte for byte.
+- **The host contract is not touched.** The host contract's `replay` guarantee says a journal is complete and never
+  compacted, so archiving is invisible through `journal`, `state`, `orders`, `export`, a refusal's pointer to its
+  record and the effect driver's cursor: all of them read through `row_of`, which falls back to the archive. No
+  `DEC-4` bump and no `DEC-20` path (`git diff` of `contracts/` is empty). The program gains a query, `archived`,
+  that serves an order's packed row so it can be replayed outside the host.
+- **What is bounded, and what is not (reading, reversible).** Bounded: the live `records` table, the payload, which
+  holds only orders still open (`Status::live_records`, `archived_orders`). Not bounded: the index rows `written`
+  (write order, which the export and the effect driver's cursor need), `ids` (the record-id check across the whole
+  host), `orders` and `places`, each small and fixed-size, plus the archive rows themselves, one per ended order. So
+  total storage still grows with the stream; it grows by the compact archive, and the hot tables the program reads
+  and writes on every submit stay small. Bounding the rest needs a cold store outside the actor (copy archive
+  rows out, then drop them), which changes what `journal` can answer for a dropped order. That is a host-contract
+  question for the owner, not done here. `G-33` is not closed: the live journal is bounded, and total storage awaits the owner's item `vos-storage-bound`.
+- **Format.** The program's `FORMAT` is 2 and `PROGRAM` 2: the rows changed (new tables). The struct itself is
+  the same as format 1's: the new tables are skipped fields, and the two counters (`live_records`,
+  `archived_orders`) live in a table row, so a format-1 instance still decodes in `state::load` and every handler
+  and query refuses it by the format check, instead of trapping on load. A test decodes a format-1 struct row.
+  No running instance is upgraded by this task (v0; the `next` versions were not carried over, as `T-010-05` recorded).
+- **Rows of bounded size (review).** VOS caps a stored value at 64 KiB and one state is a few KB, so one row for
+  a whole order could not be written once its journal passed ten or twenty records. An archive is now several rows
+  of at most `CHUNK_BYTES` (32 KiB, `rutent_stm::archive::split`), found through a head of each row's first sequence
+  number; a late record goes into the last row or a new one. The `archived` query serves one row at a time. A test
+  ends an order after forty filler records and appends twenty more.
+- **A damaged archive is an error.** `row_in` returns an error for a missing, damaged or short row, which the
+  queries refuse as `Refused::Archive` and a submit as `Invalid`: never a record that reads as absent. A page of
+  reads unpacks each row once. The `archived` reply is compared with 60 KiB, under the 64 KiB reply cap. The
+  damage cases of the lookup (`chunk_of`, `entry_in`) are native tests; the node-level refusal is not exercised
+  because the program offers no way to damage a row.
+- **Cost.** A late input rewrites the last archive row (at most 32 KiB). The archive step moves one order's rows
+  inside one step under the 100M-gas cap.
+- **Tests.** `components/stm/tests/archive.rs` (native, in `cargo test --workspace`): an archive replays to the
+  journal's recorded states over 600 seeded orders; inputs after the ending are appended and still replay; a damaged
+  archive is refused (every cut, trailing byte, wrong header); arbitrary entries round-trip; `is_archivable` is
+  `is_ended`. `vos-program/client/tests/journal_bounded.rs` (needs the `vos` feature): `live_journal_stays_bounded_under_a_stream_of_completed_orders` and `archived_order_replays_to_the_same_states` on three nodes, each again on one, the long-journal order, and the format-1 struct row. `stm-vos.yml` runs the file in its own step (a `DEC-20` path). The tests were written first; the native ones failed to
+  compile until the module existed.
+- **Not proved here.** The VOS tests pass on three nodes with the JIT only in CI (`stm-vos.yml`); the run id goes
+  here once the branch is pushed.
+
+### T-010-07: answering the second review
+
+- **Sealing as records arrive.** VOS caps a step's writes at 256 KiB, and ending an order wrote its whole journal.
+  Now an order's live records are sealed into archive rows (at most 32 KiB each) as soon as they weigh 32 KiB
+  (`archive::seal_due`), and the record that ends the order seals what is left, so no step writes more than a few
+  rows whatever the journal's length. `OrderRow` gains `live_bytes`; `ArchiveHead` gains `covered` and `ended`. An
+  order that is still open can therefore have archive rows; `archived` serves the sealed ones, and `Status::archived_orders`
+  counts ended orders only. The live journal now holds less than 32 KiB of an open order plus one record.
+- **A record too large to archive is refused.** Alone in a row, a record must pack under `archive::MAX_ENTRY`
+  (60 KiB; the stored cap is 64 KiB less framing). A larger record is refused when it arrives (`Submitted::Invalid`,
+  "the record is larger than an archive row holds, so it cannot be archived"), in any order, rather than capping
+  records below the cap: a record that near the cap would already be most of VOS's reply. A refused record is
+  never written. An import with such a record is refused the same way.
+- **Tests.** Native: the packing rule over a one-megabyte journal (the worst step writes under 128 KiB; seen failing
+  with sealing at the end only: 1.2 MB in one step) and the record-size edge. Gated: an order of about half a megabyte
+  ends and replays (written first; not seen failing, as no node was run here). The format-1 decode test asserts the
+  stored format is 1.
+
+### T-010-07: the third review
+
+- **An import step has a write budget.** An import chunk of eight entries could seal eight different orders, each
+  writing its live records again as archive rows, and pass VOS's 256 KiB cap on a step's writes: such an export
+  could never be imported, and import is the total-loss path. `import_chunk` now charges each entry
+  (`archive::import_cost`: its row, and the order's live bytes again if it seals) and stops before the step's total
+  would pass `STEP_BUDGET` (200 KiB), always taking at least one. It returns a partial `next`; the client's chunk
+  sender resends what was not taken from there and fails if a step takes nothing. No contract changes: the chunk
+  call's shape is the same, and a chunk it takes whole behaves as before.
+- **The long-order test now reaches the cap.** It submits 260 filler records (about 1.3 KB each in the journal) and
+  asserts the journal weighs over 256 KiB before it ends the order. A new gated test exports fourteen orders that
+  each seal on consecutive records and imports the export. Neither gated test was seen failing here: no node was run.
+  The native budget test was seen failing with `import_cost` stubbed to zero.
+
+### T-010-07: the fourth review
+
+- **The import budget charges a late record for rewriting an ended order's last row.** `archive::import_cost` now
+  takes what the order holds (`Held`): live records (bytes and count) or an ended order's last archive row (its
+  stored length). A record to an ended order rewrites that row, up to 32 KiB, and its head, so eight of them in
+  one chunk could pass 256 KiB while the old charge said a few KB. Deletes the seal makes, and each index put,
+  are charged `INDEX_PUT` (48 bytes) instead of a flat 128. The native test fails with the ended charge removed
+  (cost 1240 bytes against a 32 KiB row). No gated test was added for this: building ended orders whose last rows
+  are nearly full needs the packed length, which a node test cannot steer.
