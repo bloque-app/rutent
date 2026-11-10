@@ -11,7 +11,7 @@
 //! own withdrawal, and it is accepted only when it is the wallet's, for that withdrawal (`DEC-2`: this component
 //! imports only the contracts).
 
-use rutent_contracts::provider_role::NodeRef;
+use rutent_contracts::provider_role::{EvidencePiece, NodeRef};
 use rutent_contracts::state_machine::{Id, SegmentPlan};
 
 use super::{Holdings, Operator, WalletError, WalletHolding};
@@ -68,6 +68,23 @@ impl From<WalletError> for StartError {
     }
 }
 
+/// The wallet's own record of the withdrawal it was asked for: the evidence piece it made, by itself, for exactly
+/// this transaction. The reference is the one the plain wallet writes, `{provider}-withdrawal-{transaction}`; a
+/// stale reference, another order's or another party's piece is no record of this withdrawal. Returns the
+/// reference, or [`StartError::NoRecord`].
+pub fn proof_of_withdrawal(
+    provider: &str,
+    transaction: &str,
+    evidence: &[EvidencePiece],
+) -> Result<String, StartError> {
+    let expected = format!("{provider}-withdrawal-{transaction}");
+    evidence
+        .iter()
+        .find(|p| p.by == provider && p.reference == expected)
+        .map(|p| p.reference.clone())
+        .ok_or(StartError::NoRecord)
+}
+
 impl WalletHolding {
     /// Withdraws `amount` of an order's value from the account for a route handed on, and returns the wallet's
     /// own record of it. The account changes only when the wallet's record is its own.
@@ -80,14 +97,9 @@ impl WalletHolding {
         amount: &str,
     ) -> Result<WithdrawalRecord, StartError> {
         let node = self.node().to_owned();
-        let (next, settled) =
+        let (next, settled, transaction) =
             self.movement(platform, operator, false, &node, asset, order, amount)?;
-        let own = format!("{}-withdrawal-", self.provider);
-        let piece = settled
-            .evidence
-            .iter()
-            .find(|p| p.by == self.provider && p.reference.starts_with(&own))
-            .ok_or(StartError::NoRecord)?;
+        let reference = proof_of_withdrawal(&self.provider, &transaction, &settled.evidence)?;
         let units = settled
             .amount_out
             .parse()
@@ -98,7 +110,7 @@ impl WalletHolding {
             asset: asset.to_owned(),
             order: order.to_owned(),
             amount: units,
-            reference: piece.reference.clone(),
+            reference,
         };
         self.ledger = next;
         Ok(record)
@@ -129,6 +141,10 @@ impl Holdings {
             .accounts
             .get_mut(node)
             .ok_or_else(|| StartError::ValueNotAtStart(node.clone()))?;
+        if first.from.asset.id != account.asset() {
+            // The value is not there in this asset: the route does not start where the value sits.
+            return Err(StartError::ValueNotAtStart(node.clone()));
+        }
         let record = account.withdraw_with_record(
             platform,
             operator,

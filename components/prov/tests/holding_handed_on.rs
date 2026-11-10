@@ -9,8 +9,9 @@ mod signed;
 mod support;
 
 use rutent_contracts::provider_role::{Denomination, NodeRef, OuterNode};
+use rutent_contracts::provider_role::{EvidenceGrade, EvidencePiece};
 use rutent_contracts::state_machine::{Endpoint, Id, OperationKind, SegmentPlan};
-use rutent_prov::holding::wallet::{Holdings, StartError};
+use rutent_prov::holding::wallet::{Holdings, StartError, proof_of_withdrawal};
 use rutent_prov::holding::{Reconciliation, reconcile};
 use signed::{RESERVE, Signed};
 use support::{TestOperator, covers, run_wallet};
@@ -153,7 +154,10 @@ fn route_that_is_not_handed_on_or_not_at_a_holding_account_does_not_start() {
     other_asset[0].from = endpoint(inner("polygon"), "EURC");
     let outcome =
         holdings.start_handed_on(&mut s.platform, &TestOperator, &other_asset, "o-1", "10");
-    assert!(matches!(outcome, Err(StartError::Wallet(_))), "{outcome:?}");
+    assert_eq!(
+        outcome.err(),
+        Some(StartError::ValueNotAtStart("polygon".to_owned()))
+    );
 
     assert_eq!(holdings.attributions(), before);
     assert!(covers(&mut s, RESERVE, "USDC", "o-1", 100));
@@ -215,4 +219,39 @@ fn value_handed_on_leaves_only_by_the_holding_account_and_rutent_keeps_none() {
         assert_eq!(landed - released - reading.balance, 0, "case {case}");
     }
     assert!(started > 50, "only {started} routes started");
+}
+
+fn piece(by: &str, reference: &str) -> EvidencePiece {
+    EvidencePiece {
+        grade: EvidenceGrade::SignedByProvider,
+        reference: reference.to_owned(),
+        by: by.to_owned(),
+    }
+}
+
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn withdrawal_without_the_wallets_own_record_of_that_transaction_is_not_proven() {
+    let ours = "w-withdrawal-7";
+    let good = format!("w-withdrawal-{ours}");
+    // The wallet's own piece for this very withdrawal proves it.
+    assert_eq!(
+        proof_of_withdrawal("w", ours, &[piece("w", &good)]),
+        Ok(good.clone())
+    );
+    // No piece at all, a piece by another party, another transaction's (stale) reference of the same wallet, and
+    // one of the same wallet's withdrawals that merely shares the prefix: none is a record of this withdrawal.
+    let cases: [Vec<EvidencePiece>; 4] = [
+        vec![],
+        vec![piece("other", &good)],
+        vec![piece("w", "w-withdrawal-w-withdrawal-6")],
+        vec![piece("w", &format!("{good}0"))],
+    ];
+    for evidence in cases {
+        assert_eq!(
+            proof_of_withdrawal("w", ours, &evidence),
+            Err(StartError::NoRecord),
+            "{evidence:?}"
+        );
+    }
 }

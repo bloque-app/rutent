@@ -180,3 +180,17 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   handed-on starts at one node, which after each step reads the balance from the wallet and checks that what landed,
   less what was handed on, less what rests in the account is zero.
 - **`DEC-20`.** No `DEC-20` path is touched.
+
+## T-016-03, review round
+
+- **The record is for this transaction.** `movement` now also returns the exact transaction id it sent, and
+  `proof_of_withdrawal(provider, transaction, evidence)` accepts only the wallet's own piece (`by` is the provider)
+  whose reference is exactly `{provider}-withdrawal-{transaction}`. A stale reference, another order's or a longer
+  one sharing the prefix is `NoRecord`.
+- **`NoRecord` is tested through that function.** A lying wallet would need its own Wasm guest, so the test
+  calls the pure check: no piece, another party's piece, a stale reference and a prefix-sharing one are each
+  refused. The function reads and changes nothing, and `withdraw_with_record` replaces the ledger only after it
+  returns, so a refusal leaves the attribution and balance as they were by construction; the refusal test of the
+  routes asserts that for the other refusals.
+- **A wrong asset is `ValueNotAtStart`.** The contract's reason covers the asset too, so a route whose first
+  segment is in an asset the account does not hold is `ValueNotAtStart(node)`, before the wallet is asked anything.

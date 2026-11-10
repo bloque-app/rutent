@@ -28,7 +28,7 @@ use rutent_contracts::provider_role::{
 
 mod handed_on;
 
-pub use handed_on::{HandedOnStart, StartError, WithdrawalRecord};
+pub use handed_on::{HandedOnStart, StartError, WithdrawalRecord, proof_of_withdrawal};
 
 use crate::catalogue::{Catalogue, NodeError};
 use crate::holding::{
@@ -159,7 +159,7 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        let (next, _) = self.movement(platform, operator, true, node, asset, order, amount)?;
+        let (next, ..) = self.movement(platform, operator, true, node, asset, order, amount)?;
         self.ledger = next;
         Ok(())
     }
@@ -174,7 +174,7 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        let (next, _) = self.movement(platform, operator, false, node, asset, order, amount)?;
+        let (next, ..) = self.movement(platform, operator, false, node, asset, order, amount)?;
         self.ledger = next;
         Ok(())
     }
@@ -238,7 +238,7 @@ impl WalletHolding {
         asset: &str,
         order: &str,
         amount: &str,
-    ) -> Result<(OrderLedger, MovementSettlement), WalletError> {
+    ) -> Result<(OrderLedger, MovementSettlement, String), WalletError> {
         // The account's own rules, before the wallet is asked anything: its node and asset (the asset check
         // `T-016-01` left to the contract types), the amount, and what the order holds. The record is changed on a
         // copy, which replaces the account's only once the wallet has confirmed.
@@ -317,7 +317,7 @@ impl WalletHolding {
                 stated: settled.amount_in,
             });
         }
-        Ok((next, settled))
+        Ok((next, settled, transaction))
     }
 }
 
