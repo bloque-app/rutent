@@ -19,10 +19,17 @@
 //! `G-54` and appended to the file `G54_OUT` names, if set: `refused` (the node did not start, or started and
 //! never answered with its log naming damage), `recovered` (its own replica holds every acknowledged record), `cut
 //! and repaired by replication` (three nodes: its own replica lost the record, said nothing, and the cluster gave it
-//! back), `cut and logged` (a loss that the node's log names) and `cut silently` (a loss nothing names). The test
-//! passes on `refused`, `recovered`, `cut and logged` and `undetermined, whole once the others joined` (a lone node
-//! of three that could not answer until the others started, then held every record), and fails on the others: it
-//! records the result and need not pass. It needs the VOS toolchain, built by `../build.sh`, and the paths of
+//! back), `cut and logged` (a loss that the node's log names), `cut silently` (a loss nothing names) and `not
+//! reproduced` (the journal was cut and its own replica still holds every acknowledged record, so the cut did not
+//! take the record and the run says nothing about a torn tail). The test passes on `refused`, `recovered`, `cut and
+//! logged` and `undetermined, whole once the others joined` (a lone node of three that could not answer until the
+//! others started, then held every record), and fails on the others, `not reproduced` among them: it records the
+//! result and need not pass.
+//!
+//! The last submit is of one of two kinds, and each kind is its own test. One ends the order (the order's seventh
+//! input settles its last segment), and `T-010-07` seals the journal on an order's last input, so a cut after it may
+//! not reach the record. One does not (the order's sixth input binds its last segment), so the record is the journal's
+//! live tail. It needs the VOS toolchain, built by `../build.sh`, and the paths of
 //! `../test.sh`; without the `vos` feature this file is empty.
 //!
 //! The nodes run the JIT on a Linux x86_64 machine that gives it, and the test fails closed elsewhere. `VOS_DEV=1`
@@ -275,6 +282,11 @@ enum Where {
 }
 
 impl Where {
+    /// Whether the damage removes bytes from the journal, rather than changing them.
+    fn is_cut(self) -> bool {
+        matches!(self, Where::TornInTheRecord)
+    }
+
     fn name(self) -> &'static str {
         match self {
             Where::InTheRecord => {
@@ -288,14 +300,20 @@ impl Where {
     }
 }
 
-fn g54(replicas: usize, name: &str, at: Where) -> Finding {
+/// `ends_order`: whether the last submit before the damage ends the order (all seven inputs) or leaves it running
+/// (the first six).
+fn g54(replicas: usize, name: &str, at: Where, ends_order: bool) -> Finding {
     let base = Base::new(name);
     let mut harness = VosHarness::<Stm>::new(config(replicas), base.0.clone(), "g");
     let store = harness.fresh_store().unwrap();
     let mut host: VosHost = <VosHarness<Stm> as Harness<Stm>>::start(&mut harness, store).unwrap();
 
     // An order's inputs, all acknowledged; the last one's record id is the one to find on disk.
-    let inputs: Vec<RecordedInput> = probe::order_inputs("ord-g54", 0);
+    let mut inputs: Vec<RecordedInput> = probe::order_inputs("ord-g54", 0);
+    if !ends_order {
+        // The sixth input only binds the last segment: the order is still running after it.
+        inputs.pop();
+    }
     let mut acknowledged = 0u64;
     assert_eq!(host.status().unwrap().records, acknowledged);
 
@@ -426,9 +444,20 @@ fn g54(replicas: usize, name: &str, at: Where) -> Finding {
             }
         }
         (Ok(()), Ok((first, settled))) if *settled >= acknowledged => Finding {
-            outcome: "recovered",
+            // A cut that left every record is not a recovery: the damage did not take the record, so the run
+            // shows nothing about a torn tail.
+            outcome: if at.is_cut() {
+                "not reproduced"
+            } else {
+                "recovered"
+            },
             detail: report(format!(
-                "its own replica holds {first} then {settled} of {acknowledged} records"
+                "its own replica holds {first} then {settled} of {acknowledged} records{}",
+                if at.is_cut() {
+                    ", so the cut did not remove the record"
+                } else {
+                    ""
+                }
             )),
         },
         (Ok(()), Ok((first, settled))) => {
@@ -501,12 +530,22 @@ fn record(setup: &str, finding: &Finding) {
     }
 }
 
-/// Both places of damage on `replicas` nodes: every one is recorded, and every one must be refused or recovered.
-fn both(replicas: usize, setup: &str) {
+/// Every place of damage on `replicas` nodes, the last submit ending the order or not: every one is recorded, and
+/// every one must be refused or recovered.
+fn both(replicas: usize, setup: &str, ends_order: bool) {
+    let setup = format!(
+        "{setup}, last input {} the order",
+        if ends_order { "ends" } else { "does not end" }
+    );
     let mut unacceptable = Vec::new();
     for at in [Where::InTheRecord, Where::LastByte, Where::TornInTheRecord] {
-        let finding = g54(replicas, &format!("g54-{replicas}-{}", at as u8), at);
-        record(setup, &finding);
+        let finding = g54(
+            replicas,
+            &format!("g54-{replicas}-{}-{}", at as u8, u8::from(ends_order)),
+            at,
+            ends_order,
+        );
+        record(&setup, &finding);
         if !finding.acceptable() {
             unacceptable.push(format!("VOS: {}; {}", finding.outcome, finding.detail));
         }
@@ -516,16 +555,30 @@ fn both(replicas: usize, setup: &str) {
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_acknowledged_append_on_one_vos_node_is_refused_or_recovered_and_never_cut_silently()
-{
-    both(1, "one node");
+fn damaged_last_append_that_ends_an_order_on_one_vos_node_is_refused_or_recovered_and_never_cut_silently()
+ {
+    both(1, "one node", true);
 }
 
 // verifies: NFR-6, INV-7
 #[test]
-fn damaged_last_acknowledged_append_on_the_vos_leader_of_three_is_refused_or_recovered_and_never_cut_silently()
+fn damaged_last_append_that_leaves_an_order_running_on_one_vos_node_is_refused_or_recovered_and_never_cut_silently()
  {
-    both(3, "leader of three");
+    both(1, "one node", false);
+}
+
+// verifies: NFR-6, INV-7
+#[test]
+fn damaged_last_append_that_ends_an_order_on_the_vos_leader_of_three_is_refused_or_recovered_and_never_cut_silently()
+ {
+    both(3, "leader of three", true);
+}
+
+// verifies: NFR-6, INV-7
+#[test]
+fn damaged_last_append_that_leaves_an_order_running_on_the_vos_leader_of_three_is_refused_or_recovered_and_never_cut_silently()
+ {
+    both(3, "leader of three", false);
 }
 
 /// The harness can find an id's bytes: the check the test's damage rests on.

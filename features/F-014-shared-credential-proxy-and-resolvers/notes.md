@@ -13,8 +13,11 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `KvResolver::openbao` or `KvResolver::vault`, and `Server` records which one it talks to. A later difference
   between the two goes in that type, behind the same interface.
 - **No Vault crate.** The resolver speaks the HTTP API directly, through a `Transport` trait. No Vault or OpenBao
-  client crate enters the build: Vault's `BUSL-1.1` line in `licences/RECORD` stays `not-adopted ... pending`
-  until the owner rules it (the gate in `F-014`'s header), and no crate is needed for either server. The only
+  client crate enters the build, and none is needed for either server. **The owner ruled this on 2026-11-09 (item
+  `vault-busl`, "HTTP API only"):** Vault is reached through its HTTP API only, so no Vault code is linked and no
+  `BUSL-1.1` code ships. Vault's line in `licences/RECORD` is `not-adopted ... permitted` and says so (corrected
+  2026-11-10; it read `pending` until the review of `M2`'s pull request found the ruling unrecorded). `PLAN.md`'s
+  "Rulings applied" table carries it. The only
   dependency change is `serde_json` becoming a normal dependency of `rutent-prov`; it was already locked, so
   `Cargo.lock` and `licences/RECORD` are unchanged.
 - **Path layout.** Provider `p`'s secret `n` is read from `/v1/{mount}/data/{prefix}/{p}/{n}`, field `value`. The

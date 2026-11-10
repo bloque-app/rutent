@@ -697,7 +697,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `rederive` job passed. The reference was made on AuthenticAMD (AMD EPYC 9V45 96-Core Processor) and re-derived on
   GenuineIntel (INTEL(R) XEON(R) PLATINUM 8573C); the digests matched. That meets the Done-when's re-derivation on a CPU
   of another vendor. That run used the first fuzzer. The deeper fuzzer ran in CI run 42756806042 (branch
-  `m2-ci-t01305`, commit `1bfb734`): the `ci` job, its fuzz step included, and the `rederive` job passed.
+  `m2-ci-t01305`, commit `1bfb734`): the `ci` job, its fuzz step included, passed, but its `rederive` job skipped
+  (an AMD runner, so nothing was compared across vendors) and reported green. **Corrected 2026-11-10 (the review of
+  `M2`'s pull request):** only 42754273532, at `0bb16a3`, compared across vendors. Both runs of the pull request's
+  head (42772739775 and 42776086908) skipped too, so **there is no cross-vendor
+  comparison at the head yet**; the job now says SKIPPED in its step list, and re-running it until it lands on an
+  Intel runner is what would give one.
 
 ## T-013-07
 
