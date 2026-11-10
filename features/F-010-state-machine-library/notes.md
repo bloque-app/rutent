@@ -691,3 +691,13 @@ force. The item waits on the form; nothing else of F-010 waits on it.
   asserts the journal weighs over 256 KiB before it ends the order. A new gated test exports fourteen orders that
   each seal on consecutive records and imports the export. Neither gated test was seen failing here: no node was run.
   The native budget test was seen failing with `import_cost` stubbed to zero.
+
+### T-010-07: the fourth review
+
+- **The import budget charges a late record for rewriting an ended order's last row.** `archive::import_cost` now
+  takes what the order holds (`Held`): live records (bytes and count) or an ended order's last archive row (its
+  stored length). A record to an ended order rewrites that row, up to 32 KiB, and its head, so eight of them in
+  one chunk could pass 256 KiB while the old charge said a few KB. Deletes the seal makes, and each index put,
+  are charged `INDEX_PUT` (48 bytes) instead of a flat 128. The native test fails with the ended charge removed
+  (cost 1240 bytes against a 32 KiB row). No gated test was added for this: building ended orders whose last rows
+  are nearly full needs the packed length, which a node test cannot steer.

@@ -79,7 +79,7 @@ use rutent_probe::Probe as Machine;
 #[cfg(not(feature = "probe-machine"))]
 use rutent_stm::Stm as Machine;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len, import_cost,
+    CHUNK_BYTES, Entry, Held, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len, import_cost,
     is_archivable, pack, seal_due, split, unpack,
 };
 use serde::Serialize;
@@ -511,12 +511,30 @@ impl Rutent {
         match entry {
             SnapshotEntry::Record(record) => {
                 let order = record.order_id.as_str().as_bytes().to_vec();
-                let live = self
-                    .place_of(&order)
-                    .and_then(|place| self.orders.get(&place))
-                    .map_or(0, |row| row.live_bytes as usize);
                 let ends = record.state_after.as_ref().is_some_and(is_archivable);
-                import_cost(live, line, ends)
+                let place = self.place_of(&order);
+                let held = match place
+                    .and_then(|p| Some((p, self.archive.get(&p).filter(|h| h.ended)?)))
+                {
+                    // An ended order: the record rewrites its last archive row.
+                    Some((place, head)) => Held::Ended {
+                        last_row: self
+                            .chunks
+                            .get(&(place, head.starts.len() as u64 - 1))
+                            .map_or(0, |row| row.len()),
+                    },
+                    None => {
+                        let row = place.and_then(|p| self.orders.get(&p));
+                        let covered = place
+                            .and_then(|p| self.archive.get(&p))
+                            .map_or(0, |h| h.covered);
+                        Held::Live {
+                            bytes: row.as_ref().map_or(0, |r| r.live_bytes as usize),
+                            count: row.map_or(0, |r| (r.len - covered) as usize),
+                        }
+                    }
+                };
+                import_cost(held, line, ends)
             }
             _ => line + 256,
         }

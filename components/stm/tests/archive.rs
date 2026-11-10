@@ -7,8 +7,8 @@ use common::generator::{Rng, Trace, traces};
 use rutent_contracts::state_machine::{Order, OrderState, RecordedInput, StateMachine};
 use rutent_stm::Stm;
 use rutent_stm::archive::{
-    CHUNK_BYTES, Entry, MAX_ENTRY, STEP_BUDGET, chunk_of, entry_fits, entry_in, entry_len,
-    import_cost, is_archivable, pack, replay, seal_due, split, unpack,
+    CHUNK_BYTES, Entry, Held, INDEX_PUT, MAX_ENTRY, STEP_BUDGET, chunk_of, entry_fits, entry_in,
+    entry_len, import_cost, is_archivable, pack, replay, seal_due, split, unpack,
 };
 
 const SEEDS: u64 = 600;
@@ -333,7 +333,14 @@ fn import_steps(records: &[(usize, usize, bool)]) -> Vec<usize> {
     let mut taken = 0;
     for &(order, weight, ends) in records {
         let held = live.get(&order).copied().unwrap_or(0);
-        let cost = import_cost(held, weight, ends);
+        let cost = import_cost(
+            Held::Live {
+                bytes: held,
+                count: held / weight,
+            },
+            weight,
+            ends,
+        );
         if taken > 0 && spent + cost > STEP_BUDGET {
             steps.push(spent);
             spent = 0;
@@ -372,7 +379,14 @@ fn an_import_step_stops_before_its_writes_pass_the_budget() {
     let eight_at_a_time: usize = (first_seals..first_seals + 8)
         .map(|at| {
             let (_, weight, ends) = records[at];
-            import_cost(near / 4096 * 4096, weight, ends)
+            import_cost(
+                Held::Live {
+                    bytes: near / 4096 * 4096,
+                    count: near / 4096,
+                },
+                weight,
+                ends,
+            )
         })
         .sum();
     assert!(
@@ -395,7 +409,44 @@ fn an_import_step_stops_before_its_writes_pass_the_budget() {
 // verifies: REQ-OPS-3
 #[test]
 fn an_entry_that_seals_costs_its_live_records_and_one_that_does_not_costs_itself() {
-    assert!(import_cost(0, 1000, false) < 2000);
-    assert!(import_cost(CHUNK_BYTES - 500, 1000, false) > CHUNK_BYTES);
-    assert!(import_cost(5000, 1000, true) > 6000);
+    let live = |bytes, count| Held::Live { bytes, count };
+    assert!(import_cost(live(0, 0), 1000, false) < 2000);
+    assert!(import_cost(live(CHUNK_BYTES - 500, 7), 1000, false) > CHUNK_BYTES);
+    assert!(import_cost(live(5000, 2), 1000, true) > 6000);
+    // Each record the seal deletes and each index row put is charged its key.
+    let few = import_cost(live(5000, 1), 1000, true);
+    let many = import_cost(live(5000, 11), 1000, true);
+    assert_eq!(many - few, 10 * INDEX_PUT);
+}
+
+// verifies: REQ-OPS-3, NFR-6
+#[test]
+fn a_late_record_to_an_ended_order_is_charged_for_rewriting_its_last_row() {
+    // The last row of an ended order is up to 32 KiB, and a late record rewrites it whole.
+    let last_row = CHUNK_BYTES - 200;
+    let cost = import_cost(Held::Ended { last_row }, 1000, false);
+    assert!(cost >= last_row + 1000, "{cost}");
+    // Eight late records to eight ended orders, one chunk of an import: they write over 256 KiB if taken together.
+    let together: usize = (0..8)
+        .map(|_| import_cost(Held::Ended { last_row }, 1000, false))
+        .sum();
+    assert!(together > 256 << 10, "{together}");
+    // The budget therefore splits them over several steps.
+    let mut steps = 0;
+    let mut spent = 0;
+    for _ in 0..8 {
+        if spent > 0 && spent + cost > STEP_BUDGET {
+            steps += 1;
+            spent = 0;
+        }
+        spent += cost;
+    }
+    steps += 1;
+    assert!(steps >= 2, "{steps} steps");
+    assert!(
+        (0..8).map(|_| cost).sum::<usize>() / steps < 256 << 10,
+        "each step is under the cap"
+    );
+    // A row that is full already starts a new one: its cost is its own record's.
+    assert!(import_cost(Held::Ended { last_row: 0 }, 1000, false) < 3000);
 }

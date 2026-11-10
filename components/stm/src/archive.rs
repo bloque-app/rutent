@@ -64,16 +64,48 @@ pub fn seal_due(live_bytes: usize, ends: bool) -> bool {
 /// for the entry that passes it and for the index rows.
 pub const STEP_BUDGET: usize = 200 << 10;
 
-/// What taking one record into an import step writes, at most: its own row and its indices, and, when it seals
-/// (`seal_due`), the order's live records `live_bytes` and `weight` packed again into archive rows. A host stops
-/// taking entries before the step's total would pass [`STEP_BUDGET`], so a run of entries that each seal a
-/// different order cannot pass the cap.
-pub fn import_cost(live_bytes: usize, weight: usize, ends: bool) -> usize {
-    let own = weight + 128;
-    if seal_due(live_bytes + weight, ends) {
-        own + live_bytes + weight + 128
-    } else {
-        own
+/// What an index row put or a delete is charged beyond its value: its key and the row's framing.
+pub const INDEX_PUT: usize = 48;
+
+/// What an order holds when an import takes a record for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// The order is open: `count` records weighing `bytes` are live, and the record may seal them.
+    Live {
+        /// Their packed weight.
+        bytes: usize,
+        /// How many there are.
+        count: usize,
+    },
+    /// The order has ended: a record is appended to its last archive row, of `last_row` stored bytes, which it
+    /// rewrites whole (or starts a new row, if that one is full).
+    Ended {
+        /// The stored length of the last row.
+        last_row: usize,
+    },
+}
+
+/// What taking one record of `weight` bytes into an import step writes, at most:
+///
+/// - its own row and the index rows it puts (`ids`, `orders`, `written`, the counters), each charged [`INDEX_PUT`];
+/// - when it seals (`seal_due`), the order's live records and itself packed again into archive rows, a delete for
+///   each record sealed, and the archive head;
+/// - when the order has ended, the order's last archive row rewritten, and its head.
+///
+/// A host stops taking entries before the step's total would pass [`STEP_BUDGET`], so a run of entries that each
+/// seal a different order, or each rewrite a different ended order's last row, cannot pass the cap.
+pub fn import_cost(held: Held, weight: usize, ends: bool) -> usize {
+    let puts = 5 * INDEX_PUT;
+    match held {
+        Held::Live { bytes, count } => {
+            let own = weight + puts;
+            if seal_due(bytes + weight, ends) {
+                own + bytes + weight + (count + 1) * INDEX_PUT + 3 * INDEX_PUT
+            } else {
+                own
+            }
+        }
+        Held::Ended { last_row } => weight + puts + last_row + 2 * INDEX_PUT,
     }
 }
 
