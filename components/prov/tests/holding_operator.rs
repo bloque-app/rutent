@@ -10,6 +10,8 @@ mod signed;
 mod support;
 
 use rutent_contracts::module_interface::RuleViolation;
+use rutent_contracts::provider_role::VERSION;
+use rutent_prov::catalogue::CatalogueError;
 use rutent_prov::catalogue::{
     HoldingSource, JoinRefusal, Publisher, PublisherError, StatementRefusal,
 };
@@ -102,6 +104,22 @@ fn operator_published_holding_module_is_admitted_on_the_operators_own_release() 
     );
     assert!(artefact.acceptance.accepted.is_none());
     assert!(s.platform.active_version(POLYGON_WALLET).is_none());
+
+    // Acceptance judges the release again: once the catalogue's settings name another operator key, the release
+    // signed with the old one is no longer accepted, and it stays waiting.
+    let mut rekeyed = signed::catalogue_support::deployment();
+    rekeyed.operator_key = public_key(&signed::catalogue_support::signing_key("operator", 2));
+    s.catalogue.set_context(rekeyed, VERSION);
+    assert_eq!(
+        s.accept(POLYGON_WALLET, &artefact.assertion_digest, "test-reviewer"),
+        None
+    );
+    assert!(s.platform.pending(POLYGON_WALLET).is_some());
+    assert!(s.platform.active_version(POLYGON_WALLET).is_none());
+
+    // Under the operator key its settings name, it is accepted.
+    s.catalogue
+        .set_context(signed::catalogue_support::deployment(), VERSION);
     s.accept(POLYGON_WALLET, &artefact.assertion_digest, "test-reviewer")
         .expect("the operator's release is accepted");
     assert_eq!(
@@ -135,6 +153,40 @@ fn operator_published_holding_module_is_admitted_on_the_operators_own_release() 
         .expect("the wallet takes the value");
 }
 
+// verifies: REQ-MDL-1, THR-4
+#[test]
+fn operator_module_declaring_a_key_a_provider_holds_as_its_statement_key_is_refused() {
+    let mut s = Signed::new();
+    s.catalogue
+        .publish_operator_module(POLYGON_WALLET)
+        .expect("the operator publishes its wallet");
+    let (declaration, binaries) = wallet_release(POLYGON_WALLET, "1.0.0");
+    let before = compiled(&s);
+
+    // A key that signs a provider's advertisements, and a key a provider's accepted advertisement lists for its
+    // statements, which that provider's outside part can resolve: neither is the operator module's to declare.
+    for (key, refusal) in [
+        (
+            advertising_key(RESERVE),
+            Unverified::StatementKey(CatalogueError::KeyIsAnAdvertisingKey),
+        ),
+        (statements_key(RAMP), Unverified::StatementKeyAdvertised),
+    ] {
+        let mut declaring = declaration.clone();
+        declaring.outside.statement_key = public_key(&key);
+        let assertion = signed::assertion_by(&declaring, &binaries, OPERATOR, &operator_key());
+        assert_eq!(
+            s.admit(&assertion, &binaries),
+            Admitted::Unverified(refusal),
+            "declaring {}",
+            public_key(&key).as_str()
+        );
+    }
+    assert_eq!(compiled(&s), before, "nothing refused was compiled");
+    assert!(s.platform.pending(POLYGON_WALLET).is_none());
+    assert!(s.platform.active_version(POLYGON_WALLET).is_none());
+}
+
 // verifies: REQ-MDL-1
 #[test]
 fn operator_and_providers_cannot_release_each_others_modules() {
@@ -146,13 +198,16 @@ fn operator_and_providers_cannot_release_each_others_modules() {
 
     // A provider's module signed with the operator key is held to the provider's rules, which refuse it.
     let (declaration, binaries) = wallet_release(RESERVE, "1.0.0");
-    for maker in [RESERVE, OPERATOR] {
+    // Made by the provider, the operator key isn't one its advertisement lists; made by the operator, the catalogue
+    // holds no advertisement of that maker at all.
+    for (maker, refusal) in [
+        (RESERVE, StatementRefusal::KeyNotInForce),
+        (OPERATOR, StatementRefusal::NoAdvertisementThen),
+    ] {
         let assertion = signed::assertion_by(&declaration, &binaries, maker, &operator_key());
-        assert!(
-            matches!(
-                s.admit(&assertion, &binaries),
-                Admitted::Unverified(Unverified::Signature(_))
-            ),
+        assert_eq!(
+            s.admit(&assertion, &binaries),
+            Admitted::Unverified(Unverified::Signature(refusal)),
             "made by {maker}"
         );
     }

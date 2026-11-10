@@ -80,6 +80,9 @@ pub enum Refusal {
     AdvertisementOfAnotherProvider,
     /// The advertisement offered with a release belongs to another deployment than the proxy's settings name.
     AdvertisementOfAnotherDeployment,
+    /// A release offered with no advertisement isn't the operator's own: it isn't of the proxy's deployment, or
+    /// isn't signed with the `operator_key` the proxy's settings name (`T-016-04`).
+    NotTheOperatorsRelease,
     /// The release's provider or one of its secret names isn't one plain path segment of at most 255 bytes, so
     /// the store can't address it under that provider's keys.
     UnaddressableName,
@@ -189,10 +192,19 @@ pub struct Use {
     pub outcome: Result<(), Refusal>,
 }
 
-/// One provider's admitted release, and what its accepted advertisement and deployment say about its keys.
+/// One provider's admitted release, and what vouches for its statement key.
 struct Release {
     declaration: Declaration,
-    keys: Vec<SigningKey>,
+    vouched: Vouched,
+}
+
+/// What vouches for a running release's statement key.
+enum Vouched {
+    /// The provider's accepted advertisement, by the keys it lists.
+    Advertisement(Vec<SigningKey>),
+    /// The operator's own release (`T-016-04`): a module the operator publishes, such as a public node's holding
+    /// account, has no advertisement.
+    Operator,
 }
 
 /// What the platform is handling for one provider's module: the operation's transaction, and the outside
@@ -250,8 +262,7 @@ impl<R: Resolver> CredentialProxy<R> {
         artefact: &AdmissionArtefact,
         advertisement: &Statement<Advertisement>,
     ) -> Result<(), Refusal> {
-        let declaration = artefact.declaration();
-        let provider = declaration.provider.as_str();
+        let provider = artefact.declaration().provider.as_str();
         if artefact.acceptance.accepted.is_none() {
             return Err(Refusal::NotAccepted);
         }
@@ -261,6 +272,35 @@ impl<R: Resolver> CredentialProxy<R> {
         if advertisement.deployment != self.deployment {
             return Err(Refusal::AdvertisementOfAnotherDeployment);
         }
+        self.install(
+            artefact,
+            Vouched::Advertisement(advertisement.statement.keys.clone()),
+        )
+    }
+
+    /// Makes `artefact`'s release, of a module the operator publishes (`T-016-04`; `REQ-CAT-23`), its provider's
+    /// running one, with no advertisement: its assertion must be the operator's own, of the proxy's deployment and
+    /// signed with that deployment's `operator_key`, the one the proxy's settings name, never one an advertisement
+    /// or the assertion names. The rest is as [`CredentialProxy::admit`]. Its statement key is then resolved as
+    /// the release declares it, never the operator key ([`CredentialProxy::statement_key`]).
+    pub fn admit_operator(&mut self, artefact: &AdmissionArtefact) -> Result<(), Refusal> {
+        if artefact.acceptance.accepted.is_none() {
+            return Err(Refusal::NotAccepted);
+        }
+        let assertion = &artefact.assertion;
+        if assertion.deployment != self.deployment
+            || assertion.signature.key != self.deployment.operator_key
+        {
+            return Err(Refusal::NotTheOperatorsRelease);
+        }
+        self.install(artefact, Vouched::Operator)
+    }
+
+    /// Makes the release its provider's running one, vouched for by `vouched`, once its provider has a role and
+    /// every name it lets into a store path is addressable.
+    fn install(&mut self, artefact: &AdmissionArtefact, vouched: Vouched) -> Result<(), Refusal> {
+        let declaration = artefact.declaration();
+        let provider = declaration.provider.as_str();
         if !self.roles.contains_key(provider) {
             return Err(Refusal::NoRole);
         }
@@ -279,7 +319,7 @@ impl<R: Resolver> CredentialProxy<R> {
             provider.to_owned(),
             Release {
                 declaration: declaration.clone(),
-                keys: advertisement.statement.keys.clone(),
+                vouched,
             },
         );
         Ok(())
@@ -288,13 +328,18 @@ impl<R: Resolver> CredentialProxy<R> {
     /// Takes `advertisement`, the one the catalogue now accepts for its provider, as the keys that provider's running
     /// release is judged against from the next statement key on: a key the new advertisement no longer lists for
     /// `statements`, or lists for `advertising`, stops being resolved at once, with no restart. An advertisement of
-    /// another deployment is refused, and one of a provider with no release admitted changes nothing here.
+    /// another deployment is refused, and one of a provider with no release admitted changes nothing here. Nor
+    /// does one naming a module the operator publishes: no advertisement vouches for its keys.
     pub fn advertise(&mut self, advertisement: &Statement<Advertisement>) -> Result<(), Refusal> {
         if advertisement.deployment != self.deployment {
             return Err(Refusal::AdvertisementOfAnotherDeployment);
         }
-        if let Some(release) = self.releases.get_mut(&advertisement.statement.provider) {
-            release.keys = advertisement.statement.keys.clone();
+        if let Some(Release {
+            vouched: Vouched::Advertisement(keys),
+            ..
+        }) = self.releases.get_mut(&advertisement.statement.provider)
+        {
+            *keys = advertisement.statement.keys.clone();
         }
         Ok(())
     }
@@ -450,8 +495,9 @@ impl<R: Resolver> CredentialProxy<R> {
 
     /// Resolves the private half of the statement key the caller's admitted release declares, while its module
     /// handles an operation for `transaction` (`DEC-4`, `THR-4`). It is resolved only if the provider's accepted
-    /// advertisement lists that key for `statements`, never for `advertising`, and it isn't the deployment's
-    /// operator key. It is read from the bucket's keys, never its secrets, by the public key's text. It records
+    /// advertisement lists that key for `statements`, never for `advertising`, or, for a module the operator
+    /// publishes, if the operator's own release declares it ([`CredentialProxy::admit_operator`]); and never if it
+    /// is the deployment's operator key. It is read from the bucket's keys, never its secrets, by the public key's text. It records
     /// the use, refused or not.
     pub fn statement_key(
         &mut self,
@@ -486,19 +532,21 @@ impl<R: Resolver> CredentialProxy<R> {
             return Err(Refusal::NotTheRequestInFlight);
         }
         let key = &release.declaration.outside.statement_key;
-        // Every entry the advertisement lists for the key counts: one listing it for `advertising` is enough to
-        // refuse it, whatever another entry says.
-        let mut purposes = release
-            .keys
-            .iter()
-            .filter(|k| &k.public_key == key)
-            .map(|k| k.purpose)
-            .peekable();
-        if purposes.peek().is_none() {
-            return Err(Refusal::StatementKeyNotAdvertised);
-        }
-        if purposes.any(|p| p == KeyPurpose::Advertising) {
-            return Err(Refusal::StatementKeyForAdvertising);
+        // A provider's key is vouched for by its advertisement. Every entry it lists for the key counts: one
+        // listing it for `advertising` is enough to refuse it, whatever another entry says. A module the operator
+        // publishes has no advertisement; its own release, signed with the operator key, vouches for its key.
+        if let Vouched::Advertisement(keys) = &release.vouched {
+            let mut purposes = keys
+                .iter()
+                .filter(|k| &k.public_key == key)
+                .map(|k| k.purpose)
+                .peekable();
+            if purposes.peek().is_none() {
+                return Err(Refusal::StatementKeyNotAdvertised);
+            }
+            if purposes.any(|p| p == KeyPurpose::Advertising) {
+                return Err(Refusal::StatementKeyForAdvertising);
+            }
         }
         // The operator key is the deployment's, from the proxy's settings, never from an advertisement.
         if key == &self.deployment.operator_key {

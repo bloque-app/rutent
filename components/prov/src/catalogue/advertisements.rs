@@ -181,6 +181,18 @@ impl Catalogue {
         self.advertising_seen.contains(key)
     }
 
+    /// Whether an advertisement the catalogue accepted, of any provider and at any time, lists `key`, for any
+    /// purpose: a key a provider holds (`THR-4`).
+    pub fn is_advertised_key(&self, key: &PublicKey) -> bool {
+        self.ads.values().flatten().any(|a| {
+            a.statement
+                .statement
+                .keys
+                .iter()
+                .any(|k| &k.public_key == key)
+        })
+    }
+
     /// The advertisement last accepted for a provider.
     pub fn accepted_advertisement(&self, provider: &str) -> Option<&Statement<Advertisement>> {
         self.ads

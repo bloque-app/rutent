@@ -125,9 +125,12 @@ impl<R: Resolver, N: NameResolver, C: Connector, S: StateStore> World
 
     fn running(&mut self, artefact: &AdmissionArtefact) {
         let provider = artefact.declaration().provider.clone();
+        // A provider's release is admitted against the advertisement the catalogue accepted for it. One with none
+        // is admitted only as the operator's own release, signed with the operator key the proxy's settings name
+        // (`T-016-04`): a module the operator publishes, such as a public node's holding account.
         let admitted = match self.advertisements.get(provider.as_str()) {
             Some(advertisement) => self.proxy.admit(artefact, advertisement),
-            None => Err(Refusal::NoRelease),
+            None => self.proxy.admit_operator(artefact),
         };
         if let Err(refusal) = admitted {
             // The proxy keeps no release of the provider's then, so it refuses every lookup until one is admitted.

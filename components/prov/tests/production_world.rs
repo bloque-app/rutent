@@ -14,6 +14,8 @@
 mod common;
 #[path = "module_support/signed.rs"]
 mod signed;
+#[path = "holding_support/mod.rs"]
+mod support;
 #[path = "tls_support/mod.rs"]
 mod tls;
 
@@ -208,7 +210,11 @@ impl Running {
                         "keys": "rutent/integrations/keys"
                     }
                 },
-                "providers": { RESERVE: "integrations", RAMP: "integrations" }
+                "providers": {
+                    RESERVE: "integrations",
+                    RAMP: "integrations",
+                    support::POLYGON_WALLET: "integrations"
+                }
             })
             .to_string(),
         )
@@ -216,7 +222,7 @@ impl Running {
         let (secrets, keys, names) = (Store::default(), Store::default(), Names::default());
         // Each provider's statements key, under its public half, as the deployment stores it: the platform signs
         // every result with it, through the proxy.
-        for provider in [RESERVE, RAMP] {
+        for provider in [RESERVE, RAMP, support::POLYGON_WALLET] {
             let key = statements_key(provider);
             keys.holds(
                 provider,
@@ -851,6 +857,100 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
         ),
         "{handled:?}"
     );
+}
+
+/// A holding account the operator publishes (`T-016-04`) runs on the production world like any module: the proxy
+/// admits its release on the operator's own signature, with no advertisement, and resolves the statement key it
+/// declares, so its results are signed and value lands in it.
+// verifies: REQ-CAT-23, REQ-MDL-1, INV-5
+#[test]
+fn operator_wallets_results_are_signed_on_the_production_world() {
+    use rutent_prov::holding::wallet::{Holdings, Operator as _};
+    use support::{OPERATOR, POLYGON_WALLET, TestOperator, wallet_release};
+
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    running
+        .catalogue
+        .publish_operator_module(POLYGON_WALLET)
+        .expect("the operator publishes its wallet");
+    let (declaration, binaries) = wallet_release(POLYGON_WALLET, "1.0.0");
+    let received = signed::assertion_by(
+        &declaration,
+        &binaries,
+        OPERATOR,
+        &signed::catalogue_support::operator_key(),
+    );
+    let Admitted::Artefact(artefact) =
+        running
+            .platform
+            .admit(&received, &binaries, &mut running.catalogue, AT)
+    else {
+        panic!("the operator's release wasn't admitted");
+    };
+    running
+        .platform
+        .accept(
+            POLYGON_WALLET,
+            &artefact.assertion_digest,
+            "test-reviewer",
+            &running.catalogue,
+            AT,
+        )
+        .expect("the release is accepted");
+    assert_eq!(running.platform.world.take_unadmitted(), Vec::new());
+
+    // Its answer is signed with the statement key it declares, resolved through the proxy.
+    let deposit = TestOperator.statement(
+        serde_json::from_value(json!({
+            "kind": "deposit",
+            "transaction": "tx-o-0",
+            "provider": POLYGON_WALLET,
+            "origin": "polygon",
+            "destination": { "network": POLYGON_WALLET },
+            "asset": "USDC",
+            "amount": "5",
+            "dry_run": false,
+            "inputs": { "order": "o-0" },
+        }))
+        .expect("a valid operation"),
+    );
+    let Handled::Answered(result) = running.platform.handle(POLYGON_WALLET, &deposit) else {
+        panic!("the wallet's answer wasn't passed on");
+    };
+    assert_eq!(
+        result.signature.key,
+        public_key(&statements_key(POLYGON_WALLET))
+    );
+    assert_eq!(
+        rutent_conformance::signing::verify(&serde_json::to_vec(&*result).expect("JSON")),
+        Ok(())
+    );
+
+    // As a node's holding account, it takes value landing at its node.
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut running.catalogue,
+            &running.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("the operator registers its wallet");
+    holdings
+        .land(
+            &mut running.platform,
+            &TestOperator,
+            "polygon",
+            "USDC",
+            "o-1",
+            "100",
+        )
+        .expect("the wallet takes the value");
+    let readings = holdings.readings(&mut running.platform, &TestOperator);
+    assert_eq!(readings.len(), 1);
+    assert_eq!(readings[0].1.as_ref().expect("a reading").balance, 105);
 }
 
 /// A peer that answers one byte at a time, each well within a read's own timeout, is cut off at the operation's

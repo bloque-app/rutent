@@ -227,11 +227,11 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Reading: the maker of an operator release.** The deployment names the operator's key but not its party, so
   neither the contract nor the judge checks `maker`; the key is what binds the release to the operator, as
   `check_signed_by_operator` binds an operation. The tests use `rutent-operator`.
-- **Reading: the statement key of an operator module.** The operator chooses it, its own release vouches for it,
-  and it must not be the operator key or an advertising key. No advertisement lists it, so the credential proxy
-  (`proxy/shared.rs`), which resolves a statement key only when an advertisement lists it, would not resolve one
-  for an operator module. The plain wallet declares no secrets and its results are placeholders today, so nothing
-  asks. `proxy/` is `T-014-05`'s and is untouched; resolving an operator module's key is left to a later row.
+- **Reading: the statement key of an operator module.** The operator chooses it, and its own release vouches for
+  it. It must not be the operator key, an advertising key, or a key any accepted advertisement lists (the review
+  round below). The first version of this note said the proxy would not resolve it and that nothing asked. That
+  was wrong once `T-014-05` landed, since the production world signs every result through the proxy. The review
+  round below corrects it: the proxy admits the operator's own release and resolves its key.
 - **Registration.** `Holdings::register` now refuses a module the catalogue doesn't record as the operator's
   (`RegisterError::NotOperatorPublished`). That replaces `T-016-02`'s interim `NotReserve` check, which looked
   for a reserve in the provider's accepted advertisement and is now gone.
@@ -275,3 +275,49 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   - `contracts/` (module-interface 4.0.0).
 
   `module/platform.rs` is untouched.
+
+## T-016-04, review round
+
+- **Finding 1: an operator wallet's results were never signed in production.** Since `T-014-05`, the production
+  world (`proxy/world.rs`) signs every result with the statement key it resolves through the proxy. Its `running`
+  admitted a release only against an advertisement it held, so an operator module was never admitted
+  (`NoRelease`). Every result it gave was then unsigned, and every `land` and `release` failed.
+  - `CredentialProxy::admit_operator(artefact)` (`proxy/shared.rs`) takes no advertisement. It admits the release
+    only if it is accepted, belongs to the proxy's deployment, and is signed with the `operator_key` the proxy's
+    own settings name. Otherwise it gives `Refusal::NotTheOperatorsRelease`.
+  - A running release now records what vouches for its key: a provider's advertisement, or the operator's own
+    release. For the operator's, `statement_key` skips the advertisement-listing checks and keeps
+    `StatementKeyIsOperatorKey`.
+  - An advertisement naming an operator module's provider changes nothing in the proxy. The catalogue refuses
+    such an advertisement anyway.
+  - `running` uses `admit_operator` for a release whose provider has no advertisement held. A provider's release
+    signed with the operator key never reaches it, because the catalogue's judge refuses that release first.
+  - Tests:
+    - `operator_wallets_results_are_signed_on_the_production_world` (`tests/production_world.rs`) runs the
+      operator's wallet on the production world. Its answer is signed with its declared key and verifies, and value
+      lands in it. The test's settings give the wallet a role and store its key. It first failed on the
+      unadmitted release (`NoRelease`).
+    - The unit test `operators_own_release_is_admitted_with_no_advertisement_and_never_resolves_the_operator_key`
+      (`proxy/tests/shared.rs`) covers three refusals: a provider-signed release, another deployment's, and an
+      unaccepted one. It also covers an operator release declaring the operator key, the resolving control, and
+      an advertisement that changes nothing. It failed with the operator-key check disabled, and passed with it
+      restored.
+- **Finding 5: a key a provider holds.** The operator path took another provider's statements key as its
+  statement key. The judge now refuses a key that any accepted advertisement lists, for any purpose
+  (`Catalogue::is_advertised_key`), as `Unverified::StatementKeyAdvertised`. This check runs after the
+  advertising-key check and before compiling.
+- **Finding 2: the advertising-key check is tested.**
+  `operator_module_declaring_a_key_a_provider_holds_as_its_statement_key_is_refused` covers a reserve's
+  advertising key and a ramp's statements key, and checks that nothing compiled. With the advertising-key check
+  disabled, that case was refused by the listed-key check instead. With the listed-key check missing, the ramp's
+  statements key was admitted.
+- **Finding 3: exact variants.** A provider's module signed with the operator key gives `KeyNotInForce` when the
+  provider made it, and `NoAdvertisementThen` when the operator did.
+- **Finding 4: re-judging at acceptance.** The admission test now changes the catalogue's operator key before
+  acceptance. It then checks that the release is refused and still waits, and that it is accepted once the
+  settings name its key again. With re-judging disabled in `accept` (a temporary change, reverted), the test failed.
+- **The merge.** `m2` (with `T-014-05`, at `1c6fcd6`) was merged into the branch before finding 1.
+- **`DEC-20`.** This round touches three `DEC-20` paths:
+  - the credential proxy: `proxy/shared.rs` (`admit_operator`, the vouched key) and `proxy/world.rs` (`running`);
+  - module admission: `module/admission.rs` (the listed-key check);
+  - the catalogue's key history: `catalogue/advertisements.rs` (`is_advertised_key`).
