@@ -3,7 +3,7 @@
 /// A module is two components, one per part. Nothing here is the contract: it is how this binding carries the
 /// contract's shapes to and from each part. Every import is served by the platform, outside the provider's process,
 /// and attributed to the provider by the process the call came from, never by anything in the call (`DEC-9`).
-package rutent:binding@0.1.0;
+package rutent:binding@0.2.0;
 
 /// The sandboxed part's one route outward: an outside request, the contract's
 /// `urn:rutent:module-interface:outside-request` as JSON, answered with an outside response as JSON. The platform
@@ -27,6 +27,9 @@ interface proxy {
     enum secret-refusal {
         undeclared-secret,
         not-found,
+        /// The store couldn't be asked or gave no usable answer, so whether the secret exists isn't known. It is
+        /// never `not-found` (`REQ-MDL-17`).
+        store-unavailable,
     }
     look-up: func(transaction: string, operation: string, name: string) -> result<string, secret-refusal>;
 }
@@ -36,9 +39,10 @@ interface state {
     read: func(key: string) -> option<string>;
 }
 
-/// The egress layer (item `exp2-outside-egress`): one outbound call for the outside operation being served. The
-/// platform checks every hop against the running declaration and writes the outbound call record; the module sees
-/// only the outcome.
+/// The egress layer (item `exp2-outside-egress`): one outbound call for the outside operation being served. The call
+/// carries a whole request. The platform checks every hop against the running declaration, frames the message itself
+/// (a request never sets `Host` or what delimits its body), drops every credential header when a redirect leaves the
+/// endpoint, and writes the outbound call record; the module sees only the outcome.
 interface egress {
     enum scheme {
         https,
@@ -50,7 +54,30 @@ interface egress {
         unknown,
         refused,
     }
-    call: func(operation: string, scheme: scheme, host: string, port: u16, body: string) -> outcome;
+    /// An HTTP method an outside part may use.
+    enum method {
+        get,
+        post,
+        put,
+        patch,
+        delete,
+    }
+    /// One request header. A header the guest marks `sensitive`, and one named `authorization`,
+    /// `proxy-authorization` or `cookie` in any case, is a credential: a redirect to another endpoint drops it.
+    record header {
+        name: string,
+        value: string,
+        sensitive: bool,
+    }
+    /// The request: a method, an origin-form target (a path, with its query if any), headers and a body. It names no
+    /// host: the destination is the call's scheme, host and port, and the platform refuses one not declared.
+    record request {
+        method: method,
+        path: string,
+        headers: list<header>,
+        body: string,
+    }
+    call: func(operation: string, scheme: scheme, host: string, port: u16, request: request) -> outcome;
 }
 
 /// Cross-module calls (`REQ-MDL-21`): ask another provider's module one operation kind, through the platform.

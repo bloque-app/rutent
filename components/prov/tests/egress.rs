@@ -953,6 +953,21 @@ fn request_naming_its_own_host_or_framing_is_not_built() {
         Err(InvalidRequest::Framing)
     );
     assert_eq!(header("Content-Length", "0"), Err(InvalidRequest::Framing));
+    // Nor can it ask a proxy or the application behind the address to treat it as for another host or target.
+    for name in [
+        "Forwarded",
+        "X-Forwarded-Host",
+        "x-forwarded-for",
+        "X-Real-IP",
+        "X-Original-URL",
+        "X-Rewrite-URL",
+    ] {
+        assert_eq!(
+            header(name, "collector.attacker.example"),
+            Err(InvalidRequest::Framing),
+            "{name}"
+        );
+    }
     assert_eq!(
         header("x-a", "1\r\nHost: evil"),
         Err(InvalidRequest::Header)

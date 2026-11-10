@@ -16,6 +16,10 @@
 //! - `secret <sandboxed|outside> <operation> <name>`, `state <sandboxed|outside> <key>`,
 //!   `call <operation> <https|wss> <host> <port>`, `module <callee> <kind>`: the suite's steps;
 //! - `spin`, `grow <pages>`, `trap`: the binding's own probes of its limits, run by the sandboxed part;
+//! - `fetch <operation> <host> <port> <method> <path> <headers>`: a full request to `https` `host`, the headers as
+//!   `name=value` joined by `,` (a `!` before the name flags the value as a credential; `-` for none; a path or a value ending in `*N` is
+//!   that text followed by `N` bytes of `x`, so a program of a few lines can make a request of any size);
+//! - `reason <operation> <name>`: looks the secret up and obtains the refusal's reason, if refused;
 //! - `forge <operation> <secret> <https|wss> <host> <port>`: the binding's hostile probe, an outside step asked for
 //!   under the `serves` operation, in which the outside part looks up the secret and calls the endpoint naming
 //!   `<operation>` instead;
@@ -102,6 +106,18 @@ enum Step {
         callee: String,
         kind: String,
     },
+    Fetch {
+        operation: String,
+        host: String,
+        port: u16,
+        method: String,
+        path: String,
+        headers: String,
+    },
+    Reason {
+        operation: String,
+        name: String,
+    },
     Spin,
     Grow(u32),
     Trap,
@@ -120,7 +136,12 @@ impl Step {
     fn is_outside(&self) -> bool {
         match self {
             Self::Secret { sandboxed, .. } | Self::State { sandboxed, .. } => !sandboxed,
-            Self::Call { .. } | Self::Module { .. } | Self::Forge { .. } | Self::Burn(_) => true,
+            Self::Call { .. }
+            | Self::Module { .. }
+            | Self::Forge { .. }
+            | Self::Burn(_)
+            | Self::Fetch { .. }
+            | Self::Reason { .. } => true,
             Self::Spin | Self::Grow(_) | Self::Trap => false,
         }
     }
@@ -177,6 +198,18 @@ fn program() -> Option<Program> {
                 scheme: (*s).to_owned(),
                 host: (*h).to_owned(),
                 port: port.parse().ok()?,
+            }),
+            ["fetch", o, h, port, m, path, headers] => program.steps.push(Step::Fetch {
+                operation: (*o).to_owned(),
+                host: (*h).to_owned(),
+                port: port.parse().ok()?,
+                method: (*m).to_owned(),
+                path: (*path).to_owned(),
+                headers: (*headers).to_owned(),
+            }),
+            ["reason", o, n] => program.steps.push(Step::Reason {
+                operation: (*o).to_owned(),
+                name: (*n).to_owned(),
             }),
             ["module", c, k] => program.steps.push(Step::Module {
                 callee: (*c).to_owned(),
@@ -248,9 +281,10 @@ mod sandboxed {
         for (index, step) in program.steps.iter().enumerate() {
             if step.is_outside() {
                 let operation = match step {
-                    Step::Secret { operation, .. } | Step::Call { operation, .. } => {
-                        operation.as_str()
-                    }
+                    Step::Secret { operation, .. }
+                    | Step::Call { operation, .. }
+                    | Step::Fetch { operation, .. }
+                    | Step::Reason { operation, .. } => operation.as_str(),
                     _ => program.serves.as_str(),
                 };
                 let request = json!({
@@ -273,7 +307,12 @@ mod sandboxed {
                 Step::Spin => spin(),
                 Step::Grow(pages) => grow(*pages),
                 Step::Trap => core::arch::wasm32::unreachable(),
-                Step::Call { .. } | Step::Module { .. } | Step::Forge { .. } | Step::Burn(_) => {}
+                Step::Call { .. }
+                | Step::Module { .. }
+                | Step::Forge { .. }
+                | Step::Burn(_)
+                | Step::Fetch { .. }
+                | Step::Reason { .. } => {}
             }
         }
         obtained
@@ -413,6 +452,16 @@ mod outside {
 
     use super::{Step, program};
 
+    /// `text` with a trailing `*N` replaced by `N` bytes of `x`.
+    fn expand(text: &str) -> String {
+        match text.rsplit_once('*') {
+            Some((head, n)) if n.parse::<usize>().is_ok() => {
+                format!("{head}{}", "x".repeat(n.parse().unwrap_or(0)))
+            }
+            _ => text.to_owned(),
+        }
+    }
+
     wit_bindgen::generate!({ world: "outside", path: "../../src/module/wit" });
 
     use rutent::binding::egress::{self, Scheme};
@@ -457,7 +506,74 @@ mod outside {
                     } else {
                         Scheme::Https
                     };
-                    egress::call(operation, scheme, &host, port, &carried.join("\n"));
+                    egress::call(
+                        operation,
+                        scheme,
+                        &host,
+                        port,
+                        &egress::Request {
+                            method: egress::Method::Post,
+                            path: "/".to_owned(),
+                            headers: Vec::new(),
+                            body: carried.join("\n"),
+                        },
+                    );
+                }
+                Some(Step::Fetch {
+                    host,
+                    port,
+                    method,
+                    path,
+                    headers,
+                    ..
+                }) => {
+                    let method = match method.as_str() {
+                        "GET" => egress::Method::Get,
+                        "PUT" => egress::Method::Put,
+                        "PATCH" => egress::Method::Patch,
+                        "DELETE" => egress::Method::Delete,
+                        _ => egress::Method::Post,
+                    };
+                    let headers = headers
+                        .split(',')
+                        .filter(|h| *h != "-")
+                        .filter_map(|h| {
+                            let (name, value) = h.split_once('=')?;
+                            let (name, sensitive) = match name.strip_prefix('!') {
+                                Some(name) => (name, true),
+                                None => (name, false),
+                            };
+                            Some(egress::Header {
+                                name: name.to_owned(),
+                                value: expand(value),
+                                sensitive,
+                            })
+                        })
+                        .collect();
+                    egress::call(
+                        operation,
+                        Scheme::Https,
+                        &host,
+                        port,
+                        &egress::Request {
+                            method,
+                            path: expand(&path),
+                            headers,
+                            body: carried.join("\n"),
+                        },
+                    );
+                }
+                Some(Step::Reason { name, .. }) => {
+                    if let Err(refusal) = proxy::look_up(transaction, operation, &name) {
+                        obtained.push(
+                            match refusal {
+                                proxy::SecretRefusal::UndeclaredSecret => "undeclared-secret",
+                                proxy::SecretRefusal::NotFound => "not-found",
+                                proxy::SecretRefusal::StoreUnavailable => "store-unavailable",
+                            }
+                            .to_owned(),
+                        );
+                    }
                 }
                 Some(Step::Module { callee, kind }) => {
                     modules::call(&callee, &kind);
@@ -484,7 +600,18 @@ mod outside {
                     } else {
                         Scheme::Https
                     };
-                    egress::call(&claimed, scheme, &host, port, &carried.join("\n"));
+                    egress::call(
+                        &claimed,
+                        scheme,
+                        &host,
+                        port,
+                        &egress::Request {
+                            method: egress::Method::Post,
+                            path: "/".to_owned(),
+                            headers: Vec::new(),
+                            body: carried.join("\n"),
+                        },
+                    );
                 }
                 _ => {}
             }
