@@ -200,6 +200,8 @@ struct Release {
 struct Handling {
     transaction: Identifier,
     serving: Option<Name>,
+    /// When the operation must end: the store is given up then (`REQ-MDL-11`).
+    due: Option<std::time::Instant>,
 }
 
 /// v0's shared credential proxy (`DEC-9`, ADR-0004), over one [`Bucket`] per process role.
@@ -283,12 +285,37 @@ impl<R: Resolver> CredentialProxy<R> {
         Ok(())
     }
 
+    /// Takes `advertisement`, the one the catalogue now accepts for its provider, as the keys that provider's running
+    /// release is judged against from the next statement key on: a key the new advertisement no longer lists for
+    /// `statements`, or lists for `advertising`, stops being resolved at once, with no restart. An advertisement of
+    /// another deployment is refused, and one of a provider with no release admitted changes nothing here.
+    pub fn advertise(&mut self, advertisement: &Statement<Advertisement>) -> Result<(), Refusal> {
+        if advertisement.deployment != self.deployment {
+            return Err(Refusal::AdvertisementOfAnotherDeployment);
+        }
+        if let Some(release) = self.releases.get_mut(&advertisement.statement.provider) {
+            release.keys = advertisement.statement.keys.clone();
+        }
+        Ok(())
+    }
+
     /// Starts handling an operation for `transaction` in the caller's module. It replaces whatever that module was
     /// handling.
     pub fn begin_operation(
         &mut self,
         caller: &Caller,
         transaction: &Identifier,
+    ) -> Result<(), Refusal> {
+        self.begin_operation_until(caller, transaction, None)
+    }
+
+    /// [`CredentialProxy::begin_operation`], for an operation that must end by `due`: every store asked for it,
+    /// a secret or the statement key, is given up then (`REQ-MDL-11`).
+    pub fn begin_operation_until(
+        &mut self,
+        caller: &Caller,
+        transaction: &Identifier,
+        due: Option<std::time::Instant>,
     ) -> Result<(), Refusal> {
         let provider = caller.provider().as_str();
         if !self.releases.contains_key(provider) {
@@ -299,6 +326,7 @@ impl<R: Resolver> CredentialProxy<R> {
             Handling {
                 transaction: transaction.clone(),
                 serving: None,
+                due,
             },
         );
         Ok(())
@@ -416,7 +444,8 @@ impl<R: Resolver> CredentialProxy<R> {
             })
         });
         judge(caller, &release.declaration, in_flight.as_ref(), lookup)?;
-        resolved(bucket.secrets.resolve(provider, &lookup.name))
+        let due = self.handling.get(provider.as_str()).and_then(|h| h.due);
+        resolved(bucket.secrets.resolve_until(provider, &lookup.name, due))
     }
 
     /// Resolves the private half of the statement key the caller's admitted release declares, while its module
@@ -476,7 +505,7 @@ impl<R: Resolver> CredentialProxy<R> {
             return Err(Refusal::StatementKeyIsOperatorKey);
         }
         let name = Name::new(key.as_str()).ok_or(Refusal::UnaddressableName)?;
-        resolved(bucket.keys.resolve(provider, &name))
+        resolved(bucket.keys.resolve_until(provider, &name, handling.due))
     }
 
     /// The records of every use since they were last taken, oldest first.

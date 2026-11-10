@@ -9,14 +9,16 @@
 //!
 //! The store holds the private half as the base64url text, unpadded, of its 32-byte Ed25519 seed. It is refused
 //! unless its public half is the declared statement key, so a store holding another key can't sign in the
-//! provider's name. A nested statement of the provider's for another deployment than the platform's is refused
-//! too: a key resolved for one deployment never signs for another (`REQ-PRT-1`, `THR-8`).
+//! provider's name. A statement nested in the provider's name is signed only if it is what the operation asked
+//! for: a judgement of the subject and class asked, a reversal confirmation of the segment, asset and amount
+//! asked, in the platform's deployment and protocol version (`REQ-PRT-1`, `THR-8`). So the platform never signs a
+//! statement about something the operator never asked, which could be lifted out and used alone.
 
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::module_interface::SecretValue;
 use rutent_contracts::provider_role::{
-    Deployment, JUDGEMENT_SHAPE, PublicKey, REVERSAL_CONFIRMATION_SHAPE, ResultBody, Statement,
-    signing_input,
+    Deployment, JUDGEMENT_SHAPE, Operation, PublicKey, REVERSAL_CONFIRMATION_SHAPE, ResultBody,
+    Statement, signing_input,
 };
 use serde_json::Value;
 
@@ -31,20 +33,40 @@ pub enum SigningError {
     NotTheDeclaredKey,
     /// A statement the module nested under the provider's name belongs to another deployment.
     NestedForAnotherDeployment,
+    /// A statement the module nested under the provider's name names another protocol version than the
+    /// platform's.
+    NestedOfAnotherVersion,
     /// A statement the module nested under the provider's name is of a shape no result nests: only a judgement
     /// and a reversal confirmation are, so the platform never signs, say, a result for another transaction that
     /// could be lifted out and passed on alone.
     NestedOfAnotherShape,
+    /// A statement the module nested under the provider's name isn't about what the operation asked: a judgement
+    /// of another subject or class, a confirmation of another segment, asset or amount, or either one in answer
+    /// to an operation of another kind.
+    NestedNotAsked,
     /// The statement has no signing input under the contract's rule, or doesn't read back once signed.
     NoSigningInput,
 }
 
-/// `statement`, made by `provider` in `deployment`, signed with `key`, the private half of `declared`: the
-/// statement and each statement nested in it made by `provider`.
+/// What a result answers, as the platform knows it from its own state: the provider whose module answered, the
+/// deployment and protocol version the platform serves, and the operation it handed out.
+#[derive(Debug, Clone, Copy)]
+pub struct Answering<'a> {
+    /// The provider whose module answered, the result's maker.
+    pub provider: &'a str,
+    /// The deployment the platform serves.
+    pub deployment: &'a Deployment,
+    /// The protocol version the platform speaks.
+    pub protocol_version: &'a str,
+    /// The operation the result answers.
+    pub operation: &'a Operation,
+}
+
+/// `statement`, the answer to `answering`'s operation, signed with `key`, the private half of `declared`: the
+/// statement and each statement nested in it in the provider's name, each only if it is what was asked.
 pub fn sign_result(
     statement: &Statement<ResultBody>,
-    provider: &str,
-    deployment: &Deployment,
+    answering: &Answering<'_>,
     key: &SecretValue,
     declared: &PublicKey,
 ) -> Result<Statement<ResultBody>, SigningError> {
@@ -53,51 +75,93 @@ pub fn sign_result(
     if signing.verifying_key().as_bytes() != &declared.bytes() {
         return Err(SigningError::NotTheDeclaredKey);
     }
+    let asked = Asked::of(answering)?;
     let mut value = serde_json::to_value(statement).map_err(|_| SigningError::NoSigningInput)?;
     if let Value::Object(map) = &mut value {
         for nested in map.values_mut() {
-            sign_nested(nested, provider, deployment, &signing, declared)?;
+            sign_nested(nested, &asked, &signing, declared)?;
         }
     }
     sign(&mut value, &signing, declared)?;
     serde_json::from_value(value).map_err(|_| SigningError::NoSigningInput)
 }
 
-/// Signs each statement inside `value` made by `provider`, innermost first.
+/// What a nested statement in the provider's name must match, as JSON.
+struct Asked<'a> {
+    provider: &'a str,
+    deployment: Value,
+    protocol_version: &'a str,
+    operation: Value,
+}
+
+impl<'a> Asked<'a> {
+    fn of(answering: &Answering<'a>) -> Result<Self, SigningError> {
+        let json =
+            |v: Result<Value, serde_json::Error>| v.map_err(|_| SigningError::NoSigningInput);
+        Ok(Asked {
+            provider: answering.provider,
+            deployment: json(serde_json::to_value(answering.deployment))?,
+            protocol_version: answering.protocol_version,
+            operation: json(serde_json::to_value(answering.operation))?,
+        })
+    }
+
+    /// Whether a statement of `shape` whose body is `body` is what the operation asked for: the same kind of
+    /// question, and each field the question names equal.
+    fn asks(&self, shape: &str, body: &Value) -> Result<(), SigningError> {
+        let (kind, fields): (&str, &[&str]) = match shape {
+            JUDGEMENT_SHAPE => ("judgement", &["subject", "class"]),
+            REVERSAL_CONFIRMATION_SHAPE => {
+                ("reversal_confirmation", &["segment", "asset", "amount"])
+            }
+            _ => return Err(SigningError::NestedOfAnotherShape),
+        };
+        let asked = self.operation.get("kind").and_then(Value::as_str) == Some(kind)
+            && fields.iter().all(|field| {
+                let (asked, answered) = (self.operation.get(*field), body.get(*field));
+                asked.is_some() && asked == answered
+            });
+        if asked {
+            Ok(())
+        } else {
+            Err(SigningError::NestedNotAsked)
+        }
+    }
+}
+
+/// Signs each statement inside `value` made by the provider, innermost first, each only if it was asked for.
 fn sign_nested(
     value: &mut Value,
-    provider: &str,
-    deployment: &Deployment,
+    asked: &Asked<'_>,
     key: &SigningKey,
     declared: &PublicKey,
 ) -> Result<(), SigningError> {
     match value {
         Value::Array(items) => {
             for item in items {
-                sign_nested(item, provider, deployment, key, declared)?;
+                sign_nested(item, asked, key, declared)?;
             }
             Ok(())
         }
         Value::Object(map) => {
             for nested in map.values_mut() {
-                sign_nested(nested, provider, deployment, key, declared)?;
+                sign_nested(nested, asked, key, declared)?;
             }
             let is_statement = map.contains_key("shape")
                 && map.contains_key("signature")
-                && map.get("maker").and_then(Value::as_str) == Some(provider);
+                && map.get("maker").and_then(Value::as_str) == Some(asked.provider);
             if !is_statement {
                 return Ok(());
             }
             // The result schema pins each nested statement's shape, and the output was checked against it before
             // signing; the signer holds the same line itself, rather than sign any envelope it finds.
-            let shape = map.get("shape").and_then(Value::as_str);
-            if !matches!(shape, Some(JUDGEMENT_SHAPE | REVERSAL_CONFIRMATION_SHAPE)) {
-                return Err(SigningError::NestedOfAnotherShape);
-            }
-            let ours =
-                serde_json::to_value(deployment).map_err(|_| SigningError::NoSigningInput)?;
-            if map.get("deployment") != Some(&ours) {
+            let shape = map.get("shape").and_then(Value::as_str).unwrap_or_default();
+            asked.asks(shape, map.get("statement").unwrap_or(&Value::Null))?;
+            if map.get("deployment") != Some(&asked.deployment) {
                 return Err(SigningError::NestedForAnotherDeployment);
+            }
+            if map.get("protocol_version").and_then(Value::as_str) != Some(asked.protocol_version) {
+                return Err(SigningError::NestedOfAnotherVersion);
             }
             sign(value, key, declared)
         }
@@ -162,22 +226,73 @@ mod tests {
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
     use rutent_contracts::module_interface::SecretValue;
     use rutent_contracts::provider_role::{
-        Deployment, PublicKey, ResultBody, Statement, signing_input,
+        Deployment, Operation, PublicKey, ResultBody, Statement, signing_input,
     };
     use serde_json::Value;
 
-    use super::{SigningError, decode, decode_seed, encode, sign_result};
+    use super::{Answering, Asked, SigningError, decode, decode_seed, encode, sign_result};
 
-    const PROVIDER: &str = "id-check";
-
-    fn judged() -> Value {
+    fn fixture(name: &str) -> Value {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contracts/provider-role/fixtures/valid/result-judgement-yes.json");
+            .join("../../contracts/provider-role/fixtures/valid")
+            .join(format!("{name}.json"));
         serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON")
+    }
+
+    /// A verifier's judgement result, the judgement nested in it by the verifier, `id-check`.
+    fn judged() -> Value {
+        fixture("result-judgement-yes")
+    }
+
+    /// The origin reserve's confirmation result, the confirmation nested in it by the reserve, `acme-co`.
+    fn confirmed() -> Value {
+        fixture("result-reversal-confirmed-by-the-origin-reserve")
+    }
+
+    /// The operation `result` answers, from its fixture, with `changes` made to its body.
+    fn asking(name: &str, changes: &[(&str, &str)]) -> Operation {
+        let mut operation = fixture(name)["statement"].clone();
+        for (field, value) in changes {
+            operation[*field] = (*value).into();
+        }
+        serde_json::from_value(operation).expect("an operation")
+    }
+
+    fn judgement_asked() -> Operation {
+        asking("operation-judgement-question", &[])
     }
 
     fn deployment(value: &Value) -> Deployment {
         serde_json::from_value(value["deployment"].clone()).expect("a deployment")
+    }
+
+    /// Signs `result` as `maker`'s answer to `operation`, in the result's own deployment and protocol version.
+    fn sign_as(
+        result: &Value,
+        maker: &str,
+        operation: &Operation,
+        key: &SecretValue,
+        declared: &PublicKey,
+    ) -> Result<Value, SigningError> {
+        let statement: Statement<ResultBody> =
+            serde_json::from_value(result.clone()).expect("a result");
+        let deployment = deployment(result);
+        let version = result["protocol_version"]
+            .as_str()
+            .expect("a version")
+            .to_owned();
+        sign_result(
+            &statement,
+            &Answering {
+                provider: maker,
+                deployment: &deployment,
+                protocol_version: &version,
+                operation,
+            },
+            key,
+            declared,
+        )
+        .map(|signed| serde_json::to_value(&signed).expect("JSON"))
     }
 
     fn keys(seed: [u8; 32]) -> (SecretValue, PublicKey, SigningKey) {
@@ -191,17 +306,13 @@ mod tests {
         let bytes = serde_json::to_vec(statement).expect("JSON");
         let input = signing_input(&bytes).expect("a signing input");
         let value = statement["signature"]["value"].as_str().expect("a value");
-        let Some(raw) = decode_signature(value) else {
+        let Some(raw) = decode(value).and_then(|raw| <[u8; 64]>::try_from(raw).ok()) else {
             return false;
         };
         statement["signature"]["key"].as_str() == Some(&*encode(key.verifying_key().as_bytes()))
             && VerifyingKey::from(key)
                 .verify_strict(&input, &Signature::from_bytes(&raw))
                 .is_ok()
-    }
-
-    fn decode_signature(text: &str) -> Option<[u8; 64]> {
-        decode(text)?.try_into().ok()
     }
 
     /// For any key, the result and the judgement the module nested in it in the provider's name are signed with
@@ -218,95 +329,135 @@ mod tests {
                 state as u8
             })
         };
-        let value = judged();
-        let statement: Statement<ResultBody> =
-            serde_json::from_value(value.clone()).expect("a result");
-        let ours = deployment(&value);
-        let mut checked = 0;
+        let asked = judgement_asked();
         for _ in 0..64 {
             let (private, declared, key) = keys(seed());
             let signed =
-                sign_result(&statement, PROVIDER, &ours, &private, &declared).expect("signed");
-            let signed = serde_json::to_value(&signed).expect("JSON");
+                sign_as(&judged(), "id-check", &asked, &private, &declared).expect("signed");
             assert!(verifies(&signed, &key));
             assert!(verifies(&signed["statement"]["outcome"]["judgement"], &key));
             let (_, other, _) = keys(seed());
             assert_eq!(
-                sign_result(&statement, PROVIDER, &ours, &private, &other).err(),
+                sign_as(&judged(), "id-check", &asked, &private, &other).err(),
                 Some(SigningError::NotTheDeclaredKey)
             );
-            checked += 1;
         }
-        assert_eq!(checked, 64);
     }
 
-    /// A statement nested by another maker keeps its signature; one nested in the provider's name for another
-    /// deployment, or of a shape no result nests, is refused, and a key that isn't a seed's one text signs nothing.
+    /// A module asking the platform to sign a judgement of another subject, or of another class, than the
+    /// operation asked about gets nothing signed; the judgement asked about is signed.
+    // verifies: THR-8, THR-4, REQ-PRT-1
+    #[test]
+    fn judgement_about_another_subject_than_asked_is_not_signed() {
+        let (private, declared, _) = keys([3u8; 32]);
+        assert!(
+            sign_as(
+                &judged(),
+                "id-check",
+                &judgement_asked(),
+                &private,
+                &declared
+            )
+            .is_ok()
+        );
+        for (field, value) in [("subject", "subj-someone-else"), ("class", "kyc.company")] {
+            let other = asking("operation-judgement-question", &[(field, value)]);
+            assert_eq!(
+                sign_as(&judged(), "id-check", &other, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "{field}"
+            );
+        }
+        // A judgement nested in answer to an operation that asked none.
+        let confirmation = asking("operation-reversal-confirmation-for-one-credit", &[]);
+        assert_eq!(
+            sign_as(&judged(), "id-check", &confirmation, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+    }
+
+    /// A module asking the platform to sign a confirmation of another credit than the operation asked about, by
+    /// segment, asset or amount, gets nothing signed; the credit asked about is confirmed and signed.
+    // verifies: THR-8, THR-4, REQ-PRT-1
+    #[test]
+    fn confirmation_of_another_credit_than_asked_is_not_signed() {
+        let (private, declared, key) = keys([5u8; 32]);
+        let asked = asking("operation-reversal-confirmation-for-one-credit", &[]);
+        let signed = sign_as(&confirmed(), "acme-co", &asked, &private, &declared).expect("signed");
+        assert!(verifies(
+            &signed["statement"]["outcome"]["confirmation"],
+            &key
+        ));
+        for (field, value) in [("segment", "tx-999"), ("asset", "EURC"), ("amount", "999")] {
+            let other = asking(
+                "operation-reversal-confirmation-for-one-credit",
+                &[(field, value)],
+            );
+            assert_eq!(
+                sign_as(&confirmed(), "acme-co", &other, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "{field}"
+            );
+        }
+    }
+
+    /// A statement nested in the provider's name for another protocol version than the platform's is not signed
+    /// (`REQ-PRT-1`); one for another deployment neither.
+    // verifies: REQ-PRT-1, THR-8
+    #[test]
+    fn nested_statement_of_another_version_or_deployment_is_not_signed() {
+        let (private, declared, _) = keys([7u8; 32]);
+        let mut value = judged();
+        value["statement"]["outcome"]["judgement"]["protocol_version"] = "9.9.9".into();
+        assert_eq!(
+            sign_as(&value, "id-check", &judgement_asked(), &private, &declared).err(),
+            Some(SigningError::NestedOfAnotherVersion)
+        );
+        let mut value = judged();
+        value["statement"]["outcome"]["judgement"]["deployment"]["name"] = "elsewhere".into();
+        assert_eq!(
+            sign_as(&value, "id-check", &judgement_asked(), &private, &declared).err(),
+            Some(SigningError::NestedForAnotherDeployment)
+        );
+    }
+
+    /// A statement nested by another maker keeps its signature; a result-shaped envelope in the provider's name
+    /// is never signed; a key that isn't a seed's one text signs nothing.
     // verifies: THR-8, THR-4
     #[test]
-    fn nested_statements_of_others_are_kept_and_of_another_deployment_refused() {
+    fn nested_statements_of_others_are_kept_and_of_another_shape_refused() {
         let (private, declared, key) = keys([9u8; 32]);
         let mut value = judged();
         value["statement"]["outcome"]["judgement"]["maker"] = "another-party".into();
         let theirs = value["statement"]["outcome"]["judgement"]["signature"].clone();
-        let statement: Statement<ResultBody> =
-            serde_json::from_value(value.clone()).expect("a result");
-        let signed = sign_result(
-            &statement,
-            PROVIDER,
-            &deployment(&value),
-            &private,
-            &declared,
-        )
-        .expect("signed");
-        let signed = serde_json::to_value(&signed).expect("JSON");
+        let signed =
+            sign_as(&value, "id-check", &judgement_asked(), &private, &declared).expect("signed");
         assert_eq!(
             signed["statement"]["outcome"]["judgement"]["signature"],
             theirs
         );
         assert!(verifies(&signed, &key));
 
-        let mut value = judged();
-        value["statement"]["outcome"]["judgement"]["deployment"]["name"] = "elsewhere".into();
-        let statement: Statement<ResultBody> =
-            serde_json::from_value(value.clone()).expect("a result");
-        assert_eq!(
-            sign_result(
-                &statement,
-                PROVIDER,
-                &deployment(&judged()),
-                &private,
-                &declared
-            )
-            .err(),
-            Some(SigningError::NestedForAnotherDeployment)
-        );
-
         // A result-shaped envelope in the provider's name, wherever it sits, is never signed: it could be lifted
         // out and passed on as a result of its own.
+        let deployment = deployment(&judged());
+        let operation = judgement_asked();
+        let asked = Asked::of(&Answering {
+            provider: "id-check",
+            deployment: &deployment,
+            protocol_version: "2.0.1",
+            operation: &operation,
+        })
+        .expect("asked");
         let mut holder = serde_json::json!({ "inner": judged() });
         assert_eq!(
-            super::sign_nested(
-                &mut holder,
-                PROVIDER,
-                &deployment(&judged()),
-                &key,
-                &declared
-            ),
+            super::sign_nested(&mut holder, &asked, &key, &declared),
             Err(SigningError::NestedOfAnotherShape)
         );
 
-        let statement: Statement<ResultBody> = serde_json::from_value(judged()).expect("a result");
         let short = SecretValue::new("AAAA").expect("text");
         assert_eq!(
-            sign_result(
-                &statement,
-                PROVIDER,
-                &deployment(&judged()),
-                &short,
-                &declared
-            )
-            .err(),
+            sign_as(&judged(), "id-check", &judgement_asked(), &short, &declared).err(),
             Some(SigningError::MalformedKey)
         );
     }

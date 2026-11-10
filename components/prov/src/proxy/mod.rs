@@ -59,13 +59,13 @@ pub use calls::{
     no_route,
 };
 pub use https::HttpsTransport;
-pub(crate) use https::{AnswerError, client_config, exchange, handshake};
+pub(crate) use https::{AnswerError, Bounded, client_config, exchange, handshake, left};
 pub use kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};
 pub use resolver::{ResolveError, Resolver};
 pub use settings::{
     Bucket, InvalidSettings, ProxySettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,
 };
 pub use shared::{Caller, CredentialProxy, InFlight, Refusal, Use, UseOf, answer, judge};
-pub use signing::{SigningError, sign_result};
+pub use signing::{Answering, SigningError, sign_result};
 pub use transport::{Header, Request, Response, Transport, TransportError};
 pub use world::{NoState, ProductionWorld, StateStore};

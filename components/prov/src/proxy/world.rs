@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::time::Instant;
 
 use rutent_contracts::module_interface::{
     AdmissionArtefact, Identifier, Name, OutboundCallRecord, SecretLookup, SecretRefusalReason,
@@ -74,11 +75,14 @@ impl<R: Resolver, N: NameResolver, C: Connector, S: StateStore> ProductionWorld<
     }
 
     /// Holds `advertisement`, the one the catalogue accepted for its provider, for the proxy to admit the
-    /// provider's releases against when they start. A later one replaces it; a release already running keeps the
-    /// keys it was admitted with until its next start.
-    pub fn advertise(&mut self, advertisement: Statement<Advertisement>) {
+    /// provider's releases against when they start. A later one replaces it, and the release already running is
+    /// judged against its keys from the next signing on: a statement key it revokes signs nothing more, with no
+    /// restart. An advertisement of another deployment is refused, and nothing is held.
+    pub fn advertise(&mut self, advertisement: Statement<Advertisement>) -> Result<(), Refusal> {
+        self.proxy.advertise(&advertisement)?;
         self.advertisements
             .insert(advertisement.statement.provider.clone(), advertisement);
+        Ok(())
     }
 
     /// The proxy, to read what it recorded ([`CredentialProxy::take_uses`]) or what it has in flight.
@@ -131,9 +135,11 @@ impl<R: Resolver, N: NameResolver, C: Connector, S: StateStore> World
         }
     }
 
-    fn begin_operation(&mut self, caller: &Caller, transaction: &Identifier) {
+    fn begin_operation(&mut self, caller: &Caller, transaction: &Identifier, due: Instant) {
         // A refusal here (no release admitted) leaves nothing in flight, so the proxy refuses every lookup.
-        let _ = self.proxy.begin_operation(caller, transaction);
+        let _ = self
+            .proxy
+            .begin_operation_until(caller, transaction, Some(due));
     }
 
     fn end_operation(&mut self, caller: &Caller) {

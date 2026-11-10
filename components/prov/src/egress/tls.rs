@@ -26,7 +26,7 @@ use rustls::pki_types::ServerName;
 use rutent_contracts::module_interface::Scheme;
 
 use super::connector::{ConnectError, Connector, Dial, Request, Response};
-use crate::proxy::{AnswerError, client_config, exchange, handshake};
+use crate::proxy::{AnswerError, Bounded, client_config, exchange, handshake, left};
 
 /// The default for each of connecting, the handshake, sending and reading.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -134,16 +134,23 @@ impl<D: Dialer> Connector for TlsConnector<D> {
         }
         let name = ServerName::try_from(dial.name.as_str().to_owned())
             .map_err(|_| ConnectError::NotVerified)?;
+        // Each step is bounded by its own timeout and by what is left of the operation's deadline; once that has
+        // passed, nothing more is waited for (`REQ-MDL-11`).
+        let connect = left(self.timeout, dial.due).ok_or(ConnectError::Unreachable)?;
         let tcp = self
             .dialer
-            .connect(dial.to, self.timeout)
+            .connect(dial.to, connect)
             .map_err(|_| ConnectError::Unreachable)?;
-        // The handshake has the same bound: a peer that stalls it is not verified, and receives nothing.
-        tcp.set_read_timeout(Some(self.timeout))
-            .and_then(|()| tcp.set_write_timeout(Some(self.timeout)))
-            .map_err(|_| ConnectError::Unreachable)?;
-        let mut stream =
-            handshake(&self.config, name, tcp).map_err(|()| ConnectError::NotVerified)?;
+        let bounded = Bounded::new(tcp, self.timeout, dial.due);
+        // The handshake has the same bounds: a peer that stalls it is not verified, and receives nothing. One cut
+        // off by the deadline connected to nothing verified either, and is unreachable for this operation.
+        let mut stream = handshake(&self.config, name, bounded).map_err(|()| {
+            if left(self.timeout, dial.due).is_none() {
+                ConnectError::Unreachable
+            } else {
+                ConnectError::NotVerified
+            }
+        })?;
         let bytes = request_bytes(dial, request);
         let answer = exchange(&mut stream, &bytes, self.max_answer).map_err(|e| match e {
             AnswerError::TooLarge
@@ -265,6 +272,7 @@ mod tests {
                 scheme: Scheme::Https,
                 name: &host,
                 to: SocketAddr::new([203, 0, 113, 7].into(), port),
+                due: None,
             };
             let bytes = request_bytes(&dial, &request);
             let end = bytes

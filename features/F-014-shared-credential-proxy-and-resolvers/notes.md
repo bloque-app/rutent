@@ -535,3 +535,56 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `begin_request` not passed to the proxy (the secret test), results passed on unsigned (`module_role`).
 - **`DEC-20`.** The credential proxy and its resolvers (`proxy/`), its egress (`egress/`), and the platform's
   credential path in `module/platform.rs` (`lookup`, `egress`, `cross_module`, result signing).
+
+## T-014-05, review round
+
+- **Merged `m2` at `5063302`** (`T-016-02`'s `holding_balance`, the new row `T-013-07`). The two WIT gaps above
+  are `T-013-07`'s now.
+- **The operation's deadline bounds every outbound step (blocker).** Each read had its own timeout and nothing
+  bounded the whole exchange, so a peer sending a byte now and then held the platform, and every other provider,
+  past `OPERATION_DEADLINE`. The platform now carries the operation's `due` into the exchange:
+  - `Call::due` and `Dial::due` carry it into the egress layer;
+  - `World::begin_operation` carries it into the proxy, which keeps it with what the module handles;
+  - `Resolver::resolve_until` and `Transport::get_until` carry it into the store. Both default to ignoring it;
+    `KvResolver` and `HttpsTransport` honour it.
+
+  The TCP connection is wrapped (`proxy::Bounded`), so every read and write, the TLS handshake's included, waits
+  at most `min(step, due - now)`. The connection's own timeout is cut the same way. Once the deadline has passed,
+  every step fails as timed out. For an outbound call, a cut before the handshake finished is `Unreachable`, since
+  nothing was sent, and a cut after is `NoAnswer`. Both are recorded `unknown`. The operation then ends by the
+  deadline's own path: the process is overdue, it is killed, and the operation is refused as `LimitReached`.
+
+  Tests:
+  - `slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs`: a TLS peer dribbling one byte
+    every 300 ms held the platform for 20 s before the fix, and is cut at the 2 s deadline now.
+  - `store_dribbling_its_answer_is_cut_off_at_the_deadline`: the same for the store. It was red as a missing API.
+
+  Name resolution through the operating system's resolver is not bounded by the deadline; `getaddrinfo` takes no
+  timeout. Noted, not changed.
+- **The signer signs only what was asked (blocker).** `sign_result` now takes what the result answers
+  (`proxy::Answering`): the provider, the deployment, the protocol version and the operation handed out. A
+  statement nested in the provider's name is signed only if it answers that operation:
+  - a judgement must answer a `judgement` operation, with its `subject` and `class` equal;
+  - a reversal confirmation must answer a `reversal_confirmation` operation, with its `segment`, `asset` and
+    `amount` equal.
+
+  Anything else is `NestedNotAsked`, and the result isn't passed on. Tests:
+  `judgement_about_another_subject_than_asked_is_not_signed`, `confirmation_of_another_credit_than_asked_is_not_signed`.
+- **The nested statement's protocol version (should-fix).** It must be the platform's, or the signer refuses with
+  `NestedOfAnotherVersion` (`REQ-PRT-1`). Test: `nested_statement_of_another_version_or_deployment_is_not_signed`.
+- **Re-entrance decides on its own (should-fix).** `reenters` takes the providers on the stack and is checked before
+  the callee's process. A unit test covers the caller itself, its caller, the top-level provider and one not on the
+  stack, and failed against a check of the caller alone.
+- **A revoked statement key stops at once (nit).** `ProductionWorld::advertise` now passes the advertisement to the
+  proxy (`CredentialProxy::advertise`), so the running release is judged against the new keys from the next
+  signing on, with no restart. It refuses an advertisement of another deployment, so it returns a `Result`.
+  Test: `a_statement_key_the_next_advertisement_revokes_signs_nothing_more`.
+- **`T-016-02`'s wallet tests sign too.** After the merge, the wallets' results went unsigned, so they were refused:
+  the signed harness's world held keys for the reserve and the ramp only. `TestWorld::derive_statement_keys` now
+  derives every provider's key with the harness's own `statements_key`.
+- **How the tests were run.** Each was written first and seen to fail:
+  - the slow peer, against the old exchange;
+  - the signing tests, with the new checks taken out;
+  - re-entrance and revocation, against their old code.
+- **`DEC-20`.** The credential proxy (`proxy/`), its egress (`egress/`), and the platform's credential path in
+  `module/platform.rs`.

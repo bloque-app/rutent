@@ -97,6 +97,7 @@ impl Flight {
             transaction: &self.transaction,
             secrets: &self.secrets,
             started_at: &self.started_at,
+            due: None,
         }
     }
 }

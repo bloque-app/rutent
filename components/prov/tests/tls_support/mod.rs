@@ -127,6 +127,21 @@ impl TlsServer {
         status: &str,
         headers: &[(&str, &str)],
     ) -> TlsServer {
+        TlsServer::start(config, status, headers, None)
+    }
+
+    /// Serves with `config`, answering every request with a head that declares a long body, then one byte of it
+    /// every `gap`, for up to 20 seconds: a peer slow enough never to trip a read's own timeout.
+    pub fn dribbling(config: Arc<ServerConfig>, gap: Duration) -> TlsServer {
+        TlsServer::start(config, "200 OK", &[], Some(gap))
+    }
+
+    fn start(
+        config: Arc<ServerConfig>,
+        status: &str,
+        headers: &[(&str, &str)],
+        dribble: Option<Duration>,
+    ) -> TlsServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let address = listener.local_addr().expect("its address");
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -169,6 +184,17 @@ impl TlsServer {
                     continue;
                 };
                 kept.lock().unwrap().push(request);
+                if let Some(gap) = dribble {
+                    let started = std::time::Instant::now();
+                    let mut sent = tls
+                        .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 100000\r\n\r\n")
+                        .and_then(|()| tls.flush());
+                    while sent.is_ok() && started.elapsed() < Duration::from_secs(20) {
+                        std::thread::sleep(gap);
+                        sent = tls.write_all(b"x").and_then(|()| tls.flush());
+                    }
+                    continue;
+                }
                 let _ = tls.write_all(answer.as_bytes());
                 tls.conn.send_close_notify();
                 let _ = tls.flush();

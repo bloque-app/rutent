@@ -42,6 +42,8 @@ pub struct Call<'a> {
     pub secrets: &'a [Name],
     /// When the call started.
     pub started_at: &'a Time,
+    /// When the operation the call serves must end, if it has a deadline; the connector gives up then.
+    pub due: Option<std::time::Instant>,
 }
 
 /// Where outbound call records go. Every call [`Egress::send`] is asked to make leaves exactly one, refused calls
@@ -207,6 +209,7 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
                 scheme: destination.scheme,
                 name: &destination.host,
                 to: SocketAddr::new(checked, destination.port.get()),
+                due: call.due,
             };
             let answer = self.connector.exchange(&dial, &request);
             // The hop names the address only if a verified connection was made to it: not after a failed TLS

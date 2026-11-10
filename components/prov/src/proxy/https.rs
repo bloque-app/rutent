@@ -9,7 +9,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::client::Resumption;
 use rustls::pki_types::pem::PemObject;
@@ -116,7 +116,7 @@ impl HttpsTransport {
         self
     }
 
-    fn connect(&self) -> Result<TcpStream, TransportError> {
+    fn connect(&self, due: Option<Instant>) -> Result<Bounded, TransportError> {
         let addresses: Vec<SocketAddr> = (self.host.as_str(), self.port)
             .to_socket_addrs()
             .map_err(|_| TransportError::new("the store's host did not resolve"))?
@@ -128,13 +128,9 @@ impl HttpsTransport {
         }
         let stream = addresses
             .iter()
-            .find_map(|a| TcpStream::connect_timeout(a, self.timeout).ok())
+            .find_map(|a| TcpStream::connect_timeout(a, left(self.timeout, due)?).ok())
             .ok_or(TransportError::new("could not connect to the store"))?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
-            .map_err(|_| TransportError::new("could not set the connection's timeouts"))?;
-        Ok(stream)
+        Ok(Bounded::new(stream, self.timeout, due))
     }
 
     /// The request's bytes. A path or header that could break the request's framing is refused.
@@ -171,8 +167,16 @@ impl HttpsTransport {
 
 impl Transport for HttpsTransport {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
+        self.get_until(request, None)
+    }
+
+    fn get_until(
+        &self,
+        request: &Request,
+        due: Option<Instant>,
+    ) -> Result<Response, TransportError> {
         let head = self.head(request)?;
-        let tcp = self.connect()?;
+        let tcp = self.connect(due)?;
         let answer = match &self.tls {
             None => {
                 let mut tcp = tcp;
@@ -232,17 +236,66 @@ pub(crate) fn client_config(roots_pem: &[u8]) -> Result<Arc<ClientConfig>, &'sta
 /// Starts TLS over `tcp` and finishes the handshake as `name`: SNI `name`, and the peer's certificate chain
 /// verified against `config`'s roots and for `name`. Nothing is written but the handshake's own records, so a peer
 /// that fails the check receives no byte of a request. Any failure, a timeout included, is `Err`.
-pub(crate) fn handshake(
+pub(crate) fn handshake<S: Read + Write>(
     config: &Arc<ClientConfig>,
     name: ServerName<'static>,
-    tcp: TcpStream,
-) -> Result<StreamOwned<ClientConnection, TcpStream>, ()> {
+    tcp: S,
+) -> Result<StreamOwned<ClientConnection, S>, ()> {
     let connection = ClientConnection::new(Arc::clone(config), name).map_err(|_| ())?;
     let mut stream = StreamOwned::new(connection, tcp);
     while stream.conn.is_handshaking() {
         stream.conn.complete_io(&mut stream.sock).map_err(|_| ())?;
     }
     Ok(stream)
+}
+
+/// What is left of `step` before `due`: the step itself with no deadline, and `None` once the deadline has passed.
+pub(crate) fn left(step: Duration, due: Option<Instant>) -> Option<Duration> {
+    let left = match due {
+        Some(due) => step.min(due.saturating_duration_since(Instant::now())),
+        None => step,
+    };
+    (!left.is_zero()).then_some(left)
+}
+
+/// A TCP connection whose every read and write, the TLS handshake's included, is bounded by `step` and by what
+/// is left until `due` (`REQ-MDL-11`): a peer that sends a byte now and then, each within a step, is still cut off
+/// at the deadline. Once it has passed, every read and write fails as timed out.
+pub(crate) struct Bounded {
+    tcp: TcpStream,
+    step: Duration,
+    due: Option<Instant>,
+}
+
+impl Bounded {
+    /// `tcp`, bounded by `step` and `due`.
+    pub(crate) fn new(tcp: TcpStream, step: Duration, due: Option<Instant>) -> Self {
+        Bounded { tcp, step, due }
+    }
+
+    fn left(&self) -> std::io::Result<Duration> {
+        left(self.step, self.due).ok_or_else(|| std::io::Error::from(ErrorKind::TimedOut))
+    }
+}
+
+impl Read for Bounded {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.left()?;
+        self.tcp.set_read_timeout(Some(left))?;
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Bounded {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let left = self.left()?;
+        self.tcp.set_write_timeout(Some(left))?;
+        self.tcp.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp.flush()
+    }
 }
 
 /// One HTTP/1.x answer: its status, its headers as received, and its body.

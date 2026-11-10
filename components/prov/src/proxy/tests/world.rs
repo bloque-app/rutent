@@ -57,10 +57,12 @@ fn world() -> (Tested, BTreeMap<String, std::sync::Arc<Store>>) {
     }
     let mut world = ProductionWorld::new(proxy, Nowhere, Nowhere);
     for provider in ["alpha", "beta"] {
-        world.advertise(advertisement(
-            provider,
-            &[(KEY_A, "advertising"), (KEY_B, "statements")],
-        ));
+        world
+            .advertise(advertisement(
+                provider,
+                &[(KEY_A, "advertising"), (KEY_B, "statements")],
+            ))
+            .expect("the deployment's advertisement");
     }
     (world, stores)
 }
@@ -122,7 +124,11 @@ fn the_world_answers_a_lookup_only_inside_the_request_its_hooks_put_in_flight() 
                     assert_eq!(world.take_unadmitted().is_empty(), admitted, "{at}");
                 }
                 1 | 2 => {
-                    world.begin_operation(&who, &id(transaction));
+                    world.begin_operation(
+                        &who,
+                        &id(transaction),
+                        std::time::Instant::now() + std::time::Duration::from_secs(60),
+                    );
                     if state.admitted {
                         state.handling = Some((transaction, None));
                     }
@@ -211,4 +217,41 @@ fn the_world_answers_a_lookup_only_inside_the_request_its_hooks_put_in_flight() 
     // Neither side of the property holds vacuously.
     assert!(answered > 200, "{answered}");
     assert!(refused_by_verdict > 200, "{refused_by_verdict}");
+}
+
+/// A statement key revoked by a later advertisement stops being resolved at once: the running release signs
+/// with it no more, with no restart, and an advertisement of another deployment changes nothing.
+// verifies: THR-4, DEC-9
+#[test]
+fn a_statement_key_the_next_advertisement_revokes_signs_nothing_more() {
+    let (mut world, stores) = world();
+    stores["internal"].write(&key_path("internal", "alpha", KEY_B), "the-private-half");
+    world.running(&release("alpha", "1.0.0", &[SECRET], KEY_B));
+    let who = caller("alpha");
+    let soon = || std::time::Instant::now() + std::time::Duration::from_secs(60);
+    world.begin_operation(&who, &id("tx-1"), soon());
+    assert!(world.statement_key(&who, &id("tx-1")).is_ok());
+
+    // Another deployment's advertisement is refused, and the key is still resolved.
+    let mut foreign = advertisement("alpha", &[(KEY_A, "advertising")]);
+    foreign.deployment.name = "elsewhere".to_owned();
+    assert_eq!(
+        world.advertise(foreign),
+        Err(Refusal::AdvertisementOfAnotherDeployment)
+    );
+    assert!(world.statement_key(&who, &id("tx-1")).is_ok());
+
+    // The provider's next advertisement no longer lists the key for statements, then lists it for advertising.
+    for keys in [
+        vec![(KEY_A, "advertising"), (KEY_C, "statements")],
+        vec![(KEY_A, "advertising"), (KEY_B, "advertising")],
+    ] {
+        world
+            .advertise(advertisement("alpha", &keys))
+            .expect("the deployment's advertisement");
+        assert!(
+            world.statement_key(&who, &id("tx-1")).is_err(),
+            "{keys:?}: a revoked key was resolved"
+        );
+    }
 }

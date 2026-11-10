@@ -150,9 +150,10 @@ pub trait World {
         let _ = artefact;
     }
 
-    /// The caller's module starts handling an operation for `transaction`.
-    fn begin_operation(&mut self, caller: &Caller, transaction: &Identifier) {
-        let _ = (caller, transaction);
+    /// The caller's module starts handling an operation for `transaction`, which must end by `due`: whatever
+    /// the world asks a store or a peer for it is given up then (`REQ-MDL-11`).
+    fn begin_operation(&mut self, caller: &Caller, transaction: &Identifier, due: Instant) {
+        let _ = (caller, transaction, due);
     }
 
     /// The caller's module ended the operation it was handling, however it ended.
@@ -875,6 +876,7 @@ impl<W: World> Platform<W> {
             return refused();
         };
         let declaration = context.declaration.clone();
+        let due = context.due;
         let secrets = context
             .resolved
             .get(in_flight.as_str())
@@ -888,6 +890,7 @@ impl<W: World> Platform<W> {
             transaction: &transaction,
             secrets: &secrets,
             started_at: &started_at,
+            due: Some(due),
         };
         let Ok(request) =
             egress::Request::new(Method::Post, "/", Vec::new(), body.as_bytes().to_vec())
@@ -1036,7 +1039,8 @@ impl<W: World> Platform<W> {
             let left = self.stack.last().map_or(Duration::ZERO, |c| {
                 c.due.saturating_duration_since(Instant::now())
             });
-            if !running || reenters(&self.stack, callee) {
+            let handling = self.stack.iter().map(|context| context.provider.as_str());
+            if reenters(handling, callee) || !running {
                 refusal = Some(CallRefusalReason::CalleeUnavailable);
             } else if left < self.call_budget {
                 refusal = Some(CallRefusalReason::DeadlineTooNear);
@@ -1119,7 +1123,7 @@ impl<W: World> Platform<W> {
             Identifier::new(format!("rutent:untransacted:{}", sha256(json.as_bytes())))
         });
         if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
-            self.world.begin_operation(caller, handled_as);
+            self.world.begin_operation(caller, handled_as, due);
         }
         self.stack.push(Context {
             provider: provider.to_owned(),
@@ -1219,13 +1223,14 @@ impl<W: World> Platform<W> {
     }
 }
 
-/// Whether a call to `callee` would re-enter a provider already handling an operation on `stack`: the caller
-/// itself, or one further down the chain (A calls B, B calls A). Such a call is refused as `callee_unavailable`
-/// on purpose, not only because that provider's process is busy (`T-014-04`, `T-014-05`): one provider handles one
-/// operation at a time, and the credential proxy keeps one operation and one request in flight per provider, so a
+/// Whether a call to `callee` would re-enter a provider already `handling` an operation: the platform's stack, from
+/// the top-level operation's provider to the caller. That is the caller itself, or one further down the chain (A
+/// calls B, B calls A). Such a call is refused as `callee_unavailable` on purpose, before the callee's process is
+/// looked at, not only because that process is busy (`T-014-04`, `T-014-05`): one provider handles one operation
+/// at a time, and the credential proxy keeps one operation and one request in flight per provider, so a
 /// re-entrant operation would end the outer one's request in the proxy.
-fn reenters(stack: &[Context], callee: &str) -> bool {
-    stack.iter().any(|context| context.provider == callee)
+fn reenters<'a>(handling: impl IntoIterator<Item = &'a str>, callee: &str) -> bool {
+    handling.into_iter().any(|provider| provider == callee)
 }
 
 /// `envelope` asked of `callee`: the same operation, its `provider` the callee.
@@ -1599,13 +1604,17 @@ impl<W: World> Platform<W> {
         };
         // Signed with the provider's statement key, held through the credential proxy and never by the module
         // (`F-014`): the result and what the module nested in it in the provider's name. A result that can't be
-        // signed, because the world holds no key, the key isn't the one declared, or a nested statement is
-        // another deployment's, isn't passed on.
+        // signed, because the world holds no key, the key isn't the one declared, or a nested statement isn't
+        // what the operation asked, in this deployment and protocol version, isn't passed on.
         match private.ok().and_then(|key| {
             proxy::sign_result(
                 &unsigned,
-                provider,
-                &self.envelope.deployment,
+                &proxy::Answering {
+                    provider,
+                    deployment: &self.envelope.deployment,
+                    protocol_version: &self.envelope.protocol_version,
+                    operation: &operation.statement,
+                },
                 &key,
                 &statement_key,
             )
@@ -1620,5 +1629,26 @@ impl<W: World> Platform<W> {
     /// cross-module calls.
     pub fn take_events(&mut self) -> Events {
         std::mem::take(&mut self.events)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reenters;
+
+    /// A call back into the caller itself, or into a provider further down the chain of operations, re-enters it,
+    /// and is refused as `callee_unavailable` whatever its process's state; a provider not on the stack doesn't.
+    // verifies: REQ-MDL-21, REQ-MDL-9
+    #[test]
+    fn a_call_into_any_provider_already_handling_an_operation_re_enters_it() {
+        let stack = ["alpha", "beta", "gamma"];
+        assert!(reenters(stack, "gamma"), "the caller itself");
+        assert!(reenters(stack, "beta"), "the caller's caller");
+        assert!(
+            reenters(stack, "alpha"),
+            "the top-level operation's provider"
+        );
+        assert!(!reenters(stack, "delta"), "a provider not on the stack");
+        assert!(!reenters([], "alpha"), "no operation in flight");
     }
 }

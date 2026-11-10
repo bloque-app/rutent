@@ -205,12 +205,14 @@ impl Running {
             .with_timeout(Duration::from_secs(5));
         let mut world = ProductionWorld::new(proxy, names.clone(), connector);
         for provider in [RESERVE, RAMP] {
-            world.advertise(
-                catalogue
-                    .accepted_advertisement(provider)
-                    .expect("an accepted advertisement")
-                    .clone(),
-            );
+            world
+                .advertise(
+                    catalogue
+                        .accepted_advertisement(provider)
+                        .expect("an accepted advertisement")
+                        .clone(),
+                )
+                .expect("the deployment's advertisement");
         }
         let mut platform = Platform::new(
             common::paths(),
@@ -817,4 +819,46 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
         ),
         "{handled:?}"
     );
+}
+
+/// A peer that answers one byte at a time, each well within a read's own timeout, is cut off at the operation's
+/// deadline (`REQ-MDL-11`): the platform doesn't wait on it past the deadline, the operation ends as a limit, the
+/// call is recorded `unknown`, and another provider's operation runs right after.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs() {
+    let pki = tls::Pki::new();
+    let slow = tls::TlsServer::dribbling(pki.server_for(&api(RESERVE)), Duration::from_millis(300));
+    let dialer = tls::MappedDialer::default().with("185.12.64.41", &slow);
+    let mut running = Running::new(&pki, dialer);
+    running.platform.set_deadline(Duration::from_secs(2));
+    running.names.then(&api(RESERVE), &["185.12.64.41"]);
+    running.install(&release(RESERVE, &[]), vec![call(&api(RESERVE))]);
+    running.install(&release(RAMP, &[]), Vec::new());
+
+    let started = std::time::Instant::now();
+    let (handled, events) = running.run(RESERVE, 1);
+    let took = started.elapsed();
+
+    assert_eq!(slow.requests().len(), 1, "the slow peer got the call");
+    assert!(
+        matches!(
+            handled,
+            Handled::Refused(types::PlatformRefusal::LimitReached)
+        ),
+        "{handled:?}"
+    );
+    assert!(took < Duration::from_secs(4), "held for {took:?}");
+    assert_eq!(events.records.len(), 1, "{:?}", events.records);
+    assert!(
+        matches!(events.records[0].outcome, CallOutcome::Unknown(_)),
+        "{:?}",
+        events.records[0]
+    );
+    assert_eq!(validate_record(&events.records[0]), Ok(()));
+
+    let started = std::time::Instant::now();
+    let (handled, _) = running.run(RAMP, 1);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert!(started.elapsed() < Duration::from_secs(4));
 }
