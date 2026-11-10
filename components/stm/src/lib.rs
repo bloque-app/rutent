@@ -10,6 +10,9 @@
 //! - [`handed_on_route_starts_where_value_sits`] is the start rule across two orders, a function Core calls with
 //!   both.
 //!
+//! - [`archive`] is what a host moves out of its live journal when an order ends (`G-33`): the packed row, and the
+//!   replay that reads it back to the states the journal recorded.
+//!
 //! No transition reads an amount: which amount the next segment moves, and the remainder of an `exact_out`,
 //! are `F-020`'s.
 //!
@@ -20,6 +23,7 @@
 
 extern crate alloc;
 
+pub mod archive;
 mod hand_on;
 mod machine;
 #[cfg(feature = "std")]

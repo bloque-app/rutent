@@ -502,3 +502,43 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   built and documented in the existing `ci` job. `signing::signature_bytes` now takes only canonical signatures
   (`role::is_canonical_signature`), so a final character with unused bits set is rejected.
 - `ReleaseJudge`'s doctest is pinned to `E0277`.
+
+## T-010-07: journal growth bounded (`G-33`)
+
+- **What it does.** The VOS program archives an order when a record ends it (`rutent_stm::archive::is_archivable`:
+  complete, failed, handed on, or ended without completing, which is `is_ended`). The step that writes that record
+  packs the order's whole journal into one row of a new `archive` table and deletes its live `records` rows. A
+  record written to an archived order afterwards (a repeat, a late input, the undo of a complete part, which
+  `machine.rs` still allows) is appended to the row. Stuck and waiting orders stay live: someone can still resolve them.
+- **Library.** `rutent_stm::archive` (`no_std` + `alloc`, no new dependency): `Entry`, `pack`, `unpack` (refuses a
+  wrong header, a cut, a count the bytes cannot hold, trailing bytes), `is_archivable`, and `replay`, the host's own
+  fold of `open` and `transition` over archived inputs. The format (`RSA1`, length-prefixed entries) is the library's;
+  entries are the canonical JSON the program already stores, byte for byte.
+- **The host contract is not touched.** The host contract's `replay` guarantee says a journal is complete and never
+  compacted, so archiving is invisible through `journal`, `state`, `orders`, `export`, a refusal's pointer to its
+  record and the effect driver's cursor: all of them read through `row_of`, which falls back to the archive. No
+  `DEC-4` bump and no `DEC-20` path (`git diff` of `contracts/` is empty). The program gains a query, `archived`,
+  that serves an order's packed row so it can be replayed outside the host.
+- **What is bounded, and what is not (reading, reversible).** Bounded: the live `records` table, the payload, which
+  holds only orders still open (`Status::live_records`, `archived_orders`). Not bounded: the index rows `written`
+  (write order, which the export and the effect driver's cursor need), `ids` (the record-id check across the whole
+  host), `orders` and `places`, each small and fixed-size, plus the archive rows themselves, one per ended order. So
+  total storage still grows with the stream; it grows by the compact archive, and the hot tables the program reads
+  and writes on every submit stay small. Bounding the rest needs a cold store outside the actor (copy archive
+  rows out, then drop them), which changes what `journal` can answer for a dropped order. That is a host-contract
+  question for the owner, not done here. `G-33` is closed for the live journal only.
+- **Format.** The program's `FORMAT` is 2 and `PROGRAM` 2: a new table changes the actor's struct and `Status`
+  gained two fields. No running instance is upgraded by this task (v0; the `next` versions were not carried over, as
+  `T-010-05` recorded), so a version-1 instance is refused, never misread.
+- **Cost.** An archived order is read by unpacking its row, so reading one record costs the order's length, and a
+  late input rewrites the row. Orders are short (seven inputs for a normal one); the archive step moves one order's
+  rows inside one step under the 100M-gas cap. A `released_from` page over archived orders unpacks per record.
+- **Tests.** `components/stm/tests/archive.rs` (native, in `cargo test --workspace`): an archive replays to the
+  journal's recorded states over 600 seeded orders; inputs after the ending are appended and still replay; a damaged
+  archive is refused (every cut, trailing byte, wrong header); arbitrary entries round-trip; `is_archivable` is
+  `is_ended`. `vos-program/client/tests/journal_bounded.rs` (needs the `vos` feature, three nodes):
+  `live_journal_stays_bounded_under_a_stream_of_completed_orders` and `archived_order_replays_to_the_same_states`,
+  which also appends a late input to an archived order. The tests were written first; the native ones failed to
+  compile until the module existed.
+- **Not proved here.** The VOS tests pass on three nodes with the JIT only in CI (`stm-vos.yml`); the run id goes
+  here once the branch is pushed.
