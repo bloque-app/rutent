@@ -346,6 +346,38 @@ impl<R: Resolver> CredentialProxy<R> {
         self.handling.remove(caller.provider().as_str());
     }
 
+    /// The outside request in flight for `provider`'s module, if any.
+    pub fn in_flight(&self, provider: &Identifier) -> Option<InFlight> {
+        let handling = self.handling.get(provider.as_str())?;
+        handling.serving.as_ref().map(|operation| InFlight {
+            provider: provider.clone(),
+            transaction: handling.transaction.clone(),
+            operation: operation.clone(),
+        })
+    }
+
+    /// Forgets `provider`'s running release and whatever its module was handling, so every later lookup of it is
+    /// refused until a release is admitted again: a release that started but couldn't be admitted here never
+    /// runs on its predecessor's declaration.
+    pub fn retire(&mut self, provider: &Identifier) {
+        self.releases.remove(provider.as_str());
+        self.handling.remove(provider.as_str());
+    }
+
+    /// Records `lookup` as refused for `refusal`, a judgement made before it reached the proxy, and returns the
+    /// refusal. The store isn't asked.
+    pub fn refuse(&mut self, caller: &Caller, lookup: &SecretLookup, refusal: Refusal) -> Refusal {
+        let result = Err(refusal.clone());
+        self.record(
+            caller,
+            &lookup.transaction,
+            Some(lookup.operation.clone()),
+            UseOf::Secret(lookup.name.clone()),
+            &result,
+        );
+        refusal
+    }
+
     /// Resolves `lookup` for the caller (`DEC-9`, `REQ-MDL-6`, `REQ-MDL-9`): from the caller's own provider's keys,
     /// in its role's bucket, only for the outside request in flight for its module and a secret that request's
     /// operation declares. It records the use, refused or not.

@@ -428,3 +428,110 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `proxy::NO_ROUTE_RECORD` and `NO_ROUTE_SEGMENT`. A decision record's id is its request's, and no router may issue
   one by that id. A call refused as `not_named_by_route` is always recorded against it. Before, a call with no
   request in flight could name a segment beside `not_named_by_route`. The property test checks this.
+
+## T-014-05
+
+- **Merged `m2` at `28f16cc`** (a fast-forward), which carries `T-010-10`: real signatures in the suites, admission
+  through the catalogue's verifier, `ReleaseJudge` sealed. The orchestrator widened the row after `T-010-10`'s
+  review: the platform's results are signed with the statement key (below).
+- **The production world.** `proxy::ProductionWorld` is the credential proxy and the egress layer as
+  `module/platform.rs`'s `World`. The platform tells it what each provider's module handles, from its own state:
+  - `running(artefact)` when a release's process starts, which admits the release to the proxy against the
+    accepted advertisement the deployment handed the world (`advertise`). A release the proxy refuses is retired
+    from it (`CredentialProxy::retire`), so no lookup of that provider resolves; `take_unadmitted` names it.
+  - `begin_operation`/`end_operation` around each operation, on every exit path (answer, trap, limit, deadline).
+  - `begin_request`/`end_request` where the platform passes an outside request to the outside part and takes its
+    response.
+- **Two judgements, one rule.** The platform still judges every lookup itself (`proxy::judge`, from its stack), and
+  then hands the world the lookup with that verdict (`World::lookup`). The production world judges again in the
+  proxy, from what the hooks told it, and records the use. A lookup the platform refused is recorded in the proxy
+  (`CredentialProxy::refuse`) without asking the store, so the proxy's uses match the platform's lookup events one
+  to one. Whatever a world answers, the platform hands no value for a lookup it refused.
+- **`World` keeps its four required hooks.** `secret`, `state`, `route` and `deliver` keep their shapes, so the
+  suites' double (`TestWorld`) runs unchanged; every new hook has a default built on them. `World::secret`'s
+  `Option` stays the double's: it means "holds none". The production path is `World::lookup`, which returns the
+  contract's `SecretRefusalReason`, so a store failure is `store_unavailable`, never `not_found`.
+- **`store_unavailable` at the lookup.** `platform.rs`'s `lookup` maps each reason explicitly (`secret_reason`):
+  `not_found`, `store_unavailable`, `undeclared_secret`, and `undeclared_secret` for a reason it doesn't know. The
+  lookup event records `StoreUnavailable`. **Gap, item for `F-013`:** the WIT's `secret-refusal` enum has only
+  `undeclared-secret` and `not-found`, so a guest is told `undeclared-secret`; the record keeps the true reason.
+  Adding the case is a change to the binding's interface and its guests, not made here.
+- **Egress on the platform's path.** `platform.rs`'s `egress` builds a `Call` from its context and hands it to
+  `World::send`; the platform's own hop loop, `allows`, `within` and `MAX_HOPS` are gone. Every world goes through
+  `Egress`: the production world over its `NameResolver` and `Connector`, the double through `Served`, which reads
+  `route` as the name's resolution and `deliver` as the exchange, answering `200`, or `307` with a `Location` for a
+  redirect (so the body follows, as the old loop delivered it). The module-boundary suite passes through it
+  unchanged. The binding's egress call carries only a body, so it goes as a `POST` to `/`; a target, a method and
+  headers need the WIT to carry them (item for `F-013`). An unknown scheme on the wire is refused, unrecorded,
+  where the old loop read it as `https`.
+- **The no-route path records its own reason.** A declared destination whose name resolves to no address is refused
+  as `address_not_allowed` (`T-014-03`'s reading: there is no checked address to dial); one whose checked address
+  can't be reached is `unknown` with no address, which module-interface 4.0.0 accepts. Before, it was `failed`,
+  which `validate_record` refused. Test: `call_with_no_route_records_its_own_reason_and_a_valid_record`.
+- **The rustls connector.** `egress::TlsConnector`, on `proxy/https.rs`'s shared primitives (`client_config`,
+  `handshake`, `exchange`), which `HttpsTransport` now uses too:
+  - it dials `Dial::to` through a `Dialer` (`DirectDialer` in production) and never resolves the name; it reads no
+    proxy setting;
+  - SNI and the certificate check are for `Dial::name`, against the deployment's PEM roots only (no built-in root
+    store, so no `webpki-roots`); the handshake finishes before a byte of the request is written, and any failure
+    of it, a timeout included, is `NotVerified`;
+  - one connection per exchange, session resumption disabled and TLS 1.3 early data off, both set explicitly in
+    the shared configuration, so the proxy's transport has them too;
+  - a `3xx` comes back with its `Location`; `wss` is refused before connecting, as the contract says;
+  - HTTP/1.0 with `Connection: close`, as the transport speaks, so no answer is chunked; one with a transfer
+    encoding, cut short or over 1 MiB is `NoAnswer`. Timeout 5 s each for connect, handshake, send and read.
+  The connector's timeout is not yet bounded by what is left of the operation's deadline; the platform serves a
+  call synchronously, so a slow peer spends the module's time. Noted, not changed.
+- **`tls_probe` on real TLS.** `tests/tls_support/` generates a CA and leaves with `rcgen` in each test, runs rustls
+  servers on loopback, and maps each public address to one (`MappedDialer`), since the egress layer refuses
+  loopback. `tests/egress.rs` runs `tls_probe` with `TlsConnector` against a leaf for another name and a server
+  offering no certificate (its resolver returns none), plus a control for the right name, a self-signed chain and
+  a returned redirect. **`B-18` holds end to end**; `tls_check_against_a_wrong_name_or_no_certificate_is_refused_end_to_end`
+  shows it on the running platform. **`B-17` holds on the platform's path**:
+  `running_platform_resolves_a_destination_once_and_dials_only_the_checked_address` resolves once per call, dials
+  only the first answer's address while the name would re-resolve elsewhere, and refuses a pinned destination
+  resolving outside its block without dialling it.
+- **Re-entrance refused on purpose.** `cross_module` refuses a callee already on the platform's stack (`reenters`)
+  as `callee_unavailable`, before the process check: one provider handles one operation at a time, and the proxy
+  keeps one operation and one request per provider. Test:
+  `call_back_into_a_running_provider_leaves_its_request_in_flight_in_the_proxy`, where A's request stays in flight
+  through B's refused call back and A's later lookup resolves. It passes with or without `reenters`, since the busy
+  process refuses the call too; `reenters` makes the refusal not depend on that.
+- **Signing the platform's results (the widened row).** The module never holds a key. The platform resolves the
+  statement key through `World::statement_key` while the provider's module still handles the operation (the
+  proxy's condition), then `proxy::sign_result` signs the result and every statement the module nested in it in the
+  provider's name, innermost first, under the provider-role rule. Readings:
+  - the store holds the private half as the unpadded base64url text of its 32-byte Ed25519 seed, under the public
+    key's text in the role's `keys` prefix (`T-014-02`);
+  - a key whose public half isn't the declared `statement_key` signs nothing;
+  - a statement nested in the provider's name for another deployment is refused (`THR-8`); one of another maker
+    keeps its own signature;
+  - only a judgement or a reversal confirmation is signed when nested, the two shapes provider-role's result
+    schema nests, each pinned by `const`; the result schema has no open object, and the output is checked against
+    it before signing. A nested envelope of any other shape in the provider's name is refused, so the platform is
+    no oracle for, say, a result of another transaction lifted out of one it signed;
+  - a result that can't be signed is refused as `PlatformRefusal::Unavailable`, never passed on with a placeholder.
+    The contract has no closer reason; an item for `F-010` if one is wanted;
+  - an operation naming no transaction (a verifier's judgement) is known to the world as
+    `rutent:untransacted:<sha256 of the operation>`, so the proxy can resolve the key for it.
+  `TestWorld` holds statement keys (`hold_statement_key`), the suites' standard statements key by default; the
+  signed harness holds its own. `tests/module_role.rs` runs with `Ed25519Verifier` and nothing deferred, and its
+  in-process comparison runs signed too.
+- **The statement key's wire message.** Read under the orchestrator's ruling that the key is never in the module:
+  the statement key's answer goes from the proxy to the platform's signer, and no `FromProvider` message hands it
+  to a provider's process. An outside part that signed would hold the key, which the ruling forbids.
+- **Owner items.** None.
+- **Dependencies.** `rcgen 0.13.2` as a dev-dependency (`ring` and `pem`, no aws-lc). `Cargo.lock` gains `rcgen`,
+  `pem 3.0.6`, `base64 0.22.1`, `time 0.3.55`, `time-core 0.1.9`, `deranged 0.5.9`, `powerfmt`, `num-conv` and
+  `yasna`; `licences/RECORD` gains `deranged 0.5.9` and `pem 3.0.6`, both permissive standing.
+- **Property tests (`DEC-18`).** `proxy/tests/world.rs`: over seeded sequences of the platform's hooks and lookups
+  with random verdicts, the world answers exactly when the verdict passed and the hooks put that request in
+  flight, asks the store only then and only at the caller's path, and leaves one use per lookup; the proxy's
+  request in flight follows the model. `egress/tls.rs`: the connector frames every request itself, `Host` from
+  the declared name. `proxy/signing.rs`: for any key the result and the provider's nested judgement verify, and a
+  key other than the declared one signs nothing; a seed has one text.
+- **How the tests were run.** Each was run and then shown to fail on a mutation of what it guards: the handshake's
+  failure mapped to `NoAnswer` (both TLS tests), the name resolved twice and the second answer dialled (`B-17`),
+  `begin_request` not passed to the proxy (the secret test), results passed on unsigned (`module_role`).
+- **`DEC-20`.** The credential proxy and its resolvers (`proxy/`), its egress (`egress/`), and the platform's
+  credential path in `module/platform.rs` (`lookup`, `egress`, `cross_module`, result signing).

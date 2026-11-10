@@ -11,6 +11,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rustls::client::Resumption;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -71,28 +72,11 @@ impl HttpsTransport {
                 let pem = ca_pem.ok_or(TransportError::new(
                     "HTTPS needs the deployment's CA certificates",
                 ))?;
-                let mut roots = RootCertStore::empty();
-                for certificate in CertificateDer::pem_slice_iter(pem) {
-                    let certificate = certificate
-                        .map_err(|_| TransportError::new("the CA certificates are not PEM"))?;
-                    roots
-                        .add(certificate)
-                        .map_err(|_| TransportError::new("a CA certificate is not usable"))?;
-                }
-                if roots.is_empty() {
-                    return Err(TransportError::new("the CA file holds no certificate"));
-                }
-                let config = ClientConfig::builder_with_provider(Arc::new(
-                    rustls::crypto::ring::default_provider(),
-                ))
-                .with_safe_default_protocol_versions()
-                .map_err(|_| TransportError::new("no TLS version is available"))?
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+                let config = client_config(pem).map_err(TransportError::new)?;
                 let name = ServerName::try_from(address.host.as_str())
                     .map_err(|_| TransportError::new("the store's host is not a valid TLS name"))?
                     .to_owned();
-                Some((name, Arc::new(config)))
+                Some((name, config))
             }
         };
         if address.port == 0 {
@@ -183,72 +167,147 @@ impl HttpsTransport {
         head.push_str("\r\n");
         Ok(head.into_bytes())
     }
-
-    /// Writes `head` and reads the whole answer, to the connection's end or the declared length.
-    fn exchange<S: Read + Write>(
-        &self,
-        stream: &mut S,
-        head: &[u8],
-    ) -> Result<Response, TransportError> {
-        stream.write_all(head).map_err(io_error)?;
-        stream.flush().map_err(io_error)?;
-        let mut answer = Vec::new();
-        let mut chunk = [0u8; 8192];
-        // Whether the peer ended the answer cleanly: TLS's close_notify, or the end of a plain connection.
-        let mut closed = false;
-        loop {
-            match stream.read(&mut chunk) {
-                Ok(0) => {
-                    closed = true;
-                    break;
-                }
-                Ok(n) => {
-                    answer.extend_from_slice(&chunk[..n]);
-                    if answer.len() > self.max_answer {
-                        return Err(TransportError::new("the store's answer is too large"));
-                    }
-                    if complete(&answer) {
-                        break;
-                    }
-                }
-                // A peer that ends the connection without TLS's close_notify: the answer stands only if it is
-                // complete by its declared length.
-                Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) => return Err(io_error(e)),
-            }
-        }
-        parse(&answer, closed)
-    }
 }
 
 impl Transport for HttpsTransport {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
         let head = self.head(request)?;
         let tcp = self.connect()?;
-        match &self.tls {
+        let answer = match &self.tls {
             None => {
                 let mut tcp = tcp;
-                self.exchange(&mut tcp, &head)
+                exchange(&mut tcp, &head, self.max_answer)
             }
             Some((name, config)) => {
-                let connection = ClientConnection::new(Arc::clone(config), name.clone())
-                    .map_err(|_| TransportError::new("could not start TLS"))?;
-                let mut stream = StreamOwned::new(connection, tcp);
-                // Finish the handshake, and so the certificate check, before a byte of the request is written.
-                while stream.conn.is_handshaking() {
-                    stream.conn.complete_io(&mut stream.sock).map_err(|_| {
-                        TransportError::new("the TLS handshake or certificate check failed")
-                    })?;
-                }
-                self.exchange(&mut stream, &head)
+                // The handshake, and so the certificate check, finishes before a byte of the request is written.
+                let mut stream = handshake(config, name.clone(), tcp).map_err(|()| {
+                    TransportError::new("the TLS handshake or certificate check failed")
+                })?;
+                exchange(&mut stream, &head, self.max_answer)
             }
-        }
+        };
+        let answer = answer.map_err(|e| match e {
+            AnswerError::TooLarge => TransportError::new("the store's answer is too large"),
+            AnswerError::Io(kind) => io_error(kind),
+            AnswerError::Malformed => TransportError::new("the store's answer is not HTTP"),
+            AnswerError::Encoded => {
+                TransportError::new("the store's answer has a transfer encoding")
+            }
+            AnswerError::CutShort => TransportError::new("the store's answer was cut short"),
+        })?;
+        Ok(Response {
+            status: answer.status,
+            body: answer.body,
+        })
     }
 }
 
-fn io_error(error: std::io::Error) -> TransportError {
-    match error.kind() {
+/// The TLS client configuration the credential proxy's transport and the egress connector share (`T-014-02`,
+/// `T-014-05`): rustls over ring's primitives, TLS 1.2 or 1.3 and nothing lower, the certificate authorities in
+/// `roots_pem` and no built-in root, no client certificate, no session resumption, so nothing of one connection
+/// is reused for another name or address, and no TLS 1.3 early data, which can be replayed and is sent before the
+/// peer is verified.
+pub(crate) fn client_config(roots_pem: &[u8]) -> Result<Arc<ClientConfig>, &'static str> {
+    let mut roots = RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(roots_pem) {
+        let certificate = certificate.map_err(|_| "the CA certificates are not PEM")?;
+        roots
+            .add(certificate)
+            .map_err(|_| "a CA certificate is not usable")?;
+    }
+    if roots.is_empty() {
+        return Err("the CA file holds no certificate");
+    }
+    let mut config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|_| "no TLS version is available")?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    config.resumption = Resumption::disabled();
+    config.enable_early_data = false;
+    Ok(Arc::new(config))
+}
+
+/// Starts TLS over `tcp` and finishes the handshake as `name`: SNI `name`, and the peer's certificate chain
+/// verified against `config`'s roots and for `name`. Nothing is written but the handshake's own records, so a peer
+/// that fails the check receives no byte of a request. Any failure, a timeout included, is `Err`.
+pub(crate) fn handshake(
+    config: &Arc<ClientConfig>,
+    name: ServerName<'static>,
+    tcp: TcpStream,
+) -> Result<StreamOwned<ClientConnection, TcpStream>, ()> {
+    let connection = ClientConnection::new(Arc::clone(config), name).map_err(|_| ())?;
+    let mut stream = StreamOwned::new(connection, tcp);
+    while stream.conn.is_handshaking() {
+        stream.conn.complete_io(&mut stream.sock).map_err(|_| ())?;
+    }
+    Ok(stream)
+}
+
+/// One HTTP/1.x answer: its status, its headers as received, and its body.
+pub(crate) struct Answer {
+    pub(crate) status: u16,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Vec<u8>,
+}
+
+/// Why no answer was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnswerError {
+    /// The answer, head and body, was longer than allowed.
+    TooLarge,
+    /// The connection failed.
+    Io(ErrorKind),
+    /// The answer isn't HTTP/1.x.
+    Malformed,
+    /// The answer has a transfer encoding, which a request in HTTP/1.0 never asks for.
+    Encoded,
+    /// The answer ended before its declared length, or without a clean end and with no declared length.
+    CutShort,
+}
+
+/// Writes `request` and reads the whole answer, to the connection's end or the declared length, refusing one
+/// longer than `max` bytes.
+pub(crate) fn exchange<S: Read + Write>(
+    stream: &mut S,
+    request: &[u8],
+    max: usize,
+) -> Result<Answer, AnswerError> {
+    let io = |e: std::io::Error| AnswerError::Io(e.kind());
+    stream.write_all(request).map_err(io)?;
+    stream.flush().map_err(io)?;
+    let mut answer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    // Whether the peer ended the answer cleanly: TLS's close_notify, or the end of a plain connection.
+    let mut closed = false;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(n) => {
+                answer.extend_from_slice(&chunk[..n]);
+                if answer.len() > max {
+                    return Err(AnswerError::TooLarge);
+                }
+                if complete(&answer) {
+                    break;
+                }
+            }
+            // A peer that ends the connection without TLS's close_notify: the answer stands only if it is
+            // complete by its declared length.
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(io(e)),
+        }
+    }
+    parse(&answer, closed)
+}
+
+fn io_error(kind: ErrorKind) -> TransportError {
+    match kind {
         ErrorKind::TimedOut | ErrorKind::WouldBlock => TransportError::new("the store timed out"),
         ErrorKind::InvalidData => {
             TransportError::new("the TLS handshake or certificate check failed")
@@ -275,10 +334,11 @@ fn complete(answer: &[u8]) -> bool {
     matches!(split(answer), Some((end, Some(length))) if answer.len() >= end + length)
 }
 
-/// The status and body of an HTTP/1.x answer. A chunked body is refused: an HTTP/1.0 request gets none. A body
-/// with no declared length stands only if the connection was `closed` cleanly, since otherwise it may be cut short.
-fn parse(answer: &[u8], closed: bool) -> Result<Response, TransportError> {
-    let malformed = || TransportError::new("the store's answer is not HTTP");
+/// The status, headers and body of an HTTP/1.x answer. A chunked body is refused: an HTTP/1.0 request gets none.
+/// A body with no declared length stands only if the connection was `closed` cleanly, since otherwise it may be cut
+/// short.
+fn parse(answer: &[u8], closed: bool) -> Result<Answer, AnswerError> {
+    let malformed = || AnswerError::Malformed;
     let (end, length) = split(answer).ok_or_else(malformed)?;
     let head = std::str::from_utf8(&answer[..end]).map_err(|_| malformed())?;
     let status_line = head.split("\r\n").next().ok_or_else(malformed)?;
@@ -299,21 +359,26 @@ fn parse(answer: &[u8], closed: bool) -> Result<Response, TransportError> {
         })
     });
     if chunked {
-        return Err(TransportError::new(
-            "the store's answer has a transfer encoding",
-        ));
+        return Err(AnswerError::Encoded);
     }
+    let headers = head
+        .split("\r\n")
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_owned(), value.trim().to_owned()))
+        })
+        .collect();
     let body = &answer[end..];
     let body = match length {
-        Some(length) if body.len() < length => {
-            return Err(TransportError::new("the store's answer was cut short"));
-        }
+        Some(length) if body.len() < length => return Err(AnswerError::CutShort),
         Some(length) => &body[..length],
         None if closed => body,
-        None => return Err(TransportError::new("the store's answer was cut short")),
+        None => return Err(AnswerError::CutShort),
     };
-    Ok(Response {
+    Ok(Answer {
         status,
+        headers,
         body: body.to_vec(),
     })
 }

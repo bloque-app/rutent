@@ -164,6 +164,19 @@ pub struct TestWorld {
     received: HashMap<types::Endpoint, Vec<String>>,
     /// Every state key the platform asked the world for, in order.
     pub state_asked: Vec<String>,
+    /// The private half of each provider's statement key, as the store holds it: the base64url text of its seed.
+    /// A provider with none here has the suites' standard statements key ([`statements_key`]).
+    statement_keys: BTreeMap<String, String>,
+}
+
+impl TestWorld {
+    /// Holds `key` as `provider`'s statement key, in place of the standard one.
+    pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
+        self.statement_keys.insert(
+            provider.to_owned(),
+            rutent_conformance::signing::base64url(key.as_bytes()),
+        );
+    }
 }
 
 impl World for TestWorld {
@@ -195,6 +208,26 @@ impl World for TestWorld {
             .entry(endpoint.clone())
             .or_default()
             .push(body.to_owned());
+    }
+
+    fn statement_key(
+        &mut self,
+        caller: &rutent_prov::proxy::Caller,
+        _: &Identifier,
+    ) -> Result<
+        rutent_contracts::module_interface::SecretValue,
+        rutent_contracts::module_interface::SecretRefusalReason,
+    > {
+        let provider = caller.provider().as_str();
+        let key = self
+            .statement_keys
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| {
+                rutent_conformance::signing::base64url(statements_key(provider).as_bytes())
+            });
+        rutent_contracts::module_interface::SecretValue::new(key)
+            .ok_or(rutent_contracts::module_interface::SecretRefusalReason::NotFound)
     }
 }
 

@@ -13,6 +13,8 @@
 
 #[path = "egress_support/mod.rs"]
 mod support;
+#[path = "tls_support/mod.rs"]
+mod tls;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -604,6 +606,125 @@ fn failed_tls_check_to_a_declared_destination_is_refused() {
         "each dialled once, never retried"
     );
     assert_eq!((impostor.accepted(), bare.accepted()), (1, 1));
+}
+
+/// `B-18` with the production connector: [`tls_probe`] against `rustls` (`TlsConnector`) and real TLS servers on
+/// loopback, one certified by the deployment's authority for another name, one offering no certificate at all.
+/// Each is dialled once, its handshake fails, and it reads no byte of the request. The control, certified for the
+/// declared name, completes. The certificates are generated here.
+// verifies: REQ-MDL-7, REQ-MDL-6, THR-79
+#[test]
+fn tls_check_through_the_rustls_connector_refuses_a_wrong_name_and_no_certificate() {
+    let pki = tls::Pki::new();
+    let impostor = tls::TlsServer::serve(pki.server_for("collector.attacker.example"));
+    let bare = tls::TlsServer::serve(tls::server_with_no_certificate());
+    let genuine = tls::TlsServer::serve(pki.server_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with(API, &impostor)
+        .with("93.184.216.35", &bare)
+        .with("93.184.216.36", &genuine);
+    let connector =
+        rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer.clone())
+            .expect("a connector over the generated authority")
+            .with_timeout(Duration::from_secs(5));
+
+    tls_probe(&connector, API, "93.184.216.35", &|| {
+        impostor.bytes_received() + bare.bytes_received()
+    });
+
+    assert_eq!(
+        (impostor.accepted(), bare.accepted()),
+        (1, 1),
+        "each dialled once"
+    );
+    assert_eq!((impostor.handshakes(), bare.handshakes()), (0, 0));
+
+    // The control: the same connector reaches the server certified for the declared name.
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &["93.184.216.36"]);
+    let egress = Egress::new(&resolver, &connector);
+    let flight = Flight::payout("tx-10b");
+    let mut log = Vec::new();
+    let outcome = egress.send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert!(
+        matches!(outcome, Outcome::Completed(ref r) if r.status == 200),
+        "{outcome:?}"
+    );
+    let requests = genuine.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].starts_with("POST /p HTTP/1.0\r\nHost: api.acme.example\r\n"),
+        "{}",
+        requests[0]
+    );
+    assert_eq!(log[0].hops[0].address, Address::new("93.184.216.36"));
+    valid(&log[0]);
+    assert_eq!(
+        dialer.dialled().len(),
+        3,
+        "one dial per call, never retried"
+    );
+}
+
+/// The production connector returns a redirect rather than following it, and the egress layer, not the
+/// connector, refuses one to an undeclared host; a server certified by an authority the deployment doesn't trust
+/// is refused like one for a wrong name.
+// verifies: REQ-MDL-7, THR-79
+#[test]
+fn rustls_connector_returns_redirects_and_refuses_an_untrusted_chain() {
+    let pki = tls::Pki::new();
+    let mover = tls::TlsServer::answering(
+        pki.server_for("api.acme.example"),
+        "302 Found",
+        &[("Location", "https://collector.attacker.example/p")],
+    );
+    let untrusted = tls::TlsServer::serve(tls::self_signed_for("api.acme.example"));
+    let dialer = tls::MappedDialer::default()
+        .with(API, &mover)
+        .with("93.184.216.37", &untrusted);
+    let connector =
+        rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer.clone())
+            .expect("a connector");
+    let flight = Flight::payout("tx-10c");
+
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &[API]);
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Refused(Refusal::RedirectToUndeclaredDestination)
+    );
+    assert_eq!(
+        mover.requests().len(),
+        1,
+        "the redirecting server answered once"
+    );
+    assert_eq!(dialer.dialled().len(), 1, "the connector followed nothing");
+    valid(&log[0]);
+
+    let resolver = TableResolver::default();
+    resolver.then("api.acme.example", &["93.184.216.37"]);
+    let mut log = Vec::new();
+    let outcome = Egress::new(&resolver, &connector).send(
+        &flight.call(),
+        https("api.acme.example"),
+        post("/p"),
+        &mut log,
+    );
+    assert_eq!(outcome, Outcome::Refused(Refusal::NotVerified));
+    assert_eq!(untrusted.bytes_received(), 0);
+    valid(&log[0]);
 }
 
 /// `REQ-MDL-8`: every call leaves exactly one record, whether it completed, failed, got no answer or was refused

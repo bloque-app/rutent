@@ -19,7 +19,8 @@
 //!   included, naming the transaction, the provider, the module version, the operation, the secrets resolved
 //!   for it, and each hop's destination and connected address.
 //!
-//! The TLS client is not here: [`Connector`] is the seam a `rustls` client (`T-014-02`) satisfies.
+//! [`Connector`] is the seam the TLS client satisfies; [`TlsConnector`] is the production one, rustls over
+//! `T-014-02`'s client configuration and handshake (`T-014-05`).
 //!
 //! [`Scheme`]: rutent_contracts::module_interface::Scheme
 //! [`OutboundCallRecord`]: rutent_contracts::module_interface::OutboundCallRecord
@@ -27,9 +28,13 @@
 mod connector;
 mod layer;
 mod resolve;
+mod tls;
 
 pub use connector::{
     CREDENTIALS, ConnectError, Connector, Dial, Header, InvalidRequest, Method, Request, Response,
 };
 pub use layer::{Call, CallLog, Egress, Endpoint, MAX_HOPS, Outcome, Refusal};
 pub use resolve::{NameResolver, SystemResolver};
+pub use tls::{
+    DEFAULT_MAX_ANSWER, DEFAULT_TIMEOUT, Dialer, DirectDialer, InvalidRoots, TlsConnector,
+};

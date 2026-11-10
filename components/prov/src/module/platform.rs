@@ -8,6 +8,7 @@
 //! the provider whose process's pipe it came on, never to anything the request says (`DEC-9`). A module escaping
 //! Wasm reaches its own process, which holds no check and nothing of another provider's.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU16;
@@ -16,12 +17,12 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rutent_contracts::module_interface::{
-    Acceptance, AcceptanceMode, Accepted, Address, Addresses, AdmissionArtefact, Build,
-    CallOutcome, CallRefusalReason, CallRefused, Capabilities, CrossModuleCall, CrossModuleOutcome,
-    Declaration, Destination, Digest, DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name,
-    Nothing, OperationKind, OutboundCallRecord, OutsideOutcome, OutsideRequest, OutsideResponse,
-    PartName, Parts, RefusalReason, Refused, SPECIAL_PURPOSE, Scheme, SecretLookup,
-    SecretRefusalReason, Time, validate_artefact, validate_release, widening,
+    Acceptance, AcceptanceMode, Accepted, AdmissionArtefact, Build, CallOutcome, CallRefusalReason,
+    CallRefused, Capabilities, CrossModuleCall, CrossModuleOutcome, Declaration, Digest,
+    DigestAlgorithm, DigestValue, Hop, Host, Identifier, Name, Nothing, OperationKind,
+    OutboundCallRecord, OutsideOutcome, OutsideRequest, OutsideResponse, PartName, Parts,
+    RefusalReason, Refused, Scheme, SecretLookup, SecretRefusalReason, SecretValue, Time,
+    validate_artefact, validate_release, widening,
 };
 use rutent_contracts::provider_role::{
     Operation, RESULT_SHAPE, ResultBody, Signature, SignatureScheme, Statement,
@@ -29,6 +30,9 @@ use rutent_contracts::provider_role::{
 use serde_json::Value;
 
 use crate::catalogue::Instant as Clock;
+use crate::egress::{
+    self, Call, ConnectError, Connector, Dial, Egress, Method, NameResolver, Outcome,
+};
 use crate::module::admission::{self, ReleaseJudge, Unverified};
 pub use crate::module::children::COMPILE_DEADLINE;
 use crate::module::children::{
@@ -46,9 +50,6 @@ use crate::module::types::{
 };
 use crate::module::wire::{FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, sha256, unhex};
 use crate::proxy::{self, CallAsked, Caller, InFlight, RouteCalls};
-
-/// The most hops an outbound call follows, redirects included.
-const MAX_HOPS: usize = 5;
 
 /// The longest one operation may take, from the platform handing it to a provider's process to that process's
 /// answer, cross-module calls it makes included, before the platform kills the process (`REQ-MDL-11`). Fuel
@@ -114,11 +115,22 @@ pub struct Measurements {
 }
 
 /// What the platform reaches beyond the provider's process: the credential proxy's secrets, each provider's
-/// state, and the network behind the egress layer. The platform makes every check before it asks; the world only
-/// answers (`F-014` supplies the production one, the module-boundary suite's binding a double).
+/// state, and the network behind the egress layer. The platform makes every check before it asks, and tells the
+/// world what each provider's module is handling, so a world that judges for itself, the credential proxy
+/// (`proxy::ProductionWorld`, `T-014-05`), judges against the same state.
+///
+/// The four required hooks are a test double's: the module-boundary suite's binding seeds secrets, state and
+/// endpoints behind them. Every other hook has a default built on them, which the production world replaces:
+///
+/// - the lifecycle hooks ([`World::running`], [`World::begin_operation`], [`World::begin_request`] and their
+///   ends) do nothing by default;
+/// - [`World::lookup`] answers from [`World::secret`], and only when the platform's own judgement passed;
+/// - [`World::statement_key`] refuses, so a world with no key has none of its results passed on;
+/// - [`World::send`] runs the egress layer ([`Egress`]) over [`World::route`] and [`World::deliver`], so every
+///   world's outbound calls pass the same checks and leave the same records.
 pub trait World {
-    /// The value of the secret `name` of `provider`, which the proxy delivers to the outside part, or `None` if it
-    /// holds none. Asked only after the platform judged the lookup declared and for the request in flight.
+    /// The value of the secret `name` of `provider`, or `None` if the world holds none. The default
+    /// [`World::lookup`] asks it only after the platform judged the lookup declared and for the request in flight.
     fn secret(&mut self, provider: &str, name: &str) -> Option<String>;
 
     /// The value of the provider's own state entry `key`, if any. Asked only while an outside request is in
@@ -126,11 +138,144 @@ pub trait World {
     fn state(&mut self, provider: &str, key: &str) -> Option<String>;
 
     /// Where `endpoint` is served: the address connected to, and where it redirects, or `None` if nothing answers.
-    /// A lookup only; nothing is sent.
+    /// A lookup only; nothing is sent. Only the default [`World::send`] asks it.
     fn route(&mut self, endpoint: &Endpoint) -> Option<(IpAddr, Option<Endpoint>)>;
 
-    /// Sends `body` to `endpoint`, which the platform has judged allowed.
+    /// Receives `body` at `endpoint`, which the egress layer has judged allowed and dialled at the address
+    /// [`World::route`] gave. Only the default [`World::send`] calls it.
     fn deliver(&mut self, endpoint: &Endpoint, body: &str);
+
+    /// The release `artefact` now runs for its provider: its process started.
+    fn running(&mut self, artefact: &AdmissionArtefact) {
+        let _ = artefact;
+    }
+
+    /// The caller's module starts handling an operation for `transaction`.
+    fn begin_operation(&mut self, caller: &Caller, transaction: &Identifier) {
+        let _ = (caller, transaction);
+    }
+
+    /// The caller's module ended the operation it was handling, however it ended.
+    fn end_operation(&mut self, caller: &Caller) {
+        let _ = caller;
+    }
+
+    /// The platform passed an outside request for `transaction` and `operation` to the caller's outside part: it is
+    /// in flight until [`World::end_request`].
+    fn begin_request(&mut self, caller: &Caller, transaction: &Identifier, operation: &Name) {
+        let _ = (caller, transaction, operation);
+    }
+
+    /// The caller's outside request in flight was answered.
+    fn end_request(&mut self, caller: &Caller) {
+        let _ = caller;
+    }
+
+    /// Answers the caller's `lookup`, for the outside request in flight, given the platform's own `judged`
+    /// verdict on it. A refused verdict is never answered with a value; the world may record it. The default
+    /// asks [`World::secret`] only if the verdict passed, and a secret it doesn't hold is `not_found`.
+    fn lookup(
+        &mut self,
+        caller: &Caller,
+        lookup: &SecretLookup,
+        judged: Result<(), proxy::Refusal>,
+    ) -> Result<SecretValue, SecretRefusalReason> {
+        judged.map_err(|refusal| refusal.wire_reason())?;
+        self.secret(caller.provider().as_str(), lookup.name.as_str())
+            .and_then(SecretValue::new)
+            .ok_or(SecretRefusalReason::NotFound)
+    }
+
+    /// The private half of the statement key the caller's running release declares, while its module handles an
+    /// operation for `transaction`. The default holds none.
+    fn statement_key(
+        &mut self,
+        caller: &Caller,
+        transaction: &Identifier,
+    ) -> Result<SecretValue, SecretRefusalReason> {
+        let _ = (caller, transaction);
+        Err(SecretRefusalReason::UndeclaredSecret)
+    }
+
+    /// Makes one outbound call through the egress layer and writes its record to `log`. The default runs
+    /// [`Egress`] over [`World::route`] and [`World::deliver`].
+    fn send(
+        &mut self,
+        call: &Call<'_>,
+        endpoint: egress::Endpoint,
+        request: egress::Request,
+        log: &mut Vec<OutboundCallRecord>,
+    ) -> Outcome {
+        let served = Served(RefCell::new(self));
+        Egress::new(&served, &served).send(call, endpoint, request, log)
+    }
+}
+
+/// A world's [`World::route`] and [`World::deliver`] as the egress layer's resolver and connector, for the
+/// default [`World::send`]. A name resolves to the address its endpoint is served at; a dial to that address
+/// delivers the body and answers `200`, or `307` to the endpoint it redirects to, which keeps the method and the
+/// body. A dial to any other address, or to an endpoint nothing serves, connects to nothing.
+struct Served<'a, W: World + ?Sized>(RefCell<&'a mut W>);
+
+impl<W: World + ?Sized> NameResolver for Served<'_, W> {
+    fn resolve(&self, host: &Host, port: NonZeroU16) -> Vec<IpAddr> {
+        let mut world = self.0.borrow_mut();
+        [Scheme::Https, Scheme::Wss]
+            .into_iter()
+            .find_map(|scheme| {
+                world.route(&Endpoint {
+                    scheme,
+                    host: host.as_str().to_owned(),
+                    port: port.get(),
+                })
+            })
+            .map(|(address, _)| address)
+            .into_iter()
+            .collect()
+    }
+}
+
+impl<W: World + ?Sized> Connector for Served<'_, W> {
+    fn exchange(
+        &self,
+        dial: &Dial<'_>,
+        request: &egress::Request,
+    ) -> Result<egress::Response, ConnectError> {
+        let mut world = self.0.borrow_mut();
+        let endpoint = Endpoint {
+            scheme: dial.scheme,
+            host: dial.name.as_str().to_owned(),
+            port: dial.to.port(),
+        };
+        let (address, redirect) = world.route(&endpoint).ok_or(ConnectError::Unreachable)?;
+        if address != dial.to.ip() {
+            return Err(ConnectError::Unreachable);
+        }
+        world.deliver(&endpoint, &String::from_utf8_lossy(request.body()));
+        Ok(match redirect {
+            None => egress::Response {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            Some(next) => egress::Response {
+                status: 307,
+                headers: vec![(
+                    "location".to_owned(),
+                    format!(
+                        "{}://{}:{}/",
+                        match next.scheme {
+                            Scheme::Wss => "wss",
+                            _ => "https",
+                        },
+                        next.host,
+                        next.port
+                    ),
+                )],
+                body: Vec::new(),
+            },
+        })
+    }
 }
 
 /// The Wasm-component platform: admission, one OS process per provider, and the checks on everything a provider's
@@ -314,9 +459,11 @@ impl<W: World> Platform<W> {
                 process.took,
                 self.measurement_cap,
             );
+            let artefact = artefact.clone();
             let slot = self.providers.entry(provider.to_owned()).or_default();
             slot.active = Some(version.to_owned());
             slot.process = Some(process);
+            self.world.running(&artefact);
         }
     }
 
@@ -527,8 +674,16 @@ impl<W: World> Platform<W> {
             {
                 Some(RefusalReason::UndeclaredOperation)
             }
-            Some(_) => {
+            Some(r) => {
                 context.serving = request.clone();
+                // The request is in flight for the world too: the credential proxy answers lookups only for it.
+                if let Some(caller) = Identifier::new(context.provider.clone()) {
+                    self.world.begin_request(
+                        &Caller::process_of(caller),
+                        &r.transaction,
+                        &r.operation,
+                    );
+                }
                 return Reply::Perform;
             }
         };
@@ -562,6 +717,9 @@ impl<W: World> Platform<W> {
         let Some(serving) = context.serving.take() else {
             return Reply::Noted;
         };
+        if let Some(caller) = Identifier::new(context.provider.clone()) {
+            self.world.end_request(&Caller::process_of(caller));
+        }
         let response = serde_json::from_str::<OutsideResponse>(json)
             .ok()
             .filter(|r| r.transaction == serving.transaction && r.operation == serving.operation)
@@ -584,7 +742,7 @@ impl<W: World> Platform<W> {
         let provider = context.provider.clone();
         let (Some(serving), Some(name)) = (context.serving.clone(), Name::new(name)) else {
             return Reply::SecretRefused {
-                reason: "undeclared_secret".to_owned(),
+                reason: secret_reason(SecretRefusalReason::UndeclaredSecret).to_owned(),
             };
         };
         // The credential proxy's rule (`F-014`), from the platform's own state: the caller is the provider whose
@@ -615,22 +773,34 @@ impl<W: World> Platform<W> {
             operation: serving.operation,
             name,
         };
-        let mut value = None;
-        let outcome = if judged.is_err() {
-            LookupOutcome::Refused(SecretRefusalReason::UndeclaredSecret)
+        // The world answers with the platform's verdict in hand: the credential proxy judges again from what the
+        // platform told it (`begin_request`), and records the use, refused or not; a refused verdict is never
+        // answered with a value.
+        let refused = judged.is_err();
+        let answered = match Identifier::new(provider.clone()) {
+            Some(caller) => self
+                .world
+                .lookup(&Caller::process_of(caller), &lookup, judged),
+            None => Err(SecretRefusalReason::UndeclaredSecret),
+        };
+        // Whatever a world answers, a lookup the platform refused is handed no value.
+        let answered = if refused {
+            answered.and(Err(SecretRefusalReason::UndeclaredSecret))
         } else {
-            match self.world.secret(&provider, lookup.name.as_str()) {
-                Some(found) => {
-                    context
-                        .resolved
-                        .entry(lookup.operation.as_str().to_owned())
-                        .or_default()
-                        .push(lookup.name.clone());
-                    value = Some(found);
-                    LookupOutcome::Resolved
-                }
-                None => LookupOutcome::Refused(SecretRefusalReason::NotFound),
+            answered
+        };
+        let mut value = None;
+        let outcome = match answered {
+            Ok(found) => {
+                context
+                    .resolved
+                    .entry(lookup.operation.as_str().to_owned())
+                    .or_default()
+                    .push(lookup.name.clone());
+                value = Some(found);
+                LookupOutcome::Resolved
             }
+            Err(reason) => LookupOutcome::Refused(reason),
         };
         self.events.lookups.push(LookupEvent {
             provider: provider.clone(),
@@ -639,21 +809,25 @@ impl<W: World> Platform<W> {
             outcome: Some(outcome),
         });
         match (outcome, value) {
-            (LookupOutcome::Resolved, Some(value)) => Reply::Secret { value },
-            (LookupOutcome::Refused(SecretRefusalReason::NotFound), _) => Reply::SecretRefused {
-                reason: "not_found".to_owned(),
+            (LookupOutcome::Resolved, Some(value)) => Reply::Secret {
+                value: value.as_str().to_owned(),
+            },
+            (LookupOutcome::Refused(reason), _) => Reply::SecretRefused {
+                reason: secret_reason(reason).to_owned(),
             },
             _ => Reply::SecretRefused {
-                reason: "undeclared_secret".to_owned(),
+                reason: secret_reason(SecretRefusalReason::UndeclaredSecret).to_owned(),
             },
         }
     }
 
-    /// The egress layer: every hop's scheme, host and port must be a destination the running declaration's
-    /// operation lists, and the address connected to within that destination's addresses (ADR-0004). The operation
-    /// is the outside request in flight, from the platform's own state: a call naming another is refused as
-    /// `undeclared_operation`, and its record names the operation in flight. It writes the outbound call record,
-    /// refused calls included (`REQ-MDL-8`).
+    /// The egress layer (`F-014`): the call goes through [`World::send`], so through [`Egress`], which checks every
+    /// hop's scheme, host and port against the destinations the operation in flight lists, resolves each host once
+    /// and dials only the address it checked (`B-17`), refuses a peer not verified over TLS (`B-18`), and writes the
+    /// outbound call record, refused calls included (`REQ-MDL-7`, `REQ-MDL-8`). The operation is the outside
+    /// request in flight, from the platform's own state: a call naming another is refused as
+    /// `undeclared_operation`, and its record names the operation in flight. The binding's call carries a body
+    /// only, so it is sent as a `POST` to `/`.
     fn egress(
         &mut self,
         operation: &str,
@@ -662,6 +836,9 @@ impl<W: World> Platform<W> {
         port: u16,
         body: &str,
     ) -> Reply {
+        let refused = || Reply::Egress {
+            outcome: "refused".to_owned(),
+        };
         // The call, its size and its names are judged before anything else, so that a module past its bound is
         // refused and its call recorded as refused for it, never delivered (`REQ-MDL-11`).
         if let Err(reply) = self.admit_request(
@@ -680,139 +857,57 @@ impl<W: World> Platform<W> {
             return reply;
         }
         let context = self.stack.last().expect("a context");
-        let (provider, version, transaction) = (
-            context.provider.clone(),
-            context.version.clone(),
-            context.transaction.clone(),
-        );
-        let declaration = context.declaration.clone();
-        let Some(op_name) = context.serving.as_ref().map(|s| s.operation.clone()) else {
-            // Nothing is in flight, so there is no operation to make the call under or to record it for.
-            return Reply::Egress {
-                outcome: "refused".to_owned(),
-            };
+        // Nothing is in flight, so there is no operation to make the call under or to record it for.
+        let Some(in_flight) = context.serving.as_ref().map(|s| s.operation.clone()) else {
+            return refused();
         };
-        let as_claimed = operation == op_name.as_str();
-        let operation = op_name.as_str();
-        let secrets = context.resolved.get(operation).cloned().unwrap_or_default();
         let scheme = match scheme {
+            "https" => Scheme::Https,
             "wss" => Scheme::Wss,
-            _ => Scheme::Https,
+            _ => return refused(),
         };
-        let listed: Vec<Name> = declaration
-            .outside
-            .operations
-            .iter()
-            .filter(|o| as_claimed && o.name.as_str() == operation)
-            .flat_map(|o| o.destinations.clone())
-            .collect();
-        let find = |current: &Endpoint| -> Option<Destination> {
-            declaration
-                .outside
-                .destinations
-                .iter()
-                .find(|d| {
-                    listed.contains(&d.name)
-                        && d.scheme == current.scheme
-                        && d.host.as_str() == current.host
-                        && d.port.get() == current.port
-                })
-                .cloned()
+        // An endpoint no record could name is refused unrecorded, as before.
+        let (Some(transaction), true, true) = (
+            Identifier::new(context.transaction.clone()),
+            Host::new(host.clone()).is_some(),
+            port != 0,
+        ) else {
+            return refused();
         };
-        if Host::new(host.clone()).is_none() {
-            return Reply::Egress {
-                outcome: "refused".to_owned(),
-            };
-        }
-        let mut hops = Vec::new();
-        let mut current = Endpoint { scheme, host, port };
-        let mut outcome = CallOutcome::Completed(Nothing {});
-        for hop in 0..MAX_HOPS {
-            let matched = find(&current);
-            let served = self.world.route(&current);
-            let refusal = match (&matched, &served) {
-                _ if !as_claimed => Some(RefusalReason::UndeclaredOperation),
-                (None, _) if hop == 0 => Some(RefusalReason::UndeclaredDestination),
-                (None, _) => Some(RefusalReason::RedirectToUndeclaredDestination),
-                (Some(d), Some((address, _))) if !allows(&d.addresses, *address) => {
-                    Some(RefusalReason::AddressNotAllowed)
-                }
-                _ => None,
-            };
-            let (Some(host), Some(port)) = (
-                Host::new(current.host.clone()),
-                NonZeroU16::new(current.port),
-            ) else {
-                outcome = CallOutcome::Refused(Refused {
-                    reason: RefusalReason::UndeclaredDestination,
-                });
-                break;
-            };
-            let destination = matched.as_ref().map(|d| d.name.clone());
-            if let Some(reason) = refusal {
-                hops.push(Hop {
-                    scheme: current.scheme,
-                    host,
-                    port,
-                    destination,
-                    address: None,
-                });
-                outcome = CallOutcome::Refused(Refused { reason });
-                break;
-            }
-            let Some((address, redirect)) = served else {
-                hops.push(Hop {
-                    scheme: current.scheme,
-                    host,
-                    port,
-                    destination,
-                    address: None,
-                });
-                outcome = CallOutcome::Failed(Nothing {});
-                break;
-            };
-            hops.push(Hop {
-                scheme: current.scheme,
-                host,
-                port,
-                destination,
-                address: Address::new(address.to_string()),
-            });
-            self.world.deliver(&current, body);
-            match redirect {
-                Some(next) if hop + 1 < MAX_HOPS => current = next,
-                Some(_) => {
-                    outcome = CallOutcome::Failed(Nothing {});
-                    break;
-                }
-                None => break,
-            }
-        }
-        let reply = match &outcome {
-            CallOutcome::Completed(_) => "completed",
-            CallOutcome::Failed(_) => "failed",
-            CallOutcome::Refused(_) => "refused",
-            _ => "unknown",
-        };
+        let declaration = context.declaration.clone();
+        let secrets = context
+            .resolved
+            .get(in_flight.as_str())
+            .cloned()
+            .unwrap_or_default();
         let started_at = self.now();
-        if let (Some(transaction), Some(provider), Some(module_version)) = (
-            Identifier::new(transaction),
-            Identifier::new(provider),
-            Identifier::new(version),
-        ) {
-            self.events.records.push(OutboundCallRecord {
-                transaction,
-                provider,
-                module_version,
-                operation: op_name.clone(),
-                secrets,
-                started_at,
-                hops,
-                outcome,
-            });
-        }
+        let call = Call {
+            declaration: &declaration,
+            in_flight: &in_flight,
+            asked: operation,
+            transaction: &transaction,
+            secrets: &secrets,
+            started_at: &started_at,
+        };
+        let Ok(request) =
+            egress::Request::new(Method::Post, "/", Vec::new(), body.as_bytes().to_vec())
+        else {
+            return refused();
+        };
+        let outcome = self.world.send(
+            &call,
+            egress::Endpoint { scheme, host, port },
+            request,
+            &mut self.events.records,
+        );
         Reply::Egress {
-            outcome: reply.to_owned(),
+            outcome: match outcome {
+                Outcome::Completed(_) => "completed",
+                Outcome::Failed(_) => "failed",
+                Outcome::Unreachable | Outcome::NoAnswer => "unknown",
+                Outcome::Refused(_) => "refused",
+            }
+            .to_owned(),
         }
     }
 
@@ -941,7 +1036,7 @@ impl<W: World> Platform<W> {
             let left = self.stack.last().map_or(Duration::ZERO, |c| {
                 c.due.saturating_duration_since(Instant::now())
             });
-            if !running || callee == caller {
+            if !running || reenters(&self.stack, callee) {
                 refusal = Some(CallRefusalReason::CalleeUnavailable);
             } else if left < self.call_budget {
                 refusal = Some(CallRefusalReason::DeadlineTooNear);
@@ -1002,7 +1097,7 @@ impl<W: World> Platform<W> {
         operation: &Statement<Operation>,
         declaration: Declaration,
         version: String,
-    ) -> Result<Vec<u8>, PlatformRefusal> {
+    ) -> Result<(Vec<u8>, Result<SecretValue, SecretRefusalReason>), PlatformRefusal> {
         let mut process = self
             .providers
             .get_mut(provider)
@@ -1015,6 +1110,17 @@ impl<W: World> Platform<W> {
         // A cross-module call's operation ends no later than the one that made it.
         let own = Instant::now() + self.deadline;
         let due = self.stack.last().map_or(own, |caller| caller.due.min(own));
+        let caller = Identifier::new(provider.to_owned()).map(Caller::process_of);
+        let json = serde_json::to_string(operation).unwrap_or_default();
+        // What the world knows the operation by: its transaction, or, for one that names none (a verifier's
+        // judgement), an identifier of the platform's own, from the operation's digest. The proxy resolves the
+        // statement key only for the operation it was told is being handled.
+        let handled_as = Identifier::new(transaction.clone()).or_else(|| {
+            Identifier::new(format!("rutent:untransacted:{}", sha256(json.as_bytes())))
+        });
+        if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
+            self.world.begin_operation(caller, handled_as);
+        }
         self.stack.push(Context {
             provider: provider.to_owned(),
             version,
@@ -1027,7 +1133,6 @@ impl<W: World> Platform<W> {
             usage: Usage::default(),
             limited: None,
         });
-        let json = serde_json::to_string(operation).unwrap_or_default();
         let mut outcome = Err(PlatformRefusal::Unavailable);
         let mut alive = process
             .send(&ToProvider::Handle { operation: json })
@@ -1069,7 +1174,20 @@ impl<W: World> Platform<W> {
                 }
             }
         }
+        // The statement key is resolved while the module still handles the operation, the proxy's condition for
+        // it, and only for an answer to sign; the module never sees it.
+        let limited = self.stack.last().is_none_or(|c| c.limited.is_some());
+        let statement_key = match (&outcome, &caller, &handled_as) {
+            (Ok(_), Some(caller), Some(handled_as)) if !limited => {
+                Some(self.world.statement_key(caller, handled_as))
+            }
+            _ => None,
+        };
         let context = self.stack.pop();
+        // However the operation ended, nothing of it stays in flight in the world.
+        if let Some(caller) = &caller {
+            self.world.end_operation(caller);
+        }
         if self.stack.is_empty() {
             // The top-level operation ended, and with it every provider's budget inside it.
             self.tree.clear();
@@ -1092,8 +1210,22 @@ impl<W: World> Platform<W> {
                 self.start(provider, &context.version);
             }
         }
-        outcome
+        outcome.map(|bytes| {
+            (
+                bytes,
+                statement_key.unwrap_or(Err(SecretRefusalReason::UndeclaredSecret)),
+            )
+        })
     }
+}
+
+/// Whether a call to `callee` would re-enter a provider already handling an operation on `stack`: the caller
+/// itself, or one further down the chain (A calls B, B calls A). Such a call is refused as `callee_unavailable`
+/// on purpose, not only because that provider's process is busy (`T-014-04`, `T-014-05`): one provider handles one
+/// operation at a time, and the credential proxy keeps one operation and one request in flight per provider, so a
+/// re-entrant operation would end the outer one's request in the proxy.
+fn reenters(stack: &[Context], callee: &str) -> bool {
+    stack.iter().any(|context| context.provider == callee)
 }
 
 /// `envelope` asked of `callee`: the same operation, its `provider` the callee.
@@ -1103,38 +1235,16 @@ fn with_provider(envelope: &Statement<Operation>, callee: &str) -> Option<Statem
     serde_json::from_value(value).ok()
 }
 
-/// Whether `address` is within `addresses`: for `public`, globally routable, in no special-purpose range.
-fn allows(addresses: &Addresses, address: IpAddr) -> bool {
-    match addresses {
-        Addresses::Public(_) => !SPECIAL_PURPOSE.iter().any(|(range, len)| {
-            range
-                .parse::<IpAddr>()
-                .is_ok_and(|range| within(address, range, *len))
-        }),
-        Addresses::Blocks(blocks) => blocks.iter().any(|block| {
-            let (ip, len) = block.parts();
-            within(address, ip, len)
-        }),
+/// The wire reason of a secret refusal, each the contract's own: `store_unavailable` is a store that couldn't
+/// answer, never `not_found` (module-interface 4.0.0, `T-010-09`), and a reason this platform doesn't know is
+/// `undeclared_secret`.
+fn secret_reason(reason: SecretRefusalReason) -> &'static str {
+    match reason {
+        SecretRefusalReason::NotFound => "not_found",
+        SecretRefusalReason::StoreUnavailable => "store_unavailable",
+        SecretRefusalReason::UndeclaredSecret => "undeclared_secret",
+        _ => "undeclared_secret",
     }
-}
-
-/// Whether `ip` lies within the block `outer/outer_len`. An IPv4 address and an IPv6 block never match, so an
-/// IPv4-mapped IPv6 address is judged as IPv6, where `::ffff:0:0/96` is special-purpose.
-fn within(ip: IpAddr, outer: IpAddr, outer_len: u8) -> bool {
-    let bits = |ip: IpAddr| match ip {
-        IpAddr::V4(v4) => (u128::from(u32::from(v4)) << 96, true),
-        IpAddr::V6(v6) => (u128::from(v6), false),
-    };
-    let ((a, a4), (b, b4)) = (bits(ip), bits(outer));
-    if a4 != b4 {
-        return false;
-    }
-    let mask = if outer_len == 0 {
-        0
-    } else {
-        u128::MAX << (128 - u32::from(outer_len))
-    };
-    a & mask == b & mask
 }
 
 fn digest(hex: &str) -> Digest {
@@ -1160,7 +1270,7 @@ fn unique() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A well-formed placeholder for a 64-byte signature value. It is not a real signature.
+/// A well-formed placeholder for a 64-byte signature value, replaced when the result is signed.
 fn placeholder_signature() -> String {
     format!("{}A", "s".repeat(85))
 }
@@ -1439,7 +1549,10 @@ impl<W: World> Platform<W> {
             .unwrap_or_default()
     }
 
-    /// Hands one provider-role operation to the provider's running module.
+    /// Hands one provider-role operation to the provider's running module. Its answer is passed on only checked
+    /// against the result schema, and signed with the provider's statement key, which the world resolves while
+    /// the module still handles the operation (`T-014-05`); a result that can't be signed is refused as
+    /// `Unavailable`.
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         *self
             .operations_received
@@ -1456,8 +1569,9 @@ impl<W: World> Platform<W> {
             return Handled::Refused(PlatformRefusal::NotHandled);
         }
         let statement_key = declaration.outside.statement_key.clone();
-        let bytes = match self.run_in_process(provider, operation, declaration, version) {
-            Ok(bytes) => bytes,
+        let (bytes, private) = match self.run_in_process(provider, operation, declaration, version)
+        {
+            Ok(answered) => answered,
             Err(refusal) => return Handled::Refused(refusal),
         };
         // The output is untrusted: judged against the result schema, patterns and lengths included (`REQ-MDL-12`).
@@ -1468,9 +1582,7 @@ impl<W: World> Platform<W> {
         if !result_matches(&result, &operation.statement) {
             return Handled::Refused(PlatformRefusal::MalformedOutput);
         }
-        // The signature is a placeholder: signing is `M2` and `M3` work (the module-boundary suite's statements
-        // carry one too).
-        Handled::Answered(Box::new(Statement {
+        let unsigned = Statement {
             // The deployment and protocol version are the platform's own: a result never echoes an operation's
             // envelope, which may be another deployment's or another version's (`REQ-PRT-1`).
             deployment: self.envelope.deployment.clone(),
@@ -1480,11 +1592,28 @@ impl<W: World> Platform<W> {
             made_at: operation.made_at.clone(),
             signature: Signature {
                 scheme: SignatureScheme::Ed25519,
-                key: statement_key,
+                key: statement_key.clone(),
                 value: placeholder_signature(),
             },
             statement: result,
-        }))
+        };
+        // Signed with the provider's statement key, held through the credential proxy and never by the module
+        // (`F-014`): the result and what the module nested in it in the provider's name. A result that can't be
+        // signed, because the world holds no key, the key isn't the one declared, or a nested statement is
+        // another deployment's, isn't passed on.
+        match private.ok().and_then(|key| {
+            proxy::sign_result(
+                &unsigned,
+                provider,
+                &self.envelope.deployment,
+                &key,
+                &statement_key,
+            )
+            .ok()
+        }) {
+            Some(signed) => Handled::Answered(Box::new(signed)),
+            None => Handled::Refused(PlatformRefusal::Unavailable),
+        }
     }
 
     /// What the platform saw since it was last asked: outbound call records, secret lookups, state reads and
