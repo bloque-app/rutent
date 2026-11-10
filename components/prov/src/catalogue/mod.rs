@@ -45,6 +45,8 @@ mod snapshot;
 mod time;
 mod tuples;
 
+pub(crate) use time::Stamp;
+
 pub use advertisements::{DEFAULT_CLOCK_SKEW_SECONDS, JoinRefusal, StatementRefusal};
 pub use balance::{
     Alert, CheckBound, CheckKind, CheckRecord, CheckRefusal, CheckTicket, Eligibility, Verdict,

@@ -9,7 +9,7 @@
 //! Wasm reaches its own process, which holds no check and nothing of another provider's.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -29,7 +29,7 @@ use rutent_contracts::provider_role::{
 };
 use serde_json::Value;
 
-use crate::catalogue::Instant as Clock;
+use crate::catalogue::{Instant as Clock, Stamp};
 use crate::egress::{
     self, Call, ConnectError, Connector, Dial, Egress, Method, NameResolver, Outcome,
 };
@@ -39,6 +39,7 @@ use crate::module::children::{
     CompileError, Machine, Paths, ProviderProcess, Received, Stderr, Stderrs, compile,
 };
 use crate::module::engine::{self, FORMAT, MAX_BINARY};
+use crate::module::lifecycle::{self, Lifecycle, LifecycleRefusal, SegmentRecord, Staging};
 use crate::module::limits::{
     Bounds, LimitHit, LimitKind, MAX_BODY, MAX_HOST, MAX_KEY, MAX_MEASUREMENTS, MAX_NAME,
     MAX_OUTSIDE_MESSAGE, Metered, Usage, charge, depth_allows, keep_last, within as within_bound,
@@ -66,16 +67,24 @@ pub const START_DEADLINE: Duration = Duration::from_secs(10);
 /// caller's deadline before it could answer, and the caller's own answer would be lost with it.
 pub const MIN_CALL_BUDGET: Duration = Duration::from_secs(1);
 
-/// One provider's releases and its running process.
+/// One provider's releases and its running processes.
 #[derive(Default)]
 struct Slot {
     accepted: Vec<AdmissionArtefact>,
     /// The release waiting for a fresh acceptance, its machine code, and its assertion as received, judged again
     /// when it is accepted.
     pending: Option<(AdmissionArtefact, Rc<Machine>, Vec<u8>)>,
+    /// The versions of releases withdrawn while they waited: a version names one release, so none is admitted
+    /// again.
+    withdrawn: BTreeSet<String>,
     machines: BTreeMap<String, Rc<Machine>>,
+    /// The version in force, and its process.
     active: Option<String>,
     process: Option<ProviderProcess>,
+    /// The other versions that run beside it, each in its own process: the staged release, and versions segments
+    /// in flight are finishing on (`T-013-06`). Still the one provider's code, so no other provider's process is
+    /// shared.
+    others: BTreeMap<String, ProviderProcess>,
 }
 
 /// The operation one provider's module is handling, and what it obtained while handling it.
@@ -306,6 +315,8 @@ pub struct Platform<W: World> {
     measurement_cap: usize,
     /// What it measured.
     pub measurements: Measurements,
+    /// Each provider's accepted releases: in force, staged, the segments in flight and the decisions taken.
+    lifecycle: Lifecycle,
 }
 
 impl<W: World> Platform<W> {
@@ -338,6 +349,7 @@ impl<W: World> Platform<W> {
             compile_deadline: COMPILE_DEADLINE,
             measurement_cap: MAX_MEASUREMENTS,
             measurements: Measurements::default(),
+            lifecycle: Lifecycle::default(),
         })
     }
 
@@ -425,28 +437,29 @@ impl<W: World> Platform<W> {
         Time::new(format!("2026-11-07T{:02}:{m:02}:{s:02}Z", h % 24)).expect("a time")
     }
 
-    /// Starts `version` of the provider in a new process. If it starts, its process replaces the old one; if not,
-    /// the old one keeps running and the previous version stays in force.
-    fn start(&mut self, provider: &str, version: &str) {
-        let Some(slot) = self.providers.get(provider) else {
-            return;
-        };
-        let (Some(machine), Some(artefact)) = (
-            slot.machines.get(version).cloned(),
-            slot.accepted
-                .iter()
-                .rev()
-                .find(|a| a.declaration().version.as_str() == version),
-        ) else {
-            return;
-        };
+    /// Starts `version` of the provider in a new process, from its admitted machine code: the process and the
+    /// release it runs. `None` if the version has no accepted release or its process didn't start; nothing of the
+    /// provider changes.
+    fn spawn(
+        &mut self,
+        provider: &str,
+        version: &str,
+    ) -> Option<(ProviderProcess, AdmissionArtefact)> {
+        let slot = self.providers.get(provider)?;
+        let machine = slot.machines.get(version).cloned()?;
+        let artefact = slot
+            .accepted
+            .iter()
+            .rev()
+            .find(|a| a.declaration().version.as_str() == version)?
+            .clone();
         let code = &artefact.build.machine_code;
         let admitted = [
             code.sandboxed.value.as_str().to_owned(),
             code.outside.value.as_str().to_owned(),
         ];
-        // A process that fails to start is dropped, which kills it; the slot keeps what it had.
-        if let Ok(process) = ProviderProcess::spawn(
+        // A process that fails to start is dropped, which kills it.
+        let process = ProviderProcess::spawn(
             &self.paths,
             &self.workdir,
             provider,
@@ -454,31 +467,88 @@ impl<W: World> Platform<W> {
             [&admitted[0], &admitted[1]],
             &self.stderrs,
             START_DEADLINE,
-        ) {
-            keep_last(
-                &mut self.measurements.starts,
-                process.took,
-                self.measurement_cap,
-            );
-            let artefact = artefact.clone();
-            let slot = self.providers.entry(provider.to_owned()).or_default();
-            slot.active = Some(version.to_owned());
+        )
+        .ok()?;
+        keep_last(
+            &mut self.measurements.starts,
+            process.took,
+            self.measurement_cap,
+        );
+        Some((process, artefact))
+    }
+
+    /// Starts `version` of the provider again, in its place: the version in force's process, or another version's
+    /// beside it. If it doesn't start, the provider keeps what it had.
+    fn respawn(&mut self, provider: &str, version: &str) -> bool {
+        let Some((process, artefact)) = self.spawn(provider, version) else {
+            return false;
+        };
+        let slot = self.providers.entry(provider.to_owned()).or_default();
+        if slot.active.as_deref() == Some(version) {
             slot.process = Some(process);
-            self.world.running(&artefact);
+        } else {
+            slot.others.insert(version.to_owned(), process);
+        }
+        self.world.running(&artefact);
+        true
+    }
+
+    /// Starts a release just accepted, at the caller's clock `at`: staged beside the version in force where a
+    /// staging policy is set and a version is in force, and in force otherwise (`T-013-06`). If its process
+    /// doesn't start, the version in force stays in force, and nothing runs the release (`REQ-MDL-4`, `AC-19`).
+    fn launch(&mut self, provider: &str, version: &str, at: Clock) {
+        let placement = self.lifecycle.placement(provider);
+        let Some((process, artefact)) = self.spawn(provider, version) else {
+            return;
+        };
+        self.lifecycle.started(provider, version, placement, at);
+        self.providers
+            .entry(provider.to_owned())
+            .or_default()
+            .others
+            .insert(version.to_owned(), process);
+        self.world.running(&artefact);
+        self.reconcile(provider);
+    }
+
+    /// Makes the provider's processes what its lifecycle wants: the version in force in its place, every other
+    /// version wanted beside it, and no process of a version nothing runs on, which is stopped as it drops. A
+    /// version put back in force with no process is started; if it doesn't start, no version is in force. Never
+    /// called while the provider handles an operation, whose process is out of its place.
+    fn reconcile(&mut self, provider: &str) {
+        let wanted = self.lifecycle.wanted(provider);
+        let in_force = self.lifecycle.in_force(provider).map(str::to_owned);
+        let Some(slot) = self.providers.get_mut(provider) else {
+            return;
+        };
+        let mut running = std::mem::take(&mut slot.others);
+        if let (Some(active), Some(process)) = (slot.active.clone(), slot.process.take()) {
+            running.insert(active, process);
+        }
+        running.retain(|version, _| wanted.contains(version));
+        slot.process = in_force.as_ref().and_then(|v| running.remove(v));
+        slot.active.clone_from(&in_force);
+        slot.others = running;
+        if let Some(version) = in_force
+            && slot.process.is_none()
+            && !self.respawn(provider, &version)
+        {
+            self.lifecycle.not_running(provider, &version);
+            if let Some(slot) = self.providers.get_mut(provider) {
+                slot.active = None;
+            }
         }
     }
 
-    fn running_declaration(&self, provider: &str) -> Option<(Declaration, String)> {
-        let slot = self.providers.get(provider)?;
-        let version = slot.active.clone()?;
-        let declaration = slot
+    /// The declaration of the provider's accepted release of `version`.
+    fn declaration_of(&self, provider: &str, version: &str) -> Option<Declaration> {
+        self.providers
+            .get(provider)?
             .accepted
             .iter()
             .rev()
-            .find(|a| a.declaration().version.as_str() == version)?
-            .declaration()
-            .clone();
-        Some((declaration, version))
+            .find(|a| a.declaration().version.as_str() == version)
+            .map(|a| a.declaration().clone())
     }
 
     /// The operation on top of the stack hit `hit`: it is refused as a limit, and so is every later request of it
@@ -620,9 +690,12 @@ impl<W: World> Platform<W> {
                     return reply;
                 }
                 // Only while an outside request is in flight: outside one, the outside part has nothing to serve.
+                // Only the shared entries and the handled transaction's own: another transaction's entry is never
+                // asked of the world (`REQ-MDL-10`).
                 let context = self.stack.last().expect("a context");
                 let (provider, serving) = (context.provider.clone(), context.serving.is_some());
-                let value = if serving {
+                let readable = lifecycle::state_readable(&key, &context.transaction);
+                let value = if serving && readable {
                     self.world.state(&provider, &key)
                 } else {
                     None
@@ -1050,7 +1123,9 @@ impl<W: World> Platform<W> {
         // own process, and a callee that stopped, hit a limit or gave no readable answer leaves the call unanswered.
         let mut answered = false;
         if refusal.is_none() {
-            answered = matches!(self.handle(callee, &asked), Handled::Answered(_));
+            // On the callee's version in force: the caller's segment is the caller's, and names no version of the
+            // callee (`T-013-06`).
+            answered = matches!(self.handle_in(callee, &asked, None), Handled::Answered(_));
         }
         let (Some(transaction), Some(caller), Some(caller_version), Some(callee_id)) = (
             Identifier::new(transaction),
@@ -1102,10 +1177,17 @@ impl<W: World> Platform<W> {
         declaration: Declaration,
         version: String,
     ) -> Result<(Vec<u8>, Result<SecretValue, SecretRefusalReason>), PlatformRefusal> {
+        // The process of the version handling it: the one in force, or one beside it (`T-013-06`).
         let mut process = self
             .providers
             .get_mut(provider)
-            .and_then(|s| s.process.take())
+            .and_then(|s| {
+                if s.active.as_deref() == Some(version.as_str()) {
+                    s.process.take()
+                } else {
+                    s.others.remove(&version)
+                }
+            })
             .ok_or(PlatformRefusal::Unavailable)?;
         let transaction = serde_json::to_value(&operation.statement)
             .ok()
@@ -1203,15 +1285,19 @@ impl<W: World> Platform<W> {
             outcome = Err(PlatformRefusal::LimitReached);
         }
         if alive && process.alive() {
-            if let Some(slot) = self.providers.get_mut(provider) {
-                slot.process = Some(process);
+            if let (Some(slot), Some(context)) = (self.providers.get_mut(provider), &context) {
+                if slot.active.as_deref() == Some(context.version.as_str()) {
+                    slot.process = Some(process);
+                } else {
+                    slot.others.insert(context.version.clone(), process);
+                }
             }
         } else {
-            // The process is gone: this operation is refused, and the platform starts the running version again
-            // in a new process, as a supervisor would, touching no other provider.
+            // The process is gone: this operation is refused, and the platform starts the version again in a new
+            // process, in its place, as a supervisor would, touching no other provider and no other version.
             drop(process);
             if let Some(context) = context {
-                self.start(provider, &context.version);
+                self.respawn(provider, &context.version);
             }
         }
         outcome.map(|bytes| {
@@ -1256,6 +1342,25 @@ fn digest(hex: &str) -> Digest {
     Digest {
         algorithm: DigestAlgorithm::Sha256,
         value: DigestValue::new(hex.to_owned()).expect("a digest"),
+    }
+}
+
+/// The transaction an operation names, if it names one.
+fn transaction_of(operation: &Operation) -> Option<String> {
+    serde_json::to_value(operation)
+        .ok()
+        .and_then(|v| v["transaction"].as_str().map(str::to_owned))
+}
+
+/// Whether `next`'s assertion was made before `previous`'s, or either time can't be read: an older signed release
+/// (`THR-17`).
+fn asserted_before(next: &AdmissionArtefact, previous: &AdmissionArtefact) -> bool {
+    match (
+        Stamp::parse(&next.assertion.made_at),
+        Stamp::parse(&previous.assertion.made_at),
+    ) {
+        (Some(next), Some(previous)) => next < previous,
+        _ => true,
     }
 }
 
@@ -1388,17 +1493,33 @@ impl<W: World> Platform<W> {
         {
             return Admitted::Refused(AdmissionRefusal::UnreadableBinary);
         }
-        // A version already admitted, accepted or waiting, is never admitted again: its machine code and artefact
-        // stay what they are. While a release waits for its acceptance, no other is admitted, under any version:
-        // the one waiting is what its acceptance is given to (`AdmissionRefusal::VersionAlreadyAdmitted`).
+        // A version already admitted, accepted, waiting or withdrawn, is never admitted again: its machine code and
+        // artefact stay what they are (`VersionAlreadyAdmitted`). While a release waits for its acceptance, no other
+        // is admitted, under any version: the one waiting is what its acceptance is given to (`AdmissionPending`).
         if let Some(slot) = self.providers.get(&provider) {
-            let accepted = slot
+            let named = slot
                 .accepted
                 .iter()
-                .any(|a| a.declaration().version.as_str() == version);
-            if accepted || slot.pending.is_some() {
+                .chain(slot.pending.as_ref().map(|(a, _, _)| a))
+                .any(|a| a.declaration().version.as_str() == version)
+                || slot.withdrawn.contains(&version);
+            if named {
                 return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted);
             }
+            if slot.pending.is_some() {
+                return Admitted::Refused(AdmissionRefusal::AdmissionPending);
+            }
+        }
+        // While a release is staged, no other is admitted: its staging ends first, promoted or rolled back
+        // (ADR-0014). And a release asserted before the provider's last accepted one is an older signed release,
+        // which publishing never reinstates (`REQ-MDL-4`, `THR-17`).
+        if self.lifecycle.staged(&provider).is_some() {
+            return Admitted::Refused(AdmissionRefusal::ReleaseStaged);
+        }
+        if let Some(previous) = &previous
+            && asserted_before(&artefact, previous)
+        {
+            return Admitted::Refused(AdmissionRefusal::OlderRelease);
         }
         // The contract's rules on the release, and against the release it follows: an assertion signed with a
         // statement key an earlier release declared is refused (`THR-4`).
@@ -1471,7 +1592,8 @@ impl<W: World> Platform<W> {
         } else {
             slot.accepted.push(artefact.clone());
             slot.machines.insert(version.clone(), machine);
-            self.start(&provider, &version);
+            self.lifecycle.accept(&provider, &version);
+            self.launch(&provider, &version, at);
         }
         Admitted::Artefact(Box::new(artefact))
     }
@@ -1497,14 +1619,18 @@ impl<W: World> Platform<W> {
         {
             return None;
         }
-        let at = self.now();
+        let accepted_at = self.now();
         let slot = self.providers.get_mut(provider)?;
         let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
-        artefact.acceptance.accepted = Some(Accepted { by: Some(by), at });
+        artefact.acceptance.accepted = Some(Accepted {
+            by: Some(by),
+            at: accepted_at,
+        });
         slot.accepted.push(artefact.clone());
         slot.machines.insert(version.clone(), machine);
-        self.start(provider, &version);
+        self.lifecycle.accept(provider, &version);
+        self.launch(provider, &version, at);
         Some(artefact)
     }
 
@@ -1542,7 +1668,7 @@ impl<W: World> Platform<W> {
         if let Some(slot) = self.providers.get_mut(provider) {
             slot.process = None;
         }
-        self.start(provider, &version);
+        self.respawn(provider, &version);
         self.process(provider).is_some()
     }
 
@@ -1558,14 +1684,49 @@ impl<W: World> Platform<W> {
     /// against the result schema, and signed with the provider's statement key, which the world resolves while
     /// the module still handles the operation (`T-014-05`); a result that can't be signed is refused as
     /// `Unavailable`.
+    ///
+    /// It runs on the version its segment runs on, if a segment began for its transaction
+    /// ([`Platform::begin_segment`]), and on the version in force otherwise. It is refused as `DuplicateTransaction`
+    /// where its transaction's segment is another provider's or has ended, and as `VersionExploited` where its
+    /// segment's version was declared exploited (`T-013-06`).
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
+        let transaction = transaction_of(&operation.statement);
+        self.handle_in(provider, operation, transaction.as_deref())
+    }
+
+    /// [`Platform::handle`], in the segment of `transaction` if one holds it, and on the version in force for
+    /// `None`.
+    fn handle_in(
+        &mut self,
+        provider: &str,
+        operation: &Statement<Operation>,
+        transaction: Option<&str>,
+    ) -> Handled {
         *self
             .operations_received
             .entry(provider.to_owned())
             .or_default() += 1;
-        let Some((declaration, version)) = self.running_declaration(provider) else {
+        let version = match self.lifecycle.version_for(provider, transaction) {
+            Ok(version) => version,
+            Err(refusal) => return Handled::Refused(refusal),
+        };
+        let Some(declaration) = self.declaration_of(provider, &version) else {
             return Handled::Refused(PlatformRefusal::Unavailable);
         };
+        let handled = self.handle_on(provider, operation, declaration, version.clone());
+        self.lifecycle
+            .observe(provider, &version, matches!(handled, Handled::Answered(_)));
+        handled
+    }
+
+    /// [`Platform::handle`] on `version`, whose declaration is `declaration`.
+    fn handle_on(
+        &mut self,
+        provider: &str,
+        operation: &Statement<Operation>,
+        declaration: Declaration,
+        version: String,
+    ) -> Handled {
         if !declaration
             .sandboxed
             .handles
@@ -1623,6 +1784,145 @@ impl<W: World> Platform<W> {
             Some(signed) => Handled::Answered(Box::new(signed)),
             None => Handled::Refused(PlatformRefusal::Unavailable),
         }
+    }
+
+    /// Sets how upgrades are staged (ADR-0014): `None`, the default, puts an accepted release in force once it
+    /// starts; a policy stages it beside the version in force, on a share of new segments, until the operator
+    /// promotes it or rolls it back.
+    pub fn set_staging(&mut self, staging: Option<Staging>) {
+        self.lifecycle.set_staging(staging);
+    }
+
+    /// Each provider's lifecycle: the version in force, the staged one and what was observed of it, the operator's
+    /// marks, the segments in flight and the decisions recorded.
+    pub fn lifecycle(&self) -> &Lifecycle {
+        &self.lifecycle
+    }
+
+    /// The process the provider's `version` runs in, in force or beside it.
+    pub fn version_process(&self, provider: &str, version: &str) -> Option<ProcessId> {
+        let slot = self.providers.get(provider)?;
+        if slot.active.as_deref() == Some(version) {
+            slot.process.as_ref()
+        } else {
+            slot.others.get(version)
+        }
+        .map(|p| ProcessId::from(p.pid()))
+    }
+
+    /// Begins the segment of `transaction` at the provider (`REQ-MDL-5`, `REQ-MDL-14`): it runs on the version this
+    /// returns, the staged one for its share and the one in force otherwise, until it ends, unless the operator
+    /// marks that version stale. A transaction a segment holds or held is refused as `DuplicateTransaction`
+    /// (`INV-8`), and a provider with no version in force as `Unavailable`.
+    pub fn begin_segment(
+        &mut self,
+        provider: &str,
+        transaction: &Identifier,
+    ) -> Result<String, PlatformRefusal> {
+        self.lifecycle.begin_segment(provider, transaction)
+    }
+
+    /// Ends the segment of `transaction` and hands over its record: the version it began on, the one it ran on and
+    /// each move between them. Its transaction never begins another, and a version nothing runs on any more stops.
+    pub fn end_segment(&mut self, transaction: &str) -> Option<SegmentRecord> {
+        let record = self.lifecycle.end_segment(transaction)?;
+        self.reconcile(&record.provider);
+        Some(record)
+    }
+
+    /// Withdraws, by `by` at the caller's clock `at`, the provider's release that waits for its fresh acceptance
+    /// under `assertion_digest`, accepted or not since: one refused on being judged again stays waiting until it
+    /// is withdrawn. The provider's next release may then be admitted, under another version. The withdrawn
+    /// artefact, or `None` if no release waits under that digest or `by` names no one.
+    pub fn withdraw(
+        &mut self,
+        provider: &str,
+        assertion_digest: &Digest,
+        by: &str,
+        at: Clock,
+    ) -> Option<AdmissionArtefact> {
+        Identifier::new(by)?;
+        let slot = self.providers.get_mut(provider)?;
+        if &slot.pending.as_ref()?.0.assertion_digest != assertion_digest {
+            return None;
+        }
+        let (artefact, _, _) = slot.pending.take()?;
+        let version = artefact.declaration().version.as_str().to_owned();
+        slot.withdrawn.insert(version.clone());
+        self.lifecycle.withdrawn(provider, &version, by, at).ok()?;
+        Some(artefact)
+    }
+
+    /// Puts the provider's staged release in force, by `by` at the caller's clock `at`, once its time window has
+    /// passed and it has handled its minimum (`REQ-MDL-4`, ADR-0014). Segments in flight stay where they run.
+    pub fn promote(
+        &mut self,
+        provider: &str,
+        by: &str,
+        at: Clock,
+    ) -> Result<String, LifecycleRefusal> {
+        let promoted = self.lifecycle.promote(provider, by, at)?;
+        self.reconcile(provider);
+        Ok(promoted)
+    }
+
+    /// Rolls the provider's staged release back, by `by`: the version in force stays, and segments on the staged
+    /// one finish on it.
+    pub fn roll_back(
+        &mut self,
+        provider: &str,
+        by: &str,
+        at: Clock,
+    ) -> Result<String, LifecycleRefusal> {
+        let rolled_back = self.lifecycle.roll_back(provider, by, at)?;
+        self.reconcile(provider);
+        Ok(rolled_back)
+    }
+
+    /// Revokes the provider's `version`, by `by`: it takes no new segment, and those in flight on it finish on it
+    /// (`REQ-MDL-20`). Revoking the version in force puts the one before it back in force, a recorded decision; the
+    /// version put back, if any.
+    pub fn revoke(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Clock,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        let back = self.lifecycle.revoke(provider, version, by, at)?;
+        self.reconcile(provider);
+        Ok(back)
+    }
+
+    /// Declares the provider's `version` actively exploited, by `by`: its process is stopped and its segments are
+    /// refused as `VersionExploited`, not moved (`REQ-MDL-20`). The version put back in force, if any.
+    pub fn declare_exploited(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Clock,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        let back = self
+            .lifecycle
+            .declare_exploited(provider, version, by, at)?;
+        self.reconcile(provider);
+        Ok(back)
+    }
+
+    /// Marks the provider's `version` stale, by `by`, the operator's decision and never the publisher's: its
+    /// segments in flight move to the version in force, each move recorded in its segment's record (`REQ-MDL-5`,
+    /// `REQ-MDL-19`). Refused while a release is staged (ADR-0014). How many segments moved.
+    pub fn mark_stale(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Clock,
+    ) -> Result<usize, LifecycleRefusal> {
+        let moved = self.lifecycle.mark_stale(provider, version, by, at)?;
+        self.reconcile(provider);
+        Ok(moved)
     }
 
     /// What the platform saw since it was last asked: outbound call records, secret lookups, state reads and

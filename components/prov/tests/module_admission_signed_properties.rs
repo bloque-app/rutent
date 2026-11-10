@@ -111,8 +111,14 @@ fn while_a_release_waits_no_other_release_of_its_provider_is_admitted_or_compile
         value["version"] = version.clone().into();
         value["sandboxed"]["handles"] = serde_json::to_value(&handles).expect("JSON");
         let other = serde_json::from_value(value).expect("a valid declaration");
+        // The waiting version names the release waiting; any other is refused as pending.
+        let expected = if version == "1.0.0" {
+            AdmissionRefusal::VersionAlreadyAdmitted
+        } else {
+            AdmissionRefusal::AdmissionPending
+        };
         match s.admit(&signed::assertion(&other, &binaries, &key), &binaries) {
-            Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted) => {}
+            Admitted::Refused(refusal) if refusal == expected => {}
             got => panic!("seed {seed}: release {version} {handles:?} was not refused: {got:?}"),
         }
         assert_eq!(

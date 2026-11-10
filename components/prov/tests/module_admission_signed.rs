@@ -219,10 +219,16 @@ fn admission_while_one_is_pending_is_refused() {
         panic!("the first release wasn't admitted");
     };
     let compiles = s.platform.measurements.compiles.len();
+    // The waiting version itself names the release waiting; any other is refused as pending.
     for version in ["1.0.0", "1.0.1", "2.0.0", "0.9.0"] {
         let (declaration, binaries) = release(RESERVE, version, &["withdrawal"]);
+        let expected = if version == "1.0.0" {
+            AdmissionRefusal::VersionAlreadyAdmitted
+        } else {
+            AdmissionRefusal::AdmissionPending
+        };
         match s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries) {
-            Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted) => {}
+            Admitted::Refused(refusal) if refusal == expected => {}
             other => panic!("release {version} was admitted while 1.0.0 waits: {other:?}"),
         }
     }
@@ -256,7 +262,7 @@ fn admission_while_one_is_pending_is_refused() {
             &signed::assertion(&third, &third_binaries, &key),
             &third_binaries
         ),
-        Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+        Admitted::Refused(AdmissionRefusal::AdmissionPending)
     ));
     assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
     assert!(

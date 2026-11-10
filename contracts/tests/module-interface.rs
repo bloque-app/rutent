@@ -8,8 +8,9 @@ use jsonschema::{Registry, Validator};
 use rutent_contracts::module_interface::{
     self, Address, AddressBlock, AdmissionArtefact, AdmissionRefusal, CallOutcome,
     CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration, DeclaredList, Nothing,
-    OutboundCallRecord, OutsideRequest, OutsideResponse, RefusalReason, ReleaseAssertion,
-    RuleViolation, SecretAnswer, SecretLookup, SecretOutcome, SecretRefusalReason, Widening,
+    OutboundCallRecord, OutsideRequest, OutsideResponse, PlatformRefusal, RefusalReason,
+    ReleaseAssertion, RuleViolation, SecretAnswer, SecretLookup, SecretOutcome,
+    SecretRefusalReason, Widening,
 };
 use rutent_contracts::provider_role::{self, Advertisement, Deployment, ResultBody, Statement};
 use serde::de::DeserializeOwned;
@@ -1917,6 +1918,52 @@ fn admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_th
         format!("{:?}", AdmissionRefusal::AssertionUnverified),
         "AssertionUnverified"
     );
+}
+
+// verifies: DEC-4, REQ-MDL-4, REQ-MDL-14, REQ-MDL-20
+#[test]
+fn lifecycle_refusals_are_distinct_reasons_that_print_their_names() {
+    let admission = [
+        AdmissionRefusal::ReleaseStaged,
+        AdmissionRefusal::OlderRelease,
+        AdmissionRefusal::AdmissionPending,
+        AdmissionRefusal::VersionAlreadyAdmitted,
+    ];
+    for (i, a) in admission.iter().enumerate() {
+        for b in &admission[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    let platform = [
+        PlatformRefusal::DuplicateTransaction,
+        PlatformRefusal::VersionExploited,
+        PlatformRefusal::Unavailable,
+    ];
+    for (i, a) in platform.iter().enumerate() {
+        for b in &platform[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    for (reason, name) in [
+        (
+            format!("{:?}", AdmissionRefusal::ReleaseStaged),
+            "ReleaseStaged",
+        ),
+        (
+            format!("{:?}", AdmissionRefusal::OlderRelease),
+            "OlderRelease",
+        ),
+        (
+            format!("{:?}", PlatformRefusal::DuplicateTransaction),
+            "DuplicateTransaction",
+        ),
+        (
+            format!("{:?}", PlatformRefusal::VersionExploited),
+            "VersionExploited",
+        ),
+    ] {
+        assert_eq!(reason, name);
+    }
 }
 
 // verifies: DEC-4
