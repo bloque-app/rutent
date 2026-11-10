@@ -502,3 +502,99 @@ and `killing_the_leader_mid_submit_loses_no_acknowledged_record` passed on both 
   built and documented in the existing `ci` job. `signing::signature_bytes` now takes only canonical signatures
   (`role::is_canonical_signature`), so a final character with unused bits set is rejected.
 - `ReleaseJudge`'s doctest is pinned to `E0277`.
+## T-010-06: the `G-54` test, and the purpose-built store's two fixes
+
+`G-54`: damage to the frame holding the last acknowledged append, which a store can mistake for a torn, unacknowledged
+write and cut without a word. `T-010-06` tests VOS for it and fixes the purpose-built store, the fallback (`DEC-6`,
+ADR-0002), for it and for the memory it held.
+
+### The purpose-built store refuses a damaged acknowledged last frame
+
+- **The mark.** After the log's sync, an append writes `log.mark` in place and syncs it: where the frame ends, that
+  frame's checksum and a checksum of the two, 16 bytes, before `submit` returns. It is a copy of the last acknowledged
+  frame's identity kept apart from the log, the only thing the module's old note said could tell a torn write from
+  later damage. On open, a log whose last whole frame ends before the mark's end, or whose frame at that end has another
+  checksum, or that has no frame ending there, is refused with `HostError::Unavailable` naming the acknowledged append,
+  and nothing is cut. A tail that starts at or after the mark's end is the append a crash cut short, and is cut as
+  before. A mark that is behind the log (the crash fell between the log's sync and the mark's) leaves the frame
+  present and the open moves the mark to it.
+- **Reading: a missing mark.** A store with no mark, such as a log copied away from its directory or written before this
+  task, has nothing to check against: the open reads it as before (its damaged last frame is cut as torn) and writes
+  the mark it lacked. The residual is stated in the module's docs: no mark, or a damaged log restored beside a mark
+  that went with an older copy, is not seen. An empty mark file is a new one; a mark of the wrong size or checksum
+  refuses the store, since it can't be checked and the operator can remove it after verifying the log.
+- **Reading: "acknowledged".** An append is acknowledged when `submit` returns it, which is after the mark's sync; so
+  a write that fails at the mark is undone like one that fails at the log's sync, and the old mark goes back with the
+  cut (a unit test injects the failure), or a healthy log would be refused.
+- **Cost.** Two syncs per append where it was one. `measurements.rs` has no latency threshold on the store and its
+  throughput row (`G-42`) is `#[ignore]`d; it was not re-run here, so the extra sync's price is unmeasured.
+- **Tests.** `purpose built store refuses a damaged acknowledged last frame` (six kinds of damage to the last frame,
+  nothing cut each time, and the undamaged log opens) and `purpose built store still cuts an append that was never
+  acknowledged` (a torn append beside the earlier mark is cut and can be made again; a whole frame ahead of the mark
+  is kept; damage after that is refused). The existing torn-tail test now says what it always held, a log with no
+  mark. Both new tests were seen failing against the unchanged store first (the store opened and cut the frame).
+
+### The purpose-built store's memory is an index, not the log
+
+- **Reading: "bounds its memory".** The `M1` retrospective names only the line "the store ... bounding its memory". The
+  store kept every record it had written, so `G-01`'s 90 MiB journal cost 90 MiB or more, twice that while opening
+  (it read the whole log into one buffer and then parsed it). The reading taken: what an open host retains must not
+  follow the size of the records or of the log, and opening must not hold the log. It is not constant in the number
+  of records, which an index that dedups record ids can't be; each record costs one 16-byte place and two 128-bit keys.
+- **What it holds.** Where each record's frame is (offset and length), by order and by record id key, and the
+  refusals' places. Every read goes to the log by position and checks the frame's checksum again, so damage after
+  an open is an error, never a wrong answer. Keys are two hashes under the process's random keys, so a record id
+  of any length costs the same, and each read checks the id it finds against the one asked for (a collision is an
+  `Unavailable`, which no log is expected to hold). Opening reads a frame at a time; only a bad tail is read whole.
+  An export reads each record as it reaches it.
+- **Not bounded.** The index grows by one small entry per record; the contract's `StreamCheck`, which an open runs
+  over the log, holds each record id and order id until the open ends (it is the contract's, not this task's); a
+  frame is as large as its entry, up to 64 MiB; a journal read returns one order's records at once.
+- **Test.** `purpose built store's memory stays bounded as its history grows`, in its own test binary
+  (`tests/purpose_built_store_memory.rs`) so that its counting allocator sees nothing else. Three histories, 2 KiB
+  and 64 KiB records, and 400 of the large ones (log 0.7, 13 and 27 MB): what an open host retains was 14, 16 and 28
+  KB, the same for records thirty times larger (a limit of 16 KB more), under 2 % of the log (a limit), and the heap
+  never rose more than 1 MiB over what the host kept while the log was opened (0.1 to 0.3 MB seen). Against the
+  unchanged store the same test failed: it retained 0.7, 13.4 and 26.9 MB, and peaked at twice that.
+- **DEC-20 path touched:** `.github/workflows/stm-vos.yml` (a step, below).
+
+### `G-54` on VOS: what the test found (a development run; the scored run is CI's)
+
+The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a `continue-on-error` step of
+`stm-vos.yml`, its lines in `g54.txt` of the run's artifact) writes one order's inputs through the real program, waits
+for quiet, kills every node, and damages a node's data directory, on one node and on the leader of three. `EXP-1`'s
+damage was probably on the unsynced batch after the acknowledged append, so this test finds the frame by content:
+the last acknowledged input's record id appears 14 times in the node's one journal file (`store/0.jnl`), once in the
+batch that holds the append and again in later batches. Three kinds of damage, each followed by starting the damaged
+node alone and asking its own replica (an applied-consistency query), with the log kept:
+
+| Damage | One node | Leader of three (started alone) |
+|---|---|---|
+| A byte flipped in every place the id sits | **refused**: the node exits, `Store(JournalRecovery(ChecksumMismatch))` | **refused**, the same |
+| The journal's last byte flipped (a later frame) | recovered, 7 of 7 records | could not answer until the others joined ("behind"), then whole: undetermined |
+| The journal cut just after the id's first place (the acknowledged frame is the last, and torn) | **cut silently**: 6 of 7 records, nothing in the log | **cut silently** locally (6 of 7), repaired by replication once the others started |
+
+- **Reading.** A damaged frame with later frames behind it is refused by VOS (fjall's journal recovery reports a checksum
+  mismatch and the node does not start). A last frame that is torn or damaged with nothing after it is cut and the node
+  starts without a word: the loss of an acknowledged append, the `G-54` shape `pb` had. On three nodes the cut node is
+  repaired by the others, so the cluster loses nothing; the node's own store still cut silently.
+- **What this run is.** macOS arm64, the interpreter (`VOS_DEV=1`), at the pinned `vos-core` `5c78975`. Its result is
+  provisional: the scored run is Linux x86_64 with the JIT, in CI, and needs the branch pushed, which a task agent does
+  not do. **The run id goes here once CI has it: pending.** The storage path does not depend on the PVM backend, so I
+  expect the same lines. The test's two VOS tests fail on the silent cut by design (they need not pass).
+- **What it does not show.** The journal was cut at a place found by content, not at the frame's own boundary (fjall's
+  format was not read); a cut a few bytes later could differ. Power loss (a real torn write) was not tried.
+
+### Owner's item (draft, provisional until the scored run): `vos-g54-silent-tail-cut`
+
+VOS cuts a torn or damaged last journal frame silently, as `pb` did before this task. Choose:
+
+1. **Fix it upstream** (recommended): ask VOS's maintainers for a refusal or a log line and a node status flag when journal recovery
+   cuts a tail, and for an option to fail instead of cut; or, as a program-side guard, a watermark the program writes
+   outside the journal that a restart compares with what recovered.
+2. **Accept the residual for both candidates**: on three replicas a node that cut its tail is repaired by the others,
+   so only a loss of every replica's tail together is unprotected; `pb` now refuses (this task) and VOS does not.
+3. Other (in notes).
+
+Reversible default: proceed with 2 for `M2` and carry 1 as the request upstream. The item waits on the form; nothing
+else of F-010 waits on it.

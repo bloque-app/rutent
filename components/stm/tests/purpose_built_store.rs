@@ -356,9 +356,11 @@ fn written_store(harness: &mut PurposeBuiltHarness<Probe>) -> (Vec<RecordedInput
     (inputs, log, *starts.last().unwrap())
 }
 
+// A log with no mark beside it, as a log copied away from its store or written before marks existed is, has no record
+// of what was acknowledged: its damaged last frame can't be told from a torn append, so it is cut as one.
 // verifies: NFR-5, INV-7, REQ-STM-4, REQ-OPS-3
 #[test]
-fn a_log_torn_mid_record_reopens_at_its_last_whole_record() {
+fn a_log_with_no_mark_torn_mid_record_reopens_at_its_last_whole_record() {
     let _gate = stores_in_use();
     let mut harness = PurposeBuiltHarness::<Probe>::new();
     let (inputs, log, start) = written_store(&mut harness);
@@ -680,4 +682,147 @@ fn a_store_held_open_by_a_live_host_is_still_refused_when_the_retries_run_out() 
         started.elapsed() < std::time::Duration::from_secs(5),
         "the retries are bounded"
     );
+}
+
+/// Copies every file of a store's directory into a fresh store of the harness: the log and whatever sits beside it.
+fn copy_store(harness: &mut PurposeBuiltHarness<Probe>, from: &DiskStore) -> DiskStore {
+    let store = harness.fresh_store().unwrap();
+    for file in fs::read_dir(from.dir()).unwrap() {
+        let file = file.unwrap();
+        fs::copy(file.path(), store.dir().join(file.file_name())).unwrap();
+    }
+    store
+}
+
+/// The files beside the log, by name, with their bytes.
+fn side_files(store: &DiskStore) -> BTreeMap<String, Vec<u8>> {
+    fs::read_dir(store.dir())
+        .unwrap()
+        .map(|f| f.unwrap())
+        .filter(|f| f.file_name() != "log")
+        .map(|f| {
+            (
+                f.file_name().to_string_lossy().into_owned(),
+                fs::read(f.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Two orders' inputs submitted to a real host and killed, so the store's directory is what a kill leaves: the
+/// inputs, the store, the log's length before the last append, and the side files as they were before it.
+fn killed_store(
+    harness: &mut PurposeBuiltHarness<Probe>,
+) -> (
+    Vec<RecordedInput>,
+    DiskStore,
+    usize,
+    BTreeMap<String, Vec<u8>>,
+) {
+    let mut inputs = probe::order_inputs("ord-1", 0);
+    inputs.extend(probe::order_inputs("ord-2", 100));
+    let store = harness.fresh_store().unwrap();
+    let mut host = Pb::open(store.clone()).unwrap();
+    let (last, rest) = inputs.split_last().unwrap();
+    for input in rest {
+        host.submit(input.clone()).unwrap();
+    }
+    let before = log_len(&store) as usize;
+    let beside = side_files(&store);
+    host.submit(last.clone()).unwrap();
+    harness.kill(host).unwrap();
+    (inputs, store, before, beside)
+}
+
+// verifies: NFR-6, INV-7
+#[test]
+fn purpose_built_store_refuses_a_damaged_acknowledged_last_frame() {
+    let _gate = stores_in_use();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let (inputs, killed, start, _) = killed_store(&mut harness);
+    let log = fs::read(killed.log_path()).unwrap();
+    let whole = log.len();
+    let mut flipped = log.clone();
+    flipped[whole - 3] ^= 0x40;
+    let mut header_flipped = log.clone();
+    header_flipped[start + 5] ^= 0x01;
+    let mut zeroed = log.clone();
+    zeroed[start + FRAME_HEADER..].fill(0);
+    let damaged = [
+        ("a byte of the last frame flipped", flipped),
+        ("a byte of its checksum flipped", header_flipped),
+        ("its payload zero-filled", zeroed),
+        (
+            "the last frame cut in half",
+            log[..start + (whole - start) / 2].to_vec(),
+        ),
+        ("the last frame cut off whole", log[..start].to_vec()),
+        ("the last frame's header cut", log[..start + 3].to_vec()),
+    ];
+    for (what, bytes) in damaged {
+        let store = copy_store(&mut harness, &killed);
+        fs::write(store.log_path(), &bytes).unwrap();
+        match Pb::open(store.clone()) {
+            Err(HostError::Unavailable { reason }) => {
+                assert!(reason.contains("acknowledged"), "{what}: {reason}")
+            }
+            other => panic!("{what}: the store opened: {:?}", other.map(|_| ())),
+        }
+        assert_eq!(
+            fs::read(store.log_path()).unwrap(),
+            bytes,
+            "{what}: the store was changed"
+        );
+    }
+    // The same log, undamaged, opens and holds every acknowledged input.
+    let host = Pb::open(copy_store(&mut harness, &killed)).unwrap();
+    assert_eq!(records_by_id(&host).len(), inputs.len());
+}
+
+// verifies: NFR-6, INV-7, NFR-5
+#[test]
+fn purpose_built_store_still_cuts_an_append_that_was_never_acknowledged() {
+    let _gate = stores_in_use();
+    let mut harness = PurposeBuiltHarness::<Probe>::new();
+    let (inputs, killed, start, before) = killed_store(&mut harness);
+    let log = fs::read(killed.log_path()).unwrap();
+    let last = inputs.last().unwrap();
+    // The crash cut the last append short before it was acknowledged: its frame is torn and the mark is as the
+    // previous append left it.
+    let torn = copy_store(&mut harness, &killed);
+    fs::write(torn.log_path(), &log[..start + (log.len() - start) / 2]).unwrap();
+    for (name, bytes) in &before {
+        fs::write(torn.dir().join(name), bytes).unwrap();
+    }
+    let mut host = Pb::open(torn.clone()).unwrap();
+    assert_eq!(log_len(&torn) as usize, start, "the torn append wasn't cut");
+    assert_eq!(records_by_id(&host).len(), inputs.len() - 1);
+    assert!(matches!(
+        host.submit(last.clone()),
+        Ok(Delivery::Recorded(_))
+    ));
+    drop(host);
+    assert_eq!(
+        records_by_id(&Pb::open(torn).unwrap()).len(),
+        inputs.len(),
+        "the append, made again, wasn't kept"
+    );
+
+    // The crash came after the append was synced and before the mark was: the whole frame is there and is kept.
+    let lagging = copy_store(&mut harness, &killed);
+    for (name, bytes) in &before {
+        fs::write(lagging.dir().join(name), bytes).unwrap();
+    }
+    let host = Pb::open(lagging.clone()).unwrap();
+    assert_eq!(records_by_id(&host).len(), inputs.len());
+    assert_eq!(log_len(&lagging) as usize, log.len());
+    drop(host);
+    // The mark moved on with that open: damage to the frame now is damage to an acknowledged one.
+    let mut flipped = log.clone();
+    flipped[log.len() - 3] ^= 0x40;
+    fs::write(lagging.log_path(), flipped).unwrap();
+    assert!(matches!(
+        Pb::open(lagging),
+        Err(HostError::Unavailable { .. })
+    ));
 }
