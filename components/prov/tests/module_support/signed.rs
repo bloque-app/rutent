@@ -74,6 +74,9 @@ impl Signed {
         )
         .expect("a platform");
         platform.set_output_limit(4096);
+        // The platform signs each result with the provider's statements key, which the world holds: these tests'
+        // keys, for every provider they admit.
+        platform.world.derive_statement_keys(statements_key);
         Self {
             platform,
             catalogue,

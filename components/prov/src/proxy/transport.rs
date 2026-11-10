@@ -13,11 +13,30 @@ use core::fmt;
 pub trait Transport {
     /// Sends `request` as an HTTP `GET`.
     fn get(&self, request: &Request) -> Result<Response, TransportError>;
+
+    /// [`Transport::get`], given up when `due` passes: every step, the connection, the handshake and each read
+    /// and write, is bounded by what is left until then. The default ignores `due`.
+    fn get_until(
+        &self,
+        request: &Request,
+        due: Option<std::time::Instant>,
+    ) -> Result<Response, TransportError> {
+        let _ = due;
+        self.get(request)
+    }
 }
 
 impl<T: Transport + ?Sized> Transport for &T {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
         (**self).get(request)
+    }
+
+    fn get_until(
+        &self,
+        request: &Request,
+        due: Option<std::time::Instant>,
+    ) -> Result<Response, TransportError> {
+        (**self).get_until(request, due)
     }
 }
 
@@ -25,11 +44,27 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
         (**self).get(request)
     }
+
+    fn get_until(
+        &self,
+        request: &Request,
+        due: Option<std::time::Instant>,
+    ) -> Result<Response, TransportError> {
+        (**self).get_until(request, due)
+    }
 }
 
 impl<T: Transport + ?Sized> Transport for Box<T> {
     fn get(&self, request: &Request) -> Result<Response, TransportError> {
         (**self).get(request)
+    }
+
+    fn get_until(
+        &self,
+        request: &Request,
+        due: Option<std::time::Instant>,
+    ) -> Result<Response, TransportError> {
+        (**self).get_until(request, due)
     }
 }
 

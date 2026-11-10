@@ -17,6 +17,19 @@ use super::transport::TransportError;
 pub trait Resolver {
     /// The current value of `provider`'s secret `name`.
     fn resolve(&self, provider: &Identifier, name: &Name) -> Result<SecretValue, ResolveError>;
+
+    /// [`Resolver::resolve`], given up when `due` passes, the deadline of the operation it serves: the proxy
+    /// answers inside an operation, and a store slow to answer must not hold the platform past it
+    /// (`REQ-MDL-11`). The default ignores `due`; a resolver that asks a store over the network honours it.
+    fn resolve_until(
+        &self,
+        provider: &Identifier,
+        name: &Name,
+        due: Option<std::time::Instant>,
+    ) -> Result<SecretValue, ResolveError> {
+        let _ = due;
+        self.resolve(provider, name)
+    }
 }
 
 /// Why a secret wasn't resolved. No variant carries the store's answer, the token or a value (`THR-50`).

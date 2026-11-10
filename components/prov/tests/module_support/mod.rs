@@ -164,6 +164,26 @@ pub struct TestWorld {
     received: HashMap<types::Endpoint, Vec<String>>,
     /// Every state key the platform asked the world for, in order.
     pub state_asked: Vec<String>,
+    /// The private half of each provider's statement key, as the store holds it: the base64url text of its seed.
+    /// A provider with none here has the key `derive` gives it, or else the suites' standard statements key
+    /// ([`statements_key`]).
+    statement_keys: BTreeMap<String, String>,
+    derive: Option<fn(&str) -> Ed25519Key>,
+}
+
+impl TestWorld {
+    /// Derives each provider's statement key with `derive`, for the providers it holds no key of its own for.
+    pub fn derive_statement_keys(&mut self, derive: fn(&str) -> Ed25519Key) {
+        self.derive = Some(derive);
+    }
+
+    /// Holds `key` as `provider`'s statement key, in place of the standard one.
+    pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
+        self.statement_keys.insert(
+            provider.to_owned(),
+            rutent_conformance::signing::base64url(key.as_bytes()),
+        );
+    }
 }
 
 impl World for TestWorld {
@@ -195,6 +215,29 @@ impl World for TestWorld {
             .entry(endpoint.clone())
             .or_default()
             .push(body.to_owned());
+    }
+
+    fn statement_key(
+        &mut self,
+        caller: &rutent_prov::proxy::Caller,
+        _: &Identifier,
+    ) -> Result<
+        rutent_contracts::module_interface::SecretValue,
+        rutent_contracts::module_interface::SecretRefusalReason,
+    > {
+        let provider = caller.provider().as_str();
+        let key = self
+            .statement_keys
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| {
+                let derived = self
+                    .derive
+                    .map_or_else(|| statements_key(provider), |derive| derive(provider));
+                rutent_conformance::signing::base64url(derived.as_bytes())
+            });
+        rutent_contracts::module_interface::SecretValue::new(key)
+            .ok_or(rutent_contracts::module_interface::SecretRefusalReason::NotFound)
     }
 }
 

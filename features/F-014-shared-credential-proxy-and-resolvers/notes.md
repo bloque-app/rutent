@@ -456,3 +456,214 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   missing `name_segment` and `RouteNotNamed`.
 - **`DEC-20`.** `proxy/calls.rs` and the re-export in `proxy/mod.rs` are the credential proxy's path; the commit
   says so.
+
+## T-014-05
+
+- **Merged `m2` at `28f16cc`** (a fast-forward), which carries `T-010-10`: real signatures in the suites, admission
+  through the catalogue's verifier, `ReleaseJudge` sealed. The orchestrator widened the row after `T-010-10`'s
+  review: the platform's results are signed with the statement key (below).
+- **The production world.** `proxy::ProductionWorld` is the credential proxy and the egress layer as
+  `module/platform.rs`'s `World`. The platform tells it what each provider's module handles, from its own state:
+  - `running(artefact)` when a release's process starts, which admits the release to the proxy against the
+    accepted advertisement the deployment handed the world (`advertise`). A release the proxy refuses is retired
+    from it (`CredentialProxy::retire`), so no lookup of that provider resolves; `take_unadmitted` names it.
+  - `begin_operation`/`end_operation` around each operation, on every exit path (answer, trap, limit, deadline).
+  - `begin_request`/`end_request` where the platform passes an outside request to the outside part and takes its
+    response.
+- **Two judgements, one rule.** The platform still judges every lookup itself (`proxy::judge`, from its stack), and
+  then hands the world the lookup with that verdict (`World::lookup`). The production world judges again in the
+  proxy, from what the hooks told it, and records the use. A lookup the platform refused is recorded in the proxy
+  (`CredentialProxy::refuse`) without asking the store, so the proxy's uses match the platform's lookup events one
+  to one. Whatever a world answers, the platform hands no value for a lookup it refused.
+- **`World` keeps its four required hooks.** `secret`, `state`, `route` and `deliver` keep their shapes, so the
+  suites' double (`TestWorld`) runs unchanged; every new hook has a default built on them. `World::secret`'s
+  `Option` stays the double's: it means "holds none". The production path is `World::lookup`, which returns the
+  contract's `SecretRefusalReason`, so a store failure is `store_unavailable`, never `not_found`.
+- **`store_unavailable` at the lookup.** `platform.rs`'s `lookup` maps each reason explicitly (`secret_reason`):
+  `not_found`, `store_unavailable`, `undeclared_secret`, and `undeclared_secret` for a reason it doesn't know. The
+  lookup event records `StoreUnavailable`. **Gap, item for `F-013`:** the WIT's `secret-refusal` enum has only
+  `undeclared-secret` and `not-found`, so a guest is told `undeclared-secret`; the record keeps the true reason.
+  Adding the case is a change to the binding's interface and its guests, not made here.
+- **Egress on the platform's path.** `platform.rs`'s `egress` builds a `Call` from its context and hands it to
+  `World::send`; the platform's own hop loop, `allows`, `within` and `MAX_HOPS` are gone. Every world goes through
+  `Egress`: the production world over its `NameResolver` and `Connector`, the double through `Served`, which reads
+  `route` as the name's resolution and `deliver` as the exchange, answering `200`, or `307` with a `Location` for a
+  redirect (so the body follows, as the old loop delivered it). The module-boundary suite passes through it
+  unchanged. The binding's egress call carries only a body, so it goes as a `POST` to `/`; a target, a method and
+  headers need the WIT to carry them (item for `F-013`). An unknown scheme on the wire is refused, unrecorded,
+  where the old loop read it as `https`.
+- **The no-route path records its own reason.** A declared destination whose name resolves to no address is refused
+  as `address_not_allowed` (`T-014-03`'s reading: there is no checked address to dial); one whose checked address
+  can't be reached is `unknown` with no address, which module-interface 4.0.0 accepts. Before, it was `failed`,
+  which `validate_record` refused. Test: `call_with_no_route_records_its_own_reason_and_a_valid_record`.
+- **The rustls connector.** `egress::TlsConnector`, on `proxy/https.rs`'s shared primitives (`client_config`,
+  `handshake`, `exchange`), which `HttpsTransport` now uses too:
+  - it dials `Dial::to` through a `Dialer` (`DirectDialer` in production) and never resolves the name; it reads no
+    proxy setting;
+  - SNI and the certificate check are for `Dial::name`, against the deployment's PEM roots only (no built-in root
+    store, so no `webpki-roots`); the handshake finishes before a byte of the request is written, and any failure
+    of it, a timeout included, is `NotVerified`;
+  - one connection per exchange, session resumption disabled and TLS 1.3 early data off, both set explicitly in
+    the shared configuration, so the proxy's transport has them too;
+  - a `3xx` comes back with its `Location`; `wss` is refused before connecting, as the contract says;
+  - HTTP/1.0 with `Connection: close`, as the transport speaks, so no answer is chunked; one with a transfer
+    encoding, cut short or over 1 MiB is `NoAnswer`. Timeout 5 s each for connect, handshake, send and read.
+  The connector's timeout is not yet bounded by what is left of the operation's deadline; the platform serves a
+  call synchronously, so a slow peer spends the module's time. Noted, not changed.
+- **`tls_probe` on real TLS.** `tests/tls_support/` generates a CA and leaves with `rcgen` in each test, runs rustls
+  servers on loopback, and maps each public address to one (`MappedDialer`), since the egress layer refuses
+  loopback. `tests/egress.rs` runs `tls_probe` with `TlsConnector` against a leaf for another name and a server
+  offering no certificate (its resolver returns none), plus a control for the right name, a self-signed chain and
+  a returned redirect. **`B-18` holds end to end**; `tls_check_against_a_wrong_name_or_no_certificate_is_refused_end_to_end`
+  shows it on the running platform. **`B-17` holds on the platform's path**:
+  `running_platform_resolves_a_destination_once_and_dials_only_the_checked_address` resolves once per call, dials
+  only the first answer's address while the name would re-resolve elsewhere, and refuses a pinned destination
+  resolving outside its block without dialling it.
+- **Re-entrance refused on purpose.** `cross_module` refuses a callee already on the platform's stack (`reenters`)
+  as `callee_unavailable`, before the process check: one provider handles one operation at a time, and the proxy
+  keeps one operation and one request per provider. Test:
+  `call_back_into_a_running_provider_leaves_its_request_in_flight_in_the_proxy`, where A's request stays in flight
+  through B's refused call back and A's later lookup resolves. It passes with or without `reenters`, since the busy
+  process refuses the call too; `reenters` makes the refusal not depend on that.
+- **Signing the platform's results (the widened row).** The module never holds a key. The platform resolves the
+  statement key through `World::statement_key` while the provider's module still handles the operation (the
+  proxy's condition), then `proxy::sign_result` signs the result and every statement the module nested in it in the
+  provider's name, innermost first, under the provider-role rule. Readings:
+  - the store holds the private half as the unpadded base64url text of its 32-byte Ed25519 seed, under the public
+    key's text in the role's `keys` prefix (`T-014-02`);
+  - a key whose public half isn't the declared `statement_key` signs nothing;
+  - a statement nested in the provider's name for another deployment is refused (`THR-8`); one of another maker
+    keeps its own signature;
+  - only a judgement or a reversal confirmation is signed when nested, the two shapes provider-role's result
+    schema nests, each pinned by `const`; the result schema has no open object, and the output is checked against
+    it before signing. A nested envelope of any other shape in the provider's name is refused, so the platform is
+    no oracle for, say, a result of another transaction lifted out of one it signed;
+  - a result that can't be signed is refused as `PlatformRefusal::Unavailable`, never passed on with a placeholder.
+    The contract has no closer reason; an item for `F-010` if one is wanted;
+  - an operation naming no transaction (a verifier's judgement) is known to the world as
+    `rutent:untransacted:<sha256 of the operation>`, so the proxy can resolve the key for it.
+  `TestWorld` holds statement keys (`hold_statement_key`), the suites' standard statements key by default; the
+  signed harness holds its own. `tests/module_role.rs` runs with `Ed25519Verifier` and nothing deferred, and its
+  in-process comparison runs signed too.
+- **The statement key's wire message.** Read under the orchestrator's ruling that the key is never in the module:
+  the statement key's answer goes from the proxy to the platform's signer, and no `FromProvider` message hands it
+  to a provider's process. An outside part that signed would hold the key, which the ruling forbids.
+- **Owner items.** None.
+- **Dependencies.** `rcgen 0.13.2` as a dev-dependency (`ring` and `pem`, no aws-lc). `Cargo.lock` gains `rcgen`,
+  `pem 3.0.6`, `base64 0.22.1`, `time 0.3.55`, `time-core 0.1.9`, `deranged 0.5.9`, `powerfmt`, `num-conv` and
+  `yasna`; `licences/RECORD` gains `deranged 0.5.9` and `pem 3.0.6`, both permissive standing.
+- **Property tests (`DEC-18`).** `proxy/tests/world.rs`: over seeded sequences of the platform's hooks and lookups
+  with random verdicts, the world answers exactly when the verdict passed and the hooks put that request in
+  flight, asks the store only then and only at the caller's path, and leaves one use per lookup; the proxy's
+  request in flight follows the model. `egress/tls.rs`: the connector frames every request itself, `Host` from
+  the declared name. `proxy/signing.rs`: for any key the result and the provider's nested judgement verify, and a
+  key other than the declared one signs nothing; a seed has one text.
+- **How the tests were run.** Each was run and then shown to fail on a mutation of what it guards: the handshake's
+  failure mapped to `NoAnswer` (both TLS tests), the name resolved twice and the second answer dialled (`B-17`),
+  `begin_request` not passed to the proxy (the secret test), results passed on unsigned (`module_role`).
+- **`DEC-20`.** The credential proxy and its resolvers (`proxy/`), its egress (`egress/`), and the platform's
+  credential path in `module/platform.rs` (`lookup`, `egress`, `cross_module`, result signing).
+
+## T-014-05, review round
+
+- **Merged `m2` at `5063302`** (`T-016-02`'s `holding_balance`, the new row `T-013-07`). The two WIT gaps above
+  are `T-013-07`'s now.
+- **The operation's deadline bounds every outbound step (blocker).** Each read had its own timeout and nothing
+  bounded the whole exchange, so a peer sending a byte now and then held the platform, and every other provider,
+  past `OPERATION_DEADLINE`. The platform now carries the operation's `due` into the exchange:
+  - `Call::due` and `Dial::due` carry it into the egress layer;
+  - `World::begin_operation` carries it into the proxy, which keeps it with what the module handles;
+  - `Resolver::resolve_until` and `Transport::get_until` carry it into the store. Both default to ignoring it;
+    `KvResolver` and `HttpsTransport` honour it.
+
+  The TCP connection is wrapped (`proxy::Bounded`), so every read and write, the TLS handshake's included, waits
+  at most `min(step, due - now)`. The connection's own timeout is cut the same way. Once the deadline has passed,
+  every step fails as timed out. For an outbound call, a cut before the handshake finished is `Unreachable`, since
+  nothing was sent, and a cut after is `NoAnswer`. Both are recorded `unknown`. The operation then ends by the
+  deadline's own path: the process is overdue, it is killed, and the operation is refused as `LimitReached`.
+
+  Tests:
+  - `slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs`: a TLS peer dribbling one byte
+    every 300 ms held the platform for 20 s before the fix, and is cut at the 2 s deadline now.
+  - `store_dribbling_its_answer_is_cut_off_at_the_deadline`: the same for the store. It was red as a missing API.
+
+  Name resolution through the operating system's resolver is not bounded by the deadline; `getaddrinfo` takes no
+  timeout. Noted, not changed.
+- **The signer signs only what was asked (blocker).** `sign_result` now takes what the result answers
+  (`proxy::Answering`): the provider, the deployment, the protocol version and the operation handed out. A
+  statement nested in the provider's name is signed only if it answers that operation:
+  - a judgement must answer a `judgement` operation, with its `subject` and `class` equal;
+  - a reversal confirmation must answer a `reversal_confirmation` operation, with its `segment`, `asset` and
+    `amount` equal.
+
+  Anything else is `NestedNotAsked`, and the result isn't passed on. Tests:
+  `judgement_about_another_subject_than_asked_is_not_signed`, `confirmation_of_another_credit_than_asked_is_not_signed`.
+- **The nested statement's protocol version (should-fix).** It must be the platform's, or the signer refuses with
+  `NestedOfAnotherVersion` (`REQ-PRT-1`). Test: `nested_statement_of_another_version_or_deployment_is_not_signed`.
+- **Re-entrance decides on its own (should-fix).** `reenters` takes the providers on the stack and is checked before
+  the callee's process. A unit test covers the caller itself, its caller, the top-level provider and one not on the
+  stack, and failed against a check of the caller alone.
+- **A revoked statement key stops at once (nit).** `ProductionWorld::advertise` now passes the advertisement to the
+  proxy (`CredentialProxy::advertise`), so the running release is judged against the new keys from the next
+  signing on, with no restart. It refuses an advertisement of another deployment, so it returns a `Result`.
+  Test: `a_statement_key_the_next_advertisement_revokes_signs_nothing_more`.
+- **`T-016-02`'s wallet tests sign too.** After the merge, the wallets' results went unsigned, so they were refused:
+  the signed harness's world held keys for the reserve and the ramp only. `TestWorld::derive_statement_keys` now
+  derives every provider's key with the harness's own `statements_key`.
+- **How the tests were run.** Each was written first and seen to fail:
+  - the slow peer, against the old exchange;
+  - the signing tests, with the new checks taken out;
+  - re-entrance and revocation, against their old code.
+- **`DEC-20`.** The credential proxy (`proxy/`), its egress (`egress/`), and the platform's credential path in
+  `module/platform.rs`.
+
+## T-014-05, the name lookup bounded by the deadline
+
+- **The orchestrator's follow-up.** The lookup through the operating system's resolver was the one step the
+  deadline didn't bound. `getaddrinfo` takes no timeout, so a slow or hanging DNS answer held the platform, and
+  every other provider, past `OPERATION_DEADLINE`.
+- **How it is bounded now.** `NameResolver::resolve_for` takes the lookup with its provider and the operation's
+  `due`, and the egress layer asks it. `egress::ThreadedResolver` runs each lookup that has a deadline on a thread
+  of its own, and waits on a channel with `recv_timeout(due - now)`.
+  - Past the deadline the lookup is given up (`LookupRefused::DeadlinePassed`). Its thread is abandoned: it ends
+    when the resolver returns, and its answer is dropped. The call is recorded `unknown`, with the destination
+    matched and no address, and nothing is dialled. The operation then ends by the deadline's own path, as
+    `LimitReached`.
+  - Threads are bounded per provider: at most `MAX_LOOKUPS_IN_FLIGHT` (4), abandoned ones included. One more is
+    refused at once (`TooManyInFlight`) and recorded as refused `limit_reached`. A thread that can't be spawned is
+    refused the same way.
+
+  The production resolver is `ThreadedResolver::new(SystemResolver)`. The default `resolve_for` waits on
+  `resolve`, which suits a resolver that answers from memory.
+- **Tests.**
+  - `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`, on the running
+    platform: the tests' resolver hangs a host behind the threaded resolver. It was written first and held the
+    platform for 20 s, until the hang's own limit. It is cut at the 2 s deadline now, and the other provider's
+    operation runs at once.
+  - `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`: the cap, a provider at it refused while
+    another's lookups go on, the record, and the places given back once the hang ends.
+
+  Every `production_world` test now runs its names through the threaded resolver.
+
+## T-014-05, the store's lookup bounded too
+
+- **The store's host name.** `HttpsTransport` resolved the store's host with a bare `to_socket_addrs`, so that
+  lookup had no deadline. It now asks a `NameResolver` through `resolve_for`, with the deadline the proxy carries.
+  The default is the operating system's resolver behind a `ThreadedResolver`, the one egress uses, and
+  `with_resolver` replaces it. The store's lookups are capped under the store's own name
+  (`rutent:store:<host>`), since the transport serves every provider of its role. A lookup given up at the
+  deadline, or refused at the cap, is a transport failure, so the lookup is refused as `store_unavailable`.
+  Test: `store_whose_name_lookup_hangs_is_unavailable_at_the_deadline`, which injects a hanging resolver.
+- **A panicking resolver gives its place back.** Each lookup's thread now owns its place among the provider's
+  lookups in flight, a drop guard (`Place`), so the place is given back however the thread ends, a panic
+  included. A lookup whose thread ended with no answer resolved to nothing, so no address is dialled. Before, it
+  read as a passed deadline. Test: `a_lookup_whose_resolver_panics_gives_its_place_back`, which failed before the
+  guard: the slot stayed taken.
+- **Stalls in every phase.** `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline` covers
+  the two phases besides the answer:
+  - a peer that accepts and never answers the handshake is `unknown` with no address;
+  - one that completes the handshake, then stops reading under a 16 MiB body, is `unknown` with the address
+    connected to.
+
+  Both are cut at the deadline while each step may take 10 s. They pass with `Bounded` as it is, and failed when
+  `Bounded` ignored the deadline.
