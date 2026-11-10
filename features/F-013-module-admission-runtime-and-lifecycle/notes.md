@@ -516,5 +516,5 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Run ids.** CI run 42754273532 (branch `m2-ci-t01305`, commit `0bb16a3`): the `ci` job, fuzz step included, and the
   `rederive` job passed. The reference was made on AuthenticAMD (AMD EPYC 9V45 96-Core Processor) and re-derived on
   GenuineIntel (INTEL(R) XEON(R) PLATINUM 8573C); the digests matched. That meets the Done-when's re-derivation on a CPU
-  of another vendor. That run used the first fuzzer; the run id of the fuzz step with the deeper fuzzer is to be added by
-  the orchestrator once CI has run on this commit.
+  of another vendor. That run used the first fuzzer. The deeper fuzzer ran in CI run 42756806042 (branch
+  `m2-ci-t01305`, commit `1bfb734`): the `ci` job, its fuzz step included, and the `rederive` job passed.
