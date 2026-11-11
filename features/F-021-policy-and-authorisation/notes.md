@@ -154,3 +154,102 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   refused or not, and the call answers `Err`, nothing recorded. The read rows cite only permitted reads. Reading:
   the row should cite only a permitted revocation, which is a core-internal change, so it is `F-020`'s; until then
   the engine refuses it and the log keeps it out.
+
+## T-021-03
+
+- **What it builds.** One entry of `FIXED`, its two functions in `components/core-authz/src/roles/`, over
+  `decide` (built by `T-021-01`) and `authorise` (`T-021-04`'s). No call of its own: `T-021-03` owns no trait method
+  of core-internal, so no row of the built and unbuilt table in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`
+  moves. The engine edits are the shared type's, made in this row's turn: two `Source` variants appended
+  (`Permissions`, `Declarations`), the `FIXED` entry after `T-021-02`'s, `promote` moved in the scan from
+  `CARRIES_OUT_NOTHING` to `CARRY_OUT`, and `T-021-01`'s tests given the inputs the new rule asks for (below).
+- **Only the operator posts a route** (`REQ-AUZ-2`). A `post_route` asked in any other role is refused before the
+  deployment's policy or any source is asked. A suggestion has no call of its own: it reaches a route only as the
+  operator's post naming its suggester (`suggested_by`), which the decide entry holds whole beside the operator as
+  `who`. Whether the operator names a suggestion it posts is orchestration's to keep; the engine can't see a
+  suggestion that never reached it (`THR-90`).
+- **Each permission is held actor by actor.** The operator's permissions (`roles::Permission`: posting a route and
+  each `CatalogueChange`, ten with promotion) are asked of the deployment's register (`Source::Permissions { party,
+  permission }`, the input the actor, `acts`), one input per decision, for a caller in the operator's role only.
+  Keyed by party, every login of the operator would hold every permission, which is the insider of `THR-88` and no
+  separation at all. A caller in any other role is refused a catalogue change outright, the publisher's included
+  (`REQ-MDL-5`). A register that says no refuses, one that says nothing gives a missing input, one out of reach not
+  known. Default: posting a route needs the register's yes too, since the role is only what the caller's request
+  says; reversible by dropping that one input.
+- **The role is the request's, and never enough alone.** The engine, as `T-021-01` and `T-021-02` read it, takes the
+  caller's role as the assembly hands it from external authentication. Wherever this rule lets a role through, a
+  record binds the actor to it: the register's yes, by `acts`, for an operator's permission or Core's actor, and the
+  order's record for its requester; a caller stating a role without one is refused (review of `f7df0c2`, S4: a
+  provider stating the operator's role against a register listing only the operator's logins). A source that
+  checked a party's roles in general would be the deployment's to add (`F-030`).
+- **Acting for a user: no role stands on the request's word** (`REQ-AUZ-9`; review of `f7df0c2`, B1, S1, S2). The
+  rule first let a stated role decide alone: the operator's login stating Core's role moved value with no declaration,
+  stating a customer's gave an authorisation, and a customer stating the operator's role moved value. Each actor is
+  now held to a record:
+  - a customer, or its agent, moves value on and authorises only an order its party requested
+    (`Source::Requester(order)`, the input the party). `T-021-02`'s `OrderParties` answers requester, beneficiary or
+    payer, which would let a beneficiary authorise, so this is a source of its own;
+  - Core moves value only through an actor the register lists as carrying the authorisation onward
+    (`Permission::CarryOnward`, by `acts`);
+  - the operator acts only through a login the register lists for it (`Permission::ActForUser`, by `acts`), at the
+    order's own origin reserve (`Source::OrderOrigin(order)`, the input the reserve the request names), and only where
+    that reserve declared it can't require the user's own withdrawal (`cannot_require_user_withdrawal`). It files an
+    authorisation also where the reserve declared it starts routes on automatic deposits
+    (`starts_on_automatic_deposit`, `REQ-ORD-13`, `AC-11`), the two declarations kept apart. Any listed login may act
+    so at a reserve that declared it: `ActForUser` is one permission, not one per reserve (N2);
+  - the origin reserve itself authorises its order's withdrawal, with no user present, where its party is the order's
+    origin and it declared it starts routes on automatic deposits (`REQ-ORD-13`). It moves no value of its own asking.
+
+  No other role acts for the user. A reserve answers both declarations, as `REQ-CAT-6` has it make both at publishing;
+  never declared is a missing input, declared the other way a no, and either refuses. The decide entry's `who` is who
+  acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
+- **No party stands on the request's word either** (review of `07c4be9`, S5). External authentication establishes
+  only `acts`, and the rules read the stated `party`: `cust-9` stating `cust-1` moved value on and authorised
+  `cust-1`'s order, and `evil-pay` stating `us-bank` authorised `us-bank`'s automatic deposit. One fixed rule, first in
+  `FIXED`, now asks the deployment's register of actors (`Source::ActsFor { acts, party }`, answered by `acts`)
+  whether each actor a request names acts for the party it states: the caller, the giver, the decider, the mover,
+  the requester, the reader, the asker, a permission's granter and grantee, and a route's suggester. A no refuses as
+  `no_accountable_party`, nothing a missing input, on every call. It is fixed once at the engine, so `T-021-02`'s
+  session and read rules, which read the stated party, now read a bound one too; `session/` is unchanged but for its
+  tests' source, which answers that word. It serves `REQ-AUZ-8`, every agent acting for an identified accountable
+  party, and `T-021-05` builds its limits on it rather than adding its own.
+- **What the assembly answers.** Before `T-024-02` wires the sources, every move and every authorisation needs an
+  input, so none is permitted: fail-closed, and every policy call now needs the register of actors too. The register
+  lists who each actor acts for, Core's actors and the operator's logins; the order's
+  record, the log's acceptance or Core's intake, its requester and origin reserve; the catalogue, each reserve's two
+  declarations, a no for one a reserve that published didn't make (N3). Who is listed, and each change to it, is the
+  deployment's to record (`F-030`, N4). An authorisation asked before its order's record exists gets a missing input
+  and is refused.
+- **A permit to promote doesn't pin the version** (review of `f7df0c2`, S3). The permit names the version decided on,
+  but the platform's `promote` puts whatever is staged in force. core-internal's doc says so, and `T-020-08`'s row in
+  `PLAN.md` now has Core compare `lifecycle().staged(provider)` with the permit's version before it calls `promote`,
+  refusing on a mismatch, with its own test.
+- **The rule on an authorisation waits for `T-021-04`.** Its stub answers not known without consulting, so the rule
+  holds from when that row builds `authorise` through `consult`. The test drives the rule through `consult` directly
+  until then.
+- **Promotion** (the review of PR #60, hand-off from `retrospectives/M2.md`). The platform's `promote` put a staged
+  release in force for any caller, and no decided action carried it. `T-021-03` adds `promote` to core-internal's
+  `CatalogueChange`, about one release so it names the staged version, folded into 1.0.0 (core-internal isn't on
+  `develop` yet), with one valid fixture; `PLAN.md` §4.4 gives `contracts/` to `T-020-01` and `T-020-02` alone in
+  `M3`, and this edit is the one exception, made because the brief gave this row promotion and no action existed for
+  it. The alternative was a new `F-020` row. The row's Work and Tests in `PLAN.md` name it now. The scan lists the
+  platform's `promote` as carrying out `change_catalogue: promote`, so core-orch reaches it only holding its effect.
+- **The lifecycle hand-off is closed in the scan, not in `platform.rs`.** `accept`, `withdraw`, `revoke`,
+  `declare_exploited`, `mark_stale` and now `promote` are each reached only by core-orch holding the effect of a
+  permitted decision for that change. The platform still takes any `by`: `T-020-08` must pass it the permitting
+  decision's caller, so the platform's records name the same actor as the log's.
+- **Left as they are.** `roll_back` ends a staging and keeps the version in force (ADR-0014); no row names it a
+  permission, so it stays in `CARRIES_OUT_NOTHING`, an item for the owner's form beside promotion. `admit` starts
+  only a release that needs no fresh acceptance (`REQ-MDL-3`'s automated acceptance); a widened one waits for
+  `accept`, which is decided. Its reason in the scan said "before acceptance", which was inaccurate, and now says so.
+  Whether an automated acceptance should itself be a decision is the same item.
+- **`T-021-01`'s tests, given their inputs.** `every_decided_action` lists `promote` (13 actions); the request of a
+  post or a catalogue change is the operator's login, and the sources say yes to every input the fixed rules name,
+  so the deployment's ruling is what is decided. `authenticated_caller_is_still_decided_by_policy` now expects the
+  deployment's policy to see each caller the fixed rules let through, as it came, and the rest refused by the fixed
+  rule, and its known operator holds the permission the rule asks for, so the refusal of the other login stays the
+  deployment's. Since the review of `f7df0c2`, Core's move needs the register to list its actor: the engine tests' sources
+  answer that one word for `core-orch` themselves, outside the inputs they count, and the unbuilt engine's move is
+  not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy. Since the review
+  of `07c4be9`, the sources of `T-021-01`'s and `T-021-02`'s tests also answer the register's yes, for every
+  actor they name, outside what they count, and the unbuilt engine's grant is not known for that input.

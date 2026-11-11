@@ -332,7 +332,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | Shape | Rule |
 |---|---|
 | `DecisionRequest` | it never asks for `resolve_stuck`, which travels only as a stuck move (the schema states it too) |
-| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`), and a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`) |
+| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`, `promote`), and a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`) |
 | `SessionRequest` | a session ends after the time it is asked for |
 | `Charge` | work is charged to the accountable party its caller acts for |
 | `StuckDecide`, `PersonQuestion`, `MeasureRecord`, `Raise`, `What::Evidence` | the lists the schemas require non-empty and distinct are (the schemas state it too) |

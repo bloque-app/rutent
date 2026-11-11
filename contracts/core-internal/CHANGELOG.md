@@ -106,3 +106,7 @@
   it and two adjacent providers of one publisher can report a pair (`REQ-ORD-9`). A stated entry's relay is another
   actor than its maker, so a sibling of its publisher may relay it. 109 valid fixtures, 107 invalid, 230 admission
   cases. (DEC-4, DEC-20, REQ-ORD-9, REQ-ORD-32, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
+  about one module release, so it names the version it puts in force. Before it, no decided action carried the
+  platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
+  permissions takes in (`REQ-MDL-4`, ADR-0014). One valid fixture added: 110 valid. (DEC-4, DEC-20, REQ-AUZ-6, T-021-03)
