@@ -585,8 +585,14 @@ pub enum CallOutcome {
     Failed(Nothing),
     /// No answer came; the effect is not known.
     Unknown(Nothing),
-    /// The platform refused the call.
+    /// The platform refused the call before anything of it was sent. A refused call's record has one hop
+    /// (`validate_record`).
     Refused(Refused),
+    /// The platform refused a hop after a destination was sent the request: a redirect it won't follow, an address
+    /// or a peer it won't connect to, or a limit, once an earlier hop, or this one, connected and delivered it.
+    /// What the destination that was sent it did is not known, so this is never read as nothing having been sent
+    /// (`REQ-ORD-1`). Since 4.0.0.
+    RefusedAfterDelivery(Refused),
 }
 
 /// One module's call to another provider's module, through the platform, and its record

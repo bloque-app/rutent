@@ -106,8 +106,13 @@ pub enum Outcome {
     Unreachable,
     /// A connection was made and no complete answer came; the effect is not known.
     NoAnswer,
-    /// The egress layer refused the call.
+    /// The egress layer refused the call before anything of it was sent.
     Refused(Refusal),
+    /// The egress layer refused a hop after a hop connected and its destination was sent the request: a redirect to
+    /// a destination not declared, an address not allowed, a peer not verified, or a limit. The call is recorded
+    /// `refused_after_delivery` at that hop, and the module is told unknown: what the destination that was sent it
+    /// did is not known (`REQ-ORD-1`).
+    RefusedAfterDelivery(Refusal),
 }
 
 /// The egress layer: reaches only the destinations the operation in flight declares, checks every redirect,
@@ -144,6 +149,10 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
             Outcome::Refused(refusal) => CallOutcome::Refused(Refused {
                 reason: refusal.reason(),
             }),
+            // Its own outcome in the record too, so that a reader never takes it for nothing having been sent.
+            Outcome::RefusedAfterDelivery(refusal) => CallOutcome::RefusedAfterDelivery(Refused {
+                reason: refusal.reason(),
+            }),
         };
         log.record(OutboundCallRecord {
             transaction: call.transaction.clone(),
@@ -158,8 +167,25 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
         outcome
     }
 
-    /// Makes the call's connections, each checked, and returns them as hops with how the call ended.
+    /// Makes the call's connections, each checked, and returns them as hops with how the call ended. A refusal once
+    /// a hop connected, so once a destination was sent the request, is [`Outcome::RefusedAfterDelivery`].
     fn hops(&self, call: &Call<'_>, endpoint: Endpoint, request: Request) -> (Vec<Hop>, Outcome) {
+        let (hops, outcome) = self.connect(call, endpoint, request);
+        let delivered = hops.iter().any(|hop| hop.address.is_some());
+        let outcome = match outcome {
+            Outcome::Refused(refusal) if delivered => Outcome::RefusedAfterDelivery(refusal),
+            other => other,
+        };
+        (hops, outcome)
+    }
+
+    /// The call's connections, each checked, as hops, with how the call ended.
+    fn connect(
+        &self,
+        call: &Call<'_>,
+        endpoint: Endpoint,
+        request: Request,
+    ) -> (Vec<Hop>, Outcome) {
         let mut hops = Vec::new();
         let listed = call
             .declaration

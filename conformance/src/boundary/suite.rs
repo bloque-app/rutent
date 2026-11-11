@@ -219,8 +219,17 @@ enum Reach {
     Unclear,
 }
 
+/// Whether `record` is of a call refused for `reason` at hop `at_hop`: `refused` at the first hop, before anything
+/// was sent, and `refused_after_delivery` at a later one, once a destination was sent the request (module-interface
+/// 4.0.0).
 fn refused_call(record: &OutboundCallRecord, reason: RefusalReason, at_hop: usize) -> bool {
-    record.outcome == CallOutcome::Refused(Refused { reason }) && record.hops.len() == at_hop + 1
+    let refused = Refused { reason };
+    let expected = if at_hop == 0 {
+        CallOutcome::Refused(refused)
+    } else {
+        CallOutcome::RefusedAfterDelivery(refused)
+    };
+    record.outcome == expected && record.hops.len() == at_hop + 1
 }
 
 fn completed(record: &OutboundCallRecord) -> bool {

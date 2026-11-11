@@ -82,6 +82,12 @@ pub enum LimitKind {
     NameLength,
     /// A message, or one body, too large.
     MessageSize,
+    /// The operation's wall-time deadline passed before the process answered, and the process was killed.
+    Deadline,
+    /// A part ran out of its fuel, its CPU budget for the operation.
+    Fuel,
+    /// A part was refused memory or table growth beyond its bound.
+    Memory,
 }
 
 /// Which budget a count or a total ran out of.

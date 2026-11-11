@@ -80,10 +80,17 @@ interface egress {
     call: func(operation: string, scheme: scheme, host: string, port: u16, request: request) -> outcome;
 }
 
-/// Cross-module calls (`REQ-MDL-21`): ask another provider's module one operation kind, through the platform.
+/// Cross-module calls (`REQ-MDL-21`): ask another provider's module one operation kind, through the platform. The
+/// outcome is the call's record's (module-interface's `cross-module-call`).
 interface modules {
     enum call-outcome {
+        /// The platform passed the call on and the callee answered.
         delivered,
+        /// The platform passed the call on and no answer came: the callee stopped, was stopped by a limit or its
+        /// deadline, or gave no answer the platform could read. What the callee did is not known, so this is never
+        /// `refused`: the callee may have acted on it (`REQ-ORD-1`).
+        unanswered,
+        /// The platform refused the call and passed nothing on.
         refused,
     }
     call: func(callee: string, kind: string) -> call-outcome;

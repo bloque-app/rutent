@@ -298,3 +298,185 @@ fn binding_records_a_call_its_callee_never_answered_as_undelivered() {
         assert!(answers_as(&mut binding, &callee, "1.0.0", 3));
     }
 }
+
+/// The evidence reference of the caller's answer, which names each value its outside part obtained.
+fn reference(handled: &Handled) -> String {
+    let Handled::Answered(result) = handled else {
+        panic!("the caller didn't answer: {handled:?}")
+    };
+    serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"][0]["reference"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The calling module is told each outcome as it is recorded: a callee that answered is `delivered`, one the
+/// caller doesn't declare is `refused`, and one that was handed the operation and gave no answer is `unanswered`,
+/// never `refused`, since it may have acted on it.
+// verifies: REQ-ORD-1, REQ-MDL-21
+#[test]
+fn caller_is_told_each_cross_module_outcome_as_it_is_recorded() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let answering = format!("answering-{language}");
+        let trapping = format!("trapping-{language}");
+        install(
+            &mut binding,
+            &spec(&answering, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &spec(&trapping, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        // The caller declares calls to the answering and the trapping callee, and to no other.
+        let undeclared = format!("undeclared-{language}");
+        for (callee, told, recorded) in [
+            (&answering, "delivered", "delivered"),
+            (&trapping, "unanswered", "unanswered"),
+            (&undeclared, "refused", "refused"),
+        ] {
+            let caller = format!("caller-{told}-{language}");
+            let declared = if callee == &undeclared {
+                &answering
+            } else {
+                callee
+            };
+            let module = ModuleSpec {
+                declaration: calling(&caller, declared, &["withdrawal"]),
+                steps: Vec::new(),
+                output: Output::Honest,
+                starts: true,
+            };
+            install(
+                &mut binding,
+                &module,
+                &language,
+                "reserve",
+                &[Probe::Ask {
+                    callee: callee.clone(),
+                    kind: OperationKind::Withdrawal,
+                }],
+            );
+            binding.take_events();
+            let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+            assert_eq!(
+                reference(&handled),
+                format!("{caller}-1.0.0-{told}"),
+                "{caller}: the guest was told another outcome"
+            );
+            let events = binding.take_events();
+            let call = events.calls.first().expect("a record of the call");
+            let status = serde_json::to_value(&call.outcome).expect("JSON")["status"].clone();
+            assert_eq!(status, recorded, "{caller}: {:?}", call.outcome);
+        }
+    }
+}
+
+/// A caller whose cross-module call was delivered and that then traps may have set its callee acting: its
+/// operation is an outcome unknown, never `Unavailable`, and what ended it is recorded beside it.
+// verifies: REQ-ORD-1, REQ-MDL-21
+#[test]
+fn caller_that_traps_after_a_cross_module_call_has_an_unknown_outcome() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &caller_of(&caller, &callee),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        binding.take_events();
+        binding.take_unknown();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::OutcomeUnknown),
+            "{language}: a trap after a delivered call was given another reason"
+        );
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Delivered(_))
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        let unknown = binding.take_unknown();
+        assert_eq!(unknown.len(), 1, "{language}: {unknown:?}");
+        assert_eq!(unknown[0].provider, caller);
+        assert_eq!(unknown[0].ended_by, PlatformRefusal::Unavailable);
+    }
+}
+
+/// A call is made only when the callee's whole budget and the caller's reserve after it are both left of the
+/// caller's deadline: with the budget left but not the reserve, it is refused as `deadline_too_near`, and the
+/// callee is handed nothing.
+// verifies: REQ-MDL-11, REQ-ORD-1
+#[test]
+fn call_needs_the_callees_budget_and_the_callers_reserve_left() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &caller_of(&caller, &callee),
+            &language,
+            "reserve",
+            &[],
+        );
+        // A budget of one second leaves a reserve of half a second: the call needs one and a half left. A
+        // deadline of 1.4 seconds leaves the budget but not the reserve.
+        binding.set_call_budget(Duration::from_secs(1));
+        binding.set_deadline(Duration::from_millis(1400));
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Refused(r)) if r.reason == CallRefusalReason::DeadlineTooNear
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        assert_eq!(binding.operations_received(&callee), 0, "{language}");
+
+        // The control: with both left, the same call is delivered.
+        binding.set_deadline(Duration::from_secs(3));
+        binding.handle(&caller, &withdrawal(&caller, 2));
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Delivered(_))
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        binding.set_deadline(OPERATION_DEADLINE);
+    }
+}

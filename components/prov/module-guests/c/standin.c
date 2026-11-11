@@ -54,6 +54,7 @@ typedef struct {
     char *a, *b, *c, *d; /* the step's words after its kind and part */
     long n;
     char *e, *f; /* a fetch's headers; its path is f */
+    bool told;   /* a `tell` call: the outside part obtains the call's outcome */
 } step;
 
 typedef struct {
@@ -156,8 +157,14 @@ static bool load(program *p) {
                 *s = mk(STATE, eq(W[1], "sandboxed"), W[2], 0, 0, 0, 0);
             } else if (count == 5 && eq(W[0], "call")) {
                 *s = mk(CALL, false, W[1], W[2], W[3], W[4], to_long(W[4]));
+            } else if (count == 5 && eq(W[0], "tell")) {
+                *s = mk(CALL, false, W[1], W[2], W[3], W[4], to_long(W[4]));
+                s->told = true;
             } else if (count == 3 && eq(W[0], "module")) {
                 *s = mk(MODULE, false, W[1], W[2], 0, 0, 0);
+            } else if (count == 3 && eq(W[0], "ask")) {
+                /* The module step whose outside part obtains the call's outcome. */
+                *s = mk(MODULE, false, W[1], W[2], 0, 0, 1);
             } else if (count == 1 && eq(W[0], "spin")) {
                 *s = mk(SPIN, true, 0, 0, 0, 0, 0);
             } else if (count == 2 && eq(W[0], "grow")) {
@@ -577,7 +584,14 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
                 rutent_binding_egress_request_t request = plain_request("POST", "/", &carried);
                 rutent_binding_egress_scheme_t scheme =
                     eq(s->b, "wss") ? RUTENT_BINDING_EGRESS_SCHEME_WSS : RUTENT_BINDING_EGRESS_SCHEME_HTTPS;
-                rutent_binding_egress_call(&o, scheme, &host, (uint16_t)s->n, &request);
+                rutent_binding_egress_outcome_t outcome = rutent_binding_egress_call(&o, scheme, &host, (uint16_t)s->n, &request);
+                if (s->told) {
+                    const char *told = outcome == RUTENT_BINDING_EGRESS_OUTCOME_COMPLETED ? "completed"
+                                       : outcome == RUTENT_BINDING_EGRESS_OUTCOME_FAILED  ? "failed"
+                                       : outcome == RUTENT_BINDING_EGRESS_OUTCOME_UNKNOWN ? "unknown"
+                                                                                          : "refused";
+                    put_string(&obtained, told, strlen(told));
+                }
                 break;
             }
             case FETCH: {
@@ -616,7 +630,13 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
             case MODULE: {
                 outside_string_t callee = {(uint8_t *)s->a, strlen(s->a)};
                 outside_string_t kind = {(uint8_t *)s->b, strlen(s->b)};
-                rutent_binding_modules_call(&callee, &kind);
+                rutent_binding_modules_call_outcome_t outcome = rutent_binding_modules_call(&callee, &kind);
+                if (s->n) {
+                    const char *told = outcome == RUTENT_BINDING_MODULES_CALL_OUTCOME_DELIVERED     ? "delivered"
+                                       : outcome == RUTENT_BINDING_MODULES_CALL_OUTCOME_UNANSWERED ? "unanswered"
+                                                                                                   : "refused";
+                    put_string(&obtained, told, strlen(told));
+                }
                 break;
             }
             case BURN: {
