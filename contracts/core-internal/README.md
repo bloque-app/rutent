@@ -25,7 +25,8 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | operator → policy | `Reads::grant_permission`, `Reads::revoke_permission` | `PermissionChange` | `Decision` | `core-authz` `session` (`T-021-02`) | `REQ-AUZ-7`, `REQ-AUD-12` |
 | orchestration → policy | `Charges::charge` | `Charge` | `ChargeAnswer` | `core-authz` `parties` (`T-021-05`) | `REQ-OPS-1`, `REQ-AUZ-8` |
 | orchestration → policy | `PersonQuestions::ask_about_person` | `PersonQuestion` | `PersonAnswer` | `core-authz` `cpl` (`T-021-07`) | `REQ-CPL-2`, `REQ-CPL-5`, `REQ-CPL-6` |
-| orchestration, policy → log | `Log::append` | `Entry` | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUD-1`, `REQ-AUD-2`, `INV-7` |
+| orchestration, checks → log | `Log::append` | `GeneralEntry`: an `Entry` of no decision kind | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUD-1`, `REQ-AUD-2`, `INV-7` |
+| policy → log | `PolicyLog::append_decision` | `DecisionEntry`: a `VerifiedEntry` of a decision kind | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUZ-1`, `REQ-AUD-1`, `INV-7` |
 | orchestration → evidence store | `Evidence::keep` | a statement's bytes as received | `Kept`: its salted commitment, and the statement it restates | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-2`, `REQ-AUD-5`, `REQ-AUD-6` |
 | party, checker → evidence store | `Evidence::fetch` | `ReadCheck` of `reads: evidence` | `Fetched`: a `KeptStatement`, policy's refusal, or erased | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-5`, `REQ-AUD-9`, `REQ-AUD-10` |
 | orchestration → checks | `Comparisons::report_pair` | `ReportPair` | `Receipt` | `core-audit` `compare` (`T-022-05`) | `REQ-ORD-9` |
@@ -41,6 +42,17 @@ row implements its own in its own module, where its fail-closed stub sits until 
   appends an effect's entry (`call: effect`, outcome `to_take_effect`) and holds its receipt before the action takes
   effect, so a failure between the record and the effect leaves no effect (`INV-7`). How it ended follows as a
   `result` entry citing that receipt: `done`, `failed` or `unanswered`.
+- **Two handles on one log.** A decision entry is one whose `what` is a policy call's answer: `decide`,
+  `authorise`, `stuck_decide`, `stuck_move`, `open_session`, `check_read`, `grant_permission`,
+  `revoke_permission`, `charge` or `ask_about_person` (`calls::is_decision`). The log takes those through
+  `PolicyLog` alone, as a `DecisionEntry`, and every other entry through `Log`, as a `GeneralEntry`. Each type's
+  field is private, and it is built and deserialised only through `TryFrom`, which refuses the other's kinds, so a
+  part that holds only `Log` can't write a permitting decide and cite it, however it builds or reads the entry.
+  `admit_entry` takes the path an entry came by (`Through`) and refuses a decision kind on the general one, and
+  anything else on policy's, before it reads a row. The assembly, `rutent-scenarios`, holds the log and hands
+  `PolicyLog` to the policy engine and to no other part; `tools/boundary-check` reads the crate graph from
+  `cargo metadata` and fails when any crate but the assembly reaches `core-audit`, which builds the log and its
+  handles, or `core-authz`, which holds policy's.
 - **The log is the guard of every citation.** Permits, receipts and ids can be built anywhere: `Decision::permit`
   makes a `Permit` from a permitting answer, but a permit deserialises, and a decision's fields are public. So the
   log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS`: each row is a reference an
@@ -300,6 +312,8 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `What::Input` | the recorded input holds to the state-machine contract's own `check` |
 | `StatedEntry` | its relay is a party other than its maker; its `about` names something |
 | `VerifiedEntry` of a `command` | its `who` is the operator |
+| `GeneralEntry` | it holds no decision kind (`calls::is_decision`), however it is built or read |
+| `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
 | `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order or the trail; a customer's is never of the trail |
 | `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
@@ -400,6 +414,16 @@ These are defaults taken where the row left a choice open. Each is reversible by
 - **Reads and sessions.** No row ties a read to a session: `SPEC.md` asks no session of a reader (`REQ-CAT-3`'s
   sessions bound a reserve's balance checks), and a customer authenticated outside rutent must still read its
   order's state (`REQ-AUZ-1`, `REQ-ORD-5`, `AC-12`). A rule tying reads to sessions needs a `SPEC.md` ruling first.
+- **Policy's handle** (amending `T-020-01`'s row in `PLAN.md`, after it merged). Until then any part holding the
+  log could append a permitting decide of its own, and the log admitted an effect on it, since it held a decide to
+  any author. The fix is in the types and the crate graph rather than a new row of the citation table: a decide
+  written by policy and one written by orchestration look alike to the table. `T-020-05` and `T-021-01` hold the log
+  through these handles, orchestration through `Log` and the engine through `PolicyLog`, and `T-022-01` implements
+  both on its log.
+- **One process** (a residual for `T-025-05`). The handles keep decision entries to the policy engine while Core's
+  parts share one process, where only the assembly can reach the log. Were the parts split across processes, a
+  decision entry would need the policy engine's signature, which the log checks before it admits one; no such
+  signature exists in this contract.
 - **The join ids** are the state machine's own: an `acceptance` entry's `acceptance`, a `decision_record` entry's
   `decision_record` and an `evidence` entry's `evidence` are the ids its inputs cite, and
   `tests/core-internal.rs` joins each input fixture to its records by them (`REQ-ORD-34`, `REQ-ORD-43`).

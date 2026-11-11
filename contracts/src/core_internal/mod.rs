@@ -82,7 +82,8 @@ mod relations;
 mod types;
 
 pub use relations::{
-    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, admit_entry, covers,
+    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, Through, admit_entry,
+    covers,
 };
 pub use types::*;
 

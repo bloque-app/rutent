@@ -25,8 +25,17 @@
       "policy_version": "policy-1",
       "protocol_version": "2.0.1",
       "provider_ceilings": [],
-      "publisher_ceilings": []
+      "publisher_ceilings": [],
+      "operator_fee": {
+        "flat": "0",
+        "proportional": {
+          "numerator": "0",
+          "denominator": "1"
+        }
+      },
+      "slippage_limits": []
     },
+    "ranking": "before_operator_fee",
     "candidates": [
       {
         "candidate_id": "c001",
@@ -136,7 +145,7 @@
         "node": "hub-c"
       }
     },
-    "router_version": "rutent-router-0.3.0",
+    "router_version": "rutent-router-0.4.0",
     "snapshot": {
       "figures": [
         {

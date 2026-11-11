@@ -5,10 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
-use rutent_contracts::core_internal::Quantifier;
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, Charges, Comparisons, Decisions, Delivery, Evidence, Fetched,
-    Kept, Log, Measures, Operator, PersonQuestions, Reads, Sessions, StuckOrders,
+    AppendFailure, Authorisations, Charges, Comparisons, DECISION_ON_THE_GENERAL_HANDLE,
+    DecisionEntry, Decisions, Delivery, Evidence, Fetched, GeneralEntry, Kept, Log, Measures,
+    Operator, PersonQuestions, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, Reads, Sessions,
+    StuckOrders, is_decision,
 };
 use rutent_contracts::core_internal::{
     Action, ActorKind, CatalogueChange, KeptStatement, PermissionChange, RELATIONS, Role,
@@ -20,6 +21,7 @@ use rutent_contracts::core_internal::{
     Receipt, ReportPair, SessionAnswer, SessionRequest, StatedEntry, StuckDecide, StuckMove,
     VERSION, VerifiedEntry,
 };
+use rutent_contracts::core_internal::{Quantifier, Through};
 use rutent_contracts::router_api::Id;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -995,8 +997,27 @@ fn admission_fixtures() -> Vec<(String, Value)> {
     out
 }
 
+/// The handle a case's entry comes through: the one it names, or else the one its kind belongs to.
+fn through(case: &Value, entry: &Entry) -> Through {
+    match case["through"].as_str() {
+        Some("general") => Through::General,
+        Some("policy") => Through::Policy,
+        _ => match entry {
+            Entry::Verified(v) if is_decision(&v.what) => Through::Policy,
+            _ => Through::General,
+        },
+    }
+}
+
 /// What a case expects of [`admit_entry`]: admitted, or refused with the row's own refusal or its field's.
 fn expected(name: &str, case: &Value) -> Result<(), Violation> {
+    if case["breaks"] == "handle" {
+        let appended: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+        return Err(Violation(match through(case, &appended) {
+            Through::General => DECISION_ON_THE_GENERAL_HANDLE,
+            Through::Policy => RECORD_ON_THE_POLICY_HANDLE,
+        }));
+    }
     let Some(row) = case["row"].as_str() else {
         return Ok(());
     };
@@ -1035,7 +1056,7 @@ fn every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say() {
         }
         assert!(entry.is_valid(&case["entry"]), "{name}: the entry");
         let appended: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
-        let got = admit_entry(&history, &appended);
+        let got = admit_entry(&history, &appended, through(case, &appended));
         let want = expected(name, case);
         if got != want {
             failures.push(format!("{name}: got {got:?}, expected {want:?}"));
@@ -1084,8 +1105,92 @@ fn every_entry_of_a_complete_log_is_admitted_on_what_came_before_it() {
             })
             .collect();
         let appended: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
-        assert_eq!(admit_entry(&history, &appended), Ok(()), "{name}");
+        assert_eq!(
+            admit_entry(&history, &appended, through(&case, &appended)),
+            Ok(()),
+            "{name}"
+        );
     }
+}
+
+// verifies: REQ-AUZ-1, INV-7
+#[test]
+fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
+    let verified: Vec<(String, Value)> = fixtures("valid")
+        .into_iter()
+        .filter(|(n, _)| shape_of(n) == "verified-entry")
+        .collect();
+    // The decision kinds, by their tag on the wire, written out apart from `is_decision`.
+    const DECISION_CALLS: [&str; 10] = [
+        "decide",
+        "authorise",
+        "stuck_decide",
+        "stuck_move",
+        "open_session",
+        "check_read",
+        "grant_permission",
+        "revoke_permission",
+        "charge",
+        "ask_about_person",
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (name, value) in &verified {
+        let entry: VerifiedEntry = serde_json::from_value(value.clone()).unwrap();
+        let general = serde_json::from_value::<GeneralEntry>(value.clone());
+        let decision = serde_json::from_value::<DecisionEntry>(value.clone());
+        let call = value["what"]["call"].as_str().unwrap();
+        assert_eq!(
+            is_decision(&entry.what),
+            DECISION_CALLS.contains(&call),
+            "{name}"
+        );
+        if is_decision(&entry.what) {
+            seen.insert(call);
+            // Neither built nor read from the wire can a decision kind be a general entry.
+            assert!(
+                general
+                    .unwrap_err()
+                    .to_string()
+                    .contains(DECISION_ON_THE_GENERAL_HANDLE),
+                "{name}"
+            );
+            assert_eq!(
+                GeneralEntry::try_from(Entry::Verified(entry.clone())),
+                Err(Violation(DECISION_ON_THE_GENERAL_HANDLE)),
+                "{name}"
+            );
+            assert!(decision.is_ok(), "{name}");
+        } else {
+            assert!(general.is_ok(), "{name}");
+            assert!(
+                decision
+                    .unwrap_err()
+                    .to_string()
+                    .contains(RECORD_ON_THE_POLICY_HANDLE),
+                "{name}"
+            );
+        }
+    }
+    // Every decision kind has a fixture here, so none can leave `is_decision` unseen.
+    assert_eq!(seen, DECISION_CALLS.into_iter().collect());
+    // A stated entry is never a decision's.
+    let stated = fixture("valid", "stated-entry-of-a-quote");
+    assert!(serde_json::from_value::<GeneralEntry>(stated.clone()).is_ok());
+    assert!(serde_json::from_value::<DecisionEntry>(stated).is_err());
+
+    // The probe: orchestration writes its own permitted `decide` and an effect on a permit naming it. The decide
+    // can't be a general entry, the log refuses it on the general path, and with it absent the effect has nothing
+    // to rest on.
+    let forged: Entry =
+        serde_json::from_value(fixture("valid", "verified-entry-of-a-decision")).unwrap();
+    assert!(GeneralEntry::try_from(forged.clone()).is_err());
+    assert_eq!(
+        admit_entry(&[], &forged, Through::General),
+        Err(Violation(DECISION_ON_THE_GENERAL_HANDLE))
+    );
+    let effect: Entry =
+        serde_json::from_value(fixture("valid", "verified-entry-of-an-effect")).unwrap();
+    assert!(admit_entry(&[], &effect, Through::General).is_err());
 }
 
 // verifies: DEC-4
@@ -1405,7 +1510,12 @@ fn receipt() -> Receipt {
 }
 
 impl Log for Unbuilt {
-    fn append(&mut self, _: &Entry) -> Result<Receipt, AppendFailure> {
+    fn append(&mut self, _: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+}
+impl PolicyLog for Unbuilt {
+    fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
 }
@@ -1489,6 +1599,11 @@ fn every_call_between_cores_parts_can_be_held_as_a_trait_object() {
     fn read<T: DeserializeOwned>(name: &str) -> T {
         serde_json::from_value(fixture("valid", name)).unwrap_or_else(|e| panic!("{name}: {e}"))
     }
+    let mut policy_log: Box<dyn PolicyLog> = Box::new(Unbuilt);
+    assert_eq!(
+        policy_log.append_decision(&read("verified-entry-of-a-decision")),
+        Err(AppendFailure::Unavailable)
+    );
     let mut log: Box<dyn Log> = Box::new(Unbuilt);
     assert_eq!(
         log.append(&read("entry-verified")),

@@ -2,7 +2,7 @@
 //!
 //! Declared by `T-020-01`; `T-021-02` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Log, Reads, Sessions};
+use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, Reads, Sessions};
 use rutent_contracts::core_internal::{
     Decision, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, RefusalClass, SessionAnswer,
     SessionOutcome, SessionRequest, What,
@@ -11,7 +11,7 @@ use rutent_contracts::core_internal::{
 use crate::engine::{UNREACHABLE, Unbuilt};
 
 /// Until this row builds it: no session is opened.
-impl<L: Log> Sessions for Unbuilt<L> {
+impl<L: PolicyLog> Sessions for Unbuilt<L> {
     fn open_session(&mut self, request: &SessionRequest) -> Result<SessionAnswer, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         let outcome = SessionOutcome::NotKnown { cause: UNREACHABLE };
@@ -29,7 +29,7 @@ impl<L: Log> Sessions for Unbuilt<L> {
 }
 
 /// Until this row builds it: every read is refused, and recorded, and no permission is granted or revoked.
-impl<L: Log> Reads for Unbuilt<L> {
+impl<L: PolicyLog> Reads for Unbuilt<L> {
     fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
         let outcome = ReadOutcome::Refused {
             class: RefusalClass::NotPermitted,

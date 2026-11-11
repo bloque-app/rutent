@@ -22,6 +22,13 @@
       "excluded_tuples": [],
       "max_hops": 4,
       "max_parts": 1,
+      "operator_fee": {
+        "flat": "0",
+        "proportional": {
+          "denominator": "1",
+          "numerator": "0"
+        }
+      },
       "policy_version": "policy-7",
       "protocol_version": "2.0.1",
       "provider_ceilings": [
@@ -42,6 +49,88 @@
             "id": "COP"
           },
           "publisher": "acme"
+        }
+      ],
+      "slippage_limits": [
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-in"
+            },
+            "provider": "exchange-a",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-in"
+            }
+          }
+        },
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-b"
+            },
+            "provider": "exchange-b",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-b"
+            }
+          }
+        },
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-in"
+            },
+            "provider": "exchange-shallow",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-in"
+            }
+          }
+        },
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-in"
+            },
+            "provider": "exchange-e",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-in"
+            }
+          }
         }
       ]
     },
@@ -485,6 +574,7 @@
         ]
       }
     ],
+    "ranking": "before_operator_fee",
     "request": {
       "amount": "100000000",
       "from": {

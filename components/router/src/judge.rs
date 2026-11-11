@@ -7,7 +7,8 @@
 //! policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
 //! judgement of no; an operation outside its band or its price's levels, judged on what enters it after the fees
 //! before it, in its own unit (`REQ-QTE-12`); over a ceiling, counting what its operations produce and the
-//! exposure already in flight (`REQ-ORD-8`); arriving with nothing (`REQ-QTE-13`); below the floor; a rate cycle
+//! exposure already in flight (`REQ-ORD-8`); arriving with nothing (`REQ-QTE-13`); below the floor, after the
+//! operator's fee (`REQ-ORD-27`); a rate cycle
 //! implying free profit (ADR-0006); and, in a choice round, an operation no answer confirmed.
 
 use num_bigint::BigUint;
@@ -17,6 +18,7 @@ use rutent_contracts::router_api::{
 };
 
 use crate::price::{deepest, whole};
+use crate::quote::received_of;
 use crate::search::{Cut, Path, Search, refuses};
 
 fn amount_of(text: &str) -> BigUint {
@@ -110,8 +112,11 @@ impl Search<'_> {
         if arrives == BigUint::ZERO {
             return Some(DropReason::NoPositiveOutcome {});
         }
+        // The floor is the least the customer accepts at the destination (`REQ-ORD-27`), so it is judged on what
+        // is left after the operator's fee, taken there as the price shown takes it. Ranking stays on what
+        // arrives before it.
         if let Some(floor) = &self.request.floor
-            && arrives < amount_of(floor.as_str())
+            && received_of(&self.bounds.operator_fee, &arrives) < amount_of(floor.as_str())
         {
             return Some(DropReason::BelowFloor {});
         }

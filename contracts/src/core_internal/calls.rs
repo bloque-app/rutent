@@ -10,6 +10,13 @@
 //! `Err(AppendFailure::Refused)` and records nothing, as the log does. Values built in memory are held to the same
 //! rules as values read from the wire.
 //!
+//! **Two handles on one log.** The log takes entries through two traits. [`Log`] takes a [`GeneralEntry`], which
+//! can't hold a decision kind: that is orchestration's handle, and the checks'. [`PolicyLog`] takes a
+//! [`DecisionEntry`], which holds nothing but a decision kind: that is policy's. Neither type can be built, nor read
+//! from the wire, holding the other's kinds, so no part that holds only a [`Log`] can write a decision, however it
+//! builds or deserialises the entry. Only the assembly holds the log itself, and it hands [`PolicyLog`] to the policy
+//! engine alone; the crate graph keeps every other part from reaching the log's type (`tools/boundary-check`).
+//!
 //! **The log answers first.** Every policy answer is appended to the log before it is given, and an answer comes
 //! with the receipt of its entry; where the append fails, policy answers nothing, and nothing moves on it
 //! (`T-021-01`, `INV-7`). Orchestration appends an [`Effect`]'s entry and holds its receipt before the action takes
@@ -34,19 +41,121 @@ pub enum AppendFailure {
     Refused(Violation),
 }
 
-/// `CMP-CORE-AUDIT`'s log (ADR-0005), which orchestration and policy append to.
+/// The kinds of verified entry only policy writes: each policy call's record of its answer (`decide`, `authorise`,
+/// `stuck_decide`, `stuck_move`, `open_session`, `check_read`, `grant_permission`, `revoke_permission`, `charge`,
+/// `ask_about_person`).
+pub fn is_decision(what: &What) -> bool {
+    matches!(
+        what,
+        What::Decide { .. }
+            | What::Authorise { .. }
+            | What::StuckDecide { .. }
+            | What::StuckMove { .. }
+            | What::OpenSession { .. }
+            | What::CheckRead { .. }
+            | What::GrantPermission { .. }
+            | What::RevokePermission { .. }
+            | What::Charge { .. }
+            | What::AskAboutPerson { .. }
+    )
+}
+
+/// The refusal of a decision kind on the general handle.
+pub const DECISION_ON_THE_GENERAL_HANDLE: &str =
+    "a decision entry reaches the log only through policy's handle";
+
+/// The refusal of anything but a decision kind on policy's handle.
+pub const RECORD_ON_THE_POLICY_HANDLE: &str =
+    "policy's handle takes only the record of a policy decision";
+
+/// An entry that may reach the log through the general handle, [`Log`]: a stated entry, or a verified entry of any
+/// kind but a decision kind ([`is_decision`]). Its field is private, and it is built or deserialised only through
+/// [`TryFrom<Entry>`], which refuses a decision kind, so no value of this type holds one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "Entry", into = "Entry")]
+pub struct GeneralEntry(Entry);
+
+impl GeneralEntry {
+    /// The entry.
+    pub fn entry(&self) -> &Entry {
+        &self.0
+    }
+}
+
+impl TryFrom<Entry> for GeneralEntry {
+    type Error = Violation;
+
+    fn try_from(entry: Entry) -> Result<Self, Violation> {
+        match &entry {
+            Entry::Verified(v) if is_decision(&v.what) => {
+                Err(Violation(DECISION_ON_THE_GENERAL_HANDLE))
+            }
+            _ => Ok(GeneralEntry(entry)),
+        }
+    }
+}
+
+impl From<GeneralEntry> for Entry {
+    fn from(entry: GeneralEntry) -> Self {
+        entry.0
+    }
+}
+
+/// An entry that reaches the log through policy's handle, [`PolicyLog`]: a verified entry of a decision kind, and
+/// nothing else. Its field is private, and it is built or deserialised only through [`TryFrom<VerifiedEntry>`],
+/// which refuses any other kind.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "VerifiedEntry", into = "VerifiedEntry")]
+pub struct DecisionEntry(VerifiedEntry);
+
+impl DecisionEntry {
+    /// The entry.
+    pub fn entry(&self) -> &VerifiedEntry {
+        &self.0
+    }
+}
+
+impl TryFrom<VerifiedEntry> for DecisionEntry {
+    type Error = Violation;
+
+    fn try_from(entry: VerifiedEntry) -> Result<Self, Violation> {
+        if is_decision(&entry.what) {
+            Ok(DecisionEntry(entry))
+        } else {
+            Err(Violation(RECORD_ON_THE_POLICY_HANDLE))
+        }
+    }
+}
+
+impl From<DecisionEntry> for VerifiedEntry {
+    fn from(entry: DecisionEntry) -> Self {
+        entry.0
+    }
+}
+
+/// `CMP-CORE-AUDIT`'s log (ADR-0005) through its general handle: orchestration's, and the checks'. It takes no
+/// decision kind: those come only through [`PolicyLog`].
 pub trait Log {
     /// Appends `entry` and answers with its receipt once it is durable, or with why nothing was appended.
     ///
     /// - It runs [`Entry::check`] and refuses an entry that fails it.
-    /// - It refuses any entry that [`admit_entry`](super::admit_entry) doesn't admit over the log's history: an
+    /// - It refuses any entry that [`admit_entry`](super::admit_entry) doesn't admit over the log's history, on the
+    ///   general path ([`Through::General`](super::Through::General)), which refuses a decision kind as well: an
     ///   `effect` only on an unused permit for a permitting entry of this log that decided the same action (a stuck
     ///   order's only on its stuck move, with its decide step's resolution), a `result` only of an effect of this
     ///   log and only once, and every other entry only when the earlier entries it cites are in the log. Permits,
     ///   receipts and ids can be built anywhere, so this is the guard.
     /// - An entry the log took is never dropped. Appending an equal entry again after a failure appends it once;
     ///   entries that differ in anything, a handed-over item's drain or position included, are two entries.
-    fn append(&mut self, entry: &Entry) -> Result<Receipt, AppendFailure>;
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure>;
+}
+
+/// `CMP-CORE-AUDIT`'s log through policy's handle: the one way a decision entry reaches the log. The assembly hands
+/// it to the policy engine and to no other part.
+pub trait PolicyLog {
+    /// Appends a policy decision's entry, as [`Log::append`] does, on the policy path
+    /// ([`Through::Policy`](super::Through::Policy)).
+    fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure>;
 }
 
 /// What the evidence store answers when it keeps a statement's bytes.

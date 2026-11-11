@@ -35,7 +35,7 @@
 //!   nothing moves on it, which is what `AC-17` asks of the value.
 //! - **A decision's id is its request's**, as the stubs had it, so a permit names one request and one decision.
 //! - **The rules `SPEC.md` sets are the engine's.** [`Fixed`] holds them, one entry per later row of `F-021`, and
-//!   [`Engine::new`] asks them before the deployment's policy, so no assembly can leave one out. A refusal from either
+//!   [`Engine::with_policy`] asks them before the deployment's policy, so no assembly can leave one out. A refusal from either
 //!   beats not known from the other.
 //! - **An unreachable provider** gives `verifier_unreachable`: core-internal has no cause of its own for it.
 //! - **`AC-17`'s reading is pending** on the owner's form as `spec-ac17-not-known`, with "not known" the default.
@@ -43,9 +43,9 @@
 #[cfg(test)]
 mod entry_points;
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, DecisionEntry, Decisions, PolicyLog};
 use rutent_contracts::core_internal::{
-    Actor, Answer, Authorisation, Charge, Decision, DecisionRequest, Entry, NotKnownCause, Outcome,
+    Actor, Answer, Authorisation, Charge, Decision, DecisionRequest, NotKnownCause, Outcome,
     PermissionChange, PersonQuestion, ReadCheck, Receipt, RefusalClass, SessionRequest,
     StuckDecide, StuckMove, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
@@ -242,7 +242,7 @@ pub(crate) struct Rule {
 /// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
 pub(crate) const FIXED: &[Rule] = &[];
 
-/// The rules `SPEC.md` sets, which every engine asks first: [`Engine::new`] puts them there, so no assembly can leave
+/// The rules `SPEC.md` sets, which every engine asks first: [`Engine::with_policy`] puts them there, so no assembly can leave
 /// one out. Among them, as between two policies, a refusal beats not known.
 #[derive(Debug, Clone, Copy)]
 pub struct Fixed {
@@ -309,13 +309,21 @@ pub struct Engine<L, P, S> {
 /// (`REQ-AUZ-5`). Where the log takes no entry it answers nothing at all.
 pub type Unbuilt<L> = Engine<L, Absent, Absent>;
 
+impl<L> Unbuilt<L> {
+    /// The engine with no policy service and no sources, appending to `log`, as the assembly builds it until a
+    /// deployment's policy is handed in.
+    pub fn new(log: L) -> Self {
+        Engine::with_policy(log, Absent, Absent)
+    }
+}
+
 /// Why the unbuilt stubs know nothing.
 pub(crate) const UNREACHABLE: NotKnownCause = NotKnownCause::PolicyUnreachable;
 
 impl<L, P, S> Engine<L, P, S> {
     /// The engine that appends to `log`, consults the fixed rules and then `policy`, and asks `sources` for each
     /// input.
-    pub fn new(log: L, policy: P, sources: S) -> Self {
+    pub fn with_policy(log: L, policy: P, sources: S) -> Self {
         Engine {
             log,
             policy: (Fixed::default(), policy),
@@ -339,7 +347,7 @@ impl<L, P, S> Engine<L, P, S> {
     }
 }
 
-impl<L: Log, P, S> Engine<L, P, S> {
+impl<L: PolicyLog, P, S> Engine<L, P, S> {
     /// Appends the verified entry of one answer, timed by Core's clock.
     pub(crate) fn record(
         &mut self,
@@ -348,7 +356,7 @@ impl<L: Log, P, S> Engine<L, P, S> {
         at: &Timestamp,
         outcome: Outcome,
     ) -> Result<Receipt, AppendFailure> {
-        let entry = Entry::Verified(VerifiedEntry {
+        let entry = VerifiedEntry {
             kind: VerifiedKind::Verified,
             who: who.clone(),
             what,
@@ -357,9 +365,10 @@ impl<L: Log, P, S> Engine<L, P, S> {
                 source: TimeSource::CoreClock,
             },
             outcome,
-        });
+        };
         entry.check().map_err(AppendFailure::Refused)?;
-        self.log.append(&entry)
+        let entry = DecisionEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+        self.log.append_decision(&entry)
     }
 
     /// Records `answer` to a decision-shaped call and then gives it, its decision id its request's. Where the log
@@ -460,7 +469,7 @@ impl<L, P: Policy, S: Sources> Engine<L, P, S> {
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
-impl<L: Log, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
+impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         let answer = self.consult(Asked::Decide(request));
@@ -488,11 +497,11 @@ mod tests {
 
     use super::*;
     use rutent_contracts::core_internal::calls::{
-        Authorisations, Charges, PersonQuestions, Reads, Sessions, StuckOrders,
+        Authorisations, Charges, GeneralEntry, Log, PersonQuestions, Reads, Sessions, StuckOrders,
     };
     use rutent_contracts::core_internal::{
-        Action, ActorKind, CatalogueChange, ChargeOutcome, Permit, PersonOutcome, RELATIONS,
-        ReadOutcome, Role, SessionOutcome, admit_entry,
+        Action, ActorKind, CatalogueChange, ChargeOutcome, Entry, Permit, PersonOutcome, RELATIONS,
+        ReadOutcome, Role, SessionOutcome, Through, admit_entry,
     };
     use serde_json::{Value, json};
 
@@ -500,9 +509,9 @@ mod tests {
     #[derive(Default)]
     struct Taking(Vec<Entry>);
 
-    impl Log for Taking {
-        fn append(&mut self, entry: &Entry) -> Result<Receipt, AppendFailure> {
-            self.0.push(entry.clone());
+    impl PolicyLog for Taking {
+        fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            self.0.push(Entry::Verified(entry.entry().clone()));
             Ok(fixture!("receipt-of-an-appended-entry"))
         }
     }
@@ -510,24 +519,38 @@ mod tests {
     /// A log that takes nothing.
     struct Refusing;
 
-    impl Log for Refusing {
-        fn append(&mut self, _: &Entry) -> Result<Receipt, AppendFailure> {
+    impl PolicyLog for Refusing {
+        fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
         }
     }
 
-    /// A log that holds every entry to the contract's admission, as `CMP-CORE-AUDIT`'s log must: an effect only on
-    /// a permitting decision of this log for the same action, and every other entry on what it cites.
+    /// A log that holds every entry to the contract's admission, as `CMP-CORE-AUDIT`'s log must, on each of its two
+    /// handles: an effect only on a permitting decision of this log for the same action, every other entry on what it
+    /// cites, and a decision only through policy's handle.
     #[derive(Default)]
     struct Guarded(Vec<(Receipt, Entry)>);
 
+    impl PolicyLog for Guarded {
+        fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            self.admit(Entry::Verified(entry.entry().clone()), Through::Policy)
+        }
+    }
+
     impl Log for Guarded {
-        fn append(&mut self, entry: &Entry) -> Result<Receipt, AppendFailure> {
+        fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+            self.admit(entry.entry().clone(), Through::General)
+        }
+    }
+
+    impl Guarded {
+        fn admit(&mut self, entry: Entry, through: Through) -> Result<Receipt, AppendFailure> {
+            let entry = &entry;
             entry.check().map_err(AppendFailure::Refused)?;
             if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == entry) {
                 return Ok(receipt.clone());
             }
-            admit_entry(&self.0, entry).map_err(AppendFailure::Refused)?;
+            admit_entry(&self.0, entry, through).map_err(AppendFailure::Refused)?;
             let index = self.0.len();
             let receipt: Receipt = serde_json::from_value(json!({
                 "log": "log-test",
@@ -581,7 +604,7 @@ mod tests {
                 },
                 outcome: Outcome::ToTakeEffect {},
             });
-            self.append(&entry)
+            self.append(&GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?)
         }
     }
 
@@ -766,7 +789,7 @@ mod tests {
     fn the_unbuilt_engine_permits_nothing_on_any_call_and_records_first() {
         let not_known = Outcome::NotKnown { cause: UNREACHABLE };
         let refused = |class| Outcome::Refused { class };
-        let mut policy = Unbuilt::new(Taking::default(), Absent, Absent);
+        let mut policy = Unbuilt::new(Taking::default());
 
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
@@ -819,7 +842,7 @@ mod tests {
         assert!(matches!(answer.outcome, PersonOutcome::NotKnown { .. }));
         assert_eq!(last(&mut policy), not_known);
 
-        let mut policy = Unbuilt::new(Refusing, Absent, Absent);
+        let mut policy = Unbuilt::new(Refusing);
         assert_eq!(
             policy.decide(&fixture!("decision-request-to-move-value")),
             Err(AppendFailure::Unavailable)
@@ -838,7 +861,7 @@ mod tests {
     #[test]
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
-        let mut policy = Engine::new(
+        let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies(),
             Given::default(),
@@ -870,7 +893,8 @@ mod tests {
         assert_eq!(policy.policy.1.ruled.len(), actions.len());
 
         let permits = Service::ruling(Reply::Given(Ruling::Permit));
-        let mut policy = Engine::new(Guarded::with_a_decision_record(), permits, Given::default());
+        let mut policy =
+            Engine::with_policy(Guarded::with_a_decision_record(), permits, Given::default());
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             let permit = decision.permit().expect("a permit");
@@ -916,7 +940,8 @@ mod tests {
         ];
         let kinds = [ActorKind::Person, ActorKind::Agent, ActorKind::Component];
         let denies = Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
-        let mut policy = Engine::new(Guarded::with_a_decision_record(), denies, Given::default());
+        let mut policy =
+            Engine::with_policy(Guarded::with_a_decision_record(), denies, Given::default());
         let mut callers = Vec::new();
         for role in roles {
             for kind in kinds {
@@ -950,7 +975,8 @@ mod tests {
                 },
             )
         });
-        let mut policy = Engine::new(Guarded::default(), knows_one_operator, Given::default());
+        let mut policy =
+            Engine::with_policy(Guarded::default(), knows_one_operator, Given::default());
         let mut stale: DecisionRequest = fixture!("decision-request-to-mark-a-release-stale");
         assert!(policy.decide(&stale).unwrap().permit().is_some());
         stale.request = id("req-103");
@@ -1017,7 +1043,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, asked, ruled)) in cases.into_iter().enumerate() {
-            let mut policy = Engine::new(Guarded::default(), service, given);
+            let mut policy = Engine::with_policy(Guarded::default(), service, given);
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, missing, "case {n}");
@@ -1030,7 +1056,7 @@ mod tests {
             );
         }
 
-        let mut policy = Engine::new(
+        let mut policy = Engine::with_policy(
             Guarded::default(),
             permits(Reply::Given(both())),
             sources(yes.clone(), yes),
@@ -1082,7 +1108,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, cause)) in cases.into_iter().enumerate() {
-            let mut policy = Engine::new(Guarded::default(), service, given);
+            let mut policy = Engine::with_policy(Guarded::default(), service, given);
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, Answer::NotKnown { cause }, "case {n}");
@@ -1097,7 +1123,7 @@ mod tests {
             );
         }
 
-        let mut policy = Engine::new(Refusing, permits(both()), sources(yes.clone(), yes));
+        let mut policy = Engine::with_policy(Refusing, permits(both()), sources(yes.clone(), yes));
         assert_eq!(
             policy.decide(&fixture!("decision-request-to-move-value")),
             Err(AppendFailure::Unavailable)
@@ -1132,7 +1158,7 @@ mod tests {
         };
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
 
-        let mut policy = Engine::new(Guarded::default(), refuses(), yes());
+        let mut policy = Engine::with_policy(Guarded::default(), refuses(), yes());
         let decision = policy.decide(&request).unwrap();
         assert_eq!(decision.outcome, refused);
         let [(_, inputs)] = &policy.policy.1.ruled[..] else {
@@ -1157,14 +1183,14 @@ mod tests {
         );
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::new(Guarded::default(), (permits, refuses()), yes());
+        let mut policy = Engine::with_policy(Guarded::default(), (permits, refuses()), yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::new(Guarded::default(), (refuses(), permits), yes());
+        let mut policy = Engine::with_policy(Guarded::default(), (refuses(), permits), yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::new(Guarded::default(), permits, yes());
+        let mut policy = Engine::with_policy(Guarded::default(), permits, yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, Answer::Permit {});
     }
 
@@ -1183,7 +1209,7 @@ mod tests {
 
         // Each decision-shaped call of the unbuilt engine: either the log took no entry and nothing was answered, or
         // the answer permits nothing and an effect on a permit forged from it is refused.
-        let mut policy = Unbuilt::new(Guarded::with_a_decision_record(), Absent, Absent);
+        let mut policy = Unbuilt::new(Guarded::with_a_decision_record());
         let grant: PermissionChange = fixture!("permission-change-granting-a-regulator-the-trail");
         let decisions = [
             policy.decide(&fixture!("decision-request-to-move-value")),
@@ -1250,13 +1276,13 @@ mod tests {
         rule: cannot_be_reached,
     }];
 
-    /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::new`:
+    /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::with_policy`:
     /// a fixed rule's refusal is the answer, the deployment's policy not even asked, and it beats the deployment's
     /// service being unreachable. A deployment's refusal likewise beats a fixed rule that can't be reached.
     // verifies: REQ-AUZ-1, REQ-AUZ-5
     #[test]
     fn fixed_rules_are_asked_first_and_their_refusal_beats_an_unreachable_service() {
-        let engine = Engine::new(Taking::default(), Absent, Absent);
+        let engine = Engine::with_policy(Taking::default(), Absent, Absent);
         let names = |rules: &[Rule]| rules.iter().map(|r| r.name).collect::<Vec<_>>();
         assert_eq!(
             names(engine.policy.0.rules),
@@ -1313,7 +1339,7 @@ mod tests {
     fn a_pair_of_policies_permits_only_where_both_do_and_a_refusal_beats_not_known() {
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
         let decide = |first: Service, second: Service, sources: Given| {
-            let mut engine = Engine::new(Guarded::default(), (first, second), sources);
+            let mut engine = Engine::with_policy(Guarded::default(), (first, second), sources);
             let answer = engine.decide(&request).unwrap().outcome;
             (answer, engine.sources.asked)
         };
@@ -1575,7 +1601,7 @@ mod tests {
                         (Ruling::Refuse(RefusalClass::NotPermitted), false),
                     ] {
                         let service = Service::ruling(Reply::Given(ruling));
-                        let mut engine = Engine::new(
+                        let mut engine = Engine::with_policy(
                             Guarded::with_a_decision_record(),
                             service,
                             Given::default(),
@@ -1590,8 +1616,7 @@ mod tests {
                     }
                 }
                 Call::Unbuilt { row, call } => {
-                    let mut engine =
-                        Unbuilt::new(Guarded::with_a_decision_record(), Absent, Absent);
+                    let mut engine = Unbuilt::new(Guarded::with_a_decision_record());
                     assert!(
                         !call(&mut engine),
                         "{name}, {row}'s, permits nothing until it is built"
