@@ -4,9 +4,11 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
 ## T-020-02
 
-- **One bump, folded into 3.0.0.** router-api 3.0.0 isn't on `develop` yet (`M2`'s pull request is open), so the
-  change is a third bullet of 3.0.0's changelog entry, not 4.0.0. The contract guard against `origin/develop`
-  reads 3.0.0 against 2.x, a major, and passes.
+- **One bump: 4.0.0.** This row first folded its change into router-api 3.0.0, unreleased then, as a third bullet
+  of its changelog entry. `M2` was then merged into `develop` (pull request #60, `fb883e0`), so the contract guard
+  read 3.0.0 as released and refused the change at 3.0.0 ("version not bumped"). The row's Work names that case:
+  the new required `PolicyBounds` fields make router-api 4.0.0. The bullet moved, unchanged, into a 4.0.0 entry
+  that says why, and the guard against `origin/develop` passes at 4.0.0.
 - **What `PolicyBounds` gained.** `operator_fee`, a `FeeFormula`, and `slippage_limits`, both required. The fee is
   taken at the destination in the request's `to` unit from what the providers deliver, capped by its maximum and
   never raised to it, as `quote::quoted_price` already took it. Its proportion is at most one (`PolicyBounds::check`):

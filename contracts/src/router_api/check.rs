@@ -365,7 +365,7 @@ impl PolicyBounds {
     }
 }
 
-/// Whether what arrives leaves the customer at least `floor` after the operator's fee (`REQ-ORD-27`, 3.0.0): the
+/// Whether what arrives leaves the customer at least `floor` after the operator's fee (`REQ-ORD-27`, 4.0.0): the
 /// fee is `flat + ceil(arrives × numerator / denominator)`, capped by its `maximum` and never raised to it, and
 /// what is left never goes below nothing. Exactly, with no division: for a whole `k` and a positive `d`,
 /// `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`.
@@ -855,7 +855,7 @@ impl DecisionRecord {
     ///   stale figure is past its validity, a void statement is void, a voided quote names the condition, a
     ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor`,
     ///   `no_positive_outcome`, `over_ceiling`, `excluded_by_policy` and `outside_band` are recomputed from the
-    ///   candidate's stated amounts and fees, the floor, the bounds (the operator's fee among them, since 3.0.0)
+    ///   candidate's stated amounts and fees, the floor, the bounds (the operator's fee among them, since 4.0.0)
     ///   and the exposures: they show the stated
     ///   amounts consistent with the drops, not with the prices cited, which the router suite recomputes
     ///   (`rutent-conformance`'s `router`, `T-004-02`). `no_positive_outcome` holds when any one part arrives with
