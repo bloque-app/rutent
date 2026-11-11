@@ -117,8 +117,9 @@ fn choice_request() -> Request {
     .unwrap()
 }
 
-/// Records each refused statement and checks it went to the log as its maker's, attributed where its own signature
-/// verified and only claimed where it didn't, received at Core's clock, with its bytes in the evidence store.
+/// Records each refused statement and checks it went to the log unverified, claimed by the maker its envelope names
+/// and about the transaction its bytes sign, for the log to attribute; received at Core's clock, with its bytes in
+/// the evidence store.
 fn record_each(
     catalogue: &rutent_prov::catalogue::Catalogue,
     clock: &TestClock,
@@ -134,17 +135,19 @@ fn record_each(
         let Entry::Stated(stated) = entry else {
             panic!("a refused statement is a stated entry");
         };
-        match &stated.attribution {
-            Attribution::Verified { who } => {
-                assert!(statement.verified);
-                assert_eq!(who.acts.as_str(), RESERVE);
-                assert_eq!(who.party.as_str(), "acme");
-            }
-            Attribution::Unverified { claimed_by } => {
-                assert!(!statement.verified);
-                assert_eq!(claimed_by.acts.as_str(), RESERVE);
-            }
-        }
+        let Attribution::Unverified { claimed_by } = &stated.attribution else {
+            panic!("orchestration appends a statement unverified; the log attributes it");
+        };
+        assert_eq!(claimed_by.acts.as_str(), RESERVE);
+        assert_eq!(claimed_by.party.as_str(), "acme");
+        assert_eq!(
+            stated
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.as_ref())
+                .map(|t| t.as_str()),
+            signed_transaction(&statement.bytes).as_deref()
+        );
         assert_eq!(
             stated.received_at.as_str(),
             clock.now().timestamp().unwrap().as_str()
@@ -461,6 +464,12 @@ fn operators_statement_is_tied_to_the_deployments_operator_key() {
     );
 }
 
+/// The transaction a statement's bytes sign, where its body names one.
+fn signed_transaction(bytes: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    Some(value["statement"]["transaction"].as_str()?.to_string())
+}
+
 // verifies: REQ-AUD-2
 #[test]
 fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_signature() {
@@ -477,22 +486,29 @@ fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_sign
     let mut log = KeptLog::default();
     let mut evidence = KeptEvidence::default();
     record_refused(&mut evidence, &mut log, &clock, &catalogue, &claimed, None).unwrap();
-    let [Entry::Stated(stated)] = log.entries.as_slice() else {
-        panic!("one stated entry");
-    };
-    assert!(matches!(stated.attribution, Attribution::Unverified { .. }));
-
-    // The same claim on a statement whose signature does verify is recorded as its maker's.
+    // Orchestration never attributes a statement, whatever it is told: it appends it unverified, claimed by the
+    // maker its envelope names and about the transaction its bytes sign, and the log, which alone attributes, reads
+    // the kept bytes' own signature (core-internal's `attribute`).
     let honest = RefusedStatement {
         bytes: dry_run(&deployment(), 3_500, &statements_key(RESERVE, 1)),
         verified: false,
-        ..claimed
+        ..claimed.clone()
     };
     record_refused(&mut evidence, &mut log, &clock, &catalogue, &honest, None).unwrap();
-    let Entry::Stated(stated) = &log.entries[1] else {
-        panic!("a stated entry");
+    let [Entry::Stated(stray), Entry::Stated(signed)] = log.entries.as_slice() else {
+        panic!("two stated entries");
     };
-    assert!(matches!(stated.attribution, Attribution::Verified { .. }));
+    for (stated, statement) in [(stray, &claimed), (signed, &honest)] {
+        assert!(matches!(stated.attribution, Attribution::Unverified { .. }));
+        assert_eq!(
+            stated
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.as_ref())
+                .map(|t| t.as_str()),
+            signed_transaction(&statement.bytes).as_deref()
+        );
+    }
 }
 
 // verifies: THR-3, REQ-AUD-4

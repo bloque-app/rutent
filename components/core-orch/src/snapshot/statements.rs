@@ -17,9 +17,9 @@
 //!
 //! Keys compare by their decoded bytes (`PublicKey`). Every time read here is Core's clock: [`super::Snapshots`]
 //! passes its one reading, and the functions here read the [`Clock`] they are handed, never a time a caller
-//! chooses. A statement refused before the record never reaches a snapshot; it is recorded ([`record_refused`]) as
-//! its maker's statement where its own signature verified, and as its claimed maker's, unverified, where it didn't
-//! (core-internal's README, "Two kinds of entry").
+//! chooses. A statement refused before the record never reaches a snapshot; it is recorded ([`record_refused`])
+//! unverified, naming its claimed maker and the transaction its bytes sign, and the log sets its attribution from the
+//! kept bytes (core-internal's README, "The log, not the writer, attributes a statement").
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence};
 use rutent_contracts::core_internal::{
@@ -80,6 +80,9 @@ struct Claimed {
     maker: String,
     made_at: String,
     signature: Signature,
+    /// The statement's body, read only for the transaction it names.
+    #[serde(default)]
+    statement: Value,
 }
 
 /// A statement kept out of a snapshot, with its bytes as received, to record ([`record_refused`]).
@@ -92,7 +95,7 @@ pub struct RefusedStatement {
     /// Why.
     pub reason: Refusal,
     /// Whether its own signature verified against a key of its maker's when the snapshot was formed. Informational
-    /// only: [`record_refused`] checks the signature again itself and never reads this.
+    /// only: [`record_refused`] never reads it, and the log attributes the statement from its kept bytes.
     pub verified: bool,
 }
 
@@ -235,11 +238,13 @@ fn find_nested(value: &Value, path: &mut Vec<PathStep>, found: &mut Vec<Vec<Path
 }
 
 /// Records a refused statement (`REQ-AUD-2`): its bytes go to the evidence store, which answers their salted
-/// commitment, and a stated entry naming that commitment is appended to the log, received at Core's clock. Its
-/// maker is the one its envelope names: attributed to it (`signature: verified`) where the statement's own signature
-/// verifies now, against the catalogue at Core's clock, and only claimed by it (`signature: unverified`) where it
-/// doesn't. The check is made here, never taken from [`RefusedStatement::verified`]. The maker acts for its publisher, or
-/// for the operator where the operator publishes it; a verifier's judgement is made in the verifier's role.
+/// commitment, and a stated entry naming that commitment is appended to the log, received at Core's clock. The entry
+/// is appended unverified, naming the maker its envelope names as its claimed maker, and the log sets its attribution
+/// from the kept bytes (core-internal's `attribute`): orchestration never attributes a statement, and the log's
+/// general handle refuses one it did. Its `about` is the one handed in, with the transaction the bytes sign where
+/// they name one, since the log verifies a statement naming a transaction only about that transaction. The maker
+/// acts for its publisher, or for the operator where the operator publishes it; a verifier's judgement is made in
+/// the verifier's role.
 pub fn record_refused(
     evidence: &mut dyn Evidence,
     log: &mut dyn OrchestrationLog,
@@ -270,11 +275,28 @@ pub fn record_refused(
     };
     let shape = ShapeId::new(claimed.shape).ok_or(RecordError::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(RecordError::Unrecordable)?;
-    let verified = outer_verifies(catalogue, &refused.bytes, clock.now().floor());
-    let attribution = if verified {
-        Attribution::Verified { who: maker }
-    } else {
-        Attribution::Unverified { claimed_by: maker }
+    let attribution = Attribution::Unverified { claimed_by: maker };
+    let signed_transaction = match claimed.statement.get("transaction") {
+        None => None,
+        Some(t) => Some(
+            t.as_str()
+                .and_then(Id::new)
+                .ok_or(RecordError::Unrecordable)?,
+        ),
+    };
+    let about = match signed_transaction {
+        None => about,
+        Some(transaction) => Some(match about {
+            Some(about) => About {
+                transaction: Some(transaction),
+                ..about
+            },
+            None => About {
+                order: None,
+                segment: None,
+                transaction: Some(transaction),
+            },
+        }),
     };
     let kept = evidence.keep(&refused.bytes).map_err(RecordError::Append)?;
     let entry = Entry::Stated(StatedEntry {
