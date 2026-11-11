@@ -204,7 +204,8 @@ pub trait StatementKeys {
     fn operator(&mut self) -> Result<Id, AppendFailure>;
 
     /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's
-    /// party for the operator and a module the operator publishes; `None` where it knows no such maker. A verified
+    /// party for the operator and a module the operator publishes, by the releases the log accepted; `None` where it
+    /// knows no such maker. A verified
     /// statement's `party` is this, never the writer's word.
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure>;
 

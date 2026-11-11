@@ -1912,39 +1912,50 @@ fn first_trust_and_a_modules_key_come_from_the_log() {
         "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
         "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
     );
-    let effect = |n: u64, action: Value| -> (Receipt, Entry) {
+    let receipt = |n: u64| -> Receipt {
+        serde_json::from_value(serde_json::json!({
+            "log": "log-main", "index": n,
+            "entry": {"algorithm": "sha-256", "value": format!("{n:064x}")},
+        }))
+        .unwrap()
+    };
+    // An effect and its result: a change counts only once its effect is done.
+    let ended = |n: u64, action: Value, status: &str| -> [(Receipt, Entry); 2] {
         let mut entry = fixture("valid", "verified-entry-of-an-effect");
         entry["what"]["action"] = action;
-        (
-            serde_json::from_value(serde_json::json!({
-                "log": "log-main", "index": n,
-                "entry": {"algorithm": "sha-256", "value": format!("{n:064x}")},
-            }))
-            .unwrap(),
-            serde_json::from_value(entry).unwrap(),
-        )
+        let mut result = fixture("valid", "verified-entry-of-a-result-unanswered");
+        result["what"]["effect"] = serde_json::to_value(receipt(n)).unwrap();
+        result["outcome"]["status"] = serde_json::json!(status);
+        [
+            (receipt(n), serde_json::from_value(entry).unwrap()),
+            (receipt(n + 100), serde_json::from_value(result).unwrap()),
+        ]
     };
+    let effect = |n: u64, action: Value| ended(n, action, "done");
     let grant = |tuple: &str, k: &str| {
         serde_json::json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": tuple,
                "advertising_keys": [k]})
     };
     let fx = Id::new("fx-desk").unwrap();
-    let mut history = vec![effect(1, grant("usdc-cop", first))];
+    // A grant whose effect failed puts no key in force.
+    let mut history = ended(1, grant("usdc-cop", first), "failed").to_vec();
+    assert!(granted_advertising_keys(&history, &fx).is_empty());
+    history.extend(effect(11, grant("usdc-cop", first)));
     assert_eq!(granted_advertising_keys(&history, &fx), &[key(first)]);
     // A new grant replaces the keys: a lost key is recovered so.
-    history.push(effect(2, grant("usdc-cop", second)));
+    history.extend(effect(2, grant("usdc-cop", second)));
     assert_eq!(granted_advertising_keys(&history, &fx), &[key(second)]);
     // The latest grant in force is the one trusted, whatever its tuple.
-    history.push(effect(3, grant("usdt-cop", first)));
+    history.extend(effect(3, grant("usdt-cop", first)));
     assert_eq!(granted_advertising_keys(&history, &fx), &[key(first)]);
     // Revoking a tuple takes its grant back, leaving the one before; with none in force there is no first trust.
     let revoke = |tuple: &str| {
         serde_json::json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": "fx-desk",
                            "tuple": tuple})
     };
-    history.push(effect(4, revoke("usdt-cop")));
+    history.extend(effect(4, revoke("usdt-cop")));
     assert_eq!(granted_advertising_keys(&history, &fx), &[key(second)]);
-    history.push(effect(5, revoke("usdc-cop")));
+    history.extend(effect(5, revoke("usdc-cop")));
     assert!(granted_advertising_keys(&history, &fx).is_empty());
     assert!(granted_advertising_keys(&history, &Id::new("bridge-pay").unwrap()).is_empty());
 
@@ -1957,10 +1968,13 @@ fn first_trust_and_a_modules_key_come_from_the_log() {
         }
         a
     };
-    let mut history = vec![effect(6, release("accept_module", Some(first)))];
-    assert_eq!(release_statement_keys(&history, &module), vec![&key(first)]);
-    history.push(effect(7, release("revoke_release", None)));
-    assert!(release_statement_keys(&history, &module).is_empty());
+    let mut history = effect(6, release("accept_module", Some(first))).to_vec();
+    assert_eq!(
+        release_statement_keys(&history, &module, None),
+        vec![&key(first)]
+    );
+    history.extend(effect(7, release("revoke_release", None)));
+    assert!(release_statement_keys(&history, &module, None).is_empty());
 }
 
 /// The refusal of the stated entries' row `name`.

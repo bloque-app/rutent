@@ -109,6 +109,43 @@
           "status": "to_take_effect"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 120,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "7878787878787878787878787878787878787878787878787878787878787878"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 20,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "1414141414141414141414141414141414141414141414141414141414141414"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-06T15:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
     }
   ],
   "operator": "rutent-operator"

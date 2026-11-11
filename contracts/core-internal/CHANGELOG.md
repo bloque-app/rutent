@@ -47,7 +47,7 @@
   transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
   otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
   `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
-  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty-seven attribution cases,
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Thirty-five attribution cases,
   under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)
 - Folded into 1.0.0 before its release: a reserve's yes is bound to its order through its signed transaction. A
   statement about an order or a segment is verified only where its `about` names the transaction its body names;
@@ -112,8 +112,13 @@
   provider is the advertising keys of its latest grant in force (`granted_advertising_keys`), a new grant replacing
   them, never a deployment setting the log doesn't hold; `attribute` takes the log's history and verifies a module
   the operator publishes by the statement key of a release of it the log accepted and didn't revoke
-  (`release_statement_keys`). 112 valid fixtures, 110 invalid, 27 attribution cases. (DEC-4, DEC-20, REQ-AUD-2,
-  REQ-AUD-9, REQ-AUZ-6, T-020-01)
+  (`release_statement_keys`). (DEC-4, DEC-20, REQ-AUD-2, REQ-AUD-9, REQ-AUZ-6, T-020-01)
+- Folded into 1.0.0 before its release: release keys follow exploited and revoked, and changes count once done. A
+  catalogue change counts only once the log holds a `done` result for its effect. A release's statement key drops
+  for every statement once the release is declared exploited; once revoked, it keeps verifying statements about a
+  transaction whose segment began or ran on that release, by its handed-over segment record, and drops for any
+  other (`REQ-MDL-20`); `reinstate` restores it. `release_statement_keys` takes the statement's transaction.
+  35 attribution cases. (DEC-4, DEC-20, REQ-MDL-20, REQ-AUD-2, REQ-AUD-9, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -502,6 +502,18 @@ These are defaults taken where the row left a choice open. Each is reversible by
   `signs_for` reads a provider's advertising keys through `granted_advertising_keys`; `attribute` takes the history
   and holds a module the operator publishes to `release_statement_keys`, so its statements are verified rather than
   recorded unverified. Whoever builds a `grant` or `accept_module` decision request names the keys.
+- **Which changes count, and how a release's key stands** (`REQ-MDL-20`). A catalogue change counts only once this
+  log holds a `done` result for its effect, so a grant or an acceptance whose effect failed or went unanswered puts
+  no key in force. A release's statement key stands in force from its accepted, done `accept_module`, and
+  `reinstate` restores it. `declare_exploited` drops it for every statement. `revoke_release` drops it except for a
+  statement about a transaction whose segment began or ran on that release, by the platform's handed-over
+  `SegmentRecord` (`began_on`, `runs_on`): a segment in flight on a revoked version finishes on it, and one that
+  began after the revocation can't have begun on it.
+- **Advertisements after their grant** (`T-022-01`). `signs_for` trusts a grant's advertising keys only for an
+  advertisement made after the grant's effect, by the log's own clock, so no advertisement backdated before its
+  grant rides on it.
+- **Whose party** (`T-022-01`). `StatementKeys::publisher` answers from the log's recorded advertisements, for a
+  provider, and its accepted releases, for a module the operator publishes, never from a setting or orchestration.
 - **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives, so
   `StatementKeys` takes a maker's keys only from the grants, the accepted releases and the advertisements the log itself
   recorded under permitted `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own
