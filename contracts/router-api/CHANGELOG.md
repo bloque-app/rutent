@@ -1,6 +1,12 @@
 # router-api changelog
 
 ## 4.0.0
+- Judgements agree by tuple, subject and class: two of one subject for one tuple, one yes and one no, are refused
+  only where they judge one class. A tuple whose provider's rules need two classes may hold a yes for one and a no
+  for the other, so the no reaches the record and drops its candidate as `ineligible` (`REQ-AUD-4`, `REQ-CPL-6`).
+  0.4.0's rule compared subjects alone, the orchestrator's reading, changed on the coordinator's word on
+  `T-020-06`'s review. Folded into this unreleased major; a new valid fixture,
+  `catalogue-snapshot-judgements-of-two-classes-disagreeing`. (DEC-4, DEC-20, T-020-06)
 - A major of its own, not folded into 3.0.0: 3.0.0 was released into `develop` with `M2` (pull request #60, merged
   as `fb883e0`) while this change was on `M3`'s branch, so the contract guard reads 3.0.0 as released and the change
   below, new required fields and a new rule, needs a bump. Same content as before. (DEC-4, DEC-20, T-020-02)

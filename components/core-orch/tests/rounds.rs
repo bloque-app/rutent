@@ -111,7 +111,7 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
         Some(About {
             order: Some(id(ORDER)),
             segment: None,
-            transaction: Some(withdrawal.transaction.clone()),
+            transaction: withdrawal.transaction.clone(),
         })
     );
 }
@@ -163,10 +163,7 @@ fn yes_carried_by_the_user_is_refused() {
         .iter()
         .find(|s| s.tuple == withdrawal_tuple(RESERVE))
         .unwrap();
-    assert_eq!(
-        entry.about.as_ref().unwrap().transaction.as_ref(),
-        Some(&asked.transaction)
-    );
+    assert_eq!(entry.about.as_ref().unwrap().transaction, asked.transaction);
 }
 
 // verifies: REQ-CAT-3
@@ -286,10 +283,7 @@ fn questions_at_one_tuple_at_two_amounts_share_no_transaction_identifier() {
             panic!("a question is a stated entry");
         };
         assert_eq!(entry.attribution.maker().party, id("rutent-operator"));
-        assert_eq!(
-            entry.about.as_ref().unwrap().transaction.as_ref(),
-            Some(&sent.transaction)
-        );
+        assert_eq!(entry.about.as_ref().unwrap().transaction, sent.transaction);
     }
 
     // A source that draws one identifier twice stops the routing before a second question shares it.
@@ -347,19 +341,17 @@ fn provider_off_the_shortlist_is_asked_nothing() {
         .map(|op| op["subject"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(judged, [format!("subject-at-{RESERVE}")]);
-    // The verifier's question has a transaction of its own on the record.
+    // The verifier's question names no transaction, so it is on the record about nothing its body doesn't name.
     let to_verifier = routed
         .sent
         .iter()
         .find(|s| s.provider == id("id-check"))
         .unwrap();
+    assert_eq!(to_verifier.transaction, None);
     let Entry::Stated(entry) = &env.log.entries[to_verifier.receipt.index.get() as usize] else {
         unreachable!()
     };
-    assert_eq!(
-        entry.about.as_ref().unwrap().transaction.as_ref(),
-        Some(&to_verifier.transaction)
-    );
+    assert_eq!(entry.about, None);
     // The shortlist record names who it shortlisted, and the questions' authority is that record.
     let (_, shortlist) = env.records()[0];
     let What::DecisionRecord {
@@ -454,6 +446,41 @@ fn tuple_needing_two_judgements_is_refused_while_one_verifier_is_silent() {
         "{:?}",
         routed.offer
     );
+}
+
+// verifies: REQ-CPL-6, REQ-AUD-4
+#[test]
+fn no_for_one_class_beside_a_yes_for_another_drops_the_candidate_citing_the_no() {
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.order.needs = vec![
+        need(RESERVE, "id-check", "kyc.natural_person"),
+        need(RESERVE, "sanctions-check", "aml.sanctions_screening"),
+    ];
+    let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+    env.add_verifier("id-check");
+    env.add_verifier("sanctions-check");
+    let mut sim = env.sim();
+    sim.deny.insert("sanctions-check".into());
+    let routed = run(&mut env, &mut sim, &inputs);
+
+    let choice = last_choice(&routed);
+    let no = choice
+        .snapshot
+        .figures
+        .iter()
+        .find(|f| {
+            matches!(&f.value, FigureValue::Eligibility { judgement, .. }
+            if judgement.maker == "sanctions-check")
+        })
+        .expect("the no reaches the record");
+    let candidate = &choice.candidates[0];
+    assert_eq!(
+        candidate.dropped,
+        Some(DropReason::Ineligible {
+            figure: no.figure_id.clone()
+        })
+    );
+    assert_eq!(routed.offer, Offer::NotOffered(NotOffered::NoRoute));
 }
 
 // verifies: REQ-OPS-1

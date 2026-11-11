@@ -290,9 +290,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   the shortlist's snapshot (`origin_only`), so the record shows the exclusion and recomputes; `ask` also skips any
   withdrawal question not at the origin. The reviewer's probe (two reserves, the origin refusing) is now part of
   `route_is_not_offered_without_the_reserves_yes_in_the_users_session`: no route, and the other reserve asked no
-  withdrawal. The exclusion and the yes check back each other: off alone, the yes check stays green, since the
-  exclusion keeps the other reserve off every route; with the exclusion off too, the probe is offered on the other
-  reserve's yes.
+  withdrawal. Three guards back each other: the exclusion, `ask`'s skip of a withdrawal not at the origin, and the
+  offer's origin check. Off alone, the offer's check stays green, since the exclusion keeps the other reserve off
+  every route; the probe is offered on the other reserve's yes only with all three off (the exclusion and the skip
+  off and the origin check on, the offer is still refused).
 - **B2 and should-fix 3, judgements.** A judgement answer is admitted only if its maker is the need's verifier and
   its subject and class are the need's; any other never reaches a snapshot. A tuple with needs is offered only where
   its operation cites, for each need, a judgement by that verifier about that subject and class. The test kit gains
@@ -322,8 +323,26 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   logged under a fresh transaction of its own, which the verifier's answer can't name (a residual for `T-025-05`). A
   count a charge can't hold is refused as `RoutingError::Uncountable`, never taken as within. Who keeps `Issued` is
   above.
-- **Rule-off, each red:** the origin-only exclusion (the probe's other reserve asked a withdrawal); the exclusion and
-  the yes check's origin rule together (the probe offered); the verifier, subject and class match at admission (the
+- **Rule-off, each red:** the exclusion with `ask`'s skip (the probe's other reserve asked a withdrawal); all three
+  origin guards together, the exclusion, the skip and the offer's origin check (the probe offered); the verifier, subject and class match at admission (the
   foreign judgement entered the snapshot); the per-need check at offer (any judgement stood for both); the record
   check (another order's record taken); the router's `quote_voided` (the record said `unconfirmed`); refusals
   recorded once (the refused statement kept twice).
+
+### T-020-06, second review answers
+
+- **A no for one class beside a yes for another.** router-api's agreement rule compared judgements by tuple and
+  subject only, so a sanctions no beside a KYC yes for one person was refused from the snapshot, the router chose the
+  candidate, and Core refused it at the offer: the record named a route never offered and never cited the no
+  (`REQ-AUD-4`, `REQ-CPL-6`). The rule now compares tuple, subject and class (`CatalogueSnapshot::check`), folded
+  into the unreleased router-api 4.0.0 with a changelog entry and a valid fixture,
+  `catalogue-snapshot-judgements-of-two-classes-disagreeing`; the disagreeing fixture of one class stays invalid.
+  The rule was the orchestrator's reading, changed on the coordinator's word. New test
+  `no_for_one_class_beside_a_yes_for_another_drops_the_candidate_citing_the_no`, red with the class left out of the
+  comparison. Touches a `DEC-20` path, `contracts/router-api/` and `contracts/src/router_api/`.
+- **A judgement question is logged about nothing**, not under a transaction its body doesn't name, so the log can
+  verify what it attributes; `Sent::transaction` is `None` for it.
+- **The rule-off account above** now says that the probe is offered only with all three origin guards off.
+- **`T-020-01d`** (a person question names its verifiers, the shortlist record carries them) waits for the merge of
+  the attribution branch into `m3`; then `ask`, `asked_before` and the shortlist record's `verifiers` come from the
+  tuples' needs, and the `// T-020-01d:` note goes.

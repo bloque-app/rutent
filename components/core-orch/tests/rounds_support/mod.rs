@@ -209,6 +209,8 @@ pub struct Sim {
     pub wrong_key: BTreeSet<String>,
     /// Providers that answer with these bytes instead.
     pub relay: BTreeMap<String, Vec<u8>>,
+    /// Verifiers that judge no.
+    pub deny: BTreeSet<String>,
 }
 
 impl Sim {
@@ -221,6 +223,7 @@ impl Sim {
             silent: BTreeSet::new(),
             wrong_key: BTreeSet::new(),
             relay: BTreeMap::new(),
+            deny: BTreeSet::new(),
         }
     }
 
@@ -285,7 +288,7 @@ impl Providers for Sim {
             let body = json!({
                 "subject": operation["subject"],
                 "class": operation["class"],
-                "answer": "yes",
+                "answer": if self.deny.contains(&provider) { "no" } else { "yes" },
                 "valid_until": Instant(now + 86_400).rfc3339().unwrap(),
             });
             let value = envelope(&deployment(), JUDGEMENT_SHAPE, &provider, now, body);

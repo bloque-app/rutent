@@ -250,9 +250,9 @@ pub struct Recorded {
 pub struct Sent {
     /// The provider or verifier asked.
     pub provider: Id,
-    /// The transaction it was asked under. A judgement's request can't carry one, so only its stated entry names
-    /// it: the verifier's answer names none (a residual, `T-025-05`).
-    pub transaction: Id,
+    /// The transaction it was asked under; a judgement's request carries none, so it has none, and its stated
+    /// entry is about nothing (a residual, `T-025-05`).
+    pub transaction: Option<Id>,
     /// The tuple and amount it was about; a judgement's names the relying tuple and no amount.
     pub tuple: TupleKey,
     /// The amount, for a provider's question.
@@ -729,9 +729,8 @@ impl Run<'_, '_> {
         if !history.asked_about_person.contains(&relying) {
             history.asked_about_person.push(relying);
         }
-        // A judgement request carries no transaction, so the verifier's answer can't name one: the fresh
-        // transaction is the question's stated entry's alone (a residual, `T-025-05`).
-        let transaction = self.transaction()?;
+        // A judgement request carries no transaction, so the question is logged about nothing its body doesn't
+        // name, and the verifier's answer is bound by the need it answers alone (a residual, `T-025-05`).
         let operation = ask::judgement(&need.verifier, &need.subject, &need.class);
         let made_at = self.now()?;
         let bytes = ask::sign_question(
@@ -741,15 +740,10 @@ impl Run<'_, '_> {
             &made_at,
             operation,
         )?;
-        let about = About {
-            order: Some(order.order.clone()),
-            segment: None,
-            transaction: Some(transaction.clone()),
-        };
-        let receipt = self.append_question(&bytes, about)?;
+        let receipt = self.append_question(&bytes, None)?;
         self.sent.push(Sent {
             provider: need.verifier.clone(),
-            transaction,
+            transaction: None,
             tuple: need.tuple.clone(),
             amount: None,
             batch: 0,
@@ -832,10 +826,10 @@ impl Run<'_, '_> {
             segment: None,
             transaction: Some(transaction.clone()),
         };
-        let receipt = self.append_question(&bytes, about)?;
+        let receipt = self.append_question(&bytes, Some(about))?;
         self.sent.push(Sent {
             provider: provider.clone(),
-            transaction: transaction.clone(),
+            transaction: Some(transaction.clone()),
             tuple: question.tuple.clone(),
             amount: Some(question.amount_in.clone()),
             batch,
@@ -880,14 +874,18 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    fn append_question(&mut self, bytes: &[u8], about: About) -> Result<Receipt, RoutingError> {
+    fn append_question(
+        &mut self,
+        bytes: &[u8],
+        about: Option<About>,
+    ) -> Result<Receipt, RoutingError> {
         journal::append_stated(
             self.parts.log,
             self.parts.evidence,
             self.parts.clock,
             bytes,
             self.routing.operator.clone(),
-            Some(about),
+            about,
         )
         .map_err(|e| match e {
             Unappended::Append(failure) => RoutingError::Log(failure),
