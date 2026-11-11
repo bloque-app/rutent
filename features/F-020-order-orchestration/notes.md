@@ -65,6 +65,110 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Touches `DEC-20` paths**: `contracts/`. Also edits the router's `quote` and `judge` modules and `lib.rs`, and the
   router suite in `conformance/src/router/`, as the row's Work and `PLAN.md` §4.4 allow.
 
+## T-020-03
+
+- **Three calls on one `Intake`** (`components/core-orch/src/intake/`). `open` takes an `OrderRequest` under the
+  caller's request identifier, `quote::<R>` runs one routing through `rounds::route` and shows its quote, and
+  `accept` takes the requester's acceptance of the quote shown. A fourth, `confirm_owner`, answers a destination
+  whose owner changed. What they reach comes in a `Desk`: the rounds' `Parts`, the destination register, policy's
+  `Authorisations`, the bounds and prices the router runs under, and Core's and the operator's actors. Humans and
+  agents call the same functions with the same types (`REQ-OPS-5`); only the `Actor`'s `kind` and `acts` differ.
+- **One order per request identifier** (`REQ-ORD-19`, `INV-8`). The same request again under its identifier is told
+  what the first was told and records nothing. Another request under it opens nothing and records nothing:
+  `IntakeError::Conflicting`, naming the order the identifier opened. Reading, reversible: it could instead be told
+  the first request's answer. A repeated acceptance of an accepted order is told the same and records nothing. An
+  acceptance whose append, or whose start's, failed is carried on by accepting again: the authorisation policy
+  permitted isn't asked again, the acceptance isn't appended twice, the start is appended as first built, and the
+  order is told accepted only once it has started; a quote isn't run again meanwhile. The
+  register is in memory; keeping it across a restart is the deployment's (`F-030`), as with the rounds' `Issued`.
+- **Refused, nothing exists.** Only a request that breaks the deployment's rules is refused before an order exists:
+  an `order_refusal` naming no order, class `malformed_request`. The rules are intake's reading: the caller acts for
+  the requester in the customer's role; the route asked ends at the destination's node; a settlement account is held
+  at the destination's reserve; and a deposit input names no other address than the destination's. Every other
+  request opens an order, told `exists` with its outcome to come, and every later refusal names it.
+- **Classes of cause** (`REQ-ORD-18`). A routing that offers nothing is told "no route for this amount" where the
+  deciding record (the last choice round's, or the shortlist's where none ran) considered a candidate and dropped
+  every one for its amount (`outside_band`, `beyond_levels`, `fee_above_amount`, `nothing_delivered`,
+  `no_positive_outcome`, `below_floor`), and "no route right now" otherwise. A drop reason router-api adds later
+  counts as now until it is named. The rounds' other answers: `OverBound` is `over_bound`; `PersonQuestionsPastBound`
+  is `refused_by_policy`, since it is policy's bound for the order, not the caller's party's; `NoReservesYes` and
+  `NotEligible` are `no_route_right_now`, since the reserve or the verifier may answer later. A policy refusal of
+  the authorisation is `over_bound` for its own class, and `refused_by_policy` for every other. A chosen part
+  `snapshot::check_part` refuses is `no_route_right_now`, recorded before anything is shown. Readings, reversible.
+- **No provider text reaches the customer.** What a caller is told (`Told`, `Status`) holds identifiers, a class
+  from a closed list and the quote Core built from the router's record. A provider's words stay in its stated entry,
+  kept by the evidence store, and the log holds them by commitment only. The rule is the types', so no rule-off
+  stands for it beyond the test, which feeds refusals carrying markup and third parties' names.
+- **The quote shown, a minimal one.** `Quote` names the order, the choice round's decision record, the chosen
+  candidate, both ends, the amount and what the route delivers before the operator's fee, labelled a quote. Its
+  digest is SHA-256 of its RFC 8785 canonical JSON, the recorded decision's rule, and the `shown` entry, by Core,
+  names it. `T-020-07` adds the operator's fee shown apart, the slippage limits and a quote without a firm rate,
+  which changes the digest and nothing else here. A routing run again replaces the quote; only the latest is
+  accepted (`IntakeError::NotTheQuoteShown`).
+- **The acceptance** (`REQ-ORD-10`, `REQ-ORD-34`). Only the order's requester accepts: an actor for its party, in
+  the customer's role, a person or an agent; anyone else is refused (`NotTheRequester`) with nothing recorded, so a
+  stranger can't end another's order. The destination is resolved first; then the authorisation goes to policy, and
+  only on its permit is the `acceptance` recorded, its `who` the actor that accepted, then the `route_chosen` input.
+  Policy's not known leaves the order waiting, with nothing recorded by intake; a refusal ends it, as an
+  `order_refusal`. Reading: the authorisation is asked before the acceptance is recorded, so a refused one leaves no
+  acceptance; core-internal's README lets it come after. The operator acting for the user (`REQ-AUZ-9`) gives an
+  authorisation, never the customer's acceptance of a quote, so it isn't a caller of `accept`.
+- **The reserve's yes and the session** (`REQ-ORD-32`). The acceptance cites the receipt the rounds' `Offer::Offered`
+  names, and the session the order was routed in. Intake asks no provider anything itself: every question, the
+  reserve's request for its yes among them, is the rounds', asked under a fresh transaction for the order, signed
+  with the operator's key, appended about the order and transaction before it is sent, and its answer appended
+  with that transaction in its `about`. The tests show it end to end: the replayed log admits the acceptance's rows
+  (`acceptance-rests-on-the-reserves-yes`, `acceptance-is-asked-in-the-users-session`,
+  `acceptance-is-of-the-quote-shown`) and `answer-follows-its-question` on every answer.
+- **One yes for a split order, a contract gap.** `Offer::Offered` names a yes for each part, and core-internal's
+  acceptance names one, `reserve_yes`. The acceptance cites the first part's; each part withdraws at the origin
+  reserve, and the rounds offer no route without each yes, but the log ties only the first to the acceptance. A gap
+  for a new `F-020` row with a core-internal bump: `reserve_yes` as a list, one per part.
+- **The session comes with the request.** The user's session is opened through policy (`Sessions::open_session`)
+  by whoever takes the user's login before it reaches intake, and handed to the catalogue by the assembly, as
+  `F-021`'s notes have the register's hand-off. Intake doesn't open it; the log holds the acceptance to a permitted
+  `open_session` of the requester's that hasn't ended.
+- **The destination** (`REQ-ORD-24`). No provider-role operation resolves a destination or names its owner, so a port,
+  `intake::Destinations`, answers it: an owner, not yet, or no. The assembly backs it from the destination reserve's
+  register; Core records each answer as a `destination_check`. It is resolved when the order opens, and that owner is
+  kept; at acceptance it is resolved again. Not yet waits (`destination_not_yet_resolved`, accept again later; once it
+  resolves, to the owner first resolved, it is accepted), no ends the order (`destination_refused`), and another owner
+  makes the order wait for the customer (`destination_check` `owner_changed`, no refusal, since none of the seven
+  classes is a wait for the customer): the requester confirms that owner (`confirm_owner`) and accepts anew.
+  Confirming it again before the last segment is `T-020-08`'s and `T-020-13`'s. Reading, reversible.
+- **The requester's address** (`REQ-ORD-35`). The destination's account is the one place the address lives: intake
+  sets it as the deposit's input `beneficiary.address` (provider-role's name, `intake::DESTINATION_INPUT`), so the
+  deposit dry run asked is to the address the authorisation names as `destination.account`. A request naming
+  another address there, or a destination on another network than the route's, is refused before an order exists.
+  A reserve that can't deposit to an address refuses in its dry run, and the order has no route right now.
+- **The order's start.** `route_chosen` carries the chosen candidate's parts as the state machine plans them, each
+  part and segment under a fresh identifier, citing the choice round's decision record, stated by the customer who
+  accepted (source `customer`, the acceptor's `acts`, standing `stated`, as core-internal's `world--in_route` has
+  it), with time source `core_clock`. Feeding the input to the state machine is the assembly's (`T-024-02`) and
+  `T-020-08`'s, from the log.
+- **What policy's sources read.** `Intake::record` answers an order's requester, parties and origin reserve, for the
+  assembly to answer `F-021`'s `Requester`, `OrderOrigin` and `OrderParties` sources before the acceptance exists.
+- **Tests, and the order.** The code came first, so rule-off checks stand in for seeing each test fail first. The log
+  is the real core-internal reading: no `AuditLog` is merged, so `tests/intake_support/` holds one log both handles
+  write to, and replays it through `attribute` and `admit_entry` on the path each entry came by (policy's
+  `open_session` and `authorise` on `Through::Policy`, the rest on `Through::General`), as `T-020-06`'s
+  `Env::admitted` does. Each rule was switched off once and its test seen red: the replay of the same request; a
+  different request under a used identifier; a repeated acceptance; a refused request given an order; the amount rule
+  both ways; acceptance of another quote; acceptance by anyone; not known taken as a permit; the start at the quote;
+  the start before its acceptance; the acceptance recorded as Core's; the authorisation given by Core; the beneficiary
+  recorded as the requester; a settlement account at any reserve; the owner not compared; not yet taken as no;
+  confirmation by anyone; the deposit input not set from the destination; another address kept; another network kept;
+  an agent refused where a person is taken; the acceptance citing another entry as the yes, another session, or
+  another quote than shown (each refused by the replayed log); and, after review, the order told accepted before its
+  start was appended, policy asked again on a retry, the acceptance appended again on a retry, and a late destination
+  left refused. An eleventh test, beyond the row's list, `acceptance_whose_append_failed_is_carried_on_once`, covers
+  the retry; the test log fails one append on demand. The property test found one bug as written: a request repeated
+  was compared after intake had set its deposit input, so it read as another request; intake now keeps the request as
+  asked.
+- **Touches**: only `components/core-orch/src/intake/`, its tests (`tests/intake.rs`, `tests/intake_support/`,
+  which reuses `snapshot_support` and `rounds_support` unchanged), these notes, and `proptest` as a dev-dependency
+  of core-orch, already locked, so `Cargo.lock` gains one dependency line. No `DEC-20` path.
+
 ## T-020-05
 
 - **Core's clock.** `snapshot::Clock` is Core's clock, read as a `Reading` to the nanosecond; `SystemClock` reads
