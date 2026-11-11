@@ -6,8 +6,10 @@
 //!
 //! A session speaks for one account, and the catalogue's balance checks happen only inside one (`REQ-CAT-3`). The
 //! engine opens it only for the account's holder or its delegate, and only for a bounded time: the fixed rule refuses
-//! a session asked by anyone else, or asked to last longer than [`LONGEST_SESSION_SECS`], before the deployment's
-//! policy is asked, and the deployment's policy still decides the rest. The holder the request names must hold the
+//! a session asked by anyone else before the deployment's policy is asked, and the deployment's policy still decides
+//! the rest. The bound is measured from Core's own [`Clock`], never from the moment the request states: a session
+//! must end after Core's now and no more than [`LONGEST_SESSION_SECS`] after it, or it is refused, the clock read
+//! before the consultation, like the register. The holder the request names must hold the
 //! account, which the account's record says (`Source::Account`), whoever asks, so no party opens a session on
 //! another's account by naming itself, or an accomplice, its holder. A delegate is another party that holder names as
 //! its delegate on that account, an input asked of the holder (`Source::Holder`). Each is an input like any other, so
@@ -57,8 +59,8 @@ use crate::engine::{
     session_outcome,
 };
 
-/// The longest a session may last, in seconds, from when it is asked for to when it ends. A session asked to last
-/// longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that never ends
+/// The longest a session may last, in seconds, from Core's now when it is asked for to when it ends. A session asked
+/// to last longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that never ends
 /// would bound nothing).
 pub const LONGEST_SESSION_SECS: u64 = 15 * 60;
 
@@ -93,11 +95,65 @@ pub fn instant(at: &Timestamp) -> Instant {
 }
 
 /// What the engine opened, granted and revoked: the sessions it opened and the read permissions in force.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Register {
     pub(crate) sessions: Vec<OpenSession>,
     pub(crate) grants: Vec<PermissionChange>,
     pub(crate) revoked: Vec<Id>,
+    /// Core's clock, which bounds each session from the moment it is asked for.
+    pub(crate) clock: Box<dyn Clock>,
+}
+
+impl Default for Register {
+    fn default() -> Self {
+        Register {
+            sessions: Vec::new(),
+            grants: Vec::new(),
+            revoked: Vec::new(),
+            clock: Box::new(SystemClock),
+        }
+    }
+}
+
+/// Core's own clock (`F-012`'s notes): the time a session's bound is measured from, never a time its request states.
+/// The engine reads the host's, [`SystemClock`], unless it is handed another ([`Engine::set_clock`]); a test hands it
+/// one it sets.
+pub trait Clock: std::fmt::Debug {
+    /// The moment now, since the Unix epoch.
+    fn now(&self) -> std::time::Duration;
+}
+
+/// The host's clock, read through the standard library.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> std::time::Duration {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+    }
+}
+
+/// A clock stopped at one moment, for tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Stopped(pub(crate) std::time::Duration);
+
+#[cfg(test)]
+impl Stopped {
+    /// Stopped at `at`.
+    pub(crate) fn at(at: &Timestamp) -> Box<dyn Clock> {
+        let nanos = u64::try_from(at.unix_nanos()).unwrap();
+        Box::new(Stopped(std::time::Duration::from_nanos(nanos)))
+    }
+}
+
+#[cfg(test)]
+impl Clock for Stopped {
+    fn now(&self) -> std::time::Duration {
+        self.0
+    }
 }
 
 impl Register {
@@ -125,6 +181,15 @@ impl Register {
         })
     }
 
+    /// Whether `request` asks a session that ends after Core's now, and no more than [`LONGEST_SESSION_SECS`] after
+    /// it. The time the request states is never read: a request can state any moment.
+    fn bounded(&self, request: &SessionRequest) -> bool {
+        let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
+        let until = request.until.unix_nanos();
+        let longest = i128::from(LONGEST_SESSION_SECS) * 1_000_000_000;
+        until > now && until - now <= longest
+    }
+
     /// Whether `permission` was granted.
     fn granted(&self, permission: &Id) -> bool {
         self.grants.iter().any(|g| &g.permission == permission)
@@ -147,10 +212,6 @@ impl Register {
 /// The fixed rule's refusal of `asked`, where it needs no input to refuse.
 fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
     let refused = match asked {
-        Asked::OpenSession(r) => {
-            let longest = i128::from(LONGEST_SESSION_SECS) * 1_000_000_000;
-            r.until.unix_nanos() - r.at.unix_nanos() > longest
-        }
         Asked::CheckRead(c) => read_needs(c).is_none(),
         _ => false,
     };
@@ -249,7 +310,7 @@ pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
 }
 
 /// The fixed rule's ruling: a session only for a party the account's record says holds it, or a delegate that holder
-/// names, never longer than [`LONGEST_SESSION_SECS`]; a read only of what the log admits its reader may read. Every
+/// names; a read only of what the log admits its reader may read. Every
 /// other call passes. Each input it needs must say yes: a no refuses, and one not given is missing.
 pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     if let Some(class) = refused_outright(asked) {
@@ -272,6 +333,11 @@ impl<L, P, S> Engine<L, P, S> {
     pub fn register(&self) -> &Register {
         &self.register
     }
+
+    /// Hands the engine Core's clock, in place of the host's.
+    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
+        self.register.clock = clock;
+    }
 }
 
 /// A session only for the account's holder or its delegate, bounded in time, decided and recorded before it is
@@ -279,7 +345,7 @@ impl<L, P, S> Engine<L, P, S> {
 impl<L: PolicyLog, P: Policy, S: Sources> Sessions for Engine<L, P, S> {
     fn open_session(&mut self, request: &SessionRequest) -> Result<SessionAnswer, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
-        let answer = if self.register.reissues(request) {
+        let answer = if self.register.reissues(request) || !self.register.bounded(request) {
             Answer::Refuse {
                 class: RefusalClass::NotPermitted,
             }

@@ -85,9 +85,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   the holder's own included. Without it a party opened a session on another's account by naming itself, or an
   accomplice who vouched for it, the holder. The record is the reserve's, or the deployment's register of accounts,
   which the assembly answers.
-- **Bounded in time.** An open session ends at its request's `until`, and the fixed rule refuses one asked to last
-  longer than `LONGEST_SESSION_SECS`, 15 minutes, whoever asks. Default: a constant of the fixed rule, since the rules
-  are plain functions of the request; a deployment's own bound is its policy service's to add, which can refuse
+- **Bounded in time, from Core's clock** (review of `d2604d3`, S1). An open session ends at its request's `until`,
+  which must fall after Core's now and no more than `LONGEST_SESSION_SECS`, 15 minutes, after it, whoever asks. The
+  bound was first measured from the request's `at`, so a request stating a moment a year on opened a session ending
+  then. The engine now reads its own clock (`session::Clock`, the host's `SystemClock` unless `Engine::set_clock`
+  hands it another), never a time the request states, before the consultation, as it reads the register. The trait
+  mirrors `T-020-05`'s `snapshot::Clock`, which core-authz can't import (`DEC-2`); the assembly can hand both the one
+  clock. Default: the bound a constant; a deployment's own bound is its policy service's to add, which can refuse
   shorter sessions but never open a longer one. A session's id is its request's, as a decision's is, so a retry opens
   the same session and the log takes one entry. An id already issued opens no other session, for another account,
   holder or end: the catalogue holds one session per id, so a second would take the first one's place and speak for

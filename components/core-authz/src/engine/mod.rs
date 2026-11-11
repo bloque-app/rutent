@@ -880,6 +880,9 @@ mod tests {
         assert_eq!(last(&mut policy), not_known);
 
         // The delegate's session waits on its holder's word, which no source can give.
+        policy.set_clock(crate::session::Stopped::at(
+            &Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
+        ));
         let session = policy
             .open_session(&fixture!("session-request-of-a-delegate"))
             .unwrap();
@@ -1607,6 +1610,7 @@ mod tests {
                         from: Source::Account(request.account.clone()),
                     };
                     e.sources.says.push((holds, Reply::Given(Said::Yes)));
+                    e.set_clock(crate::session::Stopped::at(&request.at));
                     e.open_session(&request)
                         .is_ok_and(|a| matches!(a.outcome, SessionOutcome::Opened { .. }))
                 }),

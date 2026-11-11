@@ -216,6 +216,11 @@ fn provider_of(party: &str, order: &str, segment: &str) -> Need {
     }
 }
 
+/// Core's clock, stopped at the fixtures' moment, 09:00 on 2026-11-10.
+fn nine() -> Box<dyn Clock> {
+    Stopped::at(&at("2026-11-10T09:00:00Z"))
+}
+
 /// The holder `cust-1`'s own request for a session on `acct-ref-4`, from 09:00 to 09:15.
 fn own_session(request: &str) -> SessionRequest {
     let mut own: SessionRequest = valid!("session-request-of-a-delegate");
@@ -276,6 +281,7 @@ fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
     let open = |mut says: Vec<(Need, Reply<Said>)>, policy: Rules, request: &SessionRequest| {
         says.push((holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes)));
         let mut engine = Engine::with_policy(Kept::default(), policy, Says::of(says));
+        engine.set_clock(nine());
         let answer = engine.open_session(request).unwrap();
         let entry = engine.log.last(&answer.receipt).clone();
         assert_eq!(entry.outcome, answer.outcome.outcome());
@@ -415,7 +421,7 @@ fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
     assert_eq!(outcome, refused);
     assert!(engine.register().sessions().is_empty());
 
-    // Bounded in time: the longest is allowed, a second past it is refused, whoever asks.
+    // Bounded in time, from Core's now: the longest is allowed, a second past it is refused, whoever asks.
     let mut longest = own_session("req-302");
     longest.until = at("2026-11-10T09:15:00Z");
     assert_eq!(
@@ -467,6 +473,7 @@ fn expired_session_answers_no_balance_check() {
             ),
         ]),
     );
+    engine.set_clock(nine());
     let answer = engine.open_session(&own_session("req-310")).unwrap();
     assert!(matches!(answer.outcome, SessionOutcome::Opened { .. }));
     let refused: SessionRequest = valid!("session-request-of-a-delegate");
@@ -806,6 +813,7 @@ fn session_naming_a_party_that_does_not_hold_the_account_is_refused() {
     };
     let open = |request: &SessionRequest, says: Says| {
         let mut engine = Engine::with_policy(Kept::default(), Rules::permitting(), says);
+        engine.set_clock(nine());
         let answer = engine.open_session(request).unwrap();
         assert_eq!(
             engine.log.last(&answer.receipt).outcome,
@@ -1009,4 +1017,59 @@ fn party_reads_only_its_own_evidence_and_a_checker_by_its_permission() {
     );
     let other_statement = read("req-485", checker, evidence("87"), Some("perm-chk-ev"));
     assert_eq!(read_recorded(&mut engine, &other_statement), refused());
+}
+
+/// A session's bound is measured from Core's clock, never from the time its request states: a request stating a
+/// moment a year on, asking a session of ten minutes from it, is refused; one ending more than the longest after
+/// Core's now is refused, and so is one already over by Core's clock; one ending within the longest of Core's now is
+/// opened, however long after its stated moment. The deployment isn't asked of a refused one.
+// verifies: REQ-CAT-3
+#[test]
+fn session_bound_is_measured_from_cores_clock_not_the_requests_at() {
+    let open = |now: &str, at_: &str, until: &str| {
+        let mut engine = Engine::with_policy(
+            Kept::default(),
+            Rules::permitting(),
+            Says::of(vec![(
+                holds("cust-1", "acct-ref-4"),
+                Reply::Given(Said::Yes),
+            )]),
+        );
+        engine.set_clock(Stopped::at(&at(now)));
+        let mut request = own_session("req-330");
+        request.at = at(at_);
+        request.until = at(until);
+        let outcome = engine.open_session(&request).unwrap().outcome;
+        (outcome, engine.policy.1.ruled)
+    };
+    let refused = (
+        SessionOutcome::Refused {
+            class: RefusalClass::NotPermitted,
+        },
+        0,
+    );
+    let nine = "2026-11-10T09:00:00Z";
+    assert_eq!(
+        open(nine, "2027-11-10T09:00:00Z", "2027-11-10T09:10:00Z"),
+        refused,
+        "a stated moment a year on"
+    );
+    assert_eq!(
+        open(nine, nine, "2026-11-10T09:15:01Z"),
+        refused,
+        "past the longest"
+    );
+    assert_eq!(
+        open("2026-11-10T09:20:00Z", nine, "2026-11-10T09:15:00Z"),
+        refused,
+        "already over"
+    );
+    assert!(matches!(
+        open(nine, nine, "2026-11-10T09:15:00Z").0,
+        SessionOutcome::Opened { .. }
+    ));
+    assert!(matches!(
+        open("2026-11-10T09:10:00Z", nine, "2026-11-10T09:20:00Z").0,
+        SessionOutcome::Opened { .. }
+    ));
 }
