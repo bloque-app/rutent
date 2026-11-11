@@ -320,3 +320,44 @@ fn a_journal_of_sixty_withdrawals_fits_the_outside_message_a_restart_reads_it_in
     let carried = serde_json::to_string(&text).expect("a string");
     assert!(carried.len() < 64 * 1024 - 1024, "{} bytes", carried.len());
 }
+
+// verifies: REQ-MOD-4, REQ-ORD-1
+#[test]
+fn a_hook_scripted_for_a_dry_run_does_not_reach_the_next_real_movement() {
+    let mut sim = exchange();
+    // The script targets a dry run with unknown: the dry run is answered as the role asks, and arms nothing.
+    let quote = sim.answer(
+        &conversion("tx-q", "2000000", true),
+        &Behaviour::act(Act::Unknown),
+    );
+    assert_eq!(outcome(&quote.body)["status"], "dry_run_accepted");
+    let real = sim.answer(&conversion("tx-1", "2000000", false), &Behaviour::default());
+    assert_eq!(outcome(&real.body)["status"], "succeeded");
+}
+
+// verifies: REQ-MOD-4, REQ-ORD-1
+#[test]
+fn a_hook_the_stand_in_didnt_use_is_not_left_armed_or_lost_on_a_restart() {
+    let mut sim = reserve();
+    // Refused by the stand-in itself: 10 is below its band, so the unknown it was scripted for isn't given.
+    let refused = sim.answer(&withdrawal("tx-low", "10"), &Behaviour::act(Act::Unknown));
+    assert_eq!(outcome(&refused.body)["status"], "refused");
+    let next = sim.answer(&withdrawal("tx-1", "1000"), &Behaviour::default());
+    assert_eq!(outcome(&next.body)["status"], "succeeded");
+    let journal: Vec<Entry> = [refused.entry, next.entry].into_iter().flatten().collect();
+    let mut restored = reserve();
+    restored.restore(&journal);
+    assert_eq!(restored.state(), sim.state());
+    let after = restored.answer(&withdrawal("tx-2", "1000"), &Behaviour::default());
+    assert_eq!(outcome(&after.body)["status"], "succeeded");
+}
+
+// verifies: REQ-MOD-4, DEC-13
+#[test]
+fn a_repeat_sends_no_movement_again() {
+    let mut sim = reserve();
+    let first = sim.answer(&withdrawal("tx-1", "1000"), &Behaviour::default());
+    assert_eq!(first.movements.len(), 1);
+    let repeat = sim.answer(&withdrawal("tx-1", "1000"), &Behaviour::default());
+    assert!(repeat.movements.is_empty());
+}

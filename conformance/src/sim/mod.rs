@@ -355,6 +355,8 @@ pub struct Simulated {
     /// The transactions of the real movements it has served, so a repeat of one, which moves nothing, makes no
     /// second entry in the journal.
     seen: BTreeSet<String>,
+    /// The entries its books hold, in order: what a rebuild replays.
+    log: Vec<Entry>,
 }
 
 impl Simulated {
@@ -367,6 +369,7 @@ impl Simulated {
             provider,
             applied: 0,
             seen: BTreeSet::new(),
+            log: Vec::new(),
         }
     }
 
@@ -425,12 +428,17 @@ impl Simulated {
     /// Puts the books back to the journal's: a fresh stand-in, with every entry replayed into it. Replay is
     /// deterministic: the same entries give the same books.
     pub fn restore(&mut self, journal: &[Entry]) {
+        self.replay(journal.to_vec());
+        self.applied = journal.len();
+    }
+
+    /// Makes the books those of `entries`, replayed into a fresh stand-in.
+    fn replay(&mut self, entries: Vec<Entry>) {
         self.provider = self.spec.make(&self.context);
-        self.applied = 0;
         self.seen.clear();
-        for entry in journal {
+        self.log.clear();
+        for entry in entries {
             self.answer(&entry.operation, &entry.behaviour);
-            self.applied += 1;
         }
     }
 
@@ -467,14 +475,19 @@ impl Simulated {
                 .credit_reversal(&c.segment, &node, &c.asset, &c.amount);
             credited = true;
         }
-        match behaviour.act {
-            Act::Unknown => {
-                self.provider.force_outcome_unknown();
+        // A hook is armed for a real movement alone: the stand-in disarms it only when a movement succeeds or
+        // fails, and an operation that isn't one would leave it for the next.
+        let armed = real_movement(&operation.statement)
+            && matches!(behaviour.act, Act::Unknown | Act::Fail);
+        if armed {
+            match behaviour.act {
+                Act::Unknown => {
+                    self.provider.force_outcome_unknown();
+                }
+                _ => {
+                    self.provider.force_failure();
+                }
             }
-            Act::Fail => {
-                self.provider.force_failure();
-            }
-            _ => {}
         }
         let received = self.provider.handle(operation);
         // The books changed where an operation moved value for the first time, or where the fingerprint says they
@@ -484,18 +497,43 @@ impl Simulated {
         let changed = credited || first || self.provider.state() != before;
         let mut body =
             serde_json::to_value(&received.statement().statement).expect("a result serialises");
+        // Whether the hook did what it was armed for. Where it didn't, the operation was one the stand-in answered
+        // without moving, a refusal or a repeat, and the hook is still armed in it: the books are rebuilt without it,
+        // and the entry says the operation was answered as the role asks.
+        let consumed = match behaviour.act {
+            Act::Unknown => body["outcome"]["status"] == "unknown",
+            _ => body["outcome"]["status"] == "failed",
+        };
         deliver(&mut body, behaviour.delivery);
-        let movements = if behaviour.unrecorded {
+        // A repeat that changed nothing sends no movement again: a network that reorged the first would take it
+        // as a new one in another block.
+        let movements = if behaviour.unrecorded || !changed {
             Vec::new()
         } else {
             movements_of(&operation.statement, &body)
         };
+        let leaked = armed && !consumed;
+        let entry = changed.then(|| Entry {
+            operation: operation.clone(),
+            behaviour: if leaked {
+                Behaviour {
+                    act: Act::Answer,
+                    ..behaviour.clone()
+                }
+            } else {
+                behaviour.clone()
+            },
+        });
+        if let Some(entry) = &entry {
+            self.log.push(entry.clone());
+        }
+        if leaked {
+            let log = std::mem::take(&mut self.log);
+            self.replay(log);
+        }
         Answer {
             body: serde_json::to_vec(&body).expect("a result serialises"),
-            entry: changed.then(|| Entry {
-                operation: operation.clone(),
-                behaviour: behaviour.clone(),
-            }),
+            entry,
             movements,
         }
     }

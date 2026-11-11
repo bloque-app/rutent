@@ -1580,8 +1580,6 @@ impl Run<'_> {
         accepted
     }
 
-    /// The probes of `AC-19` and `REQ-MDL-13`: one provider upgraded, failing to upgrade and restarted, beside
-    /// another that must not notice.
     /// A version a provider already has admitted is never admitted again, whether it runs or waits for its
     /// acceptance, and what runs is unchanged (`REQ-MDL-1`).
     fn readmissions(&mut self) {
@@ -1698,6 +1696,8 @@ impl Run<'_> {
         self.binding.set_step_limit(usize::MAX);
     }
 
+    /// The probes of `AC-19` and `REQ-MDL-13`: one provider upgraded, failing to upgrade and restarted, beside
+    /// another that must not notice.
     fn isolation(&mut self) {
         let steady = self.name("steady");
         let moving = self.name("upgrading");

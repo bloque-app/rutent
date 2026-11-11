@@ -161,3 +161,13 @@ production.
 
 Not this outcome's: signing and routes, which the suite leaves as placeholders (`REQ-MDL-1` in `F-013`,
 `REQ-MDL-21` in `F-014`).
+
+## Probes added to the suite after the scored runs (`T-024-01`)
+
+The module-boundary suite gained four probes after both bindings' scored runs, and the scored runs predate them:
+a re-admitted version, running and waiting (`ReadmittedVersionRefused`, `ReadmittedWaitingVersionRefused`), and a
+step limit, past it and within it (`StepLimitRefused`, `StepsWithinTheLimitAnswered`). The step-limit probes need
+`ModuleBinding::set_step_limit`, whose default leaves them uncovered, so a runner of either binding that is run again
+reports those two as uncovered until its binding implements it. The re-admission probes should be seen by the Wasm
+binding, whose test already refuses a re-admitted version; the PolkaVM binding is unchecked. This repository's
+platform (`components/prov`) implements the limit and passes all four. The bindings themselves are left as scored.

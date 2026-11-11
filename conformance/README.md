@@ -200,6 +200,9 @@ and a `Fleet` that admits them.
   one, escaped once as a string in the response. An entry of a withdrawal is about 850 bytes, 950 once escaped, so a
   restart reads a journal of about sixty-eight real operations of one provider; sixty is tested. A scenario that
   runs more splits its providers.
+- **Test settings.** `Fleet::new` sets what a test platform needs and a deployment's settings own: upgrades take
+  effect at once (`set_staging(None)`), the operation deadline is the caller's, and the output limit is 1 MiB
+  (`set_output_limit(1 << 20)`). They are not defaults.
 - **What a twin is.** `Simulated` run in process answers as the module does; the role suite through the platform
   compares each answer with a twin's and the journal's replay with the twin's books.
 
