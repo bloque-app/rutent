@@ -2,13 +2,13 @@
 //!
 //! Declared by `T-020-01`; `T-021-07` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Log, PersonQuestions};
+use rutent_contracts::core_internal::calls::{AppendFailure, PersonQuestions, PolicyLog};
 use rutent_contracts::core_internal::{PersonAnswer, PersonOutcome, PersonQuestion, What};
 
 use crate::engine::{UNREACHABLE, Unbuilt};
 
 /// Until this row builds it: no question about a person is asked.
-impl<L: Log> PersonQuestions for Unbuilt<L> {
+impl<L: PolicyLog> PersonQuestions for Unbuilt<L> {
     fn ask_about_person(
         &mut self,
         question: &PersonQuestion,

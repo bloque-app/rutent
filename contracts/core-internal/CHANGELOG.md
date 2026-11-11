@@ -30,7 +30,13 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 169 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 191 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 47 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
+- Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
+  `GeneralEntry`, which holds no decision kind, and is orchestration's and the checks'; `PolicyLog::append_decision`
+  takes a `DecisionEntry`, which holds only decision kinds, and is policy's alone. Neither type can be built or read
+  holding the other's kinds, and `admit_entry` takes the path an entry came by and refuses a decision kind on the
+  general one, so no part but the policy engine can write the decision an effect is admitted on. Twenty-two of the
+  admission cases name the path. (DEC-2, DEC-4, DEC-20, REQ-AUZ-1, INV-7, T-020-01)

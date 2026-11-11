@@ -3,14 +3,15 @@
 //!
 //! Declared by `T-020-01`; `T-021-01` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, DecisionEntry, Decisions, PolicyLog};
 use rutent_contracts::core_internal::{
-    Actor, Answer, Decision, DecisionRequest, Entry, NotKnownCause, Outcome, Receipt, TimeSource,
+    Actor, Answer, Decision, DecisionRequest, NotKnownCause, Outcome, Receipt, TimeSource,
     VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 
-/// Policy before its rows build it: it permits nothing. Each call is appended to the log first, as every answer
+/// Policy before its rows build it: it permits nothing. It holds policy's handle on the log, [`PolicyLog`], which
+/// the assembly hands to it alone. Each call is appended to the log first, as every answer
 /// must be, and answered not known where its answer can say so, refused or over its bound where it can't
 /// (`REQ-AUZ-5`). Where the log takes no entry it answers nothing at all. Each policy trait's stub sits in the
 /// module of the row that owns that trait; this one, and its [`Decisions`], are `T-021-01`'s.
@@ -22,7 +23,7 @@ pub struct Unbuilt<L> {
 /// Why the unbuilt engine knows nothing.
 pub(crate) const UNREACHABLE: NotKnownCause = NotKnownCause::PolicyUnreachable;
 
-impl<L: Log> Unbuilt<L> {
+impl<L: PolicyLog> Unbuilt<L> {
     /// Policy that appends to `log`.
     pub fn new(log: L) -> Self {
         Unbuilt { log }
@@ -41,7 +42,7 @@ impl<L: Log> Unbuilt<L> {
         at: &Timestamp,
         outcome: Outcome,
     ) -> Result<Receipt, AppendFailure> {
-        let entry = Entry::Verified(VerifiedEntry {
+        let entry = VerifiedEntry {
             kind: VerifiedKind::Verified,
             who: who.clone(),
             what,
@@ -50,9 +51,10 @@ impl<L: Log> Unbuilt<L> {
                 source: TimeSource::CoreClock,
             },
             outcome,
-        });
+        };
         entry.check().map_err(AppendFailure::Refused)?;
-        self.log.append(&entry)
+        let entry = DecisionEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+        self.log.append_decision(&entry)
     }
 
     /// Answers not known to a decision-shaped call, its decision id its request's.
@@ -74,7 +76,7 @@ impl<L: Log> Unbuilt<L> {
     }
 }
 
-impl<L: Log> Decisions for Unbuilt<L> {
+impl<L: PolicyLog> Decisions for Unbuilt<L> {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         let what = |decision| What::Decide {
@@ -100,21 +102,21 @@ mod tests {
     }
 
     use super::*;
-    use rutent_contracts::core_internal::PermissionChange;
     use rutent_contracts::core_internal::calls::{
         Authorisations, Charges, PersonQuestions, Reads, Sessions, StuckOrders,
     };
     use rutent_contracts::core_internal::{
         ChargeOutcome, PersonOutcome, ReadOutcome, RefusalClass, SessionOutcome,
     };
+    use rutent_contracts::core_internal::{Entry, PermissionChange};
 
     /// A log that takes every entry, so the stub's answers can be seen.
     #[derive(Default)]
     struct Taking(Vec<Entry>);
 
-    impl Log for Taking {
-        fn append(&mut self, entry: &Entry) -> Result<Receipt, AppendFailure> {
-            self.0.push(entry.clone());
+    impl PolicyLog for Taking {
+        fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            self.0.push(Entry::Verified(entry.entry().clone()));
             Ok(fixture!("receipt-of-an-appended-entry"))
         }
     }
@@ -122,8 +124,8 @@ mod tests {
     /// A log that takes nothing.
     struct Refusing;
 
-    impl Log for Refusing {
-        fn append(&mut self, _: &Entry) -> Result<Receipt, AppendFailure> {
+    impl PolicyLog for Refusing {
+        fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
         }
     }
