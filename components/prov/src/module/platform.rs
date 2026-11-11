@@ -109,9 +109,10 @@ struct Context {
     /// The first bound the operation hit. From then on every request of it is refused, and the operation is
     /// refused as a limit whatever its process says.
     limited: Option<LimitHit>,
-    /// Whether the module passed anything out: an outbound call handed to the egress layer, or a cross-module call
-    /// handed to its callee. From then on what it did may have taken effect, so a failure is never given as a
-    /// reason that says nothing took effect (`PlatformRefusal::OutcomeUnknown`, `REQ-ORD-1`).
+    /// Whether the module passed anything out: an outbound call a destination was sent (a hop of its record
+    /// connected), or a cross-module call handed to its callee. From then on what it did may have taken effect, so
+    /// a failure is never given as a reason that says nothing took effect (`PlatformRefusal::OutcomeUnknown`,
+    /// `REQ-ORD-1`).
     passed_out: bool,
 }
 
@@ -373,7 +374,8 @@ pub struct Platform<W: World> {
     /// How many operations each provider's version ran: its process took the operation and said something of it,
     /// so an operation refused before reaching a live process doesn't count towards a staging.
     runs: BTreeMap<(String, String), u64>,
-    /// The versions whose process ended during the top-level operation in flight, started again once it ends.
+    /// The callees' versions whose process ended during a top-level operation, started again at the platform's
+    /// next call, after that operation's answer was handed back ([`Platform::restart_ended`]).
     restarts: Vec<(String, String)>,
 }
 
@@ -478,6 +480,7 @@ impl<W: World> Platform<W> {
 
     /// Kills a provider's process from outside, as a crash would: the platform sees it gone.
     pub fn kill(&mut self, provider: &str) -> bool {
+        self.restart_ended();
         match self
             .providers
             .get_mut(provider)
@@ -1084,7 +1087,9 @@ impl<W: World> Platform<W> {
             .get(in_flight.as_str())
             .cloned()
             .unwrap_or_default();
-        // A call the platform couldn't date isn't made.
+        // A call the platform couldn't date isn't made, and isn't recorded: a record's time would be made up
+        // (`REQ-AUD-1`). Nothing of it leaves the platform, so no call goes unrecorded (`REQ-MDL-8`), as for an
+        // endpoint no record could name. The module is told `refused`, which is true: nothing was sent.
         let Ok(started_at) = self.world.now() else {
             return refused();
         };
@@ -1130,16 +1135,27 @@ impl<W: World> Platform<W> {
             self.record_refused_call(scheme_name, &host, port, RefusalReason::RequestNotAllowed);
             return refused();
         };
-        // From here the call may reach its destination.
-        if let Some(context) = self.stack.last_mut() {
-            context.passed_out = true;
-        }
+        let written = self.events.records.len();
         let outcome = self.world.send(
             &call,
             egress::Endpoint { scheme, host, port },
             request,
             &mut self.events.records,
         );
+        // The call passed something out if a hop of its record connected, so a destination was sent the request.
+        // A call refused, or one whose name never resolved or whose dial connected to nothing, sent nothing. A world
+        // that wrote no record is judged by the outcome alone.
+        let records = &self.events.records[written.min(self.events.records.len())..];
+        let sent = if records.is_empty() {
+            !matches!(outcome, Outcome::Refused(_) | Outcome::Unreachable)
+        } else {
+            records
+                .iter()
+                .any(|record| record.hops.iter().any(|hop| hop.address.is_some()))
+        };
+        if sent && let Some(context) = self.stack.last_mut() {
+            context.passed_out = true;
+        }
         Reply::Egress {
             outcome: match outcome {
                 Outcome::Completed(_) => "completed",
@@ -1159,6 +1175,9 @@ impl<W: World> Platform<W> {
     /// bound (`limit_reached`) or its request isn't one the platform sends (`request_not_allowed`): one hop, the
     /// endpoint it asked for, and the refusal; nothing of the request (`REQ-MDL-8`). Nothing is written where no outside request is in
     /// flight, the endpoint isn't one a record can name, or the world's clock gives no time.
+    ///
+    /// A world whose clock gives no time leaves the call unrecorded rather than dated with a made-up time
+    /// (`REQ-AUD-1`): the call was refused before anything of it was sent, so no call goes unrecorded (`REQ-MDL-8`).
     fn record_refused_call(&mut self, scheme: &str, host: &str, port: u16, reason: RefusalReason) {
         let context = self.stack.last().expect("a context");
         let Some(operation) = context.serving.as_ref().map(|s| s.operation.clone()) else {
@@ -1515,18 +1534,26 @@ impl<W: World> Platform<W> {
         } else {
             // The process is gone: this operation is refused, and the platform starts the version again in a new
             // process, in its place, as a supervisor would, touching no other provider and no other version. A
-            // callee's is started once the top-level operation ended, never inside its caller's deadline.
+            // callee's is started only after the top-level operation's answer was handed back, at the platform's
+            // next call, so its start, up to `START_DEADLINE`, delays neither its caller nor that answer.
             drop(process);
             if let Some(context) = context {
-                self.restarts.push((provider.to_owned(), context.version));
-            }
-        }
-        if self.stack.is_empty() {
-            for (provider, version) in std::mem::take(&mut self.restarts) {
-                self.respawn(&provider, &version);
+                if self.stack.is_empty() {
+                    self.respawn(provider, &context.version);
+                } else {
+                    self.restarts.push((provider.to_owned(), context.version));
+                }
             }
         }
         (outcome.map(|bytes| (bytes, key)), passed_out)
+    }
+
+    /// Starts again each callee's version whose process ended during an earlier top-level operation, before the
+    /// platform does anything else, so every later call finds what an immediate restart would have left.
+    fn restart_ended(&mut self) {
+        for (provider, version) in std::mem::take(&mut self.restarts) {
+            self.respawn(&provider, &version);
+        }
     }
 
     /// Records a bound the provider's process hit on its own, its deadline, its fuel or its memory, for the
@@ -1722,6 +1749,7 @@ impl<W: World> Platform<W> {
         judge: &mut impl ReleaseJudge,
         at: Clock,
     ) -> Admitted {
+        self.restart_ended();
         // An automatic acceptance is recorded at the caller's clock: one no record's time can hold admits nothing.
         let Some(admitted_at) = time_of(at) else {
             return Admitted::ClockOutOfRange;
@@ -1935,6 +1963,7 @@ impl<W: World> Platform<W> {
         judge: &impl ReleaseJudge,
         at: Clock,
     ) -> Option<AdmissionArtefact> {
+        self.restart_ended();
         let by = Identifier::new(by)?;
         // Recorded at the caller's clock, the time the acceptance was given (`REQ-AUD-1`).
         let accepted_at = time_of(at)?;
@@ -1980,6 +2009,7 @@ impl<W: World> Platform<W> {
 
     /// Restarts the provider's process, and no other. False if it has none.
     pub fn restart(&mut self, provider: &str) -> bool {
+        self.restart_ended();
         let Some(version) = self
             .providers
             .get(provider)
@@ -2017,6 +2047,7 @@ impl<W: World> Platform<W> {
     /// where its transaction's segment is another provider's or has ended, and as `VersionExploited` where its
     /// segment's version was declared exploited (`T-013-06`).
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
+        self.restart_ended();
         let transaction = transaction_of(&operation.statement);
         self.handle_in(provider, operation, transaction.as_deref())
     }
@@ -2135,6 +2166,7 @@ impl<W: World> Platform<W> {
     /// accepted release beside the version in force, on a share of new segments, until the operator promotes it or
     /// rolls it back; `None` puts an accepted release in force once it starts.
     pub fn set_staging(&mut self, staging: Option<Staging>) {
+        self.restart_ended();
         self.lifecycle.set_staging(staging);
     }
 
@@ -2164,12 +2196,14 @@ impl<W: World> Platform<W> {
         provider: &str,
         transaction: &Identifier,
     ) -> Result<String, PlatformRefusal> {
+        self.restart_ended();
         self.lifecycle.begin_segment(provider, transaction)
     }
 
     /// Ends the segment of `transaction` and hands over its record: the version it began on, the one it ran on and
     /// each move between them. Its transaction never begins another, and a version nothing runs on any more stops.
     pub fn end_segment(&mut self, transaction: &str) -> Option<SegmentRecord> {
+        self.restart_ended();
         let record = self.lifecycle.end_segment(transaction)?;
         self.reconcile(&record.provider);
         Some(record)
@@ -2186,6 +2220,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Option<AdmissionArtefact> {
+        self.restart_ended();
         Identifier::new(by)?;
         let slot = self.providers.get_mut(provider)?;
         if &slot.pending.as_ref()?.0.assertion_digest != assertion_digest {
@@ -2208,6 +2243,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Result<String, LifecycleRefusal> {
+        self.restart_ended();
         if let Some(staged) = self.lifecycle.staged(provider).map(str::to_owned) {
             let live = self
                 .providers
@@ -2231,6 +2267,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Result<String, LifecycleRefusal> {
+        self.restart_ended();
         let rolled_back = self.lifecycle.roll_back(provider, by, at)?;
         self.reconcile(provider);
         Ok(rolled_back)
@@ -2246,6 +2283,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
+        self.restart_ended();
         let back = self.lifecycle.revoke(provider, version, by, at)?;
         self.reconcile(provider);
         Ok(back)
@@ -2260,6 +2298,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
+        self.restart_ended();
         let back = self
             .lifecycle
             .declare_exploited(provider, version, by, at)?;
@@ -2277,6 +2316,7 @@ impl<W: World> Platform<W> {
         by: &str,
         at: Clock,
     ) -> Result<usize, LifecycleRefusal> {
+        self.restart_ended();
         let moved = self.lifecycle.mark_stale(provider, version, by, at)?;
         self.reconcile(provider);
         Ok(moved)

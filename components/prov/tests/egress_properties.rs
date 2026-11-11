@@ -415,10 +415,10 @@ fn every_call_leaves_one_record_its_declaration_accepts() {
             (Outcome::Completed(_), CallOutcome::Completed(_))
             | (Outcome::Failed(_), CallOutcome::Failed(_))
             | (Outcome::NoAnswer | Outcome::Unreachable, CallOutcome::Unknown(_)) => true,
-            (
-                Outcome::Refused(r) | Outcome::RefusedAfterDelivery(r),
-                CallOutcome::Refused(refused),
-            ) => r.reason() == refused.reason,
+            (Outcome::Refused(r), CallOutcome::Refused(refused))
+            | (Outcome::RefusedAfterDelivery(r), CallOutcome::RefusedAfterDelivery(refused)) => {
+                r.reason() == refused.reason
+            }
             _ => false,
         };
         // A refusal is told as one only when nothing connected: once a hop was sent the request, it is a refusal

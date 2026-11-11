@@ -322,6 +322,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/outcome", "required")],
         ),
         (
+            "outbound-call-record-refused-after-delivery-without-a-reason",
+            vec![("/outcome", "required")],
+        ),
+        (
             "outbound-call-record-completed-carrying-a-reason",
             vec![("/outcome", "additionalProperties")],
         ),
@@ -515,6 +519,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
             one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
+            "outbound-call-record-refused-after-a-redirect-was-followed",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
+            "outbound-call-record-refused-after-delivery-with-nothing-sent",
+            one(RuleViolation::RefusedAfterDeliveryOfNothing),
         ),
         (
             "cross-module-call-to-its-own-provider",

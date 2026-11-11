@@ -93,6 +93,12 @@ pub enum RuleViolation {
         /// Index into `hops`.
         hop: usize,
     },
+    /// A call recorded `refused`, which says nothing of it was sent, though a hop before its last connected: a
+    /// redirect was followed, so a destination was sent the request, and the call is `refused_after_delivery`
+    /// (`REQ-ORD-1`).
+    RefusedThoughSent,
+    /// A call recorded `refused_after_delivery` though no hop connected, so nothing of it was sent: it is `refused`.
+    RefusedAfterDeliveryOfNothing,
     /// The advertisement a statement-signing key is checked against is another provider's than the
     /// declaration's.
     AdvertisementOfAnotherProvider,
@@ -341,23 +347,37 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
     done(violations)
 }
 
-/// Checks an outbound call record's rule the schema can't express: every hop matched a declared destination
-/// and connected, except the last hop of a refused call, and the last hop of an `unknown` call that matched a
-/// declared destination and connected to nothing (its dial failed, so nothing was sent).
+/// Checks an outbound call record's rules the schema can't express:
+///
+/// - every hop matched a declared destination and connected, except the last hop of a refused call, and the last
+///   hop of an `unknown` call that matched a declared destination and connected to nothing (its dial failed, so
+///   nothing was sent);
+/// - a `refused` call has one hop, since a hop before the last connected and was sent the request, and such a
+///   call is `refused_after_delivery` (`RefusedThoughSent`);
+/// - a `refused_after_delivery` call has a hop that connected (`RefusedAfterDeliveryOfNothing`).
 pub fn validate_record(record: &OutboundCallRecord) -> Result<(), Vec<RuleViolation>> {
     let last = record.hops.len().saturating_sub(1);
     let may_end_unconnected = |hop: &Hop| match record.outcome {
-        CallOutcome::Refused(_) => true,
+        CallOutcome::Refused(_) | CallOutcome::RefusedAfterDelivery(_) => true,
         CallOutcome::Unknown(_) => hop.destination.is_some(),
         _ => false,
     };
-    let violations = record
+    let mut violations: Vec<RuleViolation> = record
         .hops
         .iter()
         .enumerate()
         .filter(|(i, hop)| !hop.connected() && !(*i == last && may_end_unconnected(hop)))
         .map(|(hop, _)| RuleViolation::HopNotConnected { hop })
         .collect();
+    match record.outcome {
+        CallOutcome::Refused(_) if record.hops.len() > 1 => {
+            violations.push(RuleViolation::RefusedThoughSent);
+        }
+        CallOutcome::RefusedAfterDelivery(_) if !record.hops.iter().any(Hop::connected) => {
+            violations.push(RuleViolation::RefusedAfterDeliveryOfNothing);
+        }
+        _ => {}
+    }
     done(violations)
 }
 

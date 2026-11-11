@@ -1007,6 +1007,14 @@ fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
         events.calls[0]
     );
     assert_eq!(running.platform.operations_received(RAMP), 1);
+
+    // The callee's process was killed at its deadline, and is started again once the caller's answer was handed
+    // back: asked directly, it answers.
+    let (direct, _) = running.run(RAMP, 2);
+    assert!(
+        matches!(direct, Handled::Answered(_)),
+        "the callee wasn't started again: {direct:?}"
+    );
 }
 
 /// Publishes the operator's `polygon` wallet, admits its release signed with the operator key and accepts it, and
@@ -1308,8 +1316,8 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
 
 /// A name lookup that never answers is given up at the operation's deadline (`REQ-MDL-11`): the platform doesn't
 /// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, and another provider's
-/// operation runs right after. The call was handed to the egress layer, so the operation is an outcome unknown,
-/// with the limit that ended it recorded (`REQ-ORD-1`).
+/// operation runs right after. Nothing of the call was sent, no hop connected, so the operation ends as the limit
+/// it hit, the deadline, which is recorded: an outcome unknown would claim an effect that couldn't have happened.
 // verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8, REQ-ORD-1
 #[test]
 fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs() {
@@ -1327,15 +1335,12 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     assert!(took < Duration::from_secs(4), "held for {took:?}");
     assert_eq!(
         handled,
-        Handled::Refused(types::PlatformRefusal::OutcomeUnknown)
+        Handled::Refused(types::PlatformRefusal::LimitReached)
     );
+    assert!(events.unknown.is_empty(), "{:?}", events.unknown);
     assert_eq!(
-        events
-            .unknown
-            .iter()
-            .map(|u| u.ended_by)
-            .collect::<Vec<_>>(),
-        vec![types::PlatformRefusal::LimitReached]
+        events.limits.iter().map(|l| l.hit.kind).collect::<Vec<_>>(),
+        vec![types::LimitKind::Deadline]
     );
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
     assert!(

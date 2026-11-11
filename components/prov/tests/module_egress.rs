@@ -151,8 +151,8 @@ fn an_outside_part_naming_another_operation_than_the_one_in_flight_is_refused() 
 
 /// The module is told each outbound call's outcome so that a refusal is only ever one where nothing was sent: a call
 /// the declared destination answers is `completed`; one to an undeclared destination, sent nowhere, is `refused`;
-/// and one the declared destination took and redirected to an undeclared one is `unknown`, never `refused`, though
-/// its record says the redirect was refused, since the first destination may have acted on it.
+/// and one the declared destination took and redirected to an undeclared one is `unknown`, never `refused`, and is
+/// recorded `refused_after_delivery`, since the first destination may have acted on it.
 // verifies: REQ-ORD-1, REQ-MDL-7, REQ-MDL-8
 #[test]
 fn module_is_told_a_refusal_after_a_delivered_hop_as_unknown() {
@@ -206,10 +206,10 @@ fn module_is_told_a_refusal_after_a_delivered_hop_as_unknown() {
         let redirected = &events.records[0];
         assert_eq!(
             redirected.outcome,
-            CallOutcome::Refused(rutent_contracts::module_interface::Refused {
+            CallOutcome::RefusedAfterDelivery(rutent_contracts::module_interface::Refused {
                 reason: RefusalReason::RedirectToUndeclaredDestination
             }),
-            "{language}"
+            "{language}: the record says the call was refused before anything was sent"
         );
         assert!(redirected.hops[0].address.is_some(), "{language}");
         assert_eq!(validate_record(redirected), Ok(()), "{language}");

@@ -179,6 +179,10 @@ fn refused(reason: RefusalReason) -> CallOutcome {
     CallOutcome::Refused(Refused { reason })
 }
 
+fn refused_after_delivery(reason: RefusalReason) -> CallOutcome {
+    CallOutcome::RefusedAfterDelivery(Refused { reason })
+}
+
 fn address(text: &str) -> Option<Address> {
     Address::new(text.to_owned())
 }
@@ -383,7 +387,7 @@ fn redirect_to_an_undeclared_destination_is_refused() {
     let record = &log[0];
     assert_eq!(
         record.outcome,
-        refused(RefusalReason::RedirectToUndeclaredDestination)
+        refused_after_delivery(RefusalReason::RedirectToUndeclaredDestination)
     );
     assert_eq!(record.hops.len(), 2);
     assert_eq!(record.hops[1].host.as_str(), "collector.attacker.example");

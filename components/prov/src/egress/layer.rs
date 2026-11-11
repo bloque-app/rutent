@@ -108,10 +108,10 @@ pub enum Outcome {
     NoAnswer,
     /// The egress layer refused the call before anything of it was sent.
     Refused(Refusal),
-    /// The egress layer refused a hop after an earlier one delivered the request and answered with a redirect: a
-    /// redirect to a destination not declared, an address not allowed, a peer not verified, or a limit. The call
-    /// is recorded refused at that hop, but what the earlier destination did with the request is not known, so it
-    /// is never told as a refusal (`REQ-ORD-1`).
+    /// The egress layer refused a hop after a hop connected and its destination was sent the request: a redirect to
+    /// a destination not declared, an address not allowed, a peer not verified, or a limit. The call is recorded
+    /// `refused_after_delivery` at that hop, and the module is told unknown: what the destination that was sent it
+    /// did is not known (`REQ-ORD-1`).
     RefusedAfterDelivery(Refusal),
 }
 
@@ -146,11 +146,13 @@ impl<R: NameResolver, C: Connector> Egress<R, C> {
             Outcome::Completed(_) => CallOutcome::Completed(Nothing {}),
             Outcome::Failed(_) => CallOutcome::Failed(Nothing {}),
             Outcome::Unreachable | Outcome::NoAnswer => CallOutcome::Unknown(Nothing {}),
-            Outcome::Refused(refusal) | Outcome::RefusedAfterDelivery(refusal) => {
-                CallOutcome::Refused(Refused {
-                    reason: refusal.reason(),
-                })
-            }
+            Outcome::Refused(refusal) => CallOutcome::Refused(Refused {
+                reason: refusal.reason(),
+            }),
+            // Its own outcome in the record too, so that a reader never takes it for nothing having been sent.
+            Outcome::RefusedAfterDelivery(refusal) => CallOutcome::RefusedAfterDelivery(Refused {
+                reason: refusal.reason(),
+            }),
         };
         log.record(OutboundCallRecord {
             transaction: call.transaction.clone(),
