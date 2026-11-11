@@ -1033,10 +1033,16 @@ pub static RELATIONS: [Relation; 47] = [
         spec: &["REQ-ORD-39"],
         quantifier: Quantifier::Exists,
         refusal: "graded evidence rests on stated entries of this log",
-        fields: &[(
-            "about",
-            "graded evidence rests on statements about its order and segment",
-        )],
+        fields: &[
+            (
+                "verified",
+                "evidence graded as signed, by another party or by the provider, rests on verified statements",
+            ),
+            (
+                "about",
+                "graded evidence rests on statements about its order and segment",
+            ),
+        ],
         cites: |e, _| match &e.what {
             What::Evidence { rests_on, .. } => rests_on
                 .iter()
@@ -1045,9 +1051,29 @@ pub static RELATIONS: [Relation; 47] = [
                 .collect(),
             _ => none(),
         },
-        answers: |e, _, t, h| match &e.what {
-            What::Evidence { order, segment, .. } => {
-                statement_about(t, Some(order), Some(segment), h)
+        answers: |e, _, t, h| match (&e.what, stated(t)) {
+            (
+                What::Evidence {
+                    order,
+                    segment,
+                    grade,
+                    ..
+                },
+                Some(s),
+            ) => {
+                // Grades 2 and 3 claim a signature, so each statement they rest on is one the log verified; a
+                // public record (1) rests on the network, and a bare statement (4) claims nothing more.
+                let signed = matches!(
+                    grade,
+                    EvidenceGrade::SignedByAnotherParty | EvidenceGrade::SignedByProvider
+                );
+                judge(
+                    true,
+                    &[
+                        !signed || matches!(s.attribution, Attribution::Verified { .. }),
+                        about_agrees(s, Some(order), Some(segment), h),
+                    ],
+                )
             }
             _ => Match::NotTarget,
         },

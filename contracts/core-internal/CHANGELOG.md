@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 216 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 219 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -73,5 +73,9 @@
   one. `answer-follows-its-question` compares the question's verified party with the deployment's operator party,
   which `admit_entry` now takes as a fourth argument and `StatementKeys::operator` answers; the stated rows read a
   `StatedCiting`. A customer's segment read names a segment its order's plan lists, and only a permitted
-  revocation must revoke a grant, so a refused revocation of a permission never granted is recorded. 216 admission
-  cases and 20 attribution cases. (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, REQ-AUD-2, REQ-AUZ-7, T-020-01)
+  revocation must revoke a grant, so a refused revocation of a permission never granted is recorded.
+  (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, REQ-AUD-2, REQ-AUZ-7, T-020-01)
+- Folded into 1.0.0 before its release: graded evidence claiming a signature rests on verified statements. Every
+  statement a grade-2 or grade-3 evidence entry cites must be one the log verified; a grade-1 public record rests on
+  the network and a grade-4 bare statement claims no signature, so neither is held to it. 219 admission cases and 20
+  attribution cases. (DEC-4, DEC-20, REQ-ORD-39, REQ-AUD-2, T-020-01)
