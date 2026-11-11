@@ -326,7 +326,11 @@ The platform's egress layer writes it, not the module, since the outside part is
   destination did is not known, so `refused_after_delivery` is never read as nothing having been sent
   (`REQ-ORD-1`). A `refused` call's record shows nothing was sent: a hop before the last that connected, or a last
   hop that connected and was refused as a redirect, makes it `refused_after_delivery`. A last hop refused for its
-  address (`address_not_allowed`) names the address it refused, and was sent nothing.
+  address (`address_not_allowed`) names the address it refused, and was sent nothing. A limit hit after a
+  destination was sent the request, during that hop's exchange or on a later hop, is always
+  `refused_after_delivery`, never `refused`. `validate_record` can't always tell it from the hops, since a limit
+  hit during the one hop's exchange leaves a record like one hit before it, so this is the contract's rule for
+  every binding (`REQ-ORD-1`).
 
 ## Cross-module calls
 

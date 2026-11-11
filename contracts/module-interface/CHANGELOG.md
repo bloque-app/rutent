@@ -17,10 +17,12 @@
   its last that connected or a connected last hop refused as a redirect (`RefusedThoughSent`), and a
   `refused_after_delivery` call with no hop that connected (`RefusedAfterDeliveryOfNothing`). Before, a refused
   redirect after a delivered request was `refused`, which a reader reconciling an unknown outcome could take for
-  nothing having been sent. In the schema's
-  enum, `CallOutcome::RefusedAfterDelivery`, the README, a valid fixture and four invalid ones; the redirect
-  fixture is now `refused_after_delivery`. A new wire value and a new variant of an exhaustive enum, and 4.0.0 is
-  not released, so it joins this major. (DEC-4, DEC-20)
+  nothing having been sent. A limit hit after a destination was sent the request is always
+  `refused_after_delivery`, never `refused`: the validator can't always tell it from the hops, so the README
+  states it as the contract's rule for every binding. In the schema's enum, `CallOutcome::RefusedAfterDelivery`,
+  the README, a valid fixture and four invalid ones; the redirect fixture is now `refused_after_delivery`. A new
+  wire value and a new variant of an exhaustive enum, and 4.0.0 is not released, so it joins this major.
+  (DEC-4, DEC-20)
 - No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a
   cross-module call's outcome as it is recorded, `delivered`, `unanswered` or `refused`, so an unanswered call,
   whose callee may have acted, is never told to its caller as refused; a format binding gives its caller all three.
