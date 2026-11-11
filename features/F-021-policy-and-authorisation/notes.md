@@ -36,7 +36,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **`AC-17` against `REQ-AUZ-5`.** `AC-17` says an unreachable verifier gives a refusal; `REQ-AUZ-5` and
   core-internal's README make it not known, never a refusal and never a permit. The engine answers not known, and
   nothing moves either way. Pending on the owner's form as `spec-ac17-not-known`, default "not known"; the test
-  keeps its `AC-17` tag.
+  keeps its `AC-17` tag. Unless the owner amends `AC-17`, `T-024-07`'s scenario test "unreachable verifier gives a
+  refusal and nothing moves" (`PLAN.md` §4.4) contradicts the engine: the engine gives not known, so that test, as
+  named, expects a refusal it won't get.
 - **An unreachable provider** gives `verifier_unreachable`: core-internal's `NotKnownCause` has no cause of its own
   for a provider, and a provider answering eligibility stands where a verifier would (`REQ-CPL-6`). A cause of its
   own is a core-internal bump, `F-020`'s.

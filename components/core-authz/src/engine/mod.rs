@@ -1279,7 +1279,9 @@ mod tests {
         rule: cannot_be_reached,
     }];
 
-    /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::with_policy`:
+    /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::with_policy`
+    /// (a check that pins nothing until a row adds a rule to `FIXED`, which is empty for now, so it compares two empty
+    /// lists; the planted rules below carry the test meanwhile):
     /// a fixed rule's refusal is the answer, the deployment's policy not even asked, and it beats the deployment's
     /// service being unreachable. A deployment's refusal likewise beats a fixed rule that can't be reached.
     // verifies: REQ-AUZ-1, REQ-AUZ-5
@@ -1431,16 +1433,56 @@ mod tests {
         );
     }
 
+    /// The guarded log, keeping which policy call each entry policy appended records, so a row of the table is tied
+    /// to the call its closure makes.
+    struct Seen {
+        log: Guarded,
+        called: Vec<&'static str>,
+    }
+
+    impl Default for Seen {
+        fn default() -> Self {
+            Seen {
+                log: Guarded::with_a_decision_record(),
+                called: Vec::new(),
+            }
+        }
+    }
+
+    impl PolicyLog for Seen {
+        fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            self.called.push(call_of(&entry.entry().what));
+            self.log.append_decision(entry)
+        }
+    }
+
+    /// The policy call a decision entry records.
+    fn call_of(what: &What) -> &'static str {
+        match what {
+            What::Decide { .. } => "decide",
+            What::Authorise { .. } => "authorise",
+            What::StuckDecide { .. } => "decide_stuck",
+            What::StuckMove { .. } => "move_stuck",
+            What::OpenSession { .. } => "open_session",
+            What::CheckRead { .. } => "check_read",
+            What::GrantPermission { .. } => "grant_permission",
+            What::RevokePermission { .. } => "revoke_permission",
+            What::Charge { .. } => "charge",
+            What::AskAboutPerson { .. } => "ask_about_person",
+            _ => "not a policy call",
+        }
+    }
+
     /// How a policy call came out: permitted, or not (refused, not known, over its bound, or no answer at all).
     type Permitted = bool;
 
     /// One policy call, driven on an engine that consults a policy that records being asked, or, where its row hasn't
     /// built it yet, on the unbuilt engine, whose stub must permit nothing.
     enum Call {
-        Built(fn(&mut Engine<Guarded, Service, Given>) -> Permitted),
+        Built(fn(&mut Engine<Seen, Service, Given>) -> Permitted),
         Unbuilt {
             row: &'static str,
-            call: fn(&mut Unbuilt<Guarded>) -> Permitted,
+            call: fn(&mut Unbuilt<Seen>) -> Permitted,
         },
     }
 
@@ -1553,36 +1595,70 @@ mod tests {
         ]
     }
 
-    /// The methods of core-internal's policy traits, read from the contract's source.
+    /// Every trait of core-internal's calls, as policy's or not. A trait added to the contract fails
+    /// [`policy_methods`] until it is classified here.
+    const TRAITS: &[(&str, bool)] = &[
+        ("Log", false),
+        ("PolicyLog", false),
+        ("Evidence", false),
+        ("Decisions", true),
+        ("Authorisations", true),
+        ("Sessions", true),
+        ("Reads", true),
+        ("Charges", true),
+        ("StuckOrders", true),
+        ("PersonQuestions", true),
+        ("Comparisons", false),
+        ("Measures", false),
+        ("Operator", false),
+    ];
+
+    /// The methods of the policy traits in `source`, a version of core-internal's `calls.rs`, or the traits it
+    /// declares that [`TRAITS`] doesn't classify, and those classified that it no longer declares.
+    fn methods_of_policy(source: &str) -> Result<Vec<String>, (Vec<String>, Vec<String>)> {
+        let parsed = syn::parse_file(source).unwrap();
+        let mut methods = Vec::new();
+        let mut declared = Vec::new();
+        let mut unclassified = Vec::new();
+        for item in &parsed.items {
+            let syn::Item::Trait(t) = item else { continue };
+            let name = t.ident.to_string();
+            match TRAITS.iter().find(|(n, _)| *n == name) {
+                None => unclassified.push(name.clone()),
+                Some((_, true)) => {
+                    for item in &t.items {
+                        if let syn::TraitItem::Fn(f) = item {
+                            methods.push(f.sig.ident.to_string());
+                        }
+                    }
+                }
+                Some((_, false)) => {}
+            }
+            declared.push(name);
+        }
+        let gone: Vec<String> = TRAITS
+            .iter()
+            .filter(|(n, _)| !declared.iter().any(|d| d == n))
+            .map(|(n, _)| n.to_string())
+            .collect();
+        if !unclassified.is_empty() || !gone.is_empty() {
+            return Err((unclassified, gone));
+        }
+        methods.sort();
+        Ok(methods)
+    }
+
+    /// The methods of core-internal's policy traits, read from the contract's source, every trait in it classified.
     fn policy_methods() -> Vec<String> {
         let path = format!(
             "{}/../../contracts/src/core_internal/calls.rs",
             env!("CARGO_MANIFEST_DIR")
         );
-        let parsed = syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let policy = [
-            "Decisions",
-            "Authorisations",
-            "StuckOrders",
-            "Sessions",
-            "Reads",
-            "Charges",
-            "PersonQuestions",
-        ];
-        let mut methods = Vec::new();
-        for item in &parsed.items {
-            let syn::Item::Trait(t) = item else { continue };
-            if !policy.contains(&t.ident.to_string().as_str()) {
-                continue;
-            }
-            for item in &t.items {
-                if let syn::TraitItem::Fn(f) = item {
-                    methods.push(f.sig.ident.to_string());
-                }
-            }
-        }
-        methods.sort();
-        methods
+        methods_of_policy(&std::fs::read_to_string(path).unwrap()).unwrap_or_else(
+            |(unclassified, gone)| {
+                panic!("traits unclassified: {unclassified:?}; classified but gone: {gone:?}")
+            },
+        )
     }
 
     /// Every policy call reaches the one consultation: driven against a policy that records being asked, each built
@@ -1595,6 +1671,23 @@ mod tests {
         let mut named: Vec<String> = calls.iter().map(|(n, _)| n.to_string()).collect();
         named.sort();
         assert_eq!(named, policy_methods(), "the table holds every policy call");
+
+        // A trait the contract adds, policy's or not, fails until it is classified.
+        let path = format!(
+            "{}/../../contracts/src/core_internal/calls.rs",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let calls_rs = std::fs::read_to_string(path).unwrap();
+        let waivers = format!("{calls_rs}\npub trait Waivers {{ fn waive(&mut self); }}\n");
+        assert_eq!(
+            methods_of_policy(&waivers),
+            Err((vec!["Waivers".to_string()], Vec::new()))
+        );
+        let without_operator = calls_rs.replace("pub trait Operator", "pub trait Operators");
+        assert_eq!(
+            methods_of_policy(&without_operator),
+            Err((vec!["Operators".to_string()], vec!["Operator".to_string()]))
+        );
         let mut unbuilt = Vec::new();
         for (name, call) in calls {
             match call {
@@ -1604,26 +1697,25 @@ mod tests {
                         (Ruling::Refuse(RefusalClass::NotPermitted), false),
                     ] {
                         let service = Service::ruling(Reply::Given(ruling));
-                        let mut engine = Engine::with_policy(
-                            Guarded::with_a_decision_record(),
-                            service,
-                            Given::default(),
-                        );
+                        let mut engine =
+                            Engine::with_policy(Seen::default(), service, Given::default());
                         assert_eq!(
                             call(&mut engine),
                             permitted,
                             "{name} answers as policy rules"
                         );
+                        assert_eq!(engine.log.called, [name], "the row is the call it makes");
                         assert_eq!(engine.policy.1.asked, 1, "{name} consulted once");
                         assert_eq!(engine.policy.1.ruled.len(), 1, "{name} ruled once");
                     }
                 }
                 Call::Unbuilt { row, call } => {
-                    let mut engine = Unbuilt::new(Guarded::with_a_decision_record());
+                    let mut engine = Unbuilt::new(Seen::default());
                     assert!(
                         !call(&mut engine),
                         "{name}, {row}'s, permits nothing until it is built"
                     );
+                    assert_eq!(engine.log.called, [name], "the row is the call it makes");
                     unbuilt.push(row);
                 }
             }

@@ -722,17 +722,20 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         }
         let matches = mac.path.is_ident("matches");
         let read = if matches {
-            // Its pattern is a pattern, not a value written: only the scrutinee is read.
+            // Its pattern is a pattern, not a value written: the scrutinee and any guard are read.
             mac.parse_body_with(|input: ParseStream| {
                 let scrutinee: Expr = input.parse()?;
-                input.step(|cursor| {
-                    let mut rest = *cursor;
-                    while let Some((_, next)) = rest.token_tree() {
-                        rest = next;
-                    }
-                    Ok(((), rest))
-                })?;
-                Ok(vec![scrutinee])
+                input.parse::<Token![,]>()?;
+                syn::Pat::parse_multi_with_leading_vert(input)?;
+                let mut read = vec![scrutinee];
+                if input.peek(Token![if]) {
+                    input.parse::<Token![if]>()?;
+                    read.push(input.parse::<Expr>()?);
+                }
+                if input.peek(Token![,]) {
+                    input.parse::<Token![,]>()?;
+                }
+                Ok(read)
             })
         } else {
             mac.parse_body_with(Punctuated::<Expr, Token![,]>::parse_terminated)
@@ -966,6 +969,20 @@ pub(super) fn each_rule_catches_its_planted_bypass() {
         orch("fn f(d: &Decision) -> bool { matches!(d.outcome, Answer::Permit {}) }"),
         Vec::<String>::new(),
         "a pattern writes nothing"
+    );
+    assert_eq!(
+        orch(
+            "fn f(d: &Decision) -> bool { matches!(d.outcome, Answer::Refuse { .. } if keep(Answer::Permit {})) }"
+        ),
+        ["f: writes `Answer::Permit` outside the engine"],
+        "a guard is read"
+    );
+    assert_eq!(
+        orch(
+            "fn f(&mut self, o: &Op) -> bool { matches!(o, Op::Move | Op::Hold if self.platform.handle(\"p\", o).ok()) }"
+        ),
+        ["f: carries out `handle` without the effect it rests on"],
+        "a guard is read"
     );
 
     // The other permitting answers, outside the engine.
