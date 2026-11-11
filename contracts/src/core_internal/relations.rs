@@ -169,9 +169,15 @@ fn input_order(entry: &VerifiedEntry) -> &str {
     input(entry).map_or("", |i| i.subject.order.as_str())
 }
 
-/// The maker of a stated entry, attributed or claimed.
+/// The party a stated entry's maker states for, attributed or claimed.
 fn maker(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().party
+}
+
+/// The provider, operator or module a stated entry names as making it: the actor whose key signs, attributed or
+/// claimed. A row comparing a statement's maker with a provider reads this, not the party it states for.
+fn maker_provider(statement: &StatedEntry) -> &Id {
+    &statement.attribution.maker().acts
 }
 
 /// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
@@ -217,10 +223,12 @@ fn about_agrees(
 }
 
 /// A stated entry attributed to `party`, about what its citing entry is about: its signature verified, `party` its
-/// maker, and its `about` the citing entry's ([`about_agrees`]). An unverified statement is attributed to no one
+/// maker as `by` reads it (the party it states for, [`maker`], or the provider whose key signs, [`maker_provider`]),
+/// and its `about` the citing entry's ([`about_agrees`]). An unverified statement is attributed to no one
 /// (`REQ-AUD-2`).
 fn statement_by(
     target: &Entry,
+    by: fn(&StatedEntry) -> &Id,
     party: &Id,
     order: Option<&Id>,
     segment: Option<&Id>,
@@ -231,7 +239,7 @@ fn statement_by(
             true,
             &[
                 matches!(s.attribution, Attribution::Verified { .. }),
-                maker(s) == party,
+                by(s) == party,
                 about_agrees(s, order, segment, history),
             ],
         ),
@@ -945,6 +953,7 @@ pub static RELATIONS: [Relation; 47] = [
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
+                maker,
                 &pair.sent.party,
                 Some(&pair.order),
                 Some(&pair.segment),
@@ -976,6 +985,7 @@ pub static RELATIONS: [Relation; 47] = [
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
+                maker,
                 &pair.received.party,
                 Some(&pair.order),
                 Some(&pair.segment),
@@ -1003,7 +1013,7 @@ pub static RELATIONS: [Relation; 47] = [
         },
         answers: |e, _, t, h| match &e.what {
             What::Arrival { reserve, order, .. } => {
-                statement_by(t, reserve, order.as_ref(), None, h)
+                statement_by(t, maker_provider, reserve, order.as_ref(), None, h)
             }
             _ => Match::NotTarget,
         },
@@ -1099,7 +1109,7 @@ pub static RELATIONS: [Relation; 47] = [
                     true,
                     &[
                         verified || *grade == EvidenceGrade::PublicRecord,
-                        !word || provider == Some(maker(s)),
+                        !word || provider == Some(maker_provider(s)),
                         verified
                             || s.about
                                 .as_ref()
@@ -1149,7 +1159,9 @@ pub static RELATIONS: [Relation; 47] = [
             _ => none(),
         },
         answers: |e, _, t, h| match &e.what {
-            What::Reliance { judge, order, .. } => statement_by(t, judge, Some(order), None, h),
+            What::Reliance { judge, order, .. } => {
+                statement_by(t, maker_provider, judge, Some(order), None, h)
+            }
             _ => Match::NotTarget,
         },
     },
@@ -1651,7 +1663,7 @@ pub static RELATIONS: [Relation; 47] = [
                 true,
                 &[
                     matches!(statement.attribution, Attribution::Verified { .. }),
-                    maker(statement) == origin_reserve,
+                    maker_provider(statement) == origin_reserve,
                     statement.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
                     statement
                         .about
@@ -2051,10 +2063,10 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
 /// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the party this deployment's operator makes
-/// its statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the entry's handle is held to its kind: a
-/// decision kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry
-/// only on the general path, so a decision written by anyone but policy is refused even where its type was got
-/// round.
+/// its statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
+/// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
+/// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
+/// refused even where its type was got round.
 pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,

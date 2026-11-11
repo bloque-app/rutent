@@ -202,6 +202,11 @@ pub trait StatementKeys {
     /// deployment's `operator_key`; the log hands it to [`admit_entry`](super::admit_entry).
     fn operator(&mut self) -> Result<Id, AppendFailure>;
 
+    /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's
+    /// party for the operator and a module the operator publishes; `None` where it knows no such maker. A verified
+    /// statement's `party` is this, never the writer's word.
+    fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure>;
+
     /// Whether `key` signs `maker`'s statements at `at`: a `statements` key of the provider's advertisement
     /// current at `at`, or, for the operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`).
     fn signs_for(

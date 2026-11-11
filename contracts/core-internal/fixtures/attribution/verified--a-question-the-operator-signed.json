@@ -4,8 +4,8 @@
     "attribution": {
       "signature": "unverified",
       "claimed_by": {
-        "party": "rutent-operator",
-        "acts": "core-orch",
+        "party": "operator",
+        "acts": "rutent-operator",
         "role": "operator",
         "kind": "component"
       }
@@ -54,5 +54,11 @@
     }
   ],
   "signature": true,
-  "expect": "verified"
+  "expect": "verified",
+  "publishers": [
+    {
+      "maker": "rutent-operator",
+      "party": "operator"
+    }
+  ]
 }

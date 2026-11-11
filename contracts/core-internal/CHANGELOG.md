@@ -47,7 +47,7 @@
   transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
   otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
   `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
-  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty attribution cases,
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty-four attribution cases,
   under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)
 - Folded into 1.0.0 before its release: a reserve's yes is bound to its order through its signed transaction. A
   statement about an order or a segment is verified only where its `about` names the transaction its body names;
@@ -81,5 +81,12 @@
 - Folded into 1.0.0 before its release: evidence of any grade is bound to its order and segment. A grade-4 bare
   statement is its provider's word, so it rests on a verified statement made by the provider this log's `move_value`
   names for the segment (`REQ-ORD-38`, `REQ-AUD-2`); and a statement that isn't verified, which only a grade-1 public
-  record may rest on, must name a transaction bound to the evidence's order and segment. 224 admission cases and 20
-  attribution cases. (DEC-4, DEC-20, REQ-ORD-38, REQ-ORD-39, REQ-AUD-2, T-020-01)
+  record may rest on, must name a transaction bound to the evidence's order and segment.
+  (DEC-4, DEC-20, REQ-ORD-38, REQ-ORD-39, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: the log binds a statement's maker to its key and its publisher.
+  `attribute` compared the envelope's `maker` with the claimed `party`, though the envelope names the provider,
+  `acts`, and `party` is its publisher, so a provider whose publisher differs from it could never be verified, and
+  `party` was the writer's word. It now verifies only where the envelope's `maker` is `acts`, the key signs for
+  `acts`, and `party` is the one the new `StatementKeys::publisher` answers. The rows comparing a statement's maker
+  with a provider read `acts`; those comparing it with a party read `party`. 224 admission cases and 24 attribution
+  cases. (DEC-4, DEC-20, REQ-AUD-2, REQ-ORD-32, T-020-01)

@@ -506,8 +506,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "someone-else",
-            "acts": "bank-co",
+            "party": "bank-co",
+            "acts": "someone-else",
             "role": "provider",
             "kind": "component"
           }

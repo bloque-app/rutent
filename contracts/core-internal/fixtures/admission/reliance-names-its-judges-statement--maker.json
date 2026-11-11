@@ -551,8 +551,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "someone-else",
-            "acts": "kyc-check",
+            "party": "kyc-check",
+            "acts": "someone-else",
             "role": "provider",
             "kind": "component"
           }

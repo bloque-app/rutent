@@ -7,7 +7,9 @@
 //!
 //! 1. the bytes are a statement envelope;
 //! 2. its `deployment` is this deployment (`REQ-PRT-1`);
-//! 3. its `maker` is the party the entry claims;
+//! 3. its `maker` is the actor the entry claims (`claimed_by.acts`: the provider, the operator or the module whose
+//!    key signs), and the party the entry claims is the one that maker states for, its publisher, or the operator's
+//!    party for the operator and a module it publishes ([`StatementKeys::publisher`]);
 //! 4. its `shape` is the entry's `what.statement`, and its `made_at` the entry's `when.at`;
 //! 5. its signature's scheme and key are the entry's `signed_with`;
 //! 6. its `about` names a transaction exactly when its body names one, and the same one; and where the entry is
@@ -16,6 +18,9 @@
 //!    (`REQ-ORD-32`, `REQ-ORD-38`). A judgement names no transaction, so it is verified about nothing;
 //! 7. its signature verifies over its signing input;
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`).
+//!
+//! So a verified entry's `acts` and `party` are both bound to its key. Its `role` stays the writer's label: no
+//! relation may read a stated entry's role.
 //!
 //! So a verified entry's shape, time, key and transaction are the bytes' own, and one about an order is tied to it
 //! through a signed transaction, which [`STATED_RELATIONS`](super::STATED_RELATIONS) keeps to one order. An entry
@@ -111,7 +116,7 @@ pub fn attribute(
                 .map(|t| t.as_str());
             let bound = about.is_some_and(|a| a.order.is_some() || a.segment.is_some());
             envelope.deployment == keys.deployment()?
-                && envelope.maker == claimed_by.party.as_str()
+                && envelope.maker == claimed_by.acts.as_str()
                 && envelope.shape == claim.what.statement.as_str()
                 && envelope.made_at == claim.when.at.as_str()
                 && envelope.signature.scheme == claim.signed_with.scheme
@@ -121,7 +126,8 @@ pub fn attribute(
                     None => body_transaction.is_none() && !bound,
                 }
                 && signatures.verifies(&bytes)
-                && keys.signs_for(&claimed_by.party, &claim.signed_with, &claim.when.at)?
+                && keys.signs_for(&claimed_by.acts, &claim.signed_with, &claim.when.at)?
+                && keys.publisher(&claimed_by.acts)?.as_ref() == Some(&claimed_by.party)
         }
     };
     let mut entry = claim.clone();

@@ -2099,7 +2099,9 @@ pub struct StatedOutcome {
 }
 
 /// Who a statement is attributed to: its maker where its signature verified against a key of the maker's, and
-/// otherwise only the party it claims as maker, attributed to no one (`REQ-AUD-2`). Schema:
+/// otherwise only the party it claims as maker, attributed to no one (`REQ-AUD-2`). A verified maker's `acts` is the
+/// envelope's maker and its `party` the one that maker states for, both bound by the log; its `role` is the writer's
+/// label, which no relation reads. Schema:
 /// `urn:rutent:core-internal:stated-entry#/$defs/attribution`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "signature", rename_all = "snake_case", deny_unknown_fields)]

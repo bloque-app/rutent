@@ -1238,6 +1238,8 @@ struct Sources {
     kept: Option<KeptStatement>,
     deployment: Deployment,
     keys: Vec<(String, SignedWith, Timestamp)>,
+    /// The party each maker states for; a maker not listed states for itself.
+    publishers: Vec<(String, String)>,
     signature: bool,
 }
 
@@ -1254,6 +1256,15 @@ impl StatementKeys for Sources {
 
     fn operator(&mut self) -> Result<Id, AppendFailure> {
         Ok(operator())
+    }
+
+    fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
+        let party = self
+            .publishers
+            .iter()
+            .find(|(m, _)| m == maker.as_str())
+            .map_or(maker.as_str(), |(_, p)| p.as_str());
+        Ok(Id::new(party))
     }
 
     fn signs_for(
@@ -1293,6 +1304,19 @@ fn sources(case: &Value) -> Sources {
                 )
             })
             .collect(),
+        publishers: case["publishers"]
+            .as_array()
+            .map(|p| {
+                p.iter()
+                    .map(|p| {
+                        (
+                            p["maker"].as_str().unwrap().to_string(),
+                            p["party"].as_str().unwrap().to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         signature: case["signature"].as_bool().unwrap(),
     }
 }
@@ -1426,7 +1450,7 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
         "deployment": {"name": "rutent-test", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},
         "protocol_version": "2.0.1",
         "shape": claim.what.statement.as_str(),
-        "maker": reserve.party.as_str(),
+        "maker": reserve.acts.as_str(),
         "made_at": claim.when.at.as_str(),
         "signature": {"scheme": "ed25519", "key": claim.signed_with.key.as_str(), "value": "AA"},
         "statement": {
@@ -1445,9 +1469,13 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
         kept: Some(serde_json::from_value(kept).unwrap()),
         deployment: serde_json::from_value(envelope["deployment"].clone()).unwrap(),
         keys: vec![(
-            reserve.party.as_str().to_string(),
+            reserve.acts.as_str().to_string(),
             claim.signed_with.clone(),
             claim.when.at.clone(),
+        )],
+        publishers: vec![(
+            reserve.acts.as_str().to_string(),
+            reserve.party.as_str().to_string(),
         )],
         signature: false,
     };
@@ -1478,7 +1506,7 @@ fn signed_sources(yes: &StatedEntry, transaction: &str) -> Sources {
         "deployment": {"name": "rutent-test", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},
         "protocol_version": "2.0.1",
         "shape": yes.what.statement.as_str(),
-        "maker": yes.attribution.maker().party.as_str(),
+        "maker": yes.attribution.maker().acts.as_str(),
         "made_at": yes.when.at.as_str(),
         "signature": {"scheme": "ed25519", "key": yes.signed_with.key.as_str(), "value": "AA"},
         "statement": {
@@ -1496,9 +1524,13 @@ fn signed_sources(yes: &StatedEntry, transaction: &str) -> Sources {
         kept: Some(serde_json::from_value(kept).unwrap()),
         deployment: serde_json::from_value(envelope["deployment"].clone()).unwrap(),
         keys: vec![(
-            yes.attribution.maker().party.as_str().to_string(),
+            yes.attribution.maker().acts.as_str().to_string(),
             yes.signed_with.clone(),
             yes.when.at.clone(),
+        )],
+        publishers: vec![(
+            yes.attribution.maker().acts.as_str().to_string(),
+            yes.attribution.maker().party.as_str().to_string(),
         )],
         signature: true,
     }
@@ -1732,6 +1764,92 @@ fn a_result_about_nothing_whose_body_names_a_transaction_is_not_verified() {
     );
 }
 
+/// A provider signs an `operation` with its own key and claims it is the operator's question. The log binds the party
+/// a statement states for to its maker's publisher, so it records the forgery unverified, and the answer it would
+/// license is refused: a question is a verified statement of the operator's party.
+// verifies: REQ-AUD-2, REQ-ORD-32
+#[test]
+fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answer() {
+    let case = read_json(&contract_dir().join("fixtures/admission/world--s_usbank1.json"));
+    let mut history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                serde_json::from_value(h["receipt"].clone()).unwrap(),
+                serde_json::from_value(h["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let answer: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    assert_eq!(
+        admit_entry(&history, &answer, Through::General, &operator()),
+        Ok(())
+    );
+    let Entry::Stated(yes) = &answer else {
+        panic!("the yes is a stated entry");
+    };
+    let transaction = yes
+        .about
+        .as_ref()
+        .and_then(|a| a.transaction.clone())
+        .unwrap();
+    let slot = history
+        .iter()
+        .position(|(_, e)| {
+            matches!(e, Entry::Stated(q) if q.what.statement.as_str() == "urn:rutent:provider-role:operation")
+        })
+        .unwrap();
+    let Entry::Stated(question) = history[slot].1.clone() else {
+        unreachable!()
+    };
+    let provider = yes.attribution.maker().clone();
+    let forged = StatedEntry {
+        attribution: Attribution::Unverified {
+            claimed_by: rutent_contracts::core_internal::Actor {
+                party: operator(),
+                ..provider.clone()
+            },
+        },
+        signed_with: yes.signed_with.clone(),
+        ..question
+    };
+    let mut sources = signed_sources(&forged, transaction.as_str());
+    sources.publishers = vec![(
+        provider.acts.as_str().to_string(),
+        provider.party.as_str().to_string(),
+    )];
+    let recorded = attributed(&forged, &sources);
+    assert!(matches!(
+        recorded.attribution,
+        Attribution::Unverified { .. }
+    ));
+    history[slot].1 = Entry::Stated(recorded);
+    assert_eq!(
+        admit_entry(&history, &answer, Through::General, &operator()),
+        Err(Violation("a question is a verified statement"))
+    );
+    // With the party it claims bound to its key, the same statement is verified to the provider, not the operator.
+    sources.publishers.clear();
+    let as_its_own = StatedEntry {
+        attribution: Attribution::Unverified {
+            claimed_by: provider.clone(),
+        },
+        ..forged.clone()
+    };
+    let recorded = attributed(&as_its_own, &sources);
+    assert_eq!(
+        recorded.attribution,
+        Attribution::Verified { who: provider }
+    );
+    history[slot].1 = Entry::Stated(recorded);
+    assert_eq!(
+        admit_entry(&history, &answer, Through::General, &operator()),
+        Err(Violation("a question is the operator's statement"))
+    );
+}
+
 /// The refusal of the stated entries' row `name`.
 fn stated_row(name: &str) -> &'static str {
     STATED_RELATIONS
@@ -1755,6 +1873,7 @@ fn sources_like(s: &Sources) -> Sources {
         kept: s.kept.clone(),
         deployment: s.deployment.clone(),
         keys: s.keys.clone(),
+        publishers: s.publishers.clone(),
         signature: s.signature,
     }
 }

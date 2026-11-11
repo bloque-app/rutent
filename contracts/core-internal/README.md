@@ -27,7 +27,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | orchestration → policy | `PersonQuestions::ask_about_person` | `PersonQuestion` | `PersonAnswer` | `core-authz` `cpl` (`T-021-07`) | `REQ-CPL-2`, `REQ-CPL-5`, `REQ-CPL-6` |
 | orchestration, checks → log | `Log::append` | `GeneralEntry`: an `Entry` of no decision kind, a stated one unverified | `Receipt` of the entry recorded | `core-audit` `log` (`T-022-01`) | `REQ-AUD-1`, `REQ-AUD-2`, `INV-7` |
 | log → evidence store | `KeptStatements::kept` | a commitment | the `KeptStatement` under it, or none | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-2` |
-| log → catalogue | `StatementKeys::deployment`, `StatementKeys::operator`, `StatementKeys::signs_for` | a maker, a key and an instant | this deployment; the party its operator states as, which the log hands `admit_entry`; whether the key signs the maker's statements then | `core-audit` `log`, from advertisements the log recorded under permitted `change_catalogue` effects (`T-022-01`), never orchestration | `REQ-AUD-2`, `REQ-PRT-1`, `THR-3` |
+| log → catalogue | `StatementKeys::deployment`, `StatementKeys::operator`, `StatementKeys::publisher`, `StatementKeys::signs_for` | a maker, a key and an instant | this deployment; the party its operator states as, which the log hands `admit_entry`; the party a maker states for; whether the key signs the maker's statements then | `core-audit` `log`, from advertisements the log recorded under permitted `change_catalogue` effects (`T-022-01`), never orchestration | `REQ-AUD-2`, `REQ-PRT-1`, `THR-3` |
 | log → signature check | `Signatures::verifies` | a statement's bytes as received | whether its signature is its named key's | `core-audit` `log` (`T-022-01`) | `REQ-AUD-2` |
 | policy → log | `PolicyLog::append_decision` | `DecisionEntry`: a `VerifiedEntry` of a decision kind | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUZ-1`, `REQ-AUD-1`, `INV-7` |
 | orchestration → evidence store | `Evidence::keep` | a statement's bytes as received | `Kept`: its salted commitment, and the statement it restates | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-2`, `REQ-AUD-5`, `REQ-AUD-6` |
@@ -74,6 +74,14 @@ row implements its own in its own module, where its fail-closed stub sits until 
   order and segment (`REQ-ORD-32`, `REQ-ORD-38`). A judgement carries no transaction, so it is appended about no order,
   and the `reliance` entry that relies on it binds it to one. `fixtures/attribution/` holds a case for each part of the
   rule.
+- **A statement's maker is bound to its key and its publisher.** A stated entry's actor has two names: `acts`, the
+  provider, operator or module whose name the envelope carries and whose key signs, and `party`, the one it states
+  for, its publisher or the operator's party. The log verifies a statement only where the envelope's `maker` is its
+  `acts`, the key signs for that `acts`, and its `party` is the one `StatementKeys::publisher` answers for it, so
+  both names of a verified maker are bound. Its `role` stays the writer's label, and no relation reads it. A row
+  comparing a statement's maker with a provider (an origin reserve, an arrival's reserve, a judge, a segment's
+  provider under grade-4 evidence) reads `acts`; a row comparing it with a party (a report pair's reporting party,
+  the operator's party for a question) reads `party`.
 - **The log is the guard of every citation.** Permits, receipts and ids can be built anywhere: `Decision::permit`
   makes a `Permit` from a permitting answer, but a permit deserialises, and a decision's fields are public. So the
   log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS` for a verified entry and
@@ -473,6 +481,10 @@ These are defaults taken where the row left a choice open. Each is reversible by
   the one Core asked for: orchestration could ask a question for one order and label it another before any answer.
   It can be caught, because the question's signed body names the account and the amount asked about, which a
   checker compares with the labelled order's; the log does not compare them.
+- **A report's party** (`T-020-07`, `T-022-05`). `Report.party` is "the party that reports", and
+  `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` compare it with the
+  statement's `party`, the publisher it states for. Should a report name the provider instead, those two rows move
+  to `acts` with it.
 - **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives,
   so `StatementKeys` takes a maker's keys only from advertisements the log itself recorded under permitted
   `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own `made_at`, so a key

@@ -323,8 +323,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "fx-desk",
-            "acts": "bridge-pay",
+            "party": "bridge-pay",
+            "acts": "fx-desk",
             "role": "provider",
             "kind": "component"
           }
