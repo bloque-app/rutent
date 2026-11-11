@@ -173,3 +173,19 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   grant tests); the key binding (both statement tests); the exchange's output not held (the exchange test); the
   operator's modules unmapped (the unknown-publisher test); the chosen part's class as `malformed_request` (the
   ordered-list test).
+
+### T-020-05, second review answers
+
+- **`record_refused` checks the signature itself.** It verifies the refused statement's own signature again against
+  the catalogue at Core's clock and attributes it by that alone; `RefusedStatement::verified` is informational and
+  never read there, so no Core code can log `signature: verified` by setting a flag. Test:
+  `refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_signature`, red with the flag trusted.
+  (`T-020-01c` is to have the log set a stated entry's attribution itself; this closes it here too.)
+- **A member named twice** anywhere in a statement, nested ones included, is refused as `DuplicateMember` with its
+  byte offset, before anything in the text is read; any other text the signing rule can't make canonical is
+  `NotIJson`. Before, it surfaced as the catalogue's `Unreadable("deployment")`. Test:
+  `statement_naming_a_member_twice_is_refused_before_the_record`, red with the check switched off.
+- **The publisher name `operator`** is reserved and documented on `OPERATOR_PUBLISHER`: a catalogue publisher so
+  named would be counted with the operator's modules against an `operator` ceiling, an over-count that only refuses
+  more. The catalogue is `F-012`'s, so no refusal is added there.
+- **`T-020-08`'s Serves** gains `REQ-ORD-36`, which its Work cites.

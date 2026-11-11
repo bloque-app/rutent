@@ -460,3 +460,60 @@ fn operators_statement_is_tied_to_the_deployments_operator_key() {
         })
     );
 }
+
+// verifies: REQ-AUD-2
+#[test]
+fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_signature() {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let clock = TestClock::at(4_000);
+    let stray = signing_key("stray", 9);
+    // Built by hand, claiming a verification its signature doesn't bear out.
+    let claimed = RefusedStatement {
+        tuple: withdrawal_tuple(RESERVE),
+        bytes: dry_run(&deployment(), 3_500, &stray),
+        reason: Refusal::NoTuple,
+        verified: true,
+    };
+    let mut log = KeptLog::default();
+    let mut evidence = KeptEvidence::default();
+    record_refused(&mut evidence, &mut log, &clock, &catalogue, &claimed, None).unwrap();
+    let [Entry::Stated(stated)] = log.entries.as_slice() else {
+        panic!("one stated entry");
+    };
+    assert!(matches!(stated.attribution, Attribution::Unverified { .. }));
+
+    // The same claim on a statement whose signature does verify is recorded as its maker's.
+    let honest = RefusedStatement {
+        bytes: dry_run(&deployment(), 3_500, &statements_key(RESERVE, 1)),
+        verified: false,
+        ..claimed
+    };
+    record_refused(&mut evidence, &mut log, &clock, &catalogue, &honest, None).unwrap();
+    let Entry::Stated(stated) = &log.entries[1] else {
+        panic!("a stated entry");
+    };
+    assert!(matches!(stated.attribution, Attribution::Verified { .. }));
+}
+
+// verifies: THR-3, REQ-AUD-4
+#[test]
+fn statement_naming_a_member_twice_is_refused_before_the_record() {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let key = statements_key(RESERVE, 1);
+    let clock = TestClock::at(4_000);
+    let good = nesting(&key, &deployment(), 3_400, &key);
+    assert_eq!(bind_statement(&catalogue, &clock, &good), Ok(()));
+    // The nested judgement names its class twice: a reader could take either.
+    let text = String::from_utf8(good).unwrap();
+    let once = r#""class":"kyc.natural_person""#;
+    assert_eq!(text.matches(once).count(), 1);
+    let twice = text.replace(
+        once,
+        &format!(r#"{once},"class":"aml.sanctions_screening""#),
+    );
+    let at = twice.find(once).unwrap() + once.len() + 1;
+    assert_eq!(
+        bind_statement(&catalogue, &clock, twice.as_bytes()),
+        Err(Refusal::DuplicateMember { at })
+    );
+}

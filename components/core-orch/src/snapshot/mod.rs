@@ -58,6 +58,10 @@ use rutent_prov::catalogue::{Catalogue, Instant, LeftOut, Publisher, SnapshotErr
 pub const EXPOSURE_SOURCE: &str = "core-exposures";
 
 /// The publisher an exposure figure names for a module the operator publishes.
+///
+/// The name is reserved: a catalogue publisher also named `operator` would have its providers' exposures counted
+/// together with the operator's own modules' against a publisher ceiling on `operator`. That over-counts, so a
+/// route is only ever refused more, never let past a ceiling; an operator names no publisher so.
 pub const OPERATOR_PUBLISHER: &str = "operator";
 
 /// A tuple's advertised price, as Core holds it: its provider's fee formula, its rate where it is an exchange's, and

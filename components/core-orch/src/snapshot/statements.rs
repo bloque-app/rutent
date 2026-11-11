@@ -26,7 +26,7 @@ use rutent_contracts::core_internal::{
     About, Actor, ActorKind, Attribution, Entry, Receipt, Role, ShapeId, SignedWith, StatedEntry,
     StatedKind, StatedOutcome, StatedStatus, StatedTimeSource, StatedWhat, StatedWhen,
 };
-use rutent_contracts::provider_role::{JUDGEMENT_SHAPE, Signature};
+use rutent_contracts::provider_role::{CanonicalError, JUDGEMENT_SHAPE, Signature, canonicalize};
 use rutent_contracts::router_api::{Id, Timestamp, TupleKey, Violation};
 use rutent_prov::catalogue::{Catalogue, Instant, Publisher, StatementRefusal, Unusable};
 use serde::Deserialize;
@@ -41,6 +41,14 @@ use super::span::{PathStep, value_at};
 pub enum Refusal {
     /// The bytes aren't a statement of the kind asked for: not its envelope, or another shape.
     Unreadable(String),
+    /// An object in the bytes names a member twice, at this byte offset (RFC 7493 §2.3): which of the two a reader
+    /// takes is not decided, so nothing in it is taken.
+    DuplicateMember {
+        /// Where the second name starts, in bytes from the start of the statement as received.
+        at: usize,
+    },
+    /// The bytes are no I-JSON text the signing rule can make canonical (RFC 8785).
+    NotIJson(CanonicalError),
     /// A statement's key didn't tie it to its maker, or it belongs to another deployment or protocol version:
     /// the outer statement where `path` is empty, else the one nested at `path`.
     Key {
@@ -83,8 +91,8 @@ pub struct RefusedStatement {
     pub bytes: Vec<u8>,
     /// Why.
     pub reason: Refusal,
-    /// Whether its own signature verified against a key of its maker's, at Core's clock: then it is its maker's
-    /// statement, refused for something else.
+    /// Whether its own signature verified against a key of its maker's when the snapshot was formed. Informational
+    /// only: [`record_refused`] checks the signature again itself and never reads this.
     pub verified: bool,
 }
 
@@ -135,6 +143,13 @@ pub(super) fn bind_at(
     at: Instant,
     operator: bool,
 ) -> Result<(), Refusal> {
+    // The whole text, nested statements included, must be I-JSON before anything in it is read: `serde_json` would
+    // take the last of a member named twice, and the signing rule refuses the text.
+    match canonicalize(received) {
+        Ok(_) => {}
+        Err(CanonicalError::DuplicateMember { at }) => return Err(Refusal::DuplicateMember { at }),
+        Err(error) => return Err(Refusal::NotIJson(error)),
+    }
     let value: Value =
         serde_json::from_slice(received).map_err(|e| Refusal::Unreadable(e.to_string()))?;
     let outer = maker_of(&value).ok_or_else(|| Refusal::Unreadable("not an envelope".into()))?;
@@ -161,6 +176,9 @@ pub(super) fn bind_at(
 
 /// Whether a statement's own signature, the outer one only, ties it to its maker at `at`.
 pub(super) fn outer_verifies(catalogue: &Catalogue, received: &[u8], at: Instant) -> bool {
+    if canonicalize(received).is_err() {
+        return false;
+    }
     let Ok(value) = serde_json::from_slice::<Value>(received) else {
         return false;
     };
@@ -219,7 +237,8 @@ fn find_nested(value: &Value, path: &mut Vec<PathStep>, found: &mut Vec<Vec<Path
 /// Records a refused statement (`REQ-AUD-2`): its bytes go to the evidence store, which answers their salted
 /// commitment, and a stated entry naming that commitment is appended to the log, received at Core's clock. Its
 /// maker is the one its envelope names: attributed to it (`signature: verified`) where the statement's own signature
-/// verified, and only claimed by it (`signature: unverified`) where it didn't. The maker acts for its publisher, or
+/// verifies now, against the catalogue at Core's clock, and only claimed by it (`signature: unverified`) where it
+/// doesn't. The check is made here, never taken from [`RefusedStatement::verified`]. The maker acts for its publisher, or
 /// for the operator where the operator publishes it; a verifier's judgement is made in the verifier's role.
 pub fn record_refused(
     evidence: &mut dyn Evidence,
@@ -251,7 +270,8 @@ pub fn record_refused(
     };
     let shape = ShapeId::new(claimed.shape).ok_or(RecordError::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(RecordError::Unrecordable)?;
-    let attribution = if refused.verified {
+    let verified = outer_verifies(catalogue, &refused.bytes, clock.now().floor());
+    let attribution = if verified {
         Attribution::Verified { who: maker }
     } else {
         Attribution::Unverified { claimed_by: maker }
