@@ -44,7 +44,9 @@
 //! can't hold, so it is asked first, beside the fixed rules: its refusal is the answer and the deployment's policy
 //! isn't asked. A revocation is held to it the same way: only a permission granted can be revoked.
 //!
-//! A read is allowed or refused and nothing else, so one policy can't decide is refused as not permitted.
+//! A read is allowed or refused and nothing else, so one policy can't decide is refused as not permitted. Each is
+//! recorded: a read the log won't take as allowed, which a record that said yes wrongly would bring, is recorded and
+//! answered as refused.
 
 use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, Reads, Sessions};
 use rutent_contracts::core_internal::{
@@ -401,11 +403,20 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
             Some(class) => Answer::Refuse { class },
             None => self.consult(Asked::CheckRead(check)),
         };
-        let outcome = read_outcome(answer);
-        let what = What::CheckRead {
+        let mut outcome = read_outcome(answer);
+        let what = || What::CheckRead {
             check: check.clone(),
         };
-        let receipt = self.record(&check.reader, what, &check.at, outcome.outcome())?;
+        let receipt = match self.record(&check.reader, what(), &check.at, outcome.outcome()) {
+            // The log won't take the read as allowed, so it is recorded, and answered, as refused: every read is.
+            Err(AppendFailure::Refused(_)) if matches!(answer, Answer::Permit {}) => {
+                outcome = read_outcome(Answer::Refuse {
+                    class: RefusalClass::NotPermitted,
+                });
+                self.record(&check.reader, what(), &check.at, outcome.outcome())?
+            }
+            recorded => recorded?,
+        };
         Ok(ReadAnswer {
             request: check.request.clone(),
             outcome,

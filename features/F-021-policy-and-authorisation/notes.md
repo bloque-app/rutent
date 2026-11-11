@@ -108,8 +108,16 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   customer's of the trail. A customer's read of an order or its segment asks the order's record whether the reader
   is its requester, beneficiary or payer (`Source::OrderParties`), and a provider's of its segment asks the segment's
   record whether value moved through it (`Source::SegmentProvider`). The assembly answers both from the log, which
-  holds the acceptance and the effect; were it to say yes wrongly, the log still refuses the read
-  (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`), and nothing is answered.
+  holds the acceptance and the effect; were it to say yes wrongly, the log still refuses the read as allowed
+  (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`), and the engine records and answers
+  it as refused (review of `d2604d3`, S2: it first answered `Err` and recorded nothing on that path).
+- **Before the assembly answers the sources** (`T-024-02`; review of `d2604d3`, S3). Fail-closed only where an input
+  is needed. Every session needs one (`Source::Account`), so none opens, and these reads need one, so each is
+  refused: a customer's of an order or a segment, a provider's of its segment, any segment read by a permission
+  (`SegmentOrder`), and any read of a kept statement without a permission (`Statement`). The reads that need no
+  input are decided by the register and the deployment's policy alone, and the deployment's policy may allow them:
+  a customer's or a provider's read of a resource, and a regulator's or a checker's read by a permission granted
+  through policy of the trail, an order or a kept statement.
 - **A segment is read as one of the order the read names** (review of `d2604d3`, B2). A segment read names its
   order and segment apart, and neither the customer's rule nor `covers` tied the two, so a customer naming its own
   order beside another order's segment was allowed, and a permission over one order covered another's segments. A

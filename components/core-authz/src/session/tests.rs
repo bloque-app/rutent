@@ -532,7 +532,7 @@ fn expired_session_answers_no_balance_check() {
 /// A customer reads only its own orders: another customer is refused its order and the order's segments, recorded,
 /// even where the deployment's policy would allow anything, and no customer reads the trail. The order's own
 /// customer is allowed, and the log admits its read. An order's record out of reach refuses the read. Were the
-/// record to say yes wrongly, the log would still refuse the read, and nothing would be answered.
+/// record to say yes wrongly, the log would still refuse the read as allowed, and it is recorded refused.
 // verifies: REQ-AUZ-7
 #[test]
 fn customer_cannot_read_another_customers_order() {
@@ -582,16 +582,7 @@ fn customer_cannot_read_another_customers_order() {
         Rules::permitting(),
         Says::of(vec![(party_of("cust-2", "ord-1"), Reply::Given(Said::Yes))]),
     );
-    let entries = lying.log.0.len();
-    assert!(matches!(
-        lying.check_read(&other),
-        Err(AppendFailure::Refused(_))
-    ));
-    assert_eq!(
-        lying.log.0.len(),
-        entries,
-        "nothing recorded, nothing answered"
-    );
+    assert_eq!(read_recorded(&mut lying, &other), refused());
 }
 
 /// A provider reads only its own segments: another provider is refused a segment it isn't the provider of, whether
@@ -1072,4 +1063,29 @@ fn session_bound_is_measured_from_cores_clock_not_the_requests_at() {
         open("2026-11-10T09:10:00Z", nine, "2026-11-10T09:20:00Z").0,
         SessionOutcome::Opened { .. }
     ));
+}
+
+/// A read the log refuses is still recorded: where the order's record says yes wrongly and the log won't take the
+/// read as permitted, the engine records it refused, and answers so. A log that can't be reached answers nothing.
+// verifies: REQ-AUZ-7
+#[test]
+fn read_the_log_refuses_is_recorded_as_refused() {
+    let lying = || Says::of(vec![(party_of("cust-2", "ord-1"), Reply::Given(Said::Yes))]);
+    let mut engine = Engine::with_policy(Kept::world(), Rules::permitting(), lying());
+    let other = read(
+        "req-490",
+        actor("cust-2", "cust-2", Role::Customer),
+        json!({"kind": "order", "order": "ord-1"}),
+        None,
+    );
+    assert_eq!(read_recorded(&mut engine, &other), refused());
+
+    struct Down;
+    impl PolicyLog for Down {
+        fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+    }
+    let mut down = Engine::with_policy(Down, Rules::permitting(), lying());
+    assert_eq!(down.check_read(&other), Err(AppendFailure::Unavailable));
 }
