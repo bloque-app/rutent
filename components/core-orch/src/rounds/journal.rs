@@ -90,6 +90,7 @@ pub(super) struct RecordEntry<'a> {
     pub digest: &'a Digest,
     pub previous: Option<&'a Receipt>,
     pub shortlisted: Option<Vec<Id>>,
+    pub verifiers: Vec<Id>,
 }
 
 /// Appends one round's recorded decision, by digest, chained to the order's previous decision record.
@@ -114,6 +115,7 @@ pub(super) fn append_record(
             record: record.digest.clone(),
             previous: record.previous.cloned(),
             shortlisted: record.shortlisted,
+            verifiers: record.verifiers,
         },
         when: When {
             at,

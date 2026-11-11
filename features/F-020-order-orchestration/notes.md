@@ -346,3 +346,25 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **`T-020-01d`** (a person question names its verifiers, the shortlist record carries them) waits for the merge of
   the attribution branch into `m3`; then `ask`, `asked_before` and the shortlist record's `verifiers` come from the
   tuples' needs, and the `// T-020-01d:` note goes.
+
+### T-020-06, after the attribution branch (`m3` at `b5f64e5`)
+
+- **Merged** `m3` at `b5f64e5`. `T-020-06`'s `PLAN.md` row took the merge's wording of the question-before-answer
+  rule and of `record_refused` (appended unverified, the log setting its attribution), with this row's review
+  additions kept. Every rounds test passed on the new `record_refused`.
+- **`T-020-01d`.** A person question on a shortlisted route asks the verifier its need names, which receives the
+  subject; `asked_before` lists the verifiers already asked for the order (`History`); the authority and the
+  shortlist's `decision_record` entry name the verifiers the shortlisted tuples need, from the order's needs. The
+  `// T-020-01d:` note is gone. Each of the three was switched off once and its test seen red.
+- **A shortlist that keeps nothing is recorded now**, its entry naming no provider, so a `no_route` input has the
+  record to cite; `Recorded::receipt` is no longer optional. The gap above is closed.
+- **Questions and answers bind through the log.** Core signs its questions and records as the operator's `acts`,
+  the maker `StatementKeys::operator` names, and the stated entry claims that actor. Each answer is appended with
+  the transaction Core asked it under in its `about`. The tests now replay the log as the log would
+  (`Env::admitted`): each stated entry through core-internal's `attribute` over the kept bytes and the catalogue's
+  keys, and every entry through `admit_entry`, so `answer-follows-its-question`, `transaction-belongs-to-one-order`
+  and the decision records' chain hold on what the rounds write. There, a question is verified as the operator's, the
+  reserve's yes as the reserve's, and a carried yes, whose bytes sign another transaction, as no one's. Switched off,
+  a question signed under the operator's party, and answers appended without their transaction, each went red.
+- **Superseded above:** the hand-off on `record_refused` (it appends unverified since the merge) and the empty
+  shortlist's gap.

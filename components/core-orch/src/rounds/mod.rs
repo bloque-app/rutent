@@ -7,9 +7,9 @@
 //!
 //! 1. **The shortlist round.** A snapshot of advertised figures only, formed through [`Snapshots`]; every statement
 //!    it refuses recorded through [`record_refused`]; `route` over it; the recorded decision signed with the
-//!    operator key and appended as a `decision_record` entry naming the providers it shortlisted, chained to the
-//!    order's previous decision record ([`History`], `REQ-AUD-4`). A shortlist that keeps nothing asks no one
-//!    (`REQ-QTE-13`); the contract can't record it, since a shortlist entry names at least one provider.
+//!    operator key and appended as a `decision_record` entry naming the providers it shortlisted and the verifiers
+//!    their tuples need, chained to the order's previous decision record ([`History`], `REQ-AUD-4`). A shortlist
+//!    that keeps nothing asks no one (`REQ-QTE-13`), and its record names no provider.
 //! 2. **The questions.** Only what [`shortlist::asks`] gives: each shortlisted provider about each of its tuples, at
 //!    one amount (`REQ-CAT-5`, `cat5-single-amount-asks`), and eligibility only for a shortlisted tuple, for the
 //!    parties its rules name, each first put to policy as a question about a person on the shortlisted route
@@ -143,7 +143,7 @@ pub struct Order {
 }
 
 /// What Core keeps of an order across its routings: the receipt of its last decision record entry, which the next
-/// chains to, and who was asked about a person for it (`REQ-AUD-4`, `REQ-CPL-5`).
+/// chains to, and the verifiers asked about a person for it (`REQ-AUD-4`, `REQ-CPL-5`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
     previous: Option<Receipt>,
@@ -161,7 +161,7 @@ impl History {
         self.previous.as_ref()
     }
 
-    /// The providers already asked about a person for the order, each once.
+    /// The verifiers already asked about a person for the order, each once.
     pub fn asked_about_person(&self) -> &[Id] {
         &self.asked_about_person
     }
@@ -227,7 +227,8 @@ pub struct Routing<'a> {
     pub order: &'a Order,
     /// Core, acting on its own account: who writes each `decision_record` entry.
     pub core: &'a Actor,
-    /// The operator, in whose name Core signs its questions and records: its party is their `maker`.
+    /// The operator, in whose name Core signs its questions and records: its `acts` is their `maker`, the one the
+    /// log's `StatementKeys::operator` names, and its `party` the operator's.
     pub operator: &'a Actor,
 }
 
@@ -240,9 +241,8 @@ pub struct Recorded {
     pub recorded: Vec<u8>,
     /// Its digest, which its entry names.
     pub digest: Digest,
-    /// The receipt of its `decision_record` entry: `None` only for a shortlist that kept nothing, which the
-    /// contract can't record.
-    pub receipt: Option<Receipt>,
+    /// The receipt of its `decision_record` entry.
+    pub receipt: Receipt,
 }
 
 /// One question Core asked.
@@ -432,6 +432,7 @@ impl<R: Router> Rounds<R> {
             ));
         };
         let shortlisted: Vec<Id> = asks.providers().cloned().collect();
+        let verifiers = verifiers_of(&shortlist.record, &routing.order.needs);
         let questions: Vec<Question> = asks
             .providers()
             .flat_map(|p| {
@@ -463,7 +464,7 @@ impl<R: Router> Rounds<R> {
             ));
         }
         for need in &needs {
-            if !run.ask_about_person(need, &shortlist.digest, &shortlisted, history)? {
+            if !run.ask_about_person(need, &shortlist.digest, &shortlisted, &verifiers, history)? {
                 return Ok(finish(
                     run,
                     shortlist,
@@ -566,33 +567,32 @@ impl<R: Router> Rounds<R> {
         {
             return Err(RoutingError::NotItsRecord);
         }
-        let maker = &run.routing.operator.party;
+        let maker = &run.routing.operator.acts;
         let made_at = run.now()?;
         let recorded = ask::sign_record(run.parts.operator_key, &record, maker, &made_at)?;
         let digest = ask::digest(&recorded).ok_or(RoutingError::Unsigned)?;
-        let shortlisted = match round {
-            RoutingRound::Shortlist => Some(providers_of(&record)),
-            RoutingRound::Choice => None,
+        let (shortlisted, verifiers) = match round {
+            RoutingRound::Shortlist => (
+                Some(providers_of(&record)),
+                verifiers_of(&record, &run.routing.order.needs),
+            ),
+            RoutingRound::Choice => (None, Vec::new()),
         };
-        let receipt = match shortlisted {
-            Some(ref providers) if providers.is_empty() => None,
-            _ => Some(journal::append_record(
-                run.parts.log,
-                run.parts.clock,
-                journal::RecordEntry {
-                    who: run.routing.core,
-                    order: &run.routing.order.order,
-                    record_id: record.record_id(),
-                    round,
-                    digest: &digest,
-                    previous: history.previous.as_ref(),
-                    shortlisted,
-                },
-            )?),
-        };
-        if let Some(receipt) = &receipt {
-            history.previous = Some(receipt.clone());
-        }
+        let receipt = journal::append_record(
+            run.parts.log,
+            run.parts.clock,
+            journal::RecordEntry {
+                who: run.routing.core,
+                order: &run.routing.order.order,
+                record_id: record.record_id(),
+                round,
+                digest: &digest,
+                previous: history.previous.as_ref(),
+                shortlisted,
+                verifiers,
+            },
+        )?;
+        history.previous = Some(receipt.clone());
         Ok(Recorded {
             record,
             recorded,
@@ -701,13 +701,12 @@ impl Run<'_, '_> {
         need: &Need,
         shortlist: &Digest,
         shortlisted: &[Id],
+        verifiers: &[Id],
         history: &mut History,
     ) -> Result<bool, RoutingError> {
         let order = self.routing.order;
-        let relying = need.tuple.provider.clone();
-        // T-020-01d: REQ-CPL-5 records the providers and verifiers asked, so `ask` and `asked_before` should name
-        // the verifier; core-internal's `PersonQuestion` lets a shortlisted route's question ask only shortlisted
-        // providers, so until its shape changes they name the relying provider.
+        // The verifier receives the subject, so it is the one asked, recorded and bounded (`REQ-CPL-5`).
+        let verifier = need.verifier.clone();
         let question = PersonQuestion {
             request: self.parts.fresh.id(),
             asker: order.caller.clone(),
@@ -716,8 +715,9 @@ impl Run<'_, '_> {
             authority: Authority::ShortlistedRoute {
                 shortlist: shortlist.clone(),
                 providers: shortlisted.to_vec(),
+                verifiers: verifiers.to_vec(),
             },
-            ask: vec![relying.clone()],
+            ask: vec![verifier.clone()],
             asked_before: history.asked_about_person.clone(),
             at: self.now()?,
         };
@@ -726,8 +726,8 @@ impl Run<'_, '_> {
             PersonOutcome::PastBound { .. } => return Ok(false),
             PersonOutcome::Refused { .. } | PersonOutcome::NotKnown { .. } => return Ok(true),
         }
-        if !history.asked_about_person.contains(&relying) {
-            history.asked_about_person.push(relying);
+        if !history.asked_about_person.contains(&verifier) {
+            history.asked_about_person.push(verifier);
         }
         // A judgement request carries no transaction, so the question is logged about nothing its body doesn't
         // name, and the verifier's answer is bound by the need it answers alone (a residual, `T-025-05`).
@@ -736,7 +736,7 @@ impl Run<'_, '_> {
         let bytes = ask::sign_question(
             self.parts.operator_key,
             self.bounds.as_ref().unwrap_or(self.routing.bounds),
-            &self.routing.operator.party,
+            &self.routing.operator.acts,
             &made_at,
             operation,
         )?;
@@ -817,7 +817,7 @@ impl Run<'_, '_> {
         let bytes = ask::sign_question(
             self.parts.operator_key,
             self.bounds.as_ref().unwrap_or(self.routing.bounds),
-            &self.routing.operator.party,
+            &self.routing.operator.acts,
             &made_at,
             operation,
         )?;
@@ -1060,6 +1060,25 @@ fn accepted(answer: &[u8]) -> bool {
                 .map(|s| s == "dry_run_accepted")
         })
         .unwrap_or(false)
+}
+
+/// The verifiers the tuples of a shortlist round's kept candidates need, by the order's needs, each once.
+fn verifiers_of(record: &DecisionRecord, needs: &[Need]) -> Vec<Id> {
+    let mut verifiers: Vec<Id> = Vec::new();
+    for candidate in record.shortlist() {
+        for operation in candidate.parts.iter().flat_map(|p| p.operations.iter()) {
+            for need in needs.iter().filter(|n| {
+                n.tuple.provider == operation.provider
+                    && n.tuple.from == operation.from
+                    && n.tuple.to == operation.to
+            }) {
+                if !verifiers.contains(&need.verifier) {
+                    verifiers.push(need.verifier.clone());
+                }
+            }
+        }
+    }
+    verifiers
 }
 
 /// The providers a shortlist round shortlisted, each once, in the order the record names them.

@@ -9,12 +9,16 @@ use std::rc::Rc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Charges, Evidence, Fetched, Kept, PersonQuestions,
+    AppendFailure, Charges, Evidence, Fetched, Kept, KeptStatements, PersonQuestions, Signatures,
+    StatementKeys,
 };
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Charge, ChargeAnswer, ChargeOutcome, Entry, PersonAnswer, PersonOutcome,
     PersonQuestion, ReadCheck, Receipt, Role, RoutingRound, What,
 };
+use rutent_contracts::core_internal::{KeptStatement, SignedWith, Through, admit_entry, attribute};
+use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::provider_role::{
     Advertisement, EvidenceGrade, JUDGEMENT_SHAPE, PublicKey, RESULT_SHAPE, SafeInteger, Statement,
 };
@@ -26,6 +30,7 @@ use rutent_core_orch::rounds::{
     RoutingError,
 };
 use rutent_core_orch::snapshot::{Clock, Exposures, Price, Releases};
+use rutent_prov::catalogue::Publisher;
 use rutent_prov::catalogue::{
     Bond, Catalogue, Category, CheckBound, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
@@ -425,6 +430,115 @@ pub fn is_round(what: &What, round: RoutingRound) -> bool {
     matches!(what, What::DecisionRecord { round: r, .. } if *r == round)
 }
 
+// The log's own reading ---------------------------------------------------------------------------------------------
+
+/// The receipt the tests' log hands out for the entry at `index`.
+fn log_receipt(index: usize) -> Receipt {
+    Receipt {
+        log: id("log-1"),
+        index: SafeInteger::try_from(index as u64).unwrap(),
+        entry: serde_json::from_value(json!({ "algorithm": "sha-256", "value": "72".repeat(32) }))
+            .unwrap(),
+    }
+}
+
+/// What the log reads to attribute a statement: the bytes the store kept, the catalogue's publishers and keys, and
+/// its verification at Core's clock.
+struct Sources<'a> {
+    catalogue: &'a Catalogue,
+    store: &'a Store,
+    at: Instant,
+}
+
+impl KeptStatements for Sources<'_> {
+    fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        let place = (0..self.store.kept.len()).find(|i| &commitment(*i) == wanted);
+        Ok(place.map(|i| {
+            serde_json::from_value(json!({
+                "commitment": wanted,
+                "salt": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "bytes": base64url(&self.store.kept[i]),
+            }))
+            .unwrap()
+        }))
+    }
+}
+
+impl StatementKeys for Sources<'_> {
+    fn deployment(&mut self) -> Result<Deployment, AppendFailure> {
+        Ok(deployment())
+    }
+
+    fn operator(&mut self) -> Result<Id, AppendFailure> {
+        Ok(operator().acts)
+    }
+
+    fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
+        if maker == &operator().acts {
+            return Ok(Some(operator().party));
+        }
+        Ok(
+            match self.catalogue.publishers().publisher(maker.as_str()) {
+                Some(Publisher::Operator) => Some(operator().party),
+                Some(Publisher::Party(party)) => Id::new(party),
+                None => None,
+            },
+        )
+    }
+
+    fn signs_for(&mut self, _: &Id, _: &SignedWith, _: &Timestamp) -> Result<bool, AppendFailure> {
+        // The catalogue's verification below ties the key to its maker at its `made_at`.
+        Ok(true)
+    }
+}
+
+impl Signatures for Sources<'_> {
+    fn verifies(&self, received: &[u8]) -> bool {
+        let maker = serde_json::from_slice::<Value>(received)
+            .ok()
+            .and_then(|v| v["maker"].as_str().map(str::to_owned));
+        if maker.as_deref() == Some(operator().acts.as_str()) {
+            self.catalogue
+                .verify_operator_statement(received, self.at)
+                .is_ok()
+        } else {
+            self.catalogue.verify_statement(received, self.at).is_ok()
+        }
+    }
+}
+
+impl Env {
+    /// The log as the log itself would keep it: each stated entry attributed from its kept bytes (core-internal's
+    /// `attribute`), and every entry admitted over the ones before it on the general path (`admit_entry`), with its
+    /// rows `answer-follows-its-question`, `transaction-belongs-to-one-order` and the decision records' chain.
+    /// Refused at the first entry the log wouldn't admit, with its place.
+    pub fn admitted(&self) -> Result<Vec<Entry>, (usize, String)> {
+        let mut history: Vec<(Receipt, Entry)> = Vec::new();
+        for (i, entry) in self.log.entries.iter().enumerate() {
+            let entry = match entry {
+                Entry::Stated(claim) => {
+                    let mut sources = Sources {
+                        catalogue: &self.catalogue,
+                        store: &self.evidence,
+                        at: self.clock.now().floor(),
+                    };
+                    let mut keys = Sources { ..sources };
+                    let signatures = Sources { ..sources };
+                    Entry::Stated(
+                        attribute(claim, &mut sources, &mut keys, &signatures)
+                            .map_err(|e| (i, format!("{e:?}")))?,
+                    )
+                }
+                verified => verified.clone(),
+            };
+            admit_entry(&history, &entry, Through::General, &operator().acts)
+                .map_err(|v| (i, v.0.to_owned()))?;
+            history.push((log_receipt(i), entry));
+        }
+        Ok(history.into_iter().map(|(_, e)| e).collect())
+    }
+}
+
 // Who acts ----------------------------------------------------------------------------------------------------------
 
 /// The customer whose order it is.
@@ -437,11 +551,11 @@ pub fn customer() -> Actor {
     }
 }
 
-/// The operator, in whose name Core signs.
+/// The operator, in whose name Core signs: the maker the log's `StatementKeys::operator` names.
 pub fn operator() -> Actor {
     Actor {
-        party: id("rutent-operator"),
-        acts: id("core-orch"),
+        party: id("operator"),
+        acts: id("operator"),
         role: Role::Operator,
         kind: ActorKind::Component,
     }

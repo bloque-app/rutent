@@ -7,7 +7,7 @@ mod snapshot_support;
 use std::cell::RefCell;
 
 use rounds_support::*;
-use rutent_contracts::core_internal::{About, Authority, Entry, RoutingRound, What};
+use rutent_contracts::core_internal::{About, Attribution, Authority, Entry, RoutingRound, What};
 use rutent_contracts::provider_role::{JUDGEMENT_SHAPE, VoidedBy};
 use rutent_contracts::router_api::{
     CatalogueSnapshot, DecisionRecord, DropReason, FigureValue, PolicyBounds, Request, Round,
@@ -114,6 +114,25 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
             transaction: withdrawal.transaction.clone(),
         })
     );
+    // The log admits every entry: each answer follows its question, which is the operator's, verified, and the
+    // yes is the reserve's own.
+    let admitted = env.admitted().expect("the log admits every entry");
+    let Entry::Stated(question) = &admitted[withdrawal.receipt.index.get() as usize] else {
+        unreachable!()
+    };
+    assert!(
+        matches!(&question.attribution, Attribution::Verified { who } if who.acts == operator().acts),
+        "{:?}",
+        question.attribution
+    );
+    let Entry::Stated(yes) = &admitted[yes.index.get() as usize] else {
+        unreachable!()
+    };
+    assert!(
+        matches!(&yes.attribution, Attribution::Verified { who } if who.acts == id(RESERVE)),
+        "{:?}",
+        yes.attribution
+    );
 }
 
 // verifies: REQ-ORD-32
@@ -164,6 +183,15 @@ fn yes_carried_by_the_user_is_refused() {
         .find(|s| s.tuple == withdrawal_tuple(RESERVE))
         .unwrap();
     assert_eq!(entry.about.as_ref().unwrap().transaction, asked.transaction);
+    // The log admits it after Core's question, and attributes it to no one: its bytes sign another transaction.
+    let admitted = env.admitted().expect("the log admits every entry");
+    let Entry::Stated(carried) = &admitted[at] else {
+        unreachable!()
+    };
+    assert!(matches!(
+        carried.attribution,
+        Attribution::Unverified { .. }
+    ));
 }
 
 // verifies: REQ-CAT-3
@@ -282,7 +310,7 @@ fn questions_at_one_tuple_at_two_amounts_share_no_transaction_identifier() {
         let Entry::Stated(entry) = &env.log.entries[sent.receipt.index.get() as usize] else {
             panic!("a question is a stated entry");
         };
-        assert_eq!(entry.attribution.maker().party, id("rutent-operator"));
+        assert_eq!(entry.attribution.maker().acts, operator().acts);
         assert_eq!(entry.about.as_ref().unwrap().transaction, sent.transaction);
     }
 
@@ -332,9 +360,11 @@ fn provider_off_the_shortlist_is_asked_nothing() {
         "the shortlisted reserve is asked"
     );
     assert!(sim.asked(COLD).is_empty(), "{:?}", sim.asked(COLD));
-    // Eligibility is put to policy, and to the verifier, only for the shortlisted provider's tuple.
+    // Eligibility is put to policy, and to the verifier, only for the shortlisted provider's tuple: the question
+    // asks the verifier, which receives the subject (`REQ-CPL-5`).
     let asked: Vec<_> = env.people.questions.iter().map(|q| q.ask.clone()).collect();
-    assert_eq!(asked, vec![vec![id(RESERVE)]]);
+    assert_eq!(asked, vec![vec![id("id-check")]]);
+    assert!(env.people.questions[0].asked_before.is_empty());
     let judged: Vec<_> = sim
         .asked("id-check")
         .iter()
@@ -356,6 +386,7 @@ fn provider_off_the_shortlist_is_asked_nothing() {
     let (_, shortlist) = env.records()[0];
     let What::DecisionRecord {
         shortlisted,
+        verifiers: needed,
         record,
         ..
     } = shortlist
@@ -363,17 +394,20 @@ fn provider_off_the_shortlist_is_asked_nothing() {
         unreachable!()
     };
     assert_eq!(shortlisted.as_deref(), Some(&[id(RESERVE)][..]));
+    assert_eq!(needed, &[id("id-check")]);
     let Authority::ShortlistedRoute {
         shortlist,
         providers,
+        verifiers,
     } = &env.people.questions[0].authority
     else {
         panic!("a shortlisted route's authority");
     };
     assert_eq!(
-        (shortlist, providers.as_slice()),
-        (record, &[id(RESERVE)][..])
+        (shortlist, providers.as_slice(), verifiers.as_slice()),
+        (record, &[id(RESERVE)][..], &[id("id-check")][..])
     );
+    env.admitted().expect("the log admits every entry");
     assert!(
         matches!(routed.offer, Offer::Offered { .. }),
         "{:?}",
@@ -563,6 +597,8 @@ fn every_routing_calls_decision_record_is_chained_to_the_orders_history() {
         assert_eq!(decision_record, &recorded.record.request.request_id);
         assert_eq!(record, &recorded.digest);
     }
+    env.admitted()
+        .expect("the log admits every entry, chain included");
     assert!(is_round(records[0].1, RoutingRound::Shortlist));
     assert!(
         records[1..=first.choices.len()]
@@ -590,6 +626,7 @@ fn refines_names_the_shortlist_record_it_was_taken_from() {
         // Core's clock moved on while the providers answered; refines keeps the shortlist's own time.
         assert_ne!(refines.taken_at, choice.record.snapshot.taken_at);
     }
+    env.admitted().expect("the log admits every entry");
 }
 
 // verifies: REQ-AUD-2, REQ-AUD-4
