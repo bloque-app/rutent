@@ -54,7 +54,7 @@
 //!
 //! # The operator's fee
 //!
-//! The bounds carry the operator's own fee formula (router-api 3.0.0, `T-020-02`), taken at the destination from
+//! The bounds carry the operator's own fee formula (router-api 4.0.0, `T-020-02`), taken at the destination from
 //! what the providers deliver ([`quote`]). Two rules read it differently:
 //!
 //! - **The floor is judged after it.** The floor is the least the customer accepts at the destination

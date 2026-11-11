@@ -535,7 +535,7 @@ fn the_suite_knows_every_drop_reason_the_contract_schema_names() {
     assert_eq!(named, DROP_REASONS);
     assert_eq!(
         rutent_contracts::router_api::VERSION.split('.').next(),
-        Some("3")
+        Some("4")
     );
 }
 
