@@ -53,8 +53,8 @@ impl ReceiptVerifier for Signer {
         receipt.received == signed(receipt.maker, receipt.reference).as_slice()
     }
 
-    fn publisher_of(&self, maker: &str) -> Option<PublisherId> {
-        match maker {
+    fn publisher_of(&self, party: &str) -> Option<PublisherId> {
+        match party {
             "acme-co" => PublisherId::new("acme"),
             "acme-two" => PublisherId::new(" ACME "),
             "next-co" => PublisherId::new("other"),
@@ -82,7 +82,14 @@ pub fn verified(maker: &str, reference: &str) -> VerifiedReceipt {
     .unwrap()
 }
 
-/// A receipt check for `reference` from `next-co`, whose publisher is not the provider's (`acme`).
+/// The provider whose outcome is graded. Its publisher is `acme`.
+pub const PROVIDER: &str = "acme-co";
+
+/// The next provider, which gives receipts. Its publisher is `other`.
+pub const NEXT: &str = "next-co";
+
+/// A receipt check for `reference` from `next-co`, whose publisher is not the provider's (`acme`). It backs a piece
+/// whose `by` is `next-co`.
 pub fn other_receipt(reference: &str) -> Check {
-    receipt_check(&publisher("acme"), &verified("next-co", reference))
+    receipt_check(&Signer, PROVIDER, &verified(NEXT, reference))
 }

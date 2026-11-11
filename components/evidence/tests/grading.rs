@@ -3,23 +3,29 @@
 use rutent_contracts::provider_role::{EvidenceGrade, EvidencePiece};
 mod common;
 
-use common::{Signer, other_receipt, public_record, publisher, signed, verified};
+use common::{NEXT, PROVIDER, Signer, other_receipt, public_record, publisher, signed, verified};
 use rutent_evidence::{
     Check, Claim, GradeExt, MovementId, Receipt, ReceiptRefused, Refusal, grade_outcome,
     receipt_check, verify_receipt,
 };
 
-fn piece(grade: EvidenceGrade, reference: &str) -> EvidencePiece {
+fn piece(grade: EvidenceGrade, reference: &str, by: &str) -> EvidencePiece {
     EvidencePiece {
         grade,
         reference: reference.into(),
-        by: "acme-co".into(),
+        by: by.into(),
     }
 }
 
+/// A piece the provider gives itself, with its check.
 fn claim(grade: EvidenceGrade, reference: &str, check: Check) -> Claim {
+    claim_by(grade, reference, PROVIDER, check)
+}
+
+/// A piece whose evidence is `by`'s, such as the next provider's receipt, with its check.
+fn claim_by(grade: EvidenceGrade, reference: &str, by: &str, check: Check) -> Claim {
     Claim {
-        piece: piece(grade, reference),
+        piece: piece(grade, reference, by),
         check,
     }
 }
@@ -89,9 +95,10 @@ fn a_check_for_another_movement_backs_no_piece() {
     // Nor does a receipt for another reference back a grade 2 piece.
     let graded = grade_outcome(
         EvidenceGrade::SignedByAnotherParty,
-        vec![claim(
+        vec![claim_by(
             EvidenceGrade::SignedByAnotherParty,
             "rcpt-1",
+            NEXT,
             other_receipt("rcpt-2"),
         )],
     )
@@ -133,27 +140,36 @@ fn outcome_with_no_evidence_is_refused() {
 // verifies: DEC-13
 #[test]
 fn receipt_from_the_same_publisher_is_not_another_partys_receipt() {
-    let same = verified("acme-co", "rcpt-1");
-    assert_eq!(receipt_check(&publisher("acme"), &same), Check::unchecked());
+    // The provider's own receipt, and one from `acme-two`, behind the same publisher under another spelling.
+    for maker in [PROVIDER, "acme-two"] {
+        let same = verified(maker, "rcpt-1");
+        assert_eq!(receipt_check(&Signer, PROVIDER, &same), Check::unchecked());
+        let graded = grade_outcome(
+            EvidenceGrade::SignedByAnotherParty,
+            vec![claim_by(
+                EvidenceGrade::SignedByAnotherParty,
+                "rcpt-1",
+                maker,
+                receipt_check(&Signer, PROVIDER, &same),
+            )],
+        )
+        .unwrap();
+        assert_eq!(graded.grade, EvidenceGrade::Statement);
+    }
     assert_eq!(
-        receipt_check(&publisher("acme"), &verified("next-co", "rcpt-1")),
+        receipt_check(&Signer, PROVIDER, &verified(NEXT, "rcpt-1")),
         other_receipt("rcpt-1")
     );
-    // The same publisher under another spelling is still the same publisher.
+}
+
+// verifies: DEC-13
+#[test]
+fn a_provider_the_verifier_does_not_know_earns_no_receipt_check() {
+    // The provider's publisher is the verifier's to say, not a separate input: an unknown provider gets nothing.
     assert_eq!(
-        receipt_check(&publisher("acme"), &verified("acme-two", "rcpt-1")),
+        receipt_check(&Signer, "stranger", &verified(NEXT, "rcpt-1")),
         Check::unchecked()
     );
-    let graded = grade_outcome(
-        EvidenceGrade::SignedByAnotherParty,
-        vec![claim(
-            EvidenceGrade::SignedByAnotherParty,
-            "rcpt-1",
-            receipt_check(&publisher("acme"), &same),
-        )],
-    )
-    .unwrap();
-    assert_eq!(graded.grade, EvidenceGrade::Statement);
 }
 
 // verifies: DEC-13
@@ -161,9 +177,10 @@ fn receipt_from_the_same_publisher_is_not_another_partys_receipt() {
 fn receipt_from_a_different_publisher_is_graded_as_two() {
     let graded = grade_outcome(
         EvidenceGrade::SignedByAnotherParty,
-        vec![claim(
+        vec![claim_by(
             EvidenceGrade::SignedByAnotherParty,
             "rcpt-1",
+            NEXT,
             other_receipt("rcpt-1"),
         )],
     )
@@ -172,15 +189,79 @@ fn receipt_from_a_different_publisher_is_graded_as_two() {
     assert!(graded.is_proof());
 }
 
+// verifies: REQ-ORD-39, REQ-ORD-33, DEC-13
+#[test]
+fn a_receipt_backs_only_the_piece_its_maker_gave() {
+    // `next-co`'s receipt for `rcpt-1` backs `next-co`'s piece, not one the provider says is its own.
+    let graded = grade_outcome(
+        EvidenceGrade::SignedByAnotherParty,
+        vec![claim_by(
+            EvidenceGrade::SignedByAnotherParty,
+            "rcpt-1",
+            PROVIDER,
+            other_receipt("rcpt-1"),
+        )],
+    )
+    .unwrap();
+    assert_eq!(graded.grade, EvidenceGrade::Statement);
+    assert!(!graded.is_proof());
+}
+
+// verifies: REQ-ORD-39, DEC-13
+#[test]
+fn one_receipt_backing_two_pieces_is_refused() {
+    let refused = grade_outcome(
+        EvidenceGrade::SignedByAnotherParty,
+        vec![
+            claim_by(
+                EvidenceGrade::SignedByAnotherParty,
+                "rcpt-1",
+                NEXT,
+                other_receipt("rcpt-1"),
+            ),
+            claim_by(
+                EvidenceGrade::SignedByAnotherParty,
+                "rcpt-1",
+                NEXT,
+                other_receipt("rcpt-1"),
+            ),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(refused, Refusal::ReceiptReused("rcpt-1".into()));
+    // Two receipts, two pieces: each backs its own.
+    let graded = grade_outcome(
+        EvidenceGrade::SignedByAnotherParty,
+        vec![
+            claim_by(
+                EvidenceGrade::SignedByAnotherParty,
+                "rcpt-1",
+                NEXT,
+                other_receipt("rcpt-1"),
+            ),
+            claim_by(
+                EvidenceGrade::SignedByAnotherParty,
+                "rcpt-2",
+                NEXT,
+                other_receipt("rcpt-2"),
+            ),
+        ],
+    )
+    .unwrap();
+    assert_eq!(graded.grade, EvidenceGrade::SignedByAnotherParty);
+}
+
 // verifies: REQ-ORD-39, DEC-13
 #[test]
 fn a_receipt_never_backs_a_public_record_claim() {
-    // Another party's receipt, bound to the piece, earns grade 2 at most: a grade 1 claim on it is a statement.
+    // Another party's receipt, bound to the piece and its maker, earns grade 2 at most: a grade 1 claim on it is a
+    // statement.
     let graded = grade_outcome(
         EvidenceGrade::PublicRecord,
-        vec![claim(
+        vec![claim_by(
             EvidenceGrade::PublicRecord,
             "rcpt-1",
+            NEXT,
             other_receipt("rcpt-1"),
         )],
     )
@@ -201,6 +282,7 @@ fn a_receipt_that_does_not_verify_is_refused() {
     let accepted = verify_receipt(&Signer, &receipt("next-co", "rcpt-1", &received)).unwrap();
     assert_eq!(accepted.reference(), "rcpt-1");
     assert_eq!(accepted.publisher(), &publisher("other"));
+    assert_eq!(accepted.maker(), "next-co");
     // Presented for another reference than the one signed.
     assert_eq!(
         verify_receipt(&Signer, &receipt("next-co", "rcpt-2", &received)),
@@ -217,12 +299,21 @@ fn a_receipt_that_does_not_verify_is_refused() {
         verify_receipt(&Signer, &receipt("stranger", "rcpt-1", &unknown)),
         Err(ReceiptRefused::UnknownMaker)
     );
-    // Acknowledging nothing.
-    let empty = signed("next-co", "");
-    assert_eq!(
-        verify_receipt(&Signer, &receipt("next-co", "", &empty)),
-        Err(ReceiptRefused::NoReference)
-    );
+    // Acknowledging nothing, or only whitespace.
+    for nothing in ["", " ", "\t\n"] {
+        let empty = signed("next-co", nothing);
+        assert_eq!(
+            verify_receipt(
+                &Signer,
+                &Receipt {
+                    maker: "next-co",
+                    reference: nothing,
+                    received: &empty,
+                }
+            ),
+            Err(ReceiptRefused::NoReference)
+        );
+    }
 }
 
 // verifies: REQ-ORD-39

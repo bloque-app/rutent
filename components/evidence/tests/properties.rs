@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{other_receipt, public_record};
+use common::{NEXT, PROVIDER, other_receipt, public_record};
 use proptest::prelude::*;
 use rutent_contracts::provider_role::{EvidenceGrade, EvidencePiece};
 use rutent_evidence::{
@@ -25,13 +25,15 @@ fn check() -> impl Strategy<Value = Check> {
 
 fn claims() -> impl Strategy<Value = Vec<Claim>> {
     prop::collection::vec(
-        (grade(), check(), "[a-c]").prop_map(|(grade, check, reference)| Claim {
-            piece: EvidencePiece {
-                grade,
-                reference,
-                by: "acme".into(),
-            },
-            check,
+        (grade(), check(), "[a-c]", prop::bool::ANY).prop_map(|(grade, check, reference, next)| {
+            Claim {
+                piece: EvidencePiece {
+                    grade,
+                    reference,
+                    by: if next { NEXT } else { PROVIDER }.into(),
+                },
+                check,
+            }
         }),
         0..6,
     )
@@ -95,14 +97,15 @@ proptest! {
     fn a_public_record_claim_never_accepts_a_receipt_check(
         references in prop::collection::btree_set("[a-z]{1,4}", 1..6),
     ) {
-        // Every receipt is another party's and bound to its own piece, so only the cross-kind rule can refuse it.
+        // Every receipt is another party's and bound to its own piece and maker, so only the cross-kind rule can
+        // refuse it.
         let claims: Vec<Claim> = references
             .iter()
             .map(|reference| Claim {
                 piece: EvidencePiece {
                     grade: EvidenceGrade::PublicRecord,
                     reference: reference.clone(),
-                    by: "acme".into(),
+                    by: NEXT.into(),
                 },
                 check: other_receipt(reference),
             })
@@ -122,7 +125,7 @@ proptest! {
         let grade = EvidenceGrade::try_from(grade).unwrap();
         let check = if receipt { other_receipt(&bound_to) } else { public_record(&bound_to) };
         let claim = Claim {
-            piece: EvidencePiece { grade, reference: reference.clone(), by: "acme".into() },
+            piece: EvidencePiece { grade, reference: reference.clone(), by: if receipt { NEXT } else { PROVIDER }.into() },
             check,
         };
         let graded = grade_outcome(grade, vec![claim]).unwrap();
