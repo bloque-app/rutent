@@ -176,22 +176,41 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   (`REQ-MDL-5`). A register that says no refuses, one that says nothing gives a missing input, one out of reach not
   known. Default: posting a route needs the register's yes too, since the role is only what the caller's request
   says; reversible by dropping that one input.
-- **The role is the request's.** The engine, as `T-021-01` and `T-021-02` read it, takes the caller's role as the
-  assembly hands it from external authentication. The register's yes is what binds an operator's permission to an
-  actor; a caller claiming the operator's role without one is refused. A source that also checked a party's roles
-  would be the deployment's to add (`F-030`).
-- **The operator acts for a user only where the reserve declared it** (`REQ-AUZ-9`). An authorisation the operator
-  gives, and a `move_value` the operator asks for, ask the origin reserve's declarations (`Source::Declarations(reserve)`,
-  the input `cannot_require_user_withdrawal`, `REQ-CAT-6`). Never declared is a missing input, declared it can
-  require the user's own withdrawal is a no, and either refuses. An authorisation is given by the user (a customer,
-  its agent included) or so by the operator; value moves on the request of the user, of Core carrying the user's
-  authorisation onward, or so of the operator. Every other role is refused, by default. The decide entry's `who` is
-  who acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
-- **The automatic-deposit reserve is refused for now** (a reading, reversible). `REQ-AUZ-9` and `REQ-ORD-13` let a
-  reserve that declared it start a route on an automatic deposit, authorising the withdrawal with no user present.
-  The row's Work doesn't name it, and the rule refuses an authorisation given in a provider's role. Allowing it is
-  one more line: a provider's authorisation where its party is the origin reserve and the reserve's declarations say
-  `starts_on_automatic_deposit`. It belongs with `T-020-04`'s automatic deposit, or `T-021-04`.
+- **The role is the request's, and never enough alone.** The engine, as `T-021-01` and `T-021-02` read it, takes the
+  caller's role as the assembly hands it from external authentication. Wherever this rule lets a role through, a
+  record binds the actor to it: the register's yes, by `acts`, for an operator's permission or Core's actor, and the
+  order's record for its requester; a caller stating a role without one is refused (review of `f7df0c2`, S4: a
+  provider stating the operator's role against a register listing only the operator's logins). A source that
+  checked a party's roles in general would be the deployment's to add (`F-030`).
+- **Acting for a user: no role stands on the request's word** (`REQ-AUZ-9`; review of `f7df0c2`, B1, S1, S2). The
+  rule first let a stated role decide alone: the operator's login stating Core's role moved value with no declaration,
+  stating a customer's gave an authorisation, and a customer stating the operator's role moved value. Each actor is
+  now held to a record:
+  - a customer, or its agent, moves value on and authorises only an order its party requested
+    (`Source::Requester(order)`, the input the party). `T-021-02`'s `OrderParties` answers requester, beneficiary or
+    payer, which would let a beneficiary authorise, so this is a source of its own;
+  - Core moves value only through an actor the register lists as carrying the authorisation onward
+    (`Permission::CarryOnward`, by `acts`);
+  - the operator acts only through a login the register lists for it (`Permission::ActForUser`, by `acts`), at the
+    order's own origin reserve (`Source::OrderOrigin(order)`, the input the reserve the request names), and only where
+    that reserve declared it can't require the user's own withdrawal (`cannot_require_user_withdrawal`). It files an
+    authorisation also where the reserve declared it starts routes on automatic deposits
+    (`starts_on_automatic_deposit`, `REQ-ORD-13`, `AC-11`), the two declarations kept apart. Any listed login may act
+    so at a reserve that declared it: `ActForUser` is one permission, not one per reserve (N2);
+  - the origin reserve itself authorises its order's withdrawal, with no user present, where its party is the order's
+    origin and it declared it starts routes on automatic deposits (`REQ-ORD-13`). It moves no value of its own asking.
+
+  No other role acts for the user. A reserve answers both declarations, as `REQ-CAT-6` has it make both at publishing;
+  never declared is a missing input, declared the other way a no, and either refuses. The decide entry's `who` is who
+  acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
+- **What the assembly answers.** Before `T-024-02` wires the sources, every move and every authorisation needs an
+  input, so none is permitted: fail-closed. The register lists Core's actors and the operator's logins; the order's
+  record, the log's acceptance or Core's intake, its requester and origin reserve; the catalogue, each reserve's two
+  declarations. An authorisation asked before its order's record exists gets a missing input and is refused.
+- **A permit to promote doesn't pin the version** (review of `f7df0c2`, S3). The permit names the version decided on,
+  but the platform's `promote` puts whatever is staged in force. core-internal's doc says so, and `T-020-08`'s row in
+  `PLAN.md` now has Core compare `lifecycle().staged(provider)` with the permit's version before it calls `promote`,
+  refusing on a mismatch, with its own test.
 - **The rule on an authorisation waits for `T-021-04`.** Its stub answers not known without consulting, so the rule
   holds from when that row builds `authorise` through `consult`. The test drives the rule through `consult` directly
   until then.
@@ -216,4 +235,6 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   so the deployment's ruling is what is decided. `authenticated_caller_is_still_decided_by_policy` now expects the
   deployment's policy to see each caller the fixed rules let through, as it came, and the rest refused by the fixed
   rule, and its known operator holds the permission the rule asks for, so the refusal of the other login stays the
-  deployment's.
+  deployment's. Since the review of `f7df0c2`, Core's move needs the register to list its actor: the engine tests' sources
+  answer that one word for `core-orch` themselves, outside the inputs they count, and the unbuilt engine's move is
+  not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy.

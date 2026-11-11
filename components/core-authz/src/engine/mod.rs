@@ -145,8 +145,9 @@ pub enum Source {
         /// The segment.
         segment: Id,
     },
-    /// The deployment's register of the operator's permissions: whether the actor the input names, acting for
-    /// `party`, holds `permission`, each held actor by actor (`REQ-AUZ-2`, `REQ-AUZ-6`).
+    /// The deployment's register of permissions: whether the actor the input names (its `acts`), acting for `party`,
+    /// holds `permission`. It answers by the actor, never by the party alone, so each of a party's logins or
+    /// components holds only what it is listed for (`REQ-AUZ-2`, `REQ-AUZ-6`, `REQ-AUZ-9`).
     Permissions {
         /// The accountable party the actor acts for.
         party: Id,
@@ -157,6 +158,12 @@ pub enum Source {
     /// names, such as that it can't require the user's own withdrawal, under which the operator may act for the
     /// user there (`REQ-AUZ-9`).
     Declarations(Id),
+    /// The record of an order: whether the party the input names is its requester, whose agents act in its party
+    /// (`REQ-AUZ-9`, `REQ-ORD-13`).
+    Requester(Id),
+    /// The record of an order: whether the reserve the input names is its origin reserve, the provider of its first
+    /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
+    OrderOrigin(Id),
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -772,6 +779,10 @@ mod tests {
     }
 
     /// Verifiers and providers whose answers the test sets, input by input, and which keep what they were asked.
+    ///
+    /// The deployment's register lists Core's own actor, `core-orch`, as carrying the user's authorisation onward
+    /// (`T-021-03`), so the move the fixtures ask for in Core's name passes the fixed rules on every engine here.
+    /// That word is the register's, answered here and kept out of `asked`, which counts the inputs the tests set.
     #[derive(Default)]
     struct Given {
         says: Vec<(Need, Reply<Said>)>,
@@ -780,11 +791,25 @@ mod tests {
 
     impl Sources for Given {
         fn supply(&mut self, need: &Need) -> Reply<Said> {
+            if need == &core_carries_onward() {
+                return Reply::Given(Said::Yes);
+            }
             self.asked.push(need.clone());
             self.says
                 .iter()
                 .find(|(n, _)| n == need)
                 .map_or(Reply::Missing, |(_, said)| said.clone())
+        }
+    }
+
+    /// The register's word that Core's `core-orch` carries the user's authorisation onward.
+    fn core_carries_onward() -> Need {
+        Need {
+            input: id("core-orch"),
+            from: Source::Permissions {
+                party: id("rutent"),
+                permission: crate::roles::Permission::CarryOnward,
+            },
         }
     }
 
@@ -906,11 +931,18 @@ mod tests {
         let refused = |class| Outcome::Refused { class };
         let mut policy = Unbuilt::new(Taking::default());
 
+        // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
+        // which no source can give.
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         let decision = policy
             .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();

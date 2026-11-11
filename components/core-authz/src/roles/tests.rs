@@ -165,32 +165,80 @@ impl Policy for Permits {
     }
 }
 
-/// The deployment's register of permissions and the reserves' declarations, as the assembly answers them: who holds
-/// which permission, and which reserve declared it can't require the user's own withdrawal and what it says if not.
-/// It keeps what it was asked.
+/// The deployment's register of permissions, the reserves' declarations and the orders' records, as the assembly
+/// answers them: who holds which permission, by actor; what each reserve declared, an answer per declaration; and each
+/// order's requester and origin reserve. It keeps what it was asked.
 #[derive(Default)]
 struct Register {
     holds: Vec<(Id, Id, Permission)>,
-    declarations: Vec<(Id, Reply<Said>)>,
+    declarations: Vec<(Id, &'static str, Reply<Said>)>,
+    requesters: Vec<(Id, Id)>,
+    origins: Vec<(Id, Id)>,
     asked: Vec<Need>,
 }
 
 impl Register {
     /// A register where `who` holds `permissions` and nothing else.
     fn holding(who: &Actor, permissions: &[Permission]) -> Self {
-        Register {
-            holds: permissions
-                .iter()
-                .map(|p| (who.acts.clone(), who.party.clone(), *p))
-                .collect(),
-            ..Register::default()
-        }
+        Register::default().and_holding(who, permissions)
     }
 
-    /// The register, with `reserve` answering `said` about its declaration.
-    fn declaring(mut self, reserve: &str, said: Reply<Said>) -> Self {
-        self.declarations.push((id(reserve), said));
+    /// The register, with `who` holding `permissions` too.
+    fn and_holding(mut self, who: &Actor, permissions: &[Permission]) -> Self {
+        self.holds.extend(
+            permissions
+                .iter()
+                .map(|p| (who.acts.clone(), who.party.clone(), *p)),
+        );
         self
+    }
+
+    /// The register, with `reserve` answering `said` about its declaration that it can't require the user's own
+    /// withdrawal.
+    fn declaring(self, reserve: &str, said: Reply<Said>) -> Self {
+        self.declaring_that(reserve, NO_USER_WITHDRAWAL, said)
+    }
+
+    /// The register, with `reserve` answering `said` about `declaration`.
+    fn declaring_that(
+        mut self,
+        reserve: &str,
+        declaration: &'static str,
+        said: Reply<Said>,
+    ) -> Self {
+        self.declarations.push((id(reserve), declaration, said));
+        self
+    }
+
+    /// The register, with `order` requested by `party` and starting at `origin`.
+    fn with_order(mut self, order: &str, party: &str, origin: &str) -> Self {
+        self.requesters.push((id(order), id(party)));
+        self.origins.push((id(order), id(origin)));
+        self
+    }
+
+    /// The fixtures' world: `ord-17` requested by `cust-1` and `ord-19` by `acme-treasury`, both from `us-bank`;
+    /// Core's `core-orch` carrying an authorisation onward, and the operator's `op-login-2` acting for a user.
+    fn world() -> Self {
+        Register::default()
+            .with_order("ord-17", "cust-1", "us-bank")
+            .with_order("ord-19", "acme-treasury", "us-bank")
+            .and_holding(&core(), &[Permission::CarryOnward])
+            .and_holding(&operator(), &[Permission::ActForUser])
+    }
+}
+
+/// Core's own actor that asks for value to move.
+fn core() -> Actor {
+    actor("rutent", "core-orch", Role::Core, ActorKind::Component)
+}
+
+/// Which of `records` names `key`: yes where it names `value` with it, no where it names another, missing where it
+/// holds no record of `key`.
+fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
+    match records.iter().find(|(k, _)| k == key) {
+        Some((_, v)) => Reply::Given(if v == value { Said::Yes } else { Said::No }),
+        None => Reply::Missing,
     }
 }
 
@@ -205,11 +253,13 @@ impl Sources for Register {
                     .any(|(a, p, h)| a == &need.input && p == party && h == permission);
                 Reply::Given(if held { Said::Yes } else { Said::No })
             }
-            Source::Declarations(reserve) if need.input.as_str() == NO_USER_WITHDRAWAL => self
+            Source::Declarations(reserve) => self
                 .declarations
                 .iter()
-                .find(|(r, _)| r == reserve)
-                .map_or(Reply::Missing, |(_, said)| said.clone()),
+                .find(|(r, d, _)| r == reserve && *d == need.input.as_str())
+                .map_or(Reply::Missing, |(_, _, said)| said.clone()),
+            Source::Requester(order) => record_of(&self.requesters, order, &need.input),
+            Source::OrderOrigin(order) => record_of(&self.origins, order, &need.input),
             _ => Reply::Missing,
         }
     }
@@ -316,9 +366,24 @@ fn provider_posting_a_route_is_refused() {
     );
     assert!(policy.sources.asked.is_empty(), "the register not asked");
 
+    // The register lists the operator's login alone: a provider stating the operator's role holds nothing there.
     let mut policy = engine(
         Kept::with_a_decision_record(),
         Register::holding(&operator(), &[Permission::PostRoute]),
+    );
+    let mut claimed: DecisionRequest = valid!("decision-request-to-post-a-suggested-route");
+    claimed.request = id("req-claimed");
+    claimed.caller = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Operator,
+        ActorKind::Component,
+    );
+    let decision = policy.decide(&claimed).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "a stated operator's role");
+    assert_eq!(
+        policy.log.effect(&claimed, forged(&decision)),
+        no_permitting_decision()
     );
     let post: DecisionRequest = valid!("decision-request-to-post-a-suggested-route");
     let decision = policy.decide(&post).unwrap();
@@ -499,30 +564,33 @@ fn operator_acting_for_a_user_at_a_reserve_that_never_declared_it_is_refused() {
     moved.caller = operator();
     let mut authorised: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
     authorised.given_by = operator();
+    // A reserve answers both of its declarations at once, as `REQ-CAT-6` has it make both at publishing.
+    let declares = |reserve: &str, withdrawal: Reply<Said>| {
+        Register::world()
+            .declaring(reserve, withdrawal)
+            .declaring_that(reserve, AUTOMATIC_DEPOSIT, Reply::Given(Said::No))
+    };
     let cases = [
         (
-            Register::default(),
+            Register::world(),
             Answer::Refuse {
                 class: RefusalClass::MissingInput,
             },
         ),
+        (declares("us-bank", Reply::Given(Said::No)), NOT_PERMITTED),
         (
-            Register::default().declaring("us-bank", Reply::Given(Said::No)),
-            NOT_PERMITTED,
-        ),
-        (
-            Register::default().declaring("us-bank", Reply::Unreachable),
+            Register::world().declaring("us-bank", Reply::Unreachable),
             Answer::NotKnown {
                 cause: NotKnownCause::VerifierUnreachable,
             },
         ),
         (
-            Register::default().declaring("us-bank", Reply::Given(Said::Yes)),
+            declares("us-bank", Reply::Given(Said::Yes)),
             Answer::Permit {},
         ),
         // Another reserve's declaration says nothing of this one.
         (
-            Register::default().declaring("bank-co", Reply::Given(Said::Yes)),
+            declares("bank-co", Reply::Given(Said::Yes)),
             Answer::Refuse {
                 class: RefusalClass::MissingInput,
             },
@@ -545,21 +613,22 @@ fn operator_acting_for_a_user_at_a_reserve_that_never_declared_it_is_refused() {
             "case {n}: the authorisation"
         );
         assert!(
-            policy.sources.asked.iter().all(|n| matches!(
+            policy.sources.asked.iter().all(|n| !matches!(
                 &n.from,
-                Source::Declarations(r) if r.as_str() == "us-bank"
+                Source::Declarations(r) if r.as_str() != "us-bank"
             )),
-            "case {n}: only the origin reserve's declaration asked"
+            "case {n}: only the origin reserve's declarations asked"
         );
     }
 
     let mut policy = engine(
         Kept::default(),
-        Register::default().declaring("us-bank", Reply::Given(Said::Yes)),
+        Register::world().declaring("us-bank", Reply::Given(Said::Yes)),
     );
+    // A provider other than the origin reserve, a verifier, and Core never give the user's authorisation.
     for role in [Role::Provider, Role::Verifier, Role::Core] {
         let mut by = authorised.clone();
-        by.given_by = actor("us-bank", "us-bank", role, ActorKind::Component);
+        by.given_by = actor("bridge-pay", "bridge-pay", role, ActorKind::Component);
         assert_eq!(
             policy.consult(Asked::Authorise(&by)),
             NOT_PERMITTED,
@@ -598,11 +667,10 @@ fn operator_acting_for_a_user_at_a_reserve_that_never_declared_it_is_refused() {
 fn record_says_who_acted_for_the_user() {
     let mut policy = engine(
         Kept::default(),
-        Register::default().declaring("us-bank", Reply::Given(Said::Yes)),
+        Register::world().declaring("us-bank", Reply::Given(Said::Yes)),
     );
     let customer = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
-    let core = actor("rutent", "core-orch", Role::Core, ActorKind::Component);
-    for (n, who) in [customer, core, operator()].into_iter().enumerate() {
+    for (n, who) in [customer, core(), operator()].into_iter().enumerate() {
         let mut moved: DecisionRequest = valid!("decision-request-to-move-value");
         moved.request = id(&format!("req-30{n}"));
         moved.caller = who.clone();
@@ -627,4 +695,169 @@ fn record_says_who_acted_for_the_user() {
         "one entry for each actor, its role recorded apart"
     );
     assert_eq!(policy.policy.1.ruled, 3);
+}
+
+/// A role stated in the request never acts for a user on its own: the operator's login stating Core's role moves no
+/// value, stating a customer's gives no authorisation for an order it didn't request, and a customer stating the
+/// operator's role moves no value, nor a customer's on another's order. Each actor in its own role is let through.
+// verifies: REQ-AUZ-9
+#[test]
+fn a_stated_role_alone_never_acts_for_a_user() {
+    let mut policy = engine(
+        Kept::default(),
+        Register::world()
+            .declaring("us-bank", Reply::Given(Said::Yes))
+            .declaring_that("us-bank", AUTOMATIC_DEPOSIT, Reply::Given(Said::Yes)),
+    );
+    let moved: DecisionRequest = valid!("decision-request-to-move-value");
+    let authorised: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
+    let move_by = |n: u8, who: Actor| {
+        let mut m = moved.clone();
+        m.request = id(&format!("req-40{n}"));
+        m.caller = who;
+        m
+    };
+    let login_as_core = actor("operator", "op-login-2", Role::Core, ActorKind::Component);
+    let login_as_customer = actor("operator", "op-login-2", Role::Customer, ActorKind::Person);
+    let customer_as_operator = actor("cust-1", "cust-1", Role::Operator, ActorKind::Person);
+    let other_customer = actor(
+        "acme-treasury",
+        "acme-treasury",
+        Role::Customer,
+        ActorKind::Person,
+    );
+
+    for (n, who) in [login_as_core, customer_as_operator, other_customer]
+        .into_iter()
+        .enumerate()
+    {
+        let request = move_by(n as u8, who.clone());
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{who:?} moves no value");
+        assert_eq!(
+            policy.log.effect(&request, forged(&decision)),
+            no_permitting_decision()
+        );
+    }
+    let mut by_login = authorised.clone();
+    by_login.given_by = login_as_customer;
+    assert_eq!(
+        policy.consult(Asked::Authorise(&by_login)),
+        NOT_PERMITTED,
+        "the operator's login stating a customer's role authorises nothing"
+    );
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+
+    for (n, who) in [
+        core(),
+        operator(),
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let decision = policy.decide(&move_by(5 + n as u8, who.clone())).unwrap();
+        assert_eq!(
+            decision.outcome,
+            Answer::Permit {},
+            "{who:?} in its own role"
+        );
+    }
+    assert_eq!(
+        policy.consult(Asked::Authorise(&authorised)),
+        Answer::Permit {}
+    );
+}
+
+/// The operator naming as the order's origin a reserve that declared it can't require the user's own withdrawal, but
+/// that isn't the order's origin, moves no value and gives no authorisation; nor does a reserve naming itself the origin
+/// of an order that started elsewhere.
+// verifies: REQ-AUZ-9
+#[test]
+fn operator_naming_a_declaring_reserve_that_is_not_the_orders_origin_is_refused() {
+    let mut policy = engine(
+        Kept::default(),
+        Register::world()
+            .declaring("bank-co", Reply::Given(Said::Yes))
+            .declaring_that("bank-co", AUTOMATIC_DEPOSIT, Reply::Given(Said::Yes)),
+    );
+    let mut moved: DecisionRequest = valid!("decision-request-to-move-value");
+    moved.caller = operator();
+    if let Action::MoveValue { origin_reserve, .. } = &mut moved.action {
+        *origin_reserve = id("bank-co");
+    }
+    let decision = policy.decide(&moved).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED);
+    assert_eq!(
+        policy.log.effect(&moved, forged(&decision)),
+        no_permitting_decision()
+    );
+    let mut authorised: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
+    authorised.origin_reserve = id("bank-co");
+    authorised.given_by = operator();
+    assert_eq!(policy.consult(Asked::Authorise(&authorised)), NOT_PERMITTED);
+    authorised.given_by = actor("bank-co", "bank-co", Role::Provider, ActorKind::Component);
+    assert_eq!(policy.consult(Asked::Authorise(&authorised)), NOT_PERMITTED);
+    assert_eq!(policy.policy.1.ruled, 0);
+}
+
+/// A reserve that declared it starts routes on automatic deposits authorises its own order's withdrawal with no user
+/// present, and the operator may file one for it on that declaration alone; a reserve that declared it doesn't, never
+/// declared it, or isn't the order's origin, authorises nothing, and neither does the operator there. The operator
+/// still moves value only where the reserve declared it can't require the user's own withdrawal.
+// verifies: REQ-AUZ-9, REQ-ORD-13
+#[test]
+fn reserve_that_declared_automatic_deposits_authorises_with_no_user_present() {
+    let reserve = actor("us-bank", "us-bank", Role::Provider, ActorKind::Component);
+    let given_by = |who: &Actor| {
+        let mut a: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
+        a.given_by = who.clone();
+        a
+    };
+    let declares = |automatic: Reply<Said>| {
+        Register::world()
+            .declaring("us-bank", Reply::Given(Said::No))
+            .declaring_that("us-bank", AUTOMATIC_DEPOSIT, automatic)
+    };
+    let cases = [
+        (declares(Reply::Given(Said::Yes)), Answer::Permit {}),
+        (declares(Reply::Given(Said::No)), NOT_PERMITTED),
+        (
+            Register::world(),
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            },
+        ),
+    ];
+    for (n, (register, answer)) in cases.into_iter().enumerate() {
+        let mut policy = engine(Kept::default(), register);
+        assert_eq!(
+            policy.consult(Asked::Authorise(&given_by(&reserve))),
+            answer,
+            "case {n}: the reserve"
+        );
+        assert_eq!(
+            policy.consult(Asked::Authorise(&given_by(&operator()))),
+            answer,
+            "case {n}: the operator filing for it"
+        );
+    }
+
+    let mut policy = engine(Kept::default(), declares(Reply::Given(Said::Yes)));
+    let elsewhere = actor("bank-co", "bank-co", Role::Provider, ActorKind::Component);
+    assert_eq!(
+        policy.consult(Asked::Authorise(&given_by(&elsewhere))),
+        NOT_PERMITTED,
+        "a reserve that isn't the order's origin"
+    );
+    let mut moved: DecisionRequest = valid!("decision-request-to-move-value");
+    moved.caller = operator();
+    assert_eq!(
+        policy.decide(&moved).unwrap().outcome,
+        NOT_PERMITTED,
+        "automatic deposits alone let the operator move no value for the user"
+    );
 }

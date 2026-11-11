@@ -25,15 +25,25 @@
 //!
 //! # Acting for a user
 //!
-//! A user authorises at its origin, and the route carries that onward (`REQ-AUZ-9`). The operator may act for the
-//! user only at a reserve that declared, at publishing, that it can't require the user's own withdrawal
-//! (`REQ-CAT-6`): the fixed rule asks that reserve's declarations (`Source::Declarations`) whether it made
-//! [`NO_USER_WITHDRAWAL`], for an authorisation the operator gives and for a value-moving action the operator asks for,
-//! at the order's origin reserve. A reserve that never declared it gives a missing input, one that declared it can
-//! require the user's own withdrawal says no, and either is a refusal. An authorisation is given by the user (a
-//! customer, or its agent) or, so, by the operator, and by no other role; value is moved on the request of the user,
-//! of Core carrying the user's authorisation onward, or, so, of the operator, and of no other role. The decision's
-//! entry records who acted (`who`, the request's caller), and an authorisation's its giver (`given_by`).
+//! A user authorises at its origin, and the route carries that onward (`REQ-AUZ-9`). The role a request states is
+//! never enough on its own here either: each actor is held to a record that says it is what it states.
+//!
+//! - **The user**, a customer or its agent, moves value on, and authorises, only an order whose requester its party
+//!   is, which the order's record says (`Source::Requester`).
+//! - **Core** moves value carrying the user's authorisation onward only through an actor of its own the register
+//!   lists for it ([`Permission::CarryOnward`]), so no other actor moves value by stating Core's role.
+//! - **The operator** acts for the user only through a login the register lists for it ([`Permission::ActForUser`]),
+//!   at the order's own origin reserve, which the order's record says (`Source::OrderOrigin`), and only where that
+//!   reserve declared at publishing (`REQ-CAT-6`, `Source::Declarations`) that it can't require the user's own
+//!   withdrawal ([`NO_USER_WITHDRAWAL`]). The operator files an authorisation also where the reserve declared it
+//!   starts routes on automatic deposits ([`AUTOMATIC_DEPOSIT`], `REQ-ORD-13`). Any listed login may act so at a
+//!   reserve that declared it: the permission is one, not one per reserve.
+//! - **The origin reserve itself** authorises its order's withdrawal with no user present where it declared it starts
+//!   routes on automatic deposits, and is the order's origin (`REQ-ORD-13`). It moves no value of its own asking.
+//!
+//! No other role acts for the user. A reserve that never declared gives a missing input, one that declared the other
+//! way says no, and either is a refusal; one out of reach gives not known. The decision's entry records who acted
+//! (`who`, the request's caller), and an authorisation's its giver (`given_by`).
 //!
 //! The rule on an authorisation holds from when `T-021-04` builds `authorise` through the engine's consultation, as
 //! every call does; until then its stub permits nothing.
@@ -48,6 +58,11 @@ use crate::engine::{Asked, Input, Need, Reply, Ruling, Said, Source};
 /// reserve's declarations.
 pub const NO_USER_WITHDRAWAL: &str = "cannot_require_user_withdrawal";
 
+/// The declaration a reserve makes at publishing that it starts routes on automatic deposits (`REQ-CAT-6`), under
+/// which it, or the operator filing for it, authorises the withdrawal with no user present (`REQ-ORD-13`). It is
+/// apart from [`NO_USER_WITHDRAWAL`].
+pub const AUTOMATIC_DEPOSIT: &str = "starts_on_automatic_deposit";
+
 /// One of the operator's permissions, each separate (`REQ-AUZ-2`, `REQ-AUZ-6`): posting a route, or one catalogue
 /// change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,77 +71,175 @@ pub enum Permission {
     PostRoute,
     /// Making one kind of catalogue change, and no other (`REQ-AUZ-6`).
     Change(CatalogueChange),
+    /// One of Core's own actors moving value on the user's authorisation, carrying it onward (`REQ-AUZ-9`).
+    CarryOnward,
+    /// An operator's login acting for a user: moving value or giving an authorisation, at a reserve that declared
+    /// it (`REQ-AUZ-9`, `REQ-ORD-13`).
+    ActForUser,
 }
 
-/// What an action needs, as the fixed rule holds it: the inputs that must each say yes, or `None` where no rule lets
-/// its caller ask for it.
-fn needs_of(asked: Asked<'_>) -> Option<Vec<Need>> {
+/// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
+/// empty, inputs at least one of which must say yes, every one of them given.
+#[derive(Debug, Default)]
+struct Needs {
+    all: Vec<Need>,
+    any: Vec<Need>,
+}
+
+impl From<Vec<Need>> for Needs {
+    fn from(all: Vec<Need>) -> Self {
+        Needs {
+            all,
+            any: Vec::new(),
+        }
+    }
+}
+
+/// What `asked` needs, or `None` where no rule lets its caller ask for it. The role a request states is never enough
+/// on its own: each is held to a record that says the actor is what it states.
+fn needs_of(asked: Asked<'_>) -> Option<Needs> {
     match asked {
-        Asked::Decide(request) => match &request.action {
-            Action::PostRoute { .. } => holds(&request.caller, Permission::PostRoute),
-            Action::ChangeCatalogue { change, .. } => {
-                holds(&request.caller, Permission::Change(*change))
+        Asked::Decide(request) => {
+            let caller = &request.caller;
+            match &request.action {
+                Action::PostRoute { .. } => {
+                    operator_holds(caller, Permission::PostRoute).map(Needs::from)
+                }
+                Action::ChangeCatalogue { change, .. } => {
+                    operator_holds(caller, Permission::Change(*change)).map(Needs::from)
+                }
+                Action::MoveValue {
+                    order,
+                    origin_reserve,
+                    ..
+                } => match caller.role {
+                    // The user, or its agent, moving value on its own order.
+                    Role::Customer => Some(vec![requester(caller, order)].into()),
+                    // One of Core's own actors carrying the user's authorisation onward.
+                    Role::Core => Some(vec![listed(caller, Permission::CarryOnward)].into()),
+                    // An operator's login, at the order's own origin reserve, which declared it can't require the user's
+                    // own withdrawal.
+                    Role::Operator => Some(
+                        vec![
+                            listed(caller, Permission::ActForUser),
+                            origin(order, origin_reserve),
+                            declared(origin_reserve, NO_USER_WITHDRAWAL),
+                        ]
+                        .into(),
+                    ),
+                    Role::Provider | Role::Verifier | Role::Regulator | Role::Checker => None,
+                },
+                // A request carrying it fails its check before it is consulted (`REQ-AUZ-4`).
+                Action::ResolveStuck { .. } => None,
             }
-            Action::MoveValue { origin_reserve, .. } => match request.caller.role {
-                Role::Customer | Role::Core => Some(Vec::new()),
-                Role::Operator => Some(vec![declared(origin_reserve)]),
-                Role::Provider | Role::Verifier | Role::Regulator | Role::Checker => None,
-            },
-            // A request carrying it fails its check before it is consulted (`REQ-AUZ-4`).
-            Action::ResolveStuck { .. } => None,
-        },
-        Asked::Authorise(authorisation) => match authorisation.given_by.role {
-            Role::Customer => Some(Vec::new()),
-            Role::Operator => Some(vec![declared(&authorisation.origin_reserve)]),
-            Role::Provider | Role::Verifier | Role::Regulator | Role::Checker | Role::Core => None,
-        },
-        _ => Some(Vec::new()),
+        }
+        Asked::Authorise(a) => {
+            let by = &a.given_by;
+            match by.role {
+                // The user, or its agent, authorising its own order at its origin.
+                Role::Customer => Some(vec![requester(by, &a.order)].into()),
+                // An operator's login at the order's own origin reserve, which declared it can't require the user's own
+                // withdrawal, or that it starts routes on automatic deposits, the operator filing for it.
+                Role::Operator => Some(Needs {
+                    all: vec![
+                        listed(by, Permission::ActForUser),
+                        origin(&a.order, &a.origin_reserve),
+                    ],
+                    any: vec![
+                        declared(&a.origin_reserve, NO_USER_WITHDRAWAL),
+                        declared(&a.origin_reserve, AUTOMATIC_DEPOSIT),
+                    ],
+                }),
+                // The order's origin reserve itself, which declared it starts routes on automatic deposits.
+                Role::Provider if by.party == a.origin_reserve => Some(
+                    vec![
+                        origin(&a.order, &a.origin_reserve),
+                        declared(&a.origin_reserve, AUTOMATIC_DEPOSIT),
+                    ]
+                    .into(),
+                ),
+                Role::Provider | Role::Verifier | Role::Regulator | Role::Checker | Role::Core => {
+                    None
+                }
+            }
+        }
+        _ => Some(Needs::default()),
     }
 }
 
 /// The register's word that `caller` holds `permission`, asked only of a caller in the operator's role: no other
 /// role holds one.
-fn holds(caller: &Actor, permission: Permission) -> Option<Vec<Need>> {
-    (caller.role == Role::Operator).then(|| {
-        vec![Need {
-            input: caller.acts.clone(),
-            from: Source::Permissions {
-                party: caller.party.clone(),
-                permission,
-            },
-        }]
-    })
+fn operator_holds(caller: &Actor, permission: Permission) -> Option<Vec<Need>> {
+    (caller.role == Role::Operator).then(|| vec![listed(caller, permission)])
 }
 
-/// The reserve's word that it declared it can't require the user's own withdrawal.
-fn declared(reserve: &Id) -> Need {
+/// The register's word that the actor `caller` names, by its `acts` within its party, holds `permission`.
+fn listed(caller: &Actor, permission: Permission) -> Need {
     Need {
-        input: Id::new(NO_USER_WITHDRAWAL).expect("a valid identifier"),
+        input: caller.acts.clone(),
+        from: Source::Permissions {
+            party: caller.party.clone(),
+            permission,
+        },
+    }
+}
+
+/// The order's record's word that `caller`'s party is its requester, as the party its agents act in.
+fn requester(caller: &Actor, order: &Id) -> Need {
+    Need {
+        input: caller.party.clone(),
+        from: Source::Requester(order.clone()),
+    }
+}
+
+/// The order's record's word that `reserve` is its origin reserve.
+fn origin(order: &Id, reserve: &Id) -> Need {
+    Need {
+        input: reserve.clone(),
+        from: Source::OrderOrigin(order.clone()),
+    }
+}
+
+/// The reserve's word that it made `declaration` at publishing.
+fn declared(reserve: &Id, declaration: &str) -> Need {
+    Need {
+        input: Id::new(declaration).expect("a valid identifier"),
         from: Source::Declarations(reserve.clone()),
     }
 }
 
 /// What the fixed rule needs for `asked`: nothing for a call it refuses outright, or one it doesn't hold.
 pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
-    Reply::Given(needs_of(asked).unwrap_or_default())
+    let needs = needs_of(asked).unwrap_or_default();
+    Reply::Given(needs.all.into_iter().chain(needs.any).collect())
 }
 
-/// The fixed rule's ruling: a route posted, and a catalogue changed, only by an operator's actor holding that one
-/// permission; an authorisation given, and value moved, by the operator only at a reserve that declared it can't
-/// require the user's own withdrawal, and never in a role that can't act for the user. Every other call passes. Each
-/// input it needs must say yes: a no refuses, and one not given is missing.
+/// The fixed rule's ruling over what [`needs_of`] names: every input of `all` says yes and, where `any` names some, at
+/// least one of them does. A no refuses, and an input not given is missing. A call no rule lets its caller make is
+/// refused, and every call the rule doesn't hold passes.
 pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     let Some(needs) = needs_of(asked) else {
         return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted));
     };
-    for need in needs {
-        match inputs.iter().find(|i| i.need == need) {
-            Some(Input {
-                said: Said::Yes, ..
-            }) => {}
-            Some(_) => return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)),
+    let said = |need: &Need| inputs.iter().find(|i| &i.need == need).map(|i| i.said);
+    let mut refused = false;
+    for need in &needs.all {
+        match said(need) {
+            Some(Said::Yes) => {}
+            Some(Said::No) => refused = true,
             None => return Reply::Missing,
         }
+    }
+    let mut any_yes = needs.any.is_empty();
+    for need in &needs.any {
+        match said(need) {
+            Some(Said::Yes) => any_yes = true,
+            Some(Said::No) => {}
+            None => return Reply::Missing,
+        }
+    }
+    if refused || !any_yes {
+        return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted));
     }
     Reply::Given(Ruling::Permit)
 }
