@@ -40,8 +40,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   personal data, so `REQ-AUD-13`'s erasure never applies to it (the coordinator's ruling); the evidence store keeps
   every advertisement's bytes for as long as the log is kept. Other statements may be erased: opening reads no
   statement's bytes but an advertisement's.
-- **Stores.** `MemoryStore`, and `FileStore`, one append-only file synced before each append answers. A deployment's
-  store is `F-030`'s (`M4`); the trait lets it plug in.
+- **Stores.** `MemoryStore`, and `FileStore`, one append-only file synced before each append answers. It holds the
+  file open under an exclusive lock for its lifetime, so no second store, in this process or another, writes the
+  same log; it syncs the file's directory on opening, so a file just created survives a crash; and it syncs the file
+  before each read-back, so a write whose sync failed is read as the disk holds it (no test can make a sync fail
+  short of a failing disk, so that one stands on review). A deployment's store is `F-030`'s (`M4`); the trait lets
+  it plug in.
 - **The read surface** for the later rows, which can't edit `log/`: `entries()`, `len()`, `root()`, `root_at(size)`,
   `inclusion(index, size)` with `merkle::verify_inclusion`, and the free functions `record` and `digest`. No
   consistency proof is built: `T-022-04`'s checker holds the whole history and recomputes `root_at`.

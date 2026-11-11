@@ -947,7 +947,8 @@ fn no_platform_event_handed_to_the_log_is_missing_from_it() {
 
 /// A segment record handed over is in the log's file with the version it began on, the one it runs on and each
 /// move between them, and is still there, whole and at the same place under the same root, when the log is opened
-/// again from that file; a last line cut short by a crash is dropped, and the log goes on.
+/// again from that file; a last line cut short by a crash is dropped, and the log goes on. While one store holds the
+/// file, no second one opens it.
 // verifies: REQ-MDL-5, DEC-12
 #[test]
 fn segment_record_is_kept_durably_with_its_versions_and_moves() {
@@ -993,6 +994,12 @@ fn segment_record_is_kept_durably_with_its_versions_and_moves() {
     reopened
         .append(hand_over(valid("handover-state-read"), "drain-8", 0))
         .unwrap();
+    // While one store holds the file, no other can write it.
+    assert!(matches!(
+        FileStore::open(&file.0),
+        Err(StoreError::Unavailable(_))
+    ));
+    drop(reopened);
     let again = AuditLog::open(
         settings(),
         FileStore::open(&file.0).unwrap(),
