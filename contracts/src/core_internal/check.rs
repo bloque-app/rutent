@@ -336,10 +336,13 @@ impl What {
             What::DecisionRecord {
                 round, shortlisted, ..
             } => match (round, shortlisted) {
-                (RoutingRound::Shortlist, Some(providers)) => listed(
-                    providers,
-                    "a shortlist's decision record names its providers, at least one, each once",
-                ),
+                // A shortlist may keep no provider: its record is what a `no_route` input cites (`REQ-AUD-4`).
+                (RoutingRound::Shortlist, Some(providers)) if !distinct(providers) => {
+                    Err(Violation(
+                        "a shortlist's decision record names its providers, each once, and none where it kept none",
+                    ))
+                }
+                (RoutingRound::Shortlist, Some(_)) => Ok(()),
                 (RoutingRound::Choice, None) => Ok(()),
                 _ => Err(Violation(
                     "a decision record names shortlisted providers exactly when it is a shortlist's",

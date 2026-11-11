@@ -349,7 +349,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
 | `What::Acceptance` | it names the reserve's yes and the session exactly when its basis is given |
-| `What::DecisionRecord` | it names its shortlisted providers, at least one, each once, exactly when its round is the shortlist |
+| `What::DecisionRecord` | it names its shortlisted providers, each once, exactly when its round is the shortlist; a shortlist that kept none names none, so a `no_route` input has its record to cite |
 
 Each fixture under `fixtures/invalid/` breaks exactly one rule, named in its file name. `tests/core-internal.rs`
 lists, for each, the exact schema errors and the Rust refusal it gives, or, for a rule only Rust states, that the

@@ -1885,8 +1885,9 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         previous: Option<Receipt>,
-        /// The providers a shortlist round shortlisted, at least one, each once: present exactly when the round is
-        /// the shortlist, so a question on a shortlisted route is held to them (`REQ-CPL-2`, `REQ-CPL-6`).
+        /// The providers a shortlist round shortlisted, each once, and none where it kept none, so a `no_route`
+        /// input has the record to cite (`REQ-AUD-4`): present exactly when the round is the shortlist, so a question
+        /// on a shortlisted route is held to them (`REQ-CPL-2`, `REQ-CPL-6`).
         #[serde(
             default,
             deserialize_with = "some",

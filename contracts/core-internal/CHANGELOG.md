@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 224 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-six schemas, 106 valid fixtures and 105 invalid ones, each
+  breaking one rule, and 226 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -90,3 +90,7 @@
   `acts`, and `party` is the one the new `StatementKeys::publisher` answers. The rows comparing a statement's maker
   with a provider read `acts`; those comparing it with a party read `party`. 224 admission cases and 24 attribution
   cases. (DEC-4, DEC-20, REQ-AUD-2, REQ-ORD-32, T-020-01)
+- Folded into 1.0.0 before its release: a shortlist may keep no provider. A shortlist round's decision record names
+  its shortlisted providers each once, and none where it kept none, so a `no_route` input has the record to cite;
+  the schema drops `minItems` and the Rust check keeps distinctness. 226 admission cases. (DEC-4, DEC-20,
+  REQ-AUD-4, REQ-CPL-6, T-020-01)
