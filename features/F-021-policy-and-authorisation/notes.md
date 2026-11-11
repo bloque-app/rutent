@@ -53,6 +53,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   where a permit or the effect is in hand, no rename, alias or bare import of a watched name, no file mounted with a
   `path` attribute or `include!`. Names are matched without types. `CARRY_OUT` is pinned against every `&mut self`
   method of prov's platform and catalogue: each is listed as carrying out a decided action or as carrying out none,
-  with why. The guard is the log: `T-020-01`'s follow-up splits its append surface so that only policy's handle takes
-  a decision's entry, and the engine will append through it once that lands. What the scan can't see (a value read
-  through serde, where an effect's receipt came from) is that handle's, `T-020-08`'s and `T-025-05`'s.
+  with why. The guard is the log: `T-020-01`'s split of its append surface (c60eb61) lets a decision's entry reach it
+  only through policy's handle, `PolicyLog`, which the assembly hands to the engine alone, and orchestration's
+  `Log` takes no decision kind. What the scan can't see (a value read through serde, where an effect's receipt came
+  from) is that handle's, `T-020-08`'s and `T-025-05`'s.
+- **The engine appends only through policy's handle.** `Engine<L, P, S>` asks only `L: PolicyLog`, so it holds no
+  general handle and can't write anything but a decision. `record` builds the entry, checks it, makes it a
+  `DecisionEntry`, which refuses any kind but a decision's, and appends it with `append_decision`, in that order, then
+  answers. The engine with no policy is still `Unbuilt::new(log)`, as the scenario assembly builds it around a
+  `PolicyHandle`; the engine with a deployment's policy is `Engine::with_policy(log, policy, sources)`, which puts the
+  fixed rules first.

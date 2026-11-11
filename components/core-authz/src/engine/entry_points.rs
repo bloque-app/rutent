@@ -1,9 +1,9 @@
 //! The scan behind `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` (`REQ-AUZ-1`).
 //!
 //! **It is a tripwire, not the guard.** It catches the plain ways a later edit could go around a decision, and says
-//! where. The guard is the log: its append surface is split so that only policy's handle takes a decision's entry,
-//! and orchestration's takes none, held by the crate graph (`T-020-01`'s follow-up). Anything the scan can't see,
-//! such as a value read through serde, is that handle's to refuse.
+//! where. The guard is the log: its append surface is split so that only policy's handle, `PolicyLog`, takes a
+//! decision's entry, and orchestration's, `Log`, takes none, held by the crate graph (`T-020-01`). Anything the scan
+//! can't see, such as a value read through serde, is that handle's to refuse.
 //!
 //! It reads the source of Core's three crates, `core-orch`, `core-authz` and `core-audit`, as files, so it imports
 //! none of them (`DEC-2`). It walks each crate's module tree from `lib.rs`, leaves test code aside (`#[cfg(test)]`

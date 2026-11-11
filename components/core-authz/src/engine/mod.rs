@@ -21,12 +21,13 @@
 //!    without its ruling.
 //!
 //! Only a permitting verdict mints a permitting answer, and only in `consult`: no other code of Core's three crates
-//! writes one, which a scan of their source watches for as a tripwire. The guard is the log: a split of its append
-//! surface, pending in `T-020-01`'s follow-up, gives a decision's entry only to policy's handle, which this engine
-//! will append through. External authentication said who the caller is
-//! (`Actor::acts`) and nothing more (`REQ-AUZ-1`): the engine reads nothing of the caller to permit, and hands it to
-//! the policy service as it came. The answer is appended to the log before it is given, and an append that fails
-//! answers nothing (`INV-7`).
+//! writes one, which a scan of their source watches for as a tripwire. The guard is the log's split append surface
+//! (`T-020-01`): a decision's entry reaches the log only through policy's handle, [`PolicyLog`], which the assembly
+//! hands to this engine alone, and orchestration's handle takes no decision kind. The engine appends through that
+//! handle and nothing else: each answer's entry is built, checked, made a [`DecisionEntry`], which refuses any kind
+//! but a decision's, and appended, in that order, before the answer is given; an append that fails answers nothing
+//! (`INV-7`). External authentication said who the caller is (`Actor::acts`) and nothing more (`REQ-AUZ-1`): the
+//! engine reads nothing of the caller to permit, and hands it to the policy service as it came.
 //!
 //! # Readings
 //!
@@ -348,7 +349,9 @@ impl<L, P, S> Engine<L, P, S> {
 }
 
 impl<L: PolicyLog, P, S> Engine<L, P, S> {
-    /// Appends the verified entry of one answer, timed by Core's clock.
+    /// Appends the verified entry of one answer, timed by Core's clock, through policy's handle: built, checked, made
+    /// a [`DecisionEntry`] and appended, in that order. An entry that fails its check, or isn't a decision's, is
+    /// refused before the log sees it.
     pub(crate) fn record(
         &mut self,
         who: &Actor,
@@ -1630,5 +1633,72 @@ mod tests {
             unbuilt,
             ["T-021-04", "T-021-06", "T-021-02", "T-021-05", "T-021-07"]
         );
+    }
+
+    /// A log reachable only through policy's handle, which keeps what it took.
+    #[derive(Default)]
+    struct PolicysHandleOnly(Vec<DecisionEntry>);
+
+    impl PolicyLog for PolicysHandleOnly {
+        fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+            self.0.push(entry.clone());
+            Ok(fixture!("receipt-of-an-appended-entry"))
+        }
+    }
+
+    /// The engine writes the log only through policy's handle: holding nothing but it, each of its calls appends a
+    /// decision's entry and nothing else. An entry it would write that fails its check, or isn't a decision's, is
+    /// refused before it reaches the handle, and nothing is appended.
+    // verifies: REQ-AUZ-1, INV-7
+    #[test]
+    fn the_engine_appends_only_through_policys_handle() {
+        let mut engine = Unbuilt::new(PolicysHandleOnly::default());
+        let grant: PermissionChange = fixture!("permission-change-granting-a-regulator-the-trail");
+        let _ = engine.decide(&fixture!("decision-request-to-move-value"));
+        let _ = engine.authorise(&fixture!("authorisation-of-one-order-with-a-floor"));
+        let _ = engine.decide_stuck(&fixture!("stuck-decide-naming-its-evidence"));
+        let _ = engine.move_stuck(&fixture!("stuck-move-carrying-out-a-decision"));
+        let _ = engine.open_session(&fixture!("session-request-of-a-delegate"));
+        let _ = engine.check_read(&fixture!("read-check-by-a-provider-of-its-segment"));
+        let _ = engine.grant_permission(&grant);
+        let _ = engine.revoke_permission(&grant);
+        let _ = engine.charge(&fixture!("charge-of-fanned-out-work"));
+        let _ = engine.ask_about_person(&fixture!(
+            "person-question-on-the-persons-authority-first-asked"
+        ));
+        assert_eq!(engine.log.0.len(), 10, "every call appended its entry");
+        for entry in &engine.log.0 {
+            assert!(rutent_contracts::core_internal::calls::is_decision(
+                &entry.entry().what
+            ));
+        }
+
+        let core = actor("rutent", "core-authz", Role::Core, ActorKind::Component);
+        let at = Timestamp::new("2026-11-10T09:00:00Z").unwrap();
+        let moved: DecisionRequest = fixture!("decision-request-to-move-value");
+        let effect: rutent_contracts::core_internal::Effect =
+            fixture!("effect-moving-value-on-a-permit");
+        let not_a_decision = What::Effect {
+            action: effect.action,
+            decision: effect.decision,
+        };
+        assert_eq!(
+            engine.record(&core, not_a_decision, &at, Outcome::ToTakeEffect {}),
+            Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation(
+                    rutent_contracts::core_internal::calls::RECORD_ON_THE_POLICY_HANDLE
+                )
+            ))
+        );
+        let unchecked = What::Decide {
+            request: moved.clone(),
+            decision: moved.request.clone(),
+        };
+        assert!(matches!(
+            engine.record(&core, unchecked, &at, Outcome::ToTakeEffect {}),
+            Err(AppendFailure::Refused(v))
+                if v.0 != rutent_contracts::core_internal::calls::RECORD_ON_THE_POLICY_HANDLE
+        ));
+        assert_eq!(engine.log.0.len(), 10, "nothing more reached the handle");
     }
 }
