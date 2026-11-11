@@ -74,6 +74,9 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
 - **What it drives.** A binding implements `ModuleBinding`, which names no format and never hands out a secret's
   value:
   - `format` and `languages`, and `set_output_limit`, which the suite sets, so no binding passes by having no limit;
+  - `set_step_limit`, which the suite sets too, to probe a module at the limit and one past it, and lifts after
+    with `usize::MAX`. Its default says the binding can't be given one, which leaves the probe uncovered
+    (`T-024-01`);
   - `admit` and `accept`, which take the provider's signed release assertion and give the T-003-02 admission
     artefact;
   - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
@@ -82,8 +85,14 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     as the contract shapes them. A call to a widened callee that received it counts as reached, answered or not.
   - A refusal at admission (`AdmissionRefusal`) or of an answer (`PlatformRefusal`) is the module-interface
     contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
-    and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit
-    (`with_step_limit`), a module that passes it, with those reasons.
+    and a re-admitted version. The suite probes both (`T-024-01`):
+    - a version a provider already has admitted, running or waiting for its acceptance, admitted again must be
+      refused as `version_already_admitted`, and what runs is unchanged (`ReadmittedVersionRefused`,
+      `ReadmittedWaitingVersionRefused`);
+    - a module that takes more steps than the limit the suite set must be refused as `limit_reached` and stay
+      admitted, and one that takes the limit's own number must answer (`StepLimitRefused`,
+      `StepsWithinTheLimitAnswered`). The steps are the sandboxed part's reads of its state, so the module passes
+      nothing out, and the refusal is the limit's and never an unknown outcome.
 - **Signed releases (`T-010-10`).** The suite signs for real, with Ed25519 keys it derives itself (`signing`, behind
   the `signing` feature, which `test-support` implies). Each provider's declaration names its statements key, its
   release assertions are signed with its advertising key over the contract's signing input, and the binding is
@@ -153,7 +162,7 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
 - **The reference double** (`boundary::reference::ReferenceDouble`, built only with the `test-support` feature, which
   the crate's own tests enable) is an in-process binding with no format: a "binary" names a spec it built, and
   running it interprets the steps. Its two languages are nominal; they show the coverage accounting, not `AC-20`
-  itself. It has 40 breakers: 38 each break one enforcement, flagged by its own check only, and two leave fixtures
+  itself. It has 44 breakers: 42 each break one enforcement, flagged by its own check only, and two leave fixtures
   uncovered. A broken egress check still writes the refusal into its record but lets the request through, so only
   what the endpoint received gives it away; a reach probe of acceptance leaves such a call to the egress probes.
 - **Not covered.**
@@ -163,6 +172,39 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
   - **`REQ-MDL-11`'s limits other than output:** CPU, memory, outbound calls, state and pending work.
   - **DNS rebinding:** `BoundaryHarness::serve` gives an endpoint one address, so a name that resolves to one
     address when checked and another when connected isn't expressible yet. Nor is TLS.
+
+## Simulated providers (`sim`)
+
+`T-024-01`'s simulated providers (`REQ-MOD-4`, `DEC-23`): the stand-ins of `role::stand_in`, made scriptable and given
+books that outlive their processes. They are Wasm components (`components/prov/module-guests/sim/`), admitted through
+the platform like any module; `sim` is what they are made of, in a form that runs in process too, so a module can be
+held against a twin. `conformance/scenarios/src/sim/` is the platform side: the world, the simulated public networks
+and a `Fleet` that admits them.
+
+- **Identity.** A `Spec` is a role and a name; the publisher, the keys, and for a reserve its bank and its private
+  node follow from the name. A reserve is on a private node of its own, and its publisher is its own, so two of them
+  are two private nodes (`DEC-24`). The stand-ins' own identities are unchanged (`Identity`, `named`).
+- **Behaviours.** A `Behaviour` says how one operation is answered, and a script is a queue of them kept by the
+  platform's world: the module asks for the next one as its first step. Answer, refuse (finally, with a lifting time,
+  or waiting on the person), stay silent, answer late, crash before or after its entry is written, report outcome
+  unknown, fail, deliver short (`Delivery::Short`) or in pieces (`Delivery::Pieces`), send no movement to the
+  network, and, for a reserve, confirm a reversal or not. The module does the effects only a module can, spinning and
+  trapping; `Simulated::answer` decides the answer and the entry.
+- **Books.** The WIT world has no state write (`F-013`'s notes), so a provider's books are a journal of `Entry`
+  kept by the platform's world under the shared key `book`. The module writes each entry to its own rail, an
+  outbound call the platform records (`REQ-MDL-8`), and reads the journal back through the state read. A process that
+  finds the journal longer or shorter than its own books replays it into a fresh stand-in (`Simulated::restore`),
+  which is deterministic, so a restarted process holds the books the one before it did, and a crash after the
+  entry leaves the effect and the record of it.
+- **The journal's size.** The platform passes an outside message of 64 KiB at most, and the journal is read back in
+  one, escaped once as a string in the response. An entry of a withdrawal is about 850 bytes, 950 once escaped, so a
+  restart reads a journal of about sixty-eight real operations of one provider; sixty is tested. A scenario that
+  runs more splits its providers.
+- **Test settings.** `Fleet::new` sets what a test platform needs and a deployment's settings own: upgrades take
+  effect at once (`set_staging(None)`), the operation deadline is the caller's, and the output limit is 1 MiB
+  (`set_output_limit(1 << 20)`). They are not defaults.
+- **What a twin is.** `Simulated` run in process answers as the module does; the role suite through the platform
+  compares each answer with a twin's and the journal's replay with the twin's books.
 
 ## Host-contract suite (`host`)
 

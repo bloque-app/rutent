@@ -1506,17 +1506,22 @@ dependencies = [
  "rutent-router",
  "rutent-stm",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
 name = "rutent-core-orch"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
+ "jsonschema",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1568,9 +1573,13 @@ dependencies = [
 name = "rutent-scenarios"
 version = "0.0.0"
 dependencies = [
+ "rutent-conformance",
  "rutent-contracts",
  "rutent-core-audit",
  "rutent-core-authz",
+ "rutent-evidence",
+ "rutent-prov",
+ "rutent-stm",
  "serde_json",
 ]
 

@@ -65,6 +65,35 @@ const VALID_UNTIL: &str = "2026-11-13T15:04:05Z";
 /// The publisher behind every stand-in.
 const PUBLISHER: &str = "stand-in-publisher";
 
+/// Who a stand-in is: the provider identifier it advertises and signs as, its publisher, and the seed its
+/// placeholder keys come from (`T-024-01`). The suites' own stand-ins keep the identities `new` gives them; a
+/// simulated provider is a stand-in under an identity of its own, so two of them can be told apart: two reserves
+/// on two private nodes have two publishers (`DEC-24`).
+///
+/// Placeholder keys repeat every 64 seeds, and a stand-in's advertising key is its seed plus 30, so the seeds a
+/// deployment's stand-ins use must avoid the ones `new` uses (0 to 4, 12 and 30 to 34) and each other's, and a
+/// seed plus 30, modulo 64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// The provider identifier.
+    pub provider: String,
+    /// The publisher behind it.
+    pub publisher: String,
+    /// The seed of its placeholder keys.
+    pub seed: u8,
+}
+
+impl Identity {
+    /// An identity.
+    pub fn new(provider: &str, publisher: &str, seed: u8) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            publisher: publisher.to_owned(),
+            seed,
+        }
+    }
+}
+
 /// A role rule a stand-in breaks, set by one of its builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Fault {
@@ -311,11 +340,36 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
     }
 }
 
+/// How a refusal says it is final, or when it lifts (`REQ-CAT-18`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalClass {
+    /// Final: asking again changes nothing.
+    Final,
+    /// It lifts at a known time.
+    LiftsAtKnownTime,
+    /// It waits on the person, who can supply what it lacks.
+    WaitsOnPerson,
+}
+
+/// The refusal an operation is answered with, of its kind and of `class`: what a provider that refuses an
+/// operation says (`T-024-01`). A balance verification's refusal is always final, since it can't say when it lifts.
+pub fn refusal_to(operation: &Operation, class: RefusalClass) -> ResultBody {
+    refuse_outside_role(
+        operation,
+        match class {
+            RefusalClass::Final => final_refusal(),
+            RefusalClass::LiftsAtKnownTime => lifting_refusal(),
+            RefusalClass::WaitsOnPerson => waiting_on_the_person(),
+        },
+    )
+}
+
 // Reserve ------------------------------------------------------------------------------------------------
 
 /// A reserve over a book, between a bank network and its ledger, in COP.
 #[derive(Debug, Clone)]
 pub struct Reserve {
+    name: String,
     signer: Signer,
     advertisement: Statement<Advertisement>,
     session: String,
@@ -347,10 +401,21 @@ impl Reserve {
     /// A reserve that keeps its role. `context.account` holds funds, and `context.session` is its holder's
     /// session.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 1);
+        Self::named(
+            context,
+            &Identity::new(Self::PROVIDER, PUBLISHER, 1),
+            "stand-in-bank",
+            "stand-in-ledger",
+        )
+    }
+
+    /// A reserve that keeps its role under `identity`, between the bank network `bank` and its own private node
+    /// `ledger`, which its publisher declares (`DEC-24`).
+    pub fn named(context: &SuiteContext, identity: &Identity, bank: &str, ledger: &str) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -358,9 +423,9 @@ impl Reserve {
                     tuples: vec![
                         ReserveTuple {
                             origin: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
-                            destination: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            destination: NodeRef::Inner(ledger.to_owned()),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
                                 origin: 2,
@@ -374,9 +439,9 @@ impl Reserve {
                             ),
                         },
                         ReserveTuple {
-                            origin: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            origin: NodeRef::Inner(ledger.to_owned()),
                             destination: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
@@ -394,7 +459,7 @@ impl Reserve {
                     declaration: ReserveDeclaration {
                         can_require_user_initiated_withdrawal: true,
                         starts_routes_on_automatic_deposits: false,
-                        maker: Self::PROVIDER.to_owned(),
+                        maker: identity.provider.clone(),
                         declared_in_version: "0.1.0".to_owned(),
                     },
                 }),
@@ -410,11 +475,12 @@ impl Reserve {
                 }),
                 safe_retry: Some(true),
             },
-            private_nodes: vec!["stand-in-ledger".to_owned()],
+            private_nodes: vec![ledger.to_owned()],
         };
         let mut balances = BTreeMap::new();
         balances.insert(context.account.clone(), 50_000_000);
         Self {
+            name: identity.provider.clone(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             signer,
             session: context.session.clone(),
@@ -550,7 +616,7 @@ impl Reserve {
             amount_in: stated.to_owned(),
             amount_out: stated.to_owned(),
             fee,
-            evidence: evidence(EvidenceGrade::SignedByProvider, Self::PROVIDER, transaction),
+            evidence: evidence(EvidenceGrade::SignedByProvider, &self.name, transaction),
         });
         if std::mem::take(&mut self.unknown_next) {
             // The movement happened, but the reserve can't tell yet; its status query tells later.
@@ -669,7 +735,7 @@ impl Typed for Reserve {
                         },
                         evidence: evidence(
                             EvidenceGrade::SignedByProvider,
-                            Self::PROVIDER,
+                            &self.name,
                             &t.transaction,
                         ),
                     }),
@@ -756,10 +822,15 @@ impl Exchange {
 
     /// An exchange that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 2);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 2))
+    }
+
+    /// An exchange that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -791,7 +862,7 @@ impl Exchange {
         };
         Self {
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
-            rogue: Signer::new(context, Self::PROVIDER, 12),
+            rogue: Signer::new(context, &identity.provider, identity.seed.wrapping_add(10)),
             signer,
             conversions: Vec::new(),
             served: BTreeMap::new(),
@@ -1091,10 +1162,15 @@ impl Ramp {
 
     /// A ramp that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 3);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 3))
+    }
+
+    /// A ramp that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -1490,10 +1566,15 @@ impl Verifier {
 
     /// A verifier that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 4);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 4))
+    }
+
+    /// A verifier that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
