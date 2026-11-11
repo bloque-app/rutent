@@ -16,6 +16,7 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Action, ActorKind, CatalogueChange, KeptStatement, PermissionChange, RELATIONS, Role,
     STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry, attribute,
+    granted_advertising_keys, release_statement_keys,
 };
 use rutent_contracts::core_internal::{
     Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest, Effect, Entry, HandedOver,
@@ -72,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 30] = [
+const RUST_RULES: [(&str, &str); 33] = [
     (
         "permission-change-by-a-provider",
         "a read permission is granted or revoked by the operator",
@@ -80,6 +81,18 @@ const RUST_RULES: [(&str, &str); 30] = [
     (
         "permission-change-granted-to-a-customer",
         "a read permission is a regulator's or a checker's",
+    ),
+    (
+        "decision-request-to-grant-without-its-advertising-keys",
+        "a catalogue change names advertising keys, at least one, each once, exactly when it is a grant",
+    ),
+    (
+        "decision-request-to-mark-a-release-stale-naming-advertising-keys",
+        "a catalogue change names advertising keys, at least one, each once, exactly when it is a grant",
+    ),
+    (
+        "decision-request-to-accept-a-release-without-its-statement-key",
+        "a catalogue change names a statement key exactly when it accepts a module release",
     ),
     (
         "person-question-asking-off-its-shortlist",
@@ -1248,6 +1261,8 @@ struct Sources {
     keys: Vec<(String, SignedWith, Timestamp)>,
     /// The party each maker states for; a maker not listed states for itself.
     publishers: Vec<(String, String)>,
+    /// The maker the operator signs as.
+    operator: String,
     signature: bool,
 }
 
@@ -1263,7 +1278,7 @@ impl StatementKeys for Sources {
     }
 
     fn operator(&mut self) -> Result<Id, AppendFailure> {
-        Ok(operator())
+        Ok(Id::new(self.operator.as_str()).unwrap())
     }
 
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
@@ -1325,8 +1340,26 @@ fn sources(case: &Value) -> Sources {
                     .collect()
             })
             .unwrap_or_default(),
+        operator: case["operator"].as_str().unwrap_or("operator").to_string(),
         signature: case["signature"].as_bool().unwrap(),
     }
+}
+
+/// The history a case states, to attribute over.
+fn case_history(case: &Value) -> Vec<(Receipt, Entry)> {
+    case["history"]
+        .as_array()
+        .map(|h| {
+            h.iter()
+                .map(|i| {
+                    (
+                        serde_json::from_value(i["receipt"].clone()).unwrap(),
+                        serde_json::from_value(i["entry"].clone()).unwrap(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn attribution_cases() -> Vec<(String, Value)> {
@@ -1365,7 +1398,13 @@ fn the_log_not_the_writer_attributes_a_stated_entry() {
         let mut from = sources(case);
         let mut keys = sources(case);
         let signatures = sources(case);
-        let got = attribute(&claim, &mut from, &mut keys, &signatures);
+        let got = attribute(
+            &claim,
+            &case_history(case),
+            &mut from,
+            &mut keys,
+            &signatures,
+        );
         let maker = claim.attribution.maker().clone();
         match case["expect"].as_str().unwrap() {
             "verified" => {
@@ -1485,11 +1524,12 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
             reserve.acts.as_str().to_string(),
             reserve.party.as_str().to_string(),
         )],
+        operator: "operator".to_string(),
         signature: false,
     };
     let signatures = sources_like(&source);
     let mut keys = sources_like(&source);
-    let recorded = attribute(&claim, &mut source, &mut keys, &signatures).unwrap();
+    let recorded = attribute(&claim, &[], &mut source, &mut keys, &signatures).unwrap();
     assert_eq!(recorded, claim);
     history[slot].1 = Entry::Stated(recorded);
     assert!(admit_entry(&history, &acceptance, Through::General, &operator()).is_err());
@@ -1499,7 +1539,7 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
     signed.signature = true;
     let mut keys = sources_like(&signed);
     let signatures = sources_like(&signed);
-    let recorded = attribute(&claim, &mut signed, &mut keys, &signatures).unwrap();
+    let recorded = attribute(&claim, &[], &mut signed, &mut keys, &signatures).unwrap();
     assert_eq!(recorded.attribution, Attribution::Verified { who: reserve });
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
@@ -1540,6 +1580,7 @@ fn signed_sources(yes: &StatedEntry, transaction: &str) -> Sources {
             yes.attribution.maker().acts.as_str().to_string(),
             yes.attribution.maker().party.as_str().to_string(),
         )],
+        operator: "operator".to_string(),
         signature: true,
     }
 }
@@ -1550,7 +1591,7 @@ fn attributed(claim: &StatedEntry, source: &Sources) -> StatedEntry {
         sources_like(source),
         sources_like(source),
     );
-    attribute(claim, &mut kept, &mut keys, &signatures).unwrap()
+    attribute(claim, &[], &mut kept, &mut keys, &signatures).unwrap()
 }
 
 /// A genuine yes of the origin reserve about one order, re-appended for another: with its transaction left out the
@@ -1860,6 +1901,68 @@ fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answe
     );
 }
 
+/// A provider's first trust is the advertising keys of its latest grant in the log, which a new grant replaces and a
+/// revocation of its tuple takes back; a module the operator publishes signs with the statement key of a release of
+/// it the log accepted and didn't revoke. Both are read from the history alone, so a checker recomputes them.
+// verifies: REQ-AUD-2, REQ-AUD-9
+#[test]
+fn first_trust_and_a_modules_key_come_from_the_log() {
+    let key = |k: &str| rutent_contracts::provider_role::PublicKey::new(k).unwrap();
+    let (first, second) = (
+        "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+        "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    );
+    let effect = |n: u64, action: Value| -> (Receipt, Entry) {
+        let mut entry = fixture("valid", "verified-entry-of-an-effect");
+        entry["what"]["action"] = action;
+        (
+            serde_json::from_value(serde_json::json!({
+                "log": "log-main", "index": n,
+                "entry": {"algorithm": "sha-256", "value": format!("{n:064x}")},
+            }))
+            .unwrap(),
+            serde_json::from_value(entry).unwrap(),
+        )
+    };
+    let grant = |tuple: &str, k: &str| {
+        serde_json::json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": tuple,
+               "advertising_keys": [k]})
+    };
+    let fx = Id::new("fx-desk").unwrap();
+    let mut history = vec![effect(1, grant("usdc-cop", first))];
+    assert_eq!(granted_advertising_keys(&history, &fx), &[key(first)]);
+    // A new grant replaces the keys: a lost key is recovered so.
+    history.push(effect(2, grant("usdc-cop", second)));
+    assert_eq!(granted_advertising_keys(&history, &fx), &[key(second)]);
+    // The latest grant in force is the one trusted, whatever its tuple.
+    history.push(effect(3, grant("usdt-cop", first)));
+    assert_eq!(granted_advertising_keys(&history, &fx), &[key(first)]);
+    // Revoking a tuple takes its grant back, leaving the one before; with none in force there is no first trust.
+    let revoke = |tuple: &str| {
+        serde_json::json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": "fx-desk",
+                           "tuple": tuple})
+    };
+    history.push(effect(4, revoke("usdt-cop")));
+    assert_eq!(granted_advertising_keys(&history, &fx), &[key(second)]);
+    history.push(effect(5, revoke("usdc-cop")));
+    assert!(granted_advertising_keys(&history, &fx).is_empty());
+    assert!(granted_advertising_keys(&history, &Id::new("bridge-pay").unwrap()).is_empty());
+
+    let module = Id::new("wallet-module").unwrap();
+    let release = |change: &str, k: Option<&str>| {
+        let mut a = serde_json::json!({"kind": "change_catalogue", "change": change, "provider": "wallet-module",
+                           "version": "1.0.0"});
+        if let Some(k) = k {
+            a["statement_key"] = serde_json::json!(k);
+        }
+        a
+    };
+    let mut history = vec![effect(6, release("accept_module", Some(first)))];
+    assert_eq!(release_statement_keys(&history, &module), vec![&key(first)]);
+    history.push(effect(7, release("revoke_release", None)));
+    assert!(release_statement_keys(&history, &module).is_empty());
+}
+
 /// The refusal of the stated entries' row `name`.
 fn stated_row(name: &str) -> &'static str {
     STATED_RELATIONS
@@ -1884,6 +1987,7 @@ fn sources_like(s: &Sources) -> Sources {
         deployment: s.deployment.clone(),
         keys: s.keys.clone(),
         publishers: s.publishers.clone(),
+        operator: s.operator.clone(),
         signature: s.signature,
     }
 }
@@ -2045,6 +2149,8 @@ fn a_value_built_in_memory_is_held_to_the_same_rules_as_one_read() {
         provider: Id::new("fx-desk").unwrap(),
         version: None,
         tuple: None,
+        advertising_keys: vec![],
+        statement_key: None,
     };
     assert_eq!(
         effect.check(),

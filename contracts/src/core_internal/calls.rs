@@ -209,7 +209,12 @@ pub trait StatementKeys {
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure>;
 
     /// Whether `key` signs `maker`'s statements at `at`: a `statements` key of the provider's advertisement
-    /// current at `at`, or, for the operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`).
+    /// current at `at`, or, for the operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`). The log's
+    /// first trust in a provider's advertisements is the advertising keys its latest grant in the log names
+    /// ([`granted_advertising_keys`](super::granted_advertising_keys)), never a deployment setting such as
+    /// `first_trust`, so a checker outside the operator recomputes every attribution from the history alone. A
+    /// module the operator publishes isn't asked here: [`attribute`](super::attribute) holds it to the statement
+    /// key of a release of it the log accepted ([`release_statement_keys`](super::release_statement_keys)).
     fn signs_for(
         &mut self,
         maker: &Id,

@@ -29,7 +29,7 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 109 valid fixtures and 107 invalid ones, each
+  is held to the rules a value read from the wire is. Twenty-six schemas, 112 valid fixtures and 110 invalid ones, each
   breaking one rule, and 230 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
@@ -47,7 +47,7 @@
   transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
   otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
   `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
-  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty-four attribution cases,
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty-seven attribution cases,
   under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)
 - Folded into 1.0.0 before its release: a reserve's yes is bound to its order through its signed transaction. A
   statement about an order or a segment is verified only where its `about` names the transaction its body names;
@@ -104,8 +104,16 @@
   module the operator publishes, stating for the operator's party, asks no question of Core's. `Report.party` names
   the reporting provider, and the two report rows read `acts`, so a sibling under one publisher can't stand in for
   it and two adjacent providers of one publisher can report a pair (`REQ-ORD-9`). A stated entry's relay is another
-  actor than its maker, so a sibling of its publisher may relay it. 109 valid fixtures, 107 invalid, 230 admission
-  cases. (DEC-4, DEC-20, REQ-ORD-9, REQ-ORD-32, REQ-AUD-2, T-020-01)
+  actor than its maker, so a sibling of its publisher may relay it. (DEC-4, DEC-20, REQ-ORD-9, REQ-ORD-32, REQ-AUD-2,
+  T-020-01)
+- Folded into 1.0.0 before its release: a grant names its keys, and an accepted release names its statement key. A
+  `change_catalogue` action names the provider's advertising keys, at least one, each once, exactly when it is a
+  `grant`, and the release's `statement_key` exactly when it is `accept_module`. The log's first trust in a
+  provider is the advertising keys of its latest grant in force (`granted_advertising_keys`), a new grant replacing
+  them, never a deployment setting the log doesn't hold; `attribute` takes the log's history and verifies a module
+  the operator publishes by the statement key of a release of it the log accepted and didn't revoke
+  (`release_statement_keys`). 112 valid fixtures, 110 invalid, 27 attribution cases. (DEC-4, DEC-20, REQ-AUD-2,
+  REQ-AUD-9, REQ-AUZ-6, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

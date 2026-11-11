@@ -82,7 +82,9 @@ mod check;
 mod relations;
 mod types;
 
-pub use attribution::{STATED_WITHOUT_ITS_KEPT_BYTES, attribute};
+pub use attribution::{
+    STATED_WITHOUT_ITS_KEPT_BYTES, attribute, granted_advertising_keys, release_statement_keys,
+};
 pub use relations::{
     Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
     StatedCiting, Through, admit_entry, covers,

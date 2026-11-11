@@ -63,17 +63,18 @@ row implements its own in its own module, where its fail-closed stub sits until 
   only where the bytes are an envelope of this deployment, made by that maker, of the entry's shape, time and key, about
   the transaction its body names exactly when its body names one, with a signature that verifies (`Signatures`) under a
   key that signs the maker's statements at its `made_at` (`StatementKeys`); otherwise it records it unverified,
-  attributed to no one (`REQ-AUD-2`). The keys come from advertisements the log recorded under permitted
-  `change_catalogue` effects and from the deployment, never from orchestration, which could otherwise call its own key a
-  provider's. The receipt is of the entry recorded. A statement whose body names a transaction is verified only where
-  its `about` names that transaction, so none is verified about nothing, and one about an order or a segment only
-  through a transaction its body names: the order is Core's reading, which no provider signs, so the signed transaction
-  is what binds the statement to it. Core appends the question it asks under that transaction first, signed with the
-  operator's key and about the order, and the segment, it asks for; `answer-follows-its-question` holds the answer to
-  it, made by the deployment's operator party, and `transaction-belongs-to-one-order` keeps the transaction to that
-  order and segment (`REQ-ORD-32`, `REQ-ORD-38`). A judgement carries no transaction, so it is appended about no order,
-  and the `reliance` entry that relies on it binds it to one. `fixtures/attribution/` holds a case for each part of the
-  rule.
+  attributed to no one (`REQ-AUD-2`). The keys come from the log and the deployment, never from orchestration, which
+  could otherwise call its own key a provider's: a provider's first trust is the advertising keys its latest `grant` in
+  the log names (`granted_advertising_keys`), and a module the operator publishes signs with the statement key a release
+  of it the log accepted names (`release_statement_keys`). The receipt is of the entry recorded. A statement whose body
+  names a transaction is verified only where its `about` names that transaction, so none is verified about nothing, and
+  one about an order or a segment only through a transaction its body names: the order is Core's reading, which no
+  provider signs, so the signed transaction is what binds the statement to it. Core appends the question it asks under
+  that transaction first, signed with the operator's key and about the order, and the segment, it asks for;
+  `answer-follows-its-question` holds the answer to it, made by the deployment's operator party, and
+  `transaction-belongs-to-one-order` keeps the transaction to that order and segment (`REQ-ORD-32`, `REQ-ORD-38`). A
+  judgement carries no transaction, so it is appended about no order, and the `reliance` entry that relies on it binds
+  it to one. `fixtures/attribution/` holds a case for each part of the rule.
 - **A statement's maker is bound to its key and its publisher.** A stated entry's actor has two names: `acts`, the
   provider, operator or module whose name the envelope carries and whose key signs, and `party`, the one it states
   for, its publisher or the operator's party. The log verifies a statement only where the envelope's `maker` is its
@@ -332,7 +333,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | Shape | Rule |
 |---|---|
 | `DecisionRequest` | it never asks for `resolve_stuck`, which travels only as a stuck move (the schema states it too) |
-| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`, `promote`), and a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`) |
+| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`, `promote`), a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`), the provider's advertising keys, at least one, each once, exactly when it is a `grant`, and the release's statement key exactly when it is `accept_module` |
 | `SessionRequest` | a session ends after the time it is asked for |
 | `Charge` | work is charged to the accountable party its caller acts for |
 | `StuckDecide`, `PersonQuestion`, `MeasureRecord`, `Raise`, `What::Evidence` | the lists the schemas require non-empty and distinct are (the schemas state it too) |
@@ -493,10 +494,18 @@ These are defaults taken where the row left a choice open. Each is reversible by
   needs, by the advertisements, as well as against the shortlist record's `verifiers`.
 - **The router record's bytes** (`T-022-03`). The evidence store keeps the bytes of the router's recorded decision
   a decision record's `record` digests, so its tuples' needs and shortlist can be checked against it.
-- **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives,
-  so `StatementKeys` takes a maker's keys only from advertisements the log itself recorded under permitted
-  `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own `made_at`, so a key
-  revoked since can still sign a statement backdated to before its revocation (`THR-3`).
+- **First trust is in the log** (`T-022-01`, `T-021-04`, `T-020-08`). A `grant` names the provider's advertising
+  keys, as prov's catalogue grant does, and the latest grant in force replaces them, which is how a provider
+  recovers a lost key; `accept_module` names the release's `statement_key`. The log's first trust in a provider's
+  advertisements is that grant, never prov's `Settings::first_trust`, which the log doesn't hold, so a checker
+  outside the operator recomputes every attribution from the history alone (`REQ-AUD-9`). `T-022-01`'s
+  `signs_for` reads a provider's advertising keys through `granted_advertising_keys`; `attribute` takes the history
+  and holds a module the operator publishes to `release_statement_keys`, so its statements are verified rather than
+  recorded unverified. Whoever builds a `grant` or `accept_module` decision request names the keys.
+- **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives, so
+  `StatementKeys` takes a maker's keys only from the grants, the accepted releases and the advertisements the log itself
+  recorded under permitted `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own
+  `made_at`, so a key revoked since can still sign a statement backdated to before its revocation (`THR-3`).
 - **One process** (a residual for `T-025-05`). The handles keep decision entries to the policy engine while Core's
   parts share one process, where only the assembly can reach the log. Were the parts split across processes, a
   decision entry would need the policy engine's signature, which the log checks before it admits one; no such

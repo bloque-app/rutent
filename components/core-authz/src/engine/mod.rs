@@ -595,6 +595,9 @@ impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
 
 #[cfg(test)]
 mod tests {
+    /// A well-formed Ed25519 key for the catalogue changes that name one.
+    const A_KEY: &str = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
+
     /// A valid fixture of the contract, read as whatever type the call site wants.
     macro_rules! fixture {
         ($name:expr $(,)?) => {{
@@ -918,6 +921,13 @@ mod tests {
                 provider: id("bridge-pay"),
                 version: change.is_about_a_release().then(|| id("2.1.0")),
                 tuple: change.is_about_a_tuple().then(|| id("usd-cop")),
+                advertising_keys: if change == CatalogueChange::Grant {
+                    vec![rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()]
+                } else {
+                    vec![]
+                },
+                statement_key: (change == CatalogueChange::AcceptModule)
+                    .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
             });
         }
         for action in &actions {

@@ -28,6 +28,9 @@ macro_rules! valid {
     }};
 }
 
+/// A well-formed Ed25519 key for the catalogue changes that name one.
+const ADVERTISING_KEY: &str = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
+
 fn id(text: &str) -> Id {
     Id::new(text).unwrap()
 }
@@ -356,6 +359,13 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             provider: id("bridge-pay"),
             version: change.is_about_a_release().then(|| id("2.2.0")),
             tuple: change.is_about_a_tuple().then(|| id("usd-cop")),
+            advertising_keys: if change == CatalogueChange::Grant {
+                vec![rutent_contracts::provider_role::PublicKey::new(ADVERTISING_KEY).unwrap()]
+            } else {
+                vec![]
+            },
+            statement_key: (change == CatalogueChange::AcceptModule)
+                .then(|| rutent_contracts::provider_role::PublicKey::new(ADVERTISING_KEY).unwrap()),
         };
         asked.push((Permission::Change(change), request));
     }
