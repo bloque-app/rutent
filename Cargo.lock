@@ -1509,11 +1509,15 @@ dependencies = [
 name = "rutent-core-orch"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
+ "jsonschema",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

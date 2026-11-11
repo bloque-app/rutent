@@ -62,3 +62,70 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   an exchange held to no move states a firm rate in its quote.
 - **Touches `DEC-20` paths**: `contracts/`. Also edits the router's `quote` and `judge` modules and `lib.rs`, and the
   router suite in `conformance/src/router/`, as the row's Work and `PLAN.md` §4.4 allow.
+
+## T-020-05
+
+- **Core's clock.** `snapshot::Clock` is Core's clock; `SystemClock` reads the host's and rounds a part of a second
+  up, so an expiry is never read late. `Snapshots::form` takes no time from its caller: it reads the clock once and
+  uses that reading for the catalogue's snapshot, every statement's key check and `taken_at` (`F-012`'s notes).
+  The clock lives in this module because this row carries the inherited item; other rows reach it as
+  `snapshot::Clock`.
+- **Prices are an input.** The catalogue makes no price figure and no row of `M3` names one, so `form` takes
+  Core's prices (`snapshot::Price`: tuple, fee formula, rate, settlement seconds, when stated) and writes each with
+  its tuple's origin. A price whose tuple is out, that is dated after `taken_at`, or that the snapshot's contract
+  or the bounds' check refuses stays out, with why. Reading: where prices come from is `T-020-07`'s stated terms;
+  reversible.
+- **Exposures (`REQ-ORD-8`).** `snapshot::Exposures` is Core's record of value in flight, per order and segment.
+  A held operation counts as the router counts one against a ceiling: `amount_in` in its `from` asset, and an
+  exchange's `amount_out` in its `to` asset too. Every segment of every part of every order adds up per provider
+  and asset, so a split order's parts count together; the router sums a publisher's providers. Every provider with
+  value in flight gets an exposure figure, whether or not it has a tuple in the snapshot, so an unroutable provider
+  still counts against its publisher. Its publisher is the catalogue's; a provider whose publisher the catalogue
+  doesn't know fails the formation (`ExposureWithoutPublisher`) rather than drop its exposure. A stuck order's
+  holds stay until `release_order`, and `Exposures::stuck` reads them with no snapshot, clock or grant. Who holds
+  and releases is `T-020-08`'s (a segment handed over, a segment accounted for); the exposure figure's source is
+  `core-exposures` and its age 0.
+- **The `calls` figure.** `snapshot::Releases` records each accepted release from its admission artefact; one not
+  accepted is refused. A provider's calls figure is that of the release its tuple figures name by
+  `module_version`, with their origin, aged from the release assertion's `made_at` (0 if after `taken_at`, as the
+  catalogue does). A call for a holding balance, a call to the provider itself and a repeated callee are left out;
+  a call left out is one no route names, so it fails closed.
+- **Statements tied to keys (router-api's "Unchecked by either").** Statements enter as received bytes
+  (`snapshot::Received`), never a re-serialised type. `bind_statement` runs `Catalogue::verify_statement` (the
+  catalogue's deployment and protocol version, a key listed for its purpose by the advertisement in force at its
+  `made_at` and by the one held now) on the statement and on every statement nested in it, at any depth, each by its
+  own maker, its bytes taken with `provider_role::member`. A nested envelope inside a list can't be reached by
+  member names, so it refuses the whole statement. A maker the operator publishes, and `bind_operator_statement`
+  (the recorded decision among the operator's own), go to `verify_operator_statement`, the deployment's
+  `operator_key`. No figure kind the contract carries today nests a statement; the walk is there for the README's
+  "nested ones included", and is tested through `bind_statement`.
+- **What else keeps a statement out.** A quote's or dry run's maker that isn't its tuple's provider; a tuple
+  not in the snapshot; a verifier whose grant isn't in force for judgements at Core's clock, or whose origin is
+  unknown (its accepted advertisement and its release accepted last give it, since a verifier has no tuple figure);
+  a statement dated after `taken_at` though within the clock skew, whose age the contract can't state; and a
+  figure the contract or the bounds' check against the snapshot refuses. Each statement is added on trial, so one
+  bad statement is refused alone rather than failing the formation.
+- **Refusals recorded.** Core-internal's table gives this row "a statement refused before the record, a route
+  refused → stated entry `unverified`; `order_refusal`". `record_refused` keeps the bytes in the evidence store and
+  appends a stated entry, `signature: unverified`, naming the claimed maker; `record_route_refusal` appends an
+  `order_refusal`. `form` itself appends nothing, so a statement stays out even if the append fails.
+- **One adapter to the log.** Per the coordinator (the log's append surface is being split, `T-020-01b`), every
+  append of this module goes through `snapshot/journal.rs`, and it writes no decision kind.
+- **The route guard (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`).** `check_route` reads a route as received JSON,
+  one part, so a contract type's own check on the way in can't mask Core's rule. Each rule has one owning check:
+  typed and ordered (a non-empty list of the four kinds with two ends each, each starting where the one before
+  ended), an asset changed only at an exchange (a change of decimals counts), and a withdrawal from an outer node
+  first and a deposit to one last; `check_typed_operation`'s node rules follow. `check_part` runs it on a part the
+  router chose. The class is `malformed_request`, the only one of the seven that fits. A route handed on under
+  `REQ-ORD-43`, which starts at a holding account, is `T-020-13`'s; this guard refuses it until then.
+- **Tests, and the order.** The code came first, then the tests, so each key rule was switched off in turn and its
+  tests seen red: the exposure figures (all three exposure tests), the clock read once per formation replaced by a
+  fixed reading (the clock test), the key binding (both statement tests), the nested walk (both), the operator
+  path (the operator test), parts summed per provider (the provider ceiling test), the asset rule, the withdrawal
+  first, the deposit last, and the order (each its route test). A tenth test, beyond the row's list,
+  `judgement_is_carried_only_while_its_verifiers_grant_is_in_force_at_cores_clock`, covers the eligibility path
+  (the verifier's origin, its grant at Core's clock), and went red with the verifier's grant check switched off. Every snapshot a test forms is checked against
+  router-api's `catalogue-snapshot` schema and round-trips. The ceiling tests run through `RouteFinder`.
+- **Touches**: `Cargo.lock` and `components/core-orch/Cargo.toml` (this row's lines: `serde`, `serde_json`; dev
+  `ed25519-dalek`, `jsonschema`, all in the lock already, so no new package and no `licences/RECORD` line).
+  Signature checking is a `DEC-20` concern: this row's binding of statements to keys is in `T-025-05`'s scope.
