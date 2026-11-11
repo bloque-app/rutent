@@ -7,15 +7,17 @@
 //! A session speaks for one account, and the catalogue's balance checks happen only inside one (`REQ-CAT-3`). The
 //! engine opens it only for the account's holder or its delegate, and only for a bounded time: the fixed rule refuses
 //! a session asked by anyone else before the deployment's policy is asked, and the deployment's policy still decides
-//! the rest. The bound is measured from Core's own [`Clock`], never from the moment the request states: a session
-//! must end after Core's now and no more than [`LONGEST_SESSION_SECS`] after it, or it is refused, the clock read
-//! before the consultation, like the register. The holder the request names must hold the
-//! account, which the account's record says (`Source::Account`), whoever asks, so no party opens a session on
-//! another's account by naming itself, or an accomplice, its holder. A delegate is another party that holder names as
-//! its delegate on that account, an input asked of the holder (`Source::Holder`). Each is an input like any other, so
-//! one that can't be reached gives not known and one that says nothing a refusal (`REQ-AUZ-5`). An open session ends when it was asked to, and its id is its request's. An id already
-//! issued opens no other session: the catalogue holds one session per id, so a second would take the first one's
-//! place. That rule reads what the engine opened, so, like the permissions' below, it runs before the consultation.
+//! the rest. The holder the request names must hold the account, which the account's record says
+//! (`Source::Account`), whoever asks, so no party opens a session on another's account by naming itself, or an
+//! accomplice, its holder. A delegate is another party that holder names as its delegate on that account, an input
+//! asked of the holder (`Source::Holder`). Each is an input like any other, so one that can't be reached gives not
+//! known and one that says nothing a refusal (`REQ-AUZ-5`).
+//!
+//! The bound is measured from Core's own [`Clock`], never from the moment the request states: a session must end
+//! after Core's now and no more than [`LONGEST_SESSION_SECS`] after it, or it is refused. An open session ends when
+//! it was asked to, and its id is its request's. An id already issued opens no other session: the catalogue holds one
+//! session per id, so a second would take the first one's place. These two rules read the clock and what the engine
+//! opened, so, like the permissions' below, they run before the consultation.
 //!
 //! The engine keeps every session it opened in its [`Register`], which hands them to the catalogue
 //! ([`Register::open_in`]). The catalogue holds only which account each speaks for and when it ends, and answers no
@@ -62,8 +64,8 @@ use crate::engine::{
 };
 
 /// The longest a session may last, in seconds, from Core's now when it is asked for to when it ends. A session asked
-/// to last longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that never ends
-/// would bound nothing).
+/// to last longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that
+/// never ends would bound nothing).
 pub const LONGEST_SESSION_SECS: u64 = 15 * 60;
 
 /// A session the engine opened: the account it speaks for, its holder, and when it ends.
