@@ -418,8 +418,9 @@ impl CatalogueSnapshot {
     ///   relying provider's, the one given to it (ADR-0012; ruled by the orchestrator, 2026-11-06). The relying
     ///   provider is the provider of the tuple a judgement names, not the verifier that made it.
     /// - Answers agree: no two dry-run answers (fresh quotes included) for one tuple and amount, one accepted and
-    ///   one refused; no two judgements of one subject for one tuple, one yes and one no (ruled by the
-    ///   orchestrator, 2026-11-06).
+    ///   one refused; no two judgements of one subject and one class for one tuple, one yes and one no (ruled by
+    ///   the orchestrator, 2026-11-06; by class since `T-020-06`'s review, so a no for one class stands beside a
+    ///   yes for another and drops its candidate).
     /// - A statement figure's age runs from its `made_at` to `taken_at`, rounded up, and its validity from
     ///   `made_at` to its `valid_until`, rounded down (`REQ-QTE-4`).
     /// - A calls figure (3.0.0, `T-011-06`) states no validity, lists each callee once and each kind once per
@@ -544,8 +545,8 @@ impl CatalogueSnapshot {
         self.check_answers_agree()
     }
 
-    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject for one
-    /// tuple.
+    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject and one class
+    /// for one tuple.
     fn check_answers_agree(&self) -> Result<(), Violation> {
         let answers: Vec<(&Id, &str, bool)> = self
             .figures
@@ -576,25 +577,26 @@ impl CatalogueSnapshot {
         }) {
             return Err(Violation("dry-run answers for one tuple and amount agree"));
         }
-        let judgements: Vec<(&Id, &str, bool)> = self
+        let judgements: Vec<(&Id, &str, &str, bool)> = self
             .figures
             .iter()
             .filter_map(|f| match &f.value {
                 FigureValue::Eligibility { tuple, judgement } => Some((
                     tuple,
                     judgement.statement.subject.as_str(),
+                    judgement.statement.class.as_str(),
                     judgement.statement.answer == JudgementAnswer::Yes,
                 )),
                 _ => None,
             })
             .collect();
-        if judgements.iter().any(|(t, s, yes)| {
+        if judgements.iter().any(|(t, s, c, yes)| {
             judgements
                 .iter()
-                .any(|(t2, s2, yes2)| t == t2 && s == s2 && yes != yes2)
+                .any(|(t2, s2, c2, yes2)| t == t2 && s == s2 && c == c2 && yes != yes2)
         }) {
             return Err(Violation(
-                "eligibility judgements of one subject for one tuple agree",
+                "eligibility judgements of one subject and class for one tuple agree",
             ));
         }
         Ok(())

@@ -14,7 +14,9 @@
 //! request, no rival's tuple or figure (`REQ-CAT-5`). And a provider is asked about each of its tuples once, at one
 //! amount: where two kept paths reach its operation with different amounts, it is asked at the amount of the path
 //! the search ranks first, so it can't read from two amounts that a rival came before it, or what that rival
-//! charges. The other path's operation stays unconfirmed in the choice round until Core asks again (`F-020`).
+//! charges. In the choice round, the other path's candidate is dropped for its operation's quote at that amount,
+//! as `quote_voided`, where the quote lists `amount_changes`, and as `unconfirmed` otherwise, until Core asks again
+//! at its own amount (`T-020-06`).
 //!
 //! A shortlist round that keeps nothing asks nothing: no path arrives with a positive balance within the bounds,
 //! and the routing is refused before any provider hears of it (`REQ-QTE-13`).
