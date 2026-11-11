@@ -24,7 +24,7 @@
 //!
 //! `core-audit`'s own checks (`T-022-05`, `T-022-06`) append through a [`General`] handle, never through this type,
 //! so they can write no decision entry, and, since a [`GeneralEntry`] holds none attributed `verified`, attribute no
-//! statement.
+//! statement. [`Policy`] is the matching handle for the policy engine, which writes nothing else.
 
 pub mod kept;
 pub mod keys;
@@ -37,7 +37,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DecisionEntry, GeneralEntry, KeptStatements, Log, PolicyLog,
+    AppendFailure, DECISION_ON_THE_GENERAL_HANDLE, DecisionEntry, GeneralEntry, KeptStatements,
+    Log, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, is_decision,
 };
 use rutent_contracts::core_internal::{
     Entry, KeptStatement, Receipt, Through, Violation, admit_entry, attribute,
@@ -227,6 +228,24 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
             self.stale = false;
         }
         entry.check().map_err(AppendFailure::Refused)?;
+        // The path is held to the entry's kind before anything else, the retry rule included, as `admit_entry`
+        // holds it again: the handles' types already keep each kind to its path.
+        match (
+            through,
+            matches!(entry, Entry::Verified(v) if is_decision(&v.what)),
+        ) {
+            (Through::General, true) => {
+                return Err(AppendFailure::Refused(Violation(
+                    DECISION_ON_THE_GENERAL_HANDLE,
+                )));
+            }
+            (Through::Policy, false) => {
+                return Err(AppendFailure::Refused(Violation(
+                    RECORD_ON_THE_POLICY_HANDLE,
+                )));
+            }
+            _ => {}
+        }
         let (entry, advertisement) = match entry {
             Entry::Stated(claim) => {
                 let kept = self
@@ -344,6 +363,23 @@ impl<L: Log> General<L> {
 impl<L: Log> Log for General<L> {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         self.0.borrow_mut().append(entry)
+    }
+}
+
+/// Policy's handle on a shared log: it implements [`PolicyLog`] and nothing else, and isn't `Clone`, so the one
+/// whoever holds the log hands the policy engine is the only one it made.
+pub struct Policy<L>(Rc<RefCell<L>>);
+
+impl<L: PolicyLog> Policy<L> {
+    /// Policy's handle on `log`.
+    pub fn new(log: &Rc<RefCell<L>>) -> Self {
+        Policy(Rc::clone(log))
+    }
+}
+
+impl<L: PolicyLog> PolicyLog for Policy<L> {
+    fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+        self.0.borrow_mut().append_decision(entry)
     }
 }
 

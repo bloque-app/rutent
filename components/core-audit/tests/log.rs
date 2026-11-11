@@ -28,7 +28,7 @@ use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::log::merkle::{leaf_hash, sha256, verify_inclusion};
 use rutent_core_audit::log::{
     ADVERTISEMENT_NOT_KEPT, AuditLog, Clock, FileStore, General, KEPT_BYTES_DIFFER, KeptInMemory,
-    MemoryStore, Settings, Store, StoreError, digest,
+    MemoryStore, Policy, Settings, Store, StoreError, digest,
     keys::{CHANGE_BEFORE_ITS_TUPLES_LAST, CHANGE_OFF_THE_LOGS_CLOCK},
     record,
 };
@@ -2235,4 +2235,40 @@ fn an_advertisement_the_catalogue_would_refuse_changes_no_key() {
         "tx-p-6",
         "2026-11-06T15:04:05Z"
     ));
+}
+
+/// Names an item only for a type that doesn't implement [`Log`]: for one that does, the two impls make the name
+/// ambiguous and the test doesn't build.
+trait NotLog<A> {
+    fn holds() {}
+}
+impl<T: ?Sized> NotLog<()> for T {}
+impl<T: ?Sized + Log> NotLog<u8> for T {}
+
+/// The same for `Clone`.
+trait NotClone<A> {
+    fn holds() {}
+}
+impl<T: ?Sized> NotClone<()> for T {}
+impl<T: Clone> NotClone<u8> for T {}
+
+/// Policy's handle on a shared log takes policy's decisions and nothing else: it is no general handle and can't be
+/// copied, so the one handed to the policy engine is the only one.
+// verifies: REQ-AUZ-1, DEC-2
+#[test]
+fn policys_handle_writes_only_decisions() {
+    type Shared = AuditLog<MemoryStore, KeptInMemory>;
+    <Policy<Shared> as NotLog<_>>::holds();
+    <Policy<Shared> as NotClone<_>>::holds();
+    let log = Rc::new(RefCell::new(
+        AuditLog::open(settings(), MemoryStore::new(), KeptInMemory::new()).unwrap(),
+    ));
+    let mut policy = Policy::new(&log);
+    let decision: DecisionEntry =
+        serde_json::from_value(valid("verified-entry-of-a-decision")).unwrap();
+    assert_eq!(policy.append_decision(&decision).unwrap().index.get(), 0);
+    let record: VerifiedEntry =
+        serde_json::from_value(valid("verified-entry-of-a-holding-check")).unwrap();
+    assert!(DecisionEntry::try_from(record).is_err());
+    assert_eq!(log.borrow().len(), 1);
 }

@@ -51,6 +51,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   consistency proof is built: `T-022-04`'s checker holds the whole history and recomputes `root_at`.
 - **The checks' handle.** `log::General<L>` wraps a shared log and implements `Log` alone. `T-022-05` and `T-022-06`
   take it (or any `Log`), never `AuditLog`; a test holds that it implements no `PolicyLog`.
+- **Policy's handle.** `log::Policy<L>` wraps a shared log, implements `PolicyLog` alone and isn't `Clone`, the
+  match of `General`; a test holds both. The assembly (`F-024`'s) still holds its own `PolicyHandle`, and may take
+  this one instead.
+- **The path before the retry rule.** An append holds its path to its entry's kind (a decision only through
+  policy's handle, anything else only through the general one) before the retry rule, as `admit_entry` holds it
+  again after. The handles' types already keep each kind to its path, so no test reaches it, and no rule-off can
+  witness it.
 - **The evidence store's read** is a stand-in until `T-022-03` builds the store: `log::KeptInMemory`, a map from
   commitment to `KeptStatement` that the caller fills with a salt of its own. It has no restatement index, draws no
   salt and answers no `Evidence` read. `T-022-03`'s store replaces it through `KeptStatements`, with no change to
