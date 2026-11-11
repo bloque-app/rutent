@@ -4,13 +4,21 @@
 mod snapshot_support;
 
 use ed25519_dalek::SigningKey;
-use rutent_contracts::core_internal::{Attribution, Entry};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, KeptStatements, Signatures, StatementKeys,
+};
+use rutent_contracts::core_internal::{
+    Attribution, Entry, KeptStatement, SignedWith, StatedEntry, attribute,
+};
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE};
 use rutent_contracts::router_api::{DECISION_RECORD_SHAPE, FigureValue, PositiveAmount, Request};
+use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_orch::snapshot::{
     Asked, Clock, Exposures, PathStep, Received, Refusal, RefusedStatement, Releases,
     bind_operator_statement, bind_statement, record_refused,
 };
+use rutent_prov::catalogue::Publisher;
 use rutent_prov::catalogue::{Instant, StatementRefusal};
 use serde_json::{Value, json};
 use snapshot_support::*;
@@ -117,8 +125,9 @@ fn choice_request() -> Request {
     .unwrap()
 }
 
-/// Records each refused statement and checks it went to the log as its maker's, attributed where its own signature
-/// verified and only claimed where it didn't, received at Core's clock, with its bytes in the evidence store.
+/// Records each refused statement and checks it went to the log unverified, claimed by the maker its envelope names
+/// and about the transaction its bytes sign, for the log to attribute; received at Core's clock, with its bytes in
+/// the evidence store.
 fn record_each(
     catalogue: &rutent_prov::catalogue::Catalogue,
     clock: &TestClock,
@@ -134,17 +143,19 @@ fn record_each(
         let Entry::Stated(stated) = entry else {
             panic!("a refused statement is a stated entry");
         };
-        match &stated.attribution {
-            Attribution::Verified { who } => {
-                assert!(statement.verified);
-                assert_eq!(who.acts.as_str(), RESERVE);
-                assert_eq!(who.party.as_str(), "acme");
-            }
-            Attribution::Unverified { claimed_by } => {
-                assert!(!statement.verified);
-                assert_eq!(claimed_by.acts.as_str(), RESERVE);
-            }
-        }
+        let Attribution::Unverified { claimed_by } = &stated.attribution else {
+            panic!("orchestration appends a statement unverified; the log attributes it");
+        };
+        assert_eq!(claimed_by.acts.as_str(), RESERVE);
+        assert_eq!(claimed_by.party.as_str(), "acme");
+        assert_eq!(
+            stated
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.as_ref())
+                .map(|t| t.as_str()),
+            signed_transaction(&statement.bytes).as_deref()
+        );
         assert_eq!(
             stated.received_at.as_str(),
             clock.now().timestamp().unwrap().as_str()
@@ -461,6 +472,87 @@ fn operators_statement_is_tied_to_the_deployments_operator_key() {
     );
 }
 
+/// The log's sources over the real catalogue, for core-internal's `attribute`: the bytes the evidence store kept by
+/// their commitment, the catalogue's publishers and deployment, and its verification of a statement's key and
+/// signature at Core's clock.
+struct LogSources<'a> {
+    catalogue: &'a rutent_prov::catalogue::Catalogue,
+    evidence: &'a KeptEvidence,
+    log: &'a KeptLog,
+    at: Instant,
+}
+
+impl KeptStatements for LogSources<'_> {
+    fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        // The stated entries name their bytes in the order the store kept them.
+        let place = self
+            .log
+            .entries
+            .iter()
+            .position(|e| matches!(e, Entry::Stated(s) if &s.commitment == commitment));
+        Ok(place.map(|i| {
+            serde_json::from_value(json!({
+                "commitment": commitment,
+                "salt": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "bytes": base64url(&self.evidence.kept[i]),
+            }))
+            .unwrap()
+        }))
+    }
+}
+
+impl StatementKeys for LogSources<'_> {
+    fn deployment(&mut self) -> Result<Deployment, AppendFailure> {
+        Ok(deployment())
+    }
+
+    fn operator(&mut self) -> Result<Id, AppendFailure> {
+        Ok(Id::new("operator").unwrap())
+    }
+
+    fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
+        Ok(
+            match self.catalogue.publishers().publisher(maker.as_str()) {
+                Some(Publisher::Operator) => Id::new("operator"),
+                Some(Publisher::Party(party)) => Id::new(party),
+                None => None,
+            },
+        )
+    }
+
+    fn signs_for(&mut self, _: &Id, _: &SignedWith, _: &Timestamp) -> Result<bool, AppendFailure> {
+        // The catalogue's verification below ties the key to its maker at its `made_at`.
+        Ok(true)
+    }
+}
+
+impl Signatures for LogSources<'_> {
+    fn verifies(&self, received: &[u8]) -> bool {
+        self.catalogue.verify_statement(received, self.at).is_ok()
+    }
+}
+
+fn base64url(raw: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in raw.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+/// The transaction a statement's bytes sign, where its body names one.
+fn signed_transaction(bytes: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    Some(value["statement"]["transaction"].as_str()?.to_string())
+}
+
 // verifies: REQ-AUD-2
 #[test]
 fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_signature() {
@@ -477,22 +569,53 @@ fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_sign
     let mut log = KeptLog::default();
     let mut evidence = KeptEvidence::default();
     record_refused(&mut evidence, &mut log, &clock, &catalogue, &claimed, None).unwrap();
-    let [Entry::Stated(stated)] = log.entries.as_slice() else {
-        panic!("one stated entry");
-    };
-    assert!(matches!(stated.attribution, Attribution::Unverified { .. }));
-
-    // The same claim on a statement whose signature does verify is recorded as its maker's.
+    // Orchestration never attributes a statement, whatever it is told: it appends it unverified, claimed by the
+    // maker its envelope names and about the transaction its bytes sign, and the log, which alone attributes, reads
+    // the kept bytes' own signature (core-internal's `attribute`).
     let honest = RefusedStatement {
         bytes: dry_run(&deployment(), 3_500, &statements_key(RESERVE, 1)),
         verified: false,
-        ..claimed
+        ..claimed.clone()
     };
     record_refused(&mut evidence, &mut log, &clock, &catalogue, &honest, None).unwrap();
-    let Entry::Stated(stated) = &log.entries[1] else {
-        panic!("a stated entry");
+    let [Entry::Stated(stray), Entry::Stated(signed)] = log.entries.as_slice() else {
+        panic!("two stated entries");
     };
-    assert!(matches!(stated.attribution, Attribution::Verified { .. }));
+    for (stated, statement) in [(stray, &claimed), (signed, &honest)] {
+        assert!(matches!(stated.attribution, Attribution::Unverified { .. }));
+        assert_eq!(
+            stated
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.as_ref())
+                .map(|t| t.as_str()),
+            signed_transaction(&statement.bytes).as_deref()
+        );
+    }
+
+    // The log attributes each by its own signature, over the catalogue: the stray one stays unverified, and the
+    // honest one is its maker's, the provider whose key signs, stating for its publisher.
+    let (stray, signed) = (stray.clone(), signed.clone());
+    let attributed = |claim: &StatedEntry| {
+        let mut sources = LogSources {
+            catalogue: &catalogue,
+            evidence: &evidence,
+            log: &log,
+            at: clock.now().floor(),
+        };
+        let mut keys = LogSources { ..sources };
+        let signatures = LogSources { ..sources };
+        attribute(claim, &mut sources, &mut keys, &signatures).unwrap()
+    };
+    assert!(matches!(
+        attributed(&stray).attribution,
+        Attribution::Unverified { .. }
+    ));
+    let Attribution::Verified { who } = attributed(&signed).attribution else {
+        panic!("the honest statement is its maker's");
+    };
+    assert_eq!(who.acts.as_str(), RESERVE);
+    assert_eq!(who.party.as_str(), "acme");
 }
 
 // verifies: THR-3, REQ-AUD-4

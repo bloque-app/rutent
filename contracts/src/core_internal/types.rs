@@ -979,13 +979,17 @@ pub enum Authority {
         /// The consent.
         consent: Digest,
     },
-    /// A route the router shortlisted for the order: the digest of the shortlist round's recorded decision, and the
-    /// providers it shortlisted, so policy can hold who is asked to them (`REQ-CPL-6`).
+    /// A route the router shortlisted for the order: the digest of the shortlist round's recorded decision, the
+    /// providers it shortlisted, and the verifiers its tuples need, which receive the subject, so policy can hold
+    /// who is asked to them (`REQ-CPL-5`, `REQ-CPL-6`).
     ShortlistedRoute {
         /// The shortlist.
         shortlist: Digest,
         /// The shortlisted providers, at least one, each once.
         providers: Vec<Id>,
+        /// The verifiers the shortlisted route's tuples need, each once: none where they need none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        verifiers: Vec<Id>,
     },
 }
 
@@ -1067,12 +1071,14 @@ pub struct PersonAnswer {
 
 // --- What the log's checks read --------------------------------------------------------------------------------
 
-/// One party's report about a segment: how much of which asset it says it sent or received, and the receipt of the
-/// stated entry that holds its statement. Schema: `urn:rutent:core-internal:report-pair#/$defs/report`.
+/// One provider's report about a segment: how much of which asset it says it sent or received, and the receipt of
+/// the stated entry that holds its statement, made by that provider. Schema:
+/// `urn:rutent:core-internal:report-pair#/$defs/report`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
-    /// The party that reports.
+    /// The provider that reports: the statement's maker, its `acts`, so two adjacent providers of one publisher
+    /// report a pair (`REQ-ORD-9`).
     pub party: Id,
     /// The amount, in the asset's unit.
     pub amount: Amount,
@@ -1885,14 +1891,20 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         previous: Option<Receipt>,
-        /// The providers a shortlist round shortlisted, at least one, each once: present exactly when the round is
-        /// the shortlist, so a question on a shortlisted route is held to them (`REQ-CPL-2`, `REQ-CPL-6`).
+        /// The providers a shortlist round shortlisted, each once, and none where it kept none, so a `no_route`
+        /// input has the record to cite (`REQ-AUD-4`): present exactly when the round is the shortlist, so a question
+        /// on a shortlisted route is held to them (`REQ-CPL-2`, `REQ-CPL-6`).
         #[serde(
             default,
             deserialize_with = "some",
             skip_serializing_if = "Option::is_none"
         )]
         shortlisted: Option<Vec<Id>>,
+        /// The verifiers a shortlist round's tuples need, by its recorded decision, each once: only on a shortlist's
+        /// record, and none where they need none, so a question on its route asks only them besides its providers
+        /// (`REQ-CPL-5`, `REQ-CPL-6`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        verifiers: Vec<Id>,
     },
     /// What was shown to the customer, by digest, and how (`REQ-QTE-2`, `REQ-QTE-7`, `REQ-QTE-10`).
     Shown {
@@ -2099,7 +2111,9 @@ pub struct StatedOutcome {
 }
 
 /// Who a statement is attributed to: its maker where its signature verified against a key of the maker's, and
-/// otherwise only the party it claims as maker, attributed to no one (`REQ-AUD-2`). Schema:
+/// otherwise only the party it claims as maker, attributed to no one (`REQ-AUD-2`). A verified maker's `acts` is the
+/// envelope's maker and its `party` the one that maker states for, both bound by the log; its `role` is the writer's
+/// label, which no relation reads. Schema:
 /// `urn:rutent:core-internal:stated-entry#/$defs/attribution`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "signature", rename_all = "snake_case", deny_unknown_fields)]

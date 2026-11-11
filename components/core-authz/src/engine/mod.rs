@@ -617,7 +617,9 @@ mod tests {
             if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == entry) {
                 return Ok(receipt.clone());
             }
-            admit_entry(&self.0, entry, through).map_err(AppendFailure::Refused)?;
+            // The operator party Core's questions are verified to, as the log's `StatementKeys::operator` answers.
+            let operator = Id::new("operator").unwrap();
+            admit_entry(&self.0, entry, through, &operator).map_err(AppendFailure::Refused)?;
             let index = self.0.len();
             let receipt: Receipt = serde_json::from_value(json!({
                 "log": "log-test",
@@ -1689,6 +1691,9 @@ mod tests {
         ("Comparisons", false),
         ("Measures", false),
         ("Operator", false),
+        ("KeptStatements", false),
+        ("StatementKeys", false),
+        ("Signatures", false),
     ];
 
     /// The methods of the policy traits in `source`, a version of core-internal's `calls.rs`, or the traits it

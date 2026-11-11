@@ -76,14 +76,16 @@
 //! so they could name these types; a source check in `tools/boundary-check` fails if any of them names
 //! `core_internal` at all (`DEC-2`).
 
+mod attribution;
 pub mod calls;
 mod check;
 mod relations;
 mod types;
 
+pub use attribution::{STATED_WITHOUT_ITS_KEPT_BYTES, attribute};
 pub use relations::{
-    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, Through, admit_entry,
-    covers,
+    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
+    StatedCiting, Through, admit_entry, covers,
 };
 pub use types::*;
 

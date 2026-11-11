@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 191 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 47 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 109 valid fixtures and 107 invalid ones, each
+  breaking one rule, and 230 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -40,3 +40,69 @@
   holding the other's kinds, and `admit_entry` takes the path an entry came by and refuses a decision kind on the
   general one, so no part but the policy engine can write the decision an effect is admitted on. Twenty-two of the
   admission cases name the path. (DEC-2, DEC-4, DEC-20, REQ-AUZ-1, INV-7, T-020-01)
+- Folded into 1.0.0 before its release: the log, not the writer, attributes a stated entry. A `GeneralEntry`
+  refuses a stated entry attributed `verified`, so a statement reaches the general handle naming only its claimed
+  maker and its bytes' commitment. `attribute` records it verified only where the bytes the evidence store keeps
+  under that commitment are an envelope of this deployment, by that maker, of the entry's shape, time, key and
+  transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
+  otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
+  `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Twenty-four attribution cases,
+  under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a reserve's yes is bound to its order through its signed transaction. A
+  statement about an order or a segment is verified only where its `about` names the transaction its body names;
+  `acceptance-rests-on-the-reserves-yes` requires that transaction; and a new none-other row over stated entries,
+  `transaction-belongs-to-one-order` in `STATED_RELATIONS`, refuses a later entry naming a transaction under
+  another order than the first. `Relation`, `Cites` and `Answers` take the citing entry's kind as a parameter,
+  verified by default. (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, T-020-01)
+- Folded into 1.0.0 before its release: a statement is cited only for what it is about, and a yes follows its
+  question. Core appends each question it asks, an `operation` signed with the operator's key and about the order
+  and transaction it asks under, before its answer; `answer-follows-its-question`, a second row of
+  `STATED_RELATIONS`, admits a provider's result naming a transaction only after that question and about its
+  order, so a genuine yes can't be bound to another order first. Every row that cites a statement (the sent and
+  received reports, an arrival's report, graded evidence, what came after an order ended, a reliance's judgement)
+  holds the order, segment and transaction its `about` names to the citing entry's, a transaction by the order it
+  belongs to; a statement about nothing stays citable on its body. A judgement, which carries no transaction, is
+  appended about no order and bound by its reliance. 206 admission cases and 19 attribution cases.
+  (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, REQ-ORD-39, REQ-CPL-12, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: a statement naming a transaction is bound through it. `attribute` verifies
+  a statement whose body names a transaction only where its `about` names the same one, so no result is verified
+  about nothing and none escapes `answer-follows-its-question` or the `about` checks; a judgement, which names no
+  transaction, stays about nothing. `transaction-belongs-to-one-order` fixes the segment the first entry names as
+  well as the order, and a cited statement's transaction must belong to the citing entry's segment where it names
+  one. `answer-follows-its-question` compares the question's verified party with the deployment's operator party,
+  which `admit_entry` now takes as a fourth argument and `StatementKeys::operator` answers; the stated rows read a
+  `StatedCiting`. A customer's segment read names a segment its order's plan lists, and only a permitted
+  revocation must revoke a grant, so a refused revocation of a permission never granted is recorded.
+  (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, REQ-AUD-2, REQ-AUZ-7, T-020-01)
+- Folded into 1.0.0 before its release: graded evidence claiming a signature rests on verified statements. Every
+  statement a grade-2 or grade-3 evidence entry cites must be one the log verified; a grade-1 public record rests on
+  the network. (DEC-4, DEC-20, REQ-ORD-39, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: evidence of any grade is bound to its order and segment. A grade-4 bare
+  statement is its provider's word, so it rests on a verified statement made by the provider this log's `move_value`
+  names for the segment (`REQ-ORD-38`, `REQ-AUD-2`); and a statement that isn't verified, which only a grade-1 public
+  record may rest on, must name a transaction bound to the evidence's order and segment.
+  (DEC-4, DEC-20, REQ-ORD-38, REQ-ORD-39, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: the log binds a statement's maker to its key and its publisher.
+  `attribute` compared the envelope's `maker` with the claimed `party`, though the envelope names the provider,
+  `acts`, and `party` is its publisher, so a provider whose publisher differs from it could never be verified, and
+  `party` was the writer's word. It now verifies only where the envelope's `maker` is `acts`, the key signs for
+  `acts`, and `party` is the one the new `StatementKeys::publisher` answers. The rows comparing a statement's maker
+  with a provider read `acts`; those comparing it with a party read `party`. 224 admission cases and 24 attribution
+  cases. (DEC-4, DEC-20, REQ-AUD-2, REQ-ORD-32, T-020-01)
+- Folded into 1.0.0 before its release: a shortlist may keep no provider. A shortlist round's decision record names
+  its shortlisted providers each once, and none where it kept none, so a `no_route` input has the record to cite;
+  the schema drops `minItems` and the Rust check keeps distinctness. (DEC-4, DEC-20, REQ-AUD-4, REQ-CPL-6,
+  T-020-01)
+- Folded into 1.0.0 before its release: a person question names the verifiers it is sent to. A shortlisted route's
+  authority and its shortlist's decision record name the verifiers the route's tuples need, which receive the
+  subject; a question on the route asks only its providers and those verifiers, and records and bounds them with
+  the providers (`REQ-CPL-5`). `shortlisted-authority-cites-its-shortlist` holds the authority's verifiers to the
+  record's, and a choice round's record names none. (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-CPL-6, T-020-01)
+- Folded into 1.0.0 before its release: rows that mean the signer read the actor. `answer-follows-its-question`
+  compares the question's verified `acts` with the maker the operator signs as (`StatementKeys::operator`), so a
+  module the operator publishes, stating for the operator's party, asks no question of Core's. `Report.party` names
+  the reporting provider, and the two report rows read `acts`, so a sibling under one publisher can't stand in for
+  it and two adjacent providers of one publisher can report a pair (`REQ-ORD-9`). A stated entry's relay is another
+  actor than its maker, so a sibling of its publisher may relay it. 109 valid fixtures, 107 invalid, 230 admission
+  cases. (DEC-4, DEC-20, REQ-ORD-9, REQ-ORD-32, REQ-AUD-2, T-020-01)

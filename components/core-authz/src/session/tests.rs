@@ -55,7 +55,9 @@ impl PolicyLog for Kept {
         if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == &entry) {
             return Ok(receipt.clone());
         }
-        admit_entry(&self.0, &entry, Through::Policy).map_err(AppendFailure::Refused)?;
+        // The operator party Core's questions are verified to, as the log's `StatementKeys::operator` answers.
+        let operator = id("operator");
+        admit_entry(&self.0, &entry, Through::Policy, &operator).map_err(AppendFailure::Refused)?;
         let index = 1_000 + self.0.len();
         let receipt: Receipt = serde_json::from_value(json!({
             "log": "log-main",
@@ -766,15 +768,20 @@ fn regulators_read_without_its_permission_is_refused_and_recorded() {
     let revoked = read("req-438", regulator.clone(), trail(), Some("perm-reg-1"));
     assert_eq!(read_recorded(&mut engine, &revoked), refused(), "revoked");
 
-    // A permission never granted can't be revoked: policy refuses it, and the log takes no revocation of it at all.
+    // A permission never granted can't be revoked: policy refuses it, and the log records the refusal, which cites
+    // no grant (core-internal's `revocation-revokes-a-grant` holds only a permitted revocation to one).
     let mut never = revocation.clone();
     never.request = id("req-r2");
     never.permission = id("perm-never");
     let ruled = engine.policy.1.ruled;
-    assert!(matches!(
-        engine.revoke_permission(&never),
-        Err(AppendFailure::Refused(_))
-    ));
+    let refusal = engine.revoke_permission(&never).unwrap();
+    assert!(refusal.permit().is_none());
+    assert_eq!(
+        refusal.outcome,
+        rutent_contracts::core_internal::Answer::Refuse {
+            class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+        }
+    );
     assert_eq!(engine.policy.1.ruled, ruled, "the deployment isn't asked");
 
     // The deployment's policy still decides a read the permission covers.

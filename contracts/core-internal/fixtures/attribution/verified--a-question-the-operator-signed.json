@@ -1,0 +1,64 @@
+{
+  "claim": {
+    "kind": "stated",
+    "attribution": {
+      "signature": "unverified",
+      "claimed_by": {
+        "party": "operator",
+        "acts": "rutent-operator",
+        "role": "operator",
+        "kind": "component"
+      }
+    },
+    "what": {
+      "statement": "urn:rutent:provider-role:operation"
+    },
+    "when": {
+      "at": "2026-11-06T15:04:05Z",
+      "source": "party_stated"
+    },
+    "received_at": "2026-11-06T15:04:06Z",
+    "outcome": {
+      "status": "stated"
+    },
+    "signed_with": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "about": {
+      "order": "ord-17",
+      "transaction": "tx-005"
+    }
+  },
+  "kept": {
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "bytes": "eyJkZXBsb3ltZW50Ijp7Im5hbWUiOiJydXRlbnQtdGVzdCIsIm9wZXJhdG9yX2tleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEifSwicHJvdG9jb2xfdmVyc2lvbiI6IjIuMC4xIiwic2hhcGUiOiJ1cm46cnV0ZW50OnByb3ZpZGVyLXJvbGU6b3BlcmF0aW9uIiwibWFrZXIiOiJydXRlbnQtb3BlcmF0b3IiLCJtYWRlX2F0IjoiMjAyNi0xMS0wNlQxNTowNDowNVoiLCJzaWduYXR1cmUiOnsic2NoZW1lIjoiZWQyNTUxOSIsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEiLCJ2YWx1ZSI6IkJ3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBaElpTWtKU1luS0NrcUt5d3RMaTh3TVRJek5EVTJOemc1T2pzOFBUNF9RRUZDUTBSRlJnIn0sInN0YXRlbWVudCI6eyJraW5kIjoiYmFsYW5jZV92ZXJpZmljYXRpb24iLCJ0cmFuc2FjdGlvbiI6InR4LTAwNSIsInByb3ZpZGVyIjoiYWNtZS1jbyIsInNlc3Npb24iOiJzZXNzaW9uLTQyIiwiYWNjb3VudCI6ImFjY3QtOSIsImFzc2V0IjoiQ09QIiwiYW1vdW50IjoiMjUwMDAwMDAifX0"
+  },
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "keys": [
+    {
+      "maker": "rutent-operator",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "at": "2026-11-06T15:04:05Z"
+    }
+  ],
+  "signature": true,
+  "expect": "verified",
+  "publishers": [
+    {
+      "maker": "rutent-operator",
+      "party": "operator"
+    }
+  ]
+}
