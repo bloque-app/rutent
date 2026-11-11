@@ -12,7 +12,7 @@ mod route;
 mod simnet;
 
 pub use grade::{
-    Check, Claim, GradeExt, Graded, GradedPiece, PublisherId, Receipt, ReceiptRefused,
+    Check, Claim, GradeExt, Graded, GradedPiece, PublisherId, Publishers, Receipt, ReceiptRefused,
     ReceiptVerifier, Refusal, VerifiedReceipt, distinct_movements, grade_outcome, receipt_check,
     verify_receipt,
 };

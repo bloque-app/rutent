@@ -82,9 +82,14 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   only `verify_receipt` builds one, over a `ReceiptVerifier` the caller passes. `verify_receipt` refuses a receipt
   that acknowledges no reference (empty or only whitespace), one the verifier doesn't find signed by its maker for
   that reference, and one whose maker has no publisher in the verifier's catalogue. The receipt keeps its maker.
-- The publisher-difference rule (`THR-124`) stays in `receipt_check`. The provider's publisher comes from the same
-  verifier's `publisher_of(provider)`, not from a separate input, so both publishers come from one catalogue. A
-  provider the verifier doesn't know earns no check.
+- The publisher-difference rule (`THR-124`) stays in `receipt_check`, but both publishers are read earlier, in one
+  call: `verify_receipt` takes the provider whose outcome the receipt is meant to back, and the verifier's
+  `publishers(maker, provider)` answers for both from one catalogue snapshot. Two lookups could straddle a catalogue
+  change and let `THR-124` pass by mistake. A maker or a provider the verifier doesn't know refuses the receipt
+  (`UnknownMaker`, `UnknownProvider`). `receipt_check` then needs no verifier.
+- A receipt check records the provider it was judged for, and `grade_outcome` takes the outcome's provider: a
+  receipt check backs a piece only in that provider's outcome. A check judged for one provider can't be carried to
+  another's.
 - The crate doesn't verify signatures itself. That's a reversible default, for two reasons. The crate depends on
   nothing of ours but the contracts. That is F-001's reading, stricter than `DEC-2`, which restricts only the
   three outer libraries; `CMP-EVIDENCE` isn't one of them (`ARCHITECTURE.md`), and the boundary check enforces

@@ -43,7 +43,7 @@ proptest! {
     // verifies: REQ-ORD-39, DEC-13
     #[test]
     fn graded_outcome_is_never_stronger_than_the_declared_grade(declared in grade(), claims in claims()) {
-        if let Ok(graded) = grade_outcome(declared, claims) {
+        if let Ok(graded) = grade_outcome(PROVIDER, declared, claims) {
             prop_assert!(!graded.grade.is_stronger_than(declared));
         }
     }
@@ -54,7 +54,7 @@ proptest! {
     #[test]
     fn any_claim_stronger_than_declared_is_refused(declared in grade(), claims in claims()) {
         let over = claims.iter().any(|c| c.piece.grade.is_stronger_than(declared));
-        let result = grade_outcome(declared, claims);
+        let result = grade_outcome(PROVIDER, declared, claims);
         if over {
             let refused = matches!(result, Err(Refusal::ClaimAboveDeclared { .. }) | Err(Refusal::NoEvidence));
             prop_assert!(refused);
@@ -70,7 +70,7 @@ proptest! {
             .into_iter()
             .map(|c| Claim { check: Check::unchecked(), ..c })
             .collect();
-        if let Ok(graded) = grade_outcome(declared, unchecked) {
+        if let Ok(graded) = grade_outcome(PROVIDER, declared, unchecked) {
             prop_assert!(!graded.is_proof());
         }
     }
@@ -82,8 +82,8 @@ proptest! {
     fn grading_does_not_depend_on_the_order_of_the_pieces(declared in grade(), claims in claims()) {
         let mut reversed = claims.clone();
         reversed.reverse();
-        let forward = grade_outcome(declared, claims).map(|g| g.grade);
-        let backward = grade_outcome(declared, reversed).map(|g| g.grade);
+        let forward = grade_outcome(PROVIDER, declared, claims).map(|g| g.grade);
+        let backward = grade_outcome(PROVIDER, declared, reversed).map(|g| g.grade);
         prop_assert_eq!(forward.is_ok(), backward.is_ok());
         if let (Ok(a), Ok(b)) = (forward, backward) {
             prop_assert_eq!(a, b);
@@ -110,7 +110,7 @@ proptest! {
                 check: other_receipt(reference),
             })
             .collect();
-        let graded = grade_outcome(EvidenceGrade::PublicRecord, claims).unwrap();
+        let graded = grade_outcome(PROVIDER, EvidenceGrade::PublicRecord, claims).unwrap();
         prop_assert!(graded.pieces.iter().all(|p| p.effective == EvidenceGrade::Statement));
         prop_assert!(!graded.is_proof());
     }
@@ -128,7 +128,7 @@ proptest! {
             piece: EvidencePiece { grade, reference: reference.clone(), by: if receipt { NEXT } else { PROVIDER }.into() },
             check,
         };
-        let graded = grade_outcome(grade, vec![claim]).unwrap();
+        let graded = grade_outcome(PROVIDER, grade, vec![claim]).unwrap();
         let kind_backs = !receipt || grade == EvidenceGrade::SignedByAnotherParty;
         prop_assert_eq!(graded.is_proof(), reference == bound_to && kind_backs);
     }

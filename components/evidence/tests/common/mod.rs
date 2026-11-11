@@ -3,7 +3,7 @@
 
 use rutent_evidence::{
     Check, Expected, Finality, Movement, MovementId, NetworkRules, PublicNetwork, PublisherId,
-    Receipt, ReceiptVerifier, ReorgRule, Status, VerifiedReceipt, public_record_check,
+    Publishers, Receipt, ReceiptVerifier, ReorgRule, Status, VerifiedReceipt, public_record_check,
     receipt_check, verify_receipt,
 };
 
@@ -45,7 +45,7 @@ pub fn publisher(name: &str) -> PublisherId {
 
 /// A stand-in verifier. A receipt verifies when its bytes are its maker's signature over its reference, spelled
 /// `signed <maker> <reference>`. The catalogue it reads puts `acme-co` and `acme-two` behind the publisher `acme`
-/// (under two spellings), and `next-co` behind `other`.
+/// (under two spellings), `next-co` behind `other`, and `third-co` behind `third`.
 pub struct Signer;
 
 impl ReceiptVerifier for Signer {
@@ -53,13 +53,21 @@ impl ReceiptVerifier for Signer {
         receipt.received == signed(receipt.maker, receipt.reference).as_slice()
     }
 
-    fn publisher_of(&self, party: &str) -> Option<PublisherId> {
-        match party {
-            "acme-co" => PublisherId::new("acme"),
-            "acme-two" => PublisherId::new(" ACME "),
-            "next-co" => PublisherId::new("other"),
-            _ => None,
+    fn publishers(&self, maker: &str, provider: &str) -> Publishers {
+        Publishers {
+            maker: catalogue(maker),
+            provider: catalogue(provider),
         }
+    }
+}
+
+fn catalogue(party: &str) -> Option<PublisherId> {
+    match party {
+        "acme-co" => PublisherId::new("acme"),
+        "acme-two" => PublisherId::new(" ACME "),
+        "next-co" => PublisherId::new("other"),
+        "third-co" => PublisherId::new("third"),
+        _ => None,
     }
 }
 
@@ -68,11 +76,17 @@ pub fn signed(maker: &str, reference: &str) -> Vec<u8> {
     format!("signed {maker} {reference}").into_bytes()
 }
 
-/// `maker`'s receipt for `reference`, verified by [`Signer`].
+/// `maker`'s receipt for `reference`, verified by [`Signer`] for [`PROVIDER`]'s outcome.
 pub fn verified(maker: &str, reference: &str) -> VerifiedReceipt {
+    verified_for(PROVIDER, maker, reference)
+}
+
+/// `maker`'s receipt for `reference`, verified by [`Signer`] for `provider`'s outcome.
+pub fn verified_for(provider: &str, maker: &str, reference: &str) -> VerifiedReceipt {
     let received = signed(maker, reference);
     verify_receipt(
         &Signer,
+        provider,
         &Receipt {
             maker,
             reference,
@@ -91,5 +105,5 @@ pub const NEXT: &str = "next-co";
 /// A receipt check for `reference` from `next-co`, whose publisher is not the provider's (`acme`). It backs a piece
 /// whose `by` is `next-co`.
 pub fn other_receipt(reference: &str) -> Check {
-    receipt_check(&Signer, PROVIDER, &verified(NEXT, reference))
+    receipt_check(&verified(NEXT, reference))
 }

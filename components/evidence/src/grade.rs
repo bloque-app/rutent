@@ -19,8 +19,9 @@ use rutent_contracts::provider_role::{EvidenceGrade, EvidencePiece};
 /// a stricter reading than `DEC-2` (F-001's notes), which the boundary check enforces. Core supplies them from the
 /// catalogue it accepted and the provider library's strict verifier.
 ///
-/// Each check is bound to what it checked: a movement, or the reference a receipt acknowledges and the receipt's
-/// maker. It backs only the piece whose reference that is, and a receipt only the piece its maker gave (`by`).
+/// Each check is bound to what it checked: a movement, or the reference a receipt acknowledges, the receipt's maker
+/// and the provider it was judged for. It backs only the piece whose reference that is, and a receipt only the piece
+/// its maker gave (`by`), in that provider's outcome.
 ///
 /// ```compile_fail
 /// let forged = rutent_evidence::Check::public_record(rutent_evidence::MovementId::new("tx").unwrap());
@@ -32,7 +33,11 @@ pub struct Check(Kind);
 enum Kind {
     Unchecked,
     PublicRecord(MovementId),
-    Receipt { maker: String, reference: String },
+    Receipt {
+        provider: String,
+        maker: String,
+        reference: String,
+    },
 }
 
 impl Check {
@@ -68,6 +73,14 @@ impl Check {
     pub fn receipt_maker(&self) -> Option<&str> {
         match &self.0 {
             Kind::Receipt { maker, .. } => Some(maker),
+            _ => None,
+        }
+    }
+
+    /// The provider a receipt check was judged for, if it is one: it backs only that provider's outcome.
+    pub fn receipt_provider(&self) -> Option<&str> {
+        match &self.0 {
+            Kind::Receipt { provider, .. } => Some(provider),
             _ => None,
         }
     }
@@ -108,7 +121,16 @@ pub struct Receipt<'a> {
     pub received: &'a [u8],
 }
 
-/// How a receipt's signature and the publishers behind makers are established. This crate holds neither a signature
+/// The publishers behind a receipt's maker and behind the provider whose outcome it backs, read together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Publishers {
+    /// The publisher behind the receipt's maker, or `None` for a maker the catalogue doesn't know.
+    pub maker: Option<PublisherId>,
+    /// The publisher behind the provider, or `None` for a provider the catalogue doesn't know.
+    pub provider: Option<PublisherId>,
+}
+
+/// How a receipt's signature and the publishers behind its maker and provider are established. This crate holds neither a signature
 /// scheme nor a catalogue (it depends on nothing of ours but the contracts, F-001's reading of `DEC-2`), so its
 /// caller supplies them: Core implements this over the catalogue it accepted and the provider library's strict
 /// verifier. A receipt is only as good as the verifier it is checked with.
@@ -117,25 +139,30 @@ pub trait ReceiptVerifier {
     /// it, that acknowledges `receipt.reference`.
     fn verifies(&self, receipt: &Receipt<'_>) -> bool;
 
-    /// The publisher behind a party (a receipt's maker, or the provider whose piece it backs), as the catalogue
-    /// records it (`REQ-CAT-20`), or `None` for a party it doesn't know.
-    fn publisher_of(&self, party: &str) -> Option<PublisherId>;
+    /// The publishers behind `maker` and behind `provider`, as the catalogue records them (`REQ-CAT-20`), both read
+    /// from one snapshot of it in this one call, so the `THR-124` comparison never sets one catalogue against
+    /// another.
+    fn publishers(&self, maker: &str, provider: &str) -> Publishers;
 }
 
-/// A receipt [`verify_receipt`] accepted: its maker, the publisher behind the maker, and the reference it
-/// acknowledges. Nothing else builds one.
+/// A receipt [`verify_receipt`] accepted for one provider's outcome: its maker, that provider, the publishers behind
+/// both (read in one lookup), and the reference it acknowledges. Nothing else builds one.
 ///
 /// ```compile_fail
 /// let forged = rutent_evidence::VerifiedReceipt {
 ///     maker: "next-co".into(),
+///     provider: "acme-co".into(),
 ///     publisher: rutent_evidence::PublisherId::new("other").unwrap(),
+///     provider_publisher: rutent_evidence::PublisherId::new("acme").unwrap(),
 ///     reference: "ref-1".into(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedReceipt {
     maker: String,
+    provider: String,
     publisher: PublisherId,
+    provider_publisher: PublisherId,
     reference: String,
 }
 
@@ -145,9 +172,19 @@ impl VerifiedReceipt {
         &self.maker
     }
 
+    /// The provider whose outcome the receipt was verified for.
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
     /// The publisher behind the receipt's maker.
     pub fn publisher(&self) -> &PublisherId {
         &self.publisher
+    }
+
+    /// The publisher behind the provider, read in the same lookup as the maker's.
+    pub fn provider_publisher(&self) -> &PublisherId {
+        &self.provider_publisher
     }
 
     /// The reference the receipt acknowledges.
@@ -165,12 +202,16 @@ pub enum ReceiptRefused {
     DoesNotVerify,
     /// The verifier knows no publisher behind its maker.
     UnknownMaker,
+    /// The verifier knows no publisher behind the provider whose outcome it is meant to back.
+    UnknownProvider,
 }
 
-/// Checks a receipt with `verifier`, and returns it verified: signed by its maker, acknowledging its reference, with
-/// the publisher behind the maker. The only way to build a [`VerifiedReceipt`].
+/// Checks a receipt with `verifier` for `provider`'s outcome, and returns it verified: signed by its maker,
+/// acknowledging its reference, with the publishers behind the maker and the provider read in one lookup. The only
+/// way to build a [`VerifiedReceipt`].
 pub fn verify_receipt(
     verifier: &dyn ReceiptVerifier,
+    provider: &str,
     receipt: &Receipt<'_>,
 ) -> Result<VerifiedReceipt, ReceiptRefused> {
     if receipt.reference.trim().is_empty() {
@@ -179,12 +220,14 @@ pub fn verify_receipt(
     if !verifier.verifies(receipt) {
         return Err(ReceiptRefused::DoesNotVerify);
     }
-    let publisher = verifier
-        .publisher_of(receipt.maker)
-        .ok_or(ReceiptRefused::UnknownMaker)?;
+    let found = verifier.publishers(receipt.maker, provider);
+    let publisher = found.maker.ok_or(ReceiptRefused::UnknownMaker)?;
+    let provider_publisher = found.provider.ok_or(ReceiptRefused::UnknownProvider)?;
     Ok(VerifiedReceipt {
         maker: receipt.maker.to_owned(),
+        provider: provider.to_owned(),
         publisher,
+        provider_publisher,
         reference: receipt.reference.to_owned(),
     })
 }
@@ -263,25 +306,19 @@ impl GradeExt for EvidenceGrade {
     }
 }
 
-/// The check a verified receipt earns for `provider`'s outcome: another party's, bound to the receipt's maker and
-/// the reference it acknowledges, only when the publisher behind its maker differs from the provider's. One
-/// publisher running both sides of a hop gives no grade 2 (`THR-124`, ADR-0007).
-///
-/// The provider's publisher comes from `verifier`, which should be the one the receipt was verified with, so both
-/// publishers come from one catalogue. A provider the verifier doesn't know earns no check.
-pub fn receipt_check(
-    verifier: &dyn ReceiptVerifier,
-    provider: &str,
-    receipt: &VerifiedReceipt,
-) -> Check {
-    match verifier.publisher_of(provider) {
-        Some(provider_publisher) if provider_publisher != receipt.publisher => {
-            Check(Kind::Receipt {
-                maker: receipt.maker.clone(),
-                reference: receipt.reference.clone(),
-            })
-        }
-        _ => Check::unchecked(),
+/// The check a verified receipt earns: another party's, bound to the provider it was verified for, the receipt's
+/// maker and the reference it acknowledges, only when the publisher behind its maker differs from the provider's.
+/// One publisher running both sides of a hop gives no grade 2 (`THR-124`, ADR-0007). Both publishers were read in
+/// one lookup, in [`verify_receipt`].
+pub fn receipt_check(receipt: &VerifiedReceipt) -> Check {
+    if receipt.publisher == receipt.provider_publisher {
+        Check::unchecked()
+    } else {
+        Check(Kind::Receipt {
+            provider: receipt.provider.clone(),
+            maker: receipt.maker.clone(),
+            reference: receipt.reference.clone(),
+        })
     }
 }
 
@@ -311,12 +348,15 @@ pub fn distinct_movements<'a>(
     Ok(())
 }
 
-fn effective(claim: &Claim) -> EvidenceGrade {
+fn effective(provider: &str, claim: &Claim) -> EvidenceGrade {
     let maker_gave_it = claim
         .check
         .receipt_maker()
         .is_none_or(|maker| maker == claim.piece.by);
-    let bound = claim.check.bound_to() == Some(claim.piece.reference.as_str()) && maker_gave_it;
+    let judged_for_this_provider = claim.check.receipt_provider().is_none_or(|p| p == provider);
+    let bound = claim.check.bound_to() == Some(claim.piece.reference.as_str())
+        && maker_gave_it
+        && judged_for_this_provider;
     let backed = match claim.piece.grade {
         EvidenceGrade::PublicRecord => bound && claim.check.is_public_record(),
         // Any check bound to the piece backs grade 2: a public record, or another party's receipt.
@@ -334,10 +374,14 @@ fn effective(claim: &Claim) -> EvidenceGrade {
 ///
 /// A piece claiming a grade stronger than declared refuses the outcome. A claim of grade 1 or 2 that no check backs
 /// is graded as a statement, never as proof. A check backs a piece only when it is bound to the piece's reference,
-/// a receipt only the piece its maker gave, and grade 1 only when it is a public record: a receipt backs grade 2 at
-/// most. One movement or one receipt reference backing two pieces refuses the outcome. The outcome's grade is its
-/// best piece's.
-pub fn grade_outcome(declared: EvidenceGrade, claims: Vec<Claim>) -> Result<Graded, Refusal> {
+/// a receipt only the piece its maker gave in an outcome of the provider it was judged for, and grade 1 only when it
+/// is a public record: a receipt backs grade 2 at most. One movement or one receipt reference backing two pieces
+/// refuses the outcome. The outcome's grade is its best piece's. `provider` is the provider whose outcome this is.
+pub fn grade_outcome(
+    provider: &str,
+    declared: EvidenceGrade,
+    claims: Vec<Claim>,
+) -> Result<Graded, Refusal> {
     if claims.is_empty() {
         return Err(Refusal::NoEvidence);
     }
@@ -356,7 +400,7 @@ pub fn grade_outcome(declared: EvidenceGrade, claims: Vec<Claim>) -> Result<Grad
     let pieces: Vec<GradedPiece> = claims
         .into_iter()
         .map(|claim| GradedPiece {
-            effective: effective(&claim),
+            effective: effective(provider, &claim),
             piece: claim.piece,
         })
         .collect();
