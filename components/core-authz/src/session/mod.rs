@@ -31,7 +31,10 @@
 //!   (`Source::SegmentOrder`), so a permission over an order covers that order's segments and no other's;
 //! - a provider reads only a segment it names itself the provider of, which the segment's record says
 //!   (`Source::SegmentProvider`), and never an order or the trail;
-//! - a regulator's or a checker's read names its permission.
+//! - a regulator's or a checker's read names its permission;
+//! - a customer and a provider read a resource of the deployment, such as who its checker is (`REQ-AUD-10`), and any
+//!   party a kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`);
+//! - any other read, the operator's, a verifier's and Core's own parts' included, rests on a permission.
 //!
 //! A read naming a permission is held to the register: the permission was granted, through
 //! [`Reads::grant_permission`], to the reader's party, its scope covers what the read is of, and it hasn't been
@@ -148,21 +151,71 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
             let longest = i128::from(LONGEST_SESSION_SECS) * 1_000_000_000;
             r.until.unix_nanos() - r.at.unix_nanos() > longest
         }
-        Asked::CheckRead(c) => match (c.reader.role, &c.reads) {
-            (Role::Regulator | Role::Checker, _) => c.permission.is_none(),
-            (Role::Provider, Read::Trail {} | Read::Order { .. }) => true,
-            (Role::Provider, Read::Segment { provider, .. }) => provider != &c.reader.party,
-            (Role::Customer, Read::Trail {}) => true,
-            _ => false,
-        },
+        Asked::CheckRead(c) => read_needs(c).is_none(),
         _ => false,
     };
     refused.then_some(RefusalClass::NotPermitted)
 }
 
+/// The inputs a read needs, all of which must say yes, or `None` where no rule lets its reader make it. A read is
+/// refused unless a line here lets it through:
+///
+/// - a regulator or a checker reads only by a permission, whatever it reads;
+/// - a customer reads an order, or a segment of it, the order's record naming it a party, and never the trail;
+/// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order
+///   or the trail;
+/// - a customer and a provider read a resource of the deployment, such as who its checker is (`REQ-AUD-10`);
+/// - any party reads, without a permission, a kept statement the evidence store's record says is its own
+///   (`REQ-AUD-5`);
+/// - any other read rests on a permission, which the register holds it to; a segment read as one of its order.
+///
+/// So the operator, a verifier and Core's own parts read nothing but their own evidence without a permission.
+fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
+    let party = &c.reader.party;
+    let party_of = |order: &Id| Need {
+        input: party.clone(),
+        from: Source::OrderParties(order.clone()),
+    };
+    // A segment is read as one of the order the read names, which the segment's record must say.
+    let segment_of = |order: &Id, segment: &Id| Need {
+        input: order.clone(),
+        from: Source::SegmentOrder(segment.clone()),
+    };
+    let permitted = c.permission.is_some();
+    let needs = match (c.reader.role, &c.reads) {
+        (Role::Regulator | Role::Checker, _) if !permitted => return None,
+        (Role::Customer, Read::Trail {})
+        | (Role::Provider, Read::Trail {} | Read::Order { .. }) => {
+            return None;
+        }
+        (Role::Provider, Read::Segment { provider, .. }) if provider != party => return None,
+        (Role::Customer, Read::Order { order }) => vec![party_of(order)],
+        (Role::Customer, Read::Segment { order, segment, .. }) => {
+            vec![party_of(order), segment_of(order, segment)]
+        }
+        // The record of the effect that moved value on the segment names both its order and its provider.
+        (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
+            input: party.clone(),
+            from: Source::SegmentProvider {
+                order: order.clone(),
+                segment: segment.clone(),
+            },
+        }],
+        (Role::Customer | Role::Provider, Read::Resource { .. }) => Vec::new(),
+        (_, Read::Evidence { commitment }) if !permitted => vec![Need {
+            input: party.clone(),
+            from: Source::Statement(commitment.clone()),
+        }],
+        (_, Read::Segment { order, segment, .. }) if permitted => vec![segment_of(order, segment)],
+        _ if permitted => Vec::new(),
+        _ => return None,
+    };
+    Some(needs)
+}
+
 /// The inputs the fixed rule needs for `asked`, all of which must say yes: for a session, the account's record that
 /// the named holder holds it, and, for a delegate, the holder's word that the requester is its delegate; for a read,
-/// the order's record that the customer is its party, or the segment's that the provider is its own.
+/// those [`read_needs`] names.
 fn needs_of(asked: Asked<'_>) -> Vec<Need> {
     match asked {
         Asked::OpenSession(r) => {
@@ -181,33 +234,7 @@ fn needs_of(asked: Asked<'_>) -> Vec<Need> {
             }
             needs
         }
-        Asked::CheckRead(c) => {
-            let party_of = |order: &Id| Need {
-                input: c.reader.party.clone(),
-                from: Source::OrderParties(order.clone()),
-            };
-            // A segment is read as one of the order the read names, which the segment's record must say.
-            let segment_of = |order: &Id, segment: &Id| Need {
-                input: order.clone(),
-                from: Source::SegmentOrder(segment.clone()),
-            };
-            match (c.reader.role, &c.reads) {
-                (Role::Customer, Read::Order { order }) => vec![party_of(order)],
-                (Role::Customer, Read::Segment { order, segment, .. }) => {
-                    vec![party_of(order), segment_of(order, segment)]
-                }
-                // The record of the effect that moved value on the segment names both its order and its provider.
-                (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
-                    input: c.reader.party.clone(),
-                    from: Source::SegmentProvider {
-                        order: order.clone(),
-                        segment: segment.clone(),
-                    },
-                }],
-                (_, Read::Segment { order, segment, .. }) => vec![segment_of(order, segment)],
-                _ => Vec::new(),
-            }
-        }
+        Asked::CheckRead(c) => read_needs(c).unwrap_or_default(),
         _ => Vec::new(),
     }
 }

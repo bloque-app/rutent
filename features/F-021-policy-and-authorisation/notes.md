@@ -113,6 +113,17 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   belongs to that order, for every reader but a provider, whose record (`SegmentProvider`) already names both. The
   log's half, `customer-read-is-of-its-own-order` and `covers` checking the order alone, is a core-internal change,
   `F-020`'s, raised with the contract's author.
+- **A read is refused unless a rule lets its reader make it** (review of `d2604d3`, B3). The read rule listed the
+  customer, the provider, the regulator and the checker and let every other role through, so the operator, a
+  verifier and Core's own parts read the trail, any order and any segment, and any role read any kept statement.
+  The rule now refuses by default. A customer and a provider read a resource of the deployment, such as who its
+  checker is (`REQ-AUD-10`: named to customers and providers). Any party reads, without a permission, a kept statement
+  the evidence store's record says is its own (`Source::Statement(commitment)`, the input the reader's party: its
+  maker, or the party it was told to about its own part of an order, `REQ-AUD-5`), and a checker reads one by a
+  permission over it. Every other read rests on a permission. A permission is granted only to a regulator or a
+  checker (core-internal's `PermissionChange`), and held to the reader's party, so the operator reads the trail only
+  where its party holds such a grant. Whether the operator may read the trail with no permission is on the owner's
+  form, default no.
 - **A read naming a permission is held to the register.** The permission was granted, through `grant_permission`,
   to the reader's party over a scope that covers the read, and isn't revoked: the log's rows
   `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`, held by policy first. That rule reads what

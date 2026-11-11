@@ -130,6 +130,10 @@ pub enum Source {
     /// The record of an order, as the log holds its acceptance: whether the party the input names is its
     /// requester, beneficiary or payer (`REQ-AUZ-7`).
     OrderParties(Id),
+    /// The evidence store's record of a statement it keeps, by its commitment: whether the party the input names may
+    /// hold it as its own, as the party that made it or the one it was told to about its own part of an order
+    /// (`REQ-AUD-5`).
+    Statement(rutent_contracts::module_interface::Digest),
     /// The record of a segment, as the log holds the plan that lists it: whether the order the input names is the
     /// order it belongs to (`REQ-AUZ-7`, `REQ-ORD-38`).
     SegmentOrder(Id),
