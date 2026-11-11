@@ -1,0 +1,1821 @@
+//! The log (`T-022-01`): every record Core writes, appended through `core-internal`'s two handles onto a Merkle log in
+//! `CMP-CORE-AUDIT`'s own store, attributed by the log, held to the citation table, and kept through failures.
+//!
+//! The runs replay the contract's coherent world (`fixtures/admission/world--*`), whose receipts are placeholders:
+//! each entry is appended in turn, and every later citation of its placeholder receipt is rewritten to the receipt
+//! the log answered. Its statements arrive as Core hands them over, unverified and naming their claimed maker, with
+//! bytes signed for real and kept by the evidence store's stand-in, and the log attributes each. Its providers are
+//! granted first, by a decision of policy and its effect, and their advertisements recorded.
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use rutent_conformance::role::SuiteContext;
+use rutent_conformance::signing::{
+    ADVERTISED_AT, Ed25519Key, advertisement, advertising_key, another_key, public_key, sign_value,
+    signing_key, statements_key,
+};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, DecisionEntry, GeneralEntry, Log, PolicyLog, is_decision,
+};
+use rutent_contracts::core_internal::{
+    Attribution, Entry, HandedOver, Receipt, StatedEntry, VerifiedEntry, Violation, What,
+};
+use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Deployment, VERSION};
+use rutent_contracts::router_api::{Id, Timestamp};
+use rutent_core_audit::log::merkle::{leaf_hash, sha256, verify_inclusion};
+use rutent_core_audit::log::{
+    AuditLog, FileStore, General, KeptInMemory, MemoryStore, Settings, Store, StoreError, digest,
+    record,
+};
+use serde_json::{Value, json};
+
+// --- Fixtures ----------------------------------------------------------------------------------------------------
+
+fn fixture(dir: &str, name: &str) -> Value {
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/{dir}/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+}
+
+fn valid(name: &str) -> Value {
+    fixture("valid", name)
+}
+
+fn id(text: &str) -> Id {
+    Id::new(text).unwrap()
+}
+
+/// The RFC 3339 UTC time `nanos` after the epoch, to the second, for times on 2026-11-06.
+fn rfc3339(nanos: i128) -> String {
+    let day = Timestamp::new("2026-11-06T00:00:00Z").unwrap().unix_nanos();
+    let seconds = (nanos - day) / 1_000_000_000;
+    assert!((0..86_400).contains(&seconds), "a time on 2026-11-06");
+    format!(
+        "2026-11-06T{:02}:{:02}:{:02}Z",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// The coherent world: every entry of `world--in_dest`'s history, then its own entry.
+fn world() -> Vec<(Value, Value)> {
+    let case = fixture("admission", "world--in_dest");
+    let mut entries: Vec<(Value, Value)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| (h["receipt"].clone(), h["entry"].clone()))
+        .collect();
+    entries.push((Value::Null, case["entry"].clone()));
+    entries
+}
+
+// --- The deployment, its operator and its providers --------------------------------------------------------------
+
+const LOG: &str = "log-main";
+const OPERATOR: &str = "operator";
+/// The world's providers, each of which states for itself.
+const PROVIDERS: [&str; 5] = ["us-bank", "bridge-pay", "fx-desk", "bank-co", "kyc-check"];
+/// When each provider is granted, before its advertisement.
+const GRANTED_AT: &str = "2026-11-05T00:00:00Z";
+
+fn operator_key() -> Ed25519Key {
+    signing_key("the operator of rutent-test", 0)
+}
+
+fn deployment() -> Deployment {
+    Deployment {
+        name: "rutent-test".to_owned(),
+        operator_key: public_key(&operator_key()),
+    }
+}
+
+/// The deployment's settings: the operator, and each provider's advertising key trusted for its first advertisement.
+fn settings() -> Settings {
+    PROVIDERS.iter().fold(
+        Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR)),
+        |s, p| s.trusting(id(p), public_key(&advertising_key(p))),
+    )
+}
+
+fn actor(party: &str, acts: &str, role: &str, kind: &str) -> Value {
+    json!({"party": party, "acts": acts, "role": role, "kind": kind})
+}
+
+fn provider(name: &str) -> Value {
+    actor(name, name, "provider", "component")
+}
+
+// --- Stores that fail ----------------------------------------------------------------------------------------------
+
+/// What one append of a [`Faulty`] store does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// Fails before writing anything.
+    Before,
+    /// Writes the record durably, then fails, as a crash between the write and its answer does.
+    After,
+}
+
+/// A store in memory whose appends fail as planned, one fault per append, in order; an append with no fault left
+/// planned succeeds. Its clones share the store and the plan.
+#[derive(Clone, Default)]
+struct Faulty {
+    inner: Rc<RefCell<MemoryStore>>,
+    plan: Rc<RefCell<VecDeque<Option<Fault>>>>,
+    /// While set, reading the store back fails as a store whose records can't be read whole does.
+    unreadable: Rc<std::cell::Cell<bool>>,
+}
+
+impl Faulty {
+    fn plan(&self, faults: &[Option<Fault>]) {
+        self.plan.borrow_mut().extend(faults.iter().copied());
+    }
+
+    fn records(&self) -> Vec<Vec<u8>> {
+        self.inner.borrow_mut().records().unwrap()
+    }
+}
+
+impl Store for Faulty {
+    fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
+        match self.plan.borrow_mut().pop_front().flatten() {
+            Some(Fault::Before) => Err(StoreError::Unavailable("injected before".into())),
+            Some(Fault::After) => {
+                self.inner.borrow_mut().append(record)?;
+                Err(StoreError::Unavailable("injected after".into()))
+            }
+            None => self.inner.borrow_mut().append(record),
+        }
+    }
+
+    fn records(&mut self) -> Result<Vec<Vec<u8>>, StoreError> {
+        if self.unreadable.get() {
+            return Err(StoreError::Corrupt(0));
+        }
+        self.inner.borrow_mut().records()
+    }
+}
+
+/// A file in the platform's temp directory, removed when dropped.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(name: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        TempFile(std::env::temp_dir().join(format!(
+            "rutent-core-audit-{name}-{}-{nanos}.log",
+            std::process::id()
+        )))
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+// --- A run --------------------------------------------------------------------------------------------------------
+
+/// A log and the evidence store's stand-in beside it, with the placeholder receipts and commitments of the world
+/// rewritten to the ones the log answered and the store kept.
+struct Run<S: Store> {
+    log: AuditLog<S, KeptInMemory>,
+    kept: KeptInMemory,
+    receipts: Vec<(Value, Value)>,
+    salts: u8,
+}
+
+impl<S: Store> Run<S> {
+    fn new(store: S) -> Self {
+        let kept = KeptInMemory::new();
+        Run {
+            log: AuditLog::open(settings(), store, kept.clone()).unwrap(),
+            kept,
+            receipts: Vec::new(),
+            salts: 0,
+        }
+    }
+
+    /// `value` with every placeholder receipt the run has answered rewritten to the log's.
+    fn rewrite(&self, value: &mut Value) {
+        if let Some((_, real)) = self.receipts.iter().find(|(fake, _)| fake == value) {
+            *value = real.clone();
+            return;
+        }
+        match value {
+            Value::Array(items) => items.iter_mut().for_each(|v| self.rewrite(v)),
+            Value::Object(map) => map.values_mut().for_each(|v| self.rewrite(v)),
+            _ => {}
+        }
+    }
+
+    /// Keeps `bytes` in the evidence store's stand-in, under a fresh salt.
+    fn keep(&mut self, bytes: &[u8]) -> Value {
+        self.salts += 1;
+        serde_json::to_value(self.kept.keep(bytes, [self.salts; 32])).unwrap()
+    }
+
+    /// Appends `entry`, a verified entry or a stated one already a claim, through the handle its kind goes by.
+    fn append(&mut self, mut entry: Value) -> Result<Receipt, AppendFailure> {
+        self.rewrite(&mut entry);
+        let entry: Entry = serde_json::from_value(entry).unwrap();
+        match entry {
+            Entry::Verified(v) if is_decision(&v.what) => self
+                .log
+                .append_decision(&DecisionEntry::try_from(v).unwrap()),
+            entry => self.log.append(&GeneralEntry::try_from(entry).unwrap()),
+        }
+    }
+
+    /// Appends `entry` and records that `placeholder` stands for the receipt the log answered.
+    fn append_for(&mut self, placeholder: &Value, entry: Value) -> Result<Receipt, AppendFailure> {
+        let receipt = self.append(entry)?;
+        if !placeholder.is_null() {
+            self.receipts
+                .push((placeholder.clone(), serde_json::to_value(&receipt).unwrap()));
+        }
+        Ok(receipt)
+    }
+
+    /// The entry the log holds at `receipt`.
+    fn at(&self, receipt: &Receipt) -> &Entry {
+        let (r, e) = &self.log.entries()[receipt.index.get() as usize];
+        assert_eq!(r, receipt);
+        e
+    }
+
+    /// Grants `name` a tuple: policy's permitting decision, through policy's handle, and its effect.
+    fn grant(&mut self, name: &str, at: &str) -> Receipt {
+        self.change_catalogue(name, "grant", at)
+    }
+
+    /// Revokes the tuple [`Run::grant`] granted `name`.
+    fn revoke(&mut self, name: &str, at: &str) -> Receipt {
+        self.change_catalogue(name, "revoke_grant", at)
+    }
+
+    fn change_catalogue(&mut self, name: &str, change: &str, at: &str) -> Receipt {
+        let action = json!({"kind": "change_catalogue", "change": change, "provider": name, "tuple": format!("tuple-{name}")});
+        let (request, decision) = (
+            format!("req-{change}-{name}-{at}"),
+            format!("dec-{change}-{name}-{at}"),
+        );
+        let operator = actor(OPERATOR, "op-login-2", "operator", "person");
+        let decided = self
+            .append(json!({
+                "kind": "verified",
+                "who": operator,
+                "what": {"call": "decide", "request": {"request": request, "caller": operator, "action": action, "at": at}, "decision": decision},
+                "when": {"at": at, "source": "core_clock"},
+                "outcome": {"status": "permitted"},
+            }))
+            .unwrap();
+        self.append(json!({
+            "kind": "verified",
+            "who": actor("rutent", "core-orch", "core", "component"),
+            "what": {"call": "effect", "action": action, "decision": {"request": request, "decision": decision, "answer": "permit", "receipt": decided}},
+            "when": {"at": at, "source": "core_clock"},
+            "outcome": {"status": "to_take_effect"},
+        }))
+        .unwrap()
+    }
+
+    /// Appends `bytes`, an advertisement as received a second after it was made, as a stated entry of its maker's,
+    /// after keeping it.
+    fn advertise(&mut self, maker: &str, bytes: &[u8]) -> Result<Receipt, AppendFailure> {
+        let envelope: Value = serde_json::from_slice(bytes).unwrap();
+        let made_at = envelope["made_at"].as_str().unwrap();
+        let received_at = Timestamp::new(made_at).unwrap().unix_nanos() + 1_000_000_000;
+        self.advertise_at(maker, bytes, &rfc3339(received_at))
+    }
+
+    /// Appends `bytes`, an advertisement received at `received_at`, as a stated entry of its maker's, after keeping
+    /// it.
+    fn advertise_at(
+        &mut self,
+        maker: &str,
+        bytes: &[u8],
+        received_at: &str,
+    ) -> Result<Receipt, AppendFailure> {
+        let envelope: Value = serde_json::from_slice(bytes).unwrap();
+        let commitment = self.keep(bytes);
+        self.append(json!({
+            "kind": "stated",
+            "attribution": {"signature": "unverified", "claimed_by": provider(maker)},
+            "what": {"statement": ADVERTISEMENT_SHAPE},
+            "when": {"at": envelope["made_at"], "source": "party_stated"},
+            "received_at": received_at,
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": envelope["signature"]["key"]},
+            "commitment": commitment,
+        }))
+    }
+
+    /// Grants every provider of the world and records its advertisement.
+    fn admit_providers(&mut self) {
+        for p in PROVIDERS {
+            self.grant(p, GRANTED_AT);
+            let ad = advertised(p, &advertising_key(p), p);
+            let receipt = self.advertise(p, &ad).unwrap();
+            // An advertisement is signed with an advertising key, which signs no other statement: it stays unverified.
+            assert!(
+                matches!(self.at(&receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Unverified { .. }))
+            );
+        }
+    }
+
+    /// `entry`, a stated entry of the world, as Core hands it to the log: signed for real by `key`, its bytes kept,
+    /// and unverified, naming the maker it claims. `body` is the statement's body; it names the entry's transaction.
+    fn claim(&mut self, entry: &Value, key: &Ed25519Key, body: Value) -> Value {
+        let who = entry["attribution"]["who"].clone();
+        let mut envelope = json!({
+            "deployment": deployment(),
+            "protocol_version": VERSION,
+            "shape": entry["what"]["statement"],
+            "maker": who["acts"],
+            "made_at": entry["when"]["at"],
+            "signature": {"scheme": "ed25519", "key": "", "value": ""},
+            "statement": body,
+        });
+        sign_value(&mut envelope, key);
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        let mut claim = entry.clone();
+        claim["attribution"] = json!({"signature": "unverified", "claimed_by": who});
+        claim["signed_with"]["key"] = envelope["signature"]["key"].clone();
+        claim["commitment"] = self.keep(&bytes);
+        // A record citing the world's placeholder commitment, an erasure, cites the one kept.
+        if !self
+            .receipts
+            .iter()
+            .any(|(fake, _)| fake == &entry["commitment"])
+        {
+            self.receipts
+                .push((entry["commitment"].clone(), claim["commitment"].clone()));
+        }
+        claim
+    }
+
+    /// Runs the world: its providers admitted, then each of its entries, the statements signed by their makers' own
+    /// keys. `forge` names the world's places whose statement is signed with a key no one publishes instead. Each
+    /// receipt is answered or the failure is, by the world's place.
+    fn world(&mut self, forge: &[usize]) -> Vec<(usize, Result<Receipt, AppendFailure>)> {
+        self.admit_providers();
+        let mut answers = Vec::new();
+        for (place, (placeholder, entry)) in world().into_iter().enumerate() {
+            let entry = if entry["kind"] == "stated" {
+                let maker = entry["attribution"]["who"]["acts"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let key = match (forge.contains(&place), maker == OPERATOR) {
+                    (true, _) => another_key(),
+                    (false, true) => operator_key(),
+                    (false, false) => statements_key(&maker),
+                };
+                let body = match entry["about"]["transaction"].as_str() {
+                    Some(t) => json!({"kind": "balance_verification", "transaction": t}),
+                    None => json!({"kind": "judgement"}),
+                };
+                self.claim(&entry, &key, body)
+            } else {
+                entry
+            };
+            let answer = self.append_for(&placeholder, entry);
+            answers.push((place, answer));
+        }
+        answers
+    }
+}
+
+/// `provider`'s advertisement for the test deployment, stating for `publisher`, signed with `key`.
+fn advertised(provider: &str, key: &Ed25519Key, publisher: &str) -> Vec<u8> {
+    let context = SuiteContext {
+        deployment: deployment(),
+        ..SuiteContext::default()
+    };
+    let mut value: Value = serde_json::from_slice(&advertisement(provider, &context)).unwrap();
+    value["statement"]["publisher"] = publisher.into();
+    sign_value(&mut value, key);
+    serde_json::to_vec(&value).unwrap()
+}
+
+/// The stand-alone records Core writes that cite nothing earlier, beside the world's.
+const STANDALONE: [&str; 9] = [
+    "verified-entry-of-a-charge-over-its-bound",
+    "verified-entry-of-a-hand-over",
+    "verified-entry-of-a-holding-check",
+    "verified-entry-of-a-refusal-with-nothing-existing",
+    "verified-entry-of-a-destination-whose-owner-changed",
+    "verified-entry-of-a-settlement-time",
+    "verified-entry-of-the-figures-behind-a-stuck-call",
+    "verified-entry-of-an-operator-command",
+    "verified-entry-of-a-registered-authorisation",
+];
+
+/// Every kind of verified entry `core-internal` defines, by its `call`, and the stated kind: an exhaustive match, so
+/// a kind the contract adds fails this build until a test names it.
+fn kind(entry: &Entry) -> &'static str {
+    let Entry::Verified(VerifiedEntry { what, .. }) = entry else {
+        return "stated";
+    };
+    match what {
+        What::Decide { .. } => "decide",
+        What::Authorise { .. } => "authorise",
+        What::Effect { .. } => "effect",
+        What::Result { .. } => "result",
+        What::StuckDecide { .. } => "stuck_decide",
+        What::StuckMove { .. } => "stuck_move",
+        What::OpenSession { .. } => "open_session",
+        What::Charge { .. } => "charge",
+        What::AskAboutPerson { .. } => "ask_about_person",
+        What::CheckRead { .. } => "check_read",
+        What::GrantPermission { .. } => "grant_permission",
+        What::RevokePermission { .. } => "revoke_permission",
+        What::Refiling { .. } => "refiling",
+        What::HandOver { .. } => "hand_over",
+        What::ReportPair { .. } => "report_pair",
+        What::HoldingCheck { .. } => "holding_check",
+        What::Measure { .. } => "measure",
+        What::Raise { .. } => "raise",
+        What::Input { .. } => "input",
+        What::Acceptance { .. } => "acceptance",
+        What::OrderRefusal { .. } => "order_refusal",
+        What::DestinationCheck { .. } => "destination_check",
+        What::Arrival { .. } => "arrival",
+        What::DecisionRecord { .. } => "decision_record",
+        What::Shown { .. } => "shown",
+        What::Settlement { .. } => "settlement",
+        What::Evidence { .. } => "evidence",
+        What::Fee { .. } => "fee",
+        What::StuckCall { .. } => "stuck_call",
+        What::Afterwards { .. } => "afterwards",
+        What::Reliance { .. } => "reliance",
+        What::Command { .. } => "command",
+        What::Erasure { .. } => "erasure",
+    }
+}
+
+/// Every kind [`kind`] names.
+const KINDS: [&str; 34] = [
+    "decide",
+    "authorise",
+    "effect",
+    "result",
+    "stuck_decide",
+    "stuck_move",
+    "open_session",
+    "charge",
+    "ask_about_person",
+    "check_read",
+    "grant_permission",
+    "revoke_permission",
+    "refiling",
+    "hand_over",
+    "report_pair",
+    "holding_check",
+    "measure",
+    "raise",
+    "input",
+    "acceptance",
+    "order_refusal",
+    "destination_check",
+    "arrival",
+    "decision_record",
+    "shown",
+    "settlement",
+    "evidence",
+    "fee",
+    "stuck_call",
+    "afterwards",
+    "reliance",
+    "command",
+    "erasure",
+    "stated",
+];
+
+/// Whether the log recorded the stated entry at `receipt` verified.
+fn verified_at<S: Store>(run: &Run<S>, receipt: &Receipt) -> bool {
+    matches!(run.at(receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }))
+}
+
+// --- REQ-AUD-1 ------------------------------------------------------------------------------------------------------
+
+/// Each entry of the world is appended and answered with a receipt of the entry recorded: at its place, SHA-256 of
+/// its canonical JSON, under the log's root. A verified entry is recorded as handed in, a statement as the log
+/// attributed it, and every entry says who, what, when, whose clock and the outcome.
+// verifies: REQ-AUD-1, DEC-12, ADR-0005
+#[test]
+fn every_action_leaves_its_record() {
+    let mut run = Run::new(MemoryStore::new());
+    let answers = run.world(&[]);
+    let world = world();
+    for (place, answer) in &answers {
+        let receipt = answer
+            .as_ref()
+            .unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+        let entry = run.at(receipt);
+        let bytes = record(entry).unwrap();
+        assert_eq!(receipt.entry, digest(&sha256(&bytes)));
+        let index = receipt.index.get() as usize;
+        let proof = run.log.inclusion(index, run.log.len()).unwrap();
+        assert!(verify_inclusion(
+            &leaf_hash(&bytes),
+            index,
+            run.log.len(),
+            &proof,
+            &run.log.root()
+        ));
+        let mut handed = world[*place].1.clone();
+        run.rewrite(&mut handed);
+        let recorded = serde_json::to_value(entry).unwrap();
+        match entry {
+            Entry::Verified(_) => assert_eq!(recorded, handed, "world {place}"),
+            Entry::Stated(s) => {
+                assert!(
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    "world {place}"
+                );
+                assert_eq!(
+                    recorded["attribution"], handed["attribution"],
+                    "world {place}"
+                );
+                for field in ["what", "when", "received_at", "outcome", "about"] {
+                    assert_eq!(recorded[field], handed[field], "world {place}: {field}");
+                }
+            }
+        }
+        for field in ["what", "when", "outcome"] {
+            assert!(!recorded[field].is_null(), "world {place}: {field}");
+        }
+        assert!(!recorded["when"]["source"].is_null());
+        assert!(!recorded["who"].is_null() || !recorded["attribution"].is_null());
+    }
+    // Every grant, advertisement and world entry is in the log, once.
+    assert_eq!(run.log.len(), 3 * PROVIDERS.len() + world.len());
+}
+
+/// A refused decision, a refused read, a refused order and a request left unanswered are each recorded, with their
+/// outcomes, as every permitted one is.
+// verifies: REQ-AUD-1
+#[test]
+fn refusal_and_unanswered_request_each_leave_a_record() {
+    let mut run = Run::new(MemoryStore::new());
+    let answers = run.world(&[]);
+    // The world's second effect (its place 26) has no result yet: its request goes unanswered.
+    let effect = answers[26].1.clone().unwrap();
+    let mut unanswered = valid("verified-entry-of-a-result-unanswered");
+    unanswered["what"]["effect"] = serde_json::to_value(&effect).unwrap();
+    let mut refused_decide = valid("verified-entry-of-a-decision");
+    refused_decide["what"]["decision"] = "dec-refused".into();
+    refused_decide["outcome"] = json!({"status": "refused", "class": "not_permitted"});
+    let mut not_known = valid("verified-entry-of-a-decision");
+    not_known["what"]["decision"] = "dec-not-known".into();
+    not_known["outcome"] = json!({"status": "not_known", "cause": "policy_unreachable"});
+    for (entry, outcome) in [
+        (unanswered, json!({"status": "unanswered"})),
+        (
+            refused_decide,
+            json!({"status": "refused", "class": "not_permitted"}),
+        ),
+        (
+            not_known,
+            json!({"status": "not_known", "cause": "policy_unreachable"}),
+        ),
+        (
+            valid("verified-entry-of-a-refused-read"),
+            valid("verified-entry-of-a-refused-read")["outcome"].clone(),
+        ),
+        (
+            valid("verified-entry-of-a-charge-over-its-bound"),
+            valid("verified-entry-of-a-charge-over-its-bound")["outcome"].clone(),
+        ),
+        (
+            valid("verified-entry-of-a-refusal-with-nothing-existing"),
+            valid("verified-entry-of-a-refusal-with-nothing-existing")["outcome"].clone(),
+        ),
+    ] {
+        let receipt = run
+            .append(entry.clone())
+            .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
+        let recorded = serde_json::to_value(run.at(&receipt)).unwrap();
+        assert_eq!(recorded["outcome"], outcome);
+        assert_eq!(recorded["what"], entry["what"]);
+    }
+}
+
+/// Every kind of record Core writes reaches the log, each kind the contract defines among them, with no opt-in:
+/// the world's, and the records that cite nothing earlier.
+// verifies: REQ-AUD-1
+#[test]
+fn every_record_kind_core_writes_is_in_the_log() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    for name in STANDALONE {
+        run.append(valid(name))
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    }
+    let found: BTreeSet<&str> = run.log.entries().iter().map(|(_, e)| kind(e)).collect();
+    let all: BTreeSet<&str> = KINDS.into_iter().collect();
+    assert_eq!(found, all);
+}
+
+// --- INV-7, NFR-5 -------------------------------------------------------------------------------------------------
+
+/// Orchestration acts on an effect only once the log answered its receipt. With a failure injected before the
+/// write, and one after a durable write that still answered unavailable (a crash between the record and the
+/// effect), no effect is taken without its record; the retry records the effect once and answers its receipt.
+// verifies: INV-7, NFR-5
+#[test]
+fn failure_between_record_and_effect_leaves_no_effect() {
+    for fault in [Fault::Before, Fault::After] {
+        let store = Faulty::default();
+        let mut run = Run::new(store.clone());
+        // The decision, through policy's handle.
+        let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk"});
+        let mut decide = valid("verified-entry-of-a-decision");
+        decide["what"]["request"]["action"] = action.clone();
+        let decided = run.append(decide).unwrap();
+        let mut effect = valid("verified-entry-of-an-effect");
+        effect["what"]["action"] = action;
+        effect["what"]["decision"]["receipt"] = serde_json::to_value(&decided).unwrap();
+
+        // The effect is taken only on the receipt of its record.
+        let mut taken: Vec<Receipt> = Vec::new();
+        let act = |run: &mut Run<Faulty>, taken: &mut Vec<Receipt>| {
+            if let Ok(receipt) = run.append(effect.clone()) {
+                taken.push(receipt);
+            }
+        };
+        store.plan(&[Some(fault)]);
+        act(&mut run, &mut taken);
+        assert!(
+            taken.is_empty(),
+            "{fault:?}: an effect was taken with no receipt"
+        );
+        let written = store.records().len();
+        assert_eq!(
+            written,
+            if fault == Fault::After { 2 } else { 1 },
+            "{fault:?}"
+        );
+        // Whatever the store holds, the log holds after it reads the store back; every effect taken has its record.
+        act(&mut run, &mut taken);
+        assert_eq!(taken.len(), 1, "{fault:?}");
+        assert_eq!(
+            store.records().len(),
+            2,
+            "{fault:?}: the retry wrote the effect once"
+        );
+        assert_eq!(run.log.len(), 2);
+        for receipt in &taken {
+            assert!(matches!(
+                run.at(receipt),
+                Entry::Verified(VerifiedEntry {
+                    what: What::Effect { .. },
+                    ..
+                })
+            ));
+        }
+        // Reopened, the log holds the effect once, at the receipt it answered.
+        let reopened = AuditLog::open(settings(), store.clone(), run.kept.clone()).unwrap();
+        assert_eq!(reopened.entries(), run.log.entries());
+        assert_eq!(reopened.root(), run.log.root());
+    }
+}
+
+// --- REQ-AUD-6 ----------------------------------------------------------------------------------------------------
+
+/// After a full run, in a file store, the log's bytes hold no secret's value, no balance, and none of the kept
+/// statements' bytes or salts. The run's secrets and a holding account's balance reach Core inside the statements
+/// it keeps (the proxy's secrets as a provider's statement carries them, the balance as a `holding_balance` result
+/// states it), and the evidence store holds each; the log holds only the salted commitment to them, and the proxy's
+/// lookups and uses of the secrets without their values.
+// verifies: REQ-AUD-6
+#[test]
+fn log_holds_no_secret_plaintext_and_no_balance_after_a_full_run() {
+    const BALANCE: &str = "987654321.77";
+    const SECRETS: [&str; 2] = ["sk-live-4f1c9a7e2b", "hunter2-of-the-proxy"];
+    let file = TempFile::new("aud-6");
+    let mut run = Run::new(FileStore::open(&file.0).unwrap());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    for name in STANDALONE {
+        run.append(valid(name)).unwrap();
+    }
+    // The proxy's lookups and uses of the run's secrets, handed over without their values.
+    for (position, name) in [
+        "handover-secret-lookup-resolved",
+        "handover-secret-use-of-a-secret",
+        "handover-secret-use-of-the-statement-key-refused",
+        "handover-secret-lookup-of-a-sandboxed-part",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run.append(hand_over(valid(name), "drain-secrets", position))
+            .unwrap();
+    }
+    // A holding account's balance, as its module states it: the statement is kept, the log names its commitment.
+    let question = json!({
+        "kind": "stated",
+        "attribution": {"signature": "verified", "who": actor(OPERATOR, OPERATOR, "operator", "component")},
+        "what": {"statement": "urn:rutent:provider-role:operation"},
+        "when": {"at": "2026-11-06T15:04:05Z", "source": "party_stated"},
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {"status": "stated"},
+        "signed_with": {"scheme": "ed25519", "key": public_key(&operator_key()).as_str()},
+        "commitment": valid("stated-entry-of-a-quote")["commitment"],
+        "about": {"order": "ord-1", "transaction": "tx-balance-1"},
+    });
+    let question = run.claim(
+        &question,
+        &operator_key(),
+        json!({"kind": "holding_balance", "transaction": "tx-balance-1", "credential": SECRETS[0]}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer("us-bank", "tx-balance-1");
+    answer = run.claim(
+        &answer,
+        &statements_key("us-bank"),
+        json!({"kind": "holding_balance", "transaction": "tx-balance-1", "balance": BALANCE, "token": SECRETS[1]}),
+    );
+    let receipt = run.append(answer).unwrap();
+    assert!(verified_at(&run, &receipt));
+    run.append(valid("verified-entry-of-a-holding-check"))
+        .unwrap();
+
+    let log = std::fs::read(&file.0).unwrap();
+    let holds = |needle: &[u8]| log.windows(needle.len()).any(|w| w == needle);
+    assert!(!holds(BALANCE.as_bytes()), "a balance in the log");
+    for secret in SECRETS {
+        assert!(!holds(secret.as_bytes()), "a secret in the log");
+    }
+    for kept in run.kept.statements() {
+        assert!(
+            !holds(kept.bytes.as_str().as_bytes()),
+            "a kept statement's bytes in the log"
+        );
+        assert!(!holds(kept.salt.as_str().as_bytes()), "a salt in the log");
+    }
+    // Each of them did reach the evidence store, so the log's lacking them says something.
+    let kept_holds = |needle: &str| {
+        run.kept.statements().iter().any(|k| {
+            let bytes = rutent_core_audit::log::kept::from_base64url(k.bytes.as_str()).unwrap();
+            bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+        })
+    };
+    assert!(kept_holds(BALANCE));
+    for secret in SECRETS {
+        assert!(kept_holds(secret));
+    }
+}
+
+/// A provider's answer to the operator's question under `transaction`, about the world's first order.
+fn question_answer(maker: &str, transaction: &str) -> Value {
+    json!({
+        "kind": "stated",
+        "attribution": {"signature": "verified", "who": provider(maker)},
+        "what": {"statement": "urn:rutent:provider-role:result"},
+        "when": {"at": "2026-11-06T15:04:05Z", "source": "party_stated"},
+        "received_at": "2026-11-06T15:04:07Z",
+        "outcome": {"status": "stated"},
+        "signed_with": {"scheme": "ed25519", "key": public_key(&statements_key(maker)).as_str()},
+        "commitment": valid("stated-entry-of-a-quote")["commitment"],
+        "about": {"order": "ord-1", "transaction": transaction},
+    })
+}
+
+// --- REQ-MDL-8, REQ-MDL-5 -----------------------------------------------------------------------------------------
+
+/// `item` handed over in `drain` at `position`.
+fn hand_over(item: Value, drain: &str, position: usize) -> Value {
+    json!({
+        "kind": "verified",
+        "who": actor("rutent", "core-orch", "core", "component"),
+        "what": {"call": "hand_over", "item": item, "drain": drain, "position": position},
+        "when": {"at": "2026-11-10T09:00:00Z", "source": "platform_clock"},
+        "outcome": {"status": "observed"},
+    })
+}
+
+/// Every item the platform and the proxy hand over, in two drains, the same state read twice in one of them.
+fn drains() -> Vec<Value> {
+    let platform = [
+        "handover-outbound-call",
+        "handover-cross-module-call",
+        "handover-state-read",
+        "handover-state-read",
+        "handover-limit",
+        "handover-segment-record-moved-once",
+        "handover-segment-record-never-moved",
+        "handover-secret-lookup-resolved",
+        "handover-secret-lookup-of-a-sandboxed-part",
+    ];
+    let proxy = [
+        "handover-secret-use-of-a-secret",
+        "handover-secret-use-of-the-statement-key-refused",
+    ];
+    let mut items = Vec::new();
+    for (drain, names) in [("drain-1", &platform[..]), ("drain-2", &proxy[..])] {
+        for (position, name) in names.iter().enumerate() {
+            items.push(hand_over(valid(name), drain, position));
+        }
+    }
+    items
+}
+
+/// The items the log holds, as values.
+fn handed_in_log<S: Store>(run: &Run<S>) -> Vec<Value> {
+    run.log
+        .entries()
+        .iter()
+        .filter(|(_, e)| {
+            matches!(
+                e,
+                Entry::Verified(VerifiedEntry {
+                    what: What::HandOver { .. },
+                    ..
+                })
+            )
+        })
+        .map(|(_, e)| serde_json::to_value(e).unwrap())
+        .collect()
+}
+
+/// Every item the platform and the proxy hand over is in the log, whole, once: two identical state reads of one
+/// drain are two entries, told apart by their place in it.
+// verifies: REQ-MDL-8
+#[test]
+fn no_platform_event_handed_to_the_log_is_missing_from_it() {
+    let mut run = Run::new(MemoryStore::new());
+    let items = drains();
+    for item in &items {
+        run.append(item.clone()).unwrap();
+    }
+    assert_eq!(handed_in_log(&run), items);
+    let reads = items
+        .iter()
+        .filter(|i| i["what"]["item"] == valid("handover-state-read"))
+        .count();
+    assert_eq!(reads, 2);
+    // Each kind of item the contract hands over is among them.
+    let kinds: BTreeSet<String> = run
+        .log
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(VerifiedEntry {
+                what: What::HandOver { item, .. },
+                ..
+            }) => Some(match item {
+                HandedOver::OutboundCall { .. } => "outbound_call",
+                HandedOver::CrossModuleCall { .. } => "cross_module_call",
+                HandedOver::SecretLookup { .. } => "secret_lookup",
+                HandedOver::StateRead { .. } => "state_read",
+                HandedOver::Limit { .. } => "limit",
+                HandedOver::SecretUse { .. } => "secret_use",
+                HandedOver::SegmentRecord { .. } => "segment_record",
+            }),
+            _ => None,
+        })
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(kinds.len(), 7);
+}
+
+/// A segment record handed over is in the log's file with the version it began on, the one it runs on and each
+/// move between them, and is still there, whole and at the same place under the same root, when the log is opened
+/// again from that file; a last line cut short by a crash is dropped, and the log goes on.
+// verifies: REQ-MDL-5, DEC-12
+#[test]
+fn segment_record_is_kept_durably_with_its_versions_and_moves() {
+    let file = TempFile::new("mdl-5");
+    let records = [
+        hand_over(valid("handover-segment-record-moved-once"), "drain-7", 0),
+        hand_over(valid("handover-segment-record-never-moved"), "drain-7", 1),
+    ];
+    let (entries, root) = {
+        let mut run = Run::new(FileStore::open(&file.0).unwrap());
+        for r in &records {
+            run.append(r.clone()).unwrap();
+        }
+        (run.log.entries().to_vec(), run.log.root())
+    };
+    // A crash mid-write leaves a torn last line.
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file.0)
+            .unwrap();
+        f.write_all(b"{\"kind\":\"verif").unwrap();
+    }
+    let mut reopened = Run::new(FileStore::open(&file.0).unwrap());
+    assert_eq!(reopened.log.entries(), &entries[..]);
+    assert_eq!(reopened.log.root(), root);
+    for (record, (_, entry)) in records.iter().zip(reopened.log.entries()) {
+        let entry = serde_json::to_value(entry).unwrap();
+        let (handed, kept) = (&record["what"]["item"], &entry["what"]["item"]);
+        assert_eq!(kept["kind"], "segment_record");
+        for field in ["transaction", "provider", "began_on", "runs_on", "moves"] {
+            assert_eq!(kept[field], handed[field], "{field}");
+        }
+    }
+    assert_eq!(
+        records[0]["what"]["item"]["moves"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    reopened
+        .append(hand_over(valid("handover-state-read"), "drain-8", 0))
+        .unwrap();
+    let again = AuditLog::open(
+        settings(),
+        FileStore::open(&file.0).unwrap(),
+        KeptInMemory::new(),
+    )
+    .unwrap();
+    assert_eq!(again.len(), 3);
+}
+
+/// Handed-over items whose appends fail, before the write and after it, are appended again until the log answers:
+/// then every item is in the log once, and the store holds each once.
+// verifies: REQ-MDL-8, NFR-5
+#[test]
+fn handed_over_events_survive_a_failed_append_that_is_retried() {
+    let store = Faulty::default();
+    let mut run = Run::new(store.clone());
+    let items = drains();
+    store.plan(&[
+        Some(Fault::Before),
+        None,
+        Some(Fault::After),
+        Some(Fault::After),
+        None,
+        Some(Fault::Before),
+        Some(Fault::Before),
+        None,
+        Some(Fault::After),
+    ]);
+    let mut failures = 0;
+    for item in &items {
+        // Orchestration keeps an item until the log answers its receipt.
+        let mut tries = 0;
+        while run.append(item.clone()).is_err() {
+            failures += 1;
+            tries += 1;
+            assert!(tries < 5);
+        }
+    }
+    assert!(failures >= 6);
+    assert_eq!(handed_in_log(&run), items);
+    assert_eq!(store.records().len(), items.len());
+    // An item appended again after its receipt is the same entry, not a second.
+    let receipt = run.append(items[0].clone()).unwrap();
+    assert_eq!(receipt.index.get(), 0);
+    assert_eq!(run.log.len(), items.len());
+}
+
+// --- REQ-AUD-2 ----------------------------------------------------------------------------------------------------
+
+/// A statement whose writer claims a provider's signature it doesn't have is recorded unverified, attributed to no
+/// one: bytes signed with a key no advertisement lists, and bytes that name the provider's key but were signed by
+/// another. The provider's genuine statement is recorded verified. An acceptance resting on the reserve's yes the
+/// log recorded unverified is refused, and the world goes on only on the genuine one.
+// verifies: REQ-AUD-2, REQ-ORD-32
+#[test]
+fn a_stated_entry_claiming_a_verified_signature_it_doesnt_have_is_recorded_unverified() {
+    // The reserve's yes (the world's place 2) signed with a key no one publishes: unverified, and the acceptance
+    // (place 15) that rests on it is refused.
+    let mut forged = Run::new(MemoryStore::new());
+    let answers = forged.world(&[2]);
+    let yes = answers[2].1.clone().unwrap();
+    assert!(!verified_at(&forged, &yes));
+    assert!(matches!(
+        forged.at(&yes),
+        Entry::Stated(StatedEntry {
+            attribution: Attribution::Unverified { .. },
+            ..
+        })
+    ));
+    let Err(AppendFailure::Refused(Violation(why))) = &answers[15].1 else {
+        panic!("the acceptance on a forged yes: {:?}", answers[15].1);
+    };
+    assert!(why.contains("verified"), "{why}");
+
+    // The same world signed by its makers: every statement verified, the acceptance admitted.
+    let mut genuine = Run::new(MemoryStore::new());
+    let answers = genuine.world(&[]);
+    assert!(verified_at(&genuine, answers[2].1.as_ref().unwrap()));
+    assert!(answers[15].1.is_ok());
+
+    // Bytes that name the provider's own statements key, signed by another: the signature fails, so unverified.
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    let question = question_of("tx-claim-1");
+    let question = run.claim(
+        &question,
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": "tx-claim-1"}),
+    );
+    let receipt = run.append(question).unwrap();
+    assert!(verified_at(&run, &receipt));
+    let entry = question_answer("us-bank", "tx-claim-1");
+    let mut claim = run.claim(
+        &entry,
+        &another_key(),
+        json!({"kind": "balance_verification", "transaction": "tx-claim-1"}),
+    );
+    claim["signed_with"]["key"] = public_key(&statements_key("us-bank")).as_str().into();
+    let bytes = {
+        let mut envelope = json!({
+            "deployment": deployment(), "protocol_version": VERSION, "shape": "urn:rutent:provider-role:result",
+            "maker": "us-bank", "made_at": "2026-11-06T15:04:05Z",
+            "signature": {"scheme": "ed25519", "key": "", "value": ""},
+            "statement": {"kind": "balance_verification", "transaction": "tx-claim-1"},
+        });
+        sign_value(&mut envelope, &another_key());
+        envelope["signature"]["key"] = public_key(&statements_key("us-bank")).as_str().into();
+        serde_json::to_vec(&envelope).unwrap()
+    };
+    claim["commitment"] = run.keep(&bytes);
+    let receipt = run.append(claim).unwrap();
+    assert!(!verified_at(&run, &receipt));
+    // The genuine answer is verified.
+    let claim = run.claim(
+        &entry,
+        &statements_key("us-bank"),
+        json!({"kind": "balance_verification", "transaction": "tx-claim-1"}),
+    );
+    let receipt = run.append(claim).unwrap();
+    assert!(verified_at(&run, &receipt));
+    // A writer can't hand the log a statement it attributed itself, built or read.
+    let mut attributed = question_answer("us-bank", "tx-claim-1");
+    attributed["commitment"] = run.keep(b"{}");
+    let attributed: Entry = serde_json::from_value(attributed).unwrap();
+    assert!(GeneralEntry::try_from(attributed).is_err());
+}
+
+/// The operator's question under `transaction`, about the world's first order.
+fn question_of(transaction: &str) -> Value {
+    json!({
+        "kind": "stated",
+        "attribution": {"signature": "verified", "who": actor(OPERATOR, OPERATOR, "operator", "component")},
+        "what": {"statement": "urn:rutent:provider-role:operation"},
+        "when": {"at": "2026-11-06T15:04:05Z", "source": "party_stated"},
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {"status": "stated"},
+        "signed_with": {"scheme": "ed25519", "key": public_key(&operator_key()).as_str()},
+        "commitment": valid("stated-entry-of-a-quote")["commitment"],
+        "about": {"order": "ord-1", "transaction": transaction},
+    })
+}
+
+/// `maker`'s answer under a fresh question with transaction `transaction`, signed by `key`, made at `made_at`:
+/// whether the log recorded it verified.
+fn answered<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    key: &Ed25519Key,
+    transaction: &str,
+    made_at: &str,
+) -> bool {
+    let mut question = question_of(transaction);
+    question["when"]["at"] = made_at.into();
+    let question = run.claim(
+        &question,
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": transaction}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer(maker, transaction);
+    answer["when"]["at"] = made_at.into();
+    let answer = run.claim(
+        &answer,
+        key,
+        json!({"kind": "balance_verification", "transaction": transaction}),
+    );
+    let receipt = run.append(answer).unwrap();
+    verified_at(run, &receipt)
+}
+
+// --- Whose keys: the register the log keeps from its own records ---------------------------------------------------
+
+/// Orchestration can't make its own key a provider's: an advertisement for a granted provider signed with a key the
+/// deployment doesn't trust for it, listing orchestration's key for statements, is recorded and changes no key, so a
+/// statement signed with orchestration's key is recorded unverified. The provider's own first advertisement, signed
+/// with the key the deployment trusts, is then accepted, and its statements key signs.
+// verifies: REQ-AUD-2, THR-3, THR-4
+#[test]
+fn an_advertisement_orchestration_signed_names_no_key_of_the_provider() {
+    let mut run = Run::new(MemoryStore::new());
+    let orchestration = signing_key("orchestration's own", 9);
+    run.grant("us-bank", GRANTED_AT);
+    // Orchestration's advertisement for us-bank: its own key for advertising and statements.
+    let mut forged: Value =
+        serde_json::from_slice(&advertised("us-bank", &orchestration, "us-bank")).unwrap();
+    forged["statement"]["keys"] = json!([
+        {"scheme": "ed25519", "public_key": public_key(&orchestration).as_str(), "purpose": "advertising"},
+        {"scheme": "ed25519", "public_key": public_key(&signing_key("orchestration's own", 10)).as_str(), "purpose": "statements"},
+    ]);
+    sign_value(&mut forged, &orchestration);
+    run.advertise("us-bank", &serde_json::to_vec(&forged).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &signing_key("orchestration's own", 10),
+        "tx-o-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-o-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Bytes naming the key the deployment trusts for us-bank, but signed by orchestration's: the signature fails.
+    let mut tampered: Value =
+        serde_json::from_slice(&advertised("us-bank", &orchestration, "us-bank")).unwrap();
+    tampered["signature"]["key"] = public_key(&advertising_key("us-bank")).as_str().into();
+    run.advertise("us-bank", &serde_json::to_vec(&tampered).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-o-5",
+        "2026-11-06T15:04:05Z"
+    ));
+    // The provider's own, signed with the key the deployment trusts for it.
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-o-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &signing_key("orchestration's own", 10),
+        "tx-o-4",
+        "2026-11-06T15:04:05Z"
+    ));
+}
+
+/// A later advertisement is accepted only as a successor: signed with an advertising key the one accepted last
+/// lists, and newer. One signed with the provider's statements key, which a compromised outside part holds, adds no
+/// key; one signed with its advertising key, adding a fresh statements key and dropping the old, is accepted, and
+/// then only the fresh key signs.
+// verifies: REQ-AUD-2, THR-4
+#[test]
+fn a_later_advertisement_signs_in_keys_only_as_a_successor() {
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("us-bank", GRANTED_AT);
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    let fresh = signing_key("us-bank's fresh statements key", 3);
+    let successor = |key: &Ed25519Key, made_at: &str| {
+        let mut ad: Value = serde_json::from_slice(&advertised("us-bank", key, "us-bank")).unwrap();
+        ad["made_at"] = made_at.into();
+        ad["statement"]["keys"] = json!([
+            {"scheme": "ed25519", "public_key": public_key(&advertising_key("us-bank")).as_str(), "purpose": "advertising"},
+            {"scheme": "ed25519", "public_key": public_key(&fresh).as_str(), "purpose": "statements"},
+        ]);
+        sign_value(&mut ad, key);
+        serde_json::to_vec(&ad).unwrap()
+    };
+    // Signed with the statements key: refused.
+    run.advertise(
+        "us-bank",
+        &successor(&statements_key("us-bank"), "2026-11-06T00:00:00.5Z"),
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-s-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Signed with the advertising key, but no newer: refused.
+    run.advertise(
+        "us-bank",
+        &successor(&advertising_key("us-bank"), ADVERTISED_AT),
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-s-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Signed with the advertising key, and newer: accepted.
+    run.advertise(
+        "us-bank",
+        &successor(&advertising_key("us-bank"), "2026-11-06T00:00:00.5Z"),
+    )
+    .unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-s-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    // The dropped key no longer signs, even for a statement dated while it was listed.
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-s-4",
+        "2026-11-06T00:00:00.2Z"
+    ));
+    // A statement dated before the fresh key was listed isn't signed by it.
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-s-5",
+        "2026-11-06T00:00:00.2Z"
+    ));
+}
+
+/// A provider's key signs only while a grant of it is in force: an advertisement recorded before any grant is
+/// accepted for nothing, and once the grant is revoked a statement made after the revocation is recorded
+/// unverified, while one made before it still verifies.
+// verifies: REQ-AUD-2, REQ-CAT-2
+#[test]
+fn a_provider_signs_only_under_a_grant_in_force() {
+    let mut run = Run::new(MemoryStore::new());
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    run.grant("us-bank", GRANTED_AT);
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-g-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-g-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-g-3",
+        "2026-11-07T00:00:01Z"
+    ));
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-g-4",
+        "2026-11-06T23:59:59Z"
+    ));
+}
+
+/// The operator's statements verify only under the deployment's `operator_key`, the deployment's own setting: a
+/// question signed with any other key, a provider's included, is recorded unverified, so no answer follows it.
+// verifies: REQ-AUD-2, REQ-ORD-32
+#[test]
+fn the_operators_statements_verify_only_under_the_deployments_key() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    let question = question_of("tx-q-1");
+    for key in [another_key(), statements_key("us-bank")] {
+        let mut claim = run.claim(
+            &question,
+            &key,
+            json!({"kind": "balance_verification", "transaction": "tx-q-1"}),
+        );
+        claim["received_at"] = "2026-11-06T15:04:09Z".into();
+        let receipt = run.append(claim).unwrap();
+        assert!(!verified_at(&run, &receipt));
+    }
+    let answer = question_answer("us-bank", "tx-q-1");
+    let answer = run.claim(
+        &answer,
+        &statements_key("us-bank"),
+        json!({"kind": "balance_verification", "transaction": "tx-q-1"}),
+    );
+    assert!(matches!(run.append(answer), Err(AppendFailure::Refused(_))));
+    let claim = run.claim(
+        &question,
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": "tx-q-1"}),
+    );
+    let receipt = run.append(claim).unwrap();
+    assert!(verified_at(&run, &receipt));
+}
+
+// --- The append's own guards --------------------------------------------------------------------------------------
+
+/// Every append is held to the whole citation table on its path: an effect citing a permit no permitting decision of
+/// this log backs is refused, as is an effect on a permit already used, and nothing is recorded.
+// verifies: INV-7, INV-8, REQ-AUZ-1
+#[test]
+fn an_effect_on_a_permit_this_log_holds_no_decision_for_is_refused() {
+    let mut run = Run::new(MemoryStore::new());
+    let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk"});
+    let mut effect = valid("verified-entry-of-an-effect");
+    effect["what"]["action"] = action.clone();
+    assert!(matches!(
+        run.append(effect.clone()),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert!(run.log.is_empty());
+    let mut decide = valid("verified-entry-of-a-decision");
+    decide["what"]["request"]["action"] = action;
+    let decided = run.append(decide).unwrap();
+    effect["what"]["decision"]["receipt"] = serde_json::to_value(&decided).unwrap();
+    run.append(effect.clone()).unwrap();
+    let mut other = effect;
+    other["when"]["at"] = "2026-11-10T09:00:01Z".into();
+    assert!(matches!(run.append(other), Err(AppendFailure::Refused(_))));
+    assert_eq!(run.log.len(), 2);
+}
+
+/// An entry built in memory is held to the contract's rules as one read from the wire: a command whose `who` isn't
+/// the operator, which the general handle's type lets through, is refused.
+// verifies: REQ-AUD-1, REQ-AUD-6
+#[test]
+fn an_entry_breaking_the_contracts_rules_is_refused_however_it_was_built() {
+    let mut run = Run::new(MemoryStore::new());
+    let command = valid("verified-entry-of-an-operator-command");
+    let mut entry: VerifiedEntry = serde_json::from_value(command).unwrap();
+    entry.who = serde_json::from_value(actor("rutent", "core-orch", "core", "component")).unwrap();
+    assert!(entry.check().is_err());
+    let general = GeneralEntry::try_from(Entry::Verified(entry)).unwrap();
+    assert!(matches!(
+        run.log.append(&general),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert!(run.log.is_empty());
+}
+
+/// A stated entry whose bytes the evidence store doesn't keep is refused: it would rest on nothing anyone can check.
+// verifies: REQ-AUD-2
+#[test]
+fn a_stated_entry_whose_bytes_are_not_kept_is_refused() {
+    let mut run = Run::new(MemoryStore::new());
+    let mut claim = question_of("tx-k-1");
+    claim["attribution"] = json!({"signature": "unverified", "claimed_by": actor(OPERATOR, OPERATOR, "operator", "component")});
+    assert!(matches!(run.append(claim), Err(AppendFailure::Refused(_))));
+    assert!(run.log.is_empty());
+}
+
+/// Names an item only for a type that doesn't implement [`PolicyLog`]: for one that does, the two impls make the
+/// name ambiguous and the test doesn't build.
+trait NotPolicyLog<A> {
+    fn holds() {}
+}
+impl<T: ?Sized> NotPolicyLog<()> for T {}
+impl<T: ?Sized + PolicyLog> NotPolicyLog<u8> for T {}
+
+/// `core-audit`'s checks hold a general handle on the log, which is no policy handle: they append through the
+/// general path, and a decision entry can't reach the log through it, however it is built or read.
+// verifies: REQ-AUZ-1, DEC-2
+#[test]
+fn the_checks_general_handle_writes_no_decision() {
+    type Shared = AuditLog<MemoryStore, KeptInMemory>;
+    <General<Shared> as NotPolicyLog<_>>::holds();
+    let log = Rc::new(RefCell::new(
+        AuditLog::open(settings(), MemoryStore::new(), KeptInMemory::new()).unwrap(),
+    ));
+    let mut checks = General::new(&log);
+    let pair: GeneralEntry =
+        serde_json::from_value(valid("verified-entry-of-a-holding-check")).unwrap();
+    let receipt = checks.append(&pair).unwrap();
+    assert_eq!(receipt.index.get(), 0);
+    let decision =
+        Entry::Verified(serde_json::from_value(valid("verified-entry-of-a-decision")).unwrap());
+    assert!(GeneralEntry::try_from(decision).is_err());
+    assert_eq!(log.borrow().len(), 1);
+}
+
+/// The log only grows: the root over its first entries never changes as later ones are appended, and each entry's
+/// proof under an earlier root still verifies.
+// verifies: DEC-12, ADR-0005, INV-6
+#[test]
+fn earlier_roots_stay_as_the_log_grows() {
+    let mut run = Run::new(MemoryStore::new());
+    let mut roots = BTreeMap::new();
+    for item in drains() {
+        run.append(item).unwrap();
+        roots.insert(run.log.len(), run.log.root());
+    }
+    for (size, root) in &roots {
+        assert_eq!(run.log.root_at(*size), Some(*root));
+        for index in 0..*size {
+            let bytes = record(&run.log.entries()[index].1).unwrap();
+            let proof = run.log.inclusion(index, *size).unwrap();
+            assert!(verify_inclusion(
+                &leaf_hash(&bytes),
+                index,
+                *size,
+                &proof,
+                root
+            ));
+        }
+    }
+    assert_eq!(run.log.root_at(run.log.len() + 1), None);
+}
+
+/// The key history holds across advertisements and providers: a statements key a provider dropped never signs for
+/// it again, even listed anew by a successor; a key another provider listed for advertising never signs anyone's
+/// statements; and an advertisement dated past the skew ahead of its receipt, or made for another deployment, or
+/// stating for a party its maker's statements then claim it doesn't, changes no key.
+// verifies: REQ-AUD-2, THR-4, REQ-PRT-1
+#[test]
+fn a_dropped_or_crossed_key_never_signs_again() {
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("us-bank", GRANTED_AT);
+    run.grant("fx-desk", GRANTED_AT);
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    run.advertise(
+        "fx-desk",
+        &advertised("fx-desk", &advertising_key("fx-desk"), "fx-desk"),
+    )
+    .unwrap();
+    let advertise_keys = |run: &mut Run<MemoryStore>, made_at: &str, keys: Value| {
+        let mut ad: Value = serde_json::from_slice(&advertised(
+            "us-bank",
+            &advertising_key("us-bank"),
+            "us-bank",
+        ))
+        .unwrap();
+        ad["made_at"] = made_at.into();
+        ad["statement"]["keys"] = keys;
+        sign_value(&mut ad, &advertising_key("us-bank"));
+        run.advertise("us-bank", &serde_json::to_vec(&ad).unwrap())
+            .unwrap();
+    };
+    let listed = |key: &Ed25519Key, purpose: &str| json!({"scheme": "ed25519", "public_key": public_key(key).as_str(), "purpose": purpose});
+    let fresh = signing_key("us-bank's next statements key", 4);
+    // Drop the statements key for a fresh one, then list the dropped one again beside it.
+    advertise_keys(
+        &mut run,
+        "2026-11-06T01:00:00Z",
+        json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&fresh, "statements")
+        ]),
+    );
+    advertise_keys(
+        &mut run,
+        "2026-11-06T02:00:00Z",
+        json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&fresh, "statements"),
+            listed(&statements_key("us-bank"), "statements")
+        ]),
+    );
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-d-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-d-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    // List fx-desk's advertising key for statements.
+    advertise_keys(
+        &mut run,
+        "2026-11-06T03:00:00Z",
+        json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&fresh, "statements"),
+            listed(&advertising_key("fx-desk"), "statements")
+        ]),
+    );
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &advertising_key("fx-desk"),
+        "tx-d-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Dated past the skew ahead of its receipt.
+    let ahead = signing_key("us-bank's key from the future", 5);
+    advertise_keys(
+        &mut run,
+        "2026-11-06T04:00:00Z",
+        json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&ahead, "statements")
+        ]),
+    );
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &ahead,
+        "tx-d-4",
+        "2026-11-06T15:04:05Z"
+    ));
+    let later = signing_key("us-bank's key from the future", 6);
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "us-bank",
+        &advertising_key("us-bank"),
+        "us-bank",
+    ))
+    .unwrap();
+    ad["made_at"] = "2026-11-06T04:10:00Z".into();
+    ad["statement"]["keys"] = json!([
+        listed(&advertising_key("us-bank"), "advertising"),
+        listed(&later, "statements")
+    ]);
+    sign_value(&mut ad, &advertising_key("us-bank"));
+    run.advertise_at(
+        "us-bank",
+        &serde_json::to_vec(&ad).unwrap(),
+        "2026-11-06T04:04:59Z",
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &later,
+        "tx-d-5",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Made for another deployment.
+    let elsewhere = signing_key("us-bank's key elsewhere", 7);
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "us-bank",
+        &advertising_key("us-bank"),
+        "us-bank",
+    ))
+    .unwrap();
+    ad["made_at"] = "2026-11-06T05:00:00Z".into();
+    ad["deployment"]["name"] = "another-deployment".into();
+    ad["statement"]["keys"] = json!([
+        listed(&advertising_key("us-bank"), "advertising"),
+        listed(&elsewhere, "statements")
+    ]);
+    sign_value(&mut ad, &advertising_key("us-bank"));
+    run.advertise("us-bank", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &elsewhere,
+        "tx-d-6",
+        "2026-11-06T15:04:05Z"
+    ));
+    // A first advertisement made for another deployment, signed with the key this one trusts.
+    run.grant("bank-co", GRANTED_AT);
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "bank-co",
+        &advertising_key("bank-co"),
+        "bank-co",
+    ))
+    .unwrap();
+    ad["deployment"]["name"] = "another-deployment".into();
+    sign_value(&mut ad, &advertising_key("bank-co"));
+    run.advertise("bank-co", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "bank-co",
+        &statements_key("bank-co"),
+        "tx-d-8",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.advertise(
+        "bank-co",
+        &advertised("bank-co", &advertising_key("bank-co"), "bank-co"),
+    )
+    .unwrap();
+    assert!(answered(
+        &mut run,
+        "bank-co",
+        &statements_key("bank-co"),
+        "tx-d-9",
+        "2026-11-06T15:04:05Z"
+    ));
+    // A statement claiming us-bank states for another party than its advertisement's publisher.
+    let mut question = question_of("tx-d-7");
+    question = run.claim(
+        &question,
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": "tx-d-7"}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer("us-bank", "tx-d-7");
+    answer["attribution"]["who"]["party"] = "fx-desk".into();
+    let answer = run.claim(
+        &answer,
+        &ahead,
+        json!({"kind": "balance_verification", "transaction": "tx-d-7"}),
+    );
+    let receipt = run.append(answer).unwrap();
+    assert!(!verified_at(&run, &receipt));
+}
+
+/// The log opens only on a store whose every record is an entry in its canonical form: a record rewritten in any
+/// other form, or one that is no entry, is refused rather than read as history.
+// verifies: DEC-12, INV-6
+#[test]
+fn a_store_holding_a_record_that_is_no_entry_of_the_log_is_refused() {
+    let file = TempFile::new("corrupt");
+    {
+        let mut run = Run::new(FileStore::open(&file.0).unwrap());
+        for item in drains() {
+            run.append(item).unwrap();
+        }
+    }
+    let good = std::fs::read(&file.0).unwrap();
+    let first = good.iter().position(|b| *b == b'\n').unwrap();
+    let mut entry: Value = serde_json::from_slice(&good[..first]).unwrap();
+    entry["when"]["at"] = "2026-11-10T09:00:01Z".into();
+    for (case, line) in [
+        (
+            "not canonical",
+            serde_json::to_vec_pretty(&entry)
+                .unwrap()
+                .into_iter()
+                .filter(|b| *b != b'\n')
+                .collect::<Vec<u8>>(),
+        ),
+        ("no entry", b"{\"kind\":\"verified\"}".to_vec()),
+    ] {
+        let mut bytes = line;
+        bytes.extend_from_slice(&good[first..]);
+        std::fs::write(&file.0, &bytes).unwrap();
+        let opened = AuditLog::open(
+            settings(),
+            FileStore::open(&file.0).unwrap(),
+            KeptInMemory::new(),
+        );
+        assert!(matches!(opened, Err(AppendFailure::Refused(_))), "{case}");
+    }
+}
+
+/// An advertisement that breaks provider-role's own rules changes no key, even signed with the key the deployment
+/// trusts: one signed with an advertising key it doesn't list, and one listing a key that is no key to accept
+/// signatures from (a point of small order) beside a good one.
+// verifies: REQ-AUD-2, THR-4, THR-8
+#[test]
+fn an_advertisement_breaking_provider_roles_rules_changes_no_key() {
+    let mut run = Run::new(MemoryStore::new());
+    let listed = |key: &str, purpose: &str| json!({"scheme": "ed25519", "public_key": key, "purpose": purpose});
+    for p in ["kyc-check", "fx-desk"] {
+        run.grant(p, GRANTED_AT);
+    }
+    // kyc-check's, signed with its trusted advertising key, which it lists for nothing.
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "kyc-check",
+        &advertising_key("kyc-check"),
+        "kyc-check",
+    ))
+    .unwrap();
+    ad["statement"]["keys"] = json!([listed(
+        public_key(&statements_key("kyc-check")).as_str(),
+        "statements"
+    )]);
+    sign_value(&mut ad, &advertising_key("kyc-check"));
+    run.advertise("kyc-check", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "kyc-check",
+        &statements_key("kyc-check"),
+        "tx-r-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    // fx-desk's, listing the identity point, of small order, beside its statements key.
+    let small_order = base64url_of(&{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "fx-desk",
+        &advertising_key("fx-desk"),
+        "fx-desk",
+    ))
+    .unwrap();
+    ad["statement"]["keys"] = json!([
+        listed(
+            public_key(&advertising_key("fx-desk")).as_str(),
+            "advertising"
+        ),
+        listed(
+            public_key(&statements_key("fx-desk")).as_str(),
+            "statements"
+        ),
+        listed(&small_order, "statements"),
+    ]);
+    sign_value(&mut ad, &advertising_key("fx-desk"));
+    run.advertise("fx-desk", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-r-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    // Each provider's own advertisement, as provider-role has it, is accepted.
+    for p in ["kyc-check", "fx-desk"] {
+        run.advertise(p, &advertised(p, &advertising_key(p), p))
+            .unwrap();
+    }
+    assert!(answered(
+        &mut run,
+        "kyc-check",
+        &statements_key("kyc-check"),
+        "tx-r-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-r-4",
+        "2026-11-06T15:04:05Z"
+    ));
+}
+
+fn base64url_of(bytes: &[u8]) -> String {
+    rutent_core_audit::log::kept::base64url(bytes)
+}
+
+/// A store that can't be read back after a failed write fails the next append as unavailable, not refused: the
+/// entry broke no rule, so orchestration keeps it and appends it again, and once the store reads back the retry
+/// is recorded once.
+// verifies: REQ-MDL-8, NFR-5, INV-7
+#[test]
+fn a_store_that_cant_be_read_back_leaves_the_entry_with_its_writer() {
+    let store = Faulty::default();
+    let mut run = Run::new(store.clone());
+    let items = drains();
+    store.plan(&[Some(Fault::After)]);
+    assert_eq!(
+        run.append(items[0].clone()),
+        Err(AppendFailure::Unavailable)
+    );
+    store.unreadable.set(true);
+    assert_eq!(
+        run.append(items[0].clone()),
+        Err(AppendFailure::Unavailable)
+    );
+    store.unreadable.set(false);
+    let receipt = run.append(items[0].clone()).unwrap();
+    assert_eq!(receipt.index.get(), 0);
+    assert_eq!(store.records().len(), 1);
+    assert_eq!(run.log.len(), 1);
+}

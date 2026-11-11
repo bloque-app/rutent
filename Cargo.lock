@@ -1488,12 +1488,14 @@ dependencies = [
 name = "rutent-core-audit"
 version = "0.0.0"
 dependencies = [
+ "rutent-conformance",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

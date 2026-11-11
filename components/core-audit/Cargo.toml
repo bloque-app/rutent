@@ -14,6 +14,11 @@ rutent-router = { path = "../router" }
 rutent-stm = { path = "../stm" }
 rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
+# The log's records are read back from its store, and the envelopes it attributes are read as JSON (`T-022-01`).
+serde_json = "1.0.154"
+# The log's Merkle tree and its receipts' digests: SHA-256 (`T-022-01`, ADR-0005).
+sha2 = "0.10"
 
 [dev-dependencies]
-serde_json = "1.0.154"
+# Real Ed25519 keys and signed advertisements for the log's attribution tests (`T-022-01`).
+rutent-conformance = { path = "../../conformance", features = ["signing"] }
