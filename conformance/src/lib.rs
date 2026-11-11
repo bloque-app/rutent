@@ -7,3 +7,4 @@ pub mod role;
 pub mod router;
 #[cfg(feature = "signing")]
 pub mod signing;
+pub mod sim;

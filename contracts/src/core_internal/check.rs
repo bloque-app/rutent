@@ -115,14 +115,30 @@ impl PersonQuestion {
                 "a question names each provider already asked about its order once",
             ));
         }
-        if let Authority::ShortlistedRoute { providers, .. } = &self.authority {
+        if let Authority::ShortlistedRoute {
+            providers,
+            verifiers,
+            ..
+        } = &self.authority
+        {
             listed(
                 providers,
                 "a shortlisted route names its providers, at least one, each once",
             )?;
-            if !self.ask.iter().all(|p| providers.contains(p)) {
+            if !distinct(verifiers) {
                 return Err(Violation(
-                    "a question on a shortlisted route asks only the shortlisted providers",
+                    "a shortlisted route names each verifier its tuples need once",
+                ));
+            }
+            // The verifiers that receive the subject are asked too, and recorded and bounded with the providers
+            // (`REQ-CPL-5`); anyone else is off the route.
+            if !self
+                .ask
+                .iter()
+                .all(|p| providers.contains(p) || verifiers.contains(p))
+            {
+                return Err(Violation(
+                    "a question on a shortlisted route asks only the shortlisted providers and the verifiers its tuples need",
                 ));
             }
         }
@@ -334,12 +350,24 @@ impl What {
                 Ok(())
             }
             What::DecisionRecord {
+                round, verifiers, ..
+            } if !distinct(verifiers)
+                || (*round == RoutingRound::Choice && !verifiers.is_empty()) =>
+            {
+                Err(Violation(
+                    "a decision record names the verifiers its tuples need only on a shortlist's, each once",
+                ))
+            }
+            What::DecisionRecord {
                 round, shortlisted, ..
             } => match (round, shortlisted) {
-                (RoutingRound::Shortlist, Some(providers)) => listed(
-                    providers,
-                    "a shortlist's decision record names its providers, at least one, each once",
-                ),
+                // A shortlist may keep no provider: its record is what a `no_route` input cites (`REQ-AUD-4`).
+                (RoutingRound::Shortlist, Some(providers)) if !distinct(providers) => {
+                    Err(Violation(
+                        "a shortlist's decision record names its providers, each once, and none where it kept none",
+                    ))
+                }
+                (RoutingRound::Shortlist, Some(_)) => Ok(()),
                 (RoutingRound::Choice, None) => Ok(()),
                 _ => Err(Violation(
                     "a decision record names shortlisted providers exactly when it is a shortlist's",
@@ -441,11 +469,12 @@ impl StatedEntry {
         if let Some(about) = &self.about {
             about.check()?;
         }
-        let maker = &self.attribution.maker().party;
+        // The relay is another actor than the maker; a sibling under the same publisher may relay its statement.
+        let maker = &self.attribution.maker().acts;
         if self
             .relayed_by
             .as_ref()
-            .is_some_and(|relay| &relay.party == maker)
+            .is_some_and(|relay| &relay.acts == maker)
         {
             return Err(Violation(
                 "a stated entry's relay is a party other than its maker",

@@ -1219,9 +1219,16 @@
           "$ref": "urn:rutent:core-internal:receipt"
         },
         "shortlisted": {
-          "description": "The providers a shortlist round shortlisted, at least one, each once: present exactly when the round is the shortlist (REQ-CPL-2, REQ-CPL-6), which the Rust types check.",
+          "description": "The providers a shortlist round shortlisted, each once, and none where it kept none, so a no_route input has the record to cite: present exactly when the round is the shortlist (REQ-CPL-2, REQ-CPL-6, REQ-AUD-4), which the Rust types check.",
           "type": "array",
-          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        },
+        "verifiers": {
+          "description": "The verifiers a shortlist round's tuples need, by its recorded decision, each once: only on a shortlist's record, which the Rust types check (REQ-CPL-5, REQ-CPL-6).",
+          "type": "array",
           "uniqueItems": true,
           "items": {
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"

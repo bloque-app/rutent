@@ -14,6 +14,10 @@ workspace = true
 rutent-contracts = { path = "../../contracts" }
 rutent-core-audit = { path = "../../components/core-audit" }
 rutent-core-authz = { path = "../../components/core-authz" }
-
-[dev-dependencies]
+rutent-prov = { path = "../../components/prov" }
+rutent-evidence = { path = "../../components/evidence" }
+rutent-stm = { path = "../../components/stm" }
+# The simulated providers (`T-024-01`) are admitted through the platform, signed for real, and checked by the
+# role suite, so the conformance crate's signing feature is on.
+rutent-conformance = { path = "..", features = ["signing"] }
 serde_json = "1.0.154"

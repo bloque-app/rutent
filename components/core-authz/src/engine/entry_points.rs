@@ -12,7 +12,8 @@
 //!
 //! 1. **One permit site.** A permitting answer, `Answer::Permit`, is written in exactly one function of Core: the
 //!    engine's consultation. The other permitting answers, `SessionOutcome::Opened`, `ReadOutcome::Allowed`,
-//!    `ChargeOutcome::Within` and `PersonOutcome::Allowed`, are written only in the engine. No code of Core writes
+//!    `ChargeOutcome::Within` and `PersonOutcome::Allowed`, are written only in the engine, each in the one function
+//!    that takes it from the consultation's verdict (`session_outcome`, `read_outcome`). No code of Core writes
 //!    `Outcome::Permitted` or `PermitAnswer::Permit`, and none but the engine builds a `Decision`.
 //! 2. **Effects are orchestration's.** Only `core-orch` records an effect (`What::Effect`, an `Effect`) or calls an
 //!    outer library's method that carries out a decided action ([`CARRY_OUT`]).
@@ -872,8 +873,12 @@ pub(super) fn every_entry_point_of_core_holds() {
     assert_eq!(scan.findings, Vec::new());
     assert_eq!(
         scan.permit_sites,
-        vec!["core-authz/src/engine/mod.rs::consult: Answer::Permit".to_string()],
-        "one permit site"
+        vec![
+            "core-authz/src/engine/mod.rs::consult: Answer::Permit".to_string(),
+            "core-authz/src/engine/mod.rs::session_outcome: SessionOutcome::Opened".to_string(),
+            "core-authz/src/engine/mod.rs::read_outcome: ReadOutcome::Allowed".to_string(),
+        ],
+        "one permit site, and the open session and the allowed read taken from its verdict"
     );
 }
 
