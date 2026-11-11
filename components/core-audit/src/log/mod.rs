@@ -2,18 +2,25 @@
 //!
 //! Declared by `T-020-01`; `T-022-01` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 
-use rutent_contracts::core_internal::Entry;
 use rutent_contracts::core_internal::Receipt;
-use rutent_contracts::core_internal::calls::{AppendFailure, Log};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, DecisionEntry, GeneralEntry, Log, PolicyLog,
+};
 
 /// The log and its checks before their rows build them: they take no entry, keep no evidence and record no check,
 /// answering each as unavailable, so no action that waits on a receipt takes effect (`INV-7`). Each trait's stub
-/// sits in the module of the row that owns that trait; this one, and its [`Log`], are `T-022-01`'s.
+/// sits in the module of the row that owns that trait; this one, and its [`Log`] and [`PolicyLog`], are `T-022-01`'s.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unbuilt;
 
 impl Log for Unbuilt {
-    fn append(&mut self, _entry: &Entry) -> Result<Receipt, AppendFailure> {
+    fn append(&mut self, _entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+}
+
+impl PolicyLog for Unbuilt {
+    fn append_decision(&mut self, _entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
 }
@@ -42,6 +49,10 @@ mod tests {
         let unavailable = Err(AppendFailure::Unavailable);
         let mut log = Unbuilt;
         assert_eq!(log.append(&fixture!("entry-verified")), unavailable);
+        assert_eq!(
+            log.append_decision(&fixture!("verified-entry-of-a-decision")),
+            unavailable
+        );
         assert_eq!(
             log.report_pair(&fixture!("report-pair-of-a-route-segment")),
             unavailable
