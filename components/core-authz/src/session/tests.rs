@@ -134,6 +134,9 @@ impl Policy for Rules {
 }
 
 /// Holders and records whose answers the test sets, which keep what they were asked.
+///
+/// Every actor these tests name acts for the party it states, which the register answers (`Source::ActsFor`,
+/// `T-021-03`): that word is answered here and kept out of `asked`, which counts what the session and read rules ask.
 #[derive(Default)]
 struct Says {
     says: Vec<(Need, Reply<Said>)>,
@@ -151,6 +154,9 @@ impl Says {
 
 impl Sources for Says {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
+        if matches!(need.from, Source::ActsFor { .. }) {
+            return Reply::Given(Said::Yes);
+        }
         self.asked.push(need.clone());
         self.says
             .iter()

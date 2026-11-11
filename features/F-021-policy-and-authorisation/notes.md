@@ -203,10 +203,23 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   No other role acts for the user. A reserve answers both declarations, as `REQ-CAT-6` has it make both at publishing;
   never declared is a missing input, declared the other way a no, and either refuses. The decide entry's `who` is who
   acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
+- **No party stands on the request's word either** (review of `07c4be9`, S5). External authentication establishes
+  only `acts`, and the rules read the stated `party`: `cust-9` stating `cust-1` moved value on and authorised
+  `cust-1`'s order, and `evil-pay` stating `us-bank` authorised `us-bank`'s automatic deposit. One fixed rule, first in
+  `FIXED`, now asks the deployment's register of actors (`Source::ActsFor { acts, party }`, answered by `acts`)
+  whether each actor a request names acts for the party it states: the caller, the giver, the decider, the mover,
+  the requester, the reader, the asker, a permission's granter and grantee, and a route's suggester. A no refuses as
+  `no_accountable_party`, nothing a missing input, on every call. It is fixed once at the engine, so `T-021-02`'s
+  session and read rules, which read the stated party, now read a bound one too; `session/` is unchanged but for its
+  tests' source, which answers that word. It serves `REQ-AUZ-8`, every agent acting for an identified accountable
+  party, and `T-021-05` builds its limits on it rather than adding its own.
 - **What the assembly answers.** Before `T-024-02` wires the sources, every move and every authorisation needs an
-  input, so none is permitted: fail-closed. The register lists Core's actors and the operator's logins; the order's
+  input, so none is permitted: fail-closed, and every policy call now needs the register of actors too. The register
+  lists who each actor acts for, Core's actors and the operator's logins; the order's
   record, the log's acceptance or Core's intake, its requester and origin reserve; the catalogue, each reserve's two
-  declarations. An authorisation asked before its order's record exists gets a missing input and is refused.
+  declarations, a no for one a reserve that published didn't make (N3). Who is listed, and each change to it, is the
+  deployment's to record (`F-030`, N4). An authorisation asked before its order's record exists gets a missing input
+  and is refused.
 - **A permit to promote doesn't pin the version** (review of `f7df0c2`, S3). The permit names the version decided on,
   but the platform's `promote` puts whatever is staged in force. core-internal's doc says so, and `T-020-08`'s row in
   `PLAN.md` now has Core compare `lifecycle().staged(provider)` with the permit's version before it calls `promote`,
@@ -237,4 +250,6 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   rule, and its known operator holds the permission the rule asks for, so the refusal of the other login stays the
   deployment's. Since the review of `f7df0c2`, Core's move needs the register to list its actor: the engine tests' sources
   answer that one word for `core-orch` themselves, outside the inputs they count, and the unbuilt engine's move is
-  not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy.
+  not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy. Since the review
+  of `07c4be9`, the sources of `T-021-01`'s and `T-021-02`'s tests also answer the register's yes, for every
+  actor they name, outside what they count, and the unbuilt engine's grant is not known for that input.

@@ -85,6 +85,28 @@ impl Kept {
         Ok(receipt)
     }
 
+    /// A log holding one coherent world: order `ord-1`, accepted by `cust-1` as its requester, beneficiary and payer.
+    fn world() -> Self {
+        let path = format!(
+            "{}/../../contracts/core-internal/fixtures/admission/world--grant.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let world: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        Kept(
+            world["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| {
+                    (
+                        serde_json::from_value(h["receipt"].clone()).unwrap(),
+                        serde_json::from_value(h["entry"].clone()).unwrap(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// A log holding the decision record the fixtures' posted route cites, so a permitted post is admitted.
     fn with_a_decision_record() -> Self {
         let mut record: Value = valid!("verified-entry-of-a-first-decision-record");
@@ -168,12 +190,17 @@ impl Policy for Permits {
 /// The deployment's register of permissions, the reserves' declarations and the orders' records, as the assembly
 /// answers them: who holds which permission, by actor; what each reserve declared, an answer per declaration; and each
 /// order's requester and origin reserve. It keeps what it was asked.
+///
+/// Who each actor acts for is listed where a test sets it (`acts_for`); an actor no test lists acts for the party its
+/// request states, and that word is kept out of `asked`, which counts what the rules ask beyond it.
 #[derive(Default)]
 struct Register {
     holds: Vec<(Id, Id, Permission)>,
     declarations: Vec<(Id, &'static str, Reply<Said>)>,
     requesters: Vec<(Id, Id)>,
     origins: Vec<(Id, Id)>,
+    acts_for: Vec<(Id, Id)>,
+    others: Vec<(Need, Reply<Said>)>,
     asked: Vec<Need>,
 }
 
@@ -217,6 +244,18 @@ impl Register {
         self
     }
 
+    /// The register, with `acts` acting for `party` and for no party it isn't listed for.
+    fn acting(mut self, acts: &str, party: &str) -> Self {
+        self.acts_for.push((id(acts), id(party)));
+        self
+    }
+
+    /// The register, with `said` the answer to `need`.
+    fn saying(mut self, need: Need, said: Reply<Said>) -> Self {
+        self.others.push((need, said));
+        self
+    }
+
     /// The fixtures' world: `ord-17` requested by `cust-1` and `ord-19` by `acme-treasury`, both from `us-bank`;
     /// Core's `core-orch` carrying an authorisation onward, and the operator's `op-login-2` acting for a user.
     fn world() -> Self {
@@ -244,7 +283,19 @@ fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
 
 impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
+        if let Source::ActsFor { acts, party } = &need.from {
+            let listed = self.acts_for.iter().any(|(a, _)| a == acts);
+            let acts_for = self.acts_for.iter().any(|(a, p)| a == acts && p == party);
+            return Reply::Given(if acts_for || !listed {
+                Said::Yes
+            } else {
+                Said::No
+            });
+        }
         self.asked.push(need.clone());
+        if let Some((_, said)) = self.others.iter().find(|(n, _)| n == need) {
+            return said.clone();
+        }
         match &need.from {
             Source::Permissions { party, permission } => {
                 let held = self
@@ -859,5 +910,153 @@ fn reserve_that_declared_automatic_deposits_authorises_with_no_user_present() {
         policy.decide(&moved).unwrap().outcome,
         NOT_PERMITTED,
         "automatic deposits alone let the operator move no value for the user"
+    );
+}
+
+/// The refusal of an actor that doesn't act for the party its request states.
+const NO_PARTY: Answer = Answer::Refuse {
+    class: RefusalClass::NoAccountableParty,
+};
+
+/// An actor stating a party the register doesn't say it acts for acts for no one: `cust-9` stating `cust-1` moves no
+/// value on `cust-1`'s order and gives no authorisation for it, and `evil-pay` stating `us-bank` authorises none of
+/// `us-bank`'s automatic deposits. Each is refused for having no accountable party before any other rule is asked,
+/// and the log admits no effect on it. The same requests from the parties' own actors are let through.
+// verifies: REQ-AUZ-8, REQ-AUZ-9
+#[test]
+fn actor_stating_another_party_acts_for_no_one() {
+    let register = || {
+        Register::world()
+            .acting("cust-9", "cust-9")
+            .acting("cust-1", "cust-1")
+            .acting("evil-pay", "evil-pay")
+            .acting("us-bank", "us-bank")
+            .declaring("us-bank", Reply::Given(Said::No))
+            .declaring_that("us-bank", AUTOMATIC_DEPOSIT, Reply::Given(Said::Yes))
+    };
+    let mut policy = engine(Kept::default(), register());
+    let forged_customer = actor("cust-1", "cust-9", Role::Customer, ActorKind::Person);
+    let forged_reserve = actor("us-bank", "evil-pay", Role::Provider, ActorKind::Component);
+
+    let mut moved: DecisionRequest = valid!("decision-request-to-move-value");
+    moved.caller = forged_customer.clone();
+    let decision = policy.decide(&moved).unwrap();
+    assert_eq!(decision.outcome, NO_PARTY, "a move on another's order");
+    assert_eq!(policy.log().entry_of(&decision).who, forged_customer);
+    assert_eq!(
+        policy.log.effect(&moved, forged(&decision)),
+        no_permitting_decision()
+    );
+    let mut authorised: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
+    authorised.given_by = forged_customer;
+    assert_eq!(policy.consult(Asked::Authorise(&authorised)), NO_PARTY);
+    authorised.given_by = forged_reserve;
+    assert_eq!(policy.consult(Asked::Authorise(&authorised)), NO_PARTY);
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+
+    let mut policy = engine(Kept::default(), register());
+    moved.caller = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    assert_eq!(policy.decide(&moved).unwrap().outcome, Answer::Permit {});
+    authorised.given_by = moved.caller.clone();
+    assert_eq!(
+        policy.consult(Asked::Authorise(&authorised)),
+        Answer::Permit {}
+    );
+    authorised.given_by = actor("us-bank", "us-bank", Role::Provider, ActorKind::Component);
+    assert_eq!(
+        policy.consult(Asked::Authorise(&authorised)),
+        Answer::Permit {}
+    );
+}
+
+/// An actor stating the account's holder for its party, when the register says it acts for another, opens no session
+/// on that account, though the account's record says the party it states holds it; the holder's own actor opens one.
+// verifies: REQ-AUZ-8, REQ-CAT-3
+#[test]
+fn session_opened_by_an_actor_stating_another_party_is_refused() {
+    use rutent_contracts::core_internal::calls::Sessions;
+    use rutent_contracts::core_internal::{SessionOutcome, SessionRequest};
+
+    let mut request: SessionRequest = valid!("session-request-of-a-delegate");
+    let holds = Need {
+        input: request.holder.clone(),
+        from: Source::Account(request.account.clone()),
+    };
+    let register = Register::default()
+        .acting("agent-7", "acme-treasury")
+        .acting("cust-1", "cust-1")
+        .saying(holds, Reply::Given(Said::Yes));
+    let mut policy = engine(Kept::default(), register);
+    policy.set_clock(crate::session::Stopped::at(&request.at));
+
+    // `agent-7` acts for `acme-treasury`, and states the holder, `cust-1`, as its party.
+    request.requester.party = request.holder.clone();
+    let answer = policy.open_session(&request).unwrap();
+    assert!(
+        matches!(
+            answer.outcome,
+            SessionOutcome::Refused {
+                class: RefusalClass::NoAccountableParty
+            }
+        ),
+        "{:?}",
+        answer.outcome
+    );
+    assert!(policy.register().sessions().is_empty(), "no session opened");
+
+    request.request = id("req-301");
+    request.requester = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let answer = policy.open_session(&request).unwrap();
+    assert!(matches!(answer.outcome, SessionOutcome::Opened { .. }));
+}
+
+/// An actor stating a customer's party, when the register says it acts for another, reads none of that customer's
+/// orders, though the order's record and the log say that party is its requester; the customer's own actor reads it.
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn read_by_an_actor_stating_another_party_is_refused() {
+    use rutent_contracts::core_internal::calls::Reads as _;
+    use rutent_contracts::core_internal::{ReadCheck, ReadOutcome};
+
+    let party_of = Need {
+        input: id("cust-1"),
+        from: Source::OrderParties(id("ord-1")),
+    };
+    let register = Register::default()
+        .acting("cust-9", "cust-9")
+        .acting("cust-1", "cust-1")
+        .saying(party_of, Reply::Given(Said::Yes));
+    let mut policy = engine(Kept::world(), register);
+    let read = |request: &str, reader: Actor| -> ReadCheck {
+        serde_json::from_value(json!({
+            "request": request,
+            "reader": reader,
+            "reads": {"kind": "order", "order": "ord-1"},
+            "at": "2026-11-10T09:00:00Z",
+        }))
+        .unwrap()
+    };
+
+    let forged = read(
+        "req-450",
+        actor("cust-1", "cust-9", Role::Customer, ActorKind::Person),
+    );
+    let answer = policy.check_read(&forged).unwrap();
+    assert_eq!(
+        answer.outcome,
+        ReadOutcome::Refused {
+            class: RefusalClass::NoAccountableParty
+        }
+    );
+    let own = read(
+        "req-451",
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+    );
+    assert_eq!(
+        policy.check_read(&own).unwrap().outcome,
+        ReadOutcome::Allowed {}
     );
 }

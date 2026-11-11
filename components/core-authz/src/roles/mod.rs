@@ -2,6 +2,17 @@
 //!
 //! Declared by `T-020-01`; `T-021-03` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 //!
+//! # Who an actor acts for
+//!
+//! External authentication establishes who acts (`Actor::acts`) and nothing more (`REQ-AUZ-1`), so the party a
+//! request says an actor acts for is the request's word until the deployment's register of actors says yes
+//! (`Source::ActsFor`). A fixed rule, the first asked, holds every actor a request names to it, on every call: who
+//! asks, gives, decides, moves, reads, grants or asks about a person, a route's suggester and a permission's grantee.
+//! An actor the register says acts for another party acts for no accountable party, and is refused so
+//! (`REQ-AUZ-8`), whatever else the request would pass; one the register says nothing of is a missing input. So every
+//! rule that reads a stated party, the sessions' and reads' of `T-021-02` among them, reads one the register has
+//! bound to its actor.
+//!
 //! # Posting a route
 //!
 //! Only the operator posts a route (`REQ-AUZ-2`). The fixed rule refuses a `post_route` asked in any other role
@@ -240,6 +251,67 @@ pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     }
     if refused || !any_yes {
         return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted));
+    }
+    Reply::Given(Ruling::Permit)
+}
+
+/// Every actor `asked` names, each of which acts only for the party it states: who asks, gives, decides, moves, reads,
+/// grants or asks about a person, and the actors it names besides, a route's suggester and a permission's grantee.
+fn actors_named<'a>(asked: Asked<'a>) -> Vec<&'a Actor> {
+    match asked {
+        Asked::Decide(request) => match &request.action {
+            Action::PostRoute {
+                suggested_by: Some(suggester),
+                ..
+            } => vec![&request.caller, suggester],
+            _ => vec![&request.caller],
+        },
+        Asked::Authorise(a) => vec![&a.given_by],
+        Asked::DecideStuck(r) => vec![&r.decider],
+        Asked::MoveStuck(r) => vec![&r.mover],
+        Asked::OpenSession(r) => vec![&r.requester],
+        Asked::CheckRead(c) => vec![&c.reader],
+        Asked::GrantPermission(c) | Asked::RevokePermission(c) => vec![&c.by, &c.grantee],
+        Asked::Charge(c) => vec![&c.caller],
+        Asked::AskAboutPerson(q) => vec![&q.asker],
+    }
+}
+
+/// The register's word, for each actor `asked` names, that it acts for the party it states.
+fn acts_for(asked: Asked<'_>) -> Vec<Need> {
+    let mut needs: Vec<Need> = Vec::new();
+    for actor in actors_named(asked) {
+        let need = Need {
+            input: actor.acts.clone(),
+            from: Source::ActsFor {
+                acts: actor.acts.clone(),
+                party: actor.party.clone(),
+            },
+        };
+        if !needs.contains(&need) {
+            needs.push(need);
+        }
+    }
+    needs
+}
+
+/// What the rule that every actor acts for the party it states needs: the register's word for each actor `asked`
+/// names, on every call.
+pub(crate) fn acts_for_needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
+    Reply::Given(acts_for(asked))
+}
+
+/// Its ruling: an actor the register doesn't say acts for the party it states acts for no accountable party
+/// (`REQ-AUZ-8`), whatever it asks; one the register says nothing of is a missing input.
+pub(crate) fn acts_for_rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
+    for need in acts_for(asked) {
+        match inputs.iter().find(|i| i.need == need).map(|i| i.said) {
+            Some(Said::Yes) => {}
+            Some(Said::No) => {
+                return Reply::Given(Ruling::Refuse(RefusalClass::NoAccountableParty));
+            }
+            None => return Reply::Missing,
+        }
     }
     Reply::Given(Ruling::Permit)
 }

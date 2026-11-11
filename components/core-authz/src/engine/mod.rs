@@ -147,7 +147,8 @@ pub enum Source {
     },
     /// The deployment's register of permissions: whether the actor the input names (its `acts`), acting for `party`,
     /// holds `permission`. It answers by the actor, never by the party alone, so each of a party's logins or
-    /// components holds only what it is listed for (`REQ-AUZ-2`, `REQ-AUZ-6`, `REQ-AUZ-9`).
+    /// components holds only what it is listed for (`REQ-AUZ-2`, `REQ-AUZ-6`, `REQ-AUZ-9`). Who is listed, and each
+    /// change to that, is the deployment's to keep and record (`F-030`); the engine only asks.
     Permissions {
         /// The accountable party the actor acts for.
         party: Id,
@@ -156,7 +157,9 @@ pub enum Source {
     },
     /// A reserve's declarations at publishing (`REQ-CAT-6`): whether the reserve made the declaration the input
     /// names, such as that it can't require the user's own withdrawal, under which the operator may act for the
-    /// user there (`REQ-AUZ-9`).
+    /// user there (`REQ-AUZ-9`). A reserve makes each declaration either way at publishing, so the assembly answers
+    /// no, not nothing, for one a reserve that published didn't make; nothing is left for a reserve that never
+    /// published, which refuses as a missing input.
     Declarations(Id),
     /// The record of an order: whether the party the input names is its requester, whose agents act in its party
     /// (`REQ-AUZ-9`, `REQ-ORD-13`).
@@ -164,6 +167,16 @@ pub enum Source {
     /// The record of an order: whether the reserve the input names is its origin reserve, the provider of its first
     /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
     OrderOrigin(Id),
+    /// The deployment's register of actors: whether the actor `acts`, as external authentication established it,
+    /// acts for the accountable party `party` its request states. External authentication says who acts and nothing
+    /// more (`REQ-AUZ-1`), so a party is only the request's word until this says yes (`REQ-AUZ-8`). It answers by
+    /// `acts`.
+    ActsFor {
+        /// The actor.
+        acts: Id,
+        /// The party its request says it acts for.
+        party: Id,
+    },
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -291,6 +304,11 @@ pub(crate) struct Rule {
 /// The fixed rules, in the order the engine asks them. Each later row of `F-021` adds its own entry here, and the lead
 /// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
 pub(crate) const FIXED: &[Rule] = &[
+    Rule {
+        name: "T-021-03: every actor a request names acts only for the party the register says it acts for",
+        needs: crate::roles::acts_for_needs,
+        rule: crate::roles::acts_for_rule,
+    },
     Rule {
         name: "T-021-02: a session is its holder's or its delegate's, bounded in time; a read is its reader's",
         needs: crate::session::needs,
@@ -780,9 +798,10 @@ mod tests {
 
     /// Verifiers and providers whose answers the test sets, input by input, and which keep what they were asked.
     ///
-    /// The deployment's register lists Core's own actor, `core-orch`, as carrying the user's authorisation onward
-    /// (`T-021-03`), so the move the fixtures ask for in Core's name passes the fixed rules on every engine here.
-    /// That word is the register's, answered here and kept out of `asked`, which counts the inputs the tests set.
+    /// The deployment's register lists Core's own actor, `core-orch`, as carrying the user's authorisation onward,
+    /// and says every actor the fixtures name acts for the party it states (`T-021-03`), so the fixtures' requests pass
+    /// the fixed rules on every engine here. Those words are the register's, answered here and kept out of `asked`,
+    /// which counts the inputs the tests set.
     #[derive(Default)]
     struct Given {
         says: Vec<(Need, Reply<Said>)>,
@@ -791,7 +810,7 @@ mod tests {
 
     impl Sources for Given {
         fn supply(&mut self, need: &Need) -> Reply<Said> {
-            if need == &core_carries_onward() {
+            if need == &core_carries_onward() || matches!(need.from, Source::ActsFor { .. }) {
                 return Reply::Given(Said::Yes);
             }
             self.asked.push(need.clone());
@@ -979,9 +998,15 @@ mod tests {
         assert!(matches!(read.outcome, ReadOutcome::Refused { .. }));
         assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let grant: PermissionChange = fixture!("permission-change-granting-a-regulator-the-trail");
+        // The grant waits on the register's word that its actors act for the parties they state (`T-021-03`).
         let granted = policy.grant_permission(&grant).unwrap();
         assert!(granted.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         // Nothing was granted, so there is nothing to revoke.
         let revoked = policy.revoke_permission(&grant).unwrap();
         assert!(revoked.permit().is_none());
