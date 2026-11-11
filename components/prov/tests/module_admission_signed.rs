@@ -8,10 +8,10 @@ mod common;
 mod signed;
 
 use rutent_contracts::module_interface::{
-    AcceptanceMode, AdmissionRefusal, RuleViolation, validate_release,
+    AcceptanceMode, AdmissionRefusal, RuleViolation, Time, validate_release,
 };
 use rutent_contracts::provider_role::ContextMismatch;
-use rutent_prov::catalogue::{SignatureError, StatementRefusal};
+use rutent_prov::catalogue::{Instant, SignatureError, StatementRefusal};
 use rutent_prov::module::admission::Unverified;
 use rutent_prov::module::types::Admitted;
 use rutent_prov::module::wire::sha256;
@@ -364,5 +364,55 @@ fn acceptance_after_the_signing_keys_rotation_is_refused() {
         s.platform.pending(RESERVE).map(|a| &a.assertion_digest),
         Some(&waiting.assertion_digest),
         "the refused release stopped waiting"
+    );
+}
+
+/// An acceptance is recorded at the time it was given, the caller's clock: a fresh acceptance given on 2026-12-01
+/// says 2026-12-01, and an automatic one, at the admission's own clock, says that. The platform keeps no clock
+/// of its own to make a time up from.
+// verifies: REQ-MDL-1, REQ-AUD-1
+#[test]
+fn acceptance_given_at_a_set_time_is_recorded_at_that_time() {
+    let mut s = Signed::new();
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal"]);
+    let Admitted::Artefact(artefact) =
+        s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+    else {
+        panic!("the first release wasn't admitted");
+    };
+    // 2026-12-01T00:00:00Z, 24 days after the admission.
+    let given = Instant(signed::AT.0 + 24 * 86_400);
+    let accepted = s
+        .platform
+        .accept(
+            RESERVE,
+            &artefact.assertion_digest,
+            "test-reviewer",
+            &s.catalogue,
+            given,
+        )
+        .expect("the acceptance");
+    assert_eq!(
+        accepted.acceptance.accepted.as_ref().map(|a| &a.at),
+        Some(&Time::new("2026-12-01T00:00:00Z").expect("a time")),
+        "the fresh acceptance isn't recorded at the time it was given"
+    );
+
+    // A release that widens nothing, admitted a day later, is accepted automatically at the admission's clock.
+    let (same, same_binaries) = release(RESERVE, "1.0.1", &["withdrawal"]);
+    let Admitted::Artefact(automatic) = s.platform.admit(
+        &signed::assertion(&same, &same_binaries, &key),
+        &same_binaries,
+        &mut s.catalogue,
+        Instant(given.0 + 86_400),
+    ) else {
+        panic!("the release that widens nothing wasn't admitted");
+    };
+    assert_eq!(automatic.acceptance.required, AcceptanceMode::Automatic);
+    assert_eq!(
+        automatic.acceptance.accepted.as_ref().map(|a| &a.at),
+        Some(&Time::new("2026-12-02T00:00:00Z").expect("a time")),
+        "the automatic acceptance isn't recorded at the admission's clock"
     );
 }

@@ -298,3 +298,82 @@ fn binding_records_a_call_its_callee_never_answered_as_undelivered() {
         assert!(answers_as(&mut binding, &callee, "1.0.0", 3));
     }
 }
+
+/// The evidence reference of the caller's answer, which names each value its outside part obtained.
+fn reference(handled: &Handled) -> String {
+    let Handled::Answered(result) = handled else {
+        panic!("the caller didn't answer: {handled:?}")
+    };
+    serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"][0]["reference"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The calling module is told each outcome as it is recorded: a callee that answered is `delivered`, one the
+/// caller doesn't declare is `refused`, and one that was handed the operation and gave no answer is `unanswered`,
+/// never `refused`, since it may have acted on it.
+// verifies: REQ-ORD-1, REQ-MDL-21
+#[test]
+fn caller_is_told_each_cross_module_outcome_as_it_is_recorded() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let answering = format!("answering-{language}");
+        let trapping = format!("trapping-{language}");
+        install(
+            &mut binding,
+            &spec(&answering, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &spec(&trapping, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        // The caller declares calls to the answering and the trapping callee, and to no other.
+        let undeclared = format!("undeclared-{language}");
+        for (callee, told, recorded) in [
+            (&answering, "delivered", "delivered"),
+            (&trapping, "unanswered", "unanswered"),
+            (&undeclared, "refused", "refused"),
+        ] {
+            let caller = format!("caller-{told}-{language}");
+            let declared = if callee == &undeclared {
+                &answering
+            } else {
+                callee
+            };
+            let module = ModuleSpec {
+                declaration: calling(&caller, declared, &["withdrawal"]),
+                steps: Vec::new(),
+                output: Output::Honest,
+                starts: true,
+            };
+            install(
+                &mut binding,
+                &module,
+                &language,
+                "reserve",
+                &[Probe::Ask {
+                    callee: callee.clone(),
+                    kind: OperationKind::Withdrawal,
+                }],
+            );
+            binding.take_events();
+            let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+            assert_eq!(
+                reference(&handled),
+                format!("{caller}-1.0.0-{told}"),
+                "{caller}: the guest was told another outcome"
+            );
+            let events = binding.take_events();
+            let call = events.calls.first().expect("a record of the call");
+            let status = serde_json::to_value(&call.outcome).expect("JSON")["status"].clone();
+            assert_eq!(status, recorded, "{caller}: {:?}", call.outcome);
+        }
+    }
+}

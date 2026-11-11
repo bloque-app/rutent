@@ -24,7 +24,7 @@ module-boundary suite that runs hostile modules against this contract is `T-003-
 | `urn:rutent:module-interface:secret-lookup` | `schemas/secret-lookup.schema.json` | Outside part to credential proxy: resolve one declared secret by name, at call time, for one transaction and one outside operation |
 | `urn:rutent:module-interface:secret-answer` | `schemas/secret-answer.schema.json` | Credential proxy to outside part: the value, or a refusal |
 | `urn:rutent:module-interface:outbound-call-record` | `schemas/outbound-call-record.schema.json` | The platform's record of one outbound call, hop by hop |
-| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record: delivered, or refused with the callee, the kind and why |
+| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record: delivered, unanswered, or refused with the callee, the kind and why |
 | `urn:rutent:module-interface:release-assertion` | `schemas/release-assertion.schema.json` | The provider's signed assertion of one release: its declaration and each part's portable binary, by format and digest |
 | `urn:rutent:module-interface:admission-artefact` | `schemas/admission-artefact.schema.json` | The platform's record of one admitted release: the assertion, what was received, the build that made the machine code, the version history, the widenings and the acceptance |
 | `urn:rutent:module-interface:common` | `schemas/common.schema.json` | Shared atoms: declared name, scheme, host, port, address, address block, refusal reason, digest |
@@ -341,6 +341,11 @@ The platform's egress layer writes it, not the module, since the outside part is
     answering unreadably. What the callee did is not known;
   - `refused`: the platform passed nothing on.
 
+  The calling module is told the outcome as it is recorded (since 4.0.0): a format binding gives its caller all
+  three, and an unanswered call never reaches the caller as refused, since its callee may have acted on it
+  (`REQ-ORD-1`). The platform ends a callee's deadline before its caller's, so that a callee stopped at its deadline
+  leaves its caller time to hear that the call went unanswered.
+
   A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
   - `undeclared_callee`: the caller doesn't declare the callee;
   - `undeclared_kind`: it declares the callee but not the kind;
@@ -369,10 +374,18 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
   of the provider's traffic (`ReleaseStaged`, `REQ-MDL-4`, ADR-0014), and a release whose assertion was made before
   the provider's last accepted one (`OlderRelease`, `THR-17`).
 - `PlatformRefusal`, for an operation's answer: malformed or oversized output (`REQ-MDL-12`), a part stopped by a
-  limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running
-  (`Unavailable`), or a kind the module doesn't handle (`NotHandled`), and since 4.0.0 a transaction identifier a
-  segment at another provider holds or an ended segment held (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), or a
-  segment whose version was declared actively exploited (`VersionExploited`, `REQ-MDL-20`).
+  limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running or one
+  that stopped before it passed anything out (`Unavailable`), or a kind the module doesn't handle (`NotHandled`),
+  and since 4.0.0 a transaction identifier a segment at another provider holds or an ended segment held
+  (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), a segment whose version was declared actively exploited
+  (`VersionExploited`, `REQ-MDL-20`), a statement key that couldn't be had, judged before the module is handed the
+  operation (`StatementKeyUnavailable`, `REQ-MDL-6`, `THR-4`), and a module that passed something out and then gave
+  no answer the platform can pass on (`OutcomeUnknown`, `REQ-ORD-1`).
+
+  `Unavailable`, `NotHandled`, `DuplicateTransaction`, `VersionExploited` and `StatementKeyUnavailable` say that
+  nothing of the operation took effect. Every other reason may follow the module's outbound and cross-module calls,
+  whose records say what became of them. A failure after the module passed something out is never given as a
+  reason that says nothing took effect: it is `OutcomeUnknown` unless another reason names it.
 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.

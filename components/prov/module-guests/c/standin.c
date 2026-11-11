@@ -158,6 +158,9 @@ static bool load(program *p) {
                 *s = mk(CALL, false, W[1], W[2], W[3], W[4], to_long(W[4]));
             } else if (count == 3 && eq(W[0], "module")) {
                 *s = mk(MODULE, false, W[1], W[2], 0, 0, 0);
+            } else if (count == 3 && eq(W[0], "ask")) {
+                /* The module step whose outside part obtains the call's outcome. */
+                *s = mk(MODULE, false, W[1], W[2], 0, 0, 1);
             } else if (count == 1 && eq(W[0], "spin")) {
                 *s = mk(SPIN, true, 0, 0, 0, 0, 0);
             } else if (count == 2 && eq(W[0], "grow")) {
@@ -616,7 +619,13 @@ void exports_outside_perform(outside_string_t *outside_request, outside_string_t
             case MODULE: {
                 outside_string_t callee = {(uint8_t *)s->a, strlen(s->a)};
                 outside_string_t kind = {(uint8_t *)s->b, strlen(s->b)};
-                rutent_binding_modules_call(&callee, &kind);
+                rutent_binding_modules_call_outcome_t outcome = rutent_binding_modules_call(&callee, &kind);
+                if (s->n) {
+                    const char *told = outcome == RUTENT_BINDING_MODULES_CALL_OUTCOME_DELIVERED     ? "delivered"
+                                       : outcome == RUTENT_BINDING_MODULES_CALL_OUTCOME_UNANSWERED ? "unanswered"
+                                                                                                   : "refused";
+                    put_string(&obtained, told, strlen(told));
+                }
                 break;
             }
             case BURN: {

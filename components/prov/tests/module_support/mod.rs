@@ -173,7 +173,14 @@ pub struct TestWorld {
     /// ([`statements_key`]).
     statement_keys: BTreeMap<String, String>,
     derive: Option<fn(&str) -> Ed25519Key>,
+    /// The world's clock, set by [`TestWorld::set_clock`]: [`WORLD_AT`] until it is.
+    clock: Option<Instant>,
+    /// The providers whose statement key the store can't give: the key store is down for them.
+    keys_down: BTreeSet<String>,
 }
+
+/// The test world's clock until a test sets it: 2026-11-07T00:00:00Z.
+pub const WORLD_AT: Instant = Instant(1_794_009_600);
 
 /// A request an endpoint received, as the connector would have sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +215,16 @@ impl TestWorld {
         self.derive = Some(derive);
     }
 
+    /// Sets the world's clock, which the platform's records take their times from.
+    pub fn set_clock(&mut self, at: Instant) {
+        self.clock = Some(at);
+    }
+
+    /// Takes down the store holding `provider`'s statement key: it is refused as `store_unavailable`.
+    pub fn make_key_store_unavailable(&mut self, provider: &str) {
+        self.keys_down.insert(provider.to_owned());
+    }
+
     /// Holds `key` as `provider`'s statement key, in place of the standard one.
     pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
         self.statement_keys.insert(
@@ -218,6 +235,12 @@ impl TestWorld {
 }
 
 impl World for TestWorld {
+    fn now(&mut self) -> rutent_contracts::module_interface::Time {
+        let at = self.clock.unwrap_or(WORLD_AT);
+        rutent_contracts::module_interface::Time::new(at.rfc3339().expect("a time"))
+            .expect("a time")
+    }
+
     fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
         let value = self
             .secrets
@@ -297,6 +320,9 @@ impl World for TestWorld {
         rutent_contracts::module_interface::SecretRefusalReason,
     > {
         let provider = caller.provider().as_str();
+        if self.keys_down.contains(provider) {
+            return Err(rutent_contracts::module_interface::SecretRefusalReason::StoreUnavailable);
+        }
         let key = self
             .statement_keys
             .get(provider)

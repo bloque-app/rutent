@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rutent_contracts::module_interface::{
     Acceptance, AcceptanceMode, Accepted, AdmissionArtefact, Build, CallOutcome, CallRefusalReason,
@@ -67,7 +67,9 @@ pub const START_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The least of the calling operation's deadline that must be left for the platform to hand an operation to
 /// another provider's module (`REQ-MDL-11`, `REQ-MDL-21`). A callee started with less would be killed at the
-/// caller's deadline before it could answer, and the caller's own answer would be lost with it.
+/// caller's deadline before it could answer, and the caller's own answer would be lost with it. The callee's
+/// deadline ends half of it before its caller's, so that a callee stopped at its deadline leaves its caller time
+/// to hear that the call went unanswered, and to answer its own operation (`REQ-ORD-1`).
 pub const MIN_CALL_BUDGET: Duration = Duration::from_secs(1);
 
 /// One provider's releases and its running processes.
@@ -106,6 +108,10 @@ struct Context {
     /// The first bound the operation hit. From then on every request of it is refused, and the operation is
     /// refused as a limit whatever its process says.
     limited: Option<LimitHit>,
+    /// Whether the module passed anything out: an outbound call handed to the egress layer, or a cross-module call
+    /// handed to its callee. From then on what it did may have taken effect, so a failure is never given as a
+    /// reason that says nothing took effect (`PlatformRefusal::OutcomeUnknown`, `REQ-ORD-1`).
+    passed_out: bool,
 }
 
 /// What the binding measured, for `B-06`.
@@ -137,7 +143,8 @@ pub struct Measurements {
 /// - the lifecycle hooks ([`World::running`], [`World::begin_operation`], [`World::begin_request`] and their
 ///   ends) do nothing by default;
 /// - [`World::lookup`] answers from [`World::secret`], and only when the platform's own judgement passed;
-/// - [`World::statement_key`] refuses, so a world with no key has none of its results passed on;
+/// - [`World::statement_key`] refuses, so a world with no key has no operation handed to its modules;
+/// - [`World::now`] reads the system clock;
 /// - [`World::send`] runs the egress layer ([`Egress`]) over [`World::route`] and [`World::deliver`], so every
 ///   world's outbound calls pass the same checks and leave the same records.
 pub trait World {
@@ -207,7 +214,9 @@ pub trait World {
     }
 
     /// The private half of the statement key the caller's running release declares, while its module handles an
-    /// operation for `transaction`. The default holds none.
+    /// operation for `transaction`. The platform asks it once the operation began ([`World::begin_operation`])
+    /// and before it hands the operation to the module, so a key it can't have refuses the operation before
+    /// anything of it runs (`PlatformRefusal::StatementKeyUnavailable`). The default holds none.
     fn statement_key(
         &mut self,
         caller: &Caller,
@@ -215,6 +224,15 @@ pub trait World {
     ) -> Result<SecretValue, SecretRefusalReason> {
         let _ = (caller, transaction);
         Err(SecretRefusalReason::UndeclaredSecret)
+    }
+
+    /// The time now, by the world's clock: when an outbound call the platform records started, refused ones
+    /// included (`REQ-AUD-1`). The platform holds no clock of its own. The default reads the system clock.
+    fn now(&mut self) -> Time {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        time_of(Clock(secs)).expect("the system clock is before the year 10000")
     }
 
     /// Makes one outbound call through the egress layer and writes its record to `log`. The default runs
@@ -321,7 +339,6 @@ pub struct Platform<W: World> {
     operations_received: BTreeMap<String, usize>,
     providers: BTreeMap<String, Slot>,
     stack: Vec<Context>,
-    clock: u32,
     events: Events,
     deadline: Duration,
     stderrs: Stderrs,
@@ -364,7 +381,6 @@ impl<W: World> Platform<W> {
             operations_received: BTreeMap::new(),
             providers: BTreeMap::new(),
             stack: Vec::new(),
-            clock: 0,
             events: Events::default(),
             deadline: OPERATION_DEADLINE,
             stderrs: Stderrs::default(),
@@ -456,12 +472,6 @@ impl<W: World> Platform<W> {
             }
             None => false,
         }
-    }
-
-    fn now(&mut self) -> Time {
-        self.clock += 1;
-        let (h, m, s) = (self.clock / 3600, (self.clock / 60) % 60, self.clock % 60);
-        Time::new(format!("2026-11-07T{:02}:{m:02}:{s:02}Z", h % 24)).expect("a time")
     }
 
     /// Starts `version` of the provider in a new process, from its admitted machine code: the process and the
@@ -1057,7 +1067,7 @@ impl<W: World> Platform<W> {
             .get(in_flight.as_str())
             .cloned()
             .unwrap_or_default();
-        let started_at = self.now();
+        let started_at = self.world.now();
         let call = Call {
             declaration: &declaration,
             in_flight: &in_flight,
@@ -1100,6 +1110,10 @@ impl<W: World> Platform<W> {
             self.record_refused_call(scheme_name, &host, port, RefusalReason::RequestNotAllowed);
             return refused();
         };
+        // From here the call may reach its destination.
+        if let Some(context) = self.stack.last_mut() {
+            context.passed_out = true;
+        }
         let outcome = self.world.send(
             &call,
             egress::Endpoint { scheme, host, port },
@@ -1144,7 +1158,7 @@ impl<W: World> Platform<W> {
             "wss" => Scheme::Wss,
             _ => Scheme::Https,
         };
-        let started_at = self.now();
+        let started_at = self.world.now();
         self.events.records.push(OutboundCallRecord {
             transaction,
             provider,
@@ -1252,10 +1266,24 @@ impl<W: World> Platform<W> {
         // own process, and a callee that stopped, hit a limit or gave no readable answer leaves the call unanswered.
         let mut answered = false;
         if refusal.is_none() {
+            // Passed on: what the callee does from here may take effect.
+            if let Some(context) = self.stack.last_mut() {
+                context.passed_out = true;
+            }
             // On the callee's version in force: the caller's segment is the caller's, and names no version of the
             // callee (`T-013-06`).
             answered = matches!(self.handle_in(callee, &asked, None), Handled::Answered(_));
         }
+        // What the caller is told is what is recorded: a call passed on and not answered is unanswered, never
+        // refused, since the callee may have acted on it (`REQ-ORD-1`).
+        let told = Reply::Module {
+            outcome: match (refusal, answered) {
+                (Some(_), _) => "refused",
+                (None, true) => "delivered",
+                (None, false) => "unanswered",
+            }
+            .to_owned(),
+        };
         let (Some(transaction), Some(caller), Some(caller_version), Some(callee_id)) = (
             Identifier::new(transaction),
             Identifier::new(caller),
@@ -1263,13 +1291,7 @@ impl<W: World> Platform<W> {
             Identifier::new(callee),
         ) else {
             // Already counted above; over the bound, the operation ends as a limit.
-            return if limited {
-                Reply::Limit
-            } else {
-                Reply::Module {
-                    outcome: "refused".to_owned(),
-                }
-            };
+            return if limited { Reply::Limit } else { told };
         };
         let outcome = match refusal {
             Some(reason) => CrossModuleOutcome::Refused(CallRefused {
@@ -1280,7 +1302,6 @@ impl<W: World> Platform<W> {
             None if answered => CrossModuleOutcome::Delivered(Nothing {}),
             None => CrossModuleOutcome::Unanswered(Nothing {}),
         };
-        let delivered = matches!(outcome, CrossModuleOutcome::Delivered(_));
         self.events.calls.push(CrossModuleCall {
             transaction,
             caller,
@@ -1292,20 +1313,23 @@ impl<W: World> Platform<W> {
         if limited {
             return Reply::Limit;
         }
-        Reply::Module {
-            outcome: if delivered { "delivered" } else { "refused" }.to_owned(),
-        }
+        told
     }
 
     /// Hands the operation to the provider's process and serves its requests until it answers, or until the
     /// operation's deadline, when the process is killed and the operation refused.
+    ///
+    /// The statement key is had first, once the world knows the operation is being handled and before the process
+    /// is handed it: a key the world can't give, or not the one the release declares, refuses the operation as
+    /// `StatementKeyUnavailable` with nothing of it run (`REQ-MDL-6`, `THR-4`). The answer is the module's output,
+    /// the key to sign it with, and whether the module passed anything out.
     fn run_in_process(
         &mut self,
         provider: &str,
         operation: &Statement<Operation>,
         declaration: Declaration,
         version: String,
-    ) -> Result<(Vec<u8>, Result<SecretValue, SecretRefusalReason>), PlatformRefusal> {
+    ) -> Result<(Vec<u8>, SecretValue, bool), PlatformRefusal> {
         // The process of the version handling it: the one in force, or one beside it (`T-013-06`).
         let mut process = self
             .providers
@@ -1322,9 +1346,17 @@ impl<W: World> Platform<W> {
             .ok()
             .and_then(|v| v["transaction"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        // A cross-module call's operation ends no later than the one that made it.
+        // A cross-module call's operation ends no later than half the call budget before the one that made it, so
+        // the caller outlives a callee stopped at its deadline and hears that its call went unanswered.
         let own = Instant::now() + self.deadline;
-        let due = self.stack.last().map_or(own, |caller| caller.due.min(own));
+        let reserve = self.call_budget / 2;
+        let due = self.stack.last().map_or(own, |caller| {
+            caller
+                .due
+                .checked_sub(reserve)
+                .unwrap_or(caller.due)
+                .min(own)
+        });
         let caller = Identifier::new(provider.to_owned()).map(Caller::process_of);
         let json = serde_json::to_string(operation).unwrap_or_default();
         // What the world knows the operation by: its transaction, or, for one that names none (a verifier's
@@ -1338,6 +1370,24 @@ impl<W: World> Platform<W> {
         if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
             self.world.begin_operation(caller, handled_as, due);
         }
+        // The statement key, resolved while the module handles the operation, the proxy's condition for it, and
+        // before the module is handed it: a store that can't answer, or a key that isn't the declared one's, ends
+        // the operation here, before anything of it runs. The module never sees the key.
+        let key = match (&caller, &handled_as) {
+            (Some(caller), Some(handled_as)) => self
+                .world
+                .statement_key(caller, handled_as)
+                .ok()
+                .filter(|key| proxy::check_key(key, &declaration.outside.statement_key).is_ok()),
+            _ => None,
+        };
+        let Some(key) = key else {
+            if let Some(caller) = &caller {
+                self.world.end_operation(caller);
+            }
+            self.put_back(provider, &version, process);
+            return Err(PlatformRefusal::StatementKeyUnavailable);
+        };
         let ran_as = (provider.to_owned(), version.clone());
         let mut ran = false;
         self.stack.push(Context {
@@ -1351,6 +1401,7 @@ impl<W: World> Platform<W> {
             due,
             usage: Usage::default(),
             limited: None,
+            passed_out: false,
         });
         let mut outcome = Err(PlatformRefusal::Unavailable);
         let mut alive = process
@@ -1399,15 +1450,6 @@ impl<W: World> Platform<W> {
         if ran {
             *self.runs.entry(ran_as).or_default() += 1;
         }
-        // The statement key is resolved while the module still handles the operation, the proxy's condition for
-        // it, and only for an answer to sign; the module never sees it.
-        let limited = self.stack.last().is_none_or(|c| c.limited.is_some());
-        let statement_key = match (&outcome, &caller, &handled_as) {
-            (Ok(_), Some(caller), Some(handled_as)) if !limited => {
-                Some(self.world.statement_key(caller, handled_as))
-            }
-            _ => None,
-        };
         let context = self.stack.pop();
         // However the operation ended, nothing of it stays in flight in the world.
         if let Some(caller) = &caller {
@@ -1423,13 +1465,15 @@ impl<W: World> Platform<W> {
             self.measurements.last_trap = Some(format!("limit reached: {:?}", hit.kind));
             outcome = Err(PlatformRefusal::LimitReached);
         }
+        // A module that passed something out and then stopped or failed may have acted: that is never given as
+        // nothing having taken effect (`REQ-ORD-1`).
+        let passed_out = context.as_ref().is_some_and(|c| c.passed_out);
+        if passed_out && outcome == Err(PlatformRefusal::Unavailable) {
+            outcome = Err(PlatformRefusal::OutcomeUnknown);
+        }
         if alive && process.alive() {
-            if let (Some(slot), Some(context)) = (self.providers.get_mut(provider), &context) {
-                if slot.active.as_deref() == Some(context.version.as_str()) {
-                    slot.process = Some(process);
-                } else {
-                    slot.others.insert(context.version.clone(), process);
-                }
+            if let Some(context) = &context {
+                self.put_back(provider, &context.version, process);
             }
         } else {
             // The process is gone: this operation is refused, and the platform starts the version again in a new
@@ -1439,12 +1483,18 @@ impl<W: World> Platform<W> {
                 self.respawn(provider, &context.version);
             }
         }
-        outcome.map(|bytes| {
-            (
-                bytes,
-                statement_key.unwrap_or(Err(SecretRefusalReason::UndeclaredSecret)),
-            )
-        })
+        outcome.map(|bytes| (bytes, key, passed_out))
+    }
+
+    /// Puts the process of the provider's `version` back in its place: the version in force's, or beside it.
+    fn put_back(&mut self, provider: &str, version: &str, process: ProviderProcess) {
+        if let Some(slot) = self.providers.get_mut(provider) {
+            if slot.active.as_deref() == Some(version) {
+                slot.process = Some(process);
+            } else {
+                slot.others.insert(version.to_owned(), process);
+            }
+        }
     }
 }
 
@@ -1482,6 +1532,12 @@ fn digest(hex: &str) -> Digest {
         algorithm: DigestAlgorithm::Sha256,
         value: DigestValue::new(hex.to_owned()).expect("a digest"),
     }
+}
+
+/// `at` as a record's time, or `None` past the year 9999, which no record's time can hold. Every time the platform
+/// records is the caller's clock or the world's ([`World::now`]), never one of its own.
+fn time_of(at: Clock) -> Option<Time> {
+    at.rfc3339().and_then(Time::new)
 }
 
 /// The transaction an operation names, if it names one.
@@ -1550,7 +1606,8 @@ impl<W: World> Platform<W> {
     /// judged before the admitting compiler runs. After it, only the compiler's refusal and the judge's refusal to
     /// record the declared statement key remain; the catalogue's can't happen once its judgement passed, since the
     /// accepted advertisement lists that key for statements. Each provider's history is
-    /// kept, and a release that needs only an automatic acceptance is started.
+    /// kept, and a release that needs only an automatic acceptance is started, its acceptance recorded at `at`. An
+    /// `at` past what a record's time can hold (the year 9999) admits nothing (`Unverified::ClockOutOfRange`).
     pub fn admit(
         &mut self,
         received_assertion: &[u8],
@@ -1558,6 +1615,10 @@ impl<W: World> Platform<W> {
         judge: &mut impl ReleaseJudge,
         at: Clock,
     ) -> Admitted {
+        // An automatic acceptance is recorded at the caller's clock: one no record's time can hold admits nothing.
+        let Some(admitted_at) = time_of(at) else {
+            return Admitted::Unverified(Unverified::ClockOutOfRange);
+        };
         let assertion = match admission::read(received_assertion, &self.envelope) {
             Ok(assertion) => assertion,
             Err(why) => return Admitted::Unverified(why),
@@ -1737,7 +1798,7 @@ impl<W: World> Platform<W> {
         if !fresh {
             artefact.acceptance.accepted = Some(Accepted {
                 by: None,
-                at: self.now(),
+                at: admitted_at,
             });
         }
         let slot = self.providers.entry(provider.clone()).or_default();
@@ -1755,9 +1816,10 @@ impl<W: World> Platform<W> {
     /// Gives a fresh acceptance, by `by`, to the provider's release that waits for one, and starts it. The
     /// acceptance is of one assertion: `assertion_digest` must be the waiting artefact's, the digest of its
     /// assertion as received (`REQ-MDL-1`). That assertion is judged again by `judge` at the caller's clock `at`,
-    /// so a release signed with a key retired since its admission is no longer accepted (`THR-4`). The accepted
-    /// artefact, or `None` if no release waits under that digest, `by` names no one, or the assertion no longer
-    /// passes; the waiting release then stays as it was.
+    /// so a release signed with a key retired since its admission is no longer accepted (`THR-4`), and the
+    /// acceptance is recorded at `at`. The accepted artefact, or `None` if no release waits under that digest, `by`
+    /// names no one, the assertion no longer passes, or `at` is past what a record's time can hold (the year 9999);
+    /// the waiting release then stays as it was.
     pub fn accept(
         &mut self,
         provider: &str,
@@ -1767,13 +1829,14 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Option<AdmissionArtefact> {
         let by = Identifier::new(by)?;
+        // Recorded at the caller's clock, the time the acceptance was given (`REQ-AUD-1`).
+        let accepted_at = time_of(at)?;
         let (artefact, _, received) = self.providers.get(provider)?.pending.as_ref()?;
         if &artefact.assertion_digest != assertion_digest
             || judge.judge(received, artefact, at).is_err()
         {
             return None;
         }
-        let accepted_at = self.now();
         let slot = self.providers.get_mut(provider)?;
         let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
@@ -1835,9 +1898,11 @@ impl<W: World> Platform<W> {
     }
 
     /// Hands one provider-role operation to the provider's running module. Its answer is passed on only checked
-    /// against the result schema, and signed with the provider's statement key, which the world resolves while
-    /// the module still handles the operation (`T-014-05`); a result that can't be signed is refused as
-    /// `Unavailable`.
+    /// against the result schema, and signed with the provider's statement key, which the world resolves once the
+    /// operation began and before the module is handed it (`T-014-05`): a key it can't have refuses the operation as
+    /// `StatementKeyUnavailable`, with nothing of it run. A module that passed something out, an outbound or a
+    /// cross-module call, and then stopped, failed or gave a result that can't be signed is refused as
+    /// `OutcomeUnknown`, never `Unavailable` (`REQ-ORD-1`).
     ///
     /// It runs on the version its segment runs on, if a segment began for its transaction
     /// ([`Platform::begin_segment`]), and on the version in force otherwise. It is refused as `DuplicateTransaction`
@@ -1895,11 +1960,11 @@ impl<W: World> Platform<W> {
             return Handled::Refused(PlatformRefusal::NotHandled);
         }
         let statement_key = declaration.outside.statement_key.clone();
-        let (bytes, private) = match self.run_in_process(provider, operation, declaration, version)
-        {
-            Ok(answered) => answered,
-            Err(refusal) => return Handled::Refused(refusal),
-        };
+        let (bytes, private, passed_out) =
+            match self.run_in_process(provider, operation, declaration, version) {
+                Ok(answered) => answered,
+                Err(refusal) => return Handled::Refused(refusal),
+            };
         // The output is untrusted: judged against the result schema, patterns and lengths included (`REQ-MDL-12`).
         let result = match output::check(&bytes, self.output_limit) {
             Ok(result) => result,
@@ -1924,25 +1989,24 @@ impl<W: World> Platform<W> {
             statement: result,
         };
         // Signed with the provider's statement key, held through the credential proxy and never by the module
-        // (`F-014`): the result and what the module nested in it in the provider's name. A result that can't be
-        // signed, because the world holds no key, the key isn't the one declared, or a nested statement isn't
-        // what the operation asked, in this deployment and protocol version, isn't passed on.
-        match private.ok().and_then(|key| {
-            proxy::sign_result(
-                &unsigned,
-                &proxy::Answering {
-                    provider,
-                    deployment: &self.envelope.deployment,
-                    protocol_version: &self.envelope.protocol_version,
-                    operation: &operation.statement,
-                },
-                &key,
-                &statement_key,
-            )
-            .ok()
-        }) {
-            Some(signed) => Handled::Answered(Box::new(signed)),
-            None => Handled::Refused(PlatformRefusal::Unavailable),
+        // (`F-014`): the result and what the module nested in it in the provider's name. The key was judged before
+        // the module ran; a result that still can't be signed, because a nested statement isn't what the operation
+        // asked, in this deployment and protocol version, isn't passed on. After the module passed something out,
+        // that is an outcome unknown, never one that says nothing took effect (`REQ-ORD-1`).
+        match proxy::sign_result(
+            &unsigned,
+            &proxy::Answering {
+                provider,
+                deployment: &self.envelope.deployment,
+                protocol_version: &self.envelope.protocol_version,
+                operation: &operation.statement,
+            },
+            &private,
+            &statement_key,
+        ) {
+            Ok(signed) => Handled::Answered(Box::new(signed)),
+            Err(_) if passed_out => Handled::Refused(PlatformRefusal::OutcomeUnknown),
+            Err(_) => Handled::Refused(PlatformRefusal::Unavailable),
         }
     }
 

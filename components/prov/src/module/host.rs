@@ -396,9 +396,15 @@ impl egress::Host for OutsideState {
 impl modules::Host for OutsideState {
     fn call(&mut self, callee: String, kind: String) -> wasmtime::Result<modules::CallOutcome> {
         let reply = self.ask(FromProvider::Module { callee, kind }, "a call of a module")?;
+        // Only the platform's own `refused` is a refusal (a call over a bound traps above): anything else it says is
+        // unanswered, never refused, since the callee may have acted on it (`REQ-ORD-1`).
         Ok(match reply {
-            Reply::Module { outcome } if outcome == "delivered" => modules::CallOutcome::Delivered,
-            _ => modules::CallOutcome::Refused,
+            Reply::Module { outcome } => match outcome.as_str() {
+                "delivered" => modules::CallOutcome::Delivered,
+                "refused" => modules::CallOutcome::Refused,
+                _ => modules::CallOutcome::Unanswered,
+            },
+            _ => modules::CallOutcome::Unanswered,
         })
     }
 }

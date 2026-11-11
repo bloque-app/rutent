@@ -1982,6 +1982,31 @@ fn lifecycle_refusals_are_distinct_reasons_that_print_their_names() {
     }
 }
 
+// verifies: DEC-4, REQ-ORD-1, REQ-MDL-6, THR-4
+#[test]
+fn an_unknown_outcome_and_an_unavailable_statement_key_are_reasons_of_their_own() {
+    let platform = [
+        PlatformRefusal::Unavailable,
+        PlatformRefusal::StatementKeyUnavailable,
+        PlatformRefusal::OutcomeUnknown,
+        PlatformRefusal::LimitReached,
+        PlatformRefusal::MalformedOutput,
+    ];
+    for (i, a) in platform.iter().enumerate() {
+        for b in &platform[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyUnavailable),
+        "StatementKeyUnavailable"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::OutcomeUnknown),
+        "OutcomeUnknown"
+    );
+}
+
 // verifies: DEC-4
 #[test]
 fn version_matches_the_changelog() {

@@ -110,7 +110,8 @@ pub struct Events {
     pub lookups: Vec<LookupEvent>,
     /// The state reads modules made.
     pub state_reads: Vec<StateEvent>,
-    /// The records of the cross-module calls modules made, delivered or refused, as the contract shapes them.
+    /// The records of the cross-module calls modules made, delivered, unanswered or refused, as the contract shapes
+    /// them.
     pub calls: Vec<CrossModuleCall>,
     /// The bounds modules hit.
     pub limits: Vec<LimitEvent>,

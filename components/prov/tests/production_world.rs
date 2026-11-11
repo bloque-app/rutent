@@ -630,10 +630,12 @@ fn secret_is_answered_only_inside_the_outside_request_in_flight_on_the_running_p
                 .all(|e| e.outcome.is_none()),
             "the sandboxed part's lookup reached the proxy"
         );
-        // One use per lookup served, in order, with the lookup's transaction and operation, then the statement
-        // key's, resolved once the module answered, to sign the result.
+        // The statement key's use first, resolved once the operation began and before the module was handed it,
+        // to sign the result; then one use per lookup served, in order, with the lookup's transaction and
+        // operation.
         let mut uses = running.platform.world.proxy().take_uses();
-        let signing = uses.pop().expect("the statement key's use");
+        assert!(!uses.is_empty(), "no use was recorded");
+        let signing = uses.remove(0);
         assert_eq!(
             signing.of,
             UseOf::StatementKey(Some(public_key(&statements_key(RESERVE))))
@@ -755,13 +757,14 @@ fn call_back_into_a_running_provider_leaves_its_request_in_flight_in_the_proxy()
         .map(|u| (u.provider.as_str(), u.outcome.is_ok()))
         .collect();
     assert_eq!(secrets, vec![(RAMP, true), (RESERVE, true)], "{uses:?}");
-    // Each result, the callee's and the caller's, was signed with its own provider's key.
+    // Each result, the callee's and the caller's, was signed with its own provider's key, each resolved before its
+    // module was handed the operation: the caller's first, then the callee's.
     let signers: Vec<_> = uses
         .iter()
         .filter(|u| matches!(u.of, UseOf::StatementKey(_)))
         .map(|u| (u.provider.as_str(), u.outcome.is_ok()))
         .collect();
-    assert_eq!(signers, vec![(RAMP, true), (RESERVE, true)], "{uses:?}");
+    assert_eq!(signers, vec![(RESERVE, true), (RAMP, true)], "{uses:?}");
     assert_eq!(
         running.secrets.asked(),
         vec![
@@ -812,7 +815,8 @@ fn call_with_no_route_records_its_own_reason_and_a_valid_record() {
 }
 
 /// The platform signs a result only with the declared statement key, resolved through the proxy: a store holding
-/// another key under the declared one's name, or none, signs nothing, and the module's answer isn't passed on.
+/// another key under the declared one's name, or none, signs nothing. Either is judged before the module is handed
+/// the operation, so the operation is refused as `StatementKeyUnavailable`, never `Unavailable`.
 // verifies: REQ-MDL-6, THR-4
 #[test]
 fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
@@ -840,7 +844,7 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     assert!(
         matches!(
             handled,
-            Handled::Refused(types::PlatformRefusal::Unavailable)
+            Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
         ),
         "{handled:?}"
     );
@@ -855,10 +859,153 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     assert!(
         matches!(
             handled,
-            Handled::Refused(types::PlatformRefusal::Unavailable)
+            Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
         ),
         "{handled:?}"
     );
+}
+
+/// A key store that can't give the statement key refuses the operation before the module is handed it
+/// (`begin_operation`): no outbound call is made or recorded, no cross-module call is made or recorded, and the
+/// callee is handed nothing. It is `StatementKeyUnavailable`, never `Unavailable`, and with the key back the same
+/// module makes both calls.
+// verifies: REQ-ORD-1, REQ-MDL-6, THR-4
+#[test]
+fn key_store_outage_refuses_the_operation_before_anything_of_it_runs() {
+    let pki = tls::Pki::new();
+    let server = tls::TlsServer::serve(pki.server_for(&api(RESERVE)));
+    let dialer = tls::MappedDialer::default().with("185.12.64.40", &server);
+    let mut running = Running::new(&pki, dialer);
+    running.names.then(&api(RESERVE), &["185.12.64.40"]);
+    running.install(
+        &release(RESERVE, &[RAMP]),
+        vec![
+            call(&api(RESERVE)),
+            Step::CallModule {
+                callee: RAMP.to_owned(),
+                kind: OperationKind::Withdrawal,
+            },
+        ],
+    );
+    running.install(&release(RAMP, &[]), Vec::new());
+    running.platform.routes.name(
+        &id(&format!("tx-{RESERVE}-1")),
+        NamedCall {
+            route: RouteReference {
+                decision_record: id("decision-1"),
+                segment: id("segment-1"),
+            },
+            caller: id(RESERVE),
+            callee: id(RAMP),
+            kinds: vec![OperationKind::Withdrawal],
+        },
+    );
+    let declared = public_key(&statements_key(RESERVE));
+    running.keys.holds(
+        RESERVE,
+        declared.as_str(),
+        Err(ResolveError::Unavailable { status: 503 }),
+    );
+
+    let (handled, events) = running.run(RESERVE, 1);
+
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
+    );
+    assert!(events.records.is_empty(), "{:?}", events.records);
+    assert!(events.calls.is_empty(), "{:?}", events.calls);
+    assert!(running.dialer.dialled().is_empty(), "something was dialled");
+    assert!(server.requests().is_empty(), "the endpoint got a request");
+    assert_eq!(running.platform.operations_received(RAMP), 0);
+    assert!(
+        running
+            .secrets
+            .asked()
+            .iter()
+            .all(|(provider, _)| provider != RESERVE),
+        "the module ran and looked a secret up"
+    );
+
+    // The control: with the key back, the same operation makes both calls.
+    running.keys.holds(
+        RESERVE,
+        declared.as_str(),
+        Ok(&base64url(statements_key(RESERVE).as_bytes())),
+    );
+    let (handled, events) = running.run(RESERVE, 1);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert_eq!(events.records.len(), 1, "{:?}", events.records);
+    assert!(
+        matches!(
+            events.calls.first().map(|c| &c.outcome),
+            Some(CrossModuleOutcome::Delivered(_))
+        ),
+        "{:?}",
+        events.calls
+    );
+}
+
+/// A callee that runs past its deadline (its outbound call's name lookup hangs) leaves its caller's call
+/// unanswered, and the caller's module is told `unanswered`, never `refused`: the callee may have acted. The
+/// callee's deadline ends before its caller's, so the caller hears it and still answers its own operation.
+// verifies: REQ-ORD-1, REQ-MDL-21, REQ-MDL-11
+#[test]
+fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    running.platform.set_deadline(Duration::from_secs(2));
+    running.platform.set_call_budget(Duration::from_secs(1));
+    running.names.hang(&api(RAMP));
+    running.install_probing(
+        &release(RESERVE, &[RAMP]),
+        Vec::new(),
+        &[Probe::Ask {
+            callee: RAMP.to_owned(),
+            kind: OperationKind::Withdrawal,
+        }],
+    );
+    running.install(&release(RAMP, &[]), vec![call(&api(RAMP))]);
+    running.platform.routes.name(
+        &id(&format!("tx-{RESERVE}-1")),
+        NamedCall {
+            route: RouteReference {
+                decision_record: id("decision-1"),
+                segment: id("segment-1"),
+            },
+            caller: id(RESERVE),
+            callee: id(RAMP),
+            kinds: vec![OperationKind::Withdrawal],
+        },
+    );
+    let overdue = running.platform.measurements.overdue;
+
+    let (handled, events) = running.run(RESERVE, 1);
+    running.names.release();
+
+    assert_eq!(
+        running.platform.measurements.overdue,
+        overdue + 1,
+        "the callee wasn't stopped at its deadline"
+    );
+    let Handled::Answered(result) = &handled else {
+        panic!("the caller didn't answer: {handled:?}");
+    };
+    let reference = serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"]
+        [0]["reference"]
+        .clone();
+    assert_eq!(
+        reference,
+        format!("{RESERVE}-1.0.0-unanswered"),
+        "the caller's module was told another outcome"
+    );
+    assert_eq!(events.calls.len(), 1, "{:?}", events.calls);
+    assert!(
+        matches!(events.calls[0].outcome, CrossModuleOutcome::Unanswered(_)),
+        "{:?}",
+        events.calls[0]
+    );
+    assert_eq!(running.platform.operations_received(RAMP), 1);
 }
 
 /// Publishes the operator's `polygon` wallet, admits its release signed with the operator key and accepts it, and

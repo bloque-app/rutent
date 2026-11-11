@@ -20,6 +20,8 @@
 //!   `name=value` joined by `,` (a `!` before the name flags the value as a credential; `-` for none; a path or a value ending in `*N` is
 //!   that text followed by `N` bytes of `x`, so a program of a few lines can make a request of any size);
 //! - `reason <operation> <name>`: looks the secret up and obtains the refusal's reason, if refused;
+//! - `ask <callee> <kind>`: the `module` step, which obtains the call's outcome: `delivered`, `unanswered` or
+//!   `refused`;
 //! - `forge <operation> <secret> <https|wss> <host> <port>`: the binding's hostile probe, an outside step asked for
 //!   under the `serves` operation, in which the outside part looks up the secret and calls the endpoint naming
 //!   `<operation>` instead;
@@ -105,6 +107,8 @@ enum Step {
     Module {
         callee: String,
         kind: String,
+        /// Whether the outside part obtains the call's outcome (`ask`), or ignores it (`module`).
+        told: bool,
     },
     Fetch {
         operation: String,
@@ -214,6 +218,12 @@ fn program() -> Option<Program> {
             ["module", c, k] => program.steps.push(Step::Module {
                 callee: (*c).to_owned(),
                 kind: (*k).to_owned(),
+                told: false,
+            }),
+            ["ask", c, k] => program.steps.push(Step::Module {
+                callee: (*c).to_owned(),
+                kind: (*k).to_owned(),
+                told: true,
             }),
             ["spin"] => program.steps.push(Step::Spin),
             ["grow", n] => program.steps.push(Step::Grow(n.parse().ok()?)),
@@ -575,8 +585,18 @@ mod outside {
                         );
                     }
                 }
-                Some(Step::Module { callee, kind }) => {
-                    modules::call(&callee, &kind);
+                Some(Step::Module { callee, kind, told }) => {
+                    let outcome = modules::call(&callee, &kind);
+                    if told {
+                        obtained.push(
+                            match outcome {
+                                modules::CallOutcome::Delivered => "delivered",
+                                modules::CallOutcome::Unanswered => "unanswered",
+                                modules::CallOutcome::Refused => "refused",
+                            }
+                            .to_owned(),
+                        );
+                    }
                 }
                 Some(Step::Burn(iterations)) => {
                     let mut n: u64 = 0;

@@ -1,11 +1,12 @@
 //! Signing the platform's results with the provider's statement key (`T-014-05`; `DEC-4`, `THR-4`, `THR-8`).
 //!
 //! The module never holds a key (module-interface, "Signing a result"). The platform resolves the private half of
-//! the statement key the provider's running release declares through the credential proxy, while the provider's
-//! module still handles the operation, and signs here: the result, and every statement the module nested in it
-//! under the provider's own name, innermost first, under the provider-role signing rule (Ed25519 over the RFC 8785
-//! canonical form with only `signature.value` removed). A nested statement of another maker keeps its own
-//! signature. The key is used for nothing else and dropped with the result signed.
+//! the statement key the provider's running release declares through the credential proxy, once the operation began
+//! and before the module is handed it, so a store that can't give it, or gives another key ([`check_key`]),
+//! refuses the operation before anything of it runs. It signs here, once the module answered: the result, and every
+//! statement the module nested in it under the provider's own name, innermost first, under the provider-role
+//! signing rule (Ed25519 over the RFC 8785 canonical form with only `signature.value` removed). A nested statement
+//! of another maker keeps its own signature. The key is used for nothing else and dropped with the result signed.
 //!
 //! The store holds the private half as the base64url text, unpadded, of its 32-byte Ed25519 seed. It is refused
 //! unless its public half is the declared statement key, so a store holding another key can't sign in the
@@ -70,11 +71,7 @@ pub fn sign_result(
     key: &SecretValue,
     declared: &PublicKey,
 ) -> Result<Statement<ResultBody>, SigningError> {
-    let seed = decode_seed(key.as_str()).ok_or(SigningError::MalformedKey)?;
-    let signing = SigningKey::from_bytes(&seed);
-    if signing.verifying_key().as_bytes() != &declared.bytes() {
-        return Err(SigningError::NotTheDeclaredKey);
-    }
+    let signing = signing_key(key, declared)?;
     let asked = Asked::of(answering)?;
     let mut value = serde_json::to_value(statement).map_err(|_| SigningError::NoSigningInput)?;
     if let Value::Object(map) = &mut value {
@@ -84,6 +81,23 @@ pub fn sign_result(
     }
     sign(&mut value, &signing, declared)?;
     serde_json::from_value(value).map_err(|_| SigningError::NoSigningInput)
+}
+
+/// Whether `key` is the private half of `declared`, the statement key a release declares: what the platform checks
+/// before it hands a module an operation, so a store holding another key, or none, refuses the operation before
+/// anything of it runs (module-interface 4.0.0's `StatementKeyUnavailable`).
+pub fn check_key(key: &SecretValue, declared: &PublicKey) -> Result<(), SigningError> {
+    signing_key(key, declared).map(|_| ())
+}
+
+/// `key` as a signing key, if it is the private half of `declared`.
+fn signing_key(key: &SecretValue, declared: &PublicKey) -> Result<SigningKey, SigningError> {
+    let seed = decode_seed(key.as_str()).ok_or(SigningError::MalformedKey)?;
+    let signing = SigningKey::from_bytes(&seed);
+    if signing.verifying_key().as_bytes() != &declared.bytes() {
+        return Err(SigningError::NotTheDeclaredKey);
+    }
+    Ok(signing)
 }
 
 /// What a nested statement in the provider's name must match, as JSON.

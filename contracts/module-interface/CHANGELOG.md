@@ -10,6 +10,16 @@
   and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
   the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
   Rust test. (DEC-4, DEC-20, T-010-09)
+- No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a
+  cross-module call's outcome as it is recorded, `delivered`, `unanswered` or `refused`, so an unanswered call,
+  whose callee may have acted, is never told to its caller as refused; the README says so, and a format binding
+  gives its caller all three. `PlatformRefusal` gains `StatementKeyUnavailable` (the statement key the running
+  release declares couldn't be had, or isn't that key's, judged before the module is handed the operation, so
+  nothing of it ran; a key store that can't answer was `Unavailable`, judged after the module ran) and
+  `OutcomeUnknown` (the module passed something out, an outbound or cross-module call, and then gave no answer the
+  platform can pass on; this was `Unavailable`). `Unavailable` now says nothing took effect, and the README and the
+  enum name the reasons that do. Both are Rust only, as the other platform reasons are, with a Rust test. New Rust
+  variants of a `#[non_exhaustive]` enum, and 4.0.0 is not released, so they join this major. (DEC-4, DEC-20)
 - The release lifecycle's refusals (`T-013-06`). `AdmissionRefusal` gains `ReleaseStaged` (a new release while
   another is staged on a share of the provider's traffic, ADR-0014) and `OlderRelease` (a release whose assertion
   was made before the provider's last accepted one, so publishing an older signed release never reinstates it,

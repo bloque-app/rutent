@@ -37,6 +37,14 @@ pub enum AdmissionRefusal {
 }
 
 /// Why a platform refused to pass a module's answer on. A Rust match on it needs a wildcard arm.
+///
+/// Some reasons say that nothing of the operation took effect: the platform handed it to no module, or the module
+/// passed nothing out before it stopped. They are [`Unavailable`](Self::Unavailable), [`NotHandled`](Self::NotHandled),
+/// [`DuplicateTransaction`](Self::DuplicateTransaction), [`VersionExploited`](Self::VersionExploited) and
+/// [`StatementKeyUnavailable`](Self::StatementKeyUnavailable). Every other reason may come after the module passed
+/// something out, and says nothing of what its outbound and cross-module calls did: their records do. A failure
+/// that comes after the module passed something out, and that no other reason names, is
+/// [`OutcomeUnknown`](Self::OutcomeUnknown), never one of the reasons that say nothing took effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum PlatformRefusal {
@@ -48,7 +56,8 @@ pub enum PlatformRefusal {
     /// A part was stopped by a limit before it answered: its CPU budget, its memory, its time, or a count or size
     /// of its host calls (`REQ-MDL-11`). The module stays admitted and its process keeps running.
     LimitReached,
-    /// No module of the provider is running.
+    /// No module of the provider is running, or the one handed the operation stopped before it passed anything
+    /// out: nothing of the operation took effect.
     Unavailable,
     /// The module doesn't handle the operation's kind.
     NotHandled,
@@ -59,4 +68,15 @@ pub enum PlatformRefusal {
     /// The version the operation's segment runs on was declared actively exploited: it runs nothing more, and the
     /// segment isn't moved to another (`REQ-MDL-20`).
     VersionExploited,
+    /// The private half of the statement key the provider's running release declares couldn't be had, or isn't
+    /// that key's, so no answer could be signed. The platform judges it before it hands the operation to the
+    /// module, so nothing of the operation ran (`REQ-MDL-6`, `THR-4`). A key store that can't answer is this
+    /// reason, never [`Unavailable`](Self::Unavailable).
+    StatementKeyUnavailable,
+    /// The module took the operation and passed something out, an outbound call or a cross-module call, and then
+    /// gave no answer the platform can pass on: its process stopped, it failed, or its answer couldn't be signed.
+    /// What it did may have taken effect, so this is never read as nothing having happened, and the operation is not
+    /// asked again as if it had not run: what became of it is read from its outbound and cross-module call records
+    /// (`REQ-ORD-1`, `REQ-MDL-8`, `REQ-MDL-21`).
+    OutcomeUnknown,
 }

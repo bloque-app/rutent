@@ -82,6 +82,9 @@ pub enum Unverified {
     /// The declared statement key of a module the operator publishes is a key an accepted advertisement lists, for
     /// any purpose: a provider holds it, and its outside part may resolve it (`THR-4`).
     StatementKeyAdvertised,
+    /// The caller's clock is past what a record's time can hold (the year 9999), so the admission couldn't be
+    /// recorded at it: nothing is judged, and nothing is admitted (`REQ-AUD-1`).
+    ClockOutOfRange,
 }
 
 /// Who may vouch for a release's assertion: the [`Catalogue`], and no one else. The trait is sealed, so a crate
