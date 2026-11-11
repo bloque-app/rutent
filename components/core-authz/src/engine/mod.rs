@@ -21,13 +21,15 @@
 //!    without its ruling.
 //!
 //! Only a permitting verdict mints a permitting answer, and only in `consult`: no other code of Core's three crates
-//! writes one, which a scan of their source watches for as a tripwire. The guard is the log's split append surface
-//! (`T-020-01`): a decision's entry reaches the log only through policy's handle, [`PolicyLog`], which the assembly
-//! hands to this engine alone, and orchestration's handle takes no decision kind. The engine appends through that
-//! handle and nothing else: each answer's entry is built, checked, made a [`DecisionEntry`], which refuses any kind
-//! but a decision's, and appended, in that order, before the answer is given; an append that fails answers nothing
-//! (`INV-7`). External authentication said who the caller is (`Actor::acts`) and nothing more (`REQ-AUZ-1`): the
-//! engine reads nothing of the caller to permit, and hands it to the policy service as it came.
+//! writes one, which a scan of their source watches for as a tripwire. An open session and an allowed read are taken
+//! from that verdict, each in one function here that writes it only where the verdict permits. The guard is the
+//! log's split append surface (`T-020-01`): a decision's entry reaches the log only through policy's handle,
+//! [`PolicyLog`], which the assembly hands to this engine alone, and orchestration's handle takes no decision kind.
+//! The engine appends through that handle and nothing else: each answer's entry is built, checked, made a
+//! [`DecisionEntry`], which refuses any kind but a decision's, and appended, in that order, before the answer is
+//! given; an append that fails answers nothing (`INV-7`). External authentication said who the caller is
+//! (`Actor::acts`) and nothing more (`REQ-AUZ-1`): the engine reads nothing of the caller to permit, and hands it to
+//! the policy service as it came.
 //!
 //! # Readings
 //!
@@ -46,9 +48,10 @@ mod entry_points;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, DecisionEntry, Decisions, PolicyLog};
 use rutent_contracts::core_internal::{
-    Actor, Answer, Authorisation, Charge, Decision, DecisionRequest, NotKnownCause, Outcome,
-    PermissionChange, PersonQuestion, ReadCheck, Receipt, RefusalClass, SessionRequest,
-    StuckDecide, StuckMove, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    Actor, Answer, Authorisation, Charge, Decision, DecisionRequest, NotKnownCause, Opened,
+    Outcome, PermissionChange, PersonQuestion, ReadCheck, ReadOutcome, Receipt, RefusalClass,
+    SessionOutcome, SessionRequest, StuckDecide, StuckMove, TimeSource, VerifiedEntry,
+    VerifiedKind, What, When,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 
@@ -115,6 +118,24 @@ pub enum Source {
     Verifier(Id),
     /// A provider: its yes or no, to eligibility or to a dry run, or its vouching (`REQ-CPL-6`, `REQ-CPL-7`).
     Provider(Id),
+    /// An account's holder: whether the party the input names is its delegate on that account (`REQ-CAT-3`).
+    Holder {
+        /// The account, by reference.
+        account: Id,
+        /// The party that holds it.
+        holder: Id,
+    },
+    /// The record of an order, as the log holds its acceptance: whether the party the input names is its
+    /// requester, beneficiary or payer (`REQ-AUZ-7`).
+    OrderParties(Id),
+    /// The record of a segment, as the log holds the effect that moved value on it: whether the party the input
+    /// names is the provider it moved through (`REQ-AUZ-7`).
+    SegmentProvider {
+        /// The order.
+        order: Id,
+        /// The segment.
+        segment: Id,
+    },
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -241,7 +262,11 @@ pub(crate) struct Rule {
 
 /// The fixed rules, in the order the engine asks them. Each later row of `F-021` adds its own entry here, and the lead
 /// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
-pub(crate) const FIXED: &[Rule] = &[];
+pub(crate) const FIXED: &[Rule] = &[Rule {
+    name: "T-021-02: a session is its holder's or its delegate's, bounded in time; a read is its reader's",
+    needs: crate::session::needs,
+    rule: crate::session::rule,
+}];
 
 /// The rules `SPEC.md` sets, which every engine asks first: [`Engine::with_policy`] puts them there, so no assembly can leave
 /// one out. Among them, as between two policies, a refusal beats not known.
@@ -302,6 +327,8 @@ pub struct Engine<L, P, S> {
     pub(crate) log: L,
     pub(crate) policy: (Fixed, P),
     pub(crate) sources: S,
+    /// The sessions opened and the read permissions granted and revoked (`T-021-02`).
+    pub(crate) register: crate::session::Register,
 }
 
 /// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
@@ -329,6 +356,7 @@ impl<L, P, S> Engine<L, P, S> {
             log,
             policy: (Fixed::default(), policy),
             sources,
+            register: crate::session::Register::default(),
         }
     }
 
@@ -339,6 +367,7 @@ impl<L, P, S> Engine<L, P, S> {
             log,
             policy: (Fixed { rules: fixed }, policy),
             sources,
+            register: crate::session::Register::default(),
         }
     }
 
@@ -466,6 +495,32 @@ impl<L, P: Policy, S: Sources> Engine<L, P, S> {
             Verdict::Refuse(class) => Answer::Refuse { class },
             Verdict::NotKnown(cause) => Answer::NotKnown { cause },
         }
+    }
+}
+
+/// A session answered on the engine's verdict: opened, as `opened`, only where it permits. The only place in Core that
+/// writes an open session; the session it opens is `opened`, which the session's row names.
+pub(crate) fn session_outcome(answer: Answer, opened: Opened) -> SessionOutcome {
+    match answer {
+        Answer::Permit {} => SessionOutcome::Opened {
+            session: opened.session,
+            expires_at: opened.expires_at,
+        },
+        Answer::Refuse { class } => SessionOutcome::Refused { class },
+        Answer::NotKnown { cause } => SessionOutcome::NotKnown { cause },
+    }
+}
+
+/// A read answered on the engine's verdict: allowed only where it permits. A read is allowed or refused and nothing
+/// else (core-internal's `ReadOutcome`), so a read policy can't decide is refused: not permitted, since nothing showed
+/// it was. The only place in Core that writes an allowed read.
+pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
+    match answer {
+        Answer::Permit {} => ReadOutcome::Allowed {},
+        Answer::Refuse { class } => ReadOutcome::Refused { class },
+        Answer::NotKnown { .. } => ReadOutcome::Refused {
+            class: RefusalClass::NotPermitted,
+        },
     }
 }
 
@@ -815,11 +870,17 @@ mod tests {
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), not_known);
 
+        // The delegate's session waits on its holder's word, which no source can give.
         let session = policy
             .open_session(&fixture!("session-request-of-a-delegate"))
             .unwrap();
         assert!(matches!(session.outcome, SessionOutcome::NotKnown { .. }));
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         let read = policy
             .check_read(&fixture!("read-check-by-a-provider-of-its-segment"))
             .unwrap();
@@ -829,9 +890,10 @@ mod tests {
         let granted = policy.grant_permission(&grant).unwrap();
         assert!(granted.permit().is_none());
         assert_eq!(last(&mut policy), not_known);
+        // Nothing was granted, so there is nothing to revoke.
         let revoked = policy.revoke_permission(&grant).unwrap();
         assert!(revoked.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let charge = policy
             .charge(&fixture!("charge-of-fanned-out-work"))
             .unwrap();
@@ -1280,8 +1342,7 @@ mod tests {
     }];
 
     /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::with_policy`
-    /// (a check that pins nothing until a row adds a rule to `FIXED`, which is empty for now, so it compares two empty
-    /// lists; the planted rules below carry the test meanwhile):
+    /// (`FIXED`, each row's entry; the planted rules below show how they combine):
     /// a fixed rule's refusal is the answer, the deployment's policy not even asked, and it beats the deployment's
     /// service being unreachable. A deployment's refusal likewise beats a fixed rule that can't be reached.
     // verifies: REQ-AUZ-1, REQ-AUZ-5
@@ -1527,48 +1588,47 @@ mod tests {
                 },
             ),
             (
+                // The holder's own session, which needs no input of a source.
                 "open_session",
-                Call::Unbuilt {
-                    row: "T-021-02",
-                    call: |e| {
-                        e.open_session(&fixture!("session-request-of-a-delegate"))
-                            .is_ok_and(|a| matches!(a.outcome, SessionOutcome::Opened { .. }))
-                    },
-                },
+                Call::Built(|e| {
+                    let mut request: SessionRequest = fixture!("session-request-of-a-delegate");
+                    request.requester.party = request.holder.clone();
+                    e.open_session(&request)
+                        .is_ok_and(|a| matches!(a.outcome, SessionOutcome::Opened { .. }))
+                }),
             ),
             (
+                // A read of a resource, which neither the log nor the fixed rule holds to a party.
                 "check_read",
-                Call::Unbuilt {
-                    row: "T-021-02",
-                    call: |e| {
-                        e.check_read(&fixture!("read-check-by-a-provider-of-its-segment"))
-                            .is_ok_and(|a| matches!(a.outcome, ReadOutcome::Allowed { .. }))
-                    },
-                },
+                Call::Built(|e| {
+                    e.check_read(&fixture!("read-check-of-who-the-checker-is"))
+                        .is_ok_and(|a| matches!(a.outcome, ReadOutcome::Allowed { .. }))
+                }),
             ),
             (
                 "grant_permission",
-                Call::Unbuilt {
-                    row: "T-021-02",
-                    call: |e| {
-                        e.grant_permission(&fixture!(
-                            "permission-change-granting-a-regulator-the-trail"
-                        ))
-                        .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    e.grant_permission(&fixture!(
+                        "permission-change-granting-a-regulator-the-trail"
+                    ))
+                    .is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
+                // A permission granted before, held by the log and the register without a call of the table's.
                 "revoke_permission",
-                Call::Unbuilt {
-                    row: "T-021-02",
-                    call: |e| {
-                        e.revoke_permission(&fixture!(
-                            "permission-change-granting-a-regulator-the-trail"
-                        ))
+                Call::Built(|e| {
+                    let change: PermissionChange =
+                        fixture!("permission-change-granting-a-regulator-the-trail");
+                    let granted: VerifiedEntry = fixture!("verified-entry-of-a-permission-granted");
+                    e.log
+                        .log
+                        .append_decision(&DecisionEntry::try_from(granted).unwrap())
+                        .unwrap();
+                    e.register.grants.push(change.clone());
+                    e.revoke_permission(&change)
                         .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                }),
             ),
             (
                 "charge",
@@ -1721,10 +1781,7 @@ mod tests {
             }
         }
         unbuilt.dedup();
-        assert_eq!(
-            unbuilt,
-            ["T-021-04", "T-021-06", "T-021-02", "T-021-05", "T-021-07"]
-        );
+        assert_eq!(unbuilt, ["T-021-04", "T-021-06", "T-021-05", "T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.
