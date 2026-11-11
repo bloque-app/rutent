@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 use super::sha256::hex_digest;
 use super::{
     AdmissionRefusal, Admitted, BoundaryHarness, Check, Endpoint, Events, Exercised, Finding,
-    Handled, LookupOutcome, ModuleSpec, Output, PlatformRefusal, Report, RunConfig, Step,
-    Uncovered,
+    Handled, LookupOutcome, ModuleSpec, Output, PlatformRefusal, Report, RunConfig, STEP_LIMIT,
+    Step, Uncovered,
 };
 use crate::role::placeholder_signature;
 use crate::signing::{
@@ -95,7 +95,9 @@ pub fn run_boundary_suite(binding: &mut dyn BoundaryHarness, config: &RunConfig)
         run.reach();
         run.output();
         run.releases();
+        run.readmissions();
         run.isolation();
+        run.step_limit();
         run.no_canary_anywhere();
     }
     for language in &languages {
@@ -1580,6 +1582,122 @@ impl Run<'_> {
 
     /// The probes of `AC-19` and `REQ-MDL-13`: one provider upgraded, failing to upgrade and restarted, beside
     /// another that must not notice.
+    /// A version a provider already has admitted is never admitted again, whether it runs or waits for its
+    /// acceptance, and what runs is unchanged (`REQ-MDL-1`).
+    fn readmissions(&mut self) {
+        let provider = self.name("readmit");
+        let public = json!("public");
+        let first = self.release_spec(
+            &provider,
+            "1.0.0",
+            &self.release_shape(&[("api", public.clone())], &[OWN_SECRET], false),
+        );
+        if !self.install(&first) {
+            self.find(
+                Check::ReadmittedVersionRefused,
+                "the module whose version is admitted again didn't install",
+            );
+            return;
+        }
+        // The version running, admitted again: the same release, and the refusal that names it.
+        match self.release(&first) {
+            Some((_, _, Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted))) => {
+                if self.binding.active_version(&provider).as_deref() == Some("1.0.0") {
+                    self.saw(Exercised::ReadmittedVersionRefused);
+                } else {
+                    self.find(
+                        Check::ReadmittedVersionRefused,
+                        "admitting the running version again changed what runs",
+                    );
+                }
+            }
+            Some((_, _, other)) => self.find(
+                Check::ReadmittedVersionRefused,
+                format!(
+                    "the running version, admitted again, wasn't refused as already admitted: {other:?}"
+                ),
+            ),
+            None => {}
+        }
+        // One waiting for its acceptance names its version too. A release that widens its destinations waits.
+        let widening = self.release_spec(
+            &provider,
+            "1.1.0",
+            &self.release_shape(
+                &[("api", public.clone()), ("archive", public)],
+                &[OWN_SECRET],
+                false,
+            ),
+        );
+        match self.release(&widening) {
+            Some((_, _, Admitted::Artefact(artefact)))
+                if artefact.acceptance.accepted.is_none() =>
+            {
+                match self.release(&widening) {
+                    Some((_, _, Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted))) => {
+                        self.saw(Exercised::ReadmittedWaitingVersionRefused);
+                    }
+                    Some((_, _, other)) => self.find(
+                        Check::ReadmittedVersionRefused,
+                        format!(
+                            "a version waiting for its acceptance, admitted again, wasn't refused as already admitted: {other:?}"
+                        ),
+                    ),
+                    None => {}
+                }
+            }
+            // A release that didn't wait is `WideningNeedsFreshAcceptance`'s to flag, and what waits can't be
+            // admitted again, so this control stays uncovered.
+            Some(_) | None => {}
+        }
+    }
+
+    /// A module that takes more steps in one operation than the limit the suite set is refused as `limit_reached`,
+    /// and one that takes exactly that many answers (`REQ-MDL-11`). The steps are the sandboxed part's reads of its
+    /// state, so the module passes nothing out: its refusal is the limit's and never an unknown outcome.
+    fn step_limit(&mut self) {
+        let limit = STEP_LIMIT;
+        if !self.binding.set_step_limit(limit) {
+            return;
+        }
+        let steps = |n: usize| -> Vec<Step> {
+            (0..n)
+                .map(|i| read(PartName::Sandboxed, &format!("step.{i}")))
+                .collect()
+        };
+        if let Some(seen) = self.probe("steps-within", steps(limit), Output::Honest) {
+            if seen.answered() {
+                self.saw(Exercised::StepsWithinTheLimitAnswered);
+            } else {
+                self.find(
+                    Check::StepLimitEnforced,
+                    format!(
+                        "a module that took {limit} steps wasn't answered: {:?}",
+                        seen.handled
+                    ),
+                );
+            }
+        }
+        if let Some(seen) = self.probe("steps-past", steps(limit + 1), Output::Honest) {
+            if seen.refused(PlatformRefusal::LimitReached)
+                && self.binding.active_version(&seen.provider).as_deref() == Some("1.0.0")
+            {
+                self.saw(Exercised::StepLimitRefused);
+            } else {
+                self.find(
+                    Check::StepLimitEnforced,
+                    format!(
+                        "a module that took {} steps wasn't refused as a limit, or was dropped: {:?}",
+                        limit + 1,
+                        seen.handled
+                    ),
+                );
+            }
+        }
+        // The limit bounds these probes and nothing else.
+        self.binding.set_step_limit(usize::MAX);
+    }
+
     fn isolation(&mut self) {
         let steady = self.name("steady");
         let moving = self.name("upgrading");

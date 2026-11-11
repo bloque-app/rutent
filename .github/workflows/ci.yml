@@ -127,6 +127,14 @@ jobs:
           cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-guests --all-targets -- -D warnings
           cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-standin -p rutent-wasm-role-standin \
             --target wasm32-unknown-unknown --features rutent-wasm-standin/sandboxed,rutent-wasm-standin/reserve,rutent-wasm-role-standin/reserve -- -D warnings
+          # The simulated providers (`components/prov/module-guests/sim/`, `T-024-01`): each role's sandboxed part, and the
+          # one outside part. A role is a constant chosen by a feature, so each is linted on its own.
+          for role in reserve exchange ramp verifier; do
+            cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-sim-provider \
+              --target wasm32-unknown-unknown --features "sandboxed,$role" -- -D warnings
+          done
+          cargo clippy --manifest-path components/prov/module-guests/Cargo.toml -p rutent-sim-provider \
+            --target wasm32-unknown-unknown --features outside -- -D warnings
       # The plain wallet's guest (`components/prov/guests/plain-wallet/`, `T-016-02`) is a workspace of its own too.
       - name: Format, plain wallet guest
         run: cargo fmt --manifest-path components/prov/guests/plain-wallet/Cargo.toml --all -- --check

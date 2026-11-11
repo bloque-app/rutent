@@ -13,6 +13,8 @@
 //! [`GeneralEntry`] can't hold anyway. This holds while Core's parts share one process; split across processes, a
 //! decision entry would need the engine's signature (`T-025-05`).
 
+pub mod sim;
+
 use rutent_contracts::core_internal::Receipt;
 use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, GeneralEntry, Log, PolicyLog,

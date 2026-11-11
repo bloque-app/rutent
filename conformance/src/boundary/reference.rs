@@ -85,6 +85,10 @@ struct Breaks {
     refuses_every_redirect: bool,
     refuses_declared_secrets: bool,
     ignores_steps: bool,
+    readmits_versions: bool,
+    misstates_readmission_refusals: bool,
+    ignores_the_step_limit: bool,
+    misstates_limit_refusals: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -271,6 +275,14 @@ impl ReferenceDouble {
         refusing_declared_secrets => refuses_declared_secrets;
         /// Its modules skip their steps: they attempt nothing, and so show no refusal.
         ignoring_the_modules_steps => ignores_steps;
+        /// It admits a version again that it has admitted, running or waiting.
+        readmitting_versions => readmits_versions;
+        /// It refuses a version admitted again, but as an unreadable binary, not as already admitted.
+        misstating_readmission_refusals => misstates_readmission_refusals;
+        /// It takes the step limit it is given and never applies it.
+        ignoring_the_step_limit => ignores_the_step_limit;
+        /// It refuses a module past the step limit, but as unavailable, not as a limit.
+        misstating_limit_refusals => misstates_limit_refusals;
     }
 
     fn now(&mut self) -> Time {
@@ -753,6 +765,11 @@ impl ModuleBinding for ReferenceDouble {
         self.languages.clone()
     }
 
+    fn set_step_limit(&mut self, steps: usize) -> bool {
+        self.step_limit = (steps != usize::MAX).then_some(steps);
+        true
+    }
+
     fn set_output_limit(&mut self, bytes: usize) {
         self.output_limit = bytes;
     }
@@ -805,8 +822,12 @@ impl ModuleBinding for ReferenceDouble {
                 .iter()
                 .chain(slot.pending.iter().map(|(artefact, _)| artefact))
                 .any(|artefact| artefact.declaration().version.as_str() == asserted_version);
-            if taken {
-                return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted);
+            if taken && !self.breaks.readmits_versions {
+                return Admitted::Refused(if self.breaks.misstates_readmission_refusals {
+                    AdmissionRefusal::UnreadableBinary
+                } else {
+                    AdmissionRefusal::VersionAlreadyAdmitted
+                });
             }
         }
         if self.breaks.refuses_releases_that_cannot_start && !self.built[index].starts {
@@ -951,8 +972,14 @@ impl ModuleBinding for ReferenceDouble {
             spec.steps.clone()
         };
         for (taken, step) in steps.into_iter().enumerate() {
-            if self.step_limit.is_some_and(|limit| taken >= limit) {
-                return Handled::Refused(PlatformRefusal::LimitReached);
+            if !self.breaks.ignores_the_step_limit
+                && self.step_limit.is_some_and(|limit| taken >= limit)
+            {
+                return Handled::Refused(if self.breaks.misstates_limit_refusals {
+                    PlatformRefusal::Unavailable
+                } else {
+                    PlatformRefusal::LimitReached
+                });
             }
             match step {
                 Step::LookUpSecret {
