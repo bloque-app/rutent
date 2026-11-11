@@ -1854,7 +1854,9 @@ fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answe
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
         admit_entry(&history, &answer, Through::General, &operator()),
-        Err(Violation("a question is the operator's statement"))
+        Err(Violation(
+            "a question is the operator's own statement, signed as the operator"
+        ))
     );
 }
 

@@ -469,11 +469,12 @@ impl StatedEntry {
         if let Some(about) = &self.about {
             about.check()?;
         }
-        let maker = &self.attribution.maker().party;
+        // The relay is another actor than the maker; a sibling under the same publisher may relay its statement.
+        let maker = &self.attribution.maker().acts;
         if self
             .relayed_by
             .as_ref()
-            .is_some_and(|relay| &relay.party == maker)
+            .is_some_and(|relay| &relay.acts == maker)
         {
             return Err(Violation(
                 "a stated entry's relay is a party other than its maker",

@@ -198,8 +198,9 @@ pub trait StatementKeys {
     /// This deployment, which every statement made for it names (`REQ-PRT-1`).
     fn deployment(&mut self) -> Result<Deployment, AppendFailure>;
 
-    /// The party this deployment's operator makes its statements as, Core's questions among them, signed with the
-    /// deployment's `operator_key`; the log hands it to [`admit_entry`](super::admit_entry).
+    /// The maker this deployment's operator signs its own statements as, Core's questions among them, with the
+    /// deployment's `operator_key`: a statement's `acts`, not the party a module the operator publishes states for.
+    /// The log hands it to [`admit_entry`](super::admit_entry).
     fn operator(&mut self) -> Result<Id, AppendFailure>;
 
     /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's

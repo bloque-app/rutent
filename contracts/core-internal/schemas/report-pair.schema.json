@@ -40,7 +40,7 @@
       ],
       "properties": {
         "party": {
-          "description": "The party that reports.",
+          "description": "The provider that reports: its statement's maker (acts), so two adjacent providers of one publisher report a pair (REQ-ORD-9).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "amount": {

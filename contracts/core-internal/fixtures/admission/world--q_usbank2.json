@@ -63,7 +63,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -145,7 +145,7 @@
       "signature": "verified",
       "who": {
         "party": "operator",
-        "acts": "core-orch",
+        "acts": "operator",
         "role": "operator",
         "kind": "component"
       }

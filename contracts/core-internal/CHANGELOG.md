@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 108 valid fixtures and 107 invalid ones, each
-  breaking one rule, and 228 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-six schemas, 109 valid fixtures and 107 invalid ones, each
+  breaking one rule, and 230 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -98,5 +98,11 @@
   authority and its shortlist's decision record name the verifiers the route's tuples need, which receive the
   subject; a question on the route asks only its providers and those verifiers, and records and bounds them with
   the providers (`REQ-CPL-5`). `shortlisted-authority-cites-its-shortlist` holds the authority's verifiers to the
-  record's, and a choice round's record names none. 108 valid fixtures, 107 invalid, 228 admission cases.
-  (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-CPL-6, T-020-01)
+  record's, and a choice round's record names none. (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-CPL-6, T-020-01)
+- Folded into 1.0.0 before its release: rows that mean the signer read the actor. `answer-follows-its-question`
+  compares the question's verified `acts` with the maker the operator signs as (`StatementKeys::operator`), so a
+  module the operator publishes, stating for the operator's party, asks no question of Core's. `Report.party` names
+  the reporting provider, and the two report rows read `acts`, so a sibling under one publisher can't stand in for
+  it and two adjacent providers of one publisher can report a pair (`REQ-ORD-9`). A stated entry's relay is another
+  actor than its maker, so a sibling of its publisher may relay it. 109 valid fixtures, 107 invalid, 230 admission
+  cases. (DEC-4, DEC-20, REQ-ORD-9, REQ-ORD-32, REQ-AUD-2, T-020-01)

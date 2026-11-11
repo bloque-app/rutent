@@ -169,13 +169,9 @@ fn input_order(entry: &VerifiedEntry) -> &str {
     input(entry).map_or("", |i| i.subject.order.as_str())
 }
 
-/// The party a stated entry's maker states for, attributed or claimed.
-fn maker(statement: &StatedEntry) -> &Id {
-    &statement.attribution.maker().party
-}
-
 /// The provider, operator or module a stated entry names as making it: the actor whose key signs, attributed or
-/// claimed. A row comparing a statement's maker with a provider reads this, not the party it states for.
+/// claimed. Every row comparing a statement's maker reads this, never the party it states for, which a sibling under
+/// the same publisher shares.
 fn maker_provider(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().acts
 }
@@ -222,13 +218,11 @@ fn about_agrees(
             })
 }
 
-/// A stated entry attributed to `party`, about what its citing entry is about: its signature verified, `party` its
-/// maker as `by` reads it (the party it states for, [`maker`], or the provider whose key signs, [`maker_provider`]),
-/// and its `about` the citing entry's ([`about_agrees`]). An unverified statement is attributed to no one
-/// (`REQ-AUD-2`).
+/// A stated entry made by `party`, about what its citing entry is about: its signature verified, `party` the actor
+/// whose key signs it ([`maker_provider`]), and its `about` the citing entry's ([`about_agrees`]). An unverified
+/// statement is attributed to no one (`REQ-AUD-2`).
 fn statement_by(
     target: &Entry,
-    by: fn(&StatedEntry) -> &Id,
     party: &Id,
     order: Option<&Id>,
     segment: Option<&Id>,
@@ -239,7 +233,7 @@ fn statement_by(
             true,
             &[
                 matches!(s.attribution, Attribution::Verified { .. }),
-                by(s) == party,
+                maker_provider(s) == party,
                 about_agrees(s, order, segment, history),
             ],
         ),
@@ -953,7 +947,6 @@ pub static RELATIONS: [Relation; 47] = [
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
-                maker,
                 &pair.sent.party,
                 Some(&pair.order),
                 Some(&pair.segment),
@@ -985,7 +978,6 @@ pub static RELATIONS: [Relation; 47] = [
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
-                maker,
                 &pair.received.party,
                 Some(&pair.order),
                 Some(&pair.segment),
@@ -1013,7 +1005,7 @@ pub static RELATIONS: [Relation; 47] = [
         },
         answers: |e, _, t, h| match &e.what {
             What::Arrival { reserve, order, .. } => {
-                statement_by(t, maker_provider, reserve, order.as_ref(), None, h)
+                statement_by(t, reserve, order.as_ref(), None, h)
             }
             _ => Match::NotTarget,
         },
@@ -1159,9 +1151,7 @@ pub static RELATIONS: [Relation; 47] = [
             _ => none(),
         },
         answers: |e, _, t, h| match &e.what {
-            What::Reliance { judge, order, .. } => {
-                statement_by(t, maker_provider, judge, Some(order), None, h)
-            }
+            What::Reliance { judge, order, .. } => statement_by(t, judge, Some(order), None, h),
             _ => Match::NotTarget,
         },
     },
@@ -1989,13 +1979,14 @@ fn answered_transaction(statement: &StatedEntry) -> Option<&Id> {
         .flatten()
 }
 
-/// A stated entry as the rows of [`STATED_RELATIONS`] read it: with the party this deployment's operator makes its
-/// statements as, which Core's questions are verified to.
+/// A stated entry as the rows of [`STATED_RELATIONS`] read it: with the maker this deployment's operator signs its
+/// own statements as, Core's questions among them, which a question's verified `acts` must be: a module the operator
+/// publishes states for the operator's party, but its operation is no question of Core's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatedCiting {
     /// The stated entry.
     pub entry: StatedEntry,
-    /// The deployment's operator party.
+    /// The maker the deployment's operator signs as.
     pub operator: Id,
 }
 
@@ -2009,7 +2000,10 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
         refusal: "a provider's answer under a transaction follows the question Core asked under it",
         fields: &[
             ("verified", "a question is a verified statement"),
-            ("maker", "a question is the operator's statement"),
+            (
+                "maker",
+                "a question is the operator's own statement, signed as the operator",
+            ),
             (
                 "order",
                 "an answer is about the order its question asked for",
@@ -2032,7 +2026,7 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
                 true,
                 &[
                     matches!(t.attribution, Attribution::Verified { .. }),
-                    t.attribution.maker().party == citing.operator,
+                    maker_provider(t) == &citing.operator,
                     asked.order.is_some() && order.is_none_or(|o| asked.order.as_ref() == Some(o)),
                 ],
             )
@@ -2069,8 +2063,8 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the party this deployment's operator makes
-/// its statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
+/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the maker this deployment's operator signs
+/// its own statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
 /// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
 /// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
 /// refused even where its type was got round.

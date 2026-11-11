@@ -1071,12 +1071,14 @@ pub struct PersonAnswer {
 
 // --- What the log's checks read --------------------------------------------------------------------------------
 
-/// One party's report about a segment: how much of which asset it says it sent or received, and the receipt of the
-/// stated entry that holds its statement. Schema: `urn:rutent:core-internal:report-pair#/$defs/report`.
+/// One provider's report about a segment: how much of which asset it says it sent or received, and the receipt of
+/// the stated entry that holds its statement, made by that provider. Schema:
+/// `urn:rutent:core-internal:report-pair#/$defs/report`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
-    /// The party that reports.
+    /// The provider that reports: the statement's maker, its `acts`, so two adjacent providers of one publisher
+    /// report a pair (`REQ-ORD-9`).
     pub party: Id,
     /// The amount, in the asset's unit.
     pub amount: Amount,

@@ -63,7 +63,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -153,7 +153,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -278,7 +278,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -323,8 +323,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "someone-else",
-            "acts": "bridge-pay",
+            "party": "bridge-pay",
+            "acts": "bridge-sibling",
             "role": "provider",
             "kind": "component"
           }
@@ -370,7 +370,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -462,7 +462,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }
@@ -1560,7 +1560,7 @@
           "signature": "verified",
           "who": {
             "party": "operator",
-            "acts": "core-orch",
+            "acts": "operator",
             "role": "operator",
             "kind": "component"
           }

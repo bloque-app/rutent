@@ -79,9 +79,10 @@ row implements its own in its own module, where its fail-closed stub sits until 
   for, its publisher or the operator's party. The log verifies a statement only where the envelope's `maker` is its
   `acts`, the key signs for that `acts`, and its `party` is the one `StatementKeys::publisher` answers for it, so
   both names of a verified maker are bound. Its `role` stays the writer's label, and no relation reads it. A row
-  comparing a statement's maker with a provider (an origin reserve, an arrival's reserve, a judge, a segment's
-  provider under grade-4 evidence) reads `acts`; a row comparing it with a party (a report pair's reporting party,
-  the operator's party for a question) reads `party`.
+  comparing a statement's maker with its signer (an origin reserve, an arrival's reserve, a judge, a report's
+  reporting provider, a segment's provider under grade-4 evidence, the operator for a question) reads `acts`; no row
+  compares it with a party. A module the operator publishes states for the operator's party, but its operation is no
+  question of Core's: a question is made as the operator, `StatementKeys::operator`.
 - **The log is the guard of every citation.** Permits, receipts and ids can be built anywhere: `Decision::permit`
   makes a `Permit` from a permitting answer, but a permit deserialises, and a decision's fields are public. So the
   log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS` for a verified entry and
@@ -341,7 +342,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `Raise` | its difference is a real one: two amounts or times that differ, a charge above its maximum |
 | `VerifiedEntry` | an entry's outcome is one its call can have: a policy call's `permitted`, `refused` or `not_known`; an effect's `to_take_effect`; a result's `done`, `failed` or `unanswered`; a raise's, a command's and an erasure's `done` or `failed`; any other record's `observed`. A session entry names the session exactly when it was opened, ending after it was asked for and no later than its `until` |
 | `What::Input` | the recorded input holds to the state-machine contract's own `check` |
-| `StatedEntry` | its relay is a party other than its maker; its `about` names something |
+| `StatedEntry` | its relay is an actor other than its maker (a sibling of one publisher may relay); its `about` names something |
 | `VerifiedEntry` of a `command` | its `who` is the operator |
 | `GeneralEntry` | it holds no decision kind (`calls::is_decision`), and no stated entry attributed `verified`, however it is built or read |
 | `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
@@ -484,10 +485,14 @@ These are defaults taken where the row left a choice open. Each is reversible by
   the one Core asked for: orchestration could ask a question for one order and label it another before any answer.
   It can be caught, because the question's signed body names the account and the amount asked about, which a
   checker compares with the labelled order's; the log does not compare them.
-- **A report's party** (`T-020-07`, `T-022-05`). `Report.party` is "the party that reports", and
-  `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` compare it with the
-  statement's `party`, the publisher it states for. Should a report name the provider instead, those two rows move
-  to `acts` with it.
+- **A report's party is its provider** (`T-020-07`, `T-022-05`). `Report.party` names the provider that reports, the
+  statement's `acts`, and `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` read
+  `acts`, so a sibling under the same publisher can't stand in for it and two adjacent providers of one publisher
+  can report a pair (`REQ-ORD-9`).
+- **The verifiers asked** (`T-021-07`). Policy checks the verifiers a question asks against the tuples' declared
+  needs, by the advertisements, as well as against the shortlist record's `verifiers`.
+- **The router record's bytes** (`T-022-03`). The evidence store keeps the bytes of the router's recorded decision
+  a decision record's `record` digests, so its tuples' needs and shortlist can be checked against it.
 - **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives,
   so `StatementKeys` takes a maker's keys only from advertisements the log itself recorded under permitted
   `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own `made_at`, so a key

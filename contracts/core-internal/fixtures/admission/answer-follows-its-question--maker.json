@@ -62,8 +62,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "someone-else",
-            "acts": "core-orch",
+            "party": "operator",
+            "acts": "hold-module-7",
             "role": "operator",
             "kind": "component"
           }
