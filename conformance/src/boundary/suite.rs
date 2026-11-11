@@ -1,6 +1,7 @@
 //! The module-boundary suite's run: per language, a world of endpoints, secrets and state and another provider
 //! running in it, then one module per fixture or control, then the releases and the isolation probes.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use rutent_contracts::module_interface::{
@@ -21,7 +22,10 @@ use super::{
     Handled, LookupOutcome, ModuleSpec, Output, PlatformRefusal, Report, RunConfig, Step,
     Uncovered,
 };
-use crate::role::{placeholder_key, placeholder_signature};
+use crate::role::placeholder_signature;
+use crate::signing::{
+    advertisement, advertising_key, another_key, public_key, sign_statement, statements_key,
+};
 
 const OPERATION: &str = "api.call";
 const OWN_SECRET: &str = "alpha.api_key";
@@ -84,6 +88,7 @@ pub fn run_boundary_suite(binding: &mut dyn BoundaryHarness, config: &RunConfig)
             language,
             report: &mut report,
             transactions: 0,
+            advertised: BTreeSet::new(),
         };
         run.world();
         run.other_provider();
@@ -112,6 +117,9 @@ struct Run<'a> {
     language: &'a str,
     report: &'a mut Report,
     transactions: usize,
+    /// The providers whose signed advertisement the binding was given: a release is vouched for by the key its
+    /// provider's advertisement lists.
+    advertised: BTreeSet<String>,
 }
 
 /// What one module did on one operation.
@@ -211,8 +219,17 @@ enum Reach {
     Unclear,
 }
 
+/// Whether `record` is of a call refused for `reason` at hop `at_hop`: `refused` at the first hop, before anything
+/// was sent, and `refused_after_delivery` at a later one, once a destination was sent the request (module-interface
+/// 4.0.0).
 fn refused_call(record: &OutboundCallRecord, reason: RefusalReason, at_hop: usize) -> bool {
-    record.outcome == CallOutcome::Refused(Refused { reason }) && record.hops.len() == at_hop + 1
+    let refused = Refused { reason };
+    let expected = if at_hop == 0 {
+        CallOutcome::Refused(refused)
+    } else {
+        CallOutcome::RefusedAfterDelivery(refused)
+    };
+    record.outcome == expected && record.hops.len() == at_hop + 1
 }
 
 fn completed(record: &OutboundCallRecord) -> bool {
@@ -352,7 +369,7 @@ impl Run<'_> {
                 "destinations": destinations,
                 "secrets": shape.secrets,
                 "calls": calls,
-                "statement_key": placeholder_key(1),
+                "statement_key": public_key(&statements_key(provider)),
             },
         }))
         .expect("the suite's declaration is valid")
@@ -398,11 +415,29 @@ impl Run<'_> {
         serde_json::from_value(value).expect("the suite's operation is valid")
     }
 
+    /// Gives the binding `provider`'s signed advertisement, once, before its first release.
+    fn vouch(&mut self, provider: &str) {
+        if !self.advertised.insert(provider.to_owned()) {
+            return;
+        }
+        let bytes = advertisement(provider, &self.config.context);
+        if !self.binding.list_provider(&bytes) {
+            self.find(
+                Check::AdmissionRecordsWhatItAdmits,
+                "the binding wouldn't take a provider's signed advertisement",
+            );
+        }
+    }
+
+    /// The provider's release assertion of `binaries` under `declaration`, signed with its advertising key over
+    /// the contract's signing input.
     fn assertion(
-        &self,
+        &mut self,
         declaration: &Declaration,
         binaries: &Parts<Vec<u8>>,
     ) -> Option<Statement<ReleaseAssertion>> {
+        let provider = declaration.provider.as_str();
+        self.vouch(provider);
         let format = BinaryFormat::new(self.binding.format())?;
         let part = |bytes: &[u8]| -> Option<BinaryPart> {
             Some(BinaryPart {
@@ -414,15 +449,15 @@ impl Run<'_> {
             })
         };
         let context = &self.config.context;
-        Some(Statement {
+        let unsigned = Statement {
             deployment: context.deployment.clone(),
             protocol_version: context.protocol_version.clone(),
             shape: RELEASE_ASSERTION_SHAPE.to_owned(),
-            maker: declaration.provider.as_str().to_owned(),
+            maker: provider.to_owned(),
             made_at: "2026-11-07T00:00:00Z".to_owned(),
             signature: Signature {
                 scheme: SignatureScheme::Ed25519,
-                key: placeholder_key(2),
+                key: public_key(&advertising_key(provider)),
                 value: placeholder_signature(),
             },
             statement: ReleaseAssertion {
@@ -432,7 +467,8 @@ impl Run<'_> {
                     outside: part(&binaries.outside)?,
                 },
             },
-        })
+        };
+        Some(sign_statement(&unsigned, &advertising_key(provider)))
     }
 
     /// Builds and admits a release. The binaries submitted, the assertion and what admission gave.
@@ -1167,7 +1203,12 @@ impl Run<'_> {
                     {
                         Reach::Refused
                     }
-                    Some(CrossModuleOutcome::Delivered(_)) if received => Reach::Reached,
+                    // Passed on, answered or not: the callee received it, so the widening was lent.
+                    Some(CrossModuleOutcome::Delivered(_) | CrossModuleOutcome::Unanswered(_))
+                        if received =>
+                    {
+                        Reach::Reached
+                    }
                     _ => Reach::Unclear,
                 }
             }
@@ -1278,6 +1319,7 @@ impl Run<'_> {
             self.find(Check::AdmissionRecordsWhatItAdmits, problem);
         }
         self.altered_releases();
+        self.forged_releases();
 
         let Some(previous) = accepted else {
             return;
@@ -1382,6 +1424,56 @@ impl Run<'_> {
         }
         if refused == 4 {
             self.saw(Exercised::AlteredReleaseRefused);
+        }
+    }
+
+    /// A release whose assertion doesn't verify is refused as unverified, before its binaries are judged: one
+    /// signed by a key no advertisement lists, and one altered after it was signed. The same release, signed
+    /// right, is then admitted: the refusals weren't for anything else.
+    fn forged_releases(&mut self) {
+        let spec = ModuleSpec {
+            declaration: self.declaration(&self.name("forged"), "1.0.0", &self.base_shape()),
+            steps: Vec::new(),
+            output: Output::Honest,
+            starts: true,
+        };
+        let Some(binaries) = self.binding.build(&spec, self.language) else {
+            return;
+        };
+        let Some(genuine) = self.assertion(&spec.declaration, &binaries) else {
+            return;
+        };
+        let mut altered = genuine.clone();
+        altered.made_at = "2026-11-07T00:00:01Z".to_owned();
+        let forgeries = [
+            (
+                "signed by a key no advertisement lists",
+                sign_statement(&genuine, &another_key()),
+            ),
+            ("altered after it was signed", altered),
+        ];
+        let mut refused = 0;
+        for (how, forged) in forgeries {
+            match self.binding.admit(&forged, &binaries) {
+                Admitted::Refused(AdmissionRefusal::AssertionUnverified) => refused += 1,
+                other => self.find(
+                    Check::AdmissionRecordsWhatItAdmits,
+                    format!("a release whose assertion was {how} wasn't refused as unverified: {other:?}"),
+                ),
+            }
+        }
+        let genuine_admitted = matches!(
+            self.binding.admit(&genuine, &binaries),
+            Admitted::Artefact(_)
+        );
+        if !genuine_admitted {
+            self.find(
+                Check::AdmissionRecordsWhatItAdmits,
+                "the release, signed right, wasn't admitted after its forgeries were refused",
+            );
+        }
+        if refused == 2 && genuine_admitted {
+            self.saw(Exercised::ForgedReleaseRefused);
         }
     }
 

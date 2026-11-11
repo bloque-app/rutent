@@ -1,5 +1,12 @@
 # host changelog
 
+## 2.1.0
+- The Rust code behind this contract (`contracts/src/state_machine/host`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.0.0
 - Breaking, after the M1 security review: a transition record's `seq`, a refusal record's `seq` and the `seq` it
   points to are at most 2^53 - 1 (`MAX_SEQ`), in the schemas and in Rust, so they survive RFC 8785 canonical

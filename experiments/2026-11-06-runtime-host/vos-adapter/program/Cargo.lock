@@ -82,24 +82,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "rutent-contracts-nostd"
+name = "rutent-contracts"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "rutent-probe-nostd"
 version = "0.0.0"
 dependencies = [
- "rutent-contracts-nostd",
+ "rutent-contracts",
 ]
 
 [[package]]
 name = "rutent-vos-program"
 version = "0.0.0"
 dependencies = [
- "rutent-contracts-nostd",
+ "rutent-contracts",
  "rutent-probe-nostd",
  "serde",
  "serde_json",

@@ -1,8 +1,9 @@
 //! Checked atoms: the router API's identifiers, versions, amounts and lists, each as strict as the schema atom
 //! it mirrors.
 
-use std::cmp::Ordering;
-use std::fmt;
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use core::cmp::Ordering;
+use core::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -139,7 +140,7 @@ fn is_protocol_version(text: &str) -> bool {
 /// epoch.
 fn unix_nanos(text: &str) -> Option<i128> {
     let b = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
+    let digits = |range: core::ops::Range<usize>| -> Option<i64> {
         let part = b.get(range)?;
         part.iter()
             .all(u8::is_ascii_digit)
@@ -343,7 +344,7 @@ impl<T> NonEmpty<T> {
     }
 }
 
-impl<T> std::ops::Deref for NonEmpty<T> {
+impl<T> core::ops::Deref for NonEmpty<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -385,7 +386,7 @@ impl<T: PartialEq> Distinct<T> {
     }
 }
 
-impl<T> std::ops::Deref for Distinct<T> {
+impl<T> core::ops::Deref for Distinct<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -417,12 +418,30 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// Deserialises a present list that the schemas require non-empty, refusing `null` and `[]`: the schemas leave an
+/// empty list out, so an explicit empty one is not one of its forms. Used with `#[serde(default)]`, so an absent
+/// field is the empty list.
+pub(super) fn non_empty_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let items = Vec::<T>::deserialize(deserializer)?;
+    if items.is_empty() {
+        return Err(serde::de::Error::custom(
+            "a list present on the wire is not empty",
+        ));
+    }
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Amount, Decimal, Distinct, Id, NonEmpty, PositiveAmount, ProtocolVersion, Timestamp,
         Version,
     };
+    use alloc::vec;
 
     // verifies: DEC-4
     #[test]

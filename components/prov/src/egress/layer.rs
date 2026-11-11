@@ -1,0 +1,395 @@
+//! The egress layer itself: the checks every hop of an outbound call passes, and the record each call leaves.
+
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU16;
+
+use rutent_contracts::module_interface::{
+    Address, Addresses, CallOutcome, Declaration, Hop, Host, Identifier, Name, Nothing,
+    OutboundCallRecord, RefusalReason, Refused, SPECIAL_PURPOSE, Scheme, Time,
+};
+
+use super::connector::{ConnectError, Connector, Dial, Request, Response, origin_form};
+use super::resolve::{Lookup, LookupRefused, NameResolver};
+
+/// The most connections one outbound call makes, the first and each redirect followed.
+pub const MAX_HOPS: usize = 5;
+
+/// An endpoint an outside part asks to reach: a scheme, an exact host and a port.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Endpoint {
+    /// The scheme.
+    pub scheme: Scheme,
+    /// The host name.
+    pub host: String,
+    /// The port.
+    pub port: u16,
+}
+
+/// What the platform knows about one outbound call, from its own state and never from what the outside part
+/// says: the running declaration, the outside request in flight and its transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct Call<'a> {
+    /// The provider's running declaration, which names the provider and the module version.
+    pub declaration: &'a Declaration,
+    /// The outside operation of the request in flight, from the platform's state.
+    pub in_flight: &'a Name,
+    /// The operation the outside part named for this call. One other than [`in_flight`](Self::in_flight) is
+    /// refused as `undeclared_operation`.
+    pub asked: &'a str,
+    /// The transaction of the request in flight.
+    pub transaction: &'a Identifier,
+    /// The names of the secrets resolved for the operation in flight, never their values.
+    pub secrets: &'a [Name],
+    /// When the call started.
+    pub started_at: &'a Time,
+    /// When the operation the call serves must end, if it has a deadline; the connector gives up then.
+    pub due: Option<std::time::Instant>,
+}
+
+/// Where outbound call records go. Every call [`Egress::send`] is asked to make leaves exactly one, refused calls
+/// included (`REQ-MDL-8`).
+pub trait CallLog {
+    /// Keeps `record`.
+    fn record(&mut self, record: OutboundCallRecord);
+}
+
+impl CallLog for Vec<OutboundCallRecord> {
+    fn record(&mut self, record: OutboundCallRecord) {
+        self.push(record);
+    }
+}
+
+/// Why the egress layer refused a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Refusal {
+    /// The call named another operation than the one in flight, or one the declaration doesn't declare.
+    UndeclaredOperation,
+    /// The first endpoint isn't a destination the operation in flight lists.
+    UndeclaredDestination,
+    /// A redirect led to an endpoint the operation in flight doesn't list, or to one no destination could be:
+    /// plain `http`, another scheme, a user name in the authority, or a malformed location.
+    RedirectToUndeclaredDestination,
+    /// The name resolved to an address outside the destination's declared addresses, or to none (`B-17`).
+    AddressNotAllowed,
+    /// The peer was not verified as the declared host over TLS (`B-18`).
+    NotVerified,
+    /// The provider had as many name lookups in flight as it may (`REQ-MDL-11`).
+    LimitReached,
+}
+
+impl Refusal {
+    /// The reason the outbound call record gives: each refusal its own, a failed TLS check as `peer_not_verified`
+    /// (module-interface 4.0.0, `T-010-09`).
+    pub fn reason(self) -> RefusalReason {
+        match self {
+            Refusal::UndeclaredOperation => RefusalReason::UndeclaredOperation,
+            Refusal::UndeclaredDestination => RefusalReason::UndeclaredDestination,
+            Refusal::NotVerified => RefusalReason::PeerNotVerified,
+            Refusal::RedirectToUndeclaredDestination => {
+                RefusalReason::RedirectToUndeclaredDestination
+            }
+            Refusal::AddressNotAllowed => RefusalReason::AddressNotAllowed,
+            Refusal::LimitReached => RefusalReason::LimitReached,
+        }
+    }
+}
+
+/// How an outbound call ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The last destination answered with a `2xx`.
+    Completed(Response),
+    /// The last destination answered otherwise, or redirected once more than [`MAX_HOPS`] allows.
+    Failed(Response),
+    /// No connection was established to the checked address, or the name's lookup was given up at the
+    /// operation's deadline; nothing was sent.
+    Unreachable,
+    /// A connection was made and no complete answer came; the effect is not known.
+    NoAnswer,
+    /// The egress layer refused the call before anything of it was sent.
+    Refused(Refusal),
+    /// The egress layer refused a hop after a hop connected and its destination was sent the request: a redirect to
+    /// a destination not declared, an address not allowed, a peer not verified, or a limit. The call is recorded
+    /// `refused_after_delivery` at that hop, and the module is told unknown: what the destination that was sent it
+    /// did is not known (`REQ-ORD-1`).
+    RefusedAfterDelivery(Refusal),
+}
+
+/// The egress layer: reaches only the destinations the operation in flight declares, checks every redirect,
+/// connects only to the address it checked, never without TLS, and records every call.
+#[derive(Debug, Clone)]
+pub struct Egress<R, C> {
+    resolver: R,
+    connector: C,
+}
+
+impl<R: NameResolver, C: Connector> Egress<R, C> {
+    /// An egress layer resolving with `resolver` and connecting with `connector`.
+    pub fn new(resolver: R, connector: C) -> Self {
+        Egress {
+            resolver,
+            connector,
+        }
+    }
+
+    /// Sends `request` to `endpoint` for `call`, following redirects only to destinations the operation in
+    /// flight lists, and writes the call's record to `log`, whatever its outcome.
+    pub fn send(
+        &self,
+        call: &Call<'_>,
+        endpoint: Endpoint,
+        request: Request,
+        log: &mut impl CallLog,
+    ) -> Outcome {
+        let (hops, outcome) = self.hops(call, endpoint, request);
+        let recorded = match &outcome {
+            Outcome::Completed(_) => CallOutcome::Completed(Nothing {}),
+            Outcome::Failed(_) => CallOutcome::Failed(Nothing {}),
+            Outcome::Unreachable | Outcome::NoAnswer => CallOutcome::Unknown(Nothing {}),
+            Outcome::Refused(refusal) => CallOutcome::Refused(Refused {
+                reason: refusal.reason(),
+            }),
+            // Its own outcome in the record too, so that a reader never takes it for nothing having been sent.
+            Outcome::RefusedAfterDelivery(refusal) => CallOutcome::RefusedAfterDelivery(Refused {
+                reason: refusal.reason(),
+            }),
+        };
+        log.record(OutboundCallRecord {
+            transaction: call.transaction.clone(),
+            provider: call.declaration.provider.clone(),
+            module_version: call.declaration.version.clone(),
+            operation: call.in_flight.clone(),
+            secrets: call.secrets.to_vec(),
+            started_at: call.started_at.clone(),
+            hops,
+            outcome: recorded,
+        });
+        outcome
+    }
+
+    /// Makes the call's connections, each checked, and returns them as hops with how the call ended. A refusal once
+    /// a hop connected, so once a destination was sent the request, is [`Outcome::RefusedAfterDelivery`].
+    fn hops(&self, call: &Call<'_>, endpoint: Endpoint, request: Request) -> (Vec<Hop>, Outcome) {
+        let (hops, outcome) = self.connect(call, endpoint, request);
+        let delivered = hops.iter().any(|hop| hop.address.is_some());
+        let outcome = match outcome {
+            Outcome::Refused(refusal) if delivered => Outcome::RefusedAfterDelivery(refusal),
+            other => other,
+        };
+        (hops, outcome)
+    }
+
+    /// The call's connections, each checked, as hops, with how the call ended.
+    fn connect(
+        &self,
+        call: &Call<'_>,
+        endpoint: Endpoint,
+        request: Request,
+    ) -> (Vec<Hop>, Outcome) {
+        let mut hops = Vec::new();
+        let listed = call
+            .declaration
+            .outside
+            .operations
+            .iter()
+            .find(|o| &o.name == call.in_flight)
+            .filter(|_| call.asked == call.in_flight.as_str())
+            .map(|o| o.destinations.as_slice());
+        let Some(listed) = listed else {
+            hops.extend(unconnected(&endpoint));
+            return (hops, Outcome::Refused(Refusal::UndeclaredOperation));
+        };
+        let (mut current, mut request) = (endpoint, request);
+        loop {
+            let undeclared = if hops.is_empty() {
+                Refusal::UndeclaredDestination
+            } else {
+                Refusal::RedirectToUndeclaredDestination
+            };
+            let destination = call.declaration.outside.destinations.iter().find(|d| {
+                listed.contains(&d.name)
+                    && d.scheme == current.scheme
+                    && d.host.as_str() == current.host
+                    && d.port.get() == current.port
+            });
+            let Some(destination) = destination else {
+                hops.extend(unconnected(&current));
+                return (hops, Outcome::Refused(undeclared));
+            };
+            let mut hop = Hop {
+                scheme: destination.scheme,
+                host: destination.host.clone(),
+                port: destination.port,
+                destination: Some(destination.name.clone()),
+                address: None,
+            };
+
+            // Resolved once for this connection; the connector gets the address checked, never the name. The lookup
+            // is given up at the operation's deadline, and nothing is dialled then (`REQ-MDL-11`).
+            let answer = match self.resolver.resolve_for(&Lookup {
+                host: &destination.host,
+                port: destination.port,
+                provider: &call.declaration.provider,
+                due: call.due,
+            }) {
+                Ok(answer) => answer,
+                Err(LookupRefused::DeadlinePassed) => {
+                    hops.push(hop);
+                    return (hops, Outcome::Unreachable);
+                }
+                Err(LookupRefused::TooManyInFlight) => {
+                    hops.push(hop);
+                    return (hops, Outcome::Refused(Refusal::LimitReached));
+                }
+            };
+            let checked = answer
+                .first()
+                .copied()
+                .filter(|_| answer.iter().all(|a| allows(&destination.addresses, *a)))
+                .and_then(|a| Address::new(a.to_string()).map(|text| (a, text)));
+            let Some((checked, text)) = checked else {
+                hops.push(hop);
+                return (hops, Outcome::Refused(Refusal::AddressNotAllowed));
+            };
+            let dial = Dial {
+                scheme: destination.scheme,
+                name: &destination.host,
+                to: SocketAddr::new(checked, destination.port.get()),
+                due: call.due,
+            };
+            let answer = self.connector.exchange(&dial, &request);
+            // The hop names the address only if a verified connection was made to it: not after a failed TLS
+            // check, and not after a dial that connected to nothing.
+            if !matches!(
+                answer,
+                Err(ConnectError::NotVerified | ConnectError::Unreachable)
+            ) {
+                hop.address = Some(text);
+            }
+            hops.push(hop);
+            let response = match answer {
+                Ok(response) => response,
+                Err(ConnectError::NotVerified) => {
+                    return (hops, Outcome::Refused(Refusal::NotVerified));
+                }
+                Err(ConnectError::Unreachable) => return (hops, Outcome::Unreachable),
+                Err(ConnectError::NoAnswer) => return (hops, Outcome::NoAnswer),
+            };
+            if (200..300).contains(&response.status) {
+                return (hops, Outcome::Completed(response));
+            }
+            let location = match response.status {
+                301 | 302 | 303 | 307 | 308 => response.header("location"),
+                _ => None,
+            };
+            let Some(location) = location.filter(|_| hops.len() < MAX_HOPS) else {
+                return (hops, Outcome::Failed(response));
+            };
+            let Some((next, target)) = follow(&current, location) else {
+                return (
+                    hops,
+                    Outcome::Refused(Refusal::RedirectToUndeclaredDestination),
+                );
+            };
+            request = request.redirected(response.status, target, next == current);
+            current = next;
+        }
+    }
+}
+
+/// The hop of an endpoint no connection was made to, if the contract can record it: a host and a non-zero port.
+fn unconnected(endpoint: &Endpoint) -> Option<Hop> {
+    Some(Hop {
+        scheme: endpoint.scheme,
+        host: Host::new(endpoint.host.clone())?,
+        port: NonZeroU16::new(endpoint.port)?,
+        destination: None,
+        address: None,
+    })
+}
+
+/// Where a redirect from `current` to `location` leads: the endpoint and the origin-form target, or `None` if it
+/// leads nowhere a destination could be. An absolute `https` or `wss` URL, a scheme-relative one or an absolute
+/// path is read; plain `http`, any other scheme, a user name, an IP literal, a bad port or a relative path is not.
+/// The host is lower-cased, as a URL's is, and the fragment dropped.
+fn follow(current: &Endpoint, location: &str) -> Option<(Endpoint, String)> {
+    let location = location.trim_matches([' ', '\t']);
+    let location = location.split_once('#').map_or(location, |(l, _)| l);
+    if location.starts_with('/') && !location.starts_with("//") {
+        return origin_form(location).then(|| (current.clone(), location.to_owned()));
+    }
+    let (scheme, rest) = match location.strip_prefix("//") {
+        Some(rest) => (current.scheme, rest),
+        None => {
+            let (scheme, rest) = location.split_once("://")?;
+            let scheme = match scheme.to_ascii_lowercase().as_str() {
+                "https" => Scheme::Https,
+                "wss" => Scheme::Wss,
+                _ => return None,
+            };
+            (scheme, rest)
+        }
+    };
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok().filter(|p| *p != 0)?),
+        None => (authority, 443),
+    };
+    let plain = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'.';
+    if host.is_empty() || !host.bytes().all(plain) {
+        return None;
+    }
+    let target = match tail {
+        "" => "/".to_owned(),
+        _ if tail.starts_with('?') => format!("/{tail}"),
+        _ => tail.to_owned(),
+    };
+    origin_form(&target).then(|| {
+        let endpoint = Endpoint {
+            scheme,
+            host: host.to_ascii_lowercase(),
+            port,
+        };
+        (endpoint, target)
+    })
+}
+
+/// Whether `address` is within `addresses`, and in no special-purpose range ([`SPECIAL_PURPOSE`]). The
+/// special-purpose test holds for pinned blocks too: the egress layer doesn't rely on the declaration having
+/// passed `validate_declaration`, so a block over loopback, link-local or a private range still reaches none of
+/// it.
+fn allows(addresses: &Addresses, address: IpAddr) -> bool {
+    let special = SPECIAL_PURPOSE.iter().any(|(range, len)| {
+        range
+            .parse::<IpAddr>()
+            .is_ok_and(|range| within(address, range, *len))
+    });
+    !special
+        && match addresses {
+            Addresses::Public(_) => true,
+            Addresses::Blocks(blocks) => blocks.iter().any(|block| {
+                let (ip, len) = block.parts();
+                within(address, ip, len)
+            }),
+        }
+}
+
+/// Whether `ip` lies within the block `outer/outer_len`. An IPv4 address and an IPv6 block never match, so an
+/// IPv4-mapped IPv6 address is judged as IPv6, where `::ffff:0:0/96` is special-purpose.
+fn within(ip: IpAddr, outer: IpAddr, outer_len: u8) -> bool {
+    let bits = |ip: IpAddr| match ip {
+        IpAddr::V4(v4) => (u128::from(u32::from(v4)) << 96, true),
+        IpAddr::V6(v6) => (u128::from(v6), false),
+    };
+    let ((a, a4), (b, b4)) = (bits(ip), bits(outer));
+    if a4 != b4 {
+        return false;
+    }
+    let mask = if outer_len == 0 {
+        0
+    } else {
+        u128::MAX << (128 - u32::from(outer_len))
+    };
+    a & mask == b & mask
+}

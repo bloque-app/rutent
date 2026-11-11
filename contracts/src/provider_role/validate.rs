@@ -1,7 +1,8 @@
 //! The rules of an advertisement that JSON Schema can't express: they compare two fields, or two entries of a
 //! list. An advertisement is valid when it passes the schemas and [`validate`] returns `Ok`.
 
-use std::cmp::Ordering;
+use alloc::{format, string::String, vec::Vec};
+use core::cmp::Ordering;
 
 use super::envelope::{Signature, Statement};
 use super::types::{Advertisement, Band, Category, KeyPurpose, PublicKey, Terms};
@@ -202,7 +203,7 @@ fn made_after(later: &str, earlier: &str) -> bool {
         if b.len() != 19 {
             return None;
         }
-        let digits = |range: std::ops::Range<usize>| -> Option<u32> {
+        let digits = |range: core::ops::Range<usize>| -> Option<u32> {
             let field = &b[range];
             if !field.iter().all(u8::is_ascii_digit) {
                 return None;
@@ -338,7 +339,7 @@ fn compare_amounts(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::{compare_amounts, made_after};
-    use std::cmp::Ordering;
+    use core::cmp::Ordering;
 
     // verifies: THR-4
     #[test]

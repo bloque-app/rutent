@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-shortlist-with-a-route-that-delivers-nothing-before-the-destination",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/3/dropped/operation",
+      "value": 0
+    }
+  ]
+}

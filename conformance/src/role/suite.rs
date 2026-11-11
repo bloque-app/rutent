@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
     Advertisement, BalanceOutcome, BalanceRefusal, BalanceVerification, Category, Conversion,
-    ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee, Inputs,
-    JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE,
-    Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
-    ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
-    ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape, Terms,
-    Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, validate_statement,
+    ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee,
+    HoldingBalanceOutcome, Inputs, JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose,
+    NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome,
+    ResultBody, Reversal, ReversalConfirmationOutcome, ReversalConfirmationRequest,
+    ReversalConfirmationResult, ReversalOutcome, Signature, SignatureScheme, Slippage, Statement,
+    StatementShape, Terms, Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, member,
+    signing_input, validate_statement,
 };
 
 /// An operation, the result that answers it, and the terms of the tuple it runs through.
@@ -17,8 +18,8 @@ type Answered<'a> = (&'a Operation, &'a ResultBody, &'a Terms);
 
 use super::encoding::{is_canonical_signature, is_protocol_version, is_utc_timestamp};
 use super::{
-    Check, Exercised, Finding, Report, RoleHarness, SignatureVerifier, SuiteContext, Uncovered,
-    Verification, placeholder_key, placeholder_signature,
+    Check, Exercised, Finding, Received, Report, RoleHarness, SignatureVerifier, SuiteContext,
+    Uncovered, Verification, placeholder_key, placeholder_signature,
 };
 
 /// A node no provider advertises, for probing the edge of a provider's tuples.
@@ -42,7 +43,7 @@ pub fn run_role_suite<P: RoleHarness + ?Sized>(
     let mut run = Run {
         context,
         verifier,
-        advertisement: advertisement.statement.clone(),
+        advertisement: advertisement.statement().statement.clone(),
         report: Report::default(),
         next_transaction: 0,
         required: BTreeSet::new(),
@@ -72,6 +73,7 @@ enum Kind {
     Judgement,
     Reversal,
     ReversalConfirmation,
+    HoldingBalance,
 }
 
 /// A refusal's class, whichever kind of refusal it is (`REQ-CAT-18`).
@@ -175,6 +177,7 @@ fn kind_of(operation: &Operation) -> (Kind, Option<&str>) {
         Operation::Judgement(_) => (Kind::Judgement, None),
         Operation::Reversal(o) => (Kind::Reversal, Some(&o.transaction)),
         Operation::ReversalConfirmation(o) => (Kind::ReversalConfirmation, Some(&o.transaction)),
+        Operation::HoldingBalance(o) => (Kind::HoldingBalance, Some(&o.transaction)),
     }
 }
 
@@ -261,6 +264,14 @@ fn view_of(body: &ResultBody) -> View {
             match &r.outcome {
                 BalanceOutcome::Answered(_) => Status::Answered,
                 BalanceOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+            },
+        ),
+        ResultBody::HoldingBalance(r) => (
+            Kind::HoldingBalance,
+            Some(&r.transaction),
+            match &r.outcome {
+                HoldingBalanceOutcome::Answered(_) => Status::Answered,
+                HoldingBalanceOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
             },
         ),
         ResultBody::Judgement(r) => (
@@ -402,7 +413,12 @@ impl Run<'_> {
     }
 
     /// The envelope checks every statement gets: shape, context, encodings, and the signature hook.
-    fn check_envelope<T: StatementShape>(&mut self, statement: &Statement<T>, what: &str) {
+    fn check_envelope<T: StatementShape>(
+        &mut self,
+        statement: &Statement<T>,
+        received: &[u8],
+        what: &str,
+    ) {
         if let Err(e) = statement.check_shape() {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));
         }
@@ -432,7 +448,18 @@ impl Run<'_> {
                 );
             }
         }
-        match self.verifier.verify(&statement.maker, &statement.signature) {
+        // The text itself must have a signing input: I-JSON with no member named twice, an envelope with a
+        // `signature.value`. Typed reading alone can miss a repeat inside a free-form map.
+        if let Err(e) = signing_input(received) {
+            self.flag(
+                Check::EnvelopeWellFormed,
+                format!("{what}: no signing input under the contract's rule: {e:?}"),
+            );
+        }
+        match self
+            .verifier
+            .verify(&statement.maker, &statement.signature, received)
+        {
             Verification::Verified => {}
             Verification::Deferred => {
                 self.report.signatures_deferred += 1;
@@ -463,8 +490,9 @@ impl Run<'_> {
         }
     }
 
-    fn check_advertisement(&mut self, advertisement: &Statement<Advertisement>) {
-        self.check_envelope(advertisement, "the advertisement");
+    fn check_advertisement(&mut self, received: &Received<Advertisement>) {
+        let advertisement = received.statement();
+        self.check_envelope(advertisement, received.bytes(), "the advertisement");
         if let Err(violations) = validate_statement(advertisement) {
             self.flag(Check::AdvertisementValid, format!("{violations:?}"));
         }
@@ -495,6 +523,7 @@ impl Run<'_> {
         let result = provider.handle(&statement);
         let changed_state = provider.state() != before;
         self.check_result(&result, kind, transaction.as_deref(), what);
+        let result = result.into_statement();
         Answer {
             view: view_of(&result.statement),
             result,
@@ -502,21 +531,37 @@ impl Run<'_> {
         }
     }
 
+    /// The text of a statement nested in a result's outcome under `name`, as it sat in the result received.
+    fn nested(&mut self, received: &Received<ResultBody>, name: &str, what: &str) -> Vec<u8> {
+        match member(received.bytes(), &["statement", "outcome", name]) {
+            Ok(Some(text)) => text.to_vec(),
+            Ok(None) | Err(_) => {
+                self.flag(
+                    Check::EnvelopeWellFormed,
+                    format!("{what}: not found as its own text in the result received"),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     fn check_result(
         &mut self,
-        result: &Statement<ResultBody>,
+        received: &Received<ResultBody>,
         kind: Kind,
         transaction: Option<&str>,
         what: &str,
     ) {
-        self.check_envelope(result, what);
+        let result = received.statement();
+        self.check_envelope(result, received.bytes(), what);
         self.check_maker_and_key(result, what);
         match &result.statement {
             ResultBody::Judgement(JudgementResult {
                 outcome: JudgementOutcome::Judged(judged),
             }) => {
                 let what = format!("{what}, its judgement");
-                self.check_envelope(&judged.judgement, &what);
+                let nested = self.nested(received, "judgement", &what);
+                self.check_envelope(&judged.judgement, &nested, &what);
                 self.check_maker_and_key(&judged.judgement, &what);
             }
             ResultBody::ReversalConfirmation(ReversalConfirmationResult {
@@ -524,7 +569,8 @@ impl Run<'_> {
                 ..
             }) => {
                 let what = format!("{what}, its confirmation");
-                self.check_envelope(&confirmed.confirmation, &what);
+                let nested = self.nested(received, "confirmation", &what);
+                self.check_envelope(&confirmed.confirmation, &nested, &what);
                 self.check_maker_and_key(&confirmed.confirmation, &what);
             }
             _ => {}
@@ -1064,6 +1110,7 @@ impl Run<'_> {
             return;
         };
         self.check_result(&result, kind, Some(tx), &what);
+        let result = result.into_statement();
         let view = view_of(&result.statement);
         match &view.status {
             Status::Succeeded(_) | Status::Failed { .. } => {
@@ -1896,12 +1943,12 @@ mod tests {
     #[test]
     fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
         assert_eq!(
-            VERSION, "2.1.0",
+            VERSION, "3.0.0",
             "re-pin these values when the protocol version moves"
         );
         let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["3.0.0", "2.1.1", "2.0.0"]);
+        assert_eq!(versions, ["4.0.0", "3.0.1", "2.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),

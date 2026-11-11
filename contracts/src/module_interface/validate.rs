@@ -1,12 +1,13 @@
 //! The rules JSON Schema can't express: they compare a name across lists or entries, or two fields. A value is
 //! valid when it passes its schema and its check here returns `Ok`.
 
-use std::net::IpAddr;
+use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use core::net::IpAddr;
 
 use super::admission::PartName;
 use super::types::{
     Addresses, CallOutcome, CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration,
-    OperationKind, OutboundCallRecord, SecretLookup,
+    Hop, OperationKind, OutboundCallRecord, RefusalReason, SecretLookup,
 };
 use crate::provider_role::{Advertisement, KeyPurpose, ResultBody, Statement};
 
@@ -42,6 +43,13 @@ pub enum RuleViolation {
         /// Index into `outside.calls`.
         call: usize,
     },
+    /// A declared call lists `holding_balance` among its kinds. It is the operator's own question to a holding
+    /// account, so a module may not ask it of another module: only the operator's audit reads an account's balance
+    /// (`REQ-AUD-15`).
+    DeclaredCallOfHoldingBalance {
+        /// Index into `outside.calls`.
+        call: usize,
+    },
     /// A pinned address block that overlaps a special-purpose range ([`SPECIAL_PURPOSE`]), so a connection could
     /// land on the platform's own network or nowhere routable (`REQ-MDL-7`, ADR-0004).
     SpecialPurposeAddressBlock {
@@ -68,8 +76,8 @@ pub enum RuleViolation {
     /// A cross-module call checked against a declaration of another module: its caller or caller version
     /// differs from the declaration's.
     CallOfAnotherModule,
-    /// A cross-module call recorded as delivered though its caller doesn't declare the callee and kind
-    /// (`REQ-MDL-21`).
+    /// A cross-module call recorded as passed on, delivered or unanswered, though its caller doesn't declare the
+    /// callee and kind (`REQ-MDL-21`).
     UndeclaredCallDelivered,
     /// A cross-module call refused for a reason its caller's declaration contradicts: the first check the call
     /// fails names the reason.
@@ -78,12 +86,21 @@ pub enum RuleViolation {
     CallToOwnProvider,
     /// A cross-module call whose operation names another transaction than the call (`REQ-MDL-8`).
     TransactionMismatch,
-    /// A hop that didn't match a declared destination or didn't connect, in a call that wasn't refused, or
-    /// before the last hop (ADR-0004: every hop is checked, and a failed check ends the call).
+    /// A hop that didn't match a declared destination or didn't connect, before the last hop, or as the last hop
+    /// of a call that was neither refused nor `unknown` after a failed dial to a declared destination (ADR-0004:
+    /// every hop is checked, and a failed check ends the call).
     HopNotConnected {
         /// Index into `hops`.
         hop: usize,
     },
+    /// A call recorded `refused`, which says nothing of it was sent, though its hops show a destination was sent
+    /// the request: a hop before its last connected, so a redirect was followed, or its last hop connected and the
+    /// call was refused as a redirect, which only an answer to a request sent can be. The call is
+    /// `refused_after_delivery` (`REQ-ORD-1`). A last hop that connected and was refused for its address, as
+    /// `address_not_allowed`, names the address it refused, and was sent nothing.
+    RefusedThoughSent,
+    /// A call recorded `refused_after_delivery` though no hop connected, so nothing of it was sent: it is `refused`.
+    RefusedAfterDeliveryOfNothing,
     /// The advertisement a statement-signing key is checked against is another provider's than the
     /// declaration's.
     AdvertisementOfAnotherProvider,
@@ -131,6 +148,9 @@ pub enum RuleViolation {
     AssertionKeyNotAdvertised,
     /// A release assertion signed with the deployment's `operator_key` (`THR-8`).
     AssertionKeyIsOperatorKey,
+    /// The assertion of a module the operator publishes isn't signed with the `operator_key` of the deployment
+    /// the platform serves (`REQ-MDL-1`, 4.0.0).
+    OperatorAssertionNotSignedWithOperatorKey,
     /// A release assertion signed with a key the advertisement lists for `statements`, which a module's outside
     /// part can resolve, so running code could sign a release (`THR-4`).
     AssertionKeyNotForAdvertising,
@@ -322,22 +342,48 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
         if call.callee == declaration.provider {
             violations.push(RuleViolation::DeclaredCallToOwnProvider { call: i });
         }
+        if call.kinds.contains(&OperationKind::HoldingBalance) {
+            violations.push(RuleViolation::DeclaredCallOfHoldingBalance { call: i });
+        }
     }
     done(violations)
 }
 
-/// Checks an outbound call record's rule the schema can't express: every hop matched a declared destination
-/// and connected, except the last hop of a refused call.
+/// Checks an outbound call record's rules the schema can't express:
+///
+/// - every hop matched a declared destination and connected, except the last hop of a refused call, and the last
+///   hop of an `unknown` call that matched a declared destination and connected to nothing (its dial failed, so
+///   nothing was sent);
+/// - a `refused` call shows nothing was sent: no hop before its last connected, and its last hop, if it
+///   connected, wasn't refused as a redirect, which only an answer to a request sent can be (`RefusedThoughSent`);
+/// - a `refused_after_delivery` call has a hop that connected (`RefusedAfterDeliveryOfNothing`).
 pub fn validate_record(record: &OutboundCallRecord) -> Result<(), Vec<RuleViolation>> {
-    let refused = matches!(record.outcome, CallOutcome::Refused(_));
     let last = record.hops.len().saturating_sub(1);
-    let violations = record
+    let may_end_unconnected = |hop: &Hop| match record.outcome {
+        CallOutcome::Refused(_) | CallOutcome::RefusedAfterDelivery(_) => true,
+        CallOutcome::Unknown(_) => hop.destination.is_some(),
+        _ => false,
+    };
+    let mut violations: Vec<RuleViolation> = record
         .hops
         .iter()
         .enumerate()
-        .filter(|(i, hop)| !hop.connected() && !(refused && *i == last))
+        .filter(|(i, hop)| !hop.connected() && !(*i == last && may_end_unconnected(hop)))
         .map(|(hop, _)| RuleViolation::HopNotConnected { hop })
         .collect();
+    match &record.outcome {
+        CallOutcome::Refused(refused)
+            if record.hops[..last].iter().any(Hop::connected)
+                || (refused.reason == RefusalReason::RedirectToUndeclaredDestination
+                    && record.hops.last().is_some_and(Hop::connected)) =>
+        {
+            violations.push(RuleViolation::RefusedThoughSent);
+        }
+        CallOutcome::RefusedAfterDelivery(_) if !record.hops.iter().any(Hop::connected) => {
+            violations.push(RuleViolation::RefusedAfterDeliveryOfNothing);
+        }
+        _ => {}
+    }
     done(violations)
 }
 
@@ -419,10 +465,15 @@ pub fn validate_call(call: &CrossModuleCall) -> Result<(), Vec<RuleViolation>> {
 /// Checks a cross-module call's outcome against its caller's declaration, and returns every rule broken:
 ///
 /// - the call is the declared module's, by provider and version;
-/// - a delivered call's callee and kind are declared (`REQ-MDL-21`);
+/// - a call passed on, delivered or unanswered, has its callee and kind declared (`REQ-MDL-21`);
 /// - a refused call's reason is the first check it fails, in the order the platform checks: an undeclared
-///   callee, then an undeclared kind. A refusal because the route doesn't name the call or the callee isn't
-///   running is for a call whose callee and kind are declared.
+///   callee, then an undeclared kind. A refusal because the route doesn't name the call, a limit was reached,
+///   the callee isn't running or too little of the caller's deadline is left is for a call whose callee and kind
+///   are declared.
+/// - a call whose callee and kind are declared may still be refused as `undeclared_kind`: the record names the
+///   kind of the operation forwarded, and the caller's own code may have named another, undeclared one, which
+///   the platform refuses without passing anything on (`EXP-2`'s bindings). An `undeclared_callee` refusal of a
+///   declared callee stays untrue, since the record names the callee the platform judged.
 ///
 /// Whether the route names the call, and whether the callee runs, the platform holds at run time. It assumes the
 /// declaration has passed [`validate_declaration`].
@@ -446,17 +497,14 @@ pub fn validate_call_against(
         Some(_) => None,
     };
     match (&call.outcome, first_failure) {
-        (CrossModuleOutcome::Delivered(_), Some(_)) => {
+        (CrossModuleOutcome::Delivered(_) | CrossModuleOutcome::Unanswered(_), Some(_)) => {
             violations.push(RuleViolation::UndeclaredCallDelivered);
         }
         (CrossModuleOutcome::Refused(refused), Some(reason)) if refused.reason != reason => {
             violations.push(RuleViolation::RefusalReasonUntrue);
         }
         (CrossModuleOutcome::Refused(refused), None)
-            if matches!(
-                refused.reason,
-                CallRefusalReason::UndeclaredCallee | CallRefusalReason::UndeclaredKind
-            ) =>
+            if refused.reason == CallRefusalReason::UndeclaredCallee =>
         {
             violations.push(RuleViolation::RefusalReasonUntrue);
         }

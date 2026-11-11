@@ -5,9 +5,12 @@ mod router_double;
 
 use router_double::{
     BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FOLLOWS_RATE_CYCLES,
-    IGNORES_DECIMALS, IGNORES_OBJECTIVE, OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL, Reference,
+    IGNORES_DECIMALS, IGNORES_OBJECTIVE, LEAVES_OUT_CALLS, OMITS_UNSTATABLE, OUTRANKS_UNCONFIRMED,
+    ROUNDS_EACH_LEVEL, Reference,
 };
-use rutent_conformance::router::{Case, Cell, Check, cases, path, recompute, run};
+use rutent_conformance::router::{
+    Case, Cell, Check, DROP_REASONS, cases, path, reason_name, recompute, run,
+};
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, DropReason, Id, Objective, Round, Router,
 };
@@ -393,6 +396,30 @@ fn the_policy_case_drops_by_policy_by_ceilings_on_output_and_by_outcome() {
         })
     );
     assert!(shallow.parts[0].operations.last().amount_out.is_zero());
+    // Neither tuple no operation can state is left out: the unpriced exchange and the ramp whose fee is above what
+    // reaches it are each named with their reason (router-api 3.0.0).
+    let unpriced = on_path(&record, &["f-w", "f-ex-unpriced"]);
+    assert_eq!(
+        unpriced.dropped,
+        Some(DropReason::NoPrice {
+            part: 0,
+            operation: 1
+        })
+    );
+    let dear = on_path(&record, &["f-w", "f-ex-fast", "f-ramp-dear"]);
+    assert_eq!(
+        dear.dropped.as_ref().map(reason_name).as_deref(),
+        Some("fee_above_amount")
+    );
+    // A ramp that keeps all that enters, short of the destination: nothing arrives, and the path ends there.
+    let all = on_path(&record, &["f-w", "f-ex-fast", "f-ramp-all"]);
+    assert_eq!(
+        all.dropped,
+        Some(DropReason::NothingDelivered {
+            part: 0,
+            operation: 2
+        })
+    );
     let shortlist: Vec<_> = record
         .shortlist()
         .iter()
@@ -422,6 +449,63 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<FOLLOWS_RATE_CYCLES>>()));
     assert!(fails(run::<Reference<OUTRANKS_UNCONFIRMED>>()));
     assert!(fails(run::<Reference<FEE_ROUNDS_DOWN>>()));
+    assert!(fails(run::<Reference<OMITS_UNSTATABLE>>()));
+    assert!(fails(run::<Reference<LEAVES_OUT_CALLS>>()));
+}
+
+// verifies: REQ-MDL-21, REQ-MDL-9, DEC-5
+#[test]
+fn a_router_that_names_no_calls_fails_only_on_recomputing_them() {
+    let report = run::<Reference<LEAVES_OUT_CALLS>>();
+    let failed: Vec<(&str, Cell)> = report.failures().iter().map(|o| (o.case, o.cell)).collect();
+    assert_eq!(
+        failed,
+        vec![("tie-choice", Cell::RecomputesFromTheRecordAlone)],
+        "{}",
+        report.summary()
+    );
+    let record = routed::<Reference<LEAVES_OUT_CALLS>>(&case("tie-choice"));
+    assert_eq!(
+        recompute(&record).failed_checks(),
+        vec![Check::CallsFollowTheDeclarations]
+    );
+}
+
+// verifies: REQ-AUD-4, DEC-4
+#[test]
+fn a_router_that_leaves_out_the_paths_it_can_not_state_fails_only_on_naming_them() {
+    let report = run::<Reference<OMITS_UNSTATABLE>>();
+    let failed: Vec<(&str, Cell)> = report.failures().iter().map(|o| (o.case, o.cell)).collect();
+    assert_eq!(
+        failed,
+        vec![("policy-shortlist", Cell::NamesTheExpectedDrops)],
+        "{}",
+        report.summary()
+    );
+}
+
+// verifies: REQ-AUD-4, DEC-4
+#[test]
+fn the_suite_knows_every_drop_reason_the_contract_schema_names() {
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../contracts/router-api/schemas/candidate.schema.json"),
+        )
+        .expect("the candidate schema"),
+    )
+    .expect("JSON");
+    let named: Vec<&str> = schema["$defs"]["drop_reason"]["properties"]["reason"]["enum"]
+        .as_array()
+        .expect("the reason enum")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(named, DROP_REASONS);
+    assert_eq!(
+        rutent_contracts::router_api::VERSION.split('.').next(),
+        Some("3")
+    );
 }
 
 // verifies: REQ-AUD-4, DEC-5

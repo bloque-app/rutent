@@ -34,15 +34,25 @@
 //!   release's capabilities widen the previous one's, a newly handled operation kind included; a widening
 //!   release, and a first release, require a fresh acceptance. [`validate_artefact`], [`validate_assertion_key`]
 //!   and [`validate_release`] check them; an assertion is signed with a key the accepted advertisement lists for
-//!   `advertising`.
+//!   `advertising`. A module the operator publishes, such as a public node's holding account, has no
+//!   advertisement: its assertion is the operator's own, signed with the deployment's `operator_key`, and
+//!   [`validate_operator_assertion`] checks it against the deployment the platform serves (4.0.0).
+//! - **Refusals** (`REQ-MDL-1`, `REQ-MDL-11`, `REQ-MDL-12`). A platform refuses a release at admission with an
+//!   [`AdmissionRefusal`], and an operation's answer with a [`PlatformRefusal`], each naming its own reason: a
+//!   limit hit, a disallowed import, a re-admitted version, a release while another waits for acceptance and an
+//!   assertion that doesn't verify among them. The reasons a platform gives, these two and those of the outbound
+//!   call record, the secret answer and the cross-module call, are `#[non_exhaustive]`: a Rust caller's match
+//!   has a wildcard arm. A new reason on the wire is still a major version (`DEC-4`).
 //!
 //! `contracts/module-interface/README.md` lists which rule lives where.
 
 mod admission;
+mod refusal;
 mod types;
 mod validate;
 
 pub use admission::*;
+pub use refusal::{AdmissionRefusal, PlatformRefusal};
 
 pub use types::*;
 pub use validate::{
@@ -52,4 +62,4 @@ pub use validate::{
 };
 
 /// The contract's version: the first heading of `contracts/module-interface/CHANGELOG.md`.
-pub const VERSION: &str = "2.0.1";
+pub const VERSION: &str = "4.0.0";

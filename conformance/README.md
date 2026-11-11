@@ -2,7 +2,7 @@
 
 The shared conformance suites of `DEC-5`: each contract's implementations are scored by the same suite. This crate
 depends on no crate of ours but `rutent-contracts` (`DEC-2`); its other dependencies are `num-bigint`, `serde` and
-`serde_json`. It also dev-depends on itself, to enable its `test-support` feature for its own tests.
+`serde_json`, and `ed25519-dalek` behind the `signing` feature (BSD-3-Clause; `T-010-10`). It also dev-depends on itself, to enable its `test-support` feature for its own tests.
 
 ## Role suite (`role`)
 
@@ -11,8 +11,9 @@ checked against, Bloque's own included (`DEC-5`, `DEC-23`). `run_role_suite(harn
 every probe from the provider's advertisement and returns a `Report`.
 
 - **What it drives.** A provider implements `RoleProvider`: its advertisement, `handle` for one operation
-  statement, a `state` fingerprint, and an optional status query. The test hooks that provoke what can't be
-  provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
+  statement, a `state` fingerprint, and an optional status query. Each statement it gives is a `Received`: the JSON
+  it sent, and the statement read from those bytes, so the suite checks what was sent. The test hooks that
+  provoke what can't be provoked from outside (`force_outcome_unknown`, `force_failure`, and a reserve's `credit_reversal`) live in the
   separate `RoleHarness` trait, so a production adapter can't fabricate a reserve's word. `WithoutHooks` runs a
   provider with none.
 - **What it probes.** Per value-moving tuple: a dry run, an execution compared with its quote, a repeat where
@@ -32,8 +33,14 @@ every probe from the provider's advertisement and returns a `Report`.
   deployment's name; naming another operator key while signed with the operator's; under a higher major, a
   higher patch and a lower protocol version; and signed with a key other than the operator's. Each must be refused finally and change nothing. Where an honest answer would be yes, a
   provider that served the foreign question would really give one.
+- **Signatures.** Each statement's text must have a signing input under the contract's rule
+  (`provider_role::signing_input`: I-JSON, no member named twice, a `signature.value`), or `EnvelopeWellFormed` is
+  flagged. The `SignatureVerifier` is handed the maker, the signature and the statement's bytes as received; a
+  statement nested in a result, a judgement or a reserve's confirmation, as its own text within the result's
+  (`provider_role::member`). The stand-ins send what `serde_json` writes of their statements (`Received::sent`).
+  The Ed25519 verifier itself is the catalogue's (`T-012-02`).
 - **The report.** `findings` lists every broken rule under one of 21 `Check`s. `uncovered` lists the answers the
-  advertisement requires that the suite didn't see. `deferred` lists checks it couldn't conclude: until `M2`,
+  advertisement requires that the suite didn't see. `deferred` lists checks it couldn't conclude:
   `SignatureVerifies` with `DeferredVerifier`. `passed()` means no finding, nothing uncovered and nothing
   deferred; `passed_but_for_deferred()` leaves the deferred checks aside.
 - **Certification takes two reports on the same adapter build** (ruled by the orchestrator, for `F-031` to
@@ -57,6 +64,8 @@ every probe from the provider's advertisement and returns a `Report`.
 
 ## Module-boundary suite (`boundary`)
 
+The `boundary` module (and `signing`) needs the `signing` feature (`T-010-10`); `test-support` implies it.
+
 `T-003-03`'s suite for the module interface (`contracts/module-interface/`). It scores a **format binding**: the
 runtime that admits a module in some portable binary format, runs its two parts, resolves its secrets, carries its
 outbound calls and checks its output. `EXP-2` binds it to Wasm (`T-008-02`) and PVM (`T-008-03`), and scores each
@@ -69,9 +78,23 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     artefact;
   - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
   - `handle`, for one provider-role operation, and `take_events`, for the outbound call records, the secret lookups
-    by outcome status only, the state reads, and the cross-module call records, delivered or refused, as the
-    contract shapes them.
+    by outcome status only, the state reads, and the cross-module call records, delivered, unanswered or refused,
+    as the contract shapes them. A call to a widened callee that received it counts as reached, answered or not.
+  - A refusal at admission (`AdmissionRefusal`) or of an answer (`PlatformRefusal`) is the module-interface
+    contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
+    and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit
+    (`with_step_limit`), a module that passes it, with those reasons.
+- **Signed releases (`T-010-10`).** The suite signs for real, with Ed25519 keys it derives itself (`signing`, behind
+  the `signing` feature, which `test-support` implies). Each provider's declaration names its statements key, its
+  release assertions are signed with its advertising key over the contract's signing input, and the binding is
+  given the provider's signed advertisement (`list_provider`) before its first release, so the binding's own
+  verifier (the catalogue, in a platform) judges every assertion. A release whose assertion is signed by a key no
+  advertisement lists, or altered after it was signed, must be refused as `AssertionUnverified`, and the same
+  release signed right admitted (`ForgedReleaseRefused`). The reference double verifies the same way, and has a
+  breaker that trusts every assertion.
 - **The test hooks.** `BoundaryHarness`, a separate test-only trait, holds what a production runtime must not offer:
+  - `list_provider`, which gives the binding a provider's signed advertisement, as an operator's grant and the
+    provider's accepted advertisement would reach a platform;
   - `build`, the binding's module for a format-neutral `ModuleSpec`: a module-interface declaration, the `Step`s its
     parts take (look up a secret, read state, call an endpoint, call another module) and the `Output` its sandboxed
     part returns. A binding writes these as guest code in each language. The honest output is a `succeeded`
@@ -209,9 +232,10 @@ alone, the same inputs give the same output, and a changed objective can change 
 |---|---|
 | `contract` | It passes `DecisionRecord::check`; when it doesn't, nothing else runs |
 | `shortlist-reads-advertised-figures` | A shortlist round's snapshot holds no fresh quote, dry run or judgement (`REQ-CAT-5`) |
-| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`) |
+| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`). The operation a `no_price` reason names has no price and is skipped; the one a `fee_above_amount` reason names cites no usable answer, and its price's fee on its amount in is above that amount |
 | `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
 | `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
+| `calls-follow-the-declarations` | Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of the release its tuple comes from, to the provider of another operation of its part, every kind declared, and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`); the contract refuses a call outside those, and this check finds one left out |
 | `ranking-follows-the-objective` | Kept candidates rank ahead of every outranked one by the objective, then by `candidate_id` bytes; each outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate chooses one |
 
 | Cell | Over every case |
@@ -221,15 +245,21 @@ alone, the same inputs give the same output, and a changed objective can change 
 | `passes-the-contract` | Its bytes deserialise, which runs the contract's check |
 | `recomputes-from-the-record-alone` | `recompute` finds nothing |
 | `chooses-the-expected-route` | It chooses the case's route, or none, and that is its recomputed choice |
+| `names-the-expected-drops` | It names each candidate the case expects, by the tuples it takes, with the expected drop reason: the policy case's path through an exchange with no price (`no_price`) and through a ramp whose fee is above what reaches it (`fee_above_amount`), and through a ramp that keeps all that enters short of the destination (`nothing_delivered`) (`REQ-AUD-4`, router-api 3.0.0) |
 | `replays-from-its-own-inputs` | Routing the record's own request, snapshot and bounds gives it again, byte for byte |
 | `objective-changes-the-choice` | The AC-2 pair, one snapshot under both objectives, choose different routes |
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
 rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
-by what an exchange produces, a band, a deposit that keeps everything and a floor; and a tie.
+by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price, a
+ramp whose fee is above what reaches it and one that keeps all that enters; and a tie, whose exchanges' modules
+declare calls to the reserve on their route and to each other, on none.
 
-The suite can't see a candidate a router left out; the cases' expected routes catch that on its own inputs only. A candidate
+The suite can't see a candidate a router left out; the cases' expected routes and expected drops catch that on its
+own inputs only. `DROP_REASONS` lists the drop reasons the suite knows, router-api 3.0.0's; `DropReason` is
+`#[non_exhaustive]` from 3.0.0, which spares Rust callers a broken match, so a test holds the list to the contract's
+schema, and a reason added later (still a major under `DEC-4`) fails it until the suite is reviewed for it. A candidate
 cut short at an operation beyond its price's levels (`beyond_levels`) is recomputed like any other: its fee from
 the price, and nothing out. In a choice round, an accepted answer made before the shortlist round's `taken_at`
 binds nothing, as one past its validity; a refusal or a judgement binds whenever made. The suite reads each
@@ -239,5 +269,7 @@ a refusal or a judgement of no out is the contract's to refuse.
 
 The suite's own tests (`tests/router_suite.rs`) run it against a test-only reference double
 (`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
-record passes the contract and fails exactly one check. They also recompute every valid decision record among the
+record passes the contract and fails exactly one check. The double that leaves out the paths it can't state, as
+router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
+(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. They also recompute every valid decision record among the
 contract's fixtures.

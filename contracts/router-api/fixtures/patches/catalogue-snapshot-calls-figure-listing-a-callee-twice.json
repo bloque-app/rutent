@@ -1,0 +1,15 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/figures/37/value/calls/-",
+      "value": {
+        "callee": "exchange-b",
+        "kinds": [
+          "transfer"
+        ]
+      }
+    }
+  ]
+}

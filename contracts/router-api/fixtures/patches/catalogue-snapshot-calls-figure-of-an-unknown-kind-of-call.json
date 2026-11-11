@@ -1,0 +1,10 @@
+{
+  "base": "catalogue-snapshot-of-every-kind-of-figure",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/figures/37/value/calls/0/kinds/0",
+      "value": "route"
+    }
+  ]
+}

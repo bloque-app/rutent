@@ -26,7 +26,43 @@ const SHAPES: [&str; 7] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 101] = [
+const RUST_RULES: [(&str, &str); 120] = [
+    (
+        "decision-record-naming-an-undeclared-call",
+        "every call an operation names is one its provider's module declares",
+    ),
+    (
+        "decision-record-naming-a-call-to-a-provider-off-its-part",
+        "every call an operation names is to the provider of another operation of its part",
+    ),
+    (
+        "decision-record-naming-a-call-without-its-calls-figure",
+        "an operation cites one calls figure when it names a call, and none otherwise",
+    ),
+    (
+        "decision-record-citing-a-calls-figure-and-naming-no-call",
+        "an operation cites one calls figure when it names a call, and none otherwise",
+    ),
+    (
+        "decision-record-naming-calls-of-another-release",
+        "an operation's calls come from its own module release's calls figure",
+    ),
+    (
+        "catalogue-snapshot-calls-figure-calling-its-own-provider",
+        "a calls figure names no call to its own provider",
+    ),
+    (
+        "catalogue-snapshot-calls-figure-listing-a-callee-twice",
+        "a calls figure lists each callee once",
+    ),
+    (
+        "catalogue-snapshot-two-calls-figures-for-one-provider",
+        "a snapshot holds at most one calls figure per provider",
+    ),
+    (
+        "operation-naming-a-call-to-its-own-provider",
+        "an operation names no call to its own provider",
+    ),
     (
         "operation-exchange-across-two-nodes",
         "an exchange stays at one node",
@@ -416,6 +452,46 @@ const RUST_RULES: [(&str, &str); 101] = [
         "a beyond-levels reason names an operation whose net is above its price's last level",
     ),
     (
+        "decision-record-no-price-for-a-tuple-the-snapshot-prices",
+        "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+    ),
+    (
+        "decision-record-no-price-naming-an-operation-before-the-last",
+        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+    ),
+    (
+        "decision-record-no-price-stating-a-fee",
+        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-stating-a-lower-fee",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-with-something-out",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
+        "decision-record-fee-above-amount-on-an-operation-a-usable-answer-covers",
+        "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
+    ),
+    (
+        "decision-record-nothing-delivered-with-something-out",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-naming-an-operation-before-the-last",
+        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+    ),
+    (
+        "decision-record-nothing-delivered-at-the-destination",
+        "a nothing-delivered reason names an operation short of the destination",
+    ),
+    (
+        "candidate-fee-above-amount-naming-no-operation",
+        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
+    ),
+    (
         "decision-record-confirmed-by-an-answer-made-before-the-shortlist",
         "a confirming answer is made at or after the shortlist round it refines",
     ),
@@ -435,7 +511,51 @@ const RUST_RULES: [(&str, &str); 101] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 61] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 73] = [
+    (
+        "catalogue-snapshot-calls-figure-asking-for-a-holding-balance",
+        &[("/figures/37/value/calls/0/kinds/1", "not")],
+    ),
+    (
+        "operation-naming-a-call-for-a-holding-balance",
+        &[("/calls/0/kind", "not")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-from-the-operator",
+        &[("/figures/37/origin/kind", "const")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-with-validity",
+        &[("/figures/37", "not")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-calling-no-kind",
+        &[("/figures/37/value/calls/0/kinds", "minItems")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-of-an-unknown-kind-of-call",
+        &[("/figures/37/value/calls/0/kinds/0", "enum")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-listing-a-kind-twice",
+        &[("/figures/37/value/calls/0/kinds", "uniqueItems")],
+    ),
+    (
+        "operation-naming-an-empty-list-of-calls",
+        &[("/calls", "minItems")],
+    ),
+    (
+        "operation-naming-a-call-twice",
+        &[("/calls", "uniqueItems")],
+    ),
+    (
+        "operation-naming-a-call-of-an-unknown-kind",
+        &[("/calls/0/kind", "enum")],
+    ),
+    (
+        "operation-naming-a-call-without-its-kind",
+        &[("/calls/0", "required")],
+    ),
     (
         "operation-citing-a-figure-twice",
         &[("/figures", "uniqueItems")],
@@ -445,6 +565,10 @@ const SCHEMA_RULES: [(&str, &[(&str, &str)]); 61] = [
         &[("/dropped/reason", "enum")],
     ),
     ("candidate-dropped-null", &[("/dropped", "type")]),
+    (
+        "candidate-no-price-naming-no-operation",
+        &[("/dropped", "required")],
+    ),
     (
         "candidate-over-a-ceiling-of-no-scope",
         &[("/dropped", "required")],

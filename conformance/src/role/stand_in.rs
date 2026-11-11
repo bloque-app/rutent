@@ -2,8 +2,9 @@
 //! contract asks. Each also has builders that make it break exactly one role rule, so each of the suite's checks
 //! can be shown to catch what it names. The ramp has a variant with internal steps (`REQ-CAT-21`, `AC-30`).
 //!
-//! Stand-ins sign nothing. Their signature values are well-formed placeholders, since signature verification is
-//! deferred to `M2` (see [`SignatureVerifier`](super::SignatureVerifier)).
+//! Stand-ins sign nothing. Their signature values are well-formed placeholders, which no Ed25519 verifier accepts;
+//! the suite's own tests verify with stand-in verifiers (see [`SignatureVerifier`](super::SignatureVerifier)).
+//! Each sends its statements as `serde_json` writes them ([`Received::sent`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,19 +13,50 @@ use rutent_contracts::provider_role::{
     BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band, BoundedAvailability,
     BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote, ConversionResult,
     ConversionSettlement, Declarations, Denomination, EndUnits, Evidence, EvidenceGrade,
-    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, Inputs, JUDGEMENT_SHAPE, Judged,
-    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
-    MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
-    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
-    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
-    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
-    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
-    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
-    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
-    VerifierOffer, VoidedBy,
+    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldingBalanceOutcome,
+    HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement, JudgementAnswer,
+    JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement, NoDetail, NodeRef,
+    Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, RampOffer,
+    RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
+    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
+    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
+    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
+    SigningKey, Slippage, Statement, Terms, Tracking, TransferOutcome, TransferQuote,
+    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
 };
 
-use super::{RoleHarness, RoleProvider, SuiteContext, placeholder_key, placeholder_signature};
+use super::{
+    Received, RoleHarness, RoleProvider, SuiteContext, placeholder_key, placeholder_signature,
+};
+
+/// A stand-in's answers as the contract's types. Each stand-in sends them as `serde_json` writes them
+/// ([`Received::sent`]), as an adapter built on the contract's types would.
+trait Typed {
+    fn advertisement(&self) -> Statement<Advertisement>;
+    fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody>;
+    fn state(&self) -> String;
+    fn status(&mut self, _transaction: &str) -> Option<Statement<ResultBody>> {
+        None
+    }
+}
+
+impl<T: Typed> RoleProvider for T {
+    fn advertisement(&self) -> Received<Advertisement> {
+        Received::sent(&Typed::advertisement(self))
+    }
+
+    fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
+        Received::sent(&Typed::handle(self, operation))
+    }
+
+    fn state(&self) -> String {
+        Typed::state(self)
+    }
+
+    fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
+        Typed::status(self, transaction).map(|s| Received::sent(&s))
+    }
+}
 
 /// When stand-ins say they made a statement.
 const MADE_AT: &str = "2026-11-06T15:04:05Z";
@@ -272,6 +304,10 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
                 outcome: ReversalConfirmationOutcome::Refused(refused),
             })
         }
+        Operation::HoldingBalance(h) => ResultBody::HoldingBalance(HoldingBalanceResult {
+            transaction: h.transaction.clone(),
+            outcome: HoldingBalanceOutcome::Refused(refused),
+        }),
     }
 }
 
@@ -529,7 +565,7 @@ impl Reserve {
     }
 }
 
-impl RoleProvider for Reserve {
+impl Typed for Reserve {
     fn advertisement(&self) -> Statement<Advertisement> {
         self.advertisement.clone()
     }
@@ -975,7 +1011,7 @@ impl Exchange {
     }
 }
 
-impl RoleProvider for Exchange {
+impl Typed for Exchange {
     fn advertisement(&self) -> Statement<Advertisement> {
         self.advertisement.clone()
     }
@@ -1363,7 +1399,7 @@ impl Ramp {
     }
 }
 
-impl RoleProvider for Ramp {
+impl Typed for Ramp {
     fn advertisement(&self) -> Statement<Advertisement> {
         self.advertisement.clone()
     }
@@ -1509,7 +1545,7 @@ impl Verifier {
     }
 }
 
-impl RoleProvider for Verifier {
+impl Typed for Verifier {
     fn advertisement(&self) -> Statement<Advertisement> {
         self.advertisement.clone()
     }
@@ -1585,5 +1621,6 @@ fn transaction_of(body: &ResultBody) -> Option<String> {
         ResultBody::Judgement(_) => None,
         ResultBody::Reversal(r) => Some(r.transaction.clone()),
         ResultBody::ReversalConfirmation(r) => Some(r.transaction.clone()),
+        ResultBody::HoldingBalance(r) => Some(r.transaction.clone()),
     }
 }

@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-naming-the-calls-each-segment-makes",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/snapshot/figures/4/origin/module_version",
+      "value": "2.0.0"
+    }
+  ]
+}

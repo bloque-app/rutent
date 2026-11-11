@@ -5,7 +5,8 @@
 //! The contract states digests and signatures and checks their form; computing digests over bytes and verifying
 //! signatures is the platform's (`CMP-PROV`, `M2`/`M3`), as in the provider-role contract.
 
-use std::net::IpAddr;
+use alloc::vec::Vec;
+use core::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,7 @@ use super::types::{
     OperationKind, PublicKey, Time, present,
 };
 use super::validate::{RuleViolation, done, validate_declaration};
-use crate::provider_role::{Advertisement, KeyPurpose, Statement, StatementShape};
+use crate::provider_role::{Advertisement, Deployment, KeyPurpose, Statement, StatementShape};
 
 /// The `shape` of a release assertion.
 pub const RELEASE_ASSERTION_SHAPE: &str = "urn:rutent:module-interface:release-assertion";
@@ -563,6 +564,40 @@ pub fn validate_assertion_key(
     done(violations)
 }
 
+/// Checks the assertion of a module the operator publishes, such as a public node's holding account
+/// (`REQ-CAT-23`), against the deployment the platform serves, and returns every rule broken (`REQ-MDL-1`, 4.0.0):
+///
+/// - it belongs to `deployment`, by name and operator key;
+/// - it is signed with `deployment`'s `operator_key`: the operator's own release, which no provider advertisement
+///   vouches for, so the key is the one the operator's deployment settings name;
+/// - the declaration's `statement_key` isn't the `operator_key`, so the running outside part can't resolve the key
+///   that signs the operator's statements and releases.
+///
+/// `deployment` must be the platform's own, from its deployment settings, never the one the assertion names. The
+/// platform calls this only for a module its catalogue records as the operator's, and [`validate_assertion_key`]
+/// for every other, which refuses an assertion signed with the `operator_key`. The `maker` is the operator's party,
+/// which the deployment doesn't name, so the key is what binds the release to the operator, as
+/// [`check_signed_by_operator`](crate::provider_role::Statement::check_signed_by_operator) binds an operation.
+///
+/// It compares keys by their bytes only; verifying the signature is the platform's.
+pub fn validate_operator_assertion(
+    artefact: &AdmissionArtefact,
+    deployment: &Deployment,
+) -> Result<(), Vec<RuleViolation>> {
+    let mut violations = Vec::new();
+    let assertion = &artefact.assertion;
+    if &assertion.deployment != deployment {
+        violations.push(RuleViolation::AssertionOfAnotherDeployment);
+    }
+    if assertion.signature.key != deployment.operator_key {
+        violations.push(RuleViolation::OperatorAssertionNotSignedWithOperatorKey);
+    }
+    if artefact.declaration().outside.statement_key == deployment.operator_key {
+        violations.push(RuleViolation::StatementKeyIsOperatorKey);
+    }
+    done(violations)
+}
+
 /// Checks a release against the admitted release it follows, and returns every rule broken (`REQ-MDL-1`,
 /// `REQ-MDL-3`):
 ///
@@ -593,7 +628,7 @@ pub fn validate_release(
         violations.push(RuleViolation::ReleaseUnderAnotherProtocolVersion);
     }
     let key = &next.assertion.signature.key;
-    let declared_before = std::iter::once(&before.outside.statement_key)
+    let declared_before = core::iter::once(&before.outside.statement_key)
         .chain(previous.history.iter().map(|entry| &entry.statement_key))
         .chain(next.history.iter().map(|entry| &entry.statement_key));
     if declared_before.into_iter().any(|k| k == key) {

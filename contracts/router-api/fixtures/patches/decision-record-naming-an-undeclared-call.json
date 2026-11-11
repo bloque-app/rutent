@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-naming-the-calls-each-segment-makes",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/0/parts/0/operations/0/calls/1/kind",
+      "value": "deposit"
+    }
+  ]
+}

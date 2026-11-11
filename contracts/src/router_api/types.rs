@@ -1,11 +1,12 @@
 //! Types mirroring the `urn:rutent:router-api:*` schemas. Field names match the schemas, and every struct and
 //! tagged kind denies unknown fields, as the schemas set `additionalProperties: false`.
 
-use std::num::NonZeroU8;
+use alloc::{boxed::Box, vec::Vec};
+use core::num::NonZeroU8;
 
 use serde::{Deserialize, Serialize};
 
-use super::atoms::some;
+use super::atoms::{non_empty_list, some};
 use super::{
     Amount, Decimal, Distinct, Id, NonEmpty, PositiveAmount, ProtocolVersion, Timestamp, Version,
 };
@@ -291,6 +292,16 @@ pub enum FigureValue {
         /// The verifier's judgement, in its envelope.
         judgement: Box<Statement<Judgement>>,
     },
+    /// The cross-module calls a provider's admitted module declares, as its release's `outside.calls` lists them
+    /// (module-interface, `REQ-MDL-21`): which other providers' modules it may call, and for which provider-role
+    /// operation kinds. From the provider: the origin's `module_version` names the release that declares them.
+    /// It states no validity, as an advertisement doesn't: it holds until the release is replaced. At most one per
+    /// provider in a snapshot, each callee listed once and none the provider itself (router-api 3.0.0,
+    /// `T-011-06`). A route segment names only calls its provider declares here ([`Operation::calls`]).
+    Calls {
+        /// The declared calls, each callee once.
+        calls: NonEmpty<DeclaredCall>,
+    },
     /// Value already in flight at one provider, in one asset, from the operator's records (`REQ-ORD-8`).
     Exposure {
         /// The provider.
@@ -302,6 +313,37 @@ pub enum FigureValue {
         /// The value in flight.
         in_flight: Amount,
     },
+}
+
+/// The kind of a cross-module call: a provider-role operation kind, as `urn:rutent:provider-role:operation` names
+/// it, in the module interface's terms (`validate_call_against`, `REQ-MDL-21`). Not the typed operation's
+/// [`OperationKind`]: a call asks a module for one provider-role operation, such as a `transfer` or a
+/// `balance_verification`.
+pub use crate::module_interface::OperationKind as CallKind;
+
+/// One cross-module call a provider's module declares (module-interface `outside.calls`, `REQ-MDL-21`): the provider
+/// whose module it may call, and the kinds it may ask of it, each once. Schema:
+/// `urn:rutent:router-api:common#/$defs/declared_call`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredCall {
+    /// The provider whose module may be called.
+    pub callee: Id,
+    /// The kinds that may be asked of it, each once.
+    pub kinds: NonEmpty<CallKind>,
+}
+
+/// One cross-module call a route segment names (`REQ-MDL-21`, `THR-86`): in that segment, the operation's provider's
+/// module may call `callee`'s for `kind`. The platform's call rule (`judge_call`, `T-014-04`) lets a module call
+/// another only where its release declares the call and a segment of its route names it. Schema:
+/// `urn:rutent:router-api:common#/$defs/route_call`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCall {
+    /// The provider whose module may be called: the provider of another operation of the same part.
+    pub callee: Id,
+    /// The provider-role operation kind that may be asked of it.
+    pub kind: CallKind,
 }
 
 /// The shape of a decision record statement.
@@ -457,6 +499,16 @@ pub struct Operation {
     pub amount_out: Amount,
     /// The snapshot figures the operation was evaluated with, by id, each once (`REQ-QTE-4`).
     pub figures: NonEmpty<Id>,
+    /// The cross-module calls this segment makes, each once (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`): each is a
+    /// call its provider's module declares, in the one [`FigureValue::Calls`] figure the operation cites, of the
+    /// release its tuple comes from, to the provider of another operation of the same part. Empty, and absent on
+    /// the wire, when it names none; a present list is never empty, so an operation has one form.
+    #[serde(
+        default,
+        deserialize_with = "non_empty_list",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub calls: Vec<RouteCall>,
 }
 
 /// One part of a split: a route, an ordered list of typed operations from the request's origin to its destination
@@ -497,8 +549,14 @@ pub enum CeilingScope {
 }
 
 /// Why a candidate was dropped (`REQ-AUD-4`).
+///
+/// Non-exhaustive since 3.0.0 (`DEC-4`, `T-011-05`): a match outside this crate needs a wildcard arm, which spares
+/// Rust callers when a reason is added. The contract is language-neutral, and a reader on an older schema rejects a
+/// reason it doesn't know, so a new wire value is still a major under `DEC-4`; the router suite pins the reasons
+/// it knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
 pub enum DropReason {
     /// It used a figure past its stated validity (`REQ-QTE-4`).
     StaleFigure {
@@ -541,6 +599,42 @@ pub enum DropReason {
     /// including that operation, which arrives with `0`; the part needn't reach the destination, since nothing
     /// after it can be stated. So an exhaustive search records every candidate it considered (`REQ-AUD-4`).
     BeyondLevels {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last.
+        operation: u32,
+    },
+    /// An operation runs through a tuple the snapshot holds no price for, so its terms can't be stated
+    /// (`REQ-AUD-4`; ruled by the owner, 2026-11-09, item `aud4-unstateable-candidates`). As with
+    /// [`DropReason::BeyondLevels`], the part is listed only up to and including that operation, which states a fee
+    /// of `0` and arrives with `0`, and needn't reach the destination. That operation cites its tuple and no price,
+    /// and the snapshot holds no price for that tuple.
+    NoPrice {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last.
+        operation: u32,
+    },
+    /// An operation's fee, by its price's formula (counted at its maximum where one is given), is above the amount
+    /// that reaches it, so it can't be stated (`REQ-QTE-5`, `REQ-AUD-4`; ruled by the owner, 2026-11-09, item
+    /// `aud4-unstateable-candidates`). As with [`DropReason::BeyondLevels`], the part is listed only up to and
+    /// including that operation, which states a fee equal to its amount in and arrives with `0`, and needn't reach
+    /// the destination. It cites no usable accepted answer at its amount in, since a provider's answer binds over
+    /// its price and its fee is at most what enters. That the formula's fee is above the amount in is the router
+    /// suite's to recompute.
+    FeeAboveAmount {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last.
+        operation: u32,
+    },
+    /// An operation short of the destination delivers nothing, so nothing after it can be stated (`REQ-QTE-13`,
+    /// `REQ-AUD-4`; ruled by the owner, 2026-11-09, item `aud4-unstateable-candidates`): its fee takes all that
+    /// enters, or its output rounds to `0`. As with [`DropReason::BeyondLevels`], the part is listed only up to and
+    /// including that operation, its last, which arrives with `0` and doesn't end at the destination; at the
+    /// destination such a part is `no_positive_outcome`. Its terms are stated as its figures give them, and the
+    /// router suite recomputes them like any other's.
+    NothingDelivered {
         /// The part, by index.
         part: u32,
         /// The operation within the part, by index: the part's last.

@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::module_interface::{
-    self, Address, AddressBlock, AdmissionArtefact, CrossModuleCall, Declaration, DeclaredList,
-    OutboundCallRecord, OutsideRequest, OutsideResponse, ReleaseAssertion, RuleViolation,
-    SecretAnswer, SecretLookup, SecretOutcome, Widening,
+    self, Address, AddressBlock, AdmissionArtefact, AdmissionRefusal, CallOutcome,
+    CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration, DeclaredList, Nothing,
+    OutboundCallRecord, OutsideRequest, OutsideResponse, PlatformRefusal, RefusalReason,
+    ReleaseAssertion, RuleViolation, SecretAnswer, SecretLookup, SecretOutcome,
+    SecretRefusalReason, Widening,
 };
-use rutent_contracts::provider_role::{self, Advertisement, ResultBody, Statement};
+use rutent_contracts::provider_role::{self, Advertisement, Deployment, ResultBody, Statement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,7 +45,7 @@ const SCHEMAS: [(&str, &str); 19] = [
 /// followed by `-`. `signed-result`, `declared-secret-lookup` and `declared-outbound-call-record` are bundles of
 /// values, not schemas of their own: see [`SignedResult`], [`DeclaredSecretLookup`] and
 /// [`DeclaredOutboundCallRecord`].
-const SHAPES: [&str; 15] = [
+const SHAPES: [&str; 16] = [
     "declaration",
     "outside-request",
     "outside-response",
@@ -58,6 +60,7 @@ const SHAPES: [&str; 15] = [
     "release-assertion",
     "admission-artefact",
     "advertised-artefact",
+    "operator-artefact",
     "successive-releases",
 ];
 
@@ -65,6 +68,17 @@ const SHAPES: [&str; 15] = [
 /// advertisement, for the release-assertion key rules (`validate_assertion_key`).
 const ADVERTISED_ARTEFACT_MEMBERS: [(&str, &str); 2] = [
     ("advertisement", "urn:rutent:provider-role:advertisement"),
+    ("artefact", "urn:rutent:module-interface:admission-artefact"),
+];
+
+/// The members of an `operator-artefact` bundle: the deployment the platform serves, from its settings, and the
+/// admission artefact of a module the operator publishes, for the operator's release rules
+/// (`validate_operator_assertion`).
+const OPERATOR_ARTEFACT_MEMBERS: [(&str, &str); 2] = [
+    (
+        "deployment",
+        "urn:rutent:provider-role:statement-envelope#/properties/deployment",
+    ),
     ("artefact", "urn:rutent:module-interface:admission-artefact"),
 ];
 
@@ -80,6 +94,14 @@ const SUCCESSIVE_RELEASES_MEMBERS: [(&str, &str); 2] = [
 #[serde(deny_unknown_fields)]
 struct AdvertisedArtefact {
     advertisement: Statement<Advertisement>,
+    artefact: AdmissionArtefact,
+}
+
+/// An `operator-artefact` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorArtefact {
+    deployment: Deployment,
     artefact: AdmissionArtefact,
 }
 
@@ -300,6 +322,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/outcome", "required")],
         ),
         (
+            "outbound-call-record-refused-after-delivery-without-a-reason",
+            vec![("/outcome", "required")],
+        ),
+        (
             "outbound-call-record-completed-carrying-a-reason",
             vec![("/outcome", "additionalProperties")],
         ),
@@ -331,6 +357,18 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
         (
             "cross-module-call-refused-without-its-reason",
             vec![("/outcome", "required")],
+        ),
+        (
+            "outbound-call-record-refused-for-an-unknown-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
+            "secret-answer-refused-for-an-unknown-reason",
+            vec![("/outcome/reason", "enum")],
+        ),
+        (
+            "cross-module-call-unanswered-carrying-a-reason",
+            vec![("/outcome", "additionalProperties")],
         ),
         (
             "admission-artefact-without-a-signed-assertion",
@@ -431,6 +469,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::DeclaredCallToOwnProvider { call: 0 }),
         ),
         (
+            "declaration-call-of-holding-balance",
+            one(RuleViolation::DeclaredCallOfHoldingBalance { call: 0 }),
+        ),
+        (
             "declaration-call-declared-twice",
             one(RuleViolation::DeclaredTwice {
                 list: DeclaredList::Calls,
@@ -471,6 +513,26 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::HopNotConnected { hop: 1 }),
         ),
         (
+            "outbound-call-record-unknown-through-an-unconnected-hop-before-the-last",
+            one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
+            "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
+            one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
+            "outbound-call-record-refused-after-a-redirect-was-followed",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
+            "outbound-call-record-refused-with-its-hop-connected",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
+            "outbound-call-record-refused-after-delivery-with-nothing-sent",
+            one(RuleViolation::RefusedAfterDeliveryOfNothing),
+        ),
+        (
             "cross-module-call-to-its-own-provider",
             one(RuleViolation::CallToOwnProvider),
         ),
@@ -500,6 +562,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         ),
         (
             "declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee",
+            one(RuleViolation::RefusalReasonUntrue),
+        ),
+        (
+            "declared-cross-module-call-unanswered-of-an-undeclared-kind",
+            one(RuleViolation::UndeclaredCallDelivered),
+        ),
+        (
+            "declared-cross-module-call-refused-as-a-limit-to-an-undeclared-callee",
             one(RuleViolation::RefusalReasonUntrue),
         ),
         (
@@ -602,6 +672,18 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "advertised-artefact-from-another-deployment",
             one(RuleViolation::AssertionOfAnotherDeployment),
+        ),
+        (
+            "operator-artefact-asserted-with-a-providers-key",
+            one(RuleViolation::OperatorAssertionNotSignedWithOperatorKey),
+        ),
+        (
+            "operator-artefact-from-another-deployment",
+            one(RuleViolation::AssertionOfAnotherDeployment),
+        ),
+        (
+            "operator-artefact-declaring-the-operator-key-as-its-statement-key",
+            one(RuleViolation::StatementKeyIsOperatorKey),
         ),
         (
             "admission-artefact-comparing-with-a-version-its-history-lacks",
@@ -710,6 +792,14 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
             module_interface::validate_artefact(&bundle.artefact)
                 .map_err(|v| format!("artefact: {v:?}"))?;
             module_interface::validate_assertion_key(&bundle.artefact, &bundle.advertisement)
+                .map_err(|v| format!("{v:?}"))
+        }
+        "operator-artefact" => {
+            let bundle: OperatorArtefact =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            module_interface::validate_artefact(&bundle.artefact)
+                .map_err(|v| format!("artefact: {v:?}"))?;
+            module_interface::validate_operator_assertion(&bundle.artefact, &bundle.deployment)
                 .map_err(|v| format!("{v:?}"))
         }
         "successive-releases" => {
@@ -901,6 +991,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "declared-outbound-call-record" => &DECLARED_OUTBOUND_CALL_RECORD_MEMBERS,
         "declared-cross-module-call" => &DECLARED_CROSS_MODULE_CALL_MEMBERS,
         "advertised-artefact" => &ADVERTISED_ARTEFACT_MEMBERS,
+        "operator-artefact" => &OPERATOR_ARTEFACT_MEMBERS,
         "successive-releases" => &SUCCESSIVE_RELEASES_MEMBERS,
         _ => {
             return schema_errors(
@@ -958,6 +1049,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "release-assertion" => round_trip::<Statement<ReleaseAssertion>>(value),
         "admission-artefact" => round_trip::<AdmissionArtefact>(value),
         "advertised-artefact" => round_trip::<AdvertisedArtefact>(value),
+        "operator-artefact" => round_trip::<OperatorArtefact>(value),
         "successive-releases" => round_trip::<SuccessiveReleases>(value),
         other => Err(format!("no Rust type for {other}")),
     }
@@ -1322,6 +1414,18 @@ fn artefact_without_a_signed_assertion_is_invalid() {
     assert_schema_rejects("admission-artefact-with-an-unsigned-assertion");
 }
 
+// verifies: REQ-MDL-1, REQ-CAT-23
+#[test]
+fn operator_release_is_signed_with_the_operator_key_of_the_platforms_deployment() {
+    let valid = fixture("valid", "operator-artefact-asserted-with-the-operator-key");
+    assert_eq!(rust_rules("operator-artefact", &valid), Ok(()));
+    assert_rules_reject(&[
+        "operator-artefact-asserted-with-a-providers-key",
+        "operator-artefact-from-another-deployment",
+        "operator-artefact-declaring-the-operator-key-as-its-statement-key",
+    ]);
+}
+
 // verifies: REQ-MDL-1
 #[test]
 fn altered_or_wrongly_signed_release_is_refused() {
@@ -1655,6 +1759,273 @@ fn refused_cross_module_call_is_recorded_with_its_reason() {
         "declared-cross-module-call-delivered-to-an-undeclared-callee",
         "declared-cross-module-call-refused-as-undeclared-though-declared",
     ]);
+}
+
+/// A `declared-cross-module-call` fixture, read into the contract's types.
+fn declared_call(kind: &str, name: &str) -> (Declaration, CrossModuleCall) {
+    let bundle: DeclaredCrossModuleCall =
+        serde_json::from_value(fixture(kind, name)).expect("a declared cross-module call");
+    (bundle.declaration, bundle.call)
+}
+
+// verifies: REQ-MDL-21
+#[test]
+fn call_refused_as_an_undeclared_kind_passes_validate_call_against() {
+    // The forwarded kind is declared, but the caller's code named another: the platform refuses it as
+    // `undeclared_kind`, and the record names the kind forwarded.
+    let name = "declared-cross-module-call-refused-as-an-undeclared-kind-its-caller-named";
+    let (declaration, call) = declared_call("valid", name);
+    let CrossModuleOutcome::Refused(refused) = &call.outcome else {
+        panic!("{name} is a refused call");
+    };
+    assert_eq!(refused.reason, CallRefusalReason::UndeclaredKind);
+    let declared = declaration
+        .outside
+        .calls
+        .iter()
+        .find(|c| c.callee.as_str() == call.callee())
+        .expect("the callee is declared");
+    assert!(
+        declared.kinds.contains(&refused.kind),
+        "the forwarded kind is declared"
+    );
+    assert_eq!(module_interface::validate_call(&call), Ok(()));
+    assert_eq!(
+        module_interface::validate_call_against(&declaration, &call),
+        Ok(())
+    );
+    // A declared callee refused as undeclared is still untrue, and so is an undeclared kind of an undeclared
+    // callee.
+    assert_rules_reject(&[
+        "declared-cross-module-call-refused-as-undeclared-though-declared",
+        "declared-cross-module-call-refused-as-an-undeclared-kind-to-an-undeclared-callee",
+    ]);
+}
+
+// verifies: REQ-MDL-21
+#[test]
+fn call_its_callee_never_answered_is_not_recorded_as_delivered() {
+    let name = "declared-cross-module-call-its-callee-never-answered";
+    let (declaration, call) = declared_call("valid", name);
+    assert_eq!(call.outcome, CrossModuleOutcome::Unanswered(Nothing {}));
+    assert_ne!(
+        serde_json::to_value(&call.outcome).expect("json")["status"],
+        "delivered"
+    );
+    assert_eq!(module_interface::validate_call(&call), Ok(()));
+    assert_eq!(
+        module_interface::validate_call_against(&declaration, &call),
+        Ok(())
+    );
+    // Passed on unanswered is still passed on: its callee and kind must be declared, and it carries nothing.
+    assert_rules_reject(&["declared-cross-module-call-unanswered-of-an-undeclared-kind"]);
+    assert_schema_rejects("cross-module-call-unanswered-carrying-a-reason");
+}
+
+/// The reason a fixture's refused outcome gives on the wire.
+fn wire_reason(name: &str, at: &str) -> Value {
+    fixture("valid", name)
+        .pointer(at)
+        .unwrap_or_else(|| panic!("{name} has {at}"))
+        .clone()
+}
+
+// verifies: DEC-4, REQ-MDL-9, REQ-MDL-11
+#[test]
+fn cross_module_call_refused_by_a_limit_or_a_near_deadline_names_its_own_reason() {
+    for (name, reason, wire) in [
+        (
+            "declared-cross-module-call-refused-as-a-limit-was-reached",
+            CallRefusalReason::LimitReached,
+            "limit_reached",
+        ),
+        (
+            "declared-cross-module-call-refused-as-too-little-of-the-deadline-was-left",
+            CallRefusalReason::DeadlineTooNear,
+            "deadline_too_near",
+        ),
+    ] {
+        let (declaration, call) = declared_call("valid", name);
+        let CrossModuleOutcome::Refused(refused) = &call.outcome else {
+            panic!("{name} is a refused call");
+        };
+        assert_eq!(refused.reason, reason, "{name}");
+        assert_ne!(refused.reason, CallRefusalReason::CalleeUnavailable);
+        assert_eq!(wire_reason(name, "/call/outcome/reason"), wire);
+        assert_eq!(module_interface::validate_call(&call), Ok(()));
+        assert_eq!(
+            module_interface::validate_call_against(&declaration, &call),
+            Ok(())
+        );
+    }
+    // A limit doesn't excuse an undeclared callee: the first check the call fails still names the reason.
+    assert_rules_reject(&["declared-cross-module-call-refused-as-a-limit-to-an-undeclared-callee"]);
+}
+
+// verifies: DEC-4, REQ-MDL-6, REQ-MDL-7
+#[test]
+fn outbound_call_record_refused_for_a_failed_tls_check_has_its_own_reason() {
+    let name = "outbound-call-record-refused-as-the-peer-was-not-verified";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(
+        record.outcome,
+        CallOutcome::Refused(module_interface::Refused {
+            reason: RefusalReason::PeerNotVerified
+        })
+    );
+    assert_eq!(wire_reason(name, "/outcome/reason"), "peer_not_verified");
+    // The hop matched the declared destination by name, and no verified connection was made.
+    assert!(record.hops[0].destination.is_some() && record.hops[0].address.is_none());
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+    assert_schema_rejects("outbound-call-record-refused-for-an-unknown-reason");
+}
+
+// verifies: DEC-4, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn outbound_call_record_refused_for_a_request_not_allowed_has_its_own_reason() {
+    let name = "outbound-call-record-refused-as-the-request-was-not-allowed";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(
+        record.outcome,
+        CallOutcome::Refused(module_interface::Refused {
+            reason: RefusalReason::RequestNotAllowed
+        })
+    );
+    assert_eq!(wire_reason(name, "/outcome/reason"), "request_not_allowed");
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+}
+
+// verifies: DEC-4, REQ-MDL-6
+#[test]
+fn secret_answer_for_a_store_that_gave_no_answer_has_its_own_reason() {
+    let name = "secret-answer-refused-as-the-store-gave-no-answer";
+    let answer: SecretAnswer = serde_json::from_value(fixture("valid", name)).expect("an answer");
+    let SecretOutcome::Refused(refused) = &answer.outcome else {
+        panic!("{name} is refused");
+    };
+    assert_eq!(refused.reason, SecretRefusalReason::StoreUnavailable);
+    assert_ne!(refused.reason, SecretRefusalReason::NotFound);
+    assert_eq!(wire_reason(name, "/outcome/reason"), "store_unavailable");
+    assert_schema_rejects("secret-answer-refused-for-an-unknown-reason");
+}
+
+// verifies: DEC-4, REQ-AUD-1, REQ-MDL-8
+#[test]
+fn unknown_call_whose_last_hop_connected_to_nothing_is_a_valid_record() {
+    let name = "outbound-call-record-unknown-as-nothing-connected";
+    let record: OutboundCallRecord =
+        serde_json::from_value(fixture("valid", name)).expect("a record");
+    assert_eq!(record.outcome, CallOutcome::Unknown(Nothing {}));
+    let last = record.hops.last().expect("a hop");
+    assert!(last.destination.is_some() && last.address.is_none());
+    assert_eq!(module_interface::validate_record(&record), Ok(()));
+    // Only the last hop may have connected to nothing, and only one that matched a declared destination.
+    assert_rules_reject(&[
+        "outbound-call-record-unknown-through-an-unconnected-hop-before-the-last",
+        "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
+        "outbound-call-record-completed-through-an-unconnected-hop",
+    ]);
+}
+
+// verifies: DEC-4
+#[test]
+fn admission_pending_and_assertion_unverified_are_distinct_reasons_that_print_their_names() {
+    let reasons = [
+        AdmissionRefusal::AdmissionPending,
+        AdmissionRefusal::AssertionUnverified,
+        AdmissionRefusal::VersionAlreadyAdmitted,
+    ];
+    for (i, a) in reasons.iter().enumerate() {
+        for b in &reasons[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        format!("{:?}", AdmissionRefusal::AdmissionPending),
+        "AdmissionPending"
+    );
+    assert_eq!(
+        format!("{:?}", AdmissionRefusal::AssertionUnverified),
+        "AssertionUnverified"
+    );
+}
+
+// verifies: DEC-4, REQ-MDL-4, REQ-MDL-14, REQ-MDL-20
+#[test]
+fn lifecycle_refusals_are_distinct_reasons_that_print_their_names() {
+    let admission = [
+        AdmissionRefusal::ReleaseStaged,
+        AdmissionRefusal::OlderRelease,
+        AdmissionRefusal::AdmissionPending,
+        AdmissionRefusal::VersionAlreadyAdmitted,
+    ];
+    for (i, a) in admission.iter().enumerate() {
+        for b in &admission[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    let platform = [
+        PlatformRefusal::DuplicateTransaction,
+        PlatformRefusal::VersionExploited,
+        PlatformRefusal::Unavailable,
+    ];
+    for (i, a) in platform.iter().enumerate() {
+        for b in &platform[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    for (reason, name) in [
+        (
+            format!("{:?}", AdmissionRefusal::ReleaseStaged),
+            "ReleaseStaged",
+        ),
+        (
+            format!("{:?}", AdmissionRefusal::OlderRelease),
+            "OlderRelease",
+        ),
+        (
+            format!("{:?}", PlatformRefusal::DuplicateTransaction),
+            "DuplicateTransaction",
+        ),
+        (
+            format!("{:?}", PlatformRefusal::VersionExploited),
+            "VersionExploited",
+        ),
+    ] {
+        assert_eq!(reason, name);
+    }
+}
+
+// verifies: DEC-4, REQ-ORD-1, REQ-MDL-6, THR-4
+#[test]
+fn an_unknown_outcome_and_each_statement_key_failure_are_reasons_of_their_own() {
+    let platform = [
+        PlatformRefusal::Unavailable,
+        PlatformRefusal::StatementKeyUnavailable,
+        PlatformRefusal::StatementKeyMisconfigured,
+        PlatformRefusal::OutcomeUnknown,
+        PlatformRefusal::LimitReached,
+        PlatformRefusal::MalformedOutput,
+    ];
+    for (i, a) in platform.iter().enumerate() {
+        for b in &platform[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyUnavailable),
+        "StatementKeyUnavailable"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyMisconfigured),
+        "StatementKeyMisconfigured"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::OutcomeUnknown),
+        "OutcomeUnknown"
+    );
 }
 
 // verifies: DEC-4

@@ -1,5 +1,46 @@
 # provider-role changelog
 
+## 3.0.0
+- Breaking: a holding account's balance gets its own operation and result, `holding_balance`, so `CMP-CORE-AUDIT`
+  reads the balance from the account's module and not from the host's own record of what it sent it. Before, no
+  shape carried a balance (a `balance_verification` answers yes or no for a stated amount, `INV-9`), so the plain
+  wallet's host side could report only the sum it had itself recorded, and a wallet that lost its record (a
+  restarted provider process) still looked whole. The operation names the provider, the node and the asset, and no
+  session: it is the operator's own question and changes nothing. The result is the balance in whole units of the
+  asset, zero included, or a refusal with its class. `Operation` and `ResultBody` gain a variant and the schemas
+  gain the kind, so a reader on 2.x rejects it on the wire and an exhaustive Rust match breaks: a major (`DEC-4`).
+  Valid and invalid fixtures, and Rust tests. Fixtures keep naming protocol 2.0.1. (DEC-4, DEC-20, T-016-02)
+
+## 2.4.0
+- A verifier gets the statement's bytes as received: `signing_input(received)` gives the bytes a maker signs under
+  the signing rule, the RFC 8785 canonical form of the statement's text with only the top-level `signature.value`
+  removed, refusing text that isn't an envelope (`NotAnEnvelope`) or isn't I-JSON. `member(json, path)` gives a
+  nested statement's own text exactly as it sits in the outer one, such as a judgement in a verifier's result.
+  The role suite's `SignatureVerifier` is handed those bytes (`T-010-03`; F-002's notes: the verifier canonicalises
+  the JSON as received, never a re-serialisation). Minor: two functions added, no schema, type or rule changes.
+  (DEC-4, DEC-20, T-010-03)
+
+## 2.3.0
+- One canonical JSON encoder, `provider_role::canonical`, written to RFC 8785, the scheme the signing rule and the
+  host contract's `exactly-once` name: `canonicalize(json)` and `to_canonical(value)`, which refuses a value holding
+  NaN or an infinity (`NonFiniteNumber`) before `serde_json` could write it as `null`. Members sort by their names'
+  UTF-16 code units; numbers are written as the doubles they denote, as ECMAScript writes them, ties to even; strings
+  escape only `"`, `\` and the C0 controls. Its own parser refuses duplicate member names, lone surrogates,
+  noncharacters (RFC 7493 §2.1), numbers beyond a double and nesting past 128, where `serde_json::Value` would keep
+  the last of two members silently. It passes RFC 8785's §3.2.2, §3.2.3 and Appendix B vectors, the NaN and Infinity
+  rows included, and expands a number's exact value only where an even neighbour of its shortest digits reads back, so
+  a long array of short numbers costs no expansion. Before, both rules named RFC 8785 and no code in `contracts/`
+  wrote it; the VOS program's dedup and the native client wrote `serde_json`'s own form (`EXP-1` outcome, finding 7).
+  Minor: added, no schema, type or rule changes, and the host contract's wording now has the encoder it names. (DEC-4,
+  DEC-20, DEC-26, T-010-03)
+
+## 2.2.0
+- The Rust code behind this contract (`contracts/src/provider_role`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.1.0
 - After review round 1 on the M1 pull request (findings 3 and 6): `check_amounts(operation, result, terms)`
   publishes the rules that tie a result's amounts to the operation it answers, and returns the segment's

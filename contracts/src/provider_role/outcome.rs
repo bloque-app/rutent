@@ -3,6 +3,7 @@
 //! (`urn:rutent:provider-role:judgement`), and the reserve's reversal confirmation
 //! (`urn:rutent:provider-role:reversal-confirmation`, ADR-0008). On the wire each is its maker's [`Statement`].
 
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{
@@ -31,6 +32,8 @@ pub enum ResultBody {
     Reversal(ReversalResult),
     /// The origin reserve's answer about one reversed credit.
     ReversalConfirmation(ReversalConfirmationResult),
+    /// A holding account's balance.
+    HoldingBalance(HoldingBalanceResult),
 }
 
 impl StatementShape for ResultBody {
@@ -110,6 +113,35 @@ pub struct BalanceVerificationResult {
     pub transaction: String,
     /// The outcome.
     pub outcome: BalanceOutcome,
+}
+
+/// The answer to a holding account's balance question.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldingBalanceResult {
+    /// The transaction this answers; it counts only if it matches (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The outcome.
+    pub outcome: HoldingBalanceOutcome,
+}
+
+/// A holding account's balance outcome: the figure it holds, in the asset asked, or a refusal. The figure is the
+/// module's own word (`REQ-AUD-15`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum HoldingBalanceOutcome {
+    /// The balance.
+    Answered(HoldingBalanceAnswer),
+    /// The module refused, with its class (`REQ-CAT-18`).
+    Refused(Refused),
+}
+
+/// The balance a holding account states.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldingBalanceAnswer {
+    /// What the account holds at the node, in whole units of the asset asked.
+    pub balance: String,
 }
 
 /// A verifier's result. Like the question (`REQ-CPL-4`), it names no transaction.

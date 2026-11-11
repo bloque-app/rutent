@@ -1,0 +1,14 @@
+# Where the VOS program's sources come from (T-010-05, G-48). One line per source: name, the revision pinned by SHA,
+# the URL the lockfiles and manifests name (upstream), and the URL to fetch it from. They differ only when a mirror
+# stands in: replace the last column, or point SOURCES at another file of this shape. The scripts keep cargo's own
+# URLs and rewrite them to the fetch URLs with git's `insteadOf`, and fail if a revision here is not the one the
+# manifests and lockfiles pin.
+#
+# The owner has these mirrored privately under the GitHub org bloque-app (vos-mirror, lsm-tree, stwo, s4). Pointing
+# CI at them needs a token, since a private repository cannot be cloned anonymously; see README.md.
+#
+# name      revision                                  upstream                                  fetch from
+vos         5c7897582688ea93f8d02506bee8ea25da6b1458  https://github.com/virto-network/vos      https://github.com/virto-network/vos
+lsm-tree    d0791931a96ff2be9b23af4e0d1ef17a330ed9f2  https://github.com/olanod/lsm-tree        https://github.com/olanod/lsm-tree
+stwo        e14925a81606b4d68c6a5d3047d382a20bd953d3  https://github.com/olanod/stwo            https://github.com/olanod/stwo
+s4          a11a57f806b944f62e16e63adc2f62eb81a28474  https://codeberg.org/Virto/s4             https://codeberg.org/Virto/s4

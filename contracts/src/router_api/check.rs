@@ -2,12 +2,14 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
+use alloc::{borrow::ToOwned, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::atoms::{seconds_down, seconds_up};
 use super::types::{
-    Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DropReason, Endpoint, Figure,
-    FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing, Round,
+    CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
+    Endpoint, Figure, FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing,
+    Round,
 };
 use super::{Amount, Id, Timestamp, Violation};
 use crate::provider_role::{
@@ -116,12 +118,28 @@ fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
 
 impl Operation {
     /// Checks the rules a field type can't carry: the bare typed operation's ([`check_typed_operation`]), then
-    /// that its fee is in the from asset and at most the amount in, and that it cites each figure once.
+    /// that its fee is in the from asset and at most the amount in, that it cites each figure once, and that it
+    /// names each call once, none to its own provider and none for a holding balance.
     pub fn check(&self) -> Result<(), Violation> {
         check_typed_operation(self.kind, &self.from, &self.to)?;
         if repeats(&self.figures) {
             return Err(Violation(
                 "duplicate figure: an operation cites each figure once",
+            ));
+        }
+        if repeats(&self.calls) {
+            return Err(Violation("an operation names each call once"));
+        }
+        if self.calls.iter().any(|c| c.callee == self.provider) {
+            return Err(Violation("an operation names no call to its own provider"));
+        }
+        if self
+            .calls
+            .iter()
+            .any(|c| c.kind == CallKind::HoldingBalance)
+        {
+            return Err(Violation(
+                "an operation names no call for a holding balance",
             ));
         }
         if self.fee.asset != self.from.asset.id {
@@ -155,8 +173,10 @@ impl Part {
 }
 
 impl Candidate {
-    /// Checks every part, that a drop reason's indices name an operation of the candidate, and that a candidate
-    /// isn't outranked by itself.
+    /// Checks every part, that a drop reason's indices name an operation of the candidate, that a `beyond_levels`,
+    /// `no_price`, `fee_above_amount` or `nothing_delivered` reason names its part's last operation, which arrives
+    /// with nothing (stating a fee of `0` for `no_price`, its amount in for `fee_above_amount`), and that a
+    /// candidate isn't outranked by itself.
     pub fn check(&self) -> Result<(), Violation> {
         for part in self.parts.iter() {
             part.check()?;
@@ -187,6 +207,52 @@ impl Candidate {
                 {
                     return Err(Violation(
                         "a beyond-levels reason names its part's last operation, which arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::NothingDelivered { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation of its candidate",
+                    ));
+                };
+                if *operation as usize + 1 != p.operations.len()
+                    || !p.operations.last().amount_out.is_zero()
+                {
+                    return Err(Violation(
+                        "a nothing-delivered reason names its part's last operation, which arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::NoPrice { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a no-price reason names an operation of its candidate",
+                    ));
+                };
+                let last = p.operations.last();
+                if *operation as usize + 1 != p.operations.len()
+                    || !last.amount_out.is_zero()
+                    || last.fee.amount != "0"
+                {
+                    return Err(Violation(
+                        "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
+                    ));
+                }
+            }
+            Some(DropReason::FeeAboveAmount { part, operation }) => {
+                let Some(p) = self.parts.get(*part as usize) else {
+                    return Err(Violation(
+                        "a fee-above-amount reason names an operation of its candidate",
+                    ));
+                };
+                let last = p.operations.last();
+                if *operation as usize + 1 != p.operations.len()
+                    || !last.amount_out.is_zero()
+                    || last.fee.amount != last.amount_in.amount().as_str()
+                {
+                    return Err(Violation(
+                        "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
                     ));
                 }
             }
@@ -274,6 +340,9 @@ impl CatalogueSnapshot {
     ///   orchestrator, 2026-11-06).
     /// - A statement figure's age runs from its `made_at` to `taken_at`, rounded up, and its validity from
     ///   `made_at` to its `valid_until`, rounded down (`REQ-QTE-4`).
+    /// - A calls figure (3.0.0, `T-011-06`) states no validity, lists each callee once and each kind once per
+    ///   callee, declares no call for a holding balance (module-interface refuses that declaration too) and names
+    ///   no call to its own provider; a snapshot holds at most one per provider.
     pub fn check(&self) -> Result<(), Violation> {
         for (i, figure) in self.figures.iter().enumerate() {
             if self.figures[..i]
@@ -350,6 +419,17 @@ impl CatalogueSnapshot {
             .collect();
         if repeats(&priced) {
             return Err(Violation("a snapshot holds at most one price per tuple"));
+        }
+        let declaring: Vec<Option<&Id>> = self
+            .figures
+            .iter()
+            .filter(|f| matches!(f.value, FigureValue::Calls { .. }))
+            .map(|f| f.origin.provider())
+            .collect();
+        if repeats(&declaring) {
+            return Err(Violation(
+                "a snapshot holds at most one calls figure per provider",
+            ));
         }
         // The subject reference belongs to the relying provider (ADR-0012): the provider of the tuple a
         // judgement names, not the verifier that made it.
@@ -524,6 +604,34 @@ impl CatalogueSnapshot {
                 };
                 self.check_timing(figure, &result.made_at, valid_until)
             }
+            FigureValue::Calls { calls } => {
+                if figure.valid_for_seconds.is_some() {
+                    return Err(Violation("a calls figure states no validity"));
+                }
+                let callees: Vec<&Id> = calls.iter().map(|c| &c.callee).collect();
+                if repeats(&callees) {
+                    return Err(Violation("a calls figure lists each callee once"));
+                }
+                if calls
+                    .iter()
+                    .any(|c| c.kinds.contains(&CallKind::HoldingBalance))
+                {
+                    return Err(Violation(
+                        "a calls figure declares no call for a holding balance",
+                    ));
+                }
+                if calls.iter().any(|c| repeats(&c.kinds)) {
+                    return Err(Violation(
+                        "a calls figure lists each kind once for its callee",
+                    ));
+                }
+                if callees.iter().any(|c| Some(*c) == figure.origin.provider()) {
+                    return Err(Violation(
+                        "a calls figure names no call to its own provider",
+                    ));
+                }
+                Ok(())
+            }
             FigureValue::Eligibility { tuple, judgement } => {
                 self.tuple_of(tuple, figure, false)?;
                 self.check_envelope(figure, judgement)?;
@@ -646,8 +754,16 @@ impl DecisionRecord {
     ///   shortlist's stated `taken_at` is not usable; a refusal or a judgement binds whenever it was made. That
     ///   `taken_at` is at or before the choice round's snapshot.
     /// - A `beyond_levels` candidate's named part ends at the named operation, whose net is above its price's last
-    ///   levels and which arrives with nothing; that part alone needn't reach the destination.
-    /// - Every operation cites one tuple figure, and every other figure it cites names that tuple.
+    ///   levels and which arrives with nothing; that part alone needn't reach the destination. So do a `no_price`
+    ///   and a `fee_above_amount` candidate's (3.0.0): a `no_price` operation cites its tuple and no price, and the
+    ///   snapshot holds none for that tuple; a `fee_above_amount` operation cites no usable accepted answer at its
+    ///   amount in. That its price's fee is above its amount in is the router suite's. So does a
+    ///   `nothing_delivered` candidate's, whose named operation ends short of the destination.
+    /// - Every operation but a `no_price` one cites one price.
+    /// - Every operation cites one tuple figure, and every other figure it cites names that tuple, but for the calls
+    ///   figure an operation that names calls cites (3.0.0, `T-011-06`): its own module release's, by provider and
+    ///   `module_version`. Each call it names is declared there, and is to the provider of another operation of its
+    ///   part (`REQ-MDL-21`).
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
     ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
     ///   every part; passes no ceiling, counting the value its operations produce as well as what they take in;
@@ -832,15 +948,8 @@ impl DecisionRecord {
             .flat_map(|p| p.operations.iter())
             .filter(|o| o.figures.contains(figure))
             .any(|o| {
-                let Ok(tuple) = self.tuple_of(o) else {
-                    return false;
-                };
-                self.accepted_answers().any(|(f, t, amount_in, ..)| {
-                    t == &tuple.figure_id
-                        && amount_in == o.amount_in.amount().as_str()
-                        && o.figures.contains(&f.figure_id)
-                        && self.is_usable(f)
-                })
+                self.tuple_of(o)
+                    .is_ok_and(|tuple| self.cites_a_usable_answer(o, &tuple.figure_id))
             })
     }
 
@@ -909,8 +1018,10 @@ impl DecisionRecord {
     }
 
     /// The one tuple figure an operation cites. It must be its own provider's, with the operation's two ends in
-    /// their units, and every other figure the operation cites must be about that tuple: its one price, a fresh
-    /// quote, a dry run for the operation's amount in, or an eligibility judgement that names it.
+    /// their units, and every other figure the operation cites must be about that tuple: its price, a fresh quote,
+    /// a dry run for the operation's amount in, or an eligibility judgement that names it, or else the calls figure
+    /// its calls come from ([`DecisionRecord::check_calls`]). That it cites one price,
+    /// or none where a `no_price` reason names it, is [`DecisionRecord::check_candidate`]'s, which knows the drop.
     fn tuple_of(&self, operation: &Operation) -> Result<&Figure, Violation> {
         let cited: Vec<&Figure> = operation
             .figures
@@ -943,7 +1054,8 @@ impl DecisionRecord {
                 | FigureValue::Eligibility { tuple: t, .. } => Some(t),
                 _ => None,
             };
-            if !(figure.figure_id == tuple.figure_id || names == Some(&tuple.figure_id)) {
+            let calls = matches!(figure.value, FigureValue::Calls { .. });
+            if !(figure.figure_id == tuple.figure_id || names == Some(&tuple.figure_id) || calls) {
                 return Err(Violation(
                     "every other figure an operation cites names the operation's own tuple",
                 ));
@@ -956,17 +1068,92 @@ impl DecisionRecord {
                 ));
             }
         }
-        if cited
+        Ok(tuple)
+    }
+
+    /// The calls a part's `o`th operation names (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`). It cites a calls
+    /// figure exactly when it names a call, and then one only: its own module release's, by provider and
+    /// `module_version`, the release its tuple comes from. Each call it names is declared there, callee and kind,
+    /// and its callee is the provider of another operation of the same part, so a route lets a module call only a
+    /// provider on that route. That it names every such call is the router suite's.
+    fn check_calls(&self, part: &Part, o: usize, tuple: &Figure) -> Result<(), Violation> {
+        let operation = &part.operations[o];
+        let figures: Vec<(&Figure, &[DeclaredCall])> = operation
+            .figures
             .iter()
+            .filter_map(|id| self.figure(id))
+            .filter_map(|f| match &f.value {
+                FigureValue::Calls { calls } => Some((f, calls.as_slice())),
+                _ => None,
+            })
+            .collect();
+        let declared = match (&figures[..], operation.calls.is_empty()) {
+            ([], true) => return Ok(()),
+            ([(figure, declared)], false) => {
+                if release(&figure.origin).is_none()
+                    || release(&figure.origin) != release(&tuple.origin)
+                {
+                    return Err(Violation(
+                        "an operation's calls come from its own module release's calls figure",
+                    ));
+                }
+                *declared
+            }
+            _ => {
+                return Err(Violation(
+                    "an operation cites one calls figure when it names a call, and none otherwise",
+                ));
+            }
+        };
+        for call in &operation.calls {
+            let is_declared = declared
+                .iter()
+                .any(|d| d.callee == call.callee && d.kinds.contains(&call.kind));
+            if !is_declared {
+                return Err(Violation(
+                    "every call an operation names is one its provider's module declares",
+                ));
+            }
+            let on_the_route = part
+                .operations
+                .iter()
+                .enumerate()
+                .any(|(i, other)| i != o && other.provider == call.callee);
+            if !on_the_route {
+                return Err(Violation(
+                    "every call an operation names is to the provider of another operation of its part",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The prices an operation cites. Each names its own tuple, as [`DecisionRecord::tuple_of`] checks.
+    fn prices_cited(&self, operation: &Operation) -> usize {
+        operation
+            .figures
+            .iter()
+            .filter_map(|id| self.figure(id))
             .filter(|f| matches!(f.value, FigureValue::Price { .. }))
             .count()
-            != 1
-        {
-            return Err(Violation(
-                "every operation cites one price, for its own tuple",
-            ));
-        }
-        Ok(tuple)
+    }
+
+    /// Whether the snapshot holds a price for a tuple figure.
+    fn has_price(&self, tuple: &Id) -> bool {
+        self.snapshot
+            .figures
+            .iter()
+            .any(|f| matches!(&f.value, FigureValue::Price { tuple: t, .. } if t == tuple))
+    }
+
+    /// Whether an operation cites a usable accepted answer for its tuple at its amount in.
+    fn cites_a_usable_answer(&self, operation: &Operation, tuple: &Id) -> bool {
+        self.accepted_answers().any(|(f, t, amount_in, ..)| {
+            t == tuple
+                && amount_in == operation.amount_in.amount().as_str()
+                && operation.figures.contains(&f.figure_id)
+                && self.is_usable(f)
+        })
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
@@ -1021,7 +1208,12 @@ impl DecisionRecord {
             }
             let cut_short = matches!(
                 candidate.dropped,
-                Some(DropReason::BeyondLevels { part, .. }) if part as usize == p
+                Some(
+                    DropReason::BeyondLevels { part, .. }
+                    | DropReason::NoPrice { part, .. }
+                    | DropReason::FeeAboveAmount { part, .. }
+                    | DropReason::NothingDelivered { part, .. }
+                ) if part as usize == p
             );
             if last.to != request.to && !cut_short {
                 return Err(Violation("every part ends at the request's destination"));
@@ -1044,7 +1236,23 @@ impl DecisionRecord {
                     ));
                 }
                 let tuple = self.tuple_of(operation)?;
+                let unpriced = matches!(
+                    candidate.dropped,
+                    Some(DropReason::NoPrice { part, operation }) if (part as usize, operation as usize) == (p, o)
+                );
+                if unpriced {
+                    if self.prices_cited(operation) != 0 || self.has_price(&tuple.figure_id) {
+                        return Err(Violation(
+                            "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+                        ));
+                    }
+                } else if self.prices_cited(operation) != 1 {
+                    return Err(Violation(
+                        "every operation cites one price, for its own tuple",
+                    ));
+                }
                 self.check_citations(candidate, operation, &tuple.figure_id)?;
+                self.check_calls(part, o, tuple)?;
                 if !self.is_confirmed(operation, &tuple.figure_id) {
                     unconfirmed.push((p, o));
                 }
@@ -1186,6 +1394,26 @@ impl DecisionRecord {
                 if !self.beyond_levels(named) {
                     return Err(Violation(
                         "a beyond-levels reason names an operation whose net is above its price's last level",
+                    ));
+                }
+                Ok(())
+            }
+            DropReason::NoPrice { .. } => Ok(()),
+            DropReason::NothingDelivered { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                if named.to == request.to {
+                    return Err(Violation(
+                        "a nothing-delivered reason names an operation short of the destination",
+                    ));
+                }
+                Ok(())
+            }
+            DropReason::FeeAboveAmount { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                let tuple = self.tuple_of(named)?;
+                if self.cites_a_usable_answer(named, &tuple.figure_id) {
+                    return Err(Violation(
+                        "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
                     ));
                 }
                 Ok(())
@@ -1410,6 +1638,18 @@ impl DecisionRecord {
             | (DropReason::Ineligible { .. }, FigureValue::Eligibility { .. }) => refuses(figure),
             _ => false,
         }
+    }
+}
+
+/// A provider figure's module release: its provider and `module_version`.
+fn release(origin: &Origin) -> Option<(&Id, &super::Version)> {
+    match origin {
+        Origin::Provider {
+            provider,
+            module_version,
+            ..
+        } => Some((provider, module_version)),
+        Origin::Operator { .. } => None,
     }
 }
 

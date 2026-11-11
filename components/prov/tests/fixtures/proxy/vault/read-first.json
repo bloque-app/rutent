@@ -1,0 +1,1 @@
+{"request_id":"babeff40-6f82-98e7-badc-953ca11b43f5","lease_id":"","renewable":false,"lease_duration":0,"data":{"data":{"value":"first-key-value"},"metadata":{"created_time":"2026-11-09T16:40:49.861294421Z","custom_metadata":null,"deletion_time":"","destroyed":false,"version":3}},"wrap_info":null,"warnings":null,"auth":null,"mount_type":"kv"}

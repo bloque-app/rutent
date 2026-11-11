@@ -182,30 +182,9 @@ pub enum Admitted {
     Refused(AdmissionRefusal),
 }
 
-/// Why a binding refused a release at admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdmissionRefusal {
-    /// This part's binary differs from the digest its assertion states (`REQ-MDL-1`).
-    PartAltered(PartName),
-    /// The binaries aren't a module the binding can read.
-    UnreadableBinary,
-    /// The binding judged at admission that the module won't start.
-    WontStart,
-}
-
-/// Why the platform refused to pass a module's answer on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PlatformRefusal {
-    /// The output isn't a result of the operation's shape: unparseable, of another kind, for another transaction,
-    /// or with an unknown field (`REQ-MDL-12`).
-    MalformedOutput,
-    /// The output is longer than the limit the binding was configured with (`REQ-MDL-12`).
-    OversizedOutput,
-    /// No module of the provider is running.
-    Unavailable,
-    /// The module doesn't handle the operation's kind.
-    NotHandled,
-}
+/// Why a binding refused a release at admission, and why the platform refused to pass a module's answer on: the
+/// module-interface contract's reasons, re-exported where the suite always had them.
+pub use rutent_contracts::module_interface::{AdmissionRefusal, PlatformRefusal};
 
 /// What handling one operation gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,7 +241,8 @@ pub struct Events {
     pub lookups: Vec<LookupEvent>,
     /// The state reads modules made.
     pub state_reads: Vec<StateEvent>,
-    /// The records of the cross-module calls modules made, delivered or refused, as the contract shapes them.
+    /// The records of the cross-module calls modules made, delivered, unanswered or refused, as the contract
+    /// shapes them.
     pub calls: Vec<CrossModuleCall>,
 }
 
@@ -325,6 +305,11 @@ pub trait BoundaryHarness: ModuleBinding {
 
     /// Stores `value` as the provider's state entry `key`.
     fn seed_state(&mut self, provider: &str, key: &str, value: &str);
+
+    /// Gives the binding a provider's signed advertisement, as the operator's grant and the provider's accepted
+    /// advertisement would reach a platform: the keys it lists are the ones that vouch for the provider's release
+    /// assertions (`THR-4`). False if the binding wouldn't take it.
+    fn list_provider(&mut self, advertisement: &[u8]) -> bool;
 
     /// Serves `endpoint` at `address`, redirecting to `redirect` if given.
     fn serve(
@@ -407,8 +392,9 @@ pub enum Check {
     /// Output exactly at the configured limit, measured on what the platform passed on, is passed on, and output one
     /// byte over it is refused (`REQ-MDL-12`).
     OutputSizeBounded,
-    /// Admission records what it admits: a release with either part's binary differing from its assertion is
-    /// refused, and a
+    /// Admission records what it admits: a release whose assertion doesn't verify, signed by a key no
+    /// advertisement lists or altered after signing, is refused as unverified (`REQ-MDL-1`); a release with either
+    /// part's binary differing from its assertion is refused, and a
     /// first release's artefact is valid, received as asserted, and waits for a fresh acceptance (`REQ-MDL-1`,
     /// `REQ-MDL-2`).
     AdmissionRecordsWhatItAdmits,
@@ -488,6 +474,9 @@ pub enum Exercised {
     FirstReleaseAdmitted,
     /// A release whose binaries differ from its assertion was refused.
     AlteredReleaseRefused,
+    /// A release whose assertion was signed by another key, or altered after it was signed, was refused as
+    /// unverified; the same release, signed right, was admitted.
+    ForgedReleaseRefused,
     /// A widening release waited for a fresh acceptance and ran once given it.
     WideningReleaseHeld,
     /// While a widening release waited, its new destination stayed unreachable.
@@ -546,21 +535,22 @@ impl Exercised {
             Self::OversizedOutputRefused => 28,
             Self::FirstReleaseAdmitted => 29,
             Self::AlteredReleaseRefused => 30,
-            Self::WideningReleaseHeld => 31,
-            Self::PendingReleaseUnreachable => 32,
-            Self::NarrowingReleaseRan => 33,
-            Self::NarrowedReachRefused => 34,
-            Self::WideningBySecretHeld => 35,
-            Self::WideningByCalleeHeld => 36,
-            Self::WideningByAddressHeld => 37,
-            Self::OtherProviderUndisturbed => 38,
-            Self::FailedUpgradeKeptThePrevious => 39,
-            Self::RestartedProviderAnswered => 40,
+            Self::ForgedReleaseRefused => 31,
+            Self::WideningReleaseHeld => 32,
+            Self::PendingReleaseUnreachable => 33,
+            Self::NarrowingReleaseRan => 34,
+            Self::NarrowedReachRefused => 35,
+            Self::WideningBySecretHeld => 36,
+            Self::WideningByCalleeHeld => 37,
+            Self::WideningByAddressHeld => 38,
+            Self::OtherProviderUndisturbed => 39,
+            Self::FailedUpgradeKeptThePrevious => 40,
+            Self::RestartedProviderAnswered => 41,
         }
     }
 
     /// Every fixture and control, in order.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::OwnSecretResolved,
         Self::OwnStateRead,
         Self::DeclaredCallCompleted,
@@ -592,6 +582,7 @@ impl Exercised {
         Self::OversizedOutputRefused,
         Self::FirstReleaseAdmitted,
         Self::AlteredReleaseRefused,
+        Self::ForgedReleaseRefused,
         Self::WideningReleaseHeld,
         Self::PendingReleaseUnreachable,
         Self::NarrowingReleaseRan,

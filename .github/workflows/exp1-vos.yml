@@ -41,7 +41,7 @@ env:
   ADAPTER: experiments/2026-11-06-runtime-host/vos-adapter
 
 jobs:
-  # The no_std copies equal contracts/ and the probe plus their patches, every hunk is plumbing only, and the
+  # The no_std probe copy equals conformance's probe plus its patch, every hunk is plumbing only, and the
   # separate files are exactly the listed ones (re-score brief, section 3.1).
   checks:
     runs-on: ubuntu-latest

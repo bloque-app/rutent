@@ -1,5 +1,114 @@
 # module-interface changelog
 
+## 4.0.0
+- Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module
+  call refused because its caller reached a limit on its calls is `limit_reached`, and one refused because too little
+  of the caller's deadline is left is `deadline_too_near`, where both were `callee_unavailable`. An outbound call
+  whose peer didn't prove over TLS that it is the declared host is refused as `peer_not_verified`, where it was
+  `undeclared_destination`. A secret lookup the store couldn't answer is refused as `store_unavailable`, never
+  `not_found`. `AdmissionRefusal` gains `AdmissionPending` (a new release while another waits for its acceptance)
+  and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
+  the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
+  Rust test. (DEC-4, DEC-20, T-010-09)
+- An outbound call refused after a destination was sent the request has an outcome of its own,
+  `refused_after_delivery`, with the reason: a redirect the platform won't follow, an address or a peer it won't
+  connect to, or a limit, once a hop connected. `refused` now means nothing of the call was sent:
+  `validate_record` refuses a `refused` call whose hops show a destination was sent the request, a hop before
+  its last that connected or a connected last hop refused as a redirect (`RefusedThoughSent`), and a
+  `refused_after_delivery` call with no hop that connected (`RefusedAfterDeliveryOfNothing`). Before, a refused
+  redirect after a delivered request was `refused`, which a reader reconciling an unknown outcome could take for
+  nothing having been sent. A limit hit after a destination was sent the request is always
+  `refused_after_delivery`, never `refused`: the validator can't always tell it from the hops, so the README
+  states it as the contract's rule for every binding. In the schema's enum, `CallOutcome::RefusedAfterDelivery`,
+  the README, a valid fixture and four invalid ones; the redirect fixture is now `refused_after_delivery`. A new
+  wire value and a new variant of an exhaustive enum, and 4.0.0 is not released, so it joins this major.
+  (DEC-4, DEC-20)
+- No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a
+  cross-module call's outcome as it is recorded, `delivered`, `unanswered` or `refused`, so an unanswered call,
+  whose callee may have acted, is never told to its caller as refused; a format binding gives its caller all three.
+  The platform ends a callee's deadline before its caller's, so a callee stopped at its deadline leaves its caller
+  time to hear that its call went unanswered, and a call is made only when enough of the caller's deadline is left
+  for the callee's least budget and that reserve (`deadline_too_near` otherwise); the README says so.
+  `PlatformRefusal` gains three reasons, Rust only, as the other platform reasons are, with a Rust test:
+  `StatementKeyUnavailable` (the store holding the statement key couldn't answer; it may later),
+  `StatementKeyMisconfigured` (the key can't sign as declared: none or another held, or one the platform may not
+  resolve), both judged before the module is handed the operation, so nothing of it ran, where a store that couldn't
+  answer was `Unavailable`, judged after the module ran; and `OutcomeUnknown` (the module passed something out, an
+  outbound or cross-module call, and then gave no answer the platform passes on: a limit, a bad output, a stop or a
+  result that can't be signed, each of which was its own reason). Every other reason now says nothing of the
+  operation took effect, and each one's doc says so. New Rust variants of a `#[non_exhaustive]` enum, and 4.0.0 is
+  not released, so they join this major. (DEC-4, DEC-20)
+- The release lifecycle's refusals (`T-013-06`). `AdmissionRefusal` gains `ReleaseStaged` (a new release while
+  another is staged on a share of the provider's traffic, ADR-0014) and `OlderRelease` (a release whose assertion
+  was made before the provider's last accepted one, so publishing an older signed release never reinstates it,
+  `THR-17`). `PlatformRefusal` gains `DuplicateTransaction` (a transaction identifier a segment at another provider
+  holds, or an ended segment held, `REQ-MDL-14`, `INV-8`) and `VersionExploited` (a segment on a version declared
+  actively exploited, `REQ-MDL-20`). `VersionAlreadyAdmitted` also names a version withdrawn while it waited. All
+  four are Rust only, as the other platform reasons are, with a Rust test.
+  Staging, stale marks and segment records stay `CMP-PROV`'s, not shaped here. New Rust variants of
+  `#[non_exhaustive]` enums, and 4.0.0 is not released, so they join this major. (DEC-4, DEC-20, T-013-06)
+- A new refusal reason, `request_not_allowed`: an outbound call whose request the platform won't send whatever the
+  destination, since its method isn't allowed, its target isn't a path or a header names the host or frames the
+  message, is recorded as refused with it, so such an attempt leaves an audit record (`REQ-MDL-8`). The record holds
+  none of the request. In the schema's enum, `RefusalReason::RequestNotAllowed` (a variant, breaking an exhaustive
+  match, which joins this major), and a valid fixture. (DEC-4, DEC-20, T-013-07)
+- `OperationKind` gains `HoldingBalance`, the provider-role operation kind `holding_balance` (provider-role 3.0.0),
+  which a holding account's module declares it handles. The declaration schema takes its kinds from the provider-role
+  operation schema, so it accepts the new kind with no change of its own; the Rust enum gains a variant, which breaks an
+  exhaustive match, and 4.0.0 is not released, so the variant joins this major. A declaration's `calls` may not list
+  it: it is the operator's own question to a holding account, and a module asking it of another would read an
+  account's total, which for a node holding one order is that order's balance. `validate_declaration` refuses it
+  (`DeclaredCallOfHoldingBalance`, with an invalid fixture), and the platform's call judgement refuses it however it
+  is named. (DEC-4, DEC-20, T-016-02)
+- A module the operator publishes, such as a public node's holding account (`REQ-CAT-23`), is admitted on the
+  operator's own release, with no provider advertisement: `validate_operator_assertion(artefact, deployment)` checks
+  that its assertion belongs to the deployment the platform serves, is signed with that deployment's `operator_key`
+  (`OperatorAssertionNotSignedWithOperatorKey`, a new `RuleViolation`), and declares a `statement_key` other than the
+  `operator_key`. The deployment is the platform's own, from its settings, never the one the assertion names. A new
+  `operator-artefact` bundle (the deployment and the artefact) has a valid fixture and three invalid ones. A new Rust
+  variant breaks an exhaustive match, and 4.0.0 is not released, so it joins this major. (DEC-4, DEC-20, T-016-04)
+- `validate_record` accepts an `unknown` call whose last hop matched a declared destination and connected to
+  nothing: its dial failed, so the hop names no address. An unconnected hop before the last, and an `unknown` call
+  ending at a hop that matched no destination, stay refused (`HopNotConnected`). (DEC-4, DEC-20, T-010-09)
+- `RefusalReason`, `SecretRefusalReason`, `CallRefusalReason`, `AdmissionRefusal` and `PlatformRefusal` are
+  `#[non_exhaustive]`, so a Rust caller's match has a wildcard arm and a later reason doesn't break its build. A new
+  value on the wire is still a major (`DEC-4`): a reader on an older schema rejects it. New Rust variants and the
+  attribute both break an exhaustive match, so this is a major. Fixtures keep naming interface 2.0.1: nothing
+  compares it. (DEC-4, DEC-20, T-010-09)
+
+## 3.0.0
+- Breaking: a cross-module call is recorded as `delivered` only when its callee answered. A call the platform
+  passed on and got no answer to, its callee stopped, killed at a deadline or answering unreadably, is the new
+  outcome `unanswered`, whose effect is not known, in the schema and as `CrossModuleOutcome::Unanswered`. Before,
+  `delivered` meant passed on, so a record overstated delivery (`EXP-2` outcome, follow-up rows; `REQ-MDL-21`). A
+  2.x record of `delivered` for a call never answered is untrue now, and a new Rust variant breaks an exhaustive
+  match, so this is a major. `validate_call_against` holds an unanswered call to its declaration as a delivered one
+  (`UndeclaredCallDelivered`). Fixtures keep naming interface 2.0.1, as T-010-01's bump left them: nothing compares
+  it. (DEC-4, DEC-20, DEC-27, T-010-03)
+
+## 2.3.0
+- A platform's refusals are the contract's, with closer reasons: `AdmissionRefusal` gains `DisallowedImport` (a
+  part importing what the binding doesn't offer) and `VersionAlreadyAdmitted` (a version admitted or waiting),
+  and `PlatformRefusal` gains `LimitReached` (a part stopped by a limit before it answered, its module still
+  running), where `EXP-2`'s bindings gave `UnreadableBinary` and `Unavailable`. Both enums move here from the
+  module-boundary suite, which re-exports them unchanged in name. Minor: types added to the contract, no schema
+  or rule changes. (DEC-4, DEC-20, DEC-27, T-010-03)
+
+## 2.2.0
+- `validate_call_against` accepts the platform's `undeclared_kind` refusal of a call whose callee and forwarded
+  kind are declared: the caller's code named another kind, which the platform refuses without passing anything
+  on, and the record names the kind forwarded (`EXP-2` outcome, follow-up rows; F-008's notes). An
+  `undeclared_callee` refusal of a declared callee stays untrue. A valid
+  `declared-cross-module-call-refused-as-an-undeclared-kind-its-caller-named` fixture. Minor: it accepts a record
+  it refused, and refuses nothing it accepted. (DEC-4, DEC-20, DEC-27, T-010-03)
+
+## 2.1.0
+- The Rust code behind this contract (`contracts/src/module_interface`) is `no_std` with `alloc`:
+  it uses `core` and `alloc` paths, and the crate's
+  default `std` feature turns on `std` only for its dependencies and tests. Minor, not major: no schema, Rust type or
+  behaviour changes, and every consumer that builds with default features builds unchanged. Fixtures keep naming
+  their current version. (DEC-4, DEC-20, DEC-26, T-010-01)
+
 ## 2.0.1
 - No change to this contract's shapes or types: its fixtures name provider-role 2.0.1 as their `protocol_version` and
   this version as their `interface`, after provider-role's fix to its newer-than check. (DEC-4, DEC-20, T-002-03)

@@ -2,9 +2,10 @@
 //! denies unknown fields as the schemas set `additionalProperties: false`, text the schemas require non-empty is a
 //! non-empty newtype, and addresses are parsed.
 
-use std::fmt;
-use std::net::IpAddr;
-use std::num::NonZeroU16;
+use alloc::{string::String, string::ToString, vec::Vec};
+use core::fmt;
+use core::net::IpAddr;
+use core::num::NonZeroU16;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,7 +25,7 @@ impl fmt::Display for Invalid {
     }
 }
 
-impl std::error::Error for Invalid {}
+impl core::error::Error for Invalid {}
 
 macro_rules! checked_text {
     ($(#[$doc:meta])* $name:ident, $check:expr, $message:literal) => {
@@ -227,6 +228,8 @@ pub enum OperationKind {
     Reversal,
     /// A reserve's confirmation that one reversed credit arrived (ADR-0008).
     ReversalConfirmation,
+    /// A holding account's balance, asked by the operator (`REQ-AUD-15`).
+    HoldingBalance,
 }
 
 impl OperationKind {
@@ -241,6 +244,7 @@ impl OperationKind {
             Operation::Judgement(_) => Self::Judgement,
             Operation::Reversal(_) => Self::Reversal,
             Operation::ReversalConfirmation(_) => Self::ReversalConfirmation,
+            Operation::HoldingBalance(_) => Self::HoldingBalance,
         }
     }
 }
@@ -418,9 +422,10 @@ pub struct Refused {
     pub reason: RefusalReason,
 }
 
-/// Why the platform refused an outside call.
+/// Why the platform refused an outside call. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RefusalReason {
     /// The operation isn't declared (`REQ-MDL-8`).
     UndeclaredOperation,
@@ -434,6 +439,14 @@ pub enum RefusalReason {
     RedirectToUndeclaredDestination,
     /// A limit was reached (`REQ-MDL-11`).
     LimitReached,
+    /// The peer at the checked address didn't prove over TLS that it is the declared host: an untrusted, expired
+    /// or mismatched certificate, none, or too low a version. Nothing of the request was sent (`REQ-MDL-7`,
+    /// ADR-0004).
+    PeerNotVerified,
+    /// The request itself isn't one the platform sends, whatever the destination: a method not allowed, a target
+    /// that isn't a path (it would name a host of its own), or a header that names the host or frames the message.
+    /// Nothing was sent, and the record holds none of the request (`REQ-MDL-7`, `REQ-MDL-8`).
+    RequestNotAllowed,
 }
 
 /// The outside part's request to resolve one declared secret by name, at call time
@@ -491,14 +504,19 @@ pub struct SecretRefused {
     pub reason: SecretRefusalReason,
 }
 
-/// Why a secret lookup was refused.
+/// Why a secret lookup was refused. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SecretRefusalReason {
     /// The module doesn't declare the name, or the named operation doesn't.
     UndeclaredSecret,
     /// The caller's provider holds no secret by that name.
     NotFound,
+    /// The secret store couldn't be asked or gave no usable answer, so whether the provider holds a secret by that
+    /// name isn't known. It is never reported as `not_found`, and it tells the module nothing about the store
+    /// (`REQ-MDL-6`, `REQ-MDL-9`).
+    StoreUnavailable,
 }
 
 /// The platform's record of one outbound call (`urn:rutent:module-interface:outbound-call-record`,
@@ -567,8 +585,14 @@ pub enum CallOutcome {
     Failed(Nothing),
     /// No answer came; the effect is not known.
     Unknown(Nothing),
-    /// The platform refused the call.
+    /// The platform refused the call before anything of it was sent. A refused call's record has one hop
+    /// (`validate_record`).
     Refused(Refused),
+    /// The platform refused a hop after a destination was sent the request: a redirect it won't follow, an address
+    /// or a peer it won't connect to, or a limit, once an earlier hop, or this one, connected and delivered it.
+    /// What the destination that was sent it did is not known, so this is never read as nothing having been sent
+    /// (`REQ-ORD-1`). Since 4.0.0.
+    RefusedAfterDelivery(Refused),
 }
 
 /// One module's call to another provider's module, through the platform, and its record
@@ -586,17 +610,20 @@ pub struct CrossModuleCall {
     pub route: RouteReference,
     /// What is asked of the callee.
     pub operation: Operation,
-    /// Whether the platform delivered it or refused it.
+    /// Whether the callee answered it, the platform passed it on and no answer came, or the platform refused it.
     pub outcome: CrossModuleOutcome,
 }
 
-/// A cross-module call's outcome, by status.
+/// A cross-module call's outcome, by status (`REQ-MDL-21`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CrossModuleOutcome {
-    /// The platform delivered it to the callee.
+    /// The platform passed it on and the callee answered. A call is recorded as delivered only then.
     Delivered(Nothing),
-    /// The platform refused it.
+    /// The platform passed it on and no answer came: the callee stopped, was stopped by a limit or a deadline, or
+    /// gave no answer the platform could read. What the callee did is not known.
+    Unanswered(Nothing),
+    /// The platform refused it, and passed nothing on.
     Refused(CallRefused),
 }
 
@@ -612,9 +639,10 @@ pub struct CallRefused {
     pub reason: CallRefusalReason,
 }
 
-/// Why the platform refused a cross-module call, in the order it checks.
+/// Why the platform refused a cross-module call, in the order it checks. A Rust match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CallRefusalReason {
     /// The caller doesn't declare the callee (`REQ-MDL-21`).
     UndeclaredCallee,
@@ -622,8 +650,14 @@ pub enum CallRefusalReason {
     UndeclaredKind,
     /// The route doesn't name the call (`REQ-MDL-21`, `THR-86`).
     NotNamedByRoute,
+    /// The caller reached a limit on its cross-module calls, their count or their depth (`REQ-MDL-11`). The
+    /// caller's operation ends as a limit.
+    LimitReached,
     /// The callee's module isn't running.
     CalleeUnavailable,
+    /// Too little of the caller's deadline is left for the callee to answer inside it, so the callee isn't started
+    /// (`REQ-MDL-11`). The caller's operation goes on.
+    DeadlineTooNear,
 }
 
 impl CrossModuleCall {
@@ -638,6 +672,7 @@ impl CrossModuleCall {
             Operation::Judgement(o) => &o.provider,
             Operation::Reversal(o) => &o.provider,
             Operation::ReversalConfirmation(o) => &o.provider,
+            Operation::HoldingBalance(o) => &o.provider,
         }
     }
 
@@ -652,6 +687,7 @@ impl CrossModuleCall {
             Operation::Judgement(_) => None,
             Operation::Reversal(o) => Some(&o.transaction),
             Operation::ReversalConfirmation(o) => Some(&o.transaction),
+            Operation::HoldingBalance(o) => Some(&o.transaction),
         }
     }
 }

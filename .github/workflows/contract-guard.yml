@@ -32,9 +32,14 @@ jobs:
           BASE_BRANCH: ${{ github.base_ref }}
           # A push is checked against the commit it replaces. A new branch has the all-zero commit, so use main.
           PUSH_BEFORE: ${{ github.event.before }}
+          # A push to a milestone branch (m1, m2, ...) is checked against develop, the base its pull request will
+          # have, so a contract major that is still unreleased takes further changes in the same entry.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="origin/$BASE_BRANCH"
+          elif [ "$EVENT_NAME" = "push" ] && printf '%s' "$REF_NAME" | grep -Eq '^m[0-9]+$'; then
+            base="origin/develop"
           elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
             base="$PUSH_BEFORE"
           else

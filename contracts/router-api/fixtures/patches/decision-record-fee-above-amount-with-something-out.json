@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-shortlist-with-a-tuple-of-no-price-and-a-fee-above-its-amount",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/4/parts/0/operations/1/amount_out",
+      "value": "1"
+    }
+  ]
+}

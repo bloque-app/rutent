@@ -4,11 +4,14 @@
 //! **Signing rule** (ruled by the orchestrator, 2026-11-06). The signed bytes are the RFC 8785 (JCS) canonical
 //! JSON of the whole envelope with only `signature.value` removed, so `scheme`, `key`, `shape`, `deployment` and
 //! `protocol_version` are all signed. The scheme is Ed25519 (RFC 8032), verified strictly. Every integer that can
-//! be signed is at most 2^53 - 1, or is carried as a string. Verifying signatures is not implemented here.
+//! be signed is at most 2^53 - 1, or is carried as a string. [`signing_input`](super::signing_input) computes the
+//! signed bytes from a statement's text as received ([`canonical`](super::canonical)); verifying signatures is not
+//! implemented here.
 //!
 //! Every key here is a [`PublicKey`], built only from its canonical encoding and compared by its decoded bytes.
 //! The verifier (`M2`) must still refuse non-canonical base64 and non-canonical points ([`PublicKey`] says which).
 
+use alloc::{borrow::ToOwned, string::String};
 use serde::{Deserialize, Serialize};
 
 use super::types::PublicKey;

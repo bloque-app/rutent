@@ -1,0 +1,16 @@
+[package]
+name = "rutent-wasm-guests"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The guests' build tool: componentizes a core module, writes the C bindings of a world, and digests files."
+
+[dependencies]
+wit-component = { version = "=0.254.2", features = ["dummy-module"] }
+wit-bindgen-c = "=0.61.1"
+wit-bindgen-core = "=0.61.1"
+wit-parser = "=0.258.3"
+sha2 = "0.10"
+# `wit-component`'s dummy module takes the `wit-parser` its own version uses.
+wit-parser-of-wit-component = { package = "wit-parser", version = "=0.254.2" }

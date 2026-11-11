@@ -14,6 +14,8 @@
 //! - no kept or outranked candidate follows a profitable rate cycle, and `suspect_rate_cycle` names only one that
 //!   does;
 //! - every `outranked` candidate would itself be a valid choice;
+//! - every segment names exactly the calls its provider's module declares to the other providers of its part
+//!   (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`);
 //! - the ranking follows the request's objective, ties going to the lowest `candidate_id`.
 //!
 //! # Running a router
@@ -34,6 +36,7 @@ mod price;
 pub use cases::{Case, Expected, cases};
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
@@ -41,8 +44,31 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, DropReason, Endpoint, Figure, FigureValue, Id, Objective, Operation,
-    Round, Router, Timestamp,
+    Origin, Round, Router, Timestamp,
 };
+
+/// The drop reasons this suite knows, as router-api 3.0.0 names them (`T-011-05`). `DropReason` is
+/// `#[non_exhaustive]` since 3.0.0, so a reason added later (still a major under `DEC-4`) breaks no build here; a
+/// test holds this list to the contract's schema, so a new reason fails it until the suite is reviewed for it.
+pub const DROP_REASONS: [&str; 17] = [
+    "stale_figure",
+    "void_statement",
+    "quote_voided",
+    "dry_run_refused",
+    "ineligible",
+    "over_ceiling",
+    "unconfirmed",
+    "outside_band",
+    "beyond_levels",
+    "no_price",
+    "fee_above_amount",
+    "nothing_delivered",
+    "excluded_by_policy",
+    "below_floor",
+    "no_positive_outcome",
+    "suspect_rate_cycle",
+    "outranked",
+];
 
 /// One check the suite runs on a decision record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,7 +79,9 @@ pub enum Check {
     /// judgement, which only the choice round asks for (`REQ-CAT-5`).
     ShortlistReadsAdvertisedFigures,
     /// Every operation's fee and `amount_out` follow from the figures it cites (`REQ-QTE-5`, `REQ-QTE-12`): from
-    /// every usable accepted answer it cites for its amount in, or else from its price.
+    /// every usable accepted answer it cites for its amount in, or else from its price. The operation a `no_price`
+    /// reason names has no price to follow; the one a `fee_above_amount` reason names cites no usable answer, and
+    /// its price's fee on its amount in is above that amount.
     AmountsFollowTheirFigures,
     /// No kept or outranked candidate follows a profitable rate cycle, and a `suspect_rate_cycle` reason names a
     /// candidate that does (ADR-0006).
@@ -61,6 +89,11 @@ pub enum Check {
     /// Every candidate dropped as `outranked` would itself pass the contract as the choice (or as kept, in a
     /// shortlist round): it was beaten, not faulty.
     OutrankedCandidatesAreEligible,
+    /// Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of
+    /// the release its tuple comes from, to the provider of another operation of its part, every kind declared,
+    /// and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`). The contract
+    /// already refuses a call outside that; this check finds one left out.
+    CallsFollowTheDeclarations,
     /// The kept candidates rank ahead of every outranked one by the objective and then `candidate_id`; each
     /// outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate
     /// chooses (`REQ-QTE-11`).
@@ -76,6 +109,7 @@ impl Check {
             Check::AmountsFollowTheirFigures => "amounts-follow-their-figures",
             Check::RateCyclesAreNotFollowed => "rate-cycles-are-not-followed",
             Check::OutrankedCandidatesAreEligible => "outranked-candidates-are-eligible",
+            Check::CallsFollowTheDeclarations => "calls-follow-the-declarations",
             Check::RankingFollowsTheObjective => "ranking-follows-the-objective",
         }
     }
@@ -137,6 +171,7 @@ pub fn recompute(record: &DecisionRecord) -> Recomputed {
     reader.amounts_follow_their_figures(&mut findings);
     reader.rate_cycles_are_not_followed(&mut findings);
     reader.outranked_candidates_are_eligible(&mut findings);
+    reader.calls_follow_the_declarations(&mut findings);
     let choice = reader.ranking_follows_the_objective(&mut findings);
     Recomputed { findings, choice }
 }
@@ -205,12 +240,13 @@ fn number(text: &str) -> BigUint {
     price::whole(text).expect("the contract checked it is an amount")
 }
 
-/// The figures one operation cites, as the contract has already bound them: one tuple, one price for it, and the
-/// rest naming that tuple. Since router-api 0.6.0 the operation cites every usable statement about its tuple at its
+/// The figures one operation cites, as the contract has already bound them: one tuple, one price for it (none for
+/// the operation a `no_price` reason names), and the rest naming that tuple. Since router-api 0.6.0 the operation cites every usable statement about its tuple at its
 /// amount in, and a fresh quote only at its amount in.
 struct Cited<'a> {
     tuple: &'a Figure,
-    price: &'a Figure,
+    /// Its price; `None` only on the operation a `no_price` reason names, which is never ranked.
+    price: Option<&'a Figure>,
     /// The statements it cites that are usable: within their validity and not void at the bounds' deployment and
     /// protocol version. Only these bind the operation's terms and time. This filter, and the amount filter in
     /// `settlement_seconds`, are backups that the contract makes unreachable for a ranked candidate: since
@@ -256,11 +292,12 @@ impl Cited<'_> {
                 _ => None,
             })
             .max();
-        quoted.unwrap_or_else(|| match &self.price.value {
-            FigureValue::Price {
+        quoted.unwrap_or_else(|| match self.price.map(|p| &p.value) {
+            Some(FigureValue::Price {
                 settlement_seconds, ..
-            } => settlement_seconds.get(),
-            _ => unreachable!("a price figure"),
+            }) => settlement_seconds.get(),
+            // No price: never on a ranked candidate, and slower than any declared time.
+            _ => u64::MAX,
         })
     }
 }
@@ -328,10 +365,10 @@ impl<'a> Reader<'a> {
             .iter()
             .find(|f| is_tuple(f))
             .expect("the contract checked one tuple is cited");
-        let price = *all
+        let price = all
             .iter()
-            .find(|f| matches!(f.value, FigureValue::Price { .. }))
-            .expect("the contract checked one price is cited");
+            .copied()
+            .find(|f| matches!(f.value, FigureValue::Price { .. }));
         let usable = all.iter().copied().filter(|f| self.is_usable(f)).collect();
         Cited {
             tuple,
@@ -348,6 +385,73 @@ impl<'a> Reader<'a> {
                 .enumerate()
                 .map(move |(o, operation)| (p, o, operation))
         })
+    }
+
+    /// See [`Check::CallsFollowTheDeclarations`]. Calls are compared as sets: their order carries nothing.
+    fn calls_follow_the_declarations(&self, findings: &mut Vec<Finding>) {
+        let release = |figure: &Figure| match &figure.origin {
+            Origin::Provider {
+                provider,
+                module_version,
+                ..
+            } => Some((
+                provider.as_str().to_owned(),
+                module_version.as_str().to_owned(),
+            )),
+            Origin::Operator { .. } => None,
+        };
+        for candidate in &self.record.candidates {
+            for part in candidate.parts.iter() {
+                for (o, operation) in part.operations.iter().enumerate() {
+                    let tuple = self.figure(operation.figures.first());
+                    let declared = self.record.snapshot.figures.iter().find(|f| {
+                        matches!(f.value, FigureValue::Calls { .. })
+                            && release(f).is_some()
+                            && release(f) == release(tuple)
+                    });
+                    let mut expected = BTreeSet::new();
+                    if let Some(Figure {
+                        value: FigureValue::Calls { calls },
+                        ..
+                    }) = declared
+                    {
+                        for call in calls.iter() {
+                            let on_the_part = call.callee != operation.provider
+                                && part
+                                    .operations
+                                    .iter()
+                                    .enumerate()
+                                    .any(|(j, other)| j != o && other.provider == call.callee);
+                            if on_the_part {
+                                for kind in call.kinds.iter() {
+                                    expected.insert((
+                                        call.callee.as_str().to_owned(),
+                                        format!("{kind:?}"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let named: BTreeSet<(String, String)> = operation
+                        .calls
+                        .iter()
+                        .map(|c| (c.callee.as_str().to_owned(), format!("{:?}", c.kind)))
+                        .collect();
+                    let cites = declared.is_some_and(|f| operation.figures.contains(&f.figure_id));
+                    if named != expected || cites != !expected.is_empty() {
+                        findings.push(Finding {
+                            check: Check::CallsFollowTheDeclarations,
+                            candidate: Some(candidate.candidate_id.clone()),
+                            detail: format!(
+                                "{} names calls {named:?} and {} its calls figure; its declaration allows {expected:?} on its part",
+                                operation.provider,
+                                if cites { "cites" } else { "doesn't cite" }
+                            ),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn shortlist_reads_advertised_figures(&self, findings: &mut Vec<Finding>) {
@@ -390,6 +494,47 @@ impl<'a> Reader<'a> {
                 let cited = self.cited(operation);
                 let amount_in = operation.amount_in.amount().as_str();
                 let answers = cited.answers();
+                let named = |p2: u32, o2: u32| (p2 as usize, o2 as usize) == (p, o);
+                match &candidate.dropped {
+                    // The contract checked it cites no price and the snapshot holds none: nothing to follow.
+                    Some(DropReason::NoPrice {
+                        part: at,
+                        operation: op,
+                    }) if named(*at, *op) => {
+                        continue;
+                    }
+                    Some(DropReason::FeeAboveAmount {
+                        part: at,
+                        operation: op,
+                    }) if named(*at, *op) => {
+                        let Some(FigureValue::Price { fee, rate, .. }) =
+                            cited.price.map(|f| &f.value)
+                        else {
+                            unreachable!("the contract checked one price is cited");
+                        };
+                        if !answers.is_empty() {
+                            fail(
+                                "is dropped as its fee above its amount, but cites a usable answer"
+                                    .into(),
+                            );
+                        } else if price::evaluate(
+                            fee,
+                            rate.as_ref(),
+                            &number(amount_in),
+                            &operation.from.asset,
+                            &operation.to.asset,
+                        )
+                        .is_some()
+                        {
+                            fail(format!(
+                                "is dropped as its fee above its amount, but price {} charges at most the {amount_in} that enters",
+                                cited.price.map_or("", |f| f.figure_id.as_str())
+                            ));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
                 if !answers.is_empty() {
                     for (id, answer) in answers {
                         if answer.fee != &operation.fee
@@ -406,7 +551,10 @@ impl<'a> Reader<'a> {
                     }
                     continue;
                 }
-                let FigureValue::Price { fee, rate, .. } = &cited.price.value else {
+                let Some(price_figure) = cited.price else {
+                    unreachable!("the contract checked one price is cited");
+                };
+                let FigureValue::Price { fee, rate, .. } = &price_figure.value else {
                     unreachable!("a price figure");
                 };
                 let Some(terms) = price::evaluate(
@@ -418,7 +566,7 @@ impl<'a> Reader<'a> {
                 ) else {
                     fail(format!(
                         "price {} charges more than the {amount_in} that enters",
-                        cited.price.figure_id
+                        price_figure.figure_id
                     ));
                     continue;
                 };
@@ -426,13 +574,13 @@ impl<'a> Reader<'a> {
                 if stated_fee.as_ref() != Some(&terms.fee) {
                     fail(format!(
                         "states a fee of {}, but price {} charges {}",
-                        operation.fee.amount, cited.price.figure_id, terms.fee
+                        operation.fee.amount, price_figure.figure_id, terms.fee
                     ));
                 }
                 if number(operation.amount_out.as_str()) != terms.amount_out {
                     fail(format!(
                         "states {} out, but price {} gives {}",
-                        operation.amount_out, cited.price.figure_id, terms.amount_out
+                        operation.amount_out, price_figure.figure_id, terms.amount_out
                     ));
                 }
             }
@@ -671,6 +819,11 @@ pub enum Cell {
     RecomputesFromTheRecordAlone,
     /// The record chooses the route the case expects (or none), and its recomputed choice is its own.
     ChoosesTheExpectedRoute,
+    /// The record names each candidate the case expects, by the tuples it takes, with the drop reason the case
+    /// expects: among them the paths no operation can state, through a tuple with no price or an operation whose
+    /// fee is above what reaches it, or that deliver nothing short of the destination (`REQ-AUD-4`, router-api
+    /// 3.0.0). A router that leaves them out fails here.
+    NamesTheExpectedDrops,
     /// Routing the record's own request, snapshot and bounds gives the record again, byte for byte.
     ReplaysFromItsOwnInputs,
     /// Across the AC-2 pair, which differ only in their objective, the chosen routes differ (`AC-2`,
@@ -687,6 +840,7 @@ impl Cell {
             Cell::PassesTheContract => "passes-the-contract",
             Cell::RecomputesFromTheRecordAlone => "recomputes-from-the-record-alone",
             Cell::ChoosesTheExpectedRoute => "chooses-the-expected-route",
+            Cell::NamesTheExpectedDrops => "names-the-expected-drops",
             Cell::ReplaysFromItsOwnInputs => "replays-from-its-own-inputs",
             Cell::ObjectiveChangesTheChoice => "objective-changes-the-choice",
         }
@@ -752,6 +906,14 @@ pub fn path(record: &DecisionRecord, candidate: &Candidate) -> Vec<Vec<String>> 
                 .collect()
         })
         .collect()
+}
+
+/// A drop reason's name, as the schema's `reason` tag spells it.
+pub fn reason_name(reason: &DropReason) -> String {
+    serde_json::to_value(reason)
+        .ok()
+        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn bytes(record: &DecisionRecord) -> Vec<u8> {
@@ -833,6 +995,28 @@ fn run_case<R: Router>(case: &Case, outcomes: &mut Vec<Outcome>) -> Option<Decis
                 read.chosen, recomputed.choice
             )),
             Some(_) => Ok(()),
+        },
+    );
+    let missing: Vec<String> = case
+        .drops
+        .iter()
+        .filter(|(route, reason)| {
+            let want = vec![route.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>()];
+            !read.candidates.iter().any(|c| {
+                path(&read, c) == want
+                    && c.dropped
+                        .as_ref()
+                        .is_some_and(|d| reason_name(d) == *reason)
+            })
+        })
+        .map(|(route, reason)| format!("{route:?} dropped as {reason}"))
+        .collect();
+    report(
+        Cell::NamesTheExpectedDrops,
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("the record doesn't name {}", missing.join(", ")))
         },
     );
     let replayed = R::route(&read.request, &read.snapshot, &read.bounds);

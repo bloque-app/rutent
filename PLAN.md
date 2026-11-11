@@ -80,6 +80,7 @@ Until v0.2.0, `HOUSE-RULES.md` carried them over this plan; from v0.2.0 the plan
 | `exp2-adopt-format` | Wasm only for `M2`; PolkaVM dropped for v0 | `DEC-27`, §6.2 risk 3, §7.2 |
 | `licence-llvm-exception` | The standing permission covers `Apache-2.0 WITH LLVM-exception` | `DEC-27` |
 | `exp1-adopt-runtime` | VOS as the whole runtime, three replicas | `DEC-26`, §7.2 |
+| `vault-busl` | Support Vault (`BUSL-1.1`) beside OpenBao, through its HTTP API only (answered 2026-11-09): no Vault code is linked, so no `BUSL-1.1` code ships | `DEC-9`, `F-014`, `T-014-01`, `licences/RECORD` |
 
 ### Status of plan decisions
 
@@ -328,7 +329,7 @@ the milestone before measured. Each feature owns one component's files, so no tw
 
 | Feature | Milestone | Title | Component | Model | Depends on | Serves |
 |---|---|---|---|---|---|---|
-| `F-010` | `M2` | State machine library | `CMP-STM` | Sonnet | `F-006`, `F-007` | `REQ-STM-1` to `REQ-STM-8`, `INV-3`, `INV-4`, `INV-8`, `NFR-4` |
+| `F-010` | `M2` | State machine library | `CMP-STM` | Sonnet; Opus for `T-010-03` and `T-010-09`, contract work | `F-006`, `F-007` | `REQ-STM-1` to `REQ-STM-8`, `INV-3`, `INV-4`, `INV-8`, `NFR-4` |
 | `F-011` | `M2` | Router library | `CMP-ROUTER` | Opus | `F-006` | `REQ-QTE-1` to `REQ-QTE-15`, the shape of `REQ-QTE-16`, `REQ-EXT-2`, `AC-2`, `AC-3`, `AC-13`, `AC-14`, ADR-0006 |
 | `F-012` | `M2` | Catalogue and grants | `CMP-PROV` | Sonnet | `F-006` | `REQ-CAT-1` to `REQ-CAT-23`, `REQ-MOD-4`, `AC-15`, `AC-29`, `AC-30`, `AC-34`, `DEC-11`, `DEC-24` |
 | `F-013` | `M2` | Module admission, runtime and lifecycle | `CMP-PROV` | Sonnet | `F-008`, `F-012` | `REQ-MDL-1` to `REQ-MDL-5`, `REQ-MDL-10` to `REQ-MDL-16`, `REQ-MDL-18` to `REQ-MDL-20`, `AC-19` to `AC-21`, `NFR-2`, `NFR-3`, ADR-0014 |
@@ -351,6 +352,140 @@ the milestone before measured. Each feature owns one component's files, so no tw
 | `F-052` | `M5` | The protocol's specification, published | protocol | Opus | `M4` | `REQ-PRT-3`, `GUA-6`, `REQ-EXT-1` |
 | `F-053` | `M5` | Verifiers and judgements | `CMP-CORE-AUTHZ`, `CMP-PROV` | Opus | `F-021` | the deferred part of `REQ-CPL` (`DEC-16`), ADR-0012, `AC-16` |
 | `F-054` | `M5` | Outside providers' entry | `CMP-PROV` | Sonnet | `F-051` | `REQ-CAT-7`, `OBL-3`, `DEC-10`, `DEC-11`; waits on counsel's read on bond custody |
+
+### 4.3 `M2` tasks
+
+Written when `M1` ended (2026-11-09), from `EXP-1`'s and `EXP-2`'s outcomes and drafts (`DEC-26`, `DEC-27`), the
+`M1` retrospective, and the features' notes. Each library is built against the frozen contracts (provider-role
+2.1.0, module-interface 2.0.1, host 2.0.0, router-api 2.0.0, state-machine 2.0.0) and their conformance suites, and
+is TDD with a property test for each invariant it carries (`DEC-18`). The outer libraries import nothing of ours but
+`contracts/` (`DEC-2`). A row of an experiment's scoring sheet (`G-54`, `B-14`, …) is named in Work, never in Serves.
+
+Files are owned so that no two features edit the same ones. In `M2`, `contracts/`, `conformance/` and
+`tools/contract-guard/` are edited only by `F-010`'s tasks `T-010-01` to `T-010-03`, so every contract bump goes
+through one feature and one `DEC-20` review. `CMP-PROV`'s package is split by module path: `T-012-01` owns
+`components/prov/src/lib.rs` and declares the four modules; `F-012` owns `catalogue/`, `F-013` `module/`, `F-014`
+`proxy/` and `egress/`, `F-016` `holding/`. A later feature adds only its own dependency lines to
+`components/prov/Cargo.toml`, the root `Cargo.lock` and `licences/RECORD`, after `T-012-01`, and says so in its
+commit body. A guest that builds for another target (the VOS program, the plain wallet) is its own package with
+its own lock under its component's directory, owned by that component's feature: the plan's reading of `DEC-2`,
+since one package can't build for two targets.
+
+`M2` has 32 tasks.
+
+#### `F-010` State machine library
+
+- **Goal:** `CMP-STM` as a VOS program on three replicas (`DEC-26`), with its library, a thin `Host` client, and
+  the contract work `M2` needs; owns `components/stm/`, and in `M2` the only edits to `contracts/`, `conformance/`
+  and `tools/contract-guard/`.
+- **Serves:** `REQ-STM-1` to `REQ-STM-8`, `INV-3`, `INV-4`, `INV-8`, `NFR-4`, `NFR-6`, `REQ-OPS-3`, `DEC-4`,
+  `DEC-6`, `DEC-26`, ADR-0002.
+- **Gate, not a task:** v0 does not ship on VOS until the owner records VOS's licence for a state machine that links
+  `vos-sdk`, moving the `vos` line of `licences/RECORD` off `pending` (`DEC-6`, `REQ-MOD-5`). No task here records
+  it. The `vos-sdk` crates' lines already read `permitted` for `EXP-1`, so the licence check alone does not hold
+  this gate.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-010-01` | The `DEC-4` port of `contracts/` to `no_std` + `alloc`, behind a default-on `std` feature; a minor bump for each contract it touches, with changelog entries naming `DEC-26`; a CI step that builds the contracts without `std`; the VOS adapter's `contracts-nostd.patch` retired. Touches a `DEC-20` path | `T-006-01` | `DEC-4`, `DEC-20`, `DEC-6`, ADR-0002, `REQ-OPS-3` | `contracts build without the standard library` [`DEC-4`]; every contract suite, with `std` on | the CI `no_std` build step passes, every contract suite passes, the adapter's patch is gone, and the guard is green |
+| `T-010-02` | The contract guard's three findings from the `M1` security review: a shared file under `contracts/` needs the crate changelog, not any contract's bump; a change to a contract's dependents or to the root `Cargo.lock` that moves a contract's dependency needs that contract's bump; a changelog entry naming a `DEC-*` that `PLAN.md` doesn't define fails | `T-001-05` | `DEC-4`, `DEC-20` | `shared contracts file changed with only a contract's bump fails`; `lockfile change moving a contract dependency without a bump fails`; `changelog entry naming an undefined plan decision fails` [`DEC-4`] | the guard's tests pass and the guard runs green in CI |
+| `T-010-03` | The contract changes `M1` routed to `M2`, as one bump each, after the port: one canonical JSON encoder in `contracts/`, written to RFC 8785 as the host contract and the signing rule name it (`EXP-1` outcome, finding 7); module-interface's closer refusal reasons for a limit hit, a disallowed import and a re-admitted version, in place of `Unavailable` and `UnreadableBinary`; `validate_call_against` accepting the platform's `undeclared_kind` refusal of a call whose forwarded kind is declared and whose guest names another; a cross-module call recorded as delivered only when its callee answered; the role suite's `SignatureVerifier` given the statement's bytes as received. Touches a `DEC-20` path | `T-010-01`, `T-010-02` | `REQ-STM-4`, `INV-8`, `REQ-MDL-11`, `REQ-MDL-21`, `REQ-PRT-1`, `DEC-4`, `DEC-20` | `canonical encoding matches the RFC 8785 test vectors` [`REQ-STM-4`, `INV-8`, `REQ-PRT-1`]; `limit hit is refused with its own reason` [`REQ-MDL-11`]; `call refused as an undeclared kind passes validate call against` [`REQ-MDL-21`]; `call its callee never answered is not recorded as delivered` [`REQ-MDL-21`] | the contract tests and every suite pass, each bumped contract's changelog names its `DEC-*`, and the guard is green |
+| `T-010-04` | The library, `no_std` + `alloc` so the VOS program can run it: `StateMachine`'s `open` and `transition` over the published lists; how an order's state follows from its parts' states (F-005's notes); the start rule across two orders, a handed-on route starting where the first order's deposit failed, as a function Core calls with both orders (F-005, finding 4); recalculation through `recalculation_starts_where_value_sits`. No transition reads an amount: which amount the next segment moves and the `exact_out` remainder stay `F-020`'s (F-005, finding 2; F-002's notes), and a transition that reads one would be a state-machine major. Property tests per invariant | `T-010-01` | `REQ-STM-1`, `REQ-STM-2`, `REQ-STM-3`, `REQ-STM-4`, `REQ-STM-5`, `REQ-STM-6`, `REQ-STM-7`, `REQ-STM-8`, `INV-3`, `INV-4`, `INV-8`, `NFR-4`, `REQ-ORD-43`, `INV-10`, `DEC-18` | `no sequence of inputs gives an order zero or two states` [`REQ-STM-1`]; `repeated and reordered inputs change no state twice` [`REQ-STM-4`, `INV-8`]; `every segment ends settled or reversed in full or its order stuck` [`INV-3`]; `no route restarts before the value is evidenced at a node` [`INV-4`]; `an ended order changes only when its starting segment is proven undone` [`REQ-STM-6`]; `a provider that never answers leaves its segment unresolved` [`REQ-STM-5`]; `handed on route starting away from the failed deposit is refused` [`REQ-ORD-43`, `INV-4`]; `no recalculation changes the destination or to asset` [`INV-10`]; `replaying a recorded run reaches the same states` [`NFR-4`, `REQ-STM-3`]; the host-contract suite on the reference host | the library's tests and the host-contract suite pass, and it builds without `std` |
+| `T-010-05` | The VOS program out of `EXP-1`'s adapter, on `T-010-04`'s library, at `vos-core` `5c7897582688ea93f8d02506bee8ea25da6b1458` pinned by SHA with its forks (`lsm-tree`, `stwo`, `s4`) at their pinned revisions, its sources read from a list a mirror can replace (`G-48`); the thin `Host` client over the node API. The client, and the purpose-built store kept as the fallback behind its flag, retry an open refused while the platform spawns children (F-007's notes). The program is its own package, `components/stm/vos-program/`, building for VOS's guest target with its own lock; the client is its own package beside the program, `components/stm/vos-program/client/`, with its own lock, so the root lock never carries VOS (a `vos` feature of `rutent-stm` would); both packages are AGPL-3.0-or-later under `vos-licence-v0`, everything else MIT | `T-010-04`, `T-007-04` | `REQ-OPS-3`, `NFR-6`, `INV-7`, `DEC-6`, ADR-0002 | the host-contract suite on one node and on three; `open refused while children spawn is retried` [`REQ-OPS-3`]; `killing the leader mid-submit loses no acknowledged record` [`NFR-6`, `INV-7`] | the host-contract suite passes on one VOS node and on three in CI, its run id is in F-010's notes, and the licence check is green |
+| `T-010-06` | The `G-54` test: damage the frame holding the last acknowledged append, on one VOS node and on the leader of three, and record whether VOS refuses it, recovers it, or cuts it silently. Fixing it upstream or accepting the residual for both candidates is the owner's; on a silent cut the task drafts that item in F-010's notes. The purpose-built store, the fallback, refuses a damaged acknowledged entry and bounds its memory (the `M1` retrospective) | `T-010-05` | `NFR-6`, `INV-7`, ADR-0002 | `damaged last acknowledged append is refused or recovered and never cut silently` [`NFR-6`, `INV-7`]; `purpose built store refuses a damaged acknowledged last frame` [`NFR-6`, `INV-7`]; `purpose built store's memory stays bounded as its history grows` [`REQ-OPS-3`] | the VOS test runs in CI on both setups and its result, with a run id, is in F-010's notes, and need not pass; the store's two tests pass |
+| `T-010-07` | Journal growth bounded (`G-33`): the program archives terminal orders, and an archived order stays replayable from its archive | `T-010-05` | `REQ-OPS-3`, `NFR-4`, `REQ-STM-3` | `live journal stays bounded under a stream of completed orders` [`REQ-OPS-3`]; `archived order replays to the same states` [`NFR-4`, `REQ-STM-3`] | both tests pass in CI on three nodes |
+| `T-010-08` | The production-host check (`G-37`): a script that fails unless the kernel is 6.7 or later, userfaultfd write-protect is allowed and the JIT's perf map appears, run in CI on the runner (`F-030` runs it on the production host); a VOS node build without native codegen. The recovery runbook for total loss: scheduled halted exports, their downtime and RPO at the measured sizes (`R-08`), and a restore drill | `T-010-05` | `NFR-6`, `REQ-OPS-3`, ADR-0002 | `host check fails on a host without userfaultfd write protect` [`REQ-OPS-3`]; the host-contract suite on the build without native codegen; `halted export imported onto fresh nodes keeps every record acknowledged before it` [`NFR-6`, `INV-7`] | the script passes on the CI runner and fails on its fixture, the suite passes on that build, and the drill passes in CI |
+| `T-010-09` | The refusal reasons `M2`'s tasks found missing, as one `DEC-4` bump each of the contracts they touch: a call refused by a limit or by too little of the caller's deadline left (`T-013-02`, recorded as `callee_unavailable` until now); an outbound call whose TLS check failed (`T-014-03`, recorded as `undeclared_destination`); a secret store that gave no answer (`T-014-02`, which `World::secret`'s `Option` would show as `not_found`); an `unknown` outbound record whose last hop connected to nothing (`T-014-03`); an admission refused while a widened release waits (`AdmissionPending`) and a release whose assertion doesn't verify (`AssertionUnverified`, both `T-013-04`). Each with fixtures, the guard green, and the `no_std` build | `T-013-02`, `T-014-02`, `T-014-03` | `DEC-4`, `REQ-MDL-9`, `REQ-MDL-6`, `REQ-AUD-1` | `call refused by a limit names its own reason` [`DEC-4`, `REQ-MDL-9`]; `outbound call that failed its tls check names its own reason` [`DEC-4`, `REQ-MDL-6`]; `secret store that gave no answer is not reported as not found` [`DEC-4`, `REQ-MDL-6`] | each new reason is in its contract with a fixture, the bumps are recorded, and the contract guard and the suites pass |
+| `T-010-10` | The conformance suites sign for real: the boundary and role suites' statement key becomes a real Ed25519 key, their advertisements and release assertions are signed over `T-010-03`'s canonical bytes, and the binding runs them through the catalogue's verifier (`T-012-02`) instead of a judge that trusts every assertion (`T-013-04` found the gap) | `T-012-02`, `T-013-04` | `REQ-MDL-12`, `REQ-MDL-18`, `DEC-4` | `boundary suite refuses a release whose assertion is signed by another key` [`REQ-MDL-12`]; `role suite passes with every statement verified` [`REQ-MDL-18`] | the boundary and role suites run with no trusting judge and pass, and a forged assertion fails them |
+
+#### `F-011` Router library
+
+- **Goal:** `route(request, snapshot, policy bounds)` as router-api defines it (2.0.0, then 3.0.0 from `T-011-05`), a pure hop-limited exhaustive
+  search (ADR-0006) returning one route as a split of one part (`DEC-8`); owns `components/router/`.
+- **Serves:** `REQ-QTE-1` to `REQ-QTE-15`, the shape of `REQ-QTE-16`, `REQ-EXT-2`, `AC-2`, `AC-3`, `AC-13`, `AC-14`,
+  ADR-0006.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-011-01` | The search over a snapshot: each candidate evaluated at the actual amount and direction, each segment's amount checked against its provider's band in its own asset after the fees before it; any reachable origin to any reachable destination, with no local money or exchange needed; no figure past its validity used; the route's price the sum of its segments'. Order books stay possible (`REQ-EXT-2`, reviewed in F-011's notes) | `T-006-01` | `REQ-QTE-4`, `REQ-QTE-8`, `REQ-QTE-11`, `REQ-QTE-12`, `REQ-QTE-14`, `REQ-EXT-2`, `DEC-8`, ADR-0006 | `amount that clears the first band and misses a later one is dropped` [`REQ-QTE-12`]; `expired figure is never used` [`REQ-QTE-4`]; `route price is the sum of its segments' prices` [`REQ-QTE-8`]; `any reachable origin reaches any reachable destination without an exchange` [`REQ-QTE-14`]; `same request and snapshot always give the same result` [`AC-2`, `REQ-AUD-4`] | the router suite of `T-004-02` and these tests pass on the library |
+| `T-011-02` | The shortlist: fresh quotes, dry-runs and eligibility asked only of shortlisted providers, entering as recorded answers so the router stays pure; a dry-run's rejection drops that option for another provider of the tuple; a route with no path arriving with a positive balance is refused | `T-011-01` | `REQ-CAT-5`, `REQ-CAT-14`, `REQ-QTE-13`, `AC-3` | `provider whose dry run rejects is dropped for another serving the tuple` [`AC-3`, `REQ-CAT-14`]; `provider off the shortlist is never asked` [`REQ-CAT-5`]; `route with no positive arrival is refused` [`REQ-QTE-13`] | these tests pass |
+| `T-011-03` | The quote rules as pure checks: a quote's fields; the difference between the quotes and the shown price, the operator's fee by formula; declared settlement time recorded; a fee formula's maximum, a charge above it flagged; a formula binding from segment start; quote versus price labels; slippage within three days; no firm rate past three days, naming the segment and needing acceptance; held quotes and their validity | `T-011-01` | `REQ-QTE-1`, `REQ-QTE-2`, `REQ-QTE-3`, `REQ-QTE-5`, `REQ-QTE-6`, `REQ-QTE-7`, `REQ-QTE-9`, `REQ-QTE-10`, `REQ-QTE-15`, `AC-13`, `AC-14` | `route with a segment over three days has no firm rate and names it` [`AC-13`, `REQ-QTE-10`]; `charge above the formula's maximum is flagged` [`AC-14`, `REQ-QTE-5`]; `formula changed after segment start does not apply to it` [`REQ-QTE-6`]; `held quote past its validity is refused` [`REQ-QTE-15`] | these tests pass |
+| `T-011-04` | Objectives and the decision record: the customer's objective, lowest total cost by default; the record names every candidate with its drop reason and recomputes the choice alone; the result always a split of one part | `T-011-02`, `T-011-03` | `AC-2`, `REQ-AUD-4`, `REQ-QTE-11`, `REQ-QTE-16`, `DEC-8` | `changed objective can change the chosen route` [`AC-2`, `REQ-QTE-11`]; `decision record recomputes the choice with no provider call` [`AC-2`, `REQ-AUD-4`]; `every result is a split of one part` [`REQ-QTE-16`] | these tests and the router suite pass, and every public element is documented |
+| `T-011-05` | Router-api 3.0.0 (`DEC-4`): drop reasons for the candidates `T-011-04` found the contract can't state: a path through a tuple with no price, an operation whose fee is above the amount that reaches it, and a step that delivers nothing before the destination (`nothing_delivered`), so the decision record names every candidate and why it was dropped. The router emits them; the router suite and fixtures carry them; the owner ruled it for `M2` (item `aud4-unstateable-candidates`, 2026-11-09) | `T-011-04` | `REQ-AUD-4`, `DEC-4`, `DEC-8`, ADR-0006 | `path through a tuple with no price is recorded with its drop reason` [`REQ-AUD-4`]; `operation whose fee is above what reaches it is recorded with its drop reason` [`REQ-AUD-4`] | router-api is at 3.0.0 with the three reasons and their fixtures, the record names every candidate, and the contract guard and the router suite pass |
+| `T-011-06` | The calls a route makes, in router-api 3.0.0 before its release: each segment of a route names the cross-module calls it makes (callee, kind), so the platform's `RouteCalls` (`T-014-04`) is filled from the router's decision rather than by hand; the decision record carries them; fixtures and the router suite updated | `T-011-05`, `T-014-04` | `REQ-MDL-9`, `DEC-4`, `DEC-8` | `route names the calls each segment makes` [`REQ-MDL-9`]; `call a route doesn't name is refused when the route comes from the router` [`REQ-MDL-9`] | router-api 3.0.0 carries the calls with fixtures, the router fills them, and the guard and the suites pass |
+
+#### `F-012` Catalogue and grants
+
+- **Goal:** the catalogue, its grants and the duties the contracts hand it; owns `components/prov/src/lib.rs` and
+  `components/prov/src/catalogue/`.
+- **Serves:** `REQ-CAT-1` to `REQ-CAT-23`, `REQ-MOD-4`, `AC-15`, `AC-29`, `AC-30`, `AC-34`, `INV-9`, `NFR-8`,
+  `DEC-11`, `DEC-24`.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-012-01` | `CMP-PROV`'s layout (`lib.rs` declaring `catalogue`, `module`, `proxy`, `egress` and `holding`); grants: attributable, scoped to a named legal party, categories and tuples, with an expiry, and losing standing stops routing; the operator's bounds per tuple; an identifier or status query to join; each declaration recorded once and shown before acceptance; the publisher behind each provider and node; the reversal-capacity check, with the ceiling following the bond | `T-006-01` | `REQ-CAT-1`, `REQ-CAT-2`, `REQ-CAT-6`, `REQ-CAT-7`, `REQ-CAT-16`, `REQ-CAT-20`, `DEC-11`, `REQ-MOD-4` | `restricted tuple is not usable` [`REQ-CAT-1`]; `expired grant stops the provider being routed` [`REQ-CAT-2`]; `ceiling above the bond is refused` [`DEC-11`]; `silence leaves an owed reversal owed` [`REQ-CAT-7`]; `declaration is recorded once and shown before acceptance` [`REQ-CAT-6`] | these tests pass and the boundary check is green |
+| `T-012-02` | Advertisements, with the key history provider-role's README gives the catalogue: an Ed25519 verifier over `T-010-03`'s canonical bytes that refuses non-canonical base64 and non-canonical or small-order points (F-002's notes), which `F-013` reuses for release assertions; first trust by the operator's grant; a successor only through `validate_successor` against the last accepted; no replay; no dropped `statements` key re-listed; an advertisement dated more than a bounded skew ahead of the catalogue's clock refused; a key used for `statements` anywhere never accepted for `advertising` anywhere. The role suite runs with this verifier | `T-012-01`, `T-010-03` | `REQ-CAT-2`, `REQ-CAT-8`, `REQ-PRT-1`, `THR-4`, `THR-8` | `advertisement dated too far ahead of the catalogue's clock is refused`; `advertisement no newer than the last accepted is refused` [`REQ-CAT-2`]; `key once used for statements is never accepted for advertising in any deployment` [`REQ-CAT-2`, `THR-4`]; `small order public key is refused` [`REQ-PRT-1`]; the role suite with signatures verified | these tests pass and the role suite reports no deferred signature on the signed fixtures |
+| `T-012-03` | Tuples and nodes, and the snapshot the router reads: every tuple advertised; the operator's list of public nodes and each provider's declared private nodes, every inner node on one or the other; outer nodes named for network and reserve; bands, increments, units and gross or net; evidence availability and safe retry; required inputs; the evidence floor per tuple; a node without a holding account kept off routes; each figure with its age and origin | `T-012-01` | `REQ-CAT-10`, `REQ-CAT-11`, `REQ-CAT-12`, `REQ-CAT-13`, `REQ-CAT-17`, `REQ-CAT-21`, `REQ-CAT-22`, `REQ-CAT-23`, `REQ-ORD-39`, `AC-29`, `AC-30`, `AC-34`, `DEC-24` | `node neither public nor declared private cannot be on a route` [`REQ-CAT-22`]; `provider below the tuple's evidence floor is left out of the snapshot` [`REQ-ORD-39`]; `one publisher with several providers and a private node is shown behind each` [`AC-29`, `REQ-CAT-20`]; `exchange spanning two networks is refused` [`AC-30`, `REQ-CAT-13`]; `node without a holding account cannot be on a route` [`REQ-CAT-23`] | these tests pass and the snapshot passes router-api's schema |
+| `T-012-04` | Balance checks and eligibility: yes or no for a stated amount, only in the holder's session, bounded and logged per account; anything revealing sufficiency counted as a check; refusal classes; dry-runs that change nothing; a segment without a true undo declined; a silent reserve marked ineligible within a configured time, with an alert (`NFR-8` sets no bound, so the time is the operator's setting) | `T-012-03` | `REQ-CAT-3`, `REQ-CAT-4`, `REQ-CAT-9`, `REQ-CAT-14`, `REQ-CAT-15`, `REQ-CAT-18`, `REQ-CAT-19`, `INV-9`, `INV-2`, `AC-15`, `NFR-8` | `every balance answer reveals only whether funds suffice` [`INV-9`, `AC-15`]; `balance check outside the holder's session is refused` [`REQ-CAT-3`]; `dry run revealing sufficiency counts as a balance check` [`REQ-CAT-4`, `AC-15`]; `silent reserve is marked ineligible and an alert is raised` [`REQ-CAT-19`, `NFR-8`]; `failed segment's result leaves its value at its origin in full` [`INV-2`] | these tests, the first and last property tests, pass |
+
+#### `F-013` Module admission, runtime and lifecycle
+
+- **Goal:** module admission, runtime and lifecycle on Wasm components and Wasmtime 48.0.8 (`DEC-27`), from
+  `T-008-02`'s binding, closing `EXP-2`'s follow-up rows; owns `components/prov/src/module/`.
+- **Serves:** `REQ-MDL-1` to `REQ-MDL-5`, `REQ-MDL-10` to `REQ-MDL-16`, `REQ-MDL-18` to `REQ-MDL-20`, `AC-19` to
+  `AC-21`, `NFR-2`, `NFR-3`, `DEC-7`, `DEC-27`, ADR-0003, ADR-0014.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-013-01` | The binding out of its experimental workspace into `module/`: components with its WIT world, the format name `wasm-component`, an explicit compile target, no WASI, fuel and a memory limit per part, one OS process per provider, the admitting compiler in its own isolation. The pin read against 2026's advisories when it is set (`G-02`). The role suite through the binding with `M1`'s four stand-ins as guests (`B-01`). Keeps the binding's tests for an outside part naming another operation and for the undeclared-kind probe (`M-10`) | `T-008-04`, `T-012-01` | `REQ-MDL-15`, `REQ-MDL-16`, `REQ-MDL-18`, `REQ-MDL-13`, `AC-20`, `DEC-7`, ADR-0003 | the module-boundary suite in Rust and C [`AC-20`]; `restarting one provider's process leaves the others running` [`REQ-MDL-13`]; `stand-in of each category passes its role suite through the binding` [`REQ-CAT-21`] | the suite passes in Rust and C on x86_64 Linux in CI, each advisory's verdict is in F-013's notes, and the licence check is green |
+| `T-013-02` | Limits and calls: outbound calls, state and pending work limited per module and per provider (`B-14`); host-call bytes and counts bounded per operation and key lengths bounded on the platform side; a provider process's whole memory bounded (`G-05`; the cgroup is `F-030`'s); a wall-time deadline on the admitting compiler; a cross-module call refused when too little of the caller's deadline is left; a call recorded as delivered only when its callee answered; the restart stderr list bounded. Uses `T-010-03`'s refusal reasons | `T-013-01`, `T-010-03` | `REQ-MDL-11`, `REQ-MDL-21`, `NFR-3`, `THR-57` | `module hitting each limit leaves its transaction in a known state` [`REQ-MDL-11`]; `oversized state read key is refused before it is copied` [`REQ-MDL-11`, `THR-57`]; `call with too little deadline left is refused` [`REQ-MDL-11`]; `admitting compiler past its wall time deadline is stopped` [`REQ-MDL-11`]; `binding records a call its callee never answered as undelivered` [`REQ-MDL-21`]; `provider process memory is bounded as a whole` [`REQ-MDL-11`, `NFR-3`]; `restarts do not grow platform memory` [`REQ-MDL-11`] | these tests pass in CI |
+| `T-013-03` | Output: each output checked against its schema's patterns and lengths, not only its shape (`B-19`); guest strings never echoed into refusal logs or reports; everything downstream treats provider output as untrusted | `T-013-01`, `T-010-03` | `REQ-MDL-12`, `REQ-MDL-9` | `output breaking its schema's pattern or length is refused` [`REQ-MDL-12`]; `guest string never appears in a refusal log` [`REQ-MDL-12`, `REQ-MDL-9`] | these tests and the module-boundary suite pass |
+| `T-013-04` | Admission: integrity and the signed assertion checked with `T-012-02`'s verifier against the advertisement the catalogue accepted; acceptance recorded and bound to the assertion's digest; a new admission refused while one is pending; capability widening needing a fresh acceptance; the platform build version recorded with the machine code. Touches a `DEC-20` path | `T-013-01`, `T-012-02` | `REQ-MDL-1`, `REQ-MDL-2`, `REQ-MDL-3`, `AC-21`, `THR-4` | `release with an unverified assertion is refused` [`REQ-MDL-1`]; `acceptance of another assertion digest does not admit the release` [`REQ-MDL-1`]; `admission while one is pending is refused` [`REQ-MDL-1`]; `widened release needs fresh acceptance` [`AC-21`, `REQ-MDL-3`] | these tests pass in CI |
+| `T-013-05` | Hardening the admitting compiler: fuzzer-made binaries and a fuzz corpus through admission (`B-09`); Spectre settings chosen on purpose and recorded (`G-09`); re-derivation on a CPU of another vendor than the two AMD models shown (`B-11`, `G-04`). Touches a `DEC-20` path | `T-013-04` | `REQ-MDL-2`, `THR-18`, `THR-85`, ADR-0014 | `re derived machine code matches on a CPU of another vendor` [`REQ-MDL-2`, `THR-18`]; `fuzz corpus never crashes the admitting compiler` [`THR-85`]; `engine is built with the chosen Spectre settings` [`THR-85`] | the fuzz job and the re-derivation run in CI with their run ids in F-013's notes; the re-derivation has run on a CPU of another vendor than the reference's, not AMD's, at least once, with its run id recorded, and skips with a notice on any other draw; the settings test passes |
+| `T-013-06` | Lifecycle: releases staged on a traffic share with a minimum observation volume beside the time window (§6.2 risk 7), observed and rolled back; a failed upgrade leaves the previous version; an in-flight segment moves only to an accepted version, recorded per segment; stale versions; revoked versions finishing in flight unless actively exploited; per-transaction and shared state; a release waiting for the owner's acceptance can be withdrawn, and acceptance re-checks its assertion (`T-013-04`'s review) | `T-013-04` | `REQ-MDL-4`, `REQ-MDL-5`, `REQ-MDL-10`, `REQ-MDL-14`, `REQ-MDL-19`, `REQ-MDL-20`, `AC-19`, `NFR-2`, `INV-8`, ADR-0014 | `failed upgrade leaves the previous version in force` [`AC-19`, `REQ-MDL-4`]; `upgrade of one provider interrupts no order at another` [`AC-19`, `NFR-2`]; `low volume release stays staged until its minimum is observed` [`REQ-MDL-4`]; `segment on a revoked version finishes on it unless it is exploited` [`REQ-MDL-20`]; `transaction cannot read another transaction's state` [`REQ-MDL-10`]; `duplicate transaction identifier is refused` [`REQ-MDL-14`, `INV-8`] | these tests pass in CI |
+| `T-013-07` | The WIT world says what `T-014-05` found it can't: a secret lookup answers `store-unavailable` apart from `not-found`, and an outbound call carries a full request (method, path, headers, body) that egress checks and records, so a guest can make more than a bare call to a declared destination. The binding's version, the guests and the stand-ins in both languages follow | `T-014-05` | `REQ-MDL-6`, `REQ-MDL-15`, `REQ-MDL-17` | `guest tells an unreachable secret store from a missing secret` [`REQ-MDL-17`]; `outbound request's method path and headers reach only its declared destination` [`REQ-MDL-6`] | both tests pass through the binding in Rust and C, and the module-boundary suite passes |
+
+#### `F-014` Shared credential proxy and resolvers
+
+- **Goal:** v0's one shared credential proxy and its two resolvers (`DEC-9`, ADR-0004), and the outside part's
+  egress; owns `components/prov/src/proxy/` and `components/prov/src/egress/`.
+- **Serves:** `REQ-MDL-6` to `REQ-MDL-9`, `REQ-MDL-17`, `REQ-MDL-21`, `DEC-9`, `THR-79`.
+- **Ruled, not a gate:** the owner ruled Vault's `BUSL-1.1` on 2026-11-09 (`vault-busl`): Vault is reached through its
+  HTTP API only. No Vault code is linked, so its line in `licences/RECORD` is `permitted` and says so (`REQ-MOD-5`);
+  the Vault resolver is tested against a server run apart and enters no lockfile.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-014-01` | The resolver interface, resolve-by-name at call time, with credentials keyed by provider; implemented against OpenBao and Vault; rotating a secret takes no new release | `T-012-01` | `REQ-MDL-17`, `REQ-MDL-6`, `DEC-9`, ADR-0004 | `secret is resolved by name through each resolver` [`REQ-MDL-17`]; `rotated secret is used with no new release` [`REQ-MDL-6`] | the tests pass against both servers in CI |
+| `T-014-02` | The proxy: answers each lookup only for the calling process's own provider, and only for the transaction and operation of an outside request in flight for that module; resolves only the `statement_key` an admitted release declares, never a key listed for `advertising`; every use attributable per transaction; buckets by process role read from deployment settings. Touches a `DEC-20` path | `T-014-01`, `T-013-01` | `REQ-MDL-6`, `REQ-MDL-9`, `DEC-9`, `THR-79` | `lookup for another provider's secret is refused` [`REQ-MDL-9`]; `lookup for an operation with no request in flight is refused` [`REQ-MDL-6`]; `advertising key is never resolved` [`REQ-MDL-6`, `THR-4`]; `every use is recorded with its transaction` [`REQ-MDL-6`] | these tests and the module-boundary suite's secret probes pass |
+| `T-014-03` | Egress: only declared destinations, every redirect checked; DNS rebinding refused (`B-17`); TLS verified, never downgraded (`B-18`); every outbound call recorded with destination, version and transaction | `T-013-01` | `REQ-MDL-7`, `REQ-MDL-8`, `THR-79` | `destination re resolved to an undeclared address is refused` [`REQ-MDL-7`]; `redirect to an undeclared destination is refused` [`REQ-MDL-7`]; `failed TLS check to a declared destination is refused` [`REQ-MDL-7`]; `every outbound call is recorded with destination version and transaction` [`REQ-MDL-8`] | these tests pass in CI |
+| `T-014-04` | Cross-module calls on each module's own credentials: a call only where the route declares it, the callee resolving only its own secrets, checked with `T-010-03`'s `validate_call_against` | `T-014-02`, `T-013-02`, `T-010-03` | `REQ-MDL-21`, `REQ-MDL-9` | `undeclared cross module call is refused` [`REQ-MDL-21`]; `declared call runs on the callee's own credentials` [`REQ-MDL-21`, `REQ-MDL-9`] | these tests pass in CI |
+| `T-014-05` | The production world: `CredentialProxy` as the platform's `World`, opened and closed per outside request (`begin_*` and `end_*`); `Egress` wired into `module/platform.rs` so a call resolves once and dials only the checked address; a rustls `Connector` built on `T-014-02`'s client configuration and handshake (dial an address, verify as a name, no proxy settings, no pooling by host name, redirects returned, no TLS 1.3 early data); `tls_probe` run against loopback certificates for a wrong name and for none; the statement key's wire message; and the refusal reasons of `T-010-09` used; a call back into a provider already running stays refused on purpose, not only because its process is busy (`T-014-04`); `store_unavailable` mapped explicitly at the lookup (`T-010-09`); the platform's no-route path records its own reason. Filling `Platform::routes` from live orders is Core's (`M3`); the platform's results signed with the statement key, held through the proxy and never by the module, so the role suite runs through the platform with nothing deferred (`T-010-10`'s review) | `T-010-09`, `T-013-02`, `T-014-02`, `T-014-03` | `REQ-MDL-6`, `REQ-MDL-7`, `REQ-MDL-9`, `REQ-MDL-17`, `DEC-9` | `running platform resolves a destination once and dials only the checked address` [`REQ-MDL-6`]; `tls check against a wrong name or no certificate is refused end to end` [`REQ-MDL-6`]; `secret is answered only inside the outside request in flight on the running platform` [`REQ-MDL-17`, `REQ-MDL-9`] | the three tests pass on the running platform in CI, and B-17 and B-18 hold on the platform's path |
+
+#### `F-015` Evidence checker
+
+- **Goal:** `CMP-EVIDENCE`, the read-only checker apart from every provider's module: grades (ADR-0007) and
+  private-node replay (ADR-0005); owns `components/evidence/`.
+- **Serves:** `REQ-ORD-39`, `REQ-ORD-41`, `AC-35`, `DEC-13`, `DEC-24`.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-015-01` | The four-grade scale, declared per provider; the per-network interface for grade 1 and 2 claims (finality, reorg rule, movement-to-segment matching), each real network joining as its own task in `F-031`; a statement alone graded as a statement; one destination per route checked as the assumption it is | `T-006-01` | `REQ-ORD-39`, `DEC-13`, ADR-0007 | `statement alone is graded as a statement and not as proof` [`REQ-ORD-39`]; `claim above the provider's declared grade is refused` [`REQ-ORD-39`, `DEC-13`] | these tests pass and the boundary check is green |
+| `T-015-02` | A simulated public network behind that interface, with finality and reorgs, as the reference the real networks are tested against | `T-015-01` | `REQ-ORD-39`, `DEC-13` | `movement reorged out before finality evidences no segment` [`REQ-ORD-39`, `DEC-13`]; `movement to another destination matches no segment` [`DEC-13`] | these tests pass |
+| `T-015-03` | Private-node replay: the recorded inner segments replayed and compared with the public movement out and the stated outcomes; a mismatch recorded; a match recorded as consistency only; a route ending inside the node left its publisher's word; a route crossing two private nodes | `T-015-01` | `REQ-ORD-41`, `AC-35`, `DEC-24`, ADR-0005, `THR-131` | `mismatch with the public movement out is recorded` [`REQ-ORD-41`, `AC-35`]; `match is recorded as consistency only` [`AC-35`]; `route ending inside the node records no replay check` [`AC-35`]; `replay is a pure function of the recorded segments` [`REQ-ORD-41`]; `route across two private nodes replays each` [`DEC-24`] | these tests, the purity one a property test, pass |
+
+#### `F-016` Holding-account modules at public nodes
+
+- **Goal:** each public node's holding account, by default a plain wallet, as a module outside the core;
+  owns `components/prov/src/holding/` and the wallet's guest, `components/prov/guests/plain-wallet/`.
+- **Serves:** `REQ-CAT-23`, `INV-5`, `INV-1`.
+
+| Task | Work | Depends on | Serves | Tests | Done when |
+|---|---|---|---|---|---|
+| `T-016-01` | The holding-account interface: the balance, as the sum held for the orders at that node, attributed per order, for `CMP-CORE-AUDIT` to read | `T-012-01` | `REQ-CAT-23`, `INV-1`, `REQ-AUD-15` | `holding account balance equals the sum held for its orders` [`INV-1`, `REQ-CAT-23`] | this property test passes |
+| `T-016-02` | The plain wallet, a Wasm component in Rust, admitted through `T-013-04` like any module and registered by the operator for a public node | `T-016-01`, `T-013-04` | `REQ-CAT-23`, `INV-5`, `REQ-MDL-1` | `operator registers a plain wallet as a node's holding account` [`REQ-CAT-23`]; `value between segments rests only in a node's holding account` [`INV-5`] | these tests pass in CI |
+| `T-016-03` | A route handed on: the holding account's own record proves its withdrawal, and the holding account counts as the route's starting reserve | `T-016-02` | `REQ-ORD-40`, `INV-5` | `handed on route's withdrawal is proven by the holding account's record` [`REQ-ORD-40`, `INV-5`] | this test passes |
+| `T-016-04` | Operator-published holding modules: a holding-account module the operator publishes is admitted on the operator's own signed release, without a provider advertisement, and only such a module can be registered as a node's holding account; a provider's module can't (`T-016-02`'s review). The catalogue records the operator as its publisher | `T-016-02` | `REQ-CAT-23`, `REQ-MDL-1`, `INV-5` | `operator published holding module is admitted on the operators own release` [`REQ-MDL-1`]; `provider module cannot be registered as a holding account` [`REQ-CAT-23`] | both tests pass with real signing, and no test registers a provider's module as a holding account |
 
 ---
 
@@ -412,6 +547,60 @@ The module contract is the longest chain, so `F-002` and `F-003` take the first 
 **Checks on this table** (Narthex `REQ-SKL-6`): every task serves at least one identifier that `SPEC.md`, an ADR or
 this plan defines; the graph has no cycle; no task waits on a task of a later milestone. The orchestrating session
 runs these checks on each plan change until `T-001-03` puts them in CI.
+
+### `M2` waves
+
+Generated from the task tables of §4.3. The plan check reads one graph across milestones, and `M2`'s first tasks
+wait on `M1`'s freeze (`T-006-01`, wave 8) and outcomes (`T-007-04`, `T-008-04`, wave 10), so `M2`'s waves are
+numbered on from 11.
+
+```mermaid
+flowchart LR
+  C1{{"M1: freeze and outcomes"}}
+  subgraph W11["Wave 11"]
+    P["T-010-01 no_std port"]
+    G["T-010-02 contract guard"]
+    R1["T-011-01 route search"]
+    K1["T-012-01 grants, layout"]
+    E1["T-015-01 grades"]
+  end
+  subgraph W12["Wave 12"]
+    CC["T-010-03 contract changes"]
+    L["T-010-04 STM library"]
+    B["T-013-01 Wasm binding"]
+  end
+  subgraph W13["Wave 13"]
+    V["T-010-05 VOS program"]
+    K2["T-012-02 advertisements, keys"]
+  end
+  subgraph W14["Wave 14"]
+    A["T-013-04 admission"]
+  end
+  subgraph W15["Wave 15"]
+    H2["T-016-02 plain wallet"]
+  end
+  H3["T-016-03 handed-on route (16)"]
+  C1 --> P & G & R1 & K1 & E1
+  P & G --> CC
+  P --> L --> V
+  K1 --> B
+  CC & K1 --> K2 --> A
+  B --> A --> H2 --> H3
+```
+
+| Wave | Tasks |
+|---|---|
+| 11 | `T-010-01`, `T-010-02`, `T-011-01`, `T-012-01`, `T-015-01` |
+| 12 | `T-010-03`, `T-010-04`, `T-011-02`, `T-011-03`, `T-012-03`, `T-013-01`, `T-014-01`, `T-015-02`, `T-015-03`, `T-016-01` |
+| 13 | `T-010-05`, `T-011-04`, `T-012-02`, `T-012-04`, `T-013-02`, `T-013-03`, `T-014-02`, `T-014-03` |
+| 14 | `T-010-06`, `T-010-07`, `T-010-08`, `T-010-09`, `T-013-04`, `T-014-04` |
+| 15 | `T-010-10`, `T-011-05`, `T-013-05`, `T-013-06`, `T-014-05`, `T-016-02` |
+| 16 | `T-011-06`, `T-013-07`, `T-016-03`, `T-016-04` |
+
+**Critical path:** `T-010-01` → `T-010-03` → `T-012-02` → `T-013-04` → `T-016-02` → `T-016-03`: six tasks. The
+contract changes carry the Ed25519 verifier's canonical bytes, which admission and the holding account's
+admission wait on, so `T-010-01` and `T-010-02` start first, beside `F-011`, `F-012` and `F-015`, which wait on
+nothing else.
 
 ---
 

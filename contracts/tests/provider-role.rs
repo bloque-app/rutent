@@ -313,6 +313,26 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement", "required")],
         ),
         (
+            "operation-holding-balance-naming-a-session",
+            vec![("/statement", "additionalProperties")],
+        ),
+        (
+            "operation-holding-balance-without-a-node",
+            vec![("/statement", "required")],
+        ),
+        (
+            "result-holding-balance-with-a-negative-balance",
+            vec![("/statement/outcome/balance", "pattern")],
+        ),
+        (
+            "result-holding-balance-with-a-leading-zero",
+            vec![("/statement/outcome/balance", "pattern")],
+        ),
+        (
+            "result-holding-balance-without-a-balance",
+            vec![("/statement/outcome", "required")],
+        ),
+        (
             "operation-with-a-fractional-amount",
             vec![("/statement/amount", "pattern")],
         ),
@@ -721,6 +741,14 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
             "pattern: the signature value is a string in Rust",
         ),
         (
+            "result-holding-balance-with-a-negative-balance",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "result-holding-balance-with-a-leading-zero",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
             "advertisement-without-offers",
             "minProperties: every offer is optional in Rust",
         ),
@@ -1086,6 +1114,50 @@ fn balance_answer_carrying_anything_but_yes_or_no_is_invalid() {
     assert_schema_rejects("result-balance-answer-neither-yes-nor-no");
 }
 
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn holding_balance_is_the_operators_question_and_a_whole_figure() {
+    for name in [
+        "operation-holding-balance-naming-a-session",
+        "operation-holding-balance-without-a-node",
+        "result-holding-balance-with-a-negative-balance",
+        "result-holding-balance-with-a-leading-zero",
+        "result-holding-balance-without-a-balance",
+    ] {
+        assert_schema_rejects(name);
+    }
+}
+
+// verifies: REQ-AUD-15
+#[test]
+fn holding_balance_statements_read_into_their_rust_types() {
+    use rutent_contracts::provider_role::{
+        HoldingBalanceOutcome, Operation, ResultBody, Statement,
+    };
+    for (name, balance) in [
+        ("result-holding-balance-answered", Some("150")),
+        (
+            "result-holding-balance-answered-with-nothing-held",
+            Some("0"),
+        ),
+        ("result-holding-balance-refused-finally", None),
+    ] {
+        let value = fixture("valid", name);
+        let result: Statement<ResultBody> = serde_json::from_value(value).expect("a result");
+        let ResultBody::HoldingBalance(r) = result.statement else {
+            panic!("{name} isn't a holding balance result");
+        };
+        match (r.outcome, balance) {
+            (HoldingBalanceOutcome::Answered(a), Some(b)) => assert_eq!(a.balance, b),
+            (HoldingBalanceOutcome::Refused(_), None) => {}
+            _ => panic!("{name}"),
+        }
+    }
+    let value = fixture("valid", "operation-holding-balance");
+    let operation: Statement<Operation> = serde_json::from_value(value).expect("an operation");
+    assert!(matches!(operation.statement, Operation::HoldingBalance(_)));
+}
+
 // verifies: REQ-CAT-18
 #[test]
 fn refusal_without_its_class_is_invalid() {
@@ -1377,4 +1449,196 @@ fn version_matches_the_changelog() {
         .find_map(|line| line.strip_prefix("## "))
         .expect("changelog has a version heading");
     assert_eq!(top.trim(), provider_role::VERSION);
+}
+
+/// RFC 8785 §3.2.2's sample, as the RFC writes it, parsed and then canonicalised as §3.2.3 shows.
+const RFC_8785_SAMPLE: &str = r#"{
+       "numbers": [333333333.33333329, 1E30, 4.50,
+                   2e-3, 0.000000000000000000000000001],
+       "string": "\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/",
+       "literals": [null, true, false]
+     }"#;
+
+/// RFC 8785 §3.2.3's canonical form of the sample, with its display line wraps removed.
+const RFC_8785_SAMPLE_CANONICAL: &str = "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,\
+1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}";
+
+/// RFC 8785 §3.2.3's sorting test data.
+const RFC_8785_SORTING: &str = r#"{
+       "\u20ac": "Euro Sign",
+       "\r": "Carriage Return",
+       "\ufb33": "Hebrew Letter Dalet With Dagesh",
+       "1": "One",
+       "\ud83d\ude00": "Emoji: Grinning Face",
+       "\u0080": "Control",
+       "\u00f6": "Latin Small Letter O With Diaeresis"
+     }"#;
+
+/// RFC 8785 Appendix B, Table 1: each finite double, by its IEEE 754 bits, and its JSON representation.
+const RFC_8785_NUMBERS: [(u64, &str); 24] = [
+    (0x0000000000000000, "0"),
+    (0x8000000000000000, "0"),
+    (0x0000000000000001, "5e-324"),
+    (0x8000000000000001, "-5e-324"),
+    (0x7fefffffffffffff, "1.7976931348623157e+308"),
+    (0xffefffffffffffff, "-1.7976931348623157e+308"),
+    (0x4340000000000000, "9007199254740992"),
+    (0xc340000000000000, "-9007199254740992"),
+    (0x4430000000000000, "295147905179352830000"),
+    (0x44b52d02c7e14af5, "9.999999999999997e+22"),
+    (0x44b52d02c7e14af6, "1e+23"),
+    (0x44b52d02c7e14af7, "1.0000000000000001e+23"),
+    (0x444b1ae4d6e2ef4e, "999999999999999700000"),
+    (0x444b1ae4d6e2ef4f, "999999999999999900000"),
+    (0x444b1ae4d6e2ef50, "1e+21"),
+    (0x3eb0c6f7a0b5ed8c, "9.999999999999997e-7"),
+    (0x3eb0c6f7a0b5ed8d, "0.000001"),
+    (0x41b3de4355555553, "333333333.3333332"),
+    (0x41b3de4355555554, "333333333.33333325"),
+    (0x41b3de4355555555, "333333333.3333333"),
+    (0x41b3de4355555556, "333333333.3333334"),
+    (0x41b3de4355555557, "333333333.33333343"),
+    (0xbecbf647612f3696, "-0.0000033333333333333333"),
+    (0x43143ff3c1cb0959, "1424953923781206.2"),
+];
+
+fn canonical_text(json: &str) -> String {
+    String::from_utf8(provider_role::canonicalize(json.as_bytes()).expect("canonical"))
+        .expect("UTF-8")
+}
+
+// verifies: REQ-STM-4, INV-8, REQ-PRT-1
+#[test]
+fn canonical_encoding_matches_the_rfc_8785_test_vectors() {
+    // §3.2.2 and §3.2.3: primitives and the members sorted.
+    assert_eq!(canonical_text(RFC_8785_SAMPLE), RFC_8785_SAMPLE_CANONICAL);
+
+    // §3.2.3: members sorted by their names' UTF-16 code units, in the order the RFC expects.
+    let sorted = canonical_text(RFC_8785_SORTING);
+    let values: Vec<&str> = sorted
+        .split('"')
+        .filter(|part| part.contains(' ') || *part == "One" || *part == "Control")
+        .collect();
+    assert_eq!(
+        values,
+        [
+            "Carriage Return",
+            "One",
+            "Control",
+            "Latin Small Letter O With Diaeresis",
+            "Euro Sign",
+            "Emoji: Grinning Face",
+            "Hebrew Letter Dalet With Dagesh",
+        ]
+    );
+    assert_eq!(
+        sorted,
+        "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u{80}\":\"Control\",\
+         \"\u{f6}\":\"Latin Small Letter O With Diaeresis\",\"\u{20ac}\":\"Euro Sign\",\
+         \"\u{1f600}\":\"Emoji: Grinning Face\",\"\u{fb33}\":\"Hebrew Letter Dalet With Dagesh\"}"
+    );
+
+    // Appendix B: every finite sample, written in any exact form and read back as its double.
+    for (bits, expected) in RFC_8785_NUMBERS {
+        let value = f64::from_bits(bits);
+        for written in [
+            format!("{value:e}"),
+            format!("{value:.780e}"),
+            format!("[{value:?}]"),
+        ] {
+            let canonical = canonical_text(&written);
+            let canonical = canonical.trim_start_matches('[').trim_end_matches(']');
+            assert_eq!(canonical, expected, "{bits:016x} written as {written:.40}");
+        }
+        assert_eq!(
+            provider_role::to_canonical(&value).map(|b| String::from_utf8(b).expect("UTF-8")),
+            Ok(expected.to_owned()),
+            "{bits:016x} as a value"
+        );
+    }
+    // Appendix B's NaN and Infinity rows: no JSON form, so an error (§3.2.2.3), never `null`.
+    for bits in [
+        0x7fffffffffffffff_u64,
+        0x7ff0000000000000,
+        0xfff0000000000000,
+    ] {
+        let value = f64::from_bits(bits);
+        assert_eq!(
+            provider_role::to_canonical(&value),
+            Err(provider_role::CanonicalError::NonFiniteNumber),
+            "{bits:016x}"
+        );
+        assert_eq!(
+            provider_role::to_canonical(&[(String::from("x"), vec![value])]),
+            Err(provider_role::CanonicalError::NonFiniteNumber),
+            "{bits:016x} nested in a value"
+        );
+    }
+}
+
+// verifies: REQ-PRT-1
+#[test]
+fn text_with_no_canonical_form_is_refused() {
+    use provider_role::CanonicalError;
+    let refused = |text: &str| provider_role::canonicalize(text.as_bytes()).unwrap_err();
+    assert_eq!(
+        refused(r#"{"a":1,"a":2}"#),
+        CanonicalError::DuplicateMember { at: 7 }
+    );
+    assert_eq!(
+        refused(r#"{"a":{"b":1,"\u0062":2}}"#),
+        CanonicalError::DuplicateMember { at: 12 }
+    );
+    assert_eq!(
+        refused(r#"["\udead"]"#),
+        CanonicalError::LoneSurrogate { at: 2 }
+    );
+    assert_eq!(
+        refused(r#"["\ud83d x"]"#),
+        CanonicalError::LoneSurrogate { at: 2 }
+    );
+    assert_eq!(
+        refused("[1e400]"),
+        CanonicalError::NumberOutOfRange { at: 1 }
+    );
+    // RFC 7493 §2.1: no noncharacter, written or escaped.
+    assert_eq!(
+        refused("[\"a\u{ffff}\"]"),
+        CanonicalError::Noncharacter { at: 3 }
+    );
+    assert_eq!(
+        refused(r#"["ab\ufdd0"]"#),
+        CanonicalError::Noncharacter { at: 4 }
+    );
+    assert_eq!(
+        refused(r#"{"\ud83f\udffe":1}"#),
+        CanonicalError::Noncharacter { at: 2 }
+    );
+    assert!(provider_role::canonicalize("[\"\u{fffd}\u{fdcf}\u{fdf0}\"]".as_bytes()).is_ok());
+    assert_eq!(refused("[01]"), CanonicalError::Syntax { at: 2 });
+    assert_eq!(refused("[1,]"), CanonicalError::Syntax { at: 3 });
+    assert_eq!(refused("{} {}"), CanonicalError::Syntax { at: 3 });
+    assert_eq!(refused("[\"a\tb\"]"), CanonicalError::Syntax { at: 3 });
+    assert_eq!(
+        provider_role::canonicalize(b"[\"\xff\"]").unwrap_err(),
+        CanonicalError::NotUtf8
+    );
+    let deep = format!("{}{}", "[".repeat(129), "]".repeat(129));
+    assert_eq!(refused(&deep), CanonicalError::TooDeep { at: 128 });
+    let deepest = format!("{}{}", "[".repeat(128), "]".repeat(128));
+    assert!(provider_role::canonicalize(deepest.as_bytes()).is_ok());
+}
+
+// verifies: REQ-PRT-1, REQ-STM-4
+#[test]
+fn a_value_and_its_text_have_one_canonical_form() {
+    let statement: Statement<Advertisement> = serde_json::from_value(fixture(
+        "valid",
+        "advertisement-provider-under-several-categories",
+    ))
+    .expect("an advertisement");
+    let from_value = provider_role::to_canonical(&statement).expect("canonical");
+    let pretty = serde_json::to_vec_pretty(&statement).expect("json");
+    assert_eq!(provider_role::canonicalize(&pretty), Ok(from_value.clone()));
+    assert_eq!(provider_role::canonicalize(&from_value), Ok(from_value));
 }

@@ -24,6 +24,35 @@ state-machine      contracts/state-machine         contracts/src/state_machine
 host               contracts/state-machine/host    contracts/src/state_machine/host
 ";
 
+/// The head `PLAN.md`, cut down to the rows of its decisions table that the fixtures name.
+const PLAN: &str = "\
+| `DEC-3` | Layout. | x | accepted |
+| `DEC-4` | Versioning. | x | accepted |
+| `DEC-5` | Fixtures. | x | accepted |
+| `DEC-6` | Dependencies. | x | accepted |
+| `DEC-20` | Owner's click. | x | accepted |
+";
+
+/// A root `Cargo.lock` where `rutent-contracts` depends on `serde`, which depends on `serde_core`; `other` is
+/// a package nothing in the contracts crate reaches.
+fn lock(serde: &str, other: &str) -> String {
+    format!(
+        "version = 4\n\n\
+[[package]]\nname = \"other\"\nversion = \"{other}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"o{other}\"\n\n\
+[[package]]\nname = \"rutent-contracts\"\nversion = \"0.0.0\"\ndependencies = [\n \"serde\",\n]\n\n\
+[[package]]\nname = \"serde\"\nversion = \"{serde}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"s{serde}\"\ndependencies = [\n \"serde_core\",\n]\n\n\
+[[package]]\nname = \"serde_core\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"c\"\n"
+    )
+}
+
+/// `lock`, with `serde_core` also depending on a package that `rutent-contracts` already reaches through `serde`.
+fn lock_with_extra_edge(serde: &str) -> String {
+    lock(serde, "1.0.0").replace(
+        "checksum = \"c\"\n",
+        "checksum = \"c\"\ndependencies = [\n \"serde\",\n]\n",
+    )
+}
+
 struct Fixture {
     base: HashMap<String, String>,
     head: HashMap<String, String>,
@@ -33,10 +62,9 @@ impl Default for Fixture {
     fn default() -> Self {
         let mut base = HashMap::new();
         base.insert("contracts/CONTRACTS".to_string(), CONTRACTS.to_string());
-        Fixture {
-            base,
-            head: HashMap::new(),
-        }
+        let mut head = HashMap::new();
+        head.insert("PLAN.md".to_string(), PLAN.to_string());
+        Fixture { base, head }
     }
 }
 
@@ -184,7 +212,7 @@ fn shared_file_change_with_a_decided_entry_passes() {
 
 // verifies: DEC-4
 #[test]
-fn shared_file_change_with_a_contract_version_bump_passes() {
+fn shared_contracts_file_changed_with_only_a_contracts_bump_fails() {
     let fixture = Fixture::default()
         .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
         .base_only("contracts/provider-role/CHANGELOG.md", "# provider-role changelog\n\n## 0.1.0\n- Adverts. (DEC-4, T-002-01)\n")
@@ -203,8 +231,208 @@ fn shared_file_change_with_a_contract_version_bump_passes() {
         &fixture,
     );
     assert!(
+        violations.iter().any(|v| v.subject == "shared"),
+        "a contract's bump must not cover a shared file, got {violations:?}"
+    );
+    assert!(
+        !violations.iter().any(|v| v.subject == "provider-role"),
+        "provider-role itself is bumped, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_moving_a_contract_dependency_without_a_bump_fails() {
+    let fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock("1.0.2", "1.0.0"));
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
+        violations.iter().any(|v| v.message.contains("Cargo.lock")),
+        "a moved serde must name the lockfile, got {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.subject == "router-api"),
+        "every contract needs a bump when its dependency moves, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_moving_a_contract_dependency_with_every_bump_passes() {
+    let mut fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock("1.0.2", "1.0.0"));
+    for dir in [
+        "provider-role",
+        "module-interface",
+        "router-api",
+        "state-machine",
+        "state-machine/host",
+    ] {
+        fixture = fixture
+            .base_only(
+                &format!("contracts/{dir}/CHANGELOG.md"),
+                "# changelog\n\n## 1.0.0\n- First. (DEC-4)\n",
+            )
+            .head_only(
+                &format!("contracts/{dir}/CHANGELOG.md"),
+                "# changelog\n\n## 1.0.1\n- serde moved. (DEC-4, DEC-20)\n\n## 1.0.0\n- First. (DEC-4)\n",
+            );
+    }
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
         violations.is_empty(),
-        "expected no violations, got {violations:?}"
+        "bumped contracts cover the move, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_adding_only_dependency_edges_needs_the_crate_changelog() {
+    let fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.1"));
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "shared" && v.message.contains("serde_core")),
+        "new edges need the shared changelog entry, got {violations:?}"
+    );
+    assert!(
+        !violations.iter().any(|v| v.subject != "shared"),
+        "new edges need no contract's bump, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_adding_only_dependency_edges_with_the_crate_changelog_passes() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency gained edges. (DEC-4)\n");
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.1"));
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations.is_empty(),
+        "an entry covers new edges, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn dependency_edge_change_with_a_version_change_still_needs_every_bump() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency moved. (DEC-4)\n");
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock_with_extra_edge("1.0.2"));
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations.iter().any(|v| v.subject == "router-api"),
+        "a version change needs every bump whatever its edges do, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn new_edge_to_a_package_not_reached_before_needs_every_bump() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- A dependency gained an edge. (DEC-4)\n");
+    let head_lock = lock("1.0.1", "1.0.0").replace(
+        "checksum = \"c\"\n",
+        "checksum = \"c\"\ndependencies = [\n \"other\",\n]\n",
+    );
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &head_lock);
+    let violations = run(&["Cargo.lock", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "router-api" || v.message.contains("other")),
+        "a newly reached package needs every bump, got {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.subject == "router-api"),
+        "every contract needs its bump, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_change_to_an_unrelated_package_passes() {
+    let fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &lock("1.0.1", "2.0.0"));
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
+        violations.is_empty(),
+        "a package the contracts crate does not reach is free, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn lockfile_block_after_the_packages_is_not_part_of_the_last_package() {
+    let tail = "\n[[patch.unused]]\nname = \"serde_core\"\nversion = \"9.9.9\"\n";
+    let fixture = Fixture::default()
+        .at_both("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .base_only("Cargo.lock", &lock("1.0.1", "1.0.0"))
+        .head_only("Cargo.lock", &format!("{}{tail}", lock("1.0.1", "1.0.0")));
+    let violations = run(&["Cargo.lock"], &fixture);
+    assert!(
+        violations.is_empty(),
+        "an unused patch block moves no package, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn changelog_entry_naming_an_undefined_plan_decision_fails() {
+    let fixture = Fixture::default()
+        .base_only("contracts/provider-role/CHANGELOG.md", "# provider-role changelog\n\n## 0.1.0\n- Adverts. (DEC-4, T-002-01)\n")
+        .head_only(
+            "contracts/provider-role/CHANGELOG.md",
+            "# provider-role changelog\n\n## 0.2.0\n- Operations. (DEC-4, DEC-99, T-002-02)\n\n## 0.1.0\n- Adverts. (DEC-4, T-002-01)\n",
+        )
+        .changed_head("contracts/provider-role/schemas/operation.schema.json", "{}");
+    let violations = run(
+        &[
+            "contracts/provider-role/CHANGELOG.md",
+            "contracts/provider-role/schemas/operation.schema.json",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("DEC-99")),
+        "DEC-99 is not in PLAN.md, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4
+#[test]
+fn shared_changelog_entry_naming_an_undefined_plan_decision_fails() {
+    let head_changelog = format!("{SHARED_CHANGELOG}- Reworded the README. (DEC-99)\n");
+    let fixture = Fixture::default()
+        .base_only("contracts/CHANGELOG.md", SHARED_CHANGELOG)
+        .head_only("contracts/CHANGELOG.md", &head_changelog)
+        .changed_head("contracts/README.md", "# rutent contracts, reworded\n");
+    let violations = run(&["contracts/README.md", "contracts/CHANGELOG.md"], &fixture);
+    assert!(
+        violations.iter().any(|v| v.message.contains("DEC-99")),
+        "an undefined decision in the shared changelog fails, got {violations:?}"
     );
 }
 

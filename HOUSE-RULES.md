@@ -79,10 +79,21 @@ A change to any of these reaches `main` only with the owner's click on the relea
 security review. It may land on `develop` before that, once the reviewer approves (the `branch-model` ruling):
 
 - `contracts/`, including each version bump;
-- the credential proxy and its resolvers;
-- module admission and signature checking;
+- the credential proxy and its resolvers (`components/prov/src/proxy/`), and the egress layer and its name
+  resolvers, which carry the credentials outward (`components/prov/src/egress/`);
+- module admission and signature checking: the assertion's reading and judging
+  (`components/prov/src/module/admission.rs`, `components/prov/src/catalogue/signature.rs`); the platform, which
+  admits and accepts releases, decides which need a fresh acceptance, checks the statement key and signs or refuses
+  each answer (`components/prov/src/module/platform.rs`); the admitting compiler
+  (`components/prov/src/module/engine.rs`, `components/prov/src/module/bin/compiler.rs`); and `EXP-2`'s bindings,
+  which hold earlier ones (`experiments/2026-11-07-module-format/wasm-binding/` and `pvm-binding/`);
 - `CMP-CORE-AUTHZ`'s policy engine (`components/core-authz/`);
-- the log's and the checkpoints' signing (`components/core-audit/`).
+- the log's and the checkpoints' signing (`components/core-audit/`);
+- the repository's own gates: `.github/`, `licences/`, `tools/licence-check/` and `tools/contract-guard/`.
+
+`.github/CODEOWNERS` holds each of these paths for the owner, and `main`'s protection requires code-owner review.
+Its `enforce_admins` is off, so the owner's own merge of the release is the click. A path added to this list is
+added there in the same change.
 
 A task whose diff touches one of these says so in its commit body.
 

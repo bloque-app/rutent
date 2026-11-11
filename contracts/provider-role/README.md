@@ -55,6 +55,13 @@ decision records. All its fields are required:
   so is a nested statement's whole envelope, its own `signature.value` included.
 - **How:** the verifier canonicalises the JSON as received, never a re-serialisation of parsed types. A statement
   with a duplicate member name is rejected.
+- **The encoder** (2.3.0, 2.4.0): `provider_role::canonical` is the contracts' one RFC 8785 encoder, the one the
+  host contract's `exactly-once` means too. `signing_input(received)` gives the signed bytes of a statement's text;
+  `canonicalize` and `to_canonical` give any text's or value's canonical form, `to_canonical` refusing NaN and
+  the infinities as RFC 8785 does; `member(json, path)` gives a nested statement's own text as it sits in the
+  outer one. Its parser refuses what has no canonical form: text that isn't UTF-8, a member named twice, a lone
+  surrogate, a noncharacter, a number beyond a double, nesting past 128. It is tested on RFC 8785's §3.2.2, §3.2.3
+  and Appendix B vectors.
 - **Scheme:** `ed25519` (RFC 8032), the only one allowed, verified strictly.
 - **Key:** `key` is the signing public key. For a provider, it is one of the keys its advertisement publishes, made
   authoritative by the operator's grant (`REQ-CAT-2`), with the purpose the statement needs: `advertising` for an
@@ -72,7 +79,8 @@ decision records. All its fields are required:
 - **Integers:** every integer that can be signed is at most 2^53 − 1, or is carried as a string, since JCS writes
   numbers as IEEE doubles. Amounts are strings. `seconds` and `settlement_seconds` are capped.
 
-The contract states the rule but doesn't verify signatures. Verifying them is `M2` and `M3` work.
+The contract states the rule and computes its signing input, but doesn't verify signatures: it has no curve
+arithmetic. The Ed25519 verifier is the catalogue's (`T-012-02`).
 
 In Rust, a reader calls two checks after deserialising a `Statement<T>`, because serde enforces neither:
 
@@ -191,7 +199,7 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
   - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
-    `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
+    `holding_balance` (a holding account's module, 3.0.0), `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
     (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008).
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
@@ -199,6 +207,10 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   - A withdrawal carries the holder's `session`, required on a dry run, since a dry run reveals sufficiency
     (`REQ-CAT-3`, `REQ-CAT-4`).
   - A balance verification names a session, an account, an asset and a stated amount, and is never a dry run.
+  - A holding balance (3.0.0) is the operator's own question to a node's holding account: the provider, the node and
+    the asset, with no session. Its result is the balance in whole units of the asset, zero included, or a refusal
+    with its class. It is the module's own figure, which `CMP-CORE-AUDIT` checks against the value held for each
+    order (`REQ-AUD-15`, `INV-1`); a balance verification stays a yes or no (`INV-9`).
   - A judgement question names the verifier, a subject reference and a class, and nothing else: no transaction
     (`REQ-CPL-4`).
   - A reversal names its own `transaction`, the `provider` asked, the transaction it `reverses`, and the segment's

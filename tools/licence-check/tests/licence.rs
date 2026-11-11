@@ -1,8 +1,8 @@
 //! Tests of the licence record check, run on in-memory fixtures.
 
 use rutent_licence_check::{
-    LockFile, Member, Reason, Violation, check, check_locks, find_locks, member_paths,
-    package_identity, workspace_member_paths,
+    LockFile, Member, Reason, Violation, check, check_locks, find_all_locks, find_locks,
+    member_paths, package_identity, workspace_member_paths,
 };
 use std::fs;
 
@@ -354,4 +354,35 @@ fn symlinked_lock_or_directory_under_experiments_is_an_error() {
         let err = result.expect_err("a symlink is refused");
         assert!(err.contains("symbolic link"), "{err}");
     }
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn a_lock_under_components_is_read_like_one_under_experiments() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("licence-find-all-locks");
+    let _ = fs::remove_dir_all(&base);
+    for dir in [
+        "experiments/a",
+        "components/stm/vos-program",
+        "components/stm/vos-program/target/release",
+        "components/stm/src",
+    ] {
+        fs::create_dir_all(base.join(dir)).expect("fixture dir");
+    }
+    for lock in [
+        "experiments/a/Cargo.lock",
+        "components/stm/vos-program/Cargo.lock",
+        "components/stm/vos-program/target/release/Cargo.lock",
+    ] {
+        fs::write(base.join(lock), "version = 4\n").expect("fixture lock");
+    }
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(
+        found,
+        vec![
+            "components/stm/vos-program/Cargo.lock",
+            "experiments/a/Cargo.lock"
+        ]
+    );
 }
