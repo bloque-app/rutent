@@ -47,14 +47,16 @@ pub enum Match {
 /// The log's history: each entry it holds with its receipt, in order.
 pub type History = [(Receipt, Entry)];
 
-/// The citations an entry makes under a row, given the history.
-pub type Cites = fn(&VerifiedEntry, &History) -> Vec<Cite>;
+/// The citations an entry makes under a row, given the history: a verified entry's, or, for a row of
+/// [`STATED_RELATIONS`], a stated entry's.
+pub type Cites<C = VerifiedEntry> = fn(&C, &History) -> Vec<Cite>;
 
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
-pub type Answers = fn(&VerifiedEntry, &Cite, &Entry, &History) -> Match;
+pub type Answers<C = VerifiedEntry> = fn(&C, &Cite, &Entry, &History) -> Match;
 
-/// One row of the citation table.
-pub struct Relation {
+/// One row of the citation table, over the citing entries of kind `C`: verified entries ([`RELATIONS`]) or stated
+/// ones ([`STATED_RELATIONS`]).
+pub struct Relation<C: 'static = VerifiedEntry> {
     /// The row's name, which its fixtures are named after.
     pub name: &'static str,
     /// The `SPEC.md` ids that demand the relation.
@@ -66,9 +68,9 @@ pub struct Relation {
     /// The fields that must match, each with the refusal when the answering entry is found but that field differs.
     pub fields: &'static [(&'static str, &'static str)],
     /// The citations `entry` makes under this row, given the history; none where the row doesn't apply to it.
-    pub cites: Cites,
+    pub cites: Cites<C>,
     /// How `target`, an earlier entry, answers `cite` made by `entry`, given the whole history.
-    pub answers: Answers,
+    pub answers: Answers<C>,
 }
 
 fn verified(entry: &Entry) -> Option<&VerifiedEntry> {
@@ -136,6 +138,24 @@ fn effect_action(entry: &VerifiedEntry) -> Option<(&Action, &Permit)> {
     }
 }
 
+/// The provider of `segment` of `order`: the one this log's `move_value` effect for it names.
+fn segment_provider<'a>(order: &Id, segment: &Id, history: &'a History) -> Option<&'a Id> {
+    history
+        .iter()
+        .find_map(|(_, e)| match effect_action(verified(e)?)? {
+            (
+                Action::MoveValue {
+                    order: o,
+                    segment: s,
+                    provider,
+                    ..
+                },
+                _,
+            ) if o == order && s == segment => Some(provider),
+            _ => None,
+        })
+}
+
 /// The citing entry's recorded input, if it records one.
 fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
     match &entry.what {
@@ -149,22 +169,87 @@ fn input_order(entry: &VerifiedEntry) -> &str {
     input(entry).map_or("", |i| i.subject.order.as_str())
 }
 
-/// The maker of a stated entry, attributed or claimed.
-fn maker(statement: &StatedEntry) -> &Id {
-    &statement.attribution.maker().party
+/// The provider, operator or module a stated entry names as making it: the actor whose key signs, attributed or
+/// claimed. Every row comparing a statement's maker reads this, never the party it states for, which a sibling under
+/// the same publisher shares.
+fn maker_provider(statement: &StatedEntry) -> &Id {
+    &statement.attribution.maker().acts
 }
 
-/// A stated entry attributed to `party`: its signature verified, and `party` its maker. An unverified statement is
-/// attributed to no one (`REQ-AUD-2`).
-fn statement_by(target: &Entry, party: &Id) -> Match {
+/// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
+/// under an order names (see `transaction-belongs-to-one-order`).
+fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
+    history.iter().find_map(|(_, e)| {
+        let s = stated(e)?;
+        let (order, t) = order_transaction(s)?;
+        (t == transaction).then(|| (order, segment_of(s)))
+    })
+}
+
+/// The segment a stated entry is about, where it names one.
+fn segment_of(statement: &StatedEntry) -> Option<&Id> {
+    statement.about.as_ref()?.segment.as_ref()
+}
+
+/// Whether `statement` is about what the entry citing it is about: the order its `about` names is `order`, the
+/// segment it names is `segment` where the citing entry names one, and the transaction it names belongs to `order`
+/// and, where the citing entry names a segment, to that segment. A statement about nothing is citable on its body;
+/// the log verifies none whose body names a transaction ([`attribute`](super::attribute)).
+fn about_agrees(
+    statement: &StatedEntry,
+    order: Option<&Id>,
+    segment: Option<&Id>,
+    history: &History,
+) -> bool {
+    let Some(about) = &statement.about else {
+        return true;
+    };
+    about.order.as_ref().is_none_or(|o| Some(o) == order)
+        && about
+            .segment
+            .as_ref()
+            .is_none_or(|s| segment.is_none_or(|c| c == s))
+        && about
+            .transaction
+            .as_ref()
+            .is_none_or(|t| match binding_of(t, history) {
+                Some((o, s)) => Some(o) == order && segment.is_none_or(|c| s == Some(c)),
+                None => order.is_none() && segment.is_none(),
+            })
+}
+
+/// A stated entry made by `party`, about what its citing entry is about: its signature verified, `party` the actor
+/// whose key signs it ([`maker_provider`]), and its `about` the citing entry's ([`about_agrees`]). An unverified
+/// statement is attributed to no one (`REQ-AUD-2`).
+fn statement_by(
+    target: &Entry,
+    party: &Id,
+    order: Option<&Id>,
+    segment: Option<&Id>,
+    history: &History,
+) -> Match {
     match stated(target) {
         Some(s) => judge(
             true,
             &[
                 matches!(s.attribution, Attribution::Verified { .. }),
-                maker(s) == party,
+                maker_provider(s) == party,
+                about_agrees(s, order, segment, history),
             ],
         ),
+        None => Match::NotTarget,
+    }
+}
+
+/// A stated entry about what its citing entry is about ([`about_agrees`]).
+fn statement_about(
+    target: &Entry,
+    order: Option<&Id>,
+    segment: Option<&Id>,
+    history: &History,
+) -> Match {
+    match stated(target) {
+        Some(s) => judge(true, &[about_agrees(s, order, segment, history)]),
         None => Match::NotTarget,
     }
 }
@@ -850,13 +935,23 @@ pub static RELATIONS: [Relation; 47] = [
         fields: &[
             ("verified", "a sent report is a verified statement"),
             ("maker", "a sent report is its sending party's statement"),
+            (
+                "about",
+                "a sent report is about its pair's order and segment",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::ReportPair { pair } => alloc::vec![by_receipt(&pair.sent.statement, 0)],
             _ => none(),
         },
-        answers: |e, _, t, _| match &e.what {
-            What::ReportPair { pair } => statement_by(t, &pair.sent.party),
+        answers: |e, _, t, h| match &e.what {
+            What::ReportPair { pair } => statement_by(
+                t,
+                &pair.sent.party,
+                Some(&pair.order),
+                Some(&pair.segment),
+                h,
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -871,13 +966,23 @@ pub static RELATIONS: [Relation; 47] = [
                 "maker",
                 "a received report is its receiving party's statement",
             ),
+            (
+                "about",
+                "a received report is about its pair's order and segment",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::ReportPair { pair } => alloc::vec![by_receipt(&pair.received.statement, 0)],
             _ => none(),
         },
-        answers: |e, _, t, _| match &e.what {
-            What::ReportPair { pair } => statement_by(t, &pair.received.party),
+        answers: |e, _, t, h| match &e.what {
+            What::ReportPair { pair } => statement_by(
+                t,
+                &pair.received.party,
+                Some(&pair.order),
+                Some(&pair.segment),
+                h,
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -889,13 +994,19 @@ pub static RELATIONS: [Relation; 47] = [
         fields: &[
             ("verified", "an arrival's report is a verified statement"),
             ("maker", "an arrival's report is its reserve's statement"),
+            (
+                "about",
+                "an arrival's report is about the order it arrived for",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::Arrival { report, .. } => alloc::vec![by_receipt(report, 0)],
             _ => none(),
         },
-        answers: |e, _, t, _| match &e.what {
-            What::Arrival { reserve, .. } => statement_by(t, reserve),
+        answers: |e, _, t, h| match &e.what {
+            What::Arrival { reserve, order, .. } => {
+                statement_by(t, reserve, order.as_ref(), None, h)
+            }
             _ => Match::NotTarget,
         },
     },
@@ -939,10 +1050,27 @@ pub static RELATIONS: [Relation; 47] = [
     },
     Relation {
         name: "evidence-rests-on-statements",
-        spec: &["REQ-ORD-39"],
+        spec: &["REQ-ORD-39", "REQ-ORD-38", "REQ-AUD-2"],
         quantifier: Quantifier::Exists,
         refusal: "graded evidence rests on stated entries of this log",
-        fields: &[],
+        fields: &[
+            (
+                "verified",
+                "evidence graded as signed, or as its provider's word, rests on verified statements",
+            ),
+            (
+                "provider",
+                "evidence graded as its provider's word rests on its segment's provider's statement",
+            ),
+            (
+                "bound",
+                "an unverified statement under evidence names a transaction of its order and segment",
+            ),
+            (
+                "about",
+                "graded evidence rests on statements about its order and segment",
+            ),
+        ],
         cites: |e, _| match &e.what {
             What::Evidence { rests_on, .. } => rests_on
                 .iter()
@@ -951,19 +1079,59 @@ pub static RELATIONS: [Relation; 47] = [
                 .collect(),
             _ => none(),
         },
-        answers: |_, _, t, _| judge(stated(t).is_some(), &[]),
+        answers: |e, _, t, h| match (&e.what, stated(t)) {
+            (
+                What::Evidence {
+                    order,
+                    segment,
+                    grade,
+                    ..
+                },
+                Some(s),
+            ) => {
+                // Grades 2 and 3 claim a signature, and a bare statement (4) is its provider's word, which an
+                // unverified statement is no one's (`REQ-AUD-2`, `REQ-ORD-38`): each rests on a statement the log
+                // verified, a bare statement on the segment's provider's. A public record (1) rests on the network,
+                // so its statement may be unverified, but like any it is bound to the order and segment through a
+                // transaction it names.
+                let verified = matches!(s.attribution, Attribution::Verified { .. });
+                let word = *grade == EvidenceGrade::Statement;
+                let provider = segment_provider(order, segment, h);
+                judge(
+                    true,
+                    &[
+                        verified || *grade == EvidenceGrade::PublicRecord,
+                        !word || provider == Some(maker_provider(s)),
+                        verified
+                            || s.about
+                                .as_ref()
+                                .and_then(|a| a.transaction.as_ref())
+                                .and_then(|t| binding_of(t, h))
+                                == Some((order, Some(segment))),
+                        about_agrees(s, Some(order), Some(segment), h),
+                    ],
+                )
+            }
+            _ => Match::NotTarget,
+        },
     },
     Relation {
         name: "afterwards-rests-on-a-statement",
         spec: &["REQ-ORD-25", "REQ-ORD-31"],
         quantifier: Quantifier::Exists,
         refusal: "what came after an order ended rests on a stated entry of this log",
-        fields: &[],
+        fields: &[(
+            "about",
+            "what came after an order ended rests on a statement about that order",
+        )],
         cites: |e, _| match &e.what {
             What::Afterwards { statement, .. } => alloc::vec![by_receipt(statement, 0)],
             _ => none(),
         },
-        answers: |_, _, t, _| judge(stated(t).is_some(), &[]),
+        answers: |e, _, t, h| match &e.what {
+            What::Afterwards { order, .. } => statement_about(t, Some(order), None, h),
+            _ => Match::NotTarget,
+        },
     },
     Relation {
         name: "reliance-names-its-judges-statement",
@@ -973,13 +1141,17 @@ pub static RELATIONS: [Relation; 47] = [
         fields: &[
             ("verified", "a reliance's judgement is a verified statement"),
             ("maker", "a reliance's judgement is its judge's statement"),
+            (
+                "about",
+                "a reliance's judgement is about nothing but the order relying on it",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::Reliance { judgement, .. } => alloc::vec![by_receipt(judgement, 0)],
             _ => none(),
         },
-        answers: |e, _, t, _| match &e.what {
-            What::Reliance { judge, .. } => statement_by(t, judge),
+        answers: |e, _, t, h| match &e.what {
+            What::Reliance { judge, order, .. } => statement_by(t, judge, Some(order), None, h),
             _ => Match::NotTarget,
         },
     },
@@ -1067,7 +1239,7 @@ pub static RELATIONS: [Relation; 47] = [
     },
     Relation {
         name: "shortlisted-authority-cites-its-shortlist",
-        spec: &["REQ-CPL-2", "REQ-CPL-6"],
+        spec: &["REQ-CPL-2", "REQ-CPL-6", "REQ-CPL-5"],
         quantifier: Quantifier::Exists,
         refusal: "a shortlisted route's authority names a decision record of this log",
         fields: &[
@@ -1082,6 +1254,10 @@ pub static RELATIONS: [Relation; 47] = [
             (
                 "providers",
                 "a shortlisted route's authority names only providers its shortlist shortlisted",
+            ),
+            (
+                "verifiers",
+                "a shortlisted route's authority names only verifiers its shortlist's tuples need",
             ),
         ],
         cites: |e, _| match &e.what {
@@ -1099,6 +1275,7 @@ pub static RELATIONS: [Relation; 47] = [
             let Authority::ShortlistedRoute {
                 shortlist,
                 providers,
+                verifiers,
             } = &question.authority
             else {
                 return Match::NotTarget;
@@ -1109,6 +1286,7 @@ pub static RELATIONS: [Relation; 47] = [
                     order,
                     round,
                     shortlisted,
+                    verifiers: needed,
                     ..
                 } => judge(
                     record == shortlist,
@@ -1118,6 +1296,7 @@ pub static RELATIONS: [Relation; 47] = [
                         shortlisted
                             .as_ref()
                             .is_some_and(|s| providers.iter().all(|p| s.contains(p))),
+                        verifiers.iter().all(|v| needed.contains(v)),
                     ],
                 ),
                 _ => Match::NotTarget,
@@ -1186,8 +1365,9 @@ pub static RELATIONS: [Relation; 47] = [
         quantifier: Quantifier::Exists,
         refusal: "a revocation names a permission granted in this log",
         fields: &[],
+        // Only a permitted revocation revokes; a refused one of a permission never granted is recorded as refused.
         cites: |e, _| match &e.what {
-            What::RevokePermission { .. } => by_fields(0),
+            What::RevokePermission { .. } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
@@ -1258,27 +1438,43 @@ pub static RELATIONS: [Relation; 47] = [
         spec: &["REQ-AUZ-7"],
         quantifier: Quantifier::Exists,
         refusal: "a customer's permitted read is of an order accepted in this log",
-        fields: &[(
-            "party",
-            "a customer's permitted read is of an order whose requester, beneficiary or payer it is",
-        )],
+        fields: &[
+            (
+                "party",
+                "a customer's permitted read is of an order whose requester, beneficiary or payer it is",
+            ),
+            (
+                "segment",
+                "a customer's permitted read of a segment is of a segment its order's plan lists",
+            ),
+        ],
         cites: |e, _| match (&e.what, read_of_order(e)) {
             (What::CheckRead { check }, Some(_)) if check.reader.role == Role::Customer => {
                 by_fields(0)
             }
             _ => none(),
         },
-        answers: |e, _, t, _| {
+        answers: |e, _, t, h| {
             let (What::CheckRead { check }, Some(read)) = (&e.what, read_of_order(e)) else {
                 return Match::NotTarget;
+            };
+            // A segment read names its order; the segment must be that order's, by the plans this log holds.
+            let of_its_order = match &check.reads {
+                Reads::Segment { order, segment, .. } => {
+                    planned_end(order.as_str(), segment.as_str(), h).is_some()
+                }
+                _ => true,
             };
             match verified(t).map(|t| &t.what) {
                 Some(What::Acceptance { order, parties, .. }) => {
                     let party = &check.reader.party;
                     judge(
                         order == read,
-                        &[[&parties.requester, &parties.beneficiary, &parties.payer]
-                            .contains(&party)],
+                        &[
+                            [&parties.requester, &parties.beneficiary, &parties.payer]
+                                .contains(&party),
+                            of_its_order,
+                        ],
                     )
                 }
                 _ => Match::NotTarget,
@@ -1436,6 +1632,10 @@ pub static RELATIONS: [Relation; 47] = [
                 "an acceptance's reserve's yes is its origin reserve's statement",
             ),
             ("order", "an acceptance's reserve's yes is about its order"),
+            (
+                "transaction",
+                "an acceptance's yes names the transaction it was asked under, which the reserve signed",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::Acceptance {
@@ -1460,8 +1660,12 @@ pub static RELATIONS: [Relation; 47] = [
                 true,
                 &[
                     matches!(statement.attribution, Attribution::Verified { .. }),
-                    maker(statement) == origin_reserve,
+                    maker_provider(statement) == origin_reserve,
                     statement.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    statement
+                        .about
+                        .as_ref()
+                        .is_some_and(|a| a.transaction.is_some()),
                 ],
             )
         },
@@ -1762,6 +1966,94 @@ pub enum Through {
     Policy,
 }
 
+/// The transaction a stated entry is about, under the order it is about, where it names both.
+fn order_transaction(statement: &StatedEntry) -> Option<(&Id, &Id)> {
+    let about = statement.about.as_ref()?;
+    Some((about.order.as_ref()?, about.transaction.as_ref()?))
+}
+
+/// The transaction a provider's result is about, where it names one: the answer to a question Core asked under it.
+fn answered_transaction(statement: &StatedEntry) -> Option<&Id> {
+    (statement.what.statement.as_str() == crate::provider_role::RESULT_SHAPE)
+        .then(|| statement.about.as_ref()?.transaction.as_ref())
+        .flatten()
+}
+
+/// A stated entry as the rows of [`STATED_RELATIONS`] read it: with the maker this deployment's operator signs its
+/// own statements as, Core's questions among them, which a question's verified `acts` must be: a module the operator
+/// publishes states for the operator's party, but its operation is no question of Core's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatedCiting {
+    /// The stated entry.
+    pub entry: StatedEntry,
+    /// The maker the deployment's operator signs as.
+    pub operator: Id,
+}
+
+/// The rows a stated entry is held to, read as [`RELATIONS`] are. `contracts/core-internal/README.md` lists them in
+/// the same table.
+pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
+    Relation {
+        name: "answer-follows-its-question",
+        spec: &["REQ-ORD-32", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a provider's answer under a transaction follows the question Core asked under it",
+        fields: &[
+            ("verified", "a question is a verified statement"),
+            (
+                "maker",
+                "a question is the operator's own statement, signed as the operator",
+            ),
+            (
+                "order",
+                "an answer is about the order its question asked for",
+            ),
+        ],
+        cites: |e, _| answered_transaction(&e.entry).map_or_else(none, |_| by_fields(0)),
+        answers: |citing, _, t, _| {
+            let e = &citing.entry;
+            let (Some(transaction), Some(t)) = (answered_transaction(e), stated(t)) else {
+                return Match::NotTarget;
+            };
+            let Some(asked) = t.about.as_ref().filter(|a| {
+                t.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+                    && a.transaction.as_ref() == Some(transaction)
+            }) else {
+                return Match::NotTarget;
+            };
+            let order = e.about.as_ref().and_then(|a| a.order.as_ref());
+            judge(
+                true,
+                &[
+                    matches!(t.attribution, Attribution::Verified { .. }),
+                    maker_provider(t) == &citing.operator,
+                    asked.order.is_some() && order.is_none_or(|o| asked.order.as_ref() == Some(o)),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "transaction-belongs-to-one-order",
+        spec: &["REQ-ORD-32", "REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a transaction belongs to one order and one segment: the first entry that names it fixes them",
+        fields: &[],
+        cites: |e, _| order_transaction(&e.entry).map_or_else(none, |_| by_fields(0)),
+        answers: |citing, _, t, _| {
+            let e = &citing.entry;
+            let (Some((order, transaction)), Some(t)) = (order_transaction(e), stated(t)) else {
+                return Match::NotTarget;
+            };
+            judge(
+                order_transaction(t).is_some_and(|(o, x)| {
+                    x == transaction && (o != order || segment_of(t) != segment_of(e))
+                }),
+                &[],
+            )
+        },
+    },
+];
+
 /// Whether the log admits `entry`, given its `history`: each entry it holds with its receipt, in order. The log runs
 /// it on every append ([`calls::Log::append`](super::calls::Log::append)), since a permit, a receipt or an id can be
 /// built or read from anywhere. It reads [`RELATIONS`] row by row, and refuses on the first row the entry breaks:
@@ -1771,13 +2063,16 @@ pub enum Through {
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry cites nothing and is admitted. Before any row, the entry's handle is held to its kind: a decision
-/// kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry only on the
-/// general path, so a decision written by anyone but policy is refused even where its type was got round.
+/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the maker this deployment's operator signs
+/// its own statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
+/// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
+/// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
+/// refused even where its type was got round.
 pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
     through: Through,
+    operator: &Id,
 ) -> Result<(), Violation> {
     let decision = matches!(entry, Entry::Verified(v) if super::calls::is_decision(&v.what));
     match (through, decision) {
@@ -1789,10 +2084,25 @@ pub fn admit_entry(
         }
         _ => {}
     }
-    let Entry::Verified(entry) = entry else {
-        return Ok(());
-    };
-    for row in &RELATIONS {
+    match entry {
+        Entry::Verified(entry) => admit_under(&RELATIONS, entry, history),
+        Entry::Stated(entry) => {
+            let citing = StatedCiting {
+                entry: entry.clone(),
+                operator: operator.clone(),
+            };
+            admit_under(&STATED_RELATIONS, &citing, history)
+        }
+    }
+}
+
+/// Holds `entry` to every row of `rows` over `history`, refusing on the first it breaks.
+fn admit_under<C>(
+    rows: &[Relation<C>],
+    entry: &C,
+    history: &[(Receipt, Entry)],
+) -> Result<(), Violation> {
+    for row in rows {
         for cite in (row.cites)(entry, history) {
             let candidates = history
                 .iter()

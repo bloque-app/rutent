@@ -25,7 +25,10 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | operator → policy | `Reads::grant_permission`, `Reads::revoke_permission` | `PermissionChange` | `Decision` | `core-authz` `session` (`T-021-02`) | `REQ-AUZ-7`, `REQ-AUD-12` |
 | orchestration → policy | `Charges::charge` | `Charge` | `ChargeAnswer` | `core-authz` `parties` (`T-021-05`) | `REQ-OPS-1`, `REQ-AUZ-8` |
 | orchestration → policy | `PersonQuestions::ask_about_person` | `PersonQuestion` | `PersonAnswer` | `core-authz` `cpl` (`T-021-07`) | `REQ-CPL-2`, `REQ-CPL-5`, `REQ-CPL-6` |
-| orchestration, checks → log | `Log::append` | `GeneralEntry`: an `Entry` of no decision kind | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUD-1`, `REQ-AUD-2`, `INV-7` |
+| orchestration, checks → log | `Log::append` | `GeneralEntry`: an `Entry` of no decision kind, a stated one unverified | `Receipt` of the entry recorded | `core-audit` `log` (`T-022-01`) | `REQ-AUD-1`, `REQ-AUD-2`, `INV-7` |
+| log → evidence store | `KeptStatements::kept` | a commitment | the `KeptStatement` under it, or none | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-2` |
+| log → catalogue | `StatementKeys::deployment`, `StatementKeys::operator`, `StatementKeys::publisher`, `StatementKeys::signs_for` | a maker, a key and an instant | this deployment; the party its operator states as, which the log hands `admit_entry`; the party a maker states for; whether the key signs the maker's statements then | `core-audit` `log`, from advertisements the log recorded under permitted `change_catalogue` effects (`T-022-01`), never orchestration | `REQ-AUD-2`, `REQ-PRT-1`, `THR-3` |
+| log → signature check | `Signatures::verifies` | a statement's bytes as received | whether its signature is its named key's | `core-audit` `log` (`T-022-01`) | `REQ-AUD-2` |
 | policy → log | `PolicyLog::append_decision` | `DecisionEntry`: a `VerifiedEntry` of a decision kind | `Receipt` | `core-audit` `log` (`T-022-01`) | `REQ-AUZ-1`, `REQ-AUD-1`, `INV-7` |
 | orchestration → evidence store | `Evidence::keep` | a statement's bytes as received | `Kept`: its salted commitment, and the statement it restates | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-2`, `REQ-AUD-5`, `REQ-AUD-6` |
 | party, checker → evidence store | `Evidence::fetch` | `ReadCheck` of `reads: evidence` | `Fetched`: a `KeptStatement`, policy's refusal, or erased | `core-audit` `receipts` (`T-022-03`) | `REQ-AUD-5`, `REQ-AUD-9`, `REQ-AUD-10` |
@@ -53,13 +56,40 @@ row implements its own in its own module, where its fail-closed stub sits until 
   `PolicyLog` to the policy engine and to no other part; `tools/boundary-check` reads the crate graph from
   `cargo metadata` and fails when any crate but the assembly reaches `core-audit`, which builds the log and its
   handles, or `core-authz`, which holds policy's.
+- **The log, not the writer, attributes a statement.** A stated entry reaches `Log` unverified: it names the maker it
+  claims and the commitment of the bytes the evidence store keeps, and a `GeneralEntry` refuses one attributed
+  `verified`, built or read. On append the log runs `attribute`: it fetches the kept bytes by the commitment
+  (`KeptStatements`), refusing an entry whose bytes aren't kept, and records the entry `verified` to its claimed maker
+  only where the bytes are an envelope of this deployment, made by that maker, of the entry's shape, time and key, about
+  the transaction its body names exactly when its body names one, with a signature that verifies (`Signatures`) under a
+  key that signs the maker's statements at its `made_at` (`StatementKeys`); otherwise it records it unverified,
+  attributed to no one (`REQ-AUD-2`). The keys come from advertisements the log recorded under permitted
+  `change_catalogue` effects and from the deployment, never from orchestration, which could otherwise call its own key a
+  provider's. The receipt is of the entry recorded. A statement whose body names a transaction is verified only where
+  its `about` names that transaction, so none is verified about nothing, and one about an order or a segment only
+  through a transaction its body names: the order is Core's reading, which no provider signs, so the signed transaction
+  is what binds the statement to it. Core appends the question it asks under that transaction first, signed with the
+  operator's key and about the order, and the segment, it asks for; `answer-follows-its-question` holds the answer to
+  it, made by the deployment's operator party, and `transaction-belongs-to-one-order` keeps the transaction to that
+  order and segment (`REQ-ORD-32`, `REQ-ORD-38`). A judgement carries no transaction, so it is appended about no order,
+  and the `reliance` entry that relies on it binds it to one. `fixtures/attribution/` holds a case for each part of the
+  rule.
+- **A statement's maker is bound to its key and its publisher.** A stated entry's actor has two names: `acts`, the
+  provider, operator or module whose name the envelope carries and whose key signs, and `party`, the one it states
+  for, its publisher or the operator's party. The log verifies a statement only where the envelope's `maker` is its
+  `acts`, the key signs for that `acts`, and its `party` is the one `StatementKeys::publisher` answers for it, so
+  both names of a verified maker are bound. Its `role` stays the writer's label, and no relation reads it. A row
+  comparing a statement's maker with its signer (an origin reserve, an arrival's reserve, a judge, a report's
+  reporting provider, a segment's provider under grade-4 evidence, the operator for a question) reads `acts`; no row
+  compares it with a party. A module the operator publishes states for the operator's party, but its operation is no
+  question of Core's: a question is made as the operator, `StatementKeys::operator`.
 - **The log is the guard of every citation.** Permits, receipts and ids can be built anywhere: `Decision::permit`
   makes a `Permit` from a permitting answer, but a permit deserialises, and a decision's fields are public. So the
-  log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS`: each row is a reference an
-  entry makes to earlier entries, derived from `SPEC.md`, with the kind of entry it must point to and the outcome
-  required, the fields that must match, and the ids that demand it. An `exists` row is refused when no earlier
-  entry answers, naming the field that failed on the closest one; a `none other` row when one does. A relation with
-  no `SPEC.md` id is not in the table.
+  log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS` for a verified entry and
+  `STATED_RELATIONS` for a stated one: each row is a reference an entry makes to earlier entries, derived from
+  `SPEC.md`, with the kind of entry it must point to and the outcome required, the fields that must match, and the
+  ids that demand it. An `exists` row is refused when no earlier entry answers, naming the field that failed on the
+  closest one; a `none other` row when one does. A relation with no `SPEC.md` id is not in the table.
 
 ### The citation table
 
@@ -85,33 +115,35 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `reversal-rests-on-its-evidence` | `input` (`reversal_completed`): its `evidence` | an `evidence` with that id | order, segment, whose (not the failed segment's provider, unless the origin reserve labelled its word) | `REQ-ORD-3` | admitted: `world--*`; refused: `--missing`, `--order`, `--segment`, `--whose`, `--unless` |
 | `decision-record-chains-to-its-orders-previous` | `decision_record`: its `previous` | a `decision_record` at that receipt | order | `REQ-AUD-4` | admitted: `world--*`; refused: `--missing`, `--order` |
 | `posted-route-cites-its-decision-record` | `decide` of `post_route`: its `decision_record` | a `decision_record` with that digest | order | `REQ-AUD-4` | admitted: `world--*`; refused: `--missing`, `--order` |
-| `sent-report-is-its-partys-statement` | `report_pair`: `sent.statement` | a stated entry at that receipt | verified, maker (`sent.party`) | `REQ-ORD-9`, `REQ-AUD-2` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker` |
-| `received-report-is-its-partys-statement` | `report_pair`: `received.statement` | a stated entry at that receipt | verified, maker (`received.party`) | `REQ-ORD-9`, `REQ-AUD-2` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker` |
-| `arrival-rests-on-the-reserves-report` | `arrival`: its `report` | a stated entry at that receipt | verified, maker (the `reserve`) | `REQ-ORD-23` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker` |
+| `sent-report-is-its-partys-statement` | `report_pair`: `sent.statement` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (`sent.party`), about (the pair's order and segment) | `REQ-ORD-9`, `REQ-AUD-2` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--about` |
+| `received-report-is-its-partys-statement` | `report_pair`: `received.statement` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (`received.party`), about (the pair's order and segment) | `REQ-ORD-9`, `REQ-AUD-2` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--about` |
+| `arrival-rests-on-the-reserves-report` | `arrival`: its `report` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `reserve`), about (the order it arrived for) | `REQ-ORD-23` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--about` |
 | `refiling-files-an-arrival-anew` | `refiling`: its `arrival` | an `arrival` at that receipt | order, filer (the operator, or the arrival's reserve) | `REQ-ORD-23` | admitted: `world--*`; refused: `--missing`, `--order`, `--filer`, `--or` |
-| `evidence-rests-on-statements` | `evidence`: each of `rests_on` | a stated entry at that receipt | — | `REQ-ORD-39` | admitted: `world--*`; refused: `--missing` |
-| `afterwards-rests-on-a-statement` | `afterwards`: its `statement` | a stated entry at that receipt | — | `REQ-ORD-25`, `REQ-ORD-31` | admitted: `world--*`; refused: `--missing` |
-| `reliance-names-its-judges-statement` | `reliance`: its `judgement` | a stated entry at that receipt | verified, maker (the `judge`) | `REQ-CPL-12` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker` |
+| `evidence-rests-on-statements` | `evidence`: each of `rests_on` | a stated entry at that receipt | verified (each statement under grades 2 to 4: 2 and 3 claim a signature, and 4 is its provider's word, which an unverified statement is no one's; a public record, 1, rests on the network), provider (under grade 4, the statement's maker is the provider this log's `move_value` names for the segment), bound (an unverified statement names a transaction bound to the evidence's order and segment), about (the evidence's order and segment, a transaction by the order and segment it belongs to) | `REQ-ORD-39`, `REQ-ORD-38`, `REQ-AUD-2` | admitted: `world--*`, `--signed-and-verified`, `--provider-word`, `--public-record-unverified-bound`; refused: `--missing`, `--verified`, `--provider`, `--bound`, `--about`, `--about-segment`, `--about-grade-1`, `--about-grade-4` |
+| `afterwards-rests-on-a-statement` | `afterwards`: its `statement` | a stated entry at that receipt | about (the order) | `REQ-ORD-25`, `REQ-ORD-31` | admitted: `world--*`; refused: `--missing`, `--about` |
+| `reliance-names-its-judges-statement` | `reliance`: its `judgement` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `judge`), about (nothing but the relying order: a judgement is appended about no order) | `REQ-CPL-12` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--about` |
 | `measure-cites-entries-of-the-log` | `measure`: each of `cites` | an entry at that receipt | — | `REQ-AUD-2` | admitted: `world--*`; refused: `--missing` |
 | `raise-cites-entries-of-the-log` | `raise`: each of `cites` | an entry at that receipt | — | `REQ-ORD-9`, `REQ-AUD-15` | admitted: `world--*`; refused: `--missing` |
 | `erasure-names-a-kept-statement` | `erasure`: its `evidence` | a stated entry holding that commitment | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--missing` |
 | `acceptance-is-of-the-quote-shown` | `acceptance` (`given`): its `quote` | a `shown` with that digest | order, shown_as (a quote, never a price) | `REQ-ORD-34`, `REQ-QTE-7` | admitted: `world--*`; refused: `--missing`, `--order`, `--shown_as`, `--never` |
-| `shortlisted-authority-cites-its-shortlist` | `ask_about_person` on a shortlisted route: its `shortlist` | a `decision_record` with that digest | order, round (`shortlist`), providers (among its `shortlisted`) | `REQ-CPL-2`, `REQ-CPL-6` | admitted: `world--*`; refused: `--missing`, `--order`, `--round`, `--providers` |
+| `shortlisted-authority-cites-its-shortlist` | `ask_about_person` on a shortlisted route: its `shortlist` | a `decision_record` with that digest | order, round (`shortlist`), providers (among its `shortlisted`), verifiers (among the `verifiers` its tuples need) | `REQ-CPL-2`, `REQ-CPL-6`, `REQ-CPL-5` | admitted: `world--*`, `--asking-a-verifier-it-needs`; refused: `--missing`, `--order`, `--round`, `--providers`, `--verifiers` |
 | `provider-asked-before-was-asked` | `ask_about_person`: each of `asked_before` | an `ask_about_person`, `permitted`, asking that provider | order | `REQ-CPL-5` | admitted: `world--*`; refused: `--missing`, `--order` |
 | `asked-before-is-complete` | `ask_about_person`: its order | none other: no `ask_about_person`, `permitted`, of that order asking a provider missing from `asked_before` | — | `REQ-CPL-5` | admitted: `world--*`; refused: `--conflict` |
-| `revocation-revokes-a-grant` | `revoke_permission`: its `permission` | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing` |
+| `revocation-revokes-a-grant` | `revoke_permission`, `permitted`: its `permission` (a refused one cites nothing) | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`, `--refused`; refused: `--missing` |
 | `permitted-read-rests-on-its-grant` | `check_read`, `permitted`, naming a `permission` | a `grant_permission`, `permitted`, of that permission | grantee (the reader's party), scope (covers what it reads) | `REQ-AUZ-7`, `REQ-AUD-12` | admitted: `world--*`; refused: `--missing`, `--grantee`, `--scope` |
 | `permitted-read-is-not-revoked` | `check_read`, `permitted`, naming a `permission` | none other: no `revoke_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`; refused: `--conflict` |
-| `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order or segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer) | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--party`, `--beneficiary` |
+| `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order or segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer), segment (a segment read's segment is one its order's plan lists) | `REQ-AUZ-7` | admitted: `world--*`, `--segment-of-its-order`; refused: `--missing`, `--party`, `--beneficiary`, `--segment` |
 | `provider-read-is-of-its-own-segment` | `check_read`, `permitted`, by a provider, of a segment: its order and segment | an `effect` of `move_value` on that segment of that order | provider (the reader, as the effect and the read name it) | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--provider`, `--as` |
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
 | `route-starts-on-the-withdrawal-proof` | `effect` of `move_value` on a segment after its part's first, by the `route_chosen` plan | an `input` (`segment_settled`) of the part's first segment, for the order | — | `REQ-ORD-40` | admitted: `world--*`; refused: `--missing` |
 | `fee-rests-on-a-settled-segment` | `fee`: its segment | an `input` (`segment_settled`) of that segment | order | `REQ-AUD-11` | admitted: `world--*`; refused: `--missing`, `--order` |
-| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): its `reserve_yes` | a stated entry at that receipt | verified, maker (the `origin_reserve`), order (its `about`) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order` |
+| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): its `reserve_yes` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `origin_reserve`), order (its `about`), transaction (its `about` names the one the reserve signed) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order`, `--transaction` |
 | `acceptance-is-asked-in-the-users-session` | `acceptance` (`given`): its `session` | an `open_session`, `permitted`, that opened that session | holder (the requester), expires_at (not before the acceptance) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--holder`, `--expires_at` |
 | `move-segment-is-in-its-orders-plan` | `effect` of `move_value`: its segment | an `input` (`route_chosen`, `route_recalculated` or `destination_changed`) whose plan lists that segment | order | `REQ-ORD-38`, `REQ-ORD-40` | admitted: `world--*`; refused: `--missing`, `--unplanned-segment`, `--order` |
 | `recalculation-starts-from-evidenced-value` | `input` (`route_recalculated`): its order and part | an `input` (`segment_settled`) of that order | part, node (the settled segment's `to` in its plan is the new route's first `from`) | `REQ-ORD-2`, `INV-4` | admitted: `world--*`; refused: `--missing`, `--part`, `--node` |
 | `order-is-opened-once` | `input` (`route_chosen`): its order | none other: no other `route_chosen` of that order (the same input retried is admitted; a linked order opened by `handed_on_from` is its own order) | — | `REQ-ORD-19` | admitted: `world--*`, `--retried`; refused: `--conflict` |
+| `answer-follows-its-question` | a stated entry of a provider's `result` naming a transaction: its `about.transaction` | an earlier stated entry of an `operation` under that transaction | verified, maker (its verified party is the deployment's operator party, which `admit_entry` is handed), order (the answer's, where it names one) | `REQ-ORD-32`, `REQ-AUD-2` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order` |
+| `transaction-belongs-to-one-order` | a stated entry about an order: its `about.transaction` | none other: no earlier stated entry naming the same transaction under another order or another segment (the first fixes both; the same entry retried is admitted) | — | `REQ-ORD-32`, `REQ-ORD-38` | admitted: `world--*`, `--retried`; refused: `--conflict`, `--segment` |
 
 Every row has a refused case for its target missing (or, for `none other`, present) and one for each field it
 matches, each named `<row>--<field>`; `world--<entry>` cases admit each entry of one coherent log on what came
@@ -310,15 +342,15 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `Raise` | its difference is a real one: two amounts or times that differ, a charge above its maximum |
 | `VerifiedEntry` | an entry's outcome is one its call can have: a policy call's `permitted`, `refused` or `not_known`; an effect's `to_take_effect`; a result's `done`, `failed` or `unanswered`; a raise's, a command's and an erasure's `done` or `failed`; any other record's `observed`. A session entry names the session exactly when it was opened, ending after it was asked for and no later than its `until` |
 | `What::Input` | the recorded input holds to the state-machine contract's own `check` |
-| `StatedEntry` | its relay is a party other than its maker; its `about` names something |
+| `StatedEntry` | its relay is an actor other than its maker (a sibling of one publisher may relay); its `about` names something |
 | `VerifiedEntry` of a `command` | its `who` is the operator |
-| `GeneralEntry` | it holds no decision kind (`calls::is_decision`), however it is built or read |
+| `GeneralEntry` | it holds no decision kind (`calls::is_decision`), and no stated entry attributed `verified`, however it is built or read |
 | `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
 | `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order or the trail; a customer's is never of the trail |
-| `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers |
+| `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers and the verifiers its tuples need, which receive the subject |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
 | `What::Acceptance` | it names the reserve's yes and the session exactly when its basis is given |
-| `What::DecisionRecord` | it names its shortlisted providers, at least one, each once, exactly when its round is the shortlist |
+| `What::DecisionRecord` | it names its shortlisted providers, each once, exactly when its round is the shortlist; a shortlist that kept none names none, so a `no_route` input has its record to cite; it names the verifiers its tuples need, each once, only when it is a shortlist's |
 
 Each fixture under `fixtures/invalid/` breaks exactly one rule, named in its file name. `tests/core-internal.rs`
 lists, for each, the exact schema errors and the Rust refusal it gives, or, for a rule only Rust states, that the
@@ -396,8 +428,11 @@ These are defaults taken where the row left a choice open. Each is reversible by
 - **Acting once on an effect is orchestration's.** The log admits an identical effect entry again, as a retry of an
   append that failed, so it can't stop orchestration from acting twice on one receipt. `T-020-08` owns an effect's
   idempotency: it acts on each effect's receipt once, whatever retries the append had (`INV-8`).
-- **A question on a shortlisted route** carries the shortlisted providers, asks only among them (`REQ-CPL-6`, a
-  shape rule), and its shortlist's decision record names them (`shortlisted-authority-cites-its-shortlist`). A read
+- **A question on a shortlisted route** carries the shortlisted providers and the verifiers its tuples need, which
+  receive the subject; it asks only among them (`REQ-CPL-6`, a shape rule), and its shortlist's decision record names
+  them both (`shortlisted-authority-cites-its-shortlist`). `T-020-06` fills a shortlist record's `verifiers` from the
+  tuples' needs in the router's recorded decision; the verifiers asked are recorded and bounded with the providers
+  (`asked_before`, `provider-asked-before-was-asked`, `asked-before-is-complete`, `REQ-CPL-5`). A read
   check is taken from every role; policy answers it, and a permitted one is held to who may read
   (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`, the read rules above).
 - **Refusal classes for orders** are the seven `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
@@ -420,6 +455,48 @@ These are defaults taken where the row left a choice open. Each is reversible by
   written by policy and one written by orchestration look alike to the table. `T-020-05` and `T-021-01` hold the log
   through these handles, orchestration through `Log` and the engine through `PolicyLog`, and `T-022-01` implements
   both on its log.
+- **Attribution by the log** (amending `T-022-01`'s row in `PLAN.md`, after `T-020-01` merged).
+  Until then a stated entry's attribution was its writer's word, and the rows that require a verified statement
+  (`sent-report-is-its-partys-statement`, `received-report-is-its-partys-statement`,
+  `arrival-rests-on-the-reserves-report`, `reliance-names-its-judges-statement`,
+  `acceptance-rests-on-the-reserves-yes`) trusted it: orchestration could log a verified yes the origin reserve
+  never gave. `T-020-05` appends each statement unverified, naming its claimed maker, after keeping its bytes;
+  `T-022-01`'s log implements `attribute` over `KeptStatements`, `StatementKeys` and `Signatures`, and hands
+  `admit_entry` the operator party `StatementKeys::operator` answers; `T-022-03`'s store answers `KeptStatements`.
+  `core-audit`'s own checks (`T-022-05`, `T-022-06`) append through a general handle, never the log's own type, so
+  they write no decision and attribute no statement.
+- **Knowing a statement verified** (`T-020-03`, `T-020-05`). `Log::append` answers a receipt, not the attribution
+  it recorded. Orchestration ties a statement to its maker's key before it relies on it (`T-020-05`), so it knows
+  beforehand what the log will find; where the two differ, the log's entry is the one a relation reads, and an
+  acceptance resting on a yes the log recorded unverified is refused.
+- **A statement is bound to its order before it is answered** (`REQ-ORD-32`, `REQ-ORD-38`). No provider signs an
+  order; it signs the transaction Core asked it under. Core appends its question first, an `operation` signed with
+  the operator's key, about the order it asks for and the transaction it asks under, so the binding exists before
+  any answer can. A provider's result naming a transaction is admitted only after that question
+  (`answer-follows-its-question`), about the order the question asked for; is verified about an order or a segment
+  only where its `about` names the transaction its body names; and `transaction-belongs-to-one-order` refuses any
+  later entry naming that transaction under another order. Every row that cites a statement holds its `about` to
+  the citing entry's. A genuine yes about one order can't be cited for another, whether its transaction is left
+  out or kept, and whether it is appended before or after the genuine one.
+- **A question before each answer** (`T-020-03`, `T-020-04`, `T-020-06`). Core asks each question under a fresh
+  transaction for its order, never one an earlier order or question used, and appends the question before it sends
+  it, so its answer, appended with that transaction in its `about`, is admitted.
+- **Asking under a false label** (a residual for `T-025-05`). The log can't tell that the order a question names is
+  the one Core asked for: orchestration could ask a question for one order and label it another before any answer.
+  It can be caught, because the question's signed body names the account and the amount asked about, which a
+  checker compares with the labelled order's; the log does not compare them.
+- **A report's party is its provider** (`T-020-07`, `T-022-05`). `Report.party` names the provider that reports, the
+  statement's `acts`, and `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` read
+  `acts`, so a sibling under the same publisher can't stand in for it and two adjacent providers of one publisher
+  can report a pair (`REQ-ORD-9`).
+- **The verifiers asked** (`T-021-07`). Policy checks the verifiers a question asks against the tuples' declared
+  needs, by the advertisements, as well as against the shortlist record's `verifiers`.
+- **The router record's bytes** (`T-022-03`). The evidence store keeps the bytes of the router's recorded decision
+  a decision record's `record` digests, so its tuples' needs and shortlist can be checked against it.
+- **Whose keys** (a residual for `T-025-05`). The catalogue the state machine holds is state orchestration drives,
+  so `StatementKeys` takes a maker's keys only from advertisements the log itself recorded under permitted
+  `change_catalogue` effects (`T-022-01`). A key is checked as current at the statement's own `made_at`, so a key
+  revoked since can still sign a statement backdated to before its revocation (`THR-3`).
 - **One process** (a residual for `T-025-05`). The handles keep decision entries to the policy engine while Core's
   parts share one process, where only the assembly can reach the log. Were the parts split across processes, a
   decision entry would need the policy engine's signature, which the log checks before it admits one; no such

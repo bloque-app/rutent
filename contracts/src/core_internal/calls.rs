@@ -17,6 +17,14 @@
 //! builds or deserialises the entry. Only the assembly holds the log itself, and it hands [`PolicyLog`] to the policy
 //! engine alone; the crate graph keeps every other part from reaching the log's type (`tools/boundary-check`).
 //!
+//! **The log, not the writer, attributes a statement.** A stated entry reaches the general handle unverified: it
+//! names only the maker it claims and the commitment of the bytes the evidence store keeps. A [`GeneralEntry`]
+//! can't hold one attributed `verified`. On append the log fetches the kept bytes by their commitment
+//! ([`KeptStatements`]), checks them against the maker's keys at their `made_at` and this deployment
+//! ([`StatementKeys`], read from the catalogue, never from orchestration) and their signature ([`Signatures`]), and
+//! records the entry [`attribute`](super::attribute) answers. A relation that trusts a statement's attribution
+//! trusts the log's.
+//!
 //! **The log answers first.** Every policy answer is appended to the log before it is given, and an answer comes
 //! with the receipt of its entry; where the append fails, policy answers nothing, and nothing moves on it
 //! (`T-021-01`, `INV-7`). Orchestration appends an [`Effect`]'s entry and holds its receipt before the action takes
@@ -28,6 +36,8 @@
 use super::Violation;
 use super::types::*;
 use crate::module_interface::Digest;
+use crate::provider_role::Deployment;
+use crate::router_api::{Id, Timestamp};
 
 /// Why the log, or the evidence store, took nothing. Nothing was appended or kept, so the action it would have
 /// recorded must not take effect (`INV-7`). A library API result, with no wire form.
@@ -68,9 +78,15 @@ pub const DECISION_ON_THE_GENERAL_HANDLE: &str =
 pub const RECORD_ON_THE_POLICY_HANDLE: &str =
     "policy's handle takes only the record of a policy decision";
 
-/// An entry that may reach the log through the general handle, [`Log`]: a stated entry, or a verified entry of any
-/// kind but a decision kind ([`is_decision`]). Its field is private, and it is built or deserialised only through
-/// [`TryFrom<Entry>`], which refuses a decision kind, so no value of this type holds one.
+/// The refusal of a stated entry its writer attributed, on the general handle.
+pub const ATTRIBUTED_BY_ITS_WRITER: &str =
+    "a stated entry reaches the log unverified: the log, not its writer, attributes it";
+
+/// An entry that may reach the log through the general handle, [`Log`]: a stated entry its writer leaves
+/// unverified, naming only the maker it claims, or a verified entry of any kind but a decision kind
+/// ([`is_decision`]). Its field is private, and it is built or deserialised only through [`TryFrom<Entry>`], which
+/// refuses a decision kind and a stated entry attributed `verified`, so no value of this type holds either: the log
+/// sets a statement's attribution on append ([`attribute`](super::attribute)).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "Entry", into = "Entry")]
 pub struct GeneralEntry(Entry);
@@ -89,6 +105,9 @@ impl TryFrom<Entry> for GeneralEntry {
         match &entry {
             Entry::Verified(v) if is_decision(&v.what) => {
                 Err(Violation(DECISION_ON_THE_GENERAL_HANDLE))
+            }
+            Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }) => {
+                Err(Violation(ATTRIBUTED_BY_ITS_WRITER))
             }
             _ => Ok(GeneralEntry(entry)),
         }
@@ -139,6 +158,10 @@ pub trait Log {
     /// Appends `entry` and answers with its receipt once it is durable, or with why nothing was appended.
     ///
     /// - It runs [`Entry::check`] and refuses an entry that fails it.
+    /// - It attributes a stated entry itself: it records the entry [`attribute`](super::attribute) answers over the
+    ///   log's [`KeptStatements`], [`StatementKeys`] and [`Signatures`], `verified` only where the kept bytes bear
+    ///   the claim out, and refuses one whose bytes the evidence store doesn't keep. The receipt is of the entry
+    ///   recorded, not the one handed in.
     /// - It refuses any entry that [`admit_entry`](super::admit_entry) doesn't admit over the log's history, on the
     ///   general path ([`Through::General`](super::Through::General)), which refuses a decision kind as well: an
     ///   `effect` only on an unused permit for a permitting entry of this log that decided the same action (a stuck
@@ -156,6 +179,51 @@ pub trait PolicyLog {
     /// Appends a policy decision's entry, as [`Log::append`] does, on the policy path
     /// ([`Through::Policy`](super::Through::Policy)).
     fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure>;
+}
+
+/// The evidence store's own read for the log: the statement kept under a commitment, with no policy read, since
+/// nothing leaves Core's audit part (`T-022-03` implements it beside [`Evidence`]; `T-022-01`'s log holds it).
+pub trait KeptStatements {
+    /// The statement kept under `commitment`, or `None` where none is.
+    fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure>;
+}
+
+/// Whose keys sign statements here, as the log reads them to attribute a statement: a provider's `statements` keys
+/// from its advertisements, and the operator's key, which signs Core's questions, from the deployment. The catalogue
+/// the state machine holds is state orchestration drives, so `T-022-01`'s log takes a provider's keys only from
+/// advertisements it recorded itself under permitted `change_catalogue` effects; never from orchestration, which
+/// could otherwise name its own key a provider's and sign that provider's word. A key is current at the statement's
+/// own `made_at`, so a key revoked since still verifies a statement dated before (`THR-3`, a residual).
+pub trait StatementKeys {
+    /// This deployment, which every statement made for it names (`REQ-PRT-1`).
+    fn deployment(&mut self) -> Result<Deployment, AppendFailure>;
+
+    /// The maker this deployment's operator signs its own statements as, Core's questions among them, with the
+    /// deployment's `operator_key`: a statement's `acts`, not the party a module the operator publishes states for.
+    /// The log hands it to [`admit_entry`](super::admit_entry).
+    fn operator(&mut self) -> Result<Id, AppendFailure>;
+
+    /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's
+    /// party for the operator and a module the operator publishes; `None` where it knows no such maker. A verified
+    /// statement's `party` is this, never the writer's word.
+    fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure>;
+
+    /// Whether `key` signs `maker`'s statements at `at`: a `statements` key of the provider's advertisement
+    /// current at `at`, or, for the operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`).
+    fn signs_for(
+        &mut self,
+        maker: &Id,
+        key: &SignedWith,
+        at: &Timestamp,
+    ) -> Result<bool, AppendFailure>;
+}
+
+/// The check of a statement's signature over provider-role's `signing_input` of its bytes as received, against the
+/// key the envelope names, strictly (RFC 8032 §5.1.7). `T-022-01` gives the log one; the contract leaves the
+/// arithmetic out, so the contracts crate stays `no_std` with no curve in it.
+pub trait Signatures {
+    /// True where `received`'s signature is its named key's over its signing input.
+    fn verifies(&self, received: &[u8]) -> bool;
 }
 
 /// What the evidence store answers when it keeps a statement's bytes.

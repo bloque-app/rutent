@@ -70,7 +70,10 @@ impl Kept {
         if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == &entry) {
             return Ok(receipt.clone());
         }
-        admit_entry(&self.0, &entry, through).map_err(AppendFailure::Refused)?;
+        // The maker the operator signs its own statements as, as the log's `StatementKeys::operator` answers; these
+        // tests append no stated entry, so it is the one the other test logs of this crate name.
+        let operator = id("operator");
+        admit_entry(&self.0, &entry, through, &operator).map_err(AppendFailure::Refused)?;
         let index = 2_000 + self.0.len();
         let receipt: Receipt = serde_json::from_value(json!({
             "log": "log-roles",
