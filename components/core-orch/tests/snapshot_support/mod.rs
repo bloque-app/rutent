@@ -21,7 +21,7 @@ use rutent_contracts::router_api::{
     TupleKey, Version,
 };
 use rutent_core_orch::snapshot::{
-    Ask, Clock, Exposures, Formed, Price, Received, Releases, Snapshots,
+    Ask, Clock, Exposures, Formed, Price, Reading, Received, Releases, Snapshots,
 };
 use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
@@ -38,21 +38,27 @@ pub const JOINED_AT: u64 = 1_500;
 
 /// Core's clock in a test: it reads what the test set, and only that.
 #[derive(Debug)]
-pub struct TestClock(pub Cell<u64>);
+pub struct TestClock(pub Cell<Reading>);
 
 impl TestClock {
     pub fn at(seconds: u64) -> Self {
-        Self(Cell::new(seconds))
+        Self(Cell::new(Reading::at(seconds)))
     }
 
+    /// Sets the clock to a whole second.
     pub fn set(&self, seconds: u64) {
-        self.0.set(seconds);
+        self.0.set(Reading::at(seconds));
+    }
+
+    /// Sets the clock inside a second.
+    pub fn set_within(&self, seconds: u64, nanos: u32) {
+        self.0.set(Reading { seconds, nanos });
     }
 }
 
 impl Clock for TestClock {
-    fn now(&self) -> Instant {
-        Instant(self.0.get())
+    fn now(&self) -> Reading {
+        self.0.get()
     }
 }
 
@@ -377,19 +383,14 @@ pub fn form(
     prices: &[Price],
     statements: &[Received],
 ) -> Formed {
-    let formed = Snapshots {
-        catalogue,
-        clock,
-        exposures,
-        releases,
-    }
-    .form(&Ask {
-        snapshot_id: "snap-1",
-        bounds,
-        prices,
-        statements,
-    })
-    .expect("a snapshot is formed");
+    let formed = Snapshots::new(catalogue, clock, exposures, releases)
+        .form(&Ask {
+            snapshot_id: "snap-1",
+            bounds,
+            prices,
+            statements,
+        })
+        .expect("a snapshot is formed");
     assert_passes_the_schema(&formed.snapshot);
     formed
 }

@@ -4,17 +4,21 @@
 //! Declared by `T-020-01`; `T-020-05` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 //!
 //! [`Snapshots::form`] forms one snapshot at one reading of Core's [`Clock`]: no caller passes a time, so a stale
-//! one can't honour an expired grant (`REQ-CAT-2`). In order, it holds:
+//! one can't honour an expired grant (`REQ-CAT-2`). The assembly builds [`Snapshots`] with [`SystemClock`]. In
+//! order, a snapshot holds:
 //!
-//! 1. the catalogue's tuple figures at that reading ([`Catalogue::snapshot`]), with what stayed out and why;
+//! 1. the catalogue's tuple figures at that reading ([`Catalogue::snapshot`]), each kept only if its grant is in
+//!    force at both whole seconds around the reading, with what stayed out and why;
 //! 2. the prices Core holds for those tuples ([`Price`]), each with its provider's origin;
 //! 3. each provider's `calls` figure, from the accepted release its tuples name ([`Releases`]);
 //! 4. the exposures from Core's records ([`Exposures`]), every provider with value in flight, whether or not it has
-//!    a tuple in this snapshot, so that a publisher's ceiling counts all of its providers (`REQ-ORD-8`);
+//!    a tuple in this snapshot, so that a publisher's ceiling counts all of its providers (`REQ-ORD-8`); a module
+//!    the operator publishes counts under the publisher `operator`, and value at a provider whose publisher the
+//!    catalogue doesn't know is listed in [`Formed::unattributed`] (no route can reach that provider);
 //! 5. the statements Core received for this round, fresh quotes, dry runs and eligibility judgements, each kept
 //!    only once it and every statement nested in it is tied to its maker's key ([`bind_statement`]), its figure is
 //!    stated as the contract times it, and the snapshot with it still passes the contract and the policy bounds'
-//!    check against it. Every other is in [`Formed::refused`], to record as its claimed maker's unverified word
+//!    check against it. Every other is in [`Formed::refused`], to record before the record is formed
 //!    ([`record_refused`]).
 //!
 //! The result passes [`CatalogueSnapshot::check`] and [`PolicyBounds::check_against`] (router-api 3.0.0, as
@@ -25,29 +29,36 @@ mod exposure;
 mod journal;
 mod releases;
 mod route;
+mod span;
 mod statements;
 
-pub use clock::{Clock, SystemClock};
+pub use clock::{Clock, Reading, SystemClock};
 pub use exposure::{Exposures, Held, HoldError};
 pub use journal::OrchestrationLog;
 pub use releases::{Release, ReleaseError, Releases};
-pub use route::{RouteRefusal, Step, check_part, check_route, record_route_refusal};
+pub use route::{RouteRefusal, RouteRefused, Step, check_part, check_route, record_route_refusal};
+pub use span::PathStep;
 pub use statements::{
     RecordError, Refusal, RefusedStatement, bind_operator_statement, bind_statement, record_refused,
 };
 
+use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::provider_role::{
     Category, Judgement, NodeRef, ResultBody, SafeInteger, Statement,
 };
 use rutent_contracts::provider_role::{ConversionOutcome, ReserveMovementOutcome, TransferOutcome};
+use rutent_contracts::router_api::Amount;
 use rutent_contracts::router_api::{
     CatalogueSnapshot, Endpoint, FeeFormula, Figure, FigureValue, Id, Origin, PolicyBounds,
     PositiveAmount, Pricing, Timestamp, TupleKey, Version, Violation,
 };
-use rutent_prov::catalogue::{Catalogue, Instant, LeftOut, SnapshotError};
+use rutent_prov::catalogue::{Catalogue, Instant, LeftOut, Publisher, SnapshotError};
 
 /// The source an exposure figure names: Core's own record of value in flight.
 pub const EXPOSURE_SOURCE: &str = "core-exposures";
+
+/// The publisher an exposure figure names for a module the operator publishes.
+pub const OPERATOR_PUBLISHER: &str = "operator";
 
 /// A tuple's advertised price, as Core holds it: its provider's fee formula, its rate where it is an exchange's, and
 /// its declared settlement time, with when the provider stated them.
@@ -116,17 +127,22 @@ pub struct Ask<'a> {
 
 /// A snapshot, the reading of Core's clock it was formed at, and what stayed out of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "its refused statements are recorded with `record_refused` before a record is formed"]
 pub struct Formed {
     /// What the router reads.
     pub snapshot: CatalogueSnapshot,
-    /// The reading of Core's clock it was formed at: its `taken_at`.
+    /// The reading of Core's clock it was formed at, as a whole second at or after it: its `taken_at`.
     pub at: Instant,
     /// The catalogue's tuples that stayed out, with why.
     pub left_out: Vec<LeftOut>,
     /// The prices that stayed out, with why.
     pub prices_left_out: Vec<(TupleKey, PriceLeftOut)>,
-    /// The statements kept out, to record as unverified.
+    /// The statements kept out, each to record with [`record_refused`] before a record is formed from the
+    /// snapshot.
     pub refused: Vec<RefusedStatement>,
+    /// Value in flight at a provider whose publisher the catalogue doesn't know, so no exposure figure can state
+    /// it: the provider can't be on a route of this snapshot, and the order holding it is the caller's to settle.
+    pub unattributed: Vec<(Id, Denomination, Amount)>,
 }
 
 /// Why no snapshot was formed.
@@ -134,37 +150,69 @@ pub struct Formed {
 pub enum FormError {
     /// The catalogue gave none.
     Catalogue(SnapshotError),
-    /// Value is in flight at a provider whose publisher the catalogue doesn't know, so its exposure can't be
-    /// stated, and leaving it out would let a route past a ceiling.
-    ExposureWithoutPublisher(Id),
     /// A figure Core wrote can't be carried: a bug in Core, never silent.
     Contract(Violation),
     /// The snapshot fails the bounds' check against it.
     Bounds(Violation),
 }
 
-/// What Core forms snapshots from.
+/// What Core forms snapshots from. Its clock is fixed when it is built: the assembly passes [`SystemClock`].
 #[derive(Clone, Copy)]
 pub struct Snapshots<'a> {
-    /// The catalogue.
-    pub catalogue: &'a Catalogue,
-    /// Core's clock, read once per snapshot.
-    pub clock: &'a dyn Clock,
-    /// Core's record of value in flight.
-    pub exposures: &'a Exposures,
-    /// The releases accepted.
-    pub releases: &'a Releases,
+    catalogue: &'a Catalogue,
+    clock: &'a dyn Clock,
+    exposures: &'a Exposures,
+    releases: &'a Releases,
 }
 
-impl Snapshots<'_> {
+impl<'a> Snapshots<'a> {
+    /// Snapshots of `catalogue`, at Core's `clock`, with Core's record of value in flight and the releases accepted.
+    pub fn new(
+        catalogue: &'a Catalogue,
+        clock: &'a dyn Clock,
+        exposures: &'a Exposures,
+        releases: &'a Releases,
+    ) -> Self {
+        Self {
+            catalogue,
+            clock,
+            exposures,
+            releases,
+        }
+    }
+
     /// Forms one snapshot at one reading of Core's clock (see the module's docs).
     pub fn form(&self, ask: &Ask<'_>) -> Result<Formed, FormError> {
-        let at = self.clock.now();
+        let reading = self.clock.now();
+        let (early, at) = (reading.floor(), reading.ceil());
         let built = self
             .catalogue
             .snapshot(ask.snapshot_id, at)
             .map_err(FormError::Catalogue)?;
         let mut snapshot = built.snapshot;
+        let mut left_out = built.left_out;
+        if early != at {
+            // Inside a second: a tuple stays only if its grant is in force at the second before as well, so none is
+            // honoured before its `granted_at`.
+            let before = self
+                .catalogue
+                .snapshot(ask.snapshot_id, early)
+                .map_err(FormError::Catalogue)?;
+            let kept: Vec<(Option<Id>, FigureValue)> = before
+                .snapshot
+                .figures
+                .into_iter()
+                .map(|f| (f.origin.provider().cloned(), f.value))
+                .collect();
+            snapshot
+                .figures
+                .retain(|f| kept.contains(&(f.origin.provider().cloned(), f.value.clone())));
+            for out in before.left_out {
+                if !left_out.contains(&out) {
+                    left_out.push(out);
+                }
+            }
+        }
         let tuples: Vec<(Id, TupleKey, Origin)> = snapshot
             .figures
             .iter()
@@ -220,13 +268,17 @@ impl Snapshots<'_> {
         }
 
         let source = Id::new(EXPOSURE_SOURCE).expect("an identifier");
+        let mut unattributed = Vec::new();
         for (provider, asset, in_flight) in self.exposures.totals() {
-            let publisher = self
-                .catalogue
-                .publishers()
-                .publisher_of_provider(provider.as_str())
-                .and_then(Id::new)
-                .ok_or_else(|| FormError::ExposureWithoutPublisher(provider.clone()))?;
+            let publisher = match self.catalogue.publishers().publisher(provider.as_str()) {
+                Some(Publisher::Operator) => Id::new(OPERATOR_PUBLISHER),
+                Some(Publisher::Party(publisher)) => Id::new(publisher),
+                None => None,
+            };
+            let Some(publisher) = publisher else {
+                unattributed.push((provider, asset, in_flight));
+                continue;
+            };
             let figure = Figure {
                 figure_id: next_id(&snapshot),
                 origin: Origin::Operator {
@@ -251,7 +303,7 @@ impl Snapshots<'_> {
         let mut refused = Vec::new();
         for received in ask.statements {
             let outcome = self
-                .statement_figure(received, &tuples, &snapshot, at)
+                .statement_figure(received, &tuples, &snapshot, early, at)
                 .and_then(|figure| {
                     try_add(&mut snapshot, figure, ask.bounds)
                         .map_err(statements::Refusal::Contract)
@@ -260,6 +312,7 @@ impl Snapshots<'_> {
                 refused.push(RefusedStatement {
                     tuple: received.tuple.clone(),
                     bytes: received.bytes.clone(),
+                    verified: statements::outer_verifies(self.catalogue, &received.bytes, early),
                     reason,
                 });
             }
@@ -271,9 +324,10 @@ impl Snapshots<'_> {
         Ok(Formed {
             snapshot,
             at,
-            left_out: built.left_out,
+            left_out,
             prices_left_out,
             refused,
+            unattributed,
         })
     }
 
@@ -308,10 +362,11 @@ impl Snapshots<'_> {
         received: &Received,
         tuples: &[(Id, TupleKey, Origin)],
         snapshot: &CatalogueSnapshot,
+        early: Instant,
         at: Instant,
     ) -> Result<Figure, statements::Refusal> {
         use statements::Refusal;
-        bind_statement(self.catalogue, &received.bytes, at)?;
+        statements::bind_at(self.catalogue, &received.bytes, early, false)?;
         let (tuple, key, tuple_origin) = tuples
             .iter()
             .find(|(_, key, _)| key == &received.tuple)
@@ -348,9 +403,11 @@ impl Snapshots<'_> {
                 judgement
                     .check_shape()
                     .map_err(|e| unreadable(format!("{e:?}")))?;
-                self.catalogue
-                    .category_usable(&judgement.maker, Category::Verifier, at)
-                    .map_err(Refusal::MakerNotUsable)?;
+                for when in [early, at] {
+                    self.catalogue
+                        .category_usable(&judgement.maker, Category::Verifier, when)
+                        .map_err(Refusal::MakerNotUsable)?;
+                }
                 let origin = self.origin_of(&judgement.maker).ok_or(Refusal::NoOrigin)?;
                 let valid_until = Some(judgement.statement.valid_until.clone());
                 let made_at = judgement.made_at.clone();

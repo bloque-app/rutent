@@ -66,3 +66,56 @@ fn snapshot_read_at_cores_clock_honours_no_expired_grant() {
     let record = route(&shortlist_request("1000"), &after.snapshot, &bounds);
     assert!(record.candidates().is_empty());
 }
+
+// verifies: REQ-CAT-2
+#[test]
+fn grant_is_honoured_neither_before_its_start_nor_at_its_expiry() {
+    // Granted from 1 000 until 5 000.
+    let catalogue = catalogue(&[(RESERVE, "acme")], 5_000);
+    let (exposures, releases, bounds) = (Exposures::new(), Releases::new(), no_ceilings());
+    let prices = prices(&[RESERVE]);
+    let clock = TestClock::at(0);
+    let routed_at = |seconds: u64, nanos: u32| {
+        clock.set_within(seconds, nanos);
+        let formed = form(
+            &catalogue,
+            &clock,
+            &exposures,
+            &releases,
+            &bounds,
+            &prices,
+            &[],
+        );
+        formed.snapshot.figures.iter().any(
+            |f| matches!(&f.origin, Origin::Provider { provider, .. } if provider.as_str() == RESERVE),
+        )
+    };
+    // Half a second before it starts: the next whole second is in force, the moment isn't.
+    assert!(!routed_at(999, 500_000_000));
+    assert!(routed_at(1_000, 0));
+    assert!(routed_at(4_999, 0));
+    // Inside its last second the moment is in force, the next whole second isn't: out.
+    assert!(!routed_at(4_999, 500_000_000));
+    // At exactly its expiry: out.
+    assert!(!routed_at(5_000, 0));
+}
+
+// verifies: REQ-CAT-2
+#[test]
+fn a_reading_inside_a_second_counts_as_both_whole_seconds_around_it() {
+    use rutent_core_orch::snapshot::{Clock, Reading, SystemClock};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let within = Reading::of(Duration::new(5, 1));
+    assert_eq!((within.floor(), within.ceil()), (Instant(5), Instant(6)));
+    let whole = Reading::of(Duration::new(5, 0));
+    assert_eq!((whole.floor(), whole.ceil()), (Instant(5), Instant(5)));
+    assert_eq!(within.timestamp().unwrap().as_str(), "1970-01-01T00:00:06Z");
+
+    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let read = SystemClock.now();
+    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    assert!(before.as_secs() <= read.floor().0 && read.floor().0 <= after.as_secs());
+    assert!(read.ceil().0 <= after.as_secs() + 1);
+    assert_eq!(read.ceil().0 - read.floor().0, u64::from(read.nanos > 0));
+}

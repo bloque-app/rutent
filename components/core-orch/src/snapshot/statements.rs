@@ -11,27 +11,30 @@
 //!   listed later can't sign for an earlier time and a retired key can't sign a backdated statement.
 //! - **The operator's own statement**, the recorded decision among them, and one made by a module the operator
 //!   publishes, verifies against the deployment's `operator_key` ([`Catalogue::verify_operator_statement`]).
-//! - **Every statement nested in another**, at any depth (a judgement inside a result, a reversal confirmation), is
-//!   tied the same way to its own maker, as its text appears in the outer statement's bytes
-//!   ([`provider_role::member`](rutent_contracts::provider_role::member)). A nested statement Core can't reach by
-//!   member names, such as one inside a list, refuses the whole statement: what can't be checked isn't taken.
+//! - **Every statement nested in another**, at any depth and in any list (the provider statements a decision
+//!   record carries in `snapshot.figures`, a judgement inside a result), is tied the same way to its own maker, over
+//!   its own text exactly as it appears in the outer statement's bytes ([`PathStep`]).
 //!
-//! Keys compare by their decoded bytes (`PublicKey`). The time each check reads is Core's clock, the one reading the
-//! snapshot is formed at. A statement refused here never reaches a snapshot; it is recorded as its claimed maker's
-//! word, unverified ([`record_refused`]), as core-internal's table of homes has it.
+//! Keys compare by their decoded bytes (`PublicKey`). Every time read here is Core's clock: [`super::Snapshots`]
+//! passes its one reading, and the functions here read the [`Clock`] they are handed, never a time a caller
+//! chooses. A statement refused before the record never reaches a snapshot; it is recorded ([`record_refused`]) as
+//! its maker's statement where its own signature verified, and as its claimed maker's, unverified, where it didn't
+//! (core-internal's README, "Two kinds of entry").
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence};
-
-use super::journal::{self, OrchestrationLog};
 use rutent_contracts::core_internal::{
-    About, Actor, Attribution, Entry, ShapeId, SignedWith, StatedEntry, StatedKind, StatedOutcome,
-    StatedStatus, StatedTimeSource, StatedWhat, StatedWhen,
+    About, Actor, ActorKind, Attribution, Entry, Receipt, Role, ShapeId, SignedWith, StatedEntry,
+    StatedKind, StatedOutcome, StatedStatus, StatedTimeSource, StatedWhat, StatedWhen,
 };
-use rutent_contracts::provider_role::{Signature, member};
-use rutent_contracts::router_api::{Timestamp, TupleKey, Violation};
-use rutent_prov::catalogue::{Catalogue, Instant, StatementRefusal, Unusable};
+use rutent_contracts::provider_role::{JUDGEMENT_SHAPE, Signature};
+use rutent_contracts::router_api::{Id, Timestamp, TupleKey, Violation};
+use rutent_prov::catalogue::{Catalogue, Instant, Publisher, StatementRefusal, Unusable};
 use serde::Deserialize;
 use serde_json::Value;
+
+use super::clock::Clock;
+use super::journal::{self, OrchestrationLog};
+use super::span::{PathStep, value_at};
 
 /// Why a statement was kept out of the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,14 +42,14 @@ pub enum Refusal {
     /// The bytes aren't a statement of the kind asked for: not its envelope, or another shape.
     Unreadable(String),
     /// A statement's key didn't tie it to its maker, or it belongs to another deployment or protocol version:
-    /// the outer statement where `path` is empty, else the one nested at `path`, by member names.
+    /// the outer statement where `path` is empty, else the one nested at `path`.
     Key {
         /// Where the statement that failed sits in the outer one; empty for the outer one.
-        path: Vec<String>,
+        path: Vec<PathStep>,
         /// What the catalogue refused it for.
         refusal: StatementRefusal,
     },
-    /// A statement is nested where member names can't reach it, inside a list, so its bytes can't be checked.
+    /// A nested statement's text couldn't be found in the outer statement's bytes.
     NestedOutOfReach,
     /// A quote's or dry run's maker isn't the provider of the tuple it is about.
     NotItsProvider,
@@ -71,8 +74,7 @@ struct Claimed {
     signature: Signature,
 }
 
-/// A statement kept out of a snapshot, with its bytes as received, to record as its claimed maker's unverified
-/// word ([`record_refused`]).
+/// A statement kept out of a snapshot, with its bytes as received, to record ([`record_refused`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedStatement {
     /// The tuple it was offered for.
@@ -81,11 +83,14 @@ pub struct RefusedStatement {
     pub bytes: Vec<u8>,
     /// Why.
     pub reason: Refusal,
+    /// Whether its own signature verified against a key of its maker's, at Core's clock: then it is its maker's
+    /// statement, refused for something else.
+    pub verified: bool,
 }
 
 impl RefusedStatement {
-    /// The maker the statement claims, where its envelope can be read.
-    pub fn claimed_maker(&self) -> Option<String> {
+    /// The maker the statement names, where its envelope can be read.
+    pub fn maker(&self) -> Option<String> {
         serde_json::from_slice::<Claimed>(&self.bytes)
             .ok()
             .map(|c| c.maker)
@@ -95,31 +100,36 @@ impl RefusedStatement {
 /// Why a refused statement couldn't be recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordError {
-    /// Its envelope doesn't name a shape, a time and a key a stated entry can hold.
+    /// Its envelope doesn't name a shape, a maker, a time and a key a stated entry can hold.
     Unrecordable,
     /// The evidence store or the log refused or failed.
     Append(AppendFailure),
 }
 
-/// Ties a provider's statement, given as received, and every statement nested in it, to its maker's keys at `at`:
-/// the catalogue's deployment and protocol version, and a key listed for its purpose by the maker's advertisement
-/// in force at its `made_at` and by the one the catalogue holds. A statement made by a module the operator
-/// publishes is tied to the deployment's `operator_key` instead.
-pub fn bind_statement(catalogue: &Catalogue, received: &[u8], at: Instant) -> Result<(), Refusal> {
-    bind(catalogue, received, at, false)
+/// Ties a provider's statement, given as received, and every statement nested in it, to its maker's keys at Core's
+/// clock: the catalogue's deployment and protocol version, and a key listed for its purpose by the maker's
+/// advertisement in force at its `made_at` and by the one the catalogue holds. A statement made by a module the
+/// operator publishes is tied to the deployment's `operator_key` instead.
+pub fn bind_statement(
+    catalogue: &Catalogue,
+    clock: &dyn Clock,
+    received: &[u8],
+) -> Result<(), Refusal> {
+    bind_at(catalogue, received, clock.now().floor(), false)
 }
 
 /// Ties one of the operator's own statements, the recorded decision among them, to the deployment's
 /// `operator_key`, and every statement nested in it to its own maker, as [`bind_statement`] does.
 pub fn bind_operator_statement(
     catalogue: &Catalogue,
+    clock: &dyn Clock,
     received: &[u8],
-    at: Instant,
 ) -> Result<(), Refusal> {
-    bind(catalogue, received, at, true)
+    bind_at(catalogue, received, clock.now().floor(), true)
 }
 
-fn bind(
+/// [`bind_statement`] at one reading of Core's clock, the snapshot's.
+pub(super) fn bind_at(
     catalogue: &Catalogue,
     received: &[u8],
     at: Instant,
@@ -134,16 +144,9 @@ fn bind(
         refusal,
     })?;
     let mut nested = Vec::new();
-    find_nested(&value, &mut Vec::new(), false, &mut nested);
-    for (path, reachable) in nested {
-        if !reachable {
-            return Err(Refusal::NestedOutOfReach);
-        }
-        let names: Vec<&str> = path.iter().map(String::as_str).collect();
-        let bytes = member(received, &names)
-            .ok()
-            .flatten()
-            .ok_or(Refusal::NestedOutOfReach)?;
+    find_nested(&value, &mut Vec::new(), &mut nested);
+    for path in nested {
+        let bytes = value_at(received, &path).ok_or(Refusal::NestedOutOfReach)?;
         let inner: Value =
             serde_json::from_slice(bytes).map_err(|e| Refusal::Unreadable(e.to_string()))?;
         let maker = maker_of(&inner).ok_or(Refusal::NestedOutOfReach)?;
@@ -154,6 +157,18 @@ fn bind(
         })?;
     }
     Ok(())
+}
+
+/// Whether a statement's own signature, the outer one only, ties it to its maker at `at`.
+pub(super) fn outer_verifies(catalogue: &Catalogue, received: &[u8], at: Instant) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(received) else {
+        return false;
+    };
+    let Some(maker) = maker_of(&value) else {
+        return false;
+    };
+    let by_operator = catalogue.publishers().published_by_operator(maker);
+    verify(catalogue, received, at, by_operator).is_ok()
 }
 
 fn verify(
@@ -177,54 +192,74 @@ fn maker_of(value: &Value) -> Option<&str> {
     object.get("maker")?.as_str()
 }
 
-/// Every envelope nested in `value`, by its path of member names, and whether member names reach it (none on the
-/// way is a list).
-fn find_nested(
-    value: &Value,
-    path: &mut Vec<String>,
-    in_list: bool,
-    found: &mut Vec<(Vec<String>, bool)>,
-) {
+/// Every envelope nested in `value`, by its path.
+fn find_nested(value: &Value, path: &mut Vec<PathStep>, found: &mut Vec<Vec<PathStep>>) {
     match value {
         Value::Object(members) => {
             if !path.is_empty() && maker_of(value).is_some() {
-                found.push((path.clone(), !in_list));
+                found.push(path.clone());
             }
             for (name, inner) in members {
-                path.push(name.clone());
-                find_nested(inner, path, in_list, found);
+                path.push(PathStep::Member(name.clone()));
+                find_nested(inner, path, found);
                 path.pop();
             }
         }
         Value::Array(items) => {
-            for item in items {
-                find_nested(item, path, true, found);
+            for (place, item) in items.iter().enumerate() {
+                path.push(PathStep::Item(place));
+                find_nested(item, path, found);
+                path.pop();
             }
         }
         _ => {}
     }
 }
 
-/// Records a refused statement as its claimed maker's word, unverified (`REQ-AUD-2`): its bytes go to the evidence
-/// store, which answers their salted commitment, and a stated entry naming that commitment, with
-/// `signature: unverified`, is appended to the log. `claimed_by` is the actor the statement claims made it;
-/// `received_at` is when Core received it, by Core's clock.
+/// Records a refused statement (`REQ-AUD-2`): its bytes go to the evidence store, which answers their salted
+/// commitment, and a stated entry naming that commitment is appended to the log, received at Core's clock. Its
+/// maker is the one its envelope names: attributed to it (`signature: verified`) where the statement's own signature
+/// verified, and only claimed by it (`signature: unverified`) where it didn't. The maker acts for its publisher, or
+/// for the operator where the operator publishes it; a verifier's judgement is made in the verifier's role.
 pub fn record_refused(
     evidence: &mut dyn Evidence,
     log: &mut dyn OrchestrationLog,
+    clock: &dyn Clock,
+    catalogue: &Catalogue,
     refused: &RefusedStatement,
-    claimed_by: Actor,
-    received_at: Timestamp,
     about: Option<About>,
-) -> Result<rutent_contracts::core_internal::Receipt, RecordError> {
+) -> Result<Receipt, RecordError> {
     let claimed: Claimed =
         serde_json::from_slice(&refused.bytes).map_err(|_| RecordError::Unrecordable)?;
+    let received_at = clock.now().timestamp().ok_or(RecordError::Unrecordable)?;
+    let acts = Id::new(claimed.maker.as_str()).ok_or(RecordError::Unrecordable)?;
+    let (party, role) = match catalogue.publishers().publisher(acts.as_str()) {
+        Some(Publisher::Operator) => (Id::new("operator"), Role::Operator),
+        Some(Publisher::Party(publisher)) => (Id::new(publisher), Role::Provider),
+        None => (Some(acts.clone()), Role::Provider),
+    };
+    let role = if claimed.shape == JUDGEMENT_SHAPE {
+        Role::Verifier
+    } else {
+        role
+    };
+    let maker = Actor {
+        party: party.ok_or(RecordError::Unrecordable)?,
+        acts,
+        role,
+        kind: ActorKind::Component,
+    };
     let shape = ShapeId::new(claimed.shape).ok_or(RecordError::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(RecordError::Unrecordable)?;
+    let attribution = if refused.verified {
+        Attribution::Verified { who: maker }
+    } else {
+        Attribution::Unverified { claimed_by: maker }
+    };
     let kept = evidence.keep(&refused.bytes).map_err(RecordError::Append)?;
     let entry = Entry::Stated(StatedEntry {
         kind: StatedKind::Stated,
-        attribution: Attribution::Unverified { claimed_by },
+        attribution,
         what: StatedWhat { statement: shape },
         when: StatedWhen {
             at: made_at,

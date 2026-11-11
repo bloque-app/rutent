@@ -215,3 +215,125 @@ fn exposure_on_stuck_orders_is_readable_at_any_time() {
     exposures.release_order(&id("order-9"));
     assert!(exposures.stuck().is_empty());
 }
+
+/// An exchange of `amount_in` EURC for `amount_out` USDC at `provider`, at `polygon`.
+fn exchange(
+    provider: &str,
+    amount_in: &str,
+    amount_out: &str,
+) -> rutent_contracts::router_api::Operation {
+    serde_json::from_value(json!({
+        "kind": "exchange",
+        "provider": provider,
+        "from": { "node": "polygon", "asset": { "id": "EURC", "decimals": 6 } },
+        "to": inner(),
+        "amount_in": amount_in,
+        "fee": { "asset": "EURC", "amount": "0" },
+        "amount_out": amount_out,
+        "figures": ["fig-0001"],
+    }))
+    .unwrap()
+}
+
+// verifies: REQ-ORD-8
+#[test]
+fn exchange_held_in_flight_counts_in_what_it_gives_out_against_a_ceiling() {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let clock = TestClock::at(2_000);
+    let releases = Releases::new();
+    let prices = prices(&[RESERVE]);
+    // The route puts 2 000 USDC in flight at the reserve. The ceiling is 2 500 USDC.
+    let bounds = bounds(
+        json!([{ "provider": RESERVE, "asset": usdc(), "amount": "2500" }]),
+        json!([]),
+    );
+    let request = shortlist_request("1000");
+    let formed = form(
+        &catalogue,
+        &clock,
+        &Exposures::new(),
+        &releases,
+        &bounds,
+        &prices,
+        &[],
+    );
+    assert!(offered_through(
+        &route(&request, &formed.snapshot, &bounds),
+        RESERVE
+    ));
+
+    // An order's exchange at the reserve takes in 650 EURC and gives out 600 USDC: the USDC it gives out is in
+    // flight there too, so the route would put 2 600 USDC in flight.
+    let mut exposures = Exposures::new();
+    exposures
+        .hold(
+            &id("order-1"),
+            &id("seg-1"),
+            &exchange(RESERVE, "650", "600"),
+        )
+        .unwrap();
+    let eurc = Denomination {
+        id: "EURC".into(),
+        decimals: 6,
+    };
+    assert_eq!(exposures.in_flight(&id(RESERVE), &eurc).as_str(), "650");
+    assert_eq!(
+        exposures.in_flight(&id(RESERVE), &usdc_unit()).as_str(),
+        "600"
+    );
+    let formed = form(
+        &catalogue,
+        &clock,
+        &exposures,
+        &releases,
+        &bounds,
+        &prices,
+        &[],
+    );
+    let record = route(&request, &formed.snapshot, &bounds);
+    assert!(!offered_through(&record, RESERVE));
+}
+
+// verifies: REQ-ORD-8
+#[test]
+fn value_at_a_provider_of_no_known_publisher_stops_no_other_route() {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let clock = TestClock::at(2_000);
+    let mut exposures = Exposures::new();
+    exposures
+        .hold(
+            &id("order-1"),
+            &id("seg-1"),
+            &withdrawal("gone-reserve", "300"),
+        )
+        .unwrap();
+    exposures
+        .hold(
+            &id("order-2"),
+            &id("seg-2"),
+            &withdrawal("wallet-module", "50"),
+        )
+        .unwrap();
+    let bounds = no_ceilings();
+    let formed = form(
+        &catalogue,
+        &clock,
+        &exposures,
+        &Releases::new(),
+        &bounds,
+        &prices(&[RESERVE]),
+        &[],
+    );
+    // The provider no publisher stands behind is listed; the operator's own module counts under the operator.
+    assert_eq!(formed.unattributed.len(), 1);
+    assert_eq!(formed.unattributed[0].0.as_str(), "gone-reserve");
+    assert!(formed.snapshot.figures.iter().any(|f| matches!(
+        &f.value,
+        FigureValue::Exposure { provider, publisher, .. }
+            if provider.as_str() == "wallet-module" && publisher.as_str() == "operator"
+    )));
+    assert!(offered_through(
+        &route(&shortlist_request("1000"), &formed.snapshot, &bounds),
+        RESERVE
+    ));
+}
