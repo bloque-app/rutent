@@ -171,9 +171,9 @@ pub enum Reply {
         /// `completed`, `failed`, `unknown` or `refused`.
         outcome: String,
     },
-    /// What came of a cross-module call.
+    /// What came of a cross-module call, as its record has it.
     Module {
-        /// `delivered` or `refused`.
+        /// `delivered`, `unanswered` or `refused`.
         outcome: String,
     },
     /// The request hit a bound (`REQ-MDL-11`), or came after one was hit during this operation: the part that

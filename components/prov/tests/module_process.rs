@@ -5,7 +5,11 @@ mod common;
 
 use common::Probe;
 use common::{alive, answers_as, binding, install, languages, spec};
-use rutent_conformance::boundary::{Admitted, Handled, ModuleBinding, PlatformRefusal};
+use rutent_conformance::boundary::{
+    Admitted, BoundaryHarness, Endpoint, Handled, ModuleBinding, PlatformRefusal, Step,
+};
+use rutent_contracts::module_interface::Time;
+use rutent_prov::catalogue::Instant;
 use rutent_prov::module::children::{ProviderProcess, Stderrs};
 use rutent_prov::module::platform::OPERATION_DEADLINE;
 use rutent_prov::module::wire::sha256;
@@ -338,5 +342,71 @@ fn restarts_do_not_grow_platform_memory() {
             "a restart left a working directory, or a process, behind"
         );
         assert_eq!(binding.processes().len(), providers.len());
+    }
+}
+
+/// A guest that makes an outbound call and then traps may have acted: its operation is refused as
+/// `OutcomeUnknown`, never `Unavailable`, which says nothing of it took effect. The call's record says what became
+/// of it, and is dated by the world's clock. A guest that traps before passing anything out is still
+/// `Unavailable`.
+// verifies: REQ-ORD-1, REQ-MDL-8, REQ-AUD-1
+#[test]
+fn a_guest_that_traps_after_an_outbound_call_has_an_unknown_outcome() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("calling-{language}");
+        let endpoint = Endpoint::https(&format!("api.{provider}.example"));
+        binding.serve(
+            &endpoint,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(185, 12, 64, 40)),
+            None,
+        );
+        install(
+            &mut binding,
+            &spec(
+                &provider,
+                "1.0.0",
+                vec![Step::Call {
+                    operation: common::OPERATION.to_owned(),
+                    endpoint: endpoint.clone(),
+                }],
+                true,
+            ),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        // 2026-12-01T00:00:00Z.
+        binding.world.set_clock(Instant(1_796_083_200));
+        binding.take_events();
+        let handled = binding.handle(&provider, &common::withdrawal(&provider, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::OutcomeUnknown),
+            "{language}: a trap after an outbound call was given another reason"
+        );
+        let events = binding.take_events();
+        assert_eq!(events.records.len(), 1, "{language}: {:?}", events.records);
+        assert_eq!(
+            events.records[0].started_at,
+            Time::new("2026-12-01T00:00:00Z").expect("a time"),
+            "{language}: the record isn't dated by the world's clock"
+        );
+        assert_eq!(binding.received(&endpoint).len(), 1, "{language}");
+
+        // The control: a trap with nothing passed out is still `Unavailable`.
+        let quiet = format!("quiet-{language}");
+        install(
+            &mut binding,
+            &spec(&quiet, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        assert_eq!(
+            binding.handle(&quiet, &common::withdrawal(&quiet, 1)),
+            Handled::Refused(PlatformRefusal::Unavailable),
+            "{language}"
+        );
     }
 }

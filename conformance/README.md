@@ -274,5 +274,5 @@ record passes the contract and fails exactly one check. The double that leaves o
 router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
 (`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. The one that judges the floor
 before the operator's fee (`FLOOR_BEFORE_THE_FEE`) chooses the slow route on the fee case, which the contract
-refuses: since router-api 3.0.0 it judges the floor after the operator's fee itself. They also recompute every valid decision record among the
+refuses: since router-api 4.0.0 it judges the floor after the operator's fee itself. They also recompute every valid decision record among the
 contract's fixtures.
