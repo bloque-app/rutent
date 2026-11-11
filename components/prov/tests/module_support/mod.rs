@@ -34,6 +34,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::children::Paths;
+use rutent_prov::module::limits::Bounds;
 use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types;
 use rutent_prov::module::wire::sha256;
@@ -542,6 +543,20 @@ impl ModuleBinding for WasmBinding {
 
     fn set_output_limit(&mut self, bytes: usize) {
         self.platform.set_output_limit(bytes);
+    }
+
+    /// The most steps one module's operation may take is its most state reads: a denied read of a sandboxed part
+    /// is a host call the platform counts (`REQ-MDL-11`), for the operation and for its provider. `usize::MAX`
+    /// puts the platform's own bounds back.
+    fn set_step_limit(&mut self, steps: usize) -> bool {
+        let mut bounds = Bounds::DEFAULT;
+        if steps != usize::MAX {
+            let steps = steps as u64;
+            bounds.per_operation.state_reads = steps;
+            bounds.per_provider.state_reads = steps;
+        }
+        self.platform.set_bounds(bounds);
+        true
     }
 
     fn admit(

@@ -261,6 +261,16 @@ pub trait ModuleBinding {
     /// so a binding can't pass by having no limit.
     fn set_output_limit(&mut self, bytes: usize);
 
+    /// Sets the most steps one module's operation may take: host calls of its parts, which a binding counts as
+    /// it does its per-operation bounds (`REQ-MDL-11`). The suite sets it, so a binding can't pass by having no
+    /// limit, and probes a module at it and one past it, then lifts it with `usize::MAX`, so the limit bounds the
+    /// probes and nothing else. False if the binding can't be given one, which leaves the probe uncovered and the
+    /// report not passed: the default.
+    fn set_step_limit(&mut self, steps: usize) -> bool {
+        let _ = steps;
+        false
+    }
+
     /// Admits a release: the provider's signed assertion and the binaries it received. The binding keeps each
     /// provider's history, and starts a release that needs only an automatic acceptance.
     fn admit(
@@ -325,6 +335,10 @@ pub trait BoundaryHarness: ModuleBinding {
     /// How many operations the provider's module received, from the platform or from another module.
     fn operations_received(&self, provider: &str) -> usize;
 }
+
+/// The step limit the suite sets and probes, in steps of one module's operation (`REQ-MDL-11`). It is not part of
+/// [`RunConfig`], whose fields a binding's own runner writes out.
+pub const STEP_LIMIT: usize = 3;
 
 /// How the suite runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +421,14 @@ pub enum Check {
     /// and answering as before, and a failed upgrade leaves the previous version in force (`AC-19`,
     /// `REQ-MDL-13`).
     ProvidersAreIsolated,
+    /// A version a provider already has admitted, running or waiting for its acceptance, is never admitted again:
+    /// it is refused as `version_already_admitted`, the reason that names it, and what runs is unchanged
+    /// (`REQ-MDL-1`).
+    ReadmittedVersionRefused,
+    /// A module that takes more steps in one operation than the limit the suite set is refused as
+    /// `limit_reached`, its module still admitted, and one that takes the limit's own number of steps answers
+    /// (`REQ-MDL-11`).
+    StepLimitEnforced,
 }
 
 /// A fixture or control the suite saw pass, in one language.
@@ -497,6 +519,14 @@ pub enum Exercised {
     FailedUpgradeKeptThePrevious,
     /// A restart gave the provider a new process and its module answered again.
     RestartedProviderAnswered,
+    /// The version running was admitted again, and refused as already admitted; what ran went on running.
+    ReadmittedVersionRefused,
+    /// The version waiting for its acceptance was admitted again, and refused as already admitted.
+    ReadmittedWaitingVersionRefused,
+    /// A module past the step limit was refused as `limit_reached`, and stayed admitted.
+    StepLimitRefused,
+    /// A module that took exactly the limit's steps answered.
+    StepsWithinTheLimitAnswered,
 }
 
 impl Exercised {
@@ -546,11 +576,15 @@ impl Exercised {
             Self::OtherProviderUndisturbed => 39,
             Self::FailedUpgradeKeptThePrevious => 40,
             Self::RestartedProviderAnswered => 41,
+            Self::ReadmittedVersionRefused => 42,
+            Self::ReadmittedWaitingVersionRefused => 43,
+            Self::StepLimitRefused => 44,
+            Self::StepsWithinTheLimitAnswered => 45,
         }
     }
 
     /// Every fixture and control, in order.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 46] = [
         Self::OwnSecretResolved,
         Self::OwnStateRead,
         Self::DeclaredCallCompleted,
@@ -593,6 +627,10 @@ impl Exercised {
         Self::OtherProviderUndisturbed,
         Self::FailedUpgradeKeptThePrevious,
         Self::RestartedProviderAnswered,
+        Self::ReadmittedVersionRefused,
+        Self::ReadmittedWaitingVersionRefused,
+        Self::StepLimitRefused,
+        Self::StepsWithinTheLimitAnswered,
     ];
 }
 

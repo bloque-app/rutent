@@ -230,6 +230,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rutent-sim-provider"
+version = "0.0.0"
+dependencies = [
+ "rutent-conformance",
+ "rutent-contracts",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rutent-wasm-guests"
 version = "0.0.0"
 dependencies = [

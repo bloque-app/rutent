@@ -1573,9 +1573,13 @@ dependencies = [
 name = "rutent-scenarios"
 version = "0.0.0"
 dependencies = [
+ "rutent-conformance",
  "rutent-contracts",
  "rutent-core-audit",
  "rutent-core-authz",
+ "rutent-evidence",
+ "rutent-prov",
+ "rutent-stm",
  "serde_json",
 ]
 

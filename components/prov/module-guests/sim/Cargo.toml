@@ -1,0 +1,29 @@
+# The simulated providers as guests (`T-024-01`, `REQ-MOD-4`, `DEC-23`): the stand-ins of `rutent-conformance`, made
+# scriptable and keeping their books in the platform's shared state (`rutent-conformance`'s `sim`). One crate, two
+# parts chosen by a feature, `sandboxed` (the provider's computing, one of the four roles chosen by a feature too) and
+# `outside` (its way to its own rail and to the public networks, and to the state a script and a journal live in).
+# `sim/build.sh` builds the sandboxed part of each role and the one outside part, as components the platform admits.
+[package]
+name = "rutent-sim-provider"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[features]
+sandboxed = []
+outside = []
+reserve = []
+exchange = []
+ramp = []
+verifier = []
+
+[dependencies]
+wit-bindgen = { version = "=0.61.1", default-features = false, features = ["macros", "realloc", "std"] }
+serde_json = "1.0.154"
+rutent-contracts = { path = "../../../../contracts" }
+rutent-conformance = { path = "../../../../conformance" }
