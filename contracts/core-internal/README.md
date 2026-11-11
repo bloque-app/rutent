@@ -125,7 +125,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `raise-cites-entries-of-the-log` | `raise`: each of `cites` | an entry at that receipt | — | `REQ-ORD-9`, `REQ-AUD-15` | admitted: `world--*`; refused: `--missing` |
 | `erasure-names-a-kept-statement` | `erasure`: its `evidence` | a stated entry holding that commitment | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--missing` |
 | `acceptance-is-of-the-quote-shown` | `acceptance` (`given`): its `quote` | a `shown` with that digest | order, shown_as (a quote, never a price) | `REQ-ORD-34`, `REQ-QTE-7` | admitted: `world--*`; refused: `--missing`, `--order`, `--shown_as`, `--never` |
-| `shortlisted-authority-cites-its-shortlist` | `ask_about_person` on a shortlisted route: its `shortlist` | a `decision_record` with that digest | order, round (`shortlist`), providers (among its `shortlisted`) | `REQ-CPL-2`, `REQ-CPL-6` | admitted: `world--*`; refused: `--missing`, `--order`, `--round`, `--providers` |
+| `shortlisted-authority-cites-its-shortlist` | `ask_about_person` on a shortlisted route: its `shortlist` | a `decision_record` with that digest | order, round (`shortlist`), providers (among its `shortlisted`), verifiers (among the `verifiers` its tuples need) | `REQ-CPL-2`, `REQ-CPL-6`, `REQ-CPL-5` | admitted: `world--*`, `--asking-a-verifier-it-needs`; refused: `--missing`, `--order`, `--round`, `--providers`, `--verifiers` |
 | `provider-asked-before-was-asked` | `ask_about_person`: each of `asked_before` | an `ask_about_person`, `permitted`, asking that provider | order | `REQ-CPL-5` | admitted: `world--*`; refused: `--missing`, `--order` |
 | `asked-before-is-complete` | `ask_about_person`: its order | none other: no `ask_about_person`, `permitted`, of that order asking a provider missing from `asked_before` | — | `REQ-CPL-5` | admitted: `world--*`; refused: `--conflict` |
 | `revocation-revokes-a-grant` | `revoke_permission`, `permitted`: its `permission` (a refused one cites nothing) | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`, `--refused`; refused: `--missing` |
@@ -346,10 +346,10 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `GeneralEntry` | it holds no decision kind (`calls::is_decision`), and no stated entry attributed `verified`, however it is built or read |
 | `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
 | `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order or the trail; a customer's is never of the trail |
-| `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers |
+| `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers and the verifiers its tuples need, which receive the subject |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
 | `What::Acceptance` | it names the reserve's yes and the session exactly when its basis is given |
-| `What::DecisionRecord` | it names its shortlisted providers, each once, exactly when its round is the shortlist; a shortlist that kept none names none, so a `no_route` input has its record to cite |
+| `What::DecisionRecord` | it names its shortlisted providers, each once, exactly when its round is the shortlist; a shortlist that kept none names none, so a `no_route` input has its record to cite; it names the verifiers its tuples need, each once, only when it is a shortlist's |
 
 Each fixture under `fixtures/invalid/` breaks exactly one rule, named in its file name. `tests/core-internal.rs`
 lists, for each, the exact schema errors and the Rust refusal it gives, or, for a rule only Rust states, that the
@@ -427,8 +427,11 @@ These are defaults taken where the row left a choice open. Each is reversible by
 - **Acting once on an effect is orchestration's.** The log admits an identical effect entry again, as a retry of an
   append that failed, so it can't stop orchestration from acting twice on one receipt. `T-020-08` owns an effect's
   idempotency: it acts on each effect's receipt once, whatever retries the append had (`INV-8`).
-- **A question on a shortlisted route** carries the shortlisted providers, asks only among them (`REQ-CPL-6`, a
-  shape rule), and its shortlist's decision record names them (`shortlisted-authority-cites-its-shortlist`). A read
+- **A question on a shortlisted route** carries the shortlisted providers and the verifiers its tuples need, which
+  receive the subject; it asks only among them (`REQ-CPL-6`, a shape rule), and its shortlist's decision record names
+  them both (`shortlisted-authority-cites-its-shortlist`). `T-020-06` fills a shortlist record's `verifiers` from the
+  tuples' needs in the router's recorded decision; the verifiers asked are recorded and bounded with the providers
+  (`asked_before`, `provider-asked-before-was-asked`, `asked-before-is-complete`, `REQ-CPL-5`). A read
   check is taken from every role; policy answers it, and a permitted one is held to who may read
   (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`, the read rules above).
 - **Refusal classes for orders** are the seven `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.

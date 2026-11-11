@@ -979,13 +979,17 @@ pub enum Authority {
         /// The consent.
         consent: Digest,
     },
-    /// A route the router shortlisted for the order: the digest of the shortlist round's recorded decision, and the
-    /// providers it shortlisted, so policy can hold who is asked to them (`REQ-CPL-6`).
+    /// A route the router shortlisted for the order: the digest of the shortlist round's recorded decision, the
+    /// providers it shortlisted, and the verifiers its tuples need, which receive the subject, so policy can hold
+    /// who is asked to them (`REQ-CPL-5`, `REQ-CPL-6`).
     ShortlistedRoute {
         /// The shortlist.
         shortlist: Digest,
         /// The shortlisted providers, at least one, each once.
         providers: Vec<Id>,
+        /// The verifiers the shortlisted route's tuples need, each once: none where they need none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        verifiers: Vec<Id>,
     },
 }
 
@@ -1894,6 +1898,11 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         shortlisted: Option<Vec<Id>>,
+        /// The verifiers a shortlist round's tuples need, by its recorded decision, each once: only on a shortlist's
+        /// record, and none where they need none, so a question on its route asks only them besides its providers
+        /// (`REQ-CPL-5`, `REQ-CPL-6`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        verifiers: Vec<Id>,
     },
     /// What was shown to the customer, by digest, and how (`REQ-QTE-2`, `REQ-QTE-7`, `REQ-QTE-10`).
     Shown {

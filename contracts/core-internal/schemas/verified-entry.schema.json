@@ -1225,6 +1225,14 @@
           "items": {
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
           }
+        },
+        "verifiers": {
+          "description": "The verifiers a shortlist round's tuples need, by its recorded decision, each once: only on a shortlist's record, which the Rust types check (REQ-CPL-5, REQ-CPL-6).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
         }
       }
     },

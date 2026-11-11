@@ -124,7 +124,7 @@
       }
     },
     "authority_shortlisted_route": {
-      "description": "A route the router shortlisted for the order.",
+      "description": "A route the router shortlisted for the order, with the verifiers its tuples need, which receive the subject.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -144,6 +144,14 @@
           "description": "The shortlisted providers, at least one, each once, so policy can hold who is asked to them (REQ-CPL-6).",
           "type": "array",
           "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        },
+        "verifiers": {
+          "description": "The verifiers the shortlisted route's tuples need, each once: absent or empty where they need none. A question on the route asks only these and its providers (REQ-CPL-5, REQ-CPL-6).",
+          "type": "array",
           "uniqueItems": true,
           "items": {
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"

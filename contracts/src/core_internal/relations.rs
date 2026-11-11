@@ -1249,7 +1249,7 @@ pub static RELATIONS: [Relation; 47] = [
     },
     Relation {
         name: "shortlisted-authority-cites-its-shortlist",
-        spec: &["REQ-CPL-2", "REQ-CPL-6"],
+        spec: &["REQ-CPL-2", "REQ-CPL-6", "REQ-CPL-5"],
         quantifier: Quantifier::Exists,
         refusal: "a shortlisted route's authority names a decision record of this log",
         fields: &[
@@ -1264,6 +1264,10 @@ pub static RELATIONS: [Relation; 47] = [
             (
                 "providers",
                 "a shortlisted route's authority names only providers its shortlist shortlisted",
+            ),
+            (
+                "verifiers",
+                "a shortlisted route's authority names only verifiers its shortlist's tuples need",
             ),
         ],
         cites: |e, _| match &e.what {
@@ -1281,6 +1285,7 @@ pub static RELATIONS: [Relation; 47] = [
             let Authority::ShortlistedRoute {
                 shortlist,
                 providers,
+                verifiers,
             } = &question.authority
             else {
                 return Match::NotTarget;
@@ -1291,6 +1296,7 @@ pub static RELATIONS: [Relation; 47] = [
                     order,
                     round,
                     shortlisted,
+                    verifiers: needed,
                     ..
                 } => judge(
                     record == shortlist,
@@ -1300,6 +1306,7 @@ pub static RELATIONS: [Relation; 47] = [
                         shortlisted
                             .as_ref()
                             .is_some_and(|s| providers.iter().all(|p| s.contains(p))),
+                        verifiers.iter().all(|v| needed.contains(v)),
                     ],
                 ),
                 _ => Match::NotTarget,

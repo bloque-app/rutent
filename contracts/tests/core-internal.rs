@@ -72,7 +72,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 28] = [
+const RUST_RULES: [(&str, &str); 30] = [
     (
         "permission-change-by-a-provider",
         "a read permission is granted or revoked by the operator",
@@ -83,7 +83,15 @@ const RUST_RULES: [(&str, &str); 28] = [
     ),
     (
         "person-question-asking-off-its-shortlist",
-        "a question on a shortlisted route asks only the shortlisted providers",
+        "a question on a shortlisted route asks only the shortlisted providers and the verifiers its tuples need",
+    ),
+    (
+        "person-question-asking-a-verifier-its-route-does-not-need",
+        "a question on a shortlisted route asks only the shortlisted providers and the verifiers its tuples need",
+    ),
+    (
+        "verified-entry-of-a-choice-record-naming-verifiers",
+        "a decision record names the verifiers its tuples need only on a shortlist's, each once",
     ),
     (
         "verified-entry-of-a-customers-permitted-read-of-the-trail",

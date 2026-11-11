@@ -115,14 +115,30 @@ impl PersonQuestion {
                 "a question names each provider already asked about its order once",
             ));
         }
-        if let Authority::ShortlistedRoute { providers, .. } = &self.authority {
+        if let Authority::ShortlistedRoute {
+            providers,
+            verifiers,
+            ..
+        } = &self.authority
+        {
             listed(
                 providers,
                 "a shortlisted route names its providers, at least one, each once",
             )?;
-            if !self.ask.iter().all(|p| providers.contains(p)) {
+            if !distinct(verifiers) {
                 return Err(Violation(
-                    "a question on a shortlisted route asks only the shortlisted providers",
+                    "a shortlisted route names each verifier its tuples need once",
+                ));
+            }
+            // The verifiers that receive the subject are asked too, and recorded and bounded with the providers
+            // (`REQ-CPL-5`); anyone else is off the route.
+            if !self
+                .ask
+                .iter()
+                .all(|p| providers.contains(p) || verifiers.contains(p))
+            {
+                return Err(Violation(
+                    "a question on a shortlisted route asks only the shortlisted providers and the verifiers its tuples need",
                 ));
             }
         }
@@ -332,6 +348,15 @@ impl What {
                     ));
                 }
                 Ok(())
+            }
+            What::DecisionRecord {
+                round, verifiers, ..
+            } if !distinct(verifiers)
+                || (*round == RoutingRound::Choice && !verifiers.is_empty()) =>
+            {
+                Err(Violation(
+                    "a decision record names the verifiers its tuples need only on a shortlist's, each once",
+                ))
             }
             What::DecisionRecord {
                 round, shortlisted, ..
