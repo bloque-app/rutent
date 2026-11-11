@@ -50,8 +50,20 @@
 //! customer chose none, ranks by the most value at the destination; `fastest_settlement` by the smallest declared
 //! settlement time. An objective the contract adds later is ranked as lowest total cost until this router learns
 //! it. Only the ranking reads the objective: a changed objective may change the choice and which candidates are
-//! outranked, never another drop. The choice reads the request, the snapshot and the bounds alone; the operator's
-//! own fee is taken afterwards, at the destination ([`quote`]), and doesn't enter it.
+//! outranked, never another drop. The choice reads the request, the snapshot and the bounds alone.
+//!
+//! # The operator's fee
+//!
+//! The bounds carry the operator's own fee formula (router-api 3.0.0, `T-020-02`), taken at the destination from
+//! what the providers deliver ([`quote`]). Two rules read it differently:
+//!
+//! - **The floor is judged after it.** The floor is the least the customer accepts at the destination
+//!   (`REQ-ORD-27`), so a candidate is dropped as below the floor when what is left after the operator's fee is
+//!   below it, as the price shown would have it.
+//! - **Ranking is before it.** Lowest total cost compares the providers' amounts before the operator's fee, and
+//!   every record says so in its `ranking` (`before_operator_fee`). One formula is taken from every candidate at
+//!   the destination and its proportion is at most one, so what is left after it never falls as what arrives
+//!   grows, and ranking after it could differ only where it turns a difference into a tie.
 
 mod calls;
 mod judge;
@@ -66,7 +78,7 @@ use std::cmp::Ordering;
 use num_bigint::BigUint;
 use rutent_contracts::router_api::{
     Candidate, CatalogueSnapshot, DecisionRecord, DropReason, FigureValue, Id, NonEmpty, Objective,
-    Part, PolicyBounds, Request, Router, Version,
+    Part, PolicyBounds, Ranking, Request, Router, Version,
 };
 
 use search::{Path, Search, answer_of};
@@ -74,7 +86,9 @@ use search::{Path, Search, answer_of};
 /// The version every record this router makes names in its `router_version`.
 /// `0.2.0` since router-api 3.0.0 (`T-011-05`): the same inputs now give a record that also names the candidates
 /// the contract couldn't state before. `0.3.0` since `T-011-06`: each segment also names the calls it makes.
-pub const VERSION: &str = "rutent-router-0.3.0";
+/// `0.4.0` since `T-020-02`: the floor is judged after the operator's fee, so the same inputs may drop a
+/// candidate as below the floor that `0.3.0` kept.
+pub const VERSION: &str = "rutent-router-0.4.0";
 
 /// The route finder: the router API's [`Router`], as ADR-0006 and `DEC-8` decide it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -126,6 +140,7 @@ impl Router for RouteFinder {
             request: request.clone(),
             snapshot: snapshot.clone(),
             bounds: bounds.clone(),
+            ranking: Ranking::BeforeOperatorFee,
             candidates,
             chosen,
         }

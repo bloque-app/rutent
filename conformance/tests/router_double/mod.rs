@@ -14,7 +14,7 @@
 //! (`nothing_delivered`), as router-api 3.0.0 has them. It drops any other candidate for
 //! the first of these that holds: excluded by policy, a void statement, a stale figure,
 //! a refused dry run, an ineligible judgement, outside a band, over a ceiling, a part arriving with nothing,
-//! below the floor, a profitable rate cycle, unconfirmed (choice round). Among the rest, the choice round chooses
+//! below the floor after the operator's fee, a profitable rate cycle, unconfirmed (choice round). Among the rest, the choice round chooses
 //! the first by the objective and `candidate_id`, and drops the others as outranked by it; the shortlist round
 //! keeps them all.
 //!
@@ -34,8 +34,8 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{
     Amount, Candidate, CatalogueSnapshot, CeilingScope, Decimal, DecisionRecord, DropReason,
     Endpoint, FeeFormula, Figure, FigureValue, Id, NonEmpty, Objective, Operation, OperationKind,
-    Origin, Part, PolicyBounds, PositiveAmount, Pricing, Request, Round, RouteCall, Router,
-    Timestamp, Version,
+    Origin, Part, PolicyBounds, PositiveAmount, Pricing, Ranking, Request, Round, RouteCall,
+    Router, Timestamp, Version,
 };
 
 /// No flaw: the reference double itself.
@@ -61,6 +61,8 @@ pub const FEE_ROUNDS_DOWN: u8 = 8;
 pub const OMITS_UNSTATABLE: u8 = 9;
 /// Names no cross-module call on any segment, as a router before router-api 3.0.0's calls did (`T-011-06`).
 pub const LEAVES_OUT_CALLS: u8 = 10;
+/// Judges the floor on what arrives before the operator's fee, as routers before `T-020-02` did.
+pub const FLOOR_BEFORE_THE_FEE: u8 = 11;
 
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
@@ -739,13 +741,29 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         if last == BigUint::ZERO {
             return Some(DropReason::NoPositiveOutcome {});
         }
-        if self
-            .request
-            .floor
-            .as_ref()
-            .is_some_and(|floor| last < big(floor.as_str()))
-        {
-            return Some(DropReason::BelowFloor {});
+        if let Some(floor) = &self.request.floor {
+            // What the customer receives: what arrives less the operator's fee, its formula capped by its
+            // maximum, never raised to it, and never below nothing.
+            let formula = &self.bounds.operator_fee;
+            let mut fee = big(formula.flat.as_str())
+                + (&last * big(formula.proportional.numerator.as_str())
+                    + big(formula.proportional.denominator.amount().as_str())
+                    - 1u8)
+                    / big(formula.proportional.denominator.amount().as_str());
+            if let Some(maximum) = &formula.maximum {
+                fee = fee.min(big(maximum.as_str()));
+            }
+            if FLAW == FLOOR_BEFORE_THE_FEE {
+                fee = BigUint::ZERO;
+            }
+            let received = if fee <= last {
+                &last - fee
+            } else {
+                BigUint::ZERO
+            };
+            if received < big(floor.as_str()) {
+                return Some(DropReason::BelowFloor {});
+            }
         }
         if FLAW != FOLLOWS_RATE_CYCLES && Self::profitable_cycle(&found.steps) {
             return Some(DropReason::SuspectRateCycle {});
@@ -934,6 +952,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
             request: self.request.clone(),
             snapshot: self.snapshot.clone(),
             bounds: self.bounds.clone(),
+            ranking: Ranking::BeforeOperatorFee,
             candidates,
             chosen,
         }

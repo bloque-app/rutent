@@ -6,15 +6,15 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::router_api::{
-    Candidate, CatalogueSnapshot, FigureValue, Id, NonEmpty, Operation, Part, PolicyBounds,
-    RecordedDecision, Request, VERSION,
+    Candidate, CatalogueSnapshot, FigureValue, HeldQuote, Id, NonEmpty, Operation, Part,
+    PolicyBounds, RecordedDecision, Request, SettlementTimes, StatedTerms, VERSION,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:router-api:<shape>`.
-const SHAPES: [&str; 7] = [
+const SHAPES: [&str; 10] = [
     "common",
     "request",
     "catalogue-snapshot",
@@ -22,11 +22,38 @@ const SHAPES: [&str; 7] = [
     "operation",
     "candidate",
     "decision-record",
+    "stated-terms",
+    "settlement-times",
+    "held-quote",
 ];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 120] = [
+const RUST_RULES: [(&str, &str); 126] = [
+    (
+        "policy-bounds-two-slippage-limits-for-one-tuple",
+        "there is at most one slippage limit per tuple",
+    ),
+    (
+        "policy-bounds-operator-fee-above-the-whole",
+        "the operator's fee takes at most the whole of what arrives in proportion",
+    ),
+    (
+        "decision-record-without-a-slippage-limit-for-an-exchange-settling-within-three-days",
+        "every exchange tuple settling within three days has a slippage limit in the bounds",
+    ),
+    (
+        "settlement-times-settled-before-started",
+        "a segment settles at or after it starts",
+    ),
+    (
+        "held-quote-valid-until-before-its-snapshot",
+        "a held quote's validity is at or after its record's snapshot",
+    ),
+    (
+        "held-quote-of-a-record-choosing-nothing",
+        "a held quote's record chose a candidate",
+    ),
     (
         "decision-record-naming-an-undeclared-call",
         "every call an operation names is one its provider's module declares",
@@ -361,7 +388,7 @@ const RUST_RULES: [(&str, &str); 120] = [
     ),
     (
         "decision-record-below-floor-without-a-floor",
-        "a below-floor reason names a candidate that arrives below the floor",
+        "a below-floor reason names a candidate of a request with a floor",
     ),
     (
         "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
@@ -511,7 +538,23 @@ const RUST_RULES: [(&str, &str); 120] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 73] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 80] = [
+    ("policy-bounds-without-operator-fee", &[("", "required")]),
+    ("policy-bounds-without-slippage-limits", &[("", "required")]),
+    (
+        "policy-bounds-slippage-limit-beyond-ten-thousand-bps",
+        &[("/slippage_limits/0/max_bps", "maximum")],
+    ),
+    (
+        "decision-record-ranking-net-of-the-operator-s-fee",
+        &[("/statement/ranking", "enum")],
+    ),
+    ("stated-terms-without-stated-at", &[("", "required")]),
+    (
+        "settlement-times-without-declared-seconds",
+        &[("", "required")],
+    ),
+    ("held-quote-without-validity", &[("", "required")]),
     (
         "catalogue-snapshot-calls-figure-asking-for-a-holding-balance",
         &[("/figures/37/value/calls/0/kinds/1", "not")],
@@ -900,6 +943,9 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "policy-bounds" => round_trip::<PolicyBounds>(value),
         "operation" => round_trip::<Operation>(value),
         "candidate" => round_trip::<Candidate>(value),
+        "stated-terms" => round_trip::<StatedTerms>(value),
+        "settlement-times" => round_trip::<SettlementTimes>(value),
+        "held-quote" => round_trip::<HeldQuote>(value),
         "decision-record" => {
             let record: RecordedDecision =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -977,6 +1023,45 @@ fn route_with_an_untyped_operation_is_invalid() {
 #[test]
 fn operation_of_an_unknown_kind_is_refused() {
     assert_rejected_by_both("operation-of-an-unknown-kind");
+}
+
+// verifies: REQ-QTE-9
+#[test]
+fn policy_bounds_without_a_slippage_limit_for_a_tuple_settling_within_three_days_are_invalid() {
+    let name =
+        "decision-record-without-a-slippage-limit-for-an-exchange-settling-within-three-days";
+    let value = fixture("invalid", name);
+    let refusal = through_rust("decision-record", &value).unwrap_err();
+    assert!(
+        refusal.contains("every exchange tuple settling within three days has a slippage limit"),
+        "{refusal}"
+    );
+    // The same bounds and snapshot, checked apart: the bounds pass their own check and fail against the
+    // snapshot, whose exchange `exchange-a` declares settling within three days.
+    let record = valid_record("decision-record-split-of-one-part").statement;
+    let mut bounds = record.bounds.clone();
+    bounds.slippage_limits.clear();
+    assert!(bounds.check().is_ok());
+    assert!(bounds.check_against(&record.snapshot).is_err());
+    assert!(record.bounds.check_against(&record.snapshot).is_ok());
+}
+
+// verifies: REQ-QTE-15
+#[test]
+fn held_quote_without_a_validity_is_invalid() {
+    assert_rejected_by_both("held-quote-without-validity");
+}
+
+// verifies: REQ-QTE-6
+#[test]
+fn stated_terms_without_the_time_they_were_stated_are_invalid() {
+    assert_rejected_by_both("stated-terms-without-stated-at");
+}
+
+// verifies: REQ-QTE-3
+#[test]
+fn settlement_time_pair_without_its_declared_time_is_invalid() {
+    assert_rejected_by_both("settlement-times-without-declared-seconds");
 }
 
 // verifies: REQ-QTE-1, REQ-QTE-4, REQ-QTE-16, REQ-AUD-4, REQ-ORD-37, DEC-4, DEC-8

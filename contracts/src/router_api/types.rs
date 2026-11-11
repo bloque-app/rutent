@@ -11,8 +11,9 @@ use super::{
     Amount, Decimal, Distinct, Id, NonEmpty, PositiveAmount, ProtocolVersion, Timestamp, Version,
 };
 use crate::provider_role::{
-    Denomination, Deployment, ExchangeTuple, Fee, Judgement, NodeRef, RampTuple, ReserveTuple,
-    ResultBody, SafeInteger, ShapeMismatch, Statement, StatementShape, VoidedBy,
+    BasisPoints, Denomination, Deployment, ExchangeTuple, Fee, Judgement, NodeRef, RampTuple,
+    ReserveTuple, ResultBody, SafeInteger, ShapeMismatch, Slippage, Statement, StatementShape,
+    VoidedBy,
 };
 
 /// The typed operation of `REQ-ORD-37`: withdrawal, route, exchange or deposit, and no other. A kind beyond these
@@ -430,6 +431,37 @@ pub struct PolicyBounds {
     /// Ceilings on value in flight across one publisher's providers, at most one per publisher and asset, id and
     /// decimals.
     pub publisher_ceilings: Vec<PublisherCeiling>,
+    /// The operator's own fee (`REQ-QTE-2`, `REQ-QTE-5`), taken at the destination, in the request's `to` unit,
+    /// from what the providers' terms deliver there: `flat + ceil(a × numerator / denominator)` on that amount
+    /// `a`, capped by its `maximum` where it gives one and never raised to it. Its proportion is at most one.
+    ///
+    /// The floor is judged on what is left after it (`REQ-ORD-27`): a candidate that would leave the customer less
+    /// than the floor is dropped as `below_floor`. Ranking isn't: it compares the providers' amounts before this
+    /// fee ([`Ranking`]).
+    pub operator_fee: FeeFormula,
+    /// The slippage the operator sets per tuple (`REQ-QTE-9`): the most an exchange's rate may move against the
+    /// customer on a segment settling within three days, at most one per tuple. Every exchange tuple a snapshot
+    /// routed under these bounds declares settling within [`THREE_DAYS_SECONDS`] has one
+    /// ([`PolicyBounds::check_against`]). Empty if no such tuple is routed.
+    pub slippage_limits: Vec<SlippageLimit>,
+}
+
+/// Three calendar days, in seconds from segment start: the line `REQ-QTE-9` and `REQ-QTE-10` draw. A provider
+/// declares settlement in seconds from segment start, and the start's date isn't known when a route is quoted, so
+/// three calendar days are read as `3 × 86 400` seconds, inclusive: a segment declaring at most this settles
+/// within three days.
+pub const THREE_DAYS_SECONDS: u64 = 3 * 86_400;
+
+/// The slippage the operator sets for one tuple (`REQ-QTE-9`): the largest move of its rate against the customer
+/// on a segment that settles within three days.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlippageLimit {
+    /// The tuple, by its provider and its two ends, as [`PolicyBounds::excluded_tuples`] names one, so the limit
+    /// holds across snapshots.
+    pub tuple: TupleKey,
+    /// The largest move of the rate against the customer, in basis points.
+    pub max_bps: BasisPoints,
 }
 
 /// A tuple, by its provider and its two ends.
@@ -659,7 +691,8 @@ pub enum DropReason {
     },
     /// It uses a provider or tuple the policy excludes (`REQ-QTE-11`).
     ExcludedByPolicy {},
-    /// It would arrive below the customer's floor (`REQ-ORD-27`).
+    /// What it would leave the customer at the destination, after the operator's fee
+    /// ([`PolicyBounds::operator_fee`]), is below the customer's floor (`REQ-ORD-27`; since 3.0.0, `T-020-02`).
     BelowFloor {},
     /// One of its parts arrives with nothing (`REQ-QTE-13`).
     NoPositiveOutcome {},
@@ -687,6 +720,8 @@ pub struct DecisionRecord {
     pub snapshot: CatalogueSnapshot,
     /// The policy bounds, as applied.
     pub bounds: PolicyBounds,
+    /// What the ranking compared: always the providers' amounts before the operator's fee.
+    pub ranking: Ranking,
     /// Every candidate considered.
     pub candidates: Vec<Candidate>,
     /// The chosen candidate, by id; never in a shortlist round, and absent in a choice round with no route.
@@ -744,3 +779,69 @@ impl StatementShape for DecisionRecord {
 /// `operator_key`. Nothing in the record ties a carried statement's `signature.key` to its maker; Core does that
 /// before the record is formed (`contracts/router-api/README.md`, "Unchecked by either").
 pub type RecordedDecision = Statement<DecisionRecord>;
+
+/// What a decision record's ranking compares (`REQ-QTE-11`, `REQ-AUD-4`).
+///
+/// One value today: the providers' amounts and declared times, before the operator's fee
+/// ([`PolicyBounds::operator_fee`]). Where one formula is taken at the destination from every candidate and its
+/// proportion is at most one, what the customer receives after it never falls as what arrives grows, so ranking
+/// after it could differ only where it turns a difference into a tie, which goes to the lowest `candidate_id`.
+/// Ranking net of the fee, which a formula depending on the tuple (`REQ-QTE-5`) would need for `REQ-QTE-11`'s
+/// lowest total cost, would be a new value here, so a record always says which it used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ranking {
+    /// On the providers' amounts before the operator's fee.
+    BeforeOperatorFee,
+}
+
+/// A provider's terms for one tuple as stated at one time (`REQ-QTE-6`): its fee formula and, where its tuple sets
+/// a rate, its slippage regime. Schema: `urn:rutent:router-api:stated-terms`.
+///
+/// Core keeps a tuple's history of these, each with the time it was stated; the terms that bind a segment are the
+/// last stated at or before it started, and before that the route's total is a quote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatedTerms {
+    /// When the provider stated them.
+    pub stated_at: Timestamp,
+    /// The fee formula.
+    pub fee: FeeFormula,
+    /// The slippage regime, where the tuple sets a rate.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub slippage: Option<Slippage>,
+}
+
+/// One segment's declared settlement time and its actual one (`REQ-QTE-3`). Schema:
+/// `urn:rutent:router-api:settlement-times`.
+///
+/// The declared time is what the segment's quote or price declared, in seconds from segment start; the actual one
+/// runs from `started_at` to `settled_at`, never backwards. Core keeps one per segment it starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct SettlementTimes {
+    /// The declared settlement time, in seconds from segment start.
+    pub declared_seconds: SafeInteger,
+    /// When the segment started.
+    pub started_at: Timestamp,
+    /// When it settled: at or after `started_at`.
+    pub settled_at: Timestamp,
+}
+
+/// A quote a reserve holds for a new route before it starts (`REQ-QTE-15`): a choice round's record, whose chosen
+/// candidate is the quote, with the validity stated for the hold. Schema: `urn:rutent:router-api:held-quote`.
+///
+/// It stays a quote until each segment starts: it binds no provider, whose terms bind only from segment start
+/// (`REQ-QTE-6`), so dropping it, or its quote failing, has no effect beyond the hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct HeldQuote {
+    /// The record the quote is from: it chose a candidate.
+    pub record: DecisionRecord,
+    /// The hold's stated validity, at or after the record's snapshot was taken.
+    pub valid_until: Timestamp,
+}

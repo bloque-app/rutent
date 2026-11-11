@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/ranking",
+      "value": "after_operator_fee"
+    }
+  ]
+}

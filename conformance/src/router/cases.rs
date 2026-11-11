@@ -30,7 +30,11 @@
 //! choice round, only those two are confirmed; `f-dep-2` refuses the slow route's amount (`AC-3`), and
 //! `f-ex-c`'s quote is past its validity.
 
-use rutent_contracts::router_api::{CatalogueSnapshot, PolicyBounds, Request};
+use rutent_contracts::provider_role::NodeRef;
+use rutent_contracts::router_api::{
+    Amount, CatalogueSnapshot, Endpoint, FeeFormula, FigureValue, PolicyBounds, Request,
+    SlippageLimit, TupleKey,
+};
 use serde_json::{Value, json};
 
 /// One input the suite routes, and what a router must choose on it.
@@ -542,8 +546,36 @@ fn bounds(max_hops: u8, provider_ceilings: Value, excluded_providers: Value) -> 
             "excluded_tuples": [],
             "provider_ceilings": provider_ceilings,
             "publisher_ceilings": [],
+            "operator_fee": { "flat": "0", "proportional": { "numerator": "0", "denominator": "1" } },
+            "slippage_limits": [],
         }),
     )
+}
+
+/// A slippage limit of 50 basis points for every exchange tuple of the snapshot, so the bounds limit each one
+/// that settles within three days (`REQ-QTE-9`, router-api's `PolicyBounds::check_against`).
+fn limits_for(snapshot: &CatalogueSnapshot) -> Vec<SlippageLimit> {
+    snapshot
+        .figures
+        .iter()
+        .filter_map(|f| match (&f.value, f.origin.provider()) {
+            (FigureValue::ExchangeTuple { tuple }, Some(provider)) => {
+                let end = |asset: &rutent_contracts::provider_role::Denomination| Endpoint {
+                    node: NodeRef::Inner(tuple.node.clone()),
+                    asset: asset.clone(),
+                };
+                Some(SlippageLimit {
+                    tuple: TupleKey {
+                        provider: provider.clone(),
+                        from: end(&tuple.from),
+                        to: end(&tuple.to),
+                    },
+                    max_bps: 50.try_into().expect("basis points"),
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn request(id: &str, round: Value, to: Value, objective: &str, floor: Option<&str>) -> Request {
@@ -835,7 +867,32 @@ pub fn cases() -> Vec<Case> {
             Expected::NoRoute,
             false,
         ),
+        floor_after_the_operators_fee(ac2_choice(
+            "floor-judged-after-the-operators-fee",
+            "lowest_total_cost",
+            Some("250000000"),
+            Expected::NoRoute,
+            false,
+        )),
         policy_case(),
         tie_case(),
     ]
+    .into_iter()
+    .map(|mut case| {
+        case.bounds.slippage_limits = limits_for(&case.snapshot);
+        case
+    })
+    .collect()
+}
+
+/// The AC-2 choice round with a floor of 250 USDC and an operator's fee of a flat 10 USDC (`REQ-ORD-27`,
+/// `REQ-QTE-2`). The slow route arrives with 253.836536 USDC, above the floor before the fee and 243.836536 after
+/// it, below; the fast one with 246.877249, below either way. So no route: a router judging the floor before the
+/// operator's fee would choose the slow route and show the customer less than the floor.
+fn floor_after_the_operators_fee(mut case: Case) -> Case {
+    case.bounds.operator_fee = FeeFormula {
+        flat: Amount::new("10000000").expect("an amount"),
+        ..case.bounds.operator_fee
+    };
+    case
 }

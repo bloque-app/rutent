@@ -1,0 +1,13 @@
+{
+  "fee": {
+    "flat": "100",
+    "proportional": {
+      "numerator": "3",
+      "denominator": "1000"
+    }
+  },
+  "slippage": {
+    "regime": "bounded",
+    "max_bps": 30
+  }
+}

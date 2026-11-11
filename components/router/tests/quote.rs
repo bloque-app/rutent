@@ -7,19 +7,19 @@
 mod common;
 
 use common::{
-    Net, WIDE, bounds, choice_of, endpoint, fee, on, parse, request, routed, shortlist, tuples,
-    unit,
+    Net, WIDE, bounds, choice_of, endpoint, fee, limited, on, parse, request, routed, shortlist,
+    tuples, unit,
 };
-use rutent_contracts::provider_role::{BasisPoints, ResultBody, TransferOutcome, TransferQuote};
+use rutent_contracts::provider_role::{ResultBody, TransferOutcome, TransferQuote};
 use rutent_contracts::router_api::{
-    Amount, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, Id, Timestamp,
+    Amount, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, Id, StatedTerms, Timestamp,
 };
 use rutent_router::quote::{
-    Binding, Bound, ChargeFlag, Commitment, Executed, Firmness, HeldQuote, HeldQuoteRefused,
-    HoldRefused, Label, Measured, NeedsAcceptance, NoSlippageLimit, PriceRefused, QuoteField,
-    QuoteRefused, SegmentTime, SlippageLimit, StatedTerms, THREE_DAYS_SECONDS,
-    UnexplainedDifference, binding, check_charge, commitments, declared_times, executed_price,
-    firmness, formula_fee, may_start, quote_fields, quoted_price, rate_within,
+    Binding, Bound, ChargeFlag, Commitment, Executed, Firmness, HeldQuoteRefused, HoldRefused,
+    Label, Measured, NeedsAcceptance, NoSlippageLimit, PriceRefused, QuoteField, QuoteRefused,
+    SegmentTime, THREE_DAYS_SECONDS, UnexplainedDifference, binding, check_charge, commitments,
+    declared_times, executed_price, firmness, formula_fee, held_label, hold, may_start,
+    quote_fields, quoted_price, rate_within, redeem,
 };
 use serde_json::{Value, json};
 
@@ -47,10 +47,6 @@ fn formula(flat: &str, numerator: &str, denominator: &str, maximum: Option<&str>
         formula["maximum"] = json!(maximum);
     }
     parse("fee formula", formula)
-}
-
-fn bps(value: u16) -> BasisPoints {
-    BasisPoints::try_from(value).unwrap()
 }
 
 /// A chain of ramps `r0`, `r1`, … from `n0` to `n{k}` in USDC of 10^-6, each with a fee of `flat + a × 1/1000`
@@ -183,6 +179,9 @@ fn exchange(name: &str, seconds: u64, slippage: Option<Value>) -> DecisionRecord
         }
         None => shortlist(),
     };
+    let snapshot = net.build();
+    // The operator limits the exchange's slippage to 50 basis points, in the bounds the record names.
+    let bounds = limited(bounds(1), &snapshot, 50);
     routed(
         &request(
             &format!("r-{name}"),
@@ -191,8 +190,8 @@ fn exchange(name: &str, seconds: u64, slippage: Option<Value>) -> DecisionRecord
             endpoint(json!("hub"), "EURC", 6),
             "100000000",
         ),
-        &net.build(),
-        &bounds(1),
+        &snapshot,
+        &bounds,
     )
 }
 
@@ -305,27 +304,27 @@ fn formula_changed_after_segment_start_does_not_apply_to_it() {
 #[test]
 fn held_quote_past_its_validity_is_refused() {
     let record = confirmed();
-    let held = HeldQuote::hold(record.clone(), at("2026-11-06T15:30:00Z")).unwrap();
-    assert_eq!(held.label(), Label::Quote);
-    assert_eq!(held.valid_until(), &at("2026-11-06T15:30:00Z"));
+    let held = hold(record.clone(), at("2026-11-06T15:30:00Z")).unwrap();
+    assert_eq!(held_label(&held), Label::Quote);
+    assert_eq!(held.valid_until, at("2026-11-06T15:30:00Z"));
     assert_eq!(
-        held.redeem(&at("2026-11-06T15:30:00Z")).map(tuples),
+        redeem(&held, &at("2026-11-06T15:30:00Z")).map(tuples),
         Ok(vec!["r0".to_owned()])
     );
     assert_eq!(
-        held.redeem(&at("2026-11-06T15:30:00.001Z")),
+        redeem(&held, &at("2026-11-06T15:30:00.001Z")),
         Err(HeldQuoteRefused::PastValidity {
             valid_until: at("2026-11-06T15:30:00Z")
         })
     );
     // A validity before the quote was made can't be stated, and a record that chose nothing holds no quote.
     assert_eq!(
-        HeldQuote::hold(record, at("2026-11-06T15:01:59Z")),
+        hold(record, at("2026-11-06T15:01:59Z")),
         Err(HoldRefused::ValidityBeforeQuote)
     );
     let (unchosen, _) = chain("unchosen", &[("0", 60)]);
     assert_eq!(
-        HeldQuote::hold(unchosen, at("2026-11-06T15:30:00Z")),
+        hold(unchosen, at("2026-11-06T15:30:00Z")),
         Err(HoldRefused::NothingChosen)
     );
 }
@@ -333,14 +332,10 @@ fn held_quote_past_its_validity_is_refused() {
 // verifies: REQ-QTE-9
 #[test]
 fn a_segment_settling_in_exactly_three_days_is_bound_and_one_second_more_is_free() {
-    let limits = [SlippageLimit {
-        tuple: id("x0"),
-        max_bps: bps(50),
-    }];
     let within = exchange("three-days", THREE_DAYS_SECONDS, None);
     let candidate = on(&within, &["x0"]);
     assert_eq!(
-        commitments(&within, candidate, &limits),
+        commitments(&within, candidate, &within.bounds.slippage_limits),
         vec![(
             time(0, 0, "x0", THREE_DAYS_SECONDS),
             Ok(Commitment::Bound { rate_bps: Some(50) })
@@ -395,10 +390,6 @@ fn a_segment_settling_in_exactly_three_days_is_bound_and_one_second_more_is_free
 // verifies: REQ-QTE-9
 #[test]
 fn an_exchanges_own_tighter_slippage_binds_and_a_floating_one_leaves_the_operators() {
-    let limits = [SlippageLimit {
-        tuple: id("x0"),
-        max_bps: bps(50),
-    }];
     let cases = [
         (json!({ "regime": "bounded", "max_bps": 20 }), Some(20)),
         (json!({ "regime": "bounded", "max_bps": 80 }), Some(50)),
@@ -409,7 +400,7 @@ fn an_exchanges_own_tighter_slippage_binds_and_a_floating_one_leaves_the_operato
         let record = exchange(&format!("quoted-{i}"), 3600, Some(slippage));
         let chosen = record.chosen().expect("the quote confirms the exchange");
         assert_eq!(
-            commitments(&record, chosen, &limits),
+            commitments(&record, chosen, &record.bounds.slippage_limits),
             vec![(time(0, 0, "x0", 3600), Ok(Commitment::Bound { rate_bps }))]
         );
     }
@@ -900,8 +891,8 @@ fn a_held_quote_is_refused_exactly_past_its_validity() {
     for (seed, mut draw) in seeds(500) {
         let until = made + draw.below(86_400 - made);
         let now = draw.below(86_400);
-        let held = HeldQuote::hold(record.clone(), on_the_day(until)).unwrap();
-        let redeemed = held.redeem(&on_the_day(now));
+        let held = hold(record.clone(), on_the_day(until)).unwrap();
+        let redeemed = redeem(&held, &on_the_day(now));
         if now <= until {
             assert_eq!(redeemed, Ok(record.chosen().unwrap()), "seed {seed}");
         } else {
@@ -913,7 +904,7 @@ fn a_held_quote_is_refused_exactly_past_its_validity() {
                 "seed {seed}"
             );
         }
-        assert_eq!(held.label(), Label::Quote, "seed {seed}");
+        assert_eq!(held_label(&held), Label::Quote, "seed {seed}");
     }
 }
 

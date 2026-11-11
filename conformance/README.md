@@ -236,6 +236,7 @@ alone, the same inputs give the same output, and a changed objective can change 
 | `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
 | `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
 | `calls-follow-the-declarations` | Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of the release its tuple comes from, to the provider of another operation of its part, every kind declared, and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`); the contract refuses a call outside those, and this check finds one left out |
+| `floor-is-judged-after-the-operators-fee` | Where the request sets a floor, every kept or outranked candidate leaves the customer at least the floor after the operator's fee, the bounds' `operator_fee` on what arrives (`flat + ceil(a × n / d)`, capped by its maximum and never raised to it), and every `below_floor` candidate less (router-api 3.0.0, `T-020-02`, `REQ-ORD-27`); the `no_std` contract checks only the floor before the fee for a kept candidate, and that a `below_floor` reason has a floor |
 | `ranking-follows-the-objective` | Kept candidates rank ahead of every outranked one by the objective, then by `candidate_id` bytes; each outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate chooses one |
 
 | Cell | Over every case |
@@ -251,7 +252,8 @@ alone, the same inputs give the same output, and a changed objective can change 
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
-rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
+rounds (each objective, and a floor no route meets), and a fourth with a floor of 250 USDC and a flat operator's fee
+of 10 USDC, which the slow route meets before the fee and not after it, so no route; a policy network with an excluded exchange, a ceiling passed
 by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price, a
 ramp whose fee is above what reaches it and one that keeps all that enters; and a tie, whose exchanges' modules
 declare calls to the reserve on their route and to each other, on none.
@@ -271,5 +273,7 @@ The suite's own tests (`tests/router_suite.rs`) run it against a test-only refer
 (`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
 record passes the contract and fails exactly one check. The double that leaves out the paths it can't state, as
 router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
-(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. They also recompute every valid decision record among the
+(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. The one that judges the floor
+before the operator's fee (`FLOOR_BEFORE_THE_FEE`) chooses the slow route on the fee case, which the contract
+accepts, and fails `floor-is-judged-after-the-operators-fee` alone. They also recompute every valid decision record among the
 contract's fixtures.

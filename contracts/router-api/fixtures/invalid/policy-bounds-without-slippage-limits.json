@@ -1,0 +1,40 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+  },
+  "protocol_version": "2.0.1",
+  "policy_version": "policy-7",
+  "max_hops": 4,
+  "max_parts": 1,
+  "excluded_providers": [],
+  "excluded_tuples": [],
+  "provider_ceilings": [
+    {
+      "provider": "exchange-a",
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "amount": "500000000"
+    }
+  ],
+  "publisher_ceilings": [
+    {
+      "publisher": "acme",
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "amount": "800000000"
+    }
+  ],
+  "operator_fee": {
+    "flat": "100",
+    "proportional": {
+      "numerator": "5",
+      "denominator": "1000"
+    },
+    "maximum": "500000"
+  }
+}

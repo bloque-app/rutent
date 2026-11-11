@@ -34,6 +34,23 @@
   wire field are a major under `DEC-4` whatever Rust's `#[non_exhaustive]` spares: a reader on 2.x's schema rejects
   both. Two new valid fixtures, a calls figure in the one of every kind of figure, and twenty invalid ones; the new decision-record fixture is `rutent-router`'s own
   record over its inputs, as its tests show. (DEC-4, DEC-8, DEC-20, T-011-06)
+- Breaking, folded into the unreleased 3.0.0: the inputs Core keeps beside a decision record, so it reaches them
+  through the contract (`DEC-2`, `REQ-MOD-3`) and the router's quote rules take them from here. `PolicyBounds`
+  gains two required fields, so a record names the bounds it ran under (`REQ-AUD-4`): `operator_fee`, the
+  operator's own fee formula (`REQ-QTE-2`), taken at the destination in the request's `to` unit from what the
+  providers deliver, capped by its maximum and never raised to it, its proportion at most one; and
+  `slippage_limits`, the slippage the operator sets per tuple (`REQ-QTE-9`), keyed by provider and ends, at most
+  one per tuple. A new check, `PolicyBounds::check_against`, which `DecisionRecord::check` runs: every exchange
+  tuple of the snapshot that settles within three days (`THREE_DAYS_SECONDS`, 259,200, inclusive) by its price or a
+  fresh quote has a limit. The floor is judged after the operator's fee (`REQ-ORD-27`): `below_floor` now holds
+  where what is left after the fee is below the floor. The contract can't multiply amounts, so it checks only that
+  a kept candidate arrives at the floor before the fee and that a `below_floor` reason has a floor; the router
+  suite recomputes the rest. Ranking stays on the providers' amounts before the fee, and a decision record says so
+  in a new required field, `ranking`, whose one value is `before_operator_fee` (`REQ-QTE-11`). Three new shapes:
+  `stated-terms` (`StatedTerms`, `REQ-QTE-6`), `settlement-times` (`SettlementTimes`, `REQ-QTE-3`) and `held-quote`
+  (`HeldQuote`, `REQ-QTE-15`). New required fields and a new rule are a major under `DEC-4`. Every policy-bounds and
+  decision-record fixture gains the fields; five valid fixtures and thirteen invalid ones are new, two of them made from patches.
+  (DEC-2, DEC-4, DEC-20, T-020-02)
 
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/router_api`) is `no_std` with `alloc`:

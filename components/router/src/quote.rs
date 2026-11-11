@@ -19,24 +19,28 @@
 //!   held within the operator's slippage for its tuple; a longer one is free of both (`REQ-QTE-9`).
 //! - [`firmness`] and [`may_start`]: a route with a segment over three days has no firm rate, names that segment,
 //!   and starts only once the customer accepts it (`REQ-QTE-10`, `AC-13`).
-//! - [`HeldQuote`]: a quote held before its route starts, with a stated validity, and refused past it
+//! - [`hold`] and [`redeem`]: a quote held before its route starts, with a stated validity, and refused past it
 //!   (`REQ-QTE-15`).
+//!
+//! The arguments these take that a decision record doesn't hold are router-api's types (`T-020-02`, `DEC-2`), so
+//! Core reaches them through the contract: the operator's fee formula and the slippage limits, which the
+//! [`PolicyBounds`](rutent_contracts::router_api::PolicyBounds) carry, so a record names the bounds it ran under;
+//! a provider's [`StatedTerms`] with their times; a segment's [`SettlementTimes`], declared and actual; and the
+//! [`HeldQuote`]. The checks stay here, as public functions.
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
-    BasisPoints, ConversionOutcome, Direction, Fee, ResultBody, Slippage, TransferOutcome, VoidedBy,
+    ConversionOutcome, Direction, Fee, ResultBody, Slippage, TransferOutcome, VoidedBy,
 };
+pub use rutent_contracts::router_api::THREE_DAYS_SECONDS;
 use rutent_contracts::router_api::{
-    Amount, Candidate, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, Id, Operation,
-    OperationKind, PositiveAmount, Timestamp,
+    Amount, Candidate, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, HeldQuote, Id,
+    Operation, OperationKind, PositiveAmount, SettlementTimes, SlippageLimit, StatedTerms,
+    Timestamp,
 };
 
 use crate::price::{fraction, number};
 use crate::search::{Search, answer_of};
-
-/// Three calendar days, in seconds from segment start: the line `REQ-QTE-9` and `REQ-QTE-10` draw. A segment
-/// whose declared settlement time is at most this settles within three days.
-pub const THREE_DAYS_SECONDS: u64 = 3 * 86_400;
 
 /// How a price shown to the customer is labelled (`REQ-QTE-7`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,7 +307,9 @@ pub enum PriceRefused {
 }
 
 /// The price shown before execution: a quote, from the candidate's operations as the router evaluated them, with
-/// the operator's fee by `operator`'s formula (`REQ-QTE-2`, `REQ-QTE-7`).
+/// the operator's fee by `operator`'s formula (`REQ-QTE-2`, `REQ-QTE-7`). Core passes the formula of the bounds
+/// the candidate's record ran under, [`PolicyBounds::operator_fee`](rutent_contracts::router_api::PolicyBounds),
+/// the one the router judged the floor against.
 pub fn quoted_price(
     candidate: &Candidate,
     operator: &FeeFormula,
@@ -375,11 +381,7 @@ fn shown(
         });
     }
     let arrives = number(&providers_out);
-    // The fee its formula gives, capped by its maximum where it gives one, but never raised to it (`REQ-QTE-2`).
-    let mut operator_fee = formula_fee_of(operator, &arrives);
-    if let Some(maximum) = &operator.maximum {
-        operator_fee = operator_fee.min(number(maximum));
-    }
+    let operator_fee = operator_fee_of(operator, &arrives);
     if operator_fee > arrives {
         return Err(PriceRefused::OperatorFeeAboveArrival {
             operator_fee: Amount::new(operator_fee.to_string())
@@ -445,22 +447,45 @@ pub struct Measured {
 }
 
 impl SegmentTime {
-    /// This segment's declared time against the actual one, from when it started to when it settled; `None` if it
-    /// settled before it started.
-    pub fn measure(&self, started_at: &Timestamp, settled_at: &Timestamp) -> Option<Measured> {
-        let nanos = settled_at
-            .unix_nanos()
-            .checked_sub(started_at.unix_nanos())?;
-        if nanos < 0 {
-            return None;
-        }
-        let actual_seconds = u64::try_from((nanos + 999_999_999) / 1_000_000_000).ok()?;
-        Some(Measured {
-            declared_seconds: self.declared_seconds,
-            actual_seconds,
-            over_seconds: actual_seconds.saturating_sub(self.declared_seconds),
+    /// This segment's declared time and its actual one, from when it started to when it settled: the pair Core
+    /// keeps for it (`REQ-QTE-3`). `None` if the declared time is unknown ([`declared_times`]), past a safe
+    /// integer.
+    pub fn settled(
+        &self,
+        started_at: &Timestamp,
+        settled_at: &Timestamp,
+    ) -> Option<SettlementTimes> {
+        Some(SettlementTimes {
+            declared_seconds: self.declared_seconds.try_into().ok()?,
+            started_at: started_at.clone(),
+            settled_at: settled_at.clone(),
         })
     }
+
+    /// This segment's declared time against the actual one, from when it started to when it settled; `None` if it
+    /// settled before it started, or its declared time is unknown.
+    pub fn measure(&self, started_at: &Timestamp, settled_at: &Timestamp) -> Option<Measured> {
+        measure(&self.settled(started_at, settled_at)?)
+    }
+}
+
+/// A segment's declared settlement time against its actual one, rounded up to whole seconds (`REQ-QTE-3`);
+/// `None` if it settled before it started, which [`SettlementTimes::check`] refuses.
+pub fn measure(times: &SettlementTimes) -> Option<Measured> {
+    let nanos = times
+        .settled_at
+        .unix_nanos()
+        .checked_sub(times.started_at.unix_nanos())?;
+    if nanos < 0 {
+        return None;
+    }
+    let actual_seconds = u64::try_from((nanos + 999_999_999) / 1_000_000_000).ok()?;
+    let declared_seconds = times.declared_seconds.get();
+    Some(Measured {
+        declared_seconds,
+        actual_seconds,
+        over_seconds: actual_seconds.saturating_sub(declared_seconds),
+    })
 }
 
 /// Every segment's declared settlement time, in order, part after part, read from the record alone (`REQ-QTE-3`).
@@ -515,6 +540,17 @@ pub fn declared_times(record: &DecisionRecord, candidate: &Candidate) -> Vec<Seg
 /// maximum aside; `None` if it is past an amount's 78 digits (`REQ-QTE-5`).
 pub fn formula_fee(formula: &FeeFormula, amount_in: &Amount) -> Option<Amount> {
     Amount::new(formula_fee_of(formula, &number(amount_in)).to_string())
+}
+
+/// The operator's fee on what arrives: its formula's fee, capped by its maximum where it gives one, but never
+/// raised to it (`REQ-QTE-2`). The price shown takes it, and the router judges the floor after it, so the two
+/// can't disagree.
+pub(crate) fn operator_fee_of(operator: &FeeFormula, arrives: &BigUint) -> BigUint {
+    let fee = formula_fee_of(operator, arrives);
+    match &operator.maximum {
+        Some(maximum) => fee.min(number(maximum)),
+        None => fee,
+    }
 }
 
 /// `flat + ceil(amount_in × numerator / denominator)`, exactly.
@@ -582,18 +618,6 @@ pub fn check_charge(
 // ---------------------------------------------------------------------------------------------------------------
 // REQ-QTE-6: binding from segment start.
 
-/// A provider's terms for one tuple as stated at one time: its fee formula and, where its category sets a rate, its
-/// slippage regime.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatedTerms {
-    /// When the provider stated them.
-    pub stated_at: Timestamp,
-    /// The fee formula.
-    pub fee: FeeFormula,
-    /// The slippage regime, where the tuple sets a rate.
-    pub slippage: Option<Slippage>,
-}
-
 /// What binds a provider for one segment (`REQ-QTE-6`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding<'a> {
@@ -626,15 +650,6 @@ pub fn binding<'a>(history: &'a [StatedTerms], started_at: Option<&Timestamp>) -
 // ---------------------------------------------------------------------------------------------------------------
 // REQ-QTE-9: committed within three days.
 
-/// The slippage the operator sets for one tuple (`REQ-QTE-9`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlippageLimit {
-    /// The tuple figure, by id.
-    pub tuple: Id,
-    /// The largest move of the rate against the customer.
-    pub max_bps: BasisPoints,
-}
-
 /// What a segment's provider is held to from segment start (`REQ-QTE-9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Commitment {
@@ -660,7 +675,9 @@ pub struct NoSlippageLimit {
 /// What each segment's provider is held to, in order, part after part (`REQ-QTE-9`). An exchange's own regime is
 /// read from the usable conversion quote it cites; one it doesn't cite, or a floating regime, leaves the
 /// operator's slippage as its bound. A segment whose time is unknown ([`declared_times`]) is held as one within
-/// three days, never freed.
+/// three days, never freed. Core passes the limits of the bounds the record ran under,
+/// [`PolicyBounds::slippage_limits`](rutent_contracts::router_api::PolicyBounds); a limit matches an operation
+/// on its provider and its two ends.
 pub fn commitments(
     record: &DecisionRecord,
     candidate: &Candidate,
@@ -679,7 +696,10 @@ pub fn commitments(
             } else if o.kind != OperationKind::Exchange {
                 Ok(Commitment::Bound { rate_bps: None })
             } else {
-                match limits.iter().find(|l| l.tuple == time.tuple) {
+                let limit = limits.iter().find(|l| {
+                    l.tuple.provider == o.provider && l.tuple.from == o.from && l.tuple.to == o.to
+                });
+                match limit {
                     None => Err(NoSlippageLimit {
                         tuple: time.tuple.clone(),
                     }),
@@ -785,17 +805,6 @@ pub fn may_start(firmness: &Firmness, accepted: bool) -> Result<(), NeedsAccepta
 // ---------------------------------------------------------------------------------------------------------------
 // REQ-QTE-15: held quotes.
 
-/// A quote a reserve holds for a new route before it starts (`REQ-QTE-15`): a choice round's record, whose chosen
-/// candidate is the quote, and the validity stated for the hold.
-///
-/// It stays a quote until each segment starts: it binds no provider, whose terms bind only from segment start
-/// (`REQ-QTE-6`), so dropping it, or its quote failing, has no effect beyond the hold.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldQuote {
-    record: DecisionRecord,
-    valid_until: Timestamp,
-}
-
 /// Why a quote can't be held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldRefused {
@@ -815,45 +824,35 @@ pub enum HeldQuoteRefused {
     },
 }
 
-impl HeldQuote {
-    /// Holds the quote a choice round's record chose, until `valid_until`.
-    pub fn hold(record: DecisionRecord, valid_until: Timestamp) -> Result<Self, HoldRefused> {
-        if record.chosen().is_none() {
-            return Err(HoldRefused::NothingChosen);
-        }
-        if valid_until.unix_nanos() < record.snapshot.taken_at.unix_nanos() {
-            return Err(HoldRefused::ValidityBeforeQuote);
-        }
-        Ok(HeldQuote {
-            record,
-            valid_until,
-        })
+/// Holds the quote a choice round's record chose, until `valid_until` (`REQ-QTE-15`): the [`HeldQuote`] Core keeps,
+/// which passes [`HeldQuote::check`].
+pub fn hold(record: DecisionRecord, valid_until: Timestamp) -> Result<HeldQuote, HoldRefused> {
+    if record.chosen().is_none() {
+        return Err(HoldRefused::NothingChosen);
     }
+    if valid_until.unix_nanos() < record.snapshot.taken_at.unix_nanos() {
+        return Err(HoldRefused::ValidityBeforeQuote);
+    }
+    Ok(HeldQuote {
+        record,
+        valid_until,
+    })
+}
 
-    /// The record the quote is from.
-    pub fn record(&self) -> &DecisionRecord {
-        &self.record
-    }
+/// How a held quote is labelled: always a quote (`REQ-QTE-7`, `REQ-QTE-15`).
+pub fn held_label(_held: &HeldQuote) -> Label {
+    Label::Quote
+}
 
-    /// The hold's stated validity.
-    pub fn valid_until(&self) -> &Timestamp {
-        &self.valid_until
+/// The quoted candidate of a held quote, used at `now`: refused past the hold's validity, and at it still usable
+/// (`REQ-QTE-15`).
+pub fn redeem<'a>(held: &'a HeldQuote, now: &Timestamp) -> Result<&'a Candidate, HeldQuoteRefused> {
+    let past = HeldQuoteRefused::PastValidity {
+        valid_until: held.valid_until.clone(),
+    };
+    if now.unix_nanos() > held.valid_until.unix_nanos() {
+        return Err(past);
     }
-
-    /// How the held quote is labelled: always a quote (`REQ-QTE-7`, `REQ-QTE-15`).
-    pub fn label(&self) -> Label {
-        Label::Quote
-    }
-
-    /// The quoted candidate, used at `now`: refused past the hold's validity, and at it still usable.
-    pub fn redeem(&self, now: &Timestamp) -> Result<&Candidate, HeldQuoteRefused> {
-        let past = HeldQuoteRefused::PastValidity {
-            valid_until: self.valid_until.clone(),
-        };
-        if now.unix_nanos() > self.valid_until.unix_nanos() {
-            return Err(past);
-        }
-        // `hold` keeps only a record that chose a candidate.
-        self.record.chosen().ok_or(past)
-    }
+    // A checked hold's record chose a candidate.
+    held.record.chosen().ok_or(past)
 }

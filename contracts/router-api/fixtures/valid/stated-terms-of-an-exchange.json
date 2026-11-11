@@ -1,0 +1,14 @@
+{
+  "stated_at": "2026-11-06T14:00:00Z",
+  "fee": {
+    "flat": "100",
+    "proportional": {
+      "numerator": "3",
+      "denominator": "1000"
+    }
+  },
+  "slippage": {
+    "regime": "bounded",
+    "max_bps": 30
+  }
+}
