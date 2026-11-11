@@ -692,7 +692,7 @@ pub enum DropReason {
     /// It uses a provider or tuple the policy excludes (`REQ-QTE-11`).
     ExcludedByPolicy {},
     /// What it would leave the customer at the destination, after the operator's fee
-    /// ([`PolicyBounds::operator_fee`]), is below the customer's floor (`REQ-ORD-27`; since 3.0.0, `T-020-02`).
+    /// ([`PolicyBounds::operator_fee`]), is below the customer's floor (`REQ-ORD-27`; since 4.0.0, `T-020-02`).
     BelowFloor {},
     /// One of its parts arrives with nothing (`REQ-QTE-13`).
     NoPositiveOutcome {},
