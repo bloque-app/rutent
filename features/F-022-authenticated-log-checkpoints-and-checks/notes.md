@@ -14,8 +14,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   receipt. A failed write answers `Unavailable` and changes nothing; since the write may still have reached the
   store (a crash between the write and its answer), the log reads its store back before its next append, so a retry
   never writes a record twice. Where that read-back fails, the append answers `Unavailable`, never `Refused`: the
-  entry broke no rule, and its writer keeps it to append again (`REQ-MDL-8`). Opening a log on a store it can't
-  read whole is refused.
+  entry broke no rule, and its writer keeps it to append again (`REQ-MDL-8`). The read-back is built apart and
+  taken only whole, and only where the history the log already answered is a prefix of it, so a read that fails
+  part-way, or a store that comes back without a record the log answered, leaves the history as it was (and the
+  append unavailable). Opening a log on a store it can't read whole is refused.
+- **Kept bytes bear out their commitment.** On every stated entry's append, the bytes the evidence store answers
+  must hash, after their salt, to the entry's commitment, or the append is refused.
 - **The retry rule** is on the entry recorded, not the one handed in: an append whose recorded entry's digest is
   already in the log answers the earlier receipt. For a stated entry this means attribution runs again on a retry;
   with the register unchanged it gives the same entry. Indexing the handed-in entry instead would not survive a
@@ -25,8 +29,17 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   root is RFC 9162's tree hash. On opening, every record must be an entry that checks and is in its canonical form,
   or the log refuses to open; a torn last line, which was never answered, is dropped. Opening doesn't run
   `admit_entry` again: the store is the log's own, and a rewrite of it, by anyone with the operator's access, is
-  the outside checker's to detect against the checkpoints (`T-022-04`, `REQ-AUD-9`). The register is rebuilt from
-  the records and the evidence store's read, so the log must be opened with the same evidence store it ran with.
+  the outside checker's to detect against the checkpoints (`T-022-04`, `REQ-AUD-9`).
+- **The register comes back whole, or the log doesn't open** (the coordinator's ruling, after review). The register
+  is rebuilt from the records and the bytes the evidence store keeps for each recorded advertisement. Skipping one
+  whose bytes are gone would lose a rotation (a key retired by a later advertisement would sign again) or, with an
+  empty store, let first trust in anew and revive a dropped key by a replayed public advertisement. So opening is
+  refused where any recorded advertisement's bytes aren't kept, or don't hash, after their salt, to its commitment
+  (`ADVERTISEMENT_NOT_KEPT`). The log must be opened with the evidence store it ran with.
+- **A rule for `T-022-03`: no erasure reaches an advertisement.** An advertisement is a provider's public data, not
+  personal data, so `REQ-AUD-13`'s erasure never applies to it (the coordinator's ruling); the evidence store keeps
+  every advertisement's bytes for as long as the log is kept. Other statements may be erased: opening reads no
+  statement's bytes but an advertisement's.
 - **Stores.** `MemoryStore`, and `FileStore`, one append-only file synced before each append answers. A deployment's
   store is `F-030`'s (`M4`); the trait lets it plug in.
 - **The read surface** for the later rows, which can't edit `log/`: `entries()`, `len()`, `root()`, `root_at(size)`,

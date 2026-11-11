@@ -18,7 +18,7 @@ use rutent_conformance::signing::{
     signing_key, statements_key,
 };
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DecisionEntry, GeneralEntry, Log, PolicyLog, is_decision,
+    AppendFailure, DecisionEntry, GeneralEntry, KeptStatements, Log, PolicyLog, is_decision,
 };
 use rutent_contracts::core_internal::{
     Attribution, Entry, HandedOver, Receipt, StatedEntry, VerifiedEntry, Violation, What,
@@ -27,8 +27,8 @@ use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Deployment, VERSION};
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::log::merkle::{leaf_hash, sha256, verify_inclusion};
 use rutent_core_audit::log::{
-    AuditLog, FileStore, General, KeptInMemory, MemoryStore, Settings, Store, StoreError, digest,
-    record,
+    ADVERTISEMENT_NOT_KEPT, AuditLog, FileStore, General, KEPT_BYTES_DIFFER, KeptInMemory,
+    MemoryStore, Settings, Store, StoreError, digest, record,
 };
 use serde_json::{Value, json};
 
@@ -198,7 +198,11 @@ struct Run<S: Store> {
 
 impl<S: Store> Run<S> {
     fn new(store: S) -> Self {
-        let kept = KeptInMemory::new();
+        Self::with(store, KeptInMemory::new())
+    }
+
+    /// A run on the log kept in `store`, with `kept` the evidence store's stand-in it ran with.
+    fn with(store: S, kept: KeptInMemory) -> Self {
         Run {
             log: AuditLog::open(settings(), store, kept.clone()).unwrap(),
             kept,
@@ -1796,7 +1800,8 @@ fn base64url_of(bytes: &[u8]) -> String {
 
 /// A store that can't be read back after a failed write fails the next append as unavailable, not refused: the
 /// entry broke no rule, so orchestration keeps it and appends it again, and once the store reads back the retry
-/// is recorded once.
+/// is recorded once. A read-back that fails, or that comes back without what the log answered before, leaves the
+/// log's history as it was.
 // verifies: REQ-MDL-8, NFR-5, INV-7
 #[test]
 fn a_store_that_cant_be_read_back_leaves_the_entry_with_its_writer() {
@@ -1818,4 +1823,185 @@ fn a_store_that_cant_be_read_back_leaves_the_entry_with_its_writer() {
     assert_eq!(receipt.index.get(), 0);
     assert_eq!(store.records().len(), 1);
     assert_eq!(run.log.len(), 1);
+
+    // After another failed write, a store read back without a record the log answered is no history of it: the
+    // append is unavailable, and the log's own history stays as it was, whole.
+    run.append(items[1].clone()).unwrap();
+    store.plan(&[Some(Fault::After)]);
+    assert_eq!(
+        run.append(items[2].clone()),
+        Err(AppendFailure::Unavailable)
+    );
+    let whole = store.records();
+    *store.inner.borrow_mut() = MemoryStore::new();
+    for record in &whole[1..] {
+        store.inner.borrow_mut().append(record).unwrap();
+    }
+    let before = run.log.entries().to_vec();
+    assert_eq!(
+        run.append(items[3].clone()),
+        Err(AppendFailure::Unavailable)
+    );
+    assert_eq!(run.log.entries(), &before[..]);
+    store.unreadable.set(true);
+    assert_eq!(
+        run.append(items[3].clone()),
+        Err(AppendFailure::Unavailable)
+    );
+    assert_eq!(run.log.entries(), &before[..]);
+    // The store whole again, the log takes the record the failed write left and goes on.
+    store.unreadable.set(false);
+    *store.inner.borrow_mut() = MemoryStore::new();
+    for record in &whole {
+        store.inner.borrow_mut().append(record).unwrap();
+    }
+    assert_eq!(run.append(items[2].clone()).unwrap().index.get(), 2);
+    assert_eq!(run.append(items[3].clone()).unwrap().index.get(), 3);
+    assert_eq!(store.records().len(), 4);
+}
+
+/// The evidence store's stand-in as a reopened log reads it, with some statements gone and some altered under their
+/// commitments.
+struct Altered {
+    inner: KeptInMemory,
+    gone: Vec<Value>,
+    altered: Vec<Value>,
+}
+
+impl KeptStatements for Altered {
+    fn kept(
+        &mut self,
+        commitment: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Option<rutent_contracts::core_internal::KeptStatement>, AppendFailure> {
+        let named = serde_json::to_value(commitment).unwrap();
+        if self.gone.contains(&named) {
+            return Ok(None);
+        }
+        let mut kept = self.inner.kept(commitment)?;
+        if self.altered.contains(&named)
+            && let Some(k) = kept.as_mut()
+        {
+            let mut value = serde_json::to_value(&*k).unwrap();
+            value["bytes"] = base64url_of(b"{\"other\":\"bytes\"}").into();
+            *k = serde_json::from_value(value).unwrap();
+        }
+        Ok(kept)
+    }
+}
+
+/// The log's register comes back from its records only with every advertisement they hold: a log reopened with an
+/// evidence store that lost a recorded advertisement, or keeps other bytes under its commitment, is refused, rather
+/// than coming back with a rotation lost (a key retired by a later advertisement signing again) or with first trust
+/// let in anew. Opened with the store it ran with, the rotation holds. A stated entry whose kept bytes don't bear out
+/// its commitment is refused on append too.
+// verifies: REQ-AUD-2, THR-4, REQ-AUD-13
+#[test]
+fn reopening_refuses_an_advertisement_the_evidence_store_no_longer_keeps_whole() {
+    let store = Faulty::default();
+    let mut run = Run::new(store.clone());
+    run.grant("us-bank", GRANTED_AT);
+    let first = run
+        .advertise(
+            "us-bank",
+            &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+        )
+        .unwrap();
+    // The rotation: a fresh statements key, the old one dropped.
+    let fresh = signing_key("us-bank's rotated statements key", 8);
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "us-bank",
+        &advertising_key("us-bank"),
+        "us-bank",
+    ))
+    .unwrap();
+    ad["made_at"] = "2026-11-06T01:00:00Z".into();
+    ad["statement"]["keys"] = json!([
+        {"scheme": "ed25519", "public_key": public_key(&advertising_key("us-bank")).as_str(), "purpose": "advertising"},
+        {"scheme": "ed25519", "public_key": public_key(&fresh).as_str(), "purpose": "statements"},
+    ]);
+    sign_value(&mut ad, &advertising_key("us-bank"));
+    let rotation = run
+        .advertise("us-bank", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-re-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    let commitment = |r: &Receipt| match run.at(r) {
+        Entry::Stated(s) => serde_json::to_value(&s.commitment).unwrap(),
+        Entry::Verified(_) => panic!("an advertisement is a stated entry"),
+    };
+    let (first, rotation) = (commitment(&first), commitment(&rotation));
+    let refused = Err(AppendFailure::Refused(Violation(ADVERTISEMENT_NOT_KEPT)));
+    let opened = |gone: Vec<Value>, altered: Vec<Value>| {
+        let kept = Altered {
+            inner: run.kept.clone(),
+            gone,
+            altered,
+        };
+        AuditLog::open(settings(), store.clone(), kept).map(|_| ())
+    };
+    assert_eq!(
+        AuditLog::open(settings(), store.clone(), KeptInMemory::new()).map(|_| ()),
+        refused
+    );
+    assert_eq!(opened(vec![rotation.clone()], vec![]), refused);
+    assert_eq!(opened(vec![first.clone()], vec![]), refused);
+    assert_eq!(opened(vec![], vec![rotation.clone()]), refused);
+    assert_eq!(opened(vec![], vec![]), Ok(()));
+
+    // Reopened with the store it ran with, the retired key still signs nothing, and a replay of the first
+    // advertisement, public and validly signed, brings it back no more than it did live.
+    let mut reopened = Run::with(store.clone(), run.kept.clone());
+    reopened.salts = run.salts;
+    assert!(!answered(
+        &mut reopened,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-re-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    reopened
+        .advertise_at(
+            "us-bank",
+            &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+            "2026-11-06T02:00:00Z",
+        )
+        .unwrap();
+    assert!(!answered(
+        &mut reopened,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-re-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(answered(
+        &mut reopened,
+        "us-bank",
+        &fresh,
+        "tx-re-4",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // Live, a statement whose kept bytes don't bear out its commitment is refused.
+    let kept = KeptInMemory::new();
+    let mut claim = question_of("tx-re-5");
+    claim["attribution"] = json!({"signature": "unverified", "claimed_by": actor(OPERATOR, OPERATOR, "operator", "component")});
+    claim["commitment"] =
+        serde_json::to_value(kept.keep(b"{\"some\":\"statement\"}", [9; 32])).unwrap();
+    let altered = Altered {
+        inner: kept,
+        gone: vec![],
+        altered: vec![claim["commitment"].clone()],
+    };
+    let mut log = AuditLog::open(settings(), MemoryStore::new(), altered).unwrap();
+    let claim: Entry = serde_json::from_value(claim).unwrap();
+    assert_eq!(
+        log.append(&GeneralEntry::try_from(claim).unwrap()),
+        Err(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)))
+    );
+    assert!(log.is_empty());
 }

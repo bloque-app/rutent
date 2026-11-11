@@ -39,7 +39,9 @@ use std::rc::Rc;
 use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, GeneralEntry, KeptStatements, Log, PolicyLog,
 };
-use rutent_contracts::core_internal::{Entry, Receipt, Through, Violation, admit_entry, attribute};
+use rutent_contracts::core_internal::{
+    Entry, KeptStatement, Receipt, Through, Violation, admit_entry, attribute,
+};
 use rutent_contracts::module_interface::{Digest, DigestAlgorithm, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, SafeInteger, to_canonical};
 
@@ -57,6 +59,20 @@ pub const NO_CANONICAL_FORM: &str = "an entry of the log has an RFC 8785 canonic
 /// The refusal to open a store holding a record that isn't an entry in its canonical form.
 pub const NOT_A_RECORD_OF_THE_LOG: &str =
     "every record of the log's store is an entry in its RFC 8785 canonical form";
+
+/// The refusal to open a store holding an advertisement whose bytes the evidence store doesn't keep as its
+/// commitment names them: the register read from the log would come back without it, a rotation lost or a dropped
+/// key revived. An advertisement is a provider's public statement, which no erasure reaches (`REQ-AUD-13`).
+pub const ADVERTISEMENT_NOT_KEPT: &str =
+    "every advertisement the log recorded is kept, its bytes bearing out its commitment";
+
+/// The refusal of a stated entry whose kept bytes don't bear out its commitment: SHA-256 of the salt and the bytes.
+pub const KEPT_BYTES_DIFFER: &str = "a stated entry's kept bytes bear out its commitment: SHA-256 of the salt followed by the bytes";
+
+/// Whether `entry` is a stated entry of an advertisement's shape.
+fn is_advertisement(entry: &Entry) -> bool {
+    matches!(entry, Entry::Stated(s) if s.what.statement.as_str() == ADVERTISEMENT_SHAPE)
+}
 
 /// The log and its checks before their rows build them: they take no entry, keep no evidence and record no check,
 /// answering each as unavailable, so no action that waits on a receipt takes effect (`INV-7`). Each trait's stub
@@ -99,80 +115,99 @@ pub struct AuditLog<S: Store, K: KeptStatements> {
     settings: Settings,
     store: S,
     kept: K,
-    history: Vec<(Receipt, Entry)>,
-    leaves: Vec<Hash>,
-    recorded: HashMap<Hash, usize>,
-    register: Register,
+    state: State,
     /// A write failed, so the store may hold a record the history doesn't: read it back before the next append.
     stale: bool,
 }
 
+/// What the log holds in memory, all read from its store: the history, the tree's leaves, each record's place by its
+/// digest, and the register.
+#[derive(Default)]
+struct State {
+    history: Vec<(Receipt, Entry)>,
+    leaves: Vec<Hash>,
+    recorded: HashMap<Hash, usize>,
+    register: Register,
+}
+
+impl State {
+    /// Takes a record the store holds into the history, the tree and the register, and answers its receipt.
+    fn take(
+        &mut self,
+        settings: &Settings,
+        bytes: &[u8],
+        entry: Entry,
+        advertisement: Option<&[u8]>,
+    ) -> Receipt {
+        let hash = merkle::sha256(bytes);
+        let index = self.history.len();
+        let receipt = Receipt {
+            log: settings.log.clone(),
+            index: SafeInteger::try_from(index as u64).expect("a log of fewer than 2^53 entries"),
+            entry: digest(&hash),
+        };
+        self.register.record(settings, &entry, advertisement);
+        self.leaves.push(merkle::leaf_hash(bytes));
+        self.recorded.insert(hash, index);
+        self.history.push((receipt.clone(), entry));
+        receipt
+    }
+}
+
+/// The bytes `kept` holds, where they bear its commitment out: SHA-256 of the decoded salt followed by them.
+fn bearing_out(kept: &KeptStatement) -> Option<Vec<u8>> {
+    let mut salted = kept::from_base64url(kept.salt.as_str())?;
+    let bytes = kept::from_base64url(kept.bytes.as_str())?;
+    salted.extend_from_slice(&bytes);
+    (digest(&merkle::sha256(&salted)) == kept.commitment).then_some(bytes)
+}
+
 impl<S: Store, K: KeptStatements> AuditLog<S, K> {
     /// Opens the log kept in `store`, reading back every record it holds, with `kept` the evidence store's read and
-    /// `settings` the deployment's. It refuses a store holding a record that isn't an entry in its canonical form.
+    /// `settings` the deployment's. It refuses a store holding a record that isn't an entry in its canonical form,
+    /// and one holding an advertisement whose bytes `kept` doesn't keep as its commitment names them: the register
+    /// would otherwise come back without it.
     pub fn open(settings: Settings, store: S, kept: K) -> Result<Self, AppendFailure> {
         let mut log = AuditLog {
             settings,
             store,
             kept,
-            history: Vec::new(),
-            leaves: Vec::new(),
-            recorded: HashMap::new(),
-            register: Register::default(),
+            state: State::default(),
             stale: true,
         };
-        log.reload()?;
+        log.state = log.read_back()?;
+        log.stale = false;
         Ok(log)
     }
 
-    /// Rebuilds the history, the tree and the register from the store.
-    fn reload(&mut self) -> Result<(), AppendFailure> {
+    /// The history, the tree and the register as the store and the evidence store hold them, built apart, so a read
+    /// that fails part-way leaves the log's own as they were.
+    fn read_back(&mut self) -> Result<State, AppendFailure> {
         let records = self.store.records().map_err(|e| match e {
             StoreError::Unavailable(_) => AppendFailure::Unavailable,
             StoreError::Corrupt(_) => AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)),
         })?;
-        self.history.clear();
-        self.leaves.clear();
-        self.recorded.clear();
-        self.register = Register::default();
+        let mut state = State::default();
         for bytes in records {
             let entry: Entry = serde_json::from_slice(&bytes)
                 .ok()
                 .filter(|e: &Entry| e.check().is_ok() && record(e).ok().as_ref() == Some(&bytes))
                 .ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
-            let advertisement = self.advertisement(&entry)?;
-            self.take(&bytes, entry, advertisement.as_deref());
+            let advertisement = match &entry {
+                Entry::Stated(s) if is_advertisement(&entry) => Some(
+                    self.kept
+                        .kept(&s.commitment)?
+                        .filter(|k| k.commitment == s.commitment)
+                        .and_then(|k| bearing_out(&k))
+                        .ok_or(AppendFailure::Refused(Violation(ADVERTISEMENT_NOT_KEPT)))?,
+                ),
+                // Only an advertisement's bytes are read back: a statement erased since is no loss to the register
+                // (`REQ-AUD-13`).
+                _ => None,
+            };
+            state.take(&self.settings, &bytes, entry, advertisement.as_deref());
         }
-        self.stale = false;
-        Ok(())
-    }
-
-    /// The bytes kept for a stated entry of an advertisement's shape, which the register reads.
-    fn advertisement(&mut self, entry: &Entry) -> Result<Option<Vec<u8>>, AppendFailure> {
-        match entry {
-            Entry::Stated(s) if s.what.statement.as_str() == ADVERTISEMENT_SHAPE => Ok(self
-                .kept
-                .kept(&s.commitment)?
-                .filter(|k| k.commitment == s.commitment)
-                .and_then(|k| kept::from_base64url(k.bytes.as_str()))),
-            _ => Ok(None),
-        }
-    }
-
-    /// Takes a record the store holds into the history, the tree and the register, and answers its receipt.
-    fn take(&mut self, bytes: &[u8], entry: Entry, advertisement: Option<&[u8]>) -> Receipt {
-        let hash = merkle::sha256(bytes);
-        let index = self.history.len();
-        let receipt = Receipt {
-            log: self.settings.log.clone(),
-            index: SafeInteger::try_from(index as u64).expect("a log of fewer than 2^53 entries"),
-            entry: digest(&hash),
-        };
-        self.register.record(&self.settings, &entry, advertisement);
-        self.leaves.push(merkle::leaf_hash(bytes));
-        self.recorded.insert(hash, index);
-        self.history.push((receipt.clone(), entry));
-        receipt
+        Ok(state)
     }
 
     /// Appends `entry`, which came by `through`, as the module's steps say.
@@ -182,66 +217,93 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
         through: Through,
     ) -> Result<Receipt, AppendFailure> {
         // A store that can't be read back now says nothing of the entry, which breaks no rule: its writer keeps it
-        // and appends it again (`REQ-MDL-8`).
-        if self.stale && self.reload().is_err() {
-            return Err(AppendFailure::Unavailable);
+        // and appends it again (`REQ-MDL-8`). What the log answered before must still be there, at its place.
+        if self.stale {
+            let state = self.read_back().map_err(|_| AppendFailure::Unavailable)?;
+            if !state.history.starts_with(&self.state.history) {
+                return Err(AppendFailure::Unavailable);
+            }
+            self.state = state;
+            self.stale = false;
         }
         entry.check().map_err(AppendFailure::Refused)?;
         let (entry, advertisement) = match entry {
             Entry::Stated(claim) => {
-                let advertisement = self.advertisement(entry)?;
+                let kept = self
+                    .kept
+                    .kept(&claim.commitment)?
+                    .filter(|k| k.commitment == claim.commitment);
+                let bytes = match &kept {
+                    Some(k) => Some(
+                        bearing_out(k)
+                            .ok_or(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)))?,
+                    ),
+                    None => None,
+                };
                 let mut keys = Keys {
                     settings: &self.settings,
-                    register: &self.register,
+                    register: &self.state.register,
                 };
                 let recorded = attribute(claim, &mut self.kept, &mut keys, &Ed25519Strict)?;
-                (Entry::Stated(recorded), advertisement)
+                (
+                    Entry::Stated(recorded),
+                    bytes.filter(|_| is_advertisement(entry)),
+                )
             }
             Entry::Verified(_) => (entry.clone(), None),
         };
         let bytes = record(&entry).map_err(AppendFailure::Refused)?;
-        if let Some(&index) = self.recorded.get(&merkle::sha256(&bytes)) {
-            return Ok(self.history[index].0.clone());
+        if let Some(&index) = self.state.recorded.get(&merkle::sha256(&bytes)) {
+            return Ok(self.state.history[index].0.clone());
         }
-        admit_entry(&self.history, &entry, through, &self.settings.operator)
-            .map_err(AppendFailure::Refused)?;
+        admit_entry(
+            &self.state.history,
+            &entry,
+            through,
+            &self.settings.operator,
+        )
+        .map_err(AppendFailure::Refused)?;
         if self.store.append(&bytes).is_err() {
             self.stale = true;
             return Err(AppendFailure::Unavailable);
         }
-        Ok(self.take(&bytes, entry, advertisement.as_deref()))
+        Ok(self
+            .state
+            .take(&self.settings, &bytes, entry, advertisement.as_deref()))
     }
 
     /// Every entry of the log with its receipt, in order.
     pub fn entries(&self) -> &[(Receipt, Entry)] {
-        &self.history
+        &self.state.history
     }
 
     /// The number of entries.
     pub fn len(&self) -> usize {
-        self.history.len()
+        self.state.history.len()
     }
 
     /// Whether the log holds no entry.
     pub fn is_empty(&self) -> bool {
-        self.history.is_empty()
+        self.state.history.is_empty()
     }
 
     /// The root of the tree over every entry (RFC 9162 §2.1).
     pub fn root(&self) -> Hash {
-        merkle::root(&self.leaves)
+        merkle::root(&self.state.leaves)
     }
 
     /// The root of the tree over the first `size` entries, or `None` where the log holds fewer.
     pub fn root_at(&self, size: usize) -> Option<Hash> {
-        (size <= self.leaves.len()).then(|| merkle::root(&self.leaves[..size]))
+        let leaves = &self.state.leaves;
+        (size <= leaves.len()).then(|| merkle::root(&leaves[..size]))
     }
 
     /// The inclusion proof of entry `index` in the tree over the first `size` entries, or `None` where there is no
     /// such entry (RFC 9162 §2.1.3); [`merkle::verify_inclusion`] checks it.
     pub fn inclusion(&self, index: usize, size: usize) -> Option<Vec<Hash>> {
-        (size <= self.leaves.len())
-            .then(|| merkle::inclusion_proof(index, &self.leaves[..size]))
+        let leaves = &self.state.leaves;
+        (size <= leaves.len())
+            .then(|| merkle::inclusion_proof(index, &leaves[..size]))
             .flatten()
     }
 
