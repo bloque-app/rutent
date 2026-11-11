@@ -920,8 +920,10 @@ const NO_PARTY: Answer = Answer::Refuse {
 
 /// An actor stating a party the register doesn't say it acts for acts for no one: `cust-9` stating `cust-1` moves no
 /// value on `cust-1`'s order and gives no authorisation for it, and `evil-pay` stating `us-bank` authorises none of
-/// `us-bank`'s automatic deposits. Each is refused for having no accountable party before any other rule is asked,
-/// and the log admits no effect on it. The same requests from the parties' own actors are let through.
+/// `us-bank`'s automatic deposits. The actors a request names besides its caller are held alike: a permission granted
+/// to a grantee stating another party, and a route posted naming a suggester stating another party, are refused.
+/// Each is refused for having no accountable party, before the deployment's policy is asked, and the log admits no
+/// effect on it. The same requests from, or naming, the parties' own actors are let through.
 // verifies: REQ-AUZ-8, REQ-AUZ-9
 #[test]
 fn actor_stating_another_party_acts_for_no_one() {
@@ -970,6 +972,66 @@ fn actor_stating_another_party_acts_for_no_one() {
         policy.consult(Asked::Authorise(&authorised)),
         Answer::Permit {}
     );
+
+    // A permission's grantee: `examiner-3` acts for `fin-regulator`, and states `other-regulator`.
+    {
+        use rutent_contracts::core_internal::PermissionChange;
+        use rutent_contracts::core_internal::calls::Reads as _;
+
+        let register = Register::default()
+            .acting("op-login-2", "operator")
+            .acting("examiner-3", "fin-regulator");
+        let mut policy = engine(Kept::default(), register);
+        let granted: PermissionChange = valid!("permission-change-granting-a-regulator-the-trail");
+        let mut forged_grantee = granted.clone();
+        forged_grantee.request = id("req-g9");
+        forged_grantee.grantee.party = id("other-regulator");
+        let decision = policy.grant_permission(&forged_grantee).unwrap();
+        assert_eq!(
+            decision.outcome, NO_PARTY,
+            "a grantee stating another party"
+        );
+        assert!(policy.register().grants.is_empty(), "nothing granted");
+        let decision = policy.grant_permission(&granted).unwrap();
+        assert_eq!(
+            decision.outcome,
+            Answer::Permit {},
+            "the grantee's own party"
+        );
+    }
+
+    // A route's suggester: `bridge-pay` acts for `bridge-pay`, and states `fx-desk`.
+    {
+        let register = Register::holding(&operator(), &[Permission::PostRoute])
+            .acting("op-login-2", "operator")
+            .acting("bridge-pay", "bridge-pay");
+        let mut policy = engine(Kept::with_a_decision_record(), register);
+        let posted: DecisionRequest = valid!("decision-request-to-post-a-suggested-route");
+        let mut forged_suggester = posted.clone();
+        forged_suggester.request = id("req-s9");
+        if let Action::PostRoute {
+            suggested_by: Some(suggester),
+            ..
+        } = &mut forged_suggester.action
+        {
+            suggester.party = id("fx-desk");
+        }
+        let decision = policy.decide(&forged_suggester).unwrap();
+        assert_eq!(
+            decision.outcome, NO_PARTY,
+            "a suggester stating another party"
+        );
+        assert_eq!(
+            policy.log.effect(&forged_suggester, forged(&decision)),
+            no_permitting_decision()
+        );
+        let decision = policy.decide(&posted).unwrap();
+        assert_eq!(
+            decision.outcome,
+            Answer::Permit {},
+            "the suggester's own party"
+        );
+    }
 }
 
 /// An actor stating the account's holder for its party, when the register says it acts for another, opens no session
