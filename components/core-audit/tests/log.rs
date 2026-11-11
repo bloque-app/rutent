@@ -27,8 +27,10 @@ use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Deployment, VERSION};
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::log::merkle::{leaf_hash, sha256, verify_inclusion};
 use rutent_core_audit::log::{
-    ADVERTISEMENT_NOT_KEPT, AuditLog, FileStore, General, KEPT_BYTES_DIFFER, KeptInMemory,
-    MemoryStore, Settings, Store, StoreError, digest, record,
+    ADVERTISEMENT_NOT_KEPT, AuditLog, Clock, FileStore, General, KEPT_BYTES_DIFFER, KeptInMemory,
+    MemoryStore, Settings, Store, StoreError, digest,
+    keys::{CHANGE_BEFORE_ITS_TUPLES_LAST, CHANGE_OFF_THE_LOGS_CLOCK},
+    record,
 };
 use serde_json::{Value, json};
 
@@ -96,8 +98,34 @@ fn deployment() -> Deployment {
     }
 }
 
-/// The deployment's settings: the operator, and each provider's advertising key trusted for its first advertisement.
+/// The deployment's settings: the operator, and each provider's advertising key trusted for its first
+/// advertisement, on the test's clock.
 fn settings() -> Settings {
+    trusted().on(Rc::new(TestClock))
+}
+
+thread_local! {
+    /// Now, by the log's clock in this test's thread: each test runs on a thread of its own.
+    static NOW: std::cell::Cell<i128> =
+        std::cell::Cell::new(Timestamp::new("2026-11-10T09:00:00Z").unwrap().unix_nanos());
+}
+
+/// Sets the log's clock to `at`.
+fn set_now(at: &str) {
+    NOW.with(|now| now.set(Timestamp::new(at).unwrap().unix_nanos()));
+}
+
+/// The log's clock in a test: what [`set_now`] last set in the test's thread.
+#[derive(Debug)]
+struct TestClock;
+
+impl Clock for TestClock {
+    fn unix_nanos(&self) -> i128 {
+        NOW.with(|now| now.get())
+    }
+}
+
+fn trusted() -> Settings {
     PROVIDERS.iter().fold(
         Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR)),
         |s, p| s.trusting(id(p), public_key(&advertising_key(p))),
@@ -270,6 +298,18 @@ impl<S: Store> Run<S> {
     }
 
     fn change_catalogue(&mut self, name: &str, change: &str, at: &str) -> Receipt {
+        set_now(at);
+        self.try_change_catalogue(name, change, at).unwrap()
+    }
+
+    /// Changes the catalogue for `name`'s tuple: policy's permitting decision, and its effect dated `at`, whose
+    /// append is answered.
+    fn try_change_catalogue(
+        &mut self,
+        name: &str,
+        change: &str,
+        at: &str,
+    ) -> Result<Receipt, AppendFailure> {
         let action = json!({"kind": "change_catalogue", "change": change, "provider": name, "tuple": format!("tuple-{name}")});
         let (request, decision) = (
             format!("req-{change}-{name}-{at}"),
@@ -292,7 +332,6 @@ impl<S: Store> Run<S> {
             "when": {"at": at, "source": "core_clock"},
             "outcome": {"status": "to_take_effect"},
         }))
-        .unwrap()
     }
 
     /// Appends `bytes`, an advertisement as received a second after it was made, as a stated entry of its maker's,
@@ -2004,4 +2043,76 @@ fn reopening_refuses_an_advertisement_the_evidence_store_no_longer_keeps_whole()
         Err(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)))
     );
     assert!(log.is_empty());
+}
+
+/// A grant's window runs on the log's own clock, not on the time orchestration writes in the effect: a revocation
+/// dated far from the log's clock is refused, so it can't be put off to 2100 nor brought forward, and the grant
+/// stays in force; and a tuple's changes run in the log's order, so a re-grant dated back behind a revocation is
+/// refused and reopens nothing.
+// verifies: REQ-AUD-2, REQ-CAT-2, THR-3
+#[test]
+fn a_catalogue_change_dated_off_the_logs_clock_or_behind_its_tuple_is_refused() {
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("us-bank", GRANTED_AT);
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    // A revocation dated 2100, appended when the log's clock says 2026-11-07.
+    set_now("2026-11-07T00:00:00Z");
+    let before = run.log.len();
+    assert_eq!(
+        run.try_change_catalogue("us-bank", "revoke_grant", "2100-01-01T00:00:00Z"),
+        Err(AppendFailure::Refused(Violation(CHANGE_OFF_THE_LOGS_CLOCK)))
+    );
+    // Only policy's decision is recorded; its effect isn't.
+    assert_eq!(run.log.len(), before + 1);
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-c-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    // A revocation on the log's clock holds.
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-c-2",
+        "2026-11-07T00:00:01Z"
+    ));
+    // A re-grant dated back behind the revocation, on a clock that agrees with it, is still refused.
+    set_now("2026-11-06T12:00:00Z");
+    assert_eq!(
+        run.try_change_catalogue("us-bank", "grant", "2026-11-06T12:00:00Z"),
+        Err(AppendFailure::Refused(Violation(
+            CHANGE_BEFORE_ITS_TUPLES_LAST
+        )))
+    );
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-c-3",
+        "2026-11-07T00:00:01Z"
+    ));
+    // A re-grant dated after it reopens the window from its own time.
+    run.grant("us-bank", "2026-11-08T00:00:00Z");
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-c-4",
+        "2026-11-08T00:00:01Z"
+    ));
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-c-5",
+        "2026-11-07T12:00:00Z"
+    ));
 }

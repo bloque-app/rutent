@@ -83,11 +83,15 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   answers for, so its stated entry is recorded unverified; the register reads its bytes, not its attribution.
 - **A grant's effect counts once admitted.** The register reads the `effect` entry, which `admit_entry` admits only
   on an unused permit of a permitting `decide` of the same action; it doesn't wait for the effect's `result`.
-- **Whose clock a grant runs on** (a residual for `T-025-05`). A grant's and a revocation's times are their effects'
-  `when.at`, which orchestration writes, and a revocation holds only once orchestration appends its effect. The
-  register takes, for each tuple, the last change in the log's order at or before a statement's `made_at`, so a
-  re-grant appended later but dated earlier reopens the window behind a revocation. Each change needs its own
-  permitting decision, so this forges nothing; it is named so the security review sees it.
+- **Whose clock a grant runs on** (the coordinator's ruling, after review). A grant's and a revocation's times are
+  their effects' `when.at`, which orchestration writes, so the log holds them to its own clock: `Settings::clock`, a
+  `Clock` the deployment gives it (`SystemClock` by default), which orchestration never writes. A `change_catalogue`
+  effect dated more than the skew (`Settings::clock_skew_seconds`) from the log's clock when it is appended is
+  refused (`CHANGE_OFF_THE_LOGS_CLOCK`), so a revocation can't be dated into 2100 and left with no force; and a
+  tuple's grants and revocations must be dated in the log's order, so a re-grant backdated behind a revocation is
+  refused (`CHANGE_BEFORE_ITS_TUPLES_LAST`) and the window it would reopen stays shut. Opening doesn't consult the
+  clock: the records were held to it when they were appended. A revocation still holds only once orchestration
+  appends its effect, which is orchestration's to do on policy's decision.
 - **When an advertisement joins.** At its stated entry's `received_at`, the time Core
   stamps; a grant must be in force then.
 - **Modules the operator publishes** (`REQ-CAT-23`) have no advertisement, and an `accept_module` effect names a

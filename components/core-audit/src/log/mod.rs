@@ -46,7 +46,7 @@ use rutent_contracts::module_interface::{Digest, DigestAlgorithm, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, SafeInteger, to_canonical};
 
 pub use kept::KeptInMemory;
-pub use keys::Settings;
+pub use keys::{Clock, Settings, SystemClock};
 pub use merkle::Hash;
 pub use signatures::Ed25519Strict;
 pub use store::{FileStore, MemoryStore, Store, StoreError};
@@ -263,6 +263,10 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
             &self.settings.operator,
         )
         .map_err(AppendFailure::Refused)?;
+        self.state
+            .register
+            .admits(&self.settings, &entry)
+            .map_err(AppendFailure::Refused)?;
         if self.store.append(&bytes).is_err() {
             self.stale = true;
             return Err(AppendFailure::Unavailable);
