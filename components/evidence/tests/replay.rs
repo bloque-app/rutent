@@ -318,3 +318,79 @@ fn a_fault_inside_a_node_does_not_hide_a_mismatch_with_the_public_exit() {
         ])
     );
 }
+
+// verifies: REQ-ORD-41
+#[test]
+fn a_chain_whose_asset_changes_between_segments_is_recorded_as_broken() {
+    // The amounts link up; only the asset doesn't: the first gives out EURC, the second takes in GBPC.
+    let segments = [
+        seg("USDC", "1000", "EURC", "900", "0"),
+        seg("GBPC", "900", "GBPC", "890", "10"),
+    ];
+    assert_eq!(
+        replay_node("vault", &segments),
+        Err(vec![Mismatch::BrokenChain {
+            node: "vault".into(),
+            at: 1
+        }])
+    );
+}
+
+// verifies: REQ-ORD-41, DEC-24
+#[test]
+fn a_handoff_of_another_asset_between_private_nodes_is_recorded() {
+    // The amount handed on is the amount taken in; only the asset differs.
+    let first = node("vault-a", vec![seg("USDC", "1000", "USDC", "995", "5")]);
+    let second = node("vault-b", vec![seg("EURC", "995", "EURC", "990", "5")]);
+    let net = final_exit("EURC", "990");
+    assert_eq!(
+        replay_route(&[first, second], &exit("EURC", "990"), &net),
+        Replay::Mismatch(vec![Mismatch::HandoffBroken {
+            from: "vault-a".into(),
+            to: "vault-b".into()
+        }])
+    );
+}
+
+// verifies: REQ-ORD-41, AC-35
+#[test]
+fn a_stated_outcome_in_another_asset_is_recorded() {
+    // The replay and the public exit agree on USDC 990; the provider states EURC 990.
+    let nodes = [node(
+        "vault",
+        vec![seg("USDC", "1000", "USDC", "990", "10")],
+    )];
+    let net = final_exit("USDC", "990");
+    assert_eq!(
+        replay_route(&nodes, &exit("EURC", "990"), &net),
+        Replay::Mismatch(vec![Mismatch::StatedOutcome {
+            replayed_asset: "USDC".into(),
+            replayed_amount: "990".into(),
+        }])
+    );
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn an_amount_with_a_leading_zero_or_a_sign_is_recorded_as_malformed() {
+    // Both parse as integers that would balance the segment; neither is the one canonical spelling.
+    for segment in [
+        seg("USDC", "1000", "USDC", "0990", "10"),
+        seg("USDC", "1000", "USDC", "995", "+5"),
+    ] {
+        assert_eq!(
+            replay_node("vault", &[segment]),
+            Err(vec![Mismatch::Malformed {
+                node: "vault".into(),
+                at: 0
+            }])
+        );
+    }
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn a_fee_of_all_that_went_in_is_not_a_mismatch() {
+    // No fee may exceed what went in; one equal to it may stand.
+    assert!(replay_node("vault", &[seg("USDC", "1000", "USDC", "0", "1000")]).is_ok());
+}
