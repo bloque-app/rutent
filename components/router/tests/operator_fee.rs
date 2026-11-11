@@ -16,7 +16,8 @@ use rutent_contracts::router_api::{
 use rutent_router::RouteFinder;
 use rutent_router::quote::{
     Binding, Commitment, HeldQuoteRefused, HoldRefused, Measured, NoSlippageLimit, PriceRefused,
-    SegmentTime, ShownPrice, binding, commitments, hold, measure, quoted_price, redeem,
+    SegmentTime, ShownPrice, binding, commitments, hold, measure, quoted_price,
+    received_after_operator_fee, redeem,
 };
 use serde_json::{Value, json};
 
@@ -61,7 +62,7 @@ fn floor_request(floor: &str) -> Request {
     )
 }
 
-// verifies: REQ-ORD-27, AC-12
+// verifies: REQ-ORD-27
 #[test]
 fn floor_is_judged_on_what_the_customer_receives_after_the_operators_fee() {
     // A floor of 99,000, an arrival of 99,500 and an operator's fee of 1,000: the customer would be shown 98,500.
@@ -74,6 +75,14 @@ fn floor_is_judged_on_what_the_customer_receives_after_the_operators_fee() {
     );
     let shown = quoted_price(candidate, &record.bounds.operator_fee).unwrap();
     assert_eq!(shown.shown_out.as_str(), "98500");
+    // Core reads the same amount from the function the router judges by.
+    assert_eq!(
+        received_after_operator_fee(
+            &record.bounds.operator_fee,
+            &candidate.parts[0].operations[0].amount_out
+        ),
+        shown.shown_out
+    );
     assert_eq!(candidate.dropped, Some(DropReason::BelowFloor {}));
     assert!(recompute(&record).passes(), "{:#?}", recompute(&record));
 
@@ -183,8 +192,17 @@ fn same_request_and_snapshot_still_give_the_same_result() {
     assert_eq!(again, read);
     assert!(recompute(&read).passes(), "{:#?}", recompute(&read));
     // The floor binds after the fee: the dear ramp delivers 99,500,000, so 98,251,250 is left after the fee, and
-    // stays; at a floor of 98,300,000 it would be dropped.
+    // stays; at a floor of 98,300,000 it is dropped.
     assert_eq!(on(&read, &["r-dear"]).dropped, None);
+    let higher = routed(
+        &with_floor(two_ramps_request("r-higher"), "98300000"),
+        &snapshot,
+        &bounds,
+    );
+    assert_eq!(
+        on(&higher, &["r-dear"]).dropped,
+        Some(DropReason::BelowFloor {})
+    );
 }
 
 // verifies: REQ-AUD-4, REQ-QTE-11

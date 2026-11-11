@@ -236,7 +236,6 @@ alone, the same inputs give the same output, and a changed objective can change 
 | `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
 | `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
 | `calls-follow-the-declarations` | Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of the release its tuple comes from, to the provider of another operation of its part, every kind declared, and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`); the contract refuses a call outside those, and this check finds one left out |
-| `floor-is-judged-after-the-operators-fee` | Where the request sets a floor, every kept or outranked candidate leaves the customer at least the floor after the operator's fee, the bounds' `operator_fee` on what arrives (`flat + ceil(a × n / d)`, capped by its maximum and never raised to it), and every `below_floor` candidate less (router-api 3.0.0, `T-020-02`, `REQ-ORD-27`); the `no_std` contract checks only the floor before the fee for a kept candidate, and that a `below_floor` reason has a floor |
 | `ranking-follows-the-objective` | Kept candidates rank ahead of every outranked one by the objective, then by `candidate_id` bytes; each outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate chooses one |
 
 | Cell | Over every case |
@@ -275,5 +274,5 @@ record passes the contract and fails exactly one check. The double that leaves o
 router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
 (`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. The one that judges the floor
 before the operator's fee (`FLOOR_BEFORE_THE_FEE`) chooses the slow route on the fee case, which the contract
-accepts, and fails `floor-is-judged-after-the-operators-fee` alone. They also recompute every valid decision record among the
+refuses: since router-api 3.0.0 it judges the floor after the operator's fee itself. They also recompute every valid decision record among the
 contract's fixtures.

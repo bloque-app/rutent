@@ -22,16 +22,18 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `THREE_DAYS_SECONDS` moved into router-api; `quote` re-exports it.
 - **The floor after the fee, and what the contract checks.** The floor is "the least the customer accepts at `to`",
   so the router now drops a candidate as `below_floor` when what is left after the operator's fee is below it
-  (the review of `M2`'s pull request, the example 99,000 / 99,500 / 1,000). The `no_std` contract can't multiply
-  amounts, the precedent `fee_above_amount` set, so it keeps the half it can check (a kept candidate arrives at the
-  floor before the fee, sound since the fee only lowers it) and relaxes the converse to "a `below_floor` reason has
-  a floor". The router suite gains `floor-is-judged-after-the-operators-fee`, the double judges the floor after the
-  fee, and a flaw `FLOOR_BEFORE_THE_FEE` fails that check alone on a new case. `judge.rs` and `quote::shown` share
-  one fee function (`quote::operator_fee_of`), so the floor and the price shown can't disagree.
+  (the review of `M2`'s pull request, the example 99,000 / 99,500 / 1,000). The contract checks it exactly, both
+  ways (after review: a first pass left it to the suite and relaxed the contract, which accepted a false
+  `below_floor` even at a zero fee). No division is needed: `ceil(a × n / d) ≤ k` exactly when `a × n ≤ k × d`, and
+  the cap is a second branch, `maximum ≤ a − floor`; a `no_std` long multiplication of amounts and
+  `Amount::checked_sub` do it. The double judges the floor after the fee, and a flaw `FLOOR_BEFORE_THE_FEE` is now
+  refused by the contract itself on a new case. `judge.rs`, `quote::shown` and the public
+  `quote::received_after_operator_fee` share one function, so the floor, the price shown and Core's checks at
+  each settled segment (`AC-42`) can't disagree.
 - **"The record says its ranking is before the operator's fee."** A wire field on the record, `ranking`, with one
   value, `before_operator_fee`, rather than prose alone, so ranking net of the fee would be a new value a reader
   sees. On the record, not the bounds: it says what the router did, not what the operator chose.
-- **Item for the form, `qte11-operator-fee-by-tuple`.** `REQ-QTE-2` has the operator's formula follow `REQ-QTE-5`,
+- **Item for the form, `m3-rank-before-fee`.** `REQ-QTE-2` has the operator's formula follow `REQ-QTE-5`,
   which lets it depend on the tuple. With a formula per tuple, ranking before the fee may not give `REQ-QTE-11`'s
   lowest total cost. The bounds hold one formula, so the case can't arise yet; allowing it is a major. The property
   `one_operator_formula_at_the_destination_ranks_candidates_the_same_before_and_after_its_fee` pins the reading,
@@ -39,7 +41,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Types moved, checks stayed.** `StatedTerms`, `SettlementTimes` (the declared and actual pair) and `HeldQuote`
   are router-api's, with schemas and fixtures. `HeldQuote::hold`, `redeem` and `label` became the free functions
   `quote::hold`, `quote::redeem` and `quote::held_label`, since the router can't add methods to a contract type.
-  `quote::measure` reads a `SettlementTimes`; `SegmentTime::measure` builds one and calls it.
+  `quote::measure` reads a `SettlementTimes`; `SegmentTime::measure` builds one and calls it. `StatedTerms` names
+  its tuple (after review), since nothing else would key a tuple's history. `hold` runs `HeldQuote::check`, the
+  record's own included, and `redeem` refuses a hold whose record chose nothing as `NothingChosen`.
 - **The quote functions keep their explicit arguments.** `quoted_price` and `commitments` still take the formula and
   the limits as arguments, so their tests can vary them; Core passes the record's own
   `bounds.operator_fee` and `bounds.slippage_limits`, which the docs say.
@@ -51,7 +55,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Seen failing first.** `floor_is_judged_on_what_the_customer_receives_after_the_operators_fee` failed against
   the router judging the floor before the fee (kept, not `below_floor`), then passed with `judge.rs` restored. The
   ranking property failed under the mutation above. The contract's four "… is invalid" tests were written with the types
-  they test, so they weren't seen failing first; each rejects its fixture with the named rule. The suite's
-  `FLOOR_BEFORE_THE_FEE` test checks the new check fails alone, and `record.check()` accepts the flawed record.
+  they test, so they weren't seen failing first; each rejects its fixture with the named rule. After review, the contract's floor rules
+  were each switched off once: judging the floor before the fee let the kept-below fixture through (three tests
+  failed), and dropping the `below_floor` rule let all three false-`below_floor` fixtures through (three failed).
+- **A limit is 1 to 10,000 basis points**, as provider-role's bounded slippage is; a limit of 0 isn't allowed, and
+  an exchange held to no move states a firm rate in its quote.
 - **Touches `DEC-20` paths**: `contracts/`. Also edits the router's `quote` and `judge` modules and `lib.rs`, and the
   router suite in `conformance/src/router/`, as the row's Work and `PLAN.md` §4.4 allow.

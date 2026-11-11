@@ -454,34 +454,34 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<FLOOR_BEFORE_THE_FEE>>()));
 }
 
-// verifies: REQ-ORD-27, AC-12, DEC-5
+// verifies: REQ-ORD-27, DEC-5
 #[test]
 fn a_router_that_judges_the_floor_before_the_operators_fee_fails_only_where_the_fee_crosses_it() {
     let report = run::<Reference<FLOOR_BEFORE_THE_FEE>>();
     let failed: Vec<(&str, Cell)> = report.failures().iter().map(|o| (o.case, o.cell)).collect();
-    assert_eq!(
-        failed,
-        vec![
-            (
-                "floor-judged-after-the-operators-fee",
-                Cell::RecomputesFromTheRecordAlone
-            ),
-            (
-                "floor-judged-after-the-operators-fee",
-                Cell::ChoosesTheExpectedRoute
-            ),
-        ],
+    assert!(
+        !failed.is_empty()
+            && failed
+                .iter()
+                .all(|(case, _)| *case == "floor-judged-after-the-operators-fee"),
         "{}",
         report.summary()
     );
-    let record =
-        routed::<Reference<FLOOR_BEFORE_THE_FEE>>(&case("floor-judged-after-the-operators-fee"));
-    assert_eq!(
-        recompute(&record).failed_checks(),
-        vec![Check::FloorIsJudgedAfterTheOperatorsFee]
+    // The contract itself refuses it: the chosen route arrives above the floor before the fee, below it after.
+    let fee_case = case("floor-judged-after-the-operators-fee");
+    let record = Reference::<FLOOR_BEFORE_THE_FEE>::route(
+        &fee_case.request,
+        &fee_case.snapshot,
+        &fee_case.bounds,
     );
-    // The contract alone accepts it: the chosen route arrives above the floor before the fee.
-    assert!(record.check().is_ok());
+    assert_eq!(
+        record.check().map_err(|v| v.to_string()),
+        Err(
+            "a kept candidate leaves the customer at least the floor after the operator's fee"
+                .to_owned()
+        )
+    );
+    assert_eq!(recompute(&record).failed_checks(), vec![Check::Contract]);
 }
 
 // verifies: REQ-MDL-21, REQ-MDL-9, DEC-5

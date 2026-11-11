@@ -1501,4 +1501,47 @@ fn one_operator_formula_at_the_destination_ranks_candidates_the_same_before_and_
         }
     }
     assert!(pairs > 400, "only {pairs} pairs compared");
+
+    // And the choice itself: in a lowest-total-cost choice round under bounds carrying a drawn operator's fee, the
+    // chosen candidate leaves the customer at least as much after that fee as every other eligible one.
+    let mut choices = 0;
+    for (seed, network, request, bounds) in generated(300, ANY) {
+        let mut draw = Draw(seed ^ 0xC40);
+        let denominator = 1 + draw.below(10_000);
+        let numerator = draw.below(denominator + 1);
+        let digits = 1 + draw.below(8) as u32;
+        let flat = draw.below(10u64.pow(digits));
+        let mut charged = serde_json::to_value(&bounds).unwrap();
+        charged["operator_fee"] = json!({
+            "flat": flat.to_string(),
+            "proportional": { "numerator": numerator.to_string(), "denominator": denominator.to_string() },
+        });
+        let bounds: PolicyBounds = parse("charged bounds", charged);
+        let request = under(&request, "lowest_total_cost");
+        let shortlisted = routed(&request, &network.snapshot, &bounds);
+        if shortlisted.shortlist().is_empty() {
+            continue;
+        }
+        let (choice, snapshot) = choice_round(&mut draw, &network, &shortlisted);
+        let record = routed(&choice, &snapshot, &bounds);
+        let Some(chosen) = record.chosen() else {
+            continue;
+        };
+        let formula = &record.bounds.operator_fee;
+        for other in record.candidates.iter().filter(|c| {
+            matches!(
+                c.dropped,
+                Some(rutent_contracts::router_api::DropReason::Outranked { .. })
+            )
+        }) {
+            assert!(
+                received(chosen, formula) >= received(other, formula),
+                "seed {seed}: {} is chosen but {} leaves more after {formula:?}",
+                chosen.candidate_id,
+                other.candidate_id
+            );
+        }
+        choices += 1;
+    }
+    assert!(choices > 50, "only {choices} choices");
 }

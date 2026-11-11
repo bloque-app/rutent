@@ -18,7 +18,7 @@ use rutent_contracts::router_api::{
 };
 
 use crate::price::{deepest, whole};
-use crate::quote::operator_fee_of;
+use crate::quote::received_of;
 use crate::search::{Cut, Path, Search, refuses};
 
 fn amount_of(text: &str) -> BigUint {
@@ -115,16 +115,10 @@ impl Search<'_> {
         // The floor is the least the customer accepts at the destination (`REQ-ORD-27`), so it is judged on what
         // is left after the operator's fee, taken there as the price shown takes it. Ranking stays on what
         // arrives before it.
-        if let Some(floor) = &self.request.floor {
-            let fee = operator_fee_of(&self.bounds.operator_fee, &arrives);
-            let received = if fee <= arrives {
-                &arrives - fee
-            } else {
-                BigUint::ZERO
-            };
-            if received < amount_of(floor.as_str()) {
-                return Some(DropReason::BelowFloor {});
-            }
+        if let Some(floor) = &self.request.floor
+            && received_of(&self.bounds.operator_fee, &arrives) < amount_of(floor.as_str())
+        {
+            return Some(DropReason::BelowFloor {});
         }
         if follows_a_profitable_cycle(&operations) {
             return Some(DropReason::SuspectRateCycle {});

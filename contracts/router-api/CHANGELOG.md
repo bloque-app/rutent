@@ -43,13 +43,13 @@
   one per tuple. A new check, `PolicyBounds::check_against`, which `DecisionRecord::check` runs: every exchange
   tuple of the snapshot that settles within three days (`THREE_DAYS_SECONDS`, 259,200, inclusive) by its price or a
   fresh quote has a limit. The floor is judged after the operator's fee (`REQ-ORD-27`): `below_floor` now holds
-  where what is left after the fee is below the floor. The contract can't multiply amounts, so it checks only that
-  a kept candidate arrives at the floor before the fee and that a `below_floor` reason has a floor; the router
-  suite recomputes the rest. Ranking stays on the providers' amounts before the fee, and a decision record says so
+  where what is left after the fee is below the floor, and a kept candidate must leave at least the floor. The
+  contract checks both exactly, with no division (`ceil(a × n / d) ≤ k` exactly when `a × n ≤ k × d`), by a
+  `no_std` product of amounts and `Amount::checked_sub`. Ranking stays on the providers' amounts before the fee, and a decision record says so
   in a new required field, `ranking`, whose one value is `before_operator_fee` (`REQ-QTE-11`). Three new shapes:
-  `stated-terms` (`StatedTerms`, `REQ-QTE-6`), `settlement-times` (`SettlementTimes`, `REQ-QTE-3`) and `held-quote`
+  `stated-terms` (`StatedTerms`, `REQ-QTE-6`, naming its tuple so a history is keyed), `settlement-times` (`SettlementTimes`, `REQ-QTE-3`) and `held-quote`
   (`HeldQuote`, `REQ-QTE-15`). New required fields and a new rule are a major under `DEC-4`. Every policy-bounds and
-  decision-record fixture gains the fields; five valid fixtures and thirteen invalid ones are new, two of them made from patches.
+  decision-record fixture gains the fields; six valid fixtures and seventeen invalid ones are new, five of them made from patches.
   (DEC-2, DEC-4, DEC-20, T-020-02)
 
 ## 2.1.0

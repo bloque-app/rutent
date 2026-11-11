@@ -1,4 +1,21 @@
 {
+  "tuple": {
+    "provider": "ramp-x",
+    "from": {
+      "node": "ledger-in",
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      }
+    },
+    "to": {
+      "node": "ledger-b",
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      }
+    }
+  },
   "stated_at": "2026-11-06T14:00:00Z",
   "fee": {
     "flat": "100",

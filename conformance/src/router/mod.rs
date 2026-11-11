@@ -16,8 +16,6 @@
 //! - every `outranked` candidate would itself be a valid choice;
 //! - every segment names exactly the calls its provider's module declares to the other providers of its part
 //!   (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`);
-//! - the floor is judged on what the customer receives after the operator's fee (router-api 3.0.0, `T-020-02`,
-//!   `REQ-ORD-27`), which the `no_std` contract can't compute;
 //! - the ranking follows the request's objective, ties going to the lowest `candidate_id`.
 //!
 //! # Running a router
@@ -96,11 +94,6 @@ pub enum Check {
     /// and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`). The contract
     /// already refuses a call outside that; this check finds one left out.
     CallsFollowTheDeclarations,
-    /// Where the request sets a floor, every kept or outranked candidate leaves the customer at least the floor
-    /// after the operator's fee, by the bounds' formula on what arrives, and every `below_floor` candidate less
-    /// (router-api 3.0.0, `T-020-02`, `REQ-ORD-27`). The contract checks only that a kept candidate arrives at the
-    /// floor before the fee, and that a `below_floor` reason has a floor to be below.
-    FloorIsJudgedAfterTheOperatorsFee,
     /// The kept candidates rank ahead of every outranked one by the objective and then `candidate_id`; each
     /// outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate
     /// chooses (`REQ-QTE-11`).
@@ -117,7 +110,6 @@ impl Check {
             Check::RateCyclesAreNotFollowed => "rate-cycles-are-not-followed",
             Check::OutrankedCandidatesAreEligible => "outranked-candidates-are-eligible",
             Check::CallsFollowTheDeclarations => "calls-follow-the-declarations",
-            Check::FloorIsJudgedAfterTheOperatorsFee => "floor-is-judged-after-the-operators-fee",
             Check::RankingFollowsTheObjective => "ranking-follows-the-objective",
         }
     }
@@ -180,7 +172,6 @@ pub fn recompute(record: &DecisionRecord) -> Recomputed {
     reader.rate_cycles_are_not_followed(&mut findings);
     reader.outranked_candidates_are_eligible(&mut findings);
     reader.calls_follow_the_declarations(&mut findings);
-    reader.floor_is_judged_after_the_operators_fee(&mut findings);
     let choice = reader.ranking_follows_the_objective(&mut findings);
     Recomputed { findings, choice }
 }
@@ -460,48 +451,6 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
-        }
-    }
-
-    fn floor_is_judged_after_the_operators_fee(&self, findings: &mut Vec<Finding>) {
-        let record = self.record;
-        let Some(floor) = &record.request.floor else {
-            return;
-        };
-        let floor = number(floor.as_str());
-        for candidate in &record.candidates {
-            let below = match &candidate.dropped {
-                None | Some(DropReason::Outranked { .. }) => false,
-                Some(DropReason::BelowFloor {}) => true,
-                Some(_) => continue,
-            };
-            let arrives: BigUint = candidate
-                .parts
-                .iter()
-                .map(|p| number(p.operations.last().amount_out.as_str()))
-                .sum();
-            let fee = price::operator_fee(&record.bounds.operator_fee, &arrives);
-            let received = if fee <= arrives {
-                &arrives - fee
-            } else {
-                BigUint::ZERO
-            };
-            let detail = if below && received >= floor {
-                format!(
-                    "dropped below the floor, yet {received} is left after the operator's fee, at or above {floor}"
-                )
-            } else if !below && received < floor {
-                format!(
-                    "kept, yet only {received} is left after the operator's fee, below the floor {floor}"
-                )
-            } else {
-                continue;
-            };
-            findings.push(Finding {
-                check: Check::FloorIsJudgedAfterTheOperatorsFee,
-                candidate: Some(candidate.candidate_id.clone()),
-                detail,
-            });
         }
     }
 

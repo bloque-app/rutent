@@ -798,11 +798,14 @@ pub enum Ranking {
 /// A provider's terms for one tuple as stated at one time (`REQ-QTE-6`): its fee formula and, where its tuple sets
 /// a rate, its slippage regime. Schema: `urn:rutent:router-api:stated-terms`.
 ///
-/// Core keeps a tuple's history of these, each with the time it was stated; the terms that bind a segment are the
-/// last stated at or before it started, and before that the route's total is a quote.
+/// Core keeps each tuple's history of these, keyed by [`StatedTerms::tuple`], each with the time it was stated; the
+/// terms that bind a segment are the last stated at or before it started, and before that the route's total is a
+/// quote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatedTerms {
+    /// The tuple they are for, by its provider and its two ends, so a history is keyed across snapshots.
+    pub tuple: TupleKey,
     /// When the provider stated them.
     pub stated_at: Timestamp,
     /// The fee formula.
@@ -820,7 +823,9 @@ pub struct StatedTerms {
 /// `urn:rutent:router-api:settlement-times`.
 ///
 /// The declared time is what the segment's quote or price declared, in seconds from segment start; the actual one
-/// runs from `started_at` to `settled_at`, never backwards. Core keeps one per segment it starts.
+/// runs from `started_at` to `settled_at`, never backwards. Core keeps one per segment it starts, and the
+/// `actual_seconds` of core-internal's `Settlement` log entry is `rutent_router::quote::measure` of it, rounded up to
+/// whole seconds, so the log and this pair agree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct SettlementTimes {

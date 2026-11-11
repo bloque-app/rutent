@@ -29,7 +29,7 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 126] = [
+const RUST_RULES: [(&str, &str); 129] = [
     (
         "policy-bounds-two-slippage-limits-for-one-tuple",
         "there is at most one slippage limit per tuple",
@@ -388,7 +388,19 @@ const RUST_RULES: [(&str, &str); 126] = [
     ),
     (
         "decision-record-below-floor-without-a-floor",
-        "a below-floor reason names a candidate of a request with a floor",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-chosen-candidate-below-the-floor-after-the-operator-s-fee",
+        "a kept candidate leaves the customer at least the floor after the operator's fee",
     ),
     (
         "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
@@ -408,7 +420,7 @@ const RUST_RULES: [(&str, &str); 126] = [
     ),
     (
         "decision-record-chosen-candidate-below-the-floor",
-        "a kept candidate arrives at or above the floor",
+        "a kept candidate leaves the customer at least the floor after the operator's fee",
     ),
     (
         "decision-record-chosen-candidate-over-a-ceiling",
@@ -538,7 +550,7 @@ const RUST_RULES: [(&str, &str); 126] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 80] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 81] = [
     ("policy-bounds-without-operator-fee", &[("", "required")]),
     ("policy-bounds-without-slippage-limits", &[("", "required")]),
     (
@@ -550,6 +562,7 @@ const SCHEMA_RULES: [(&str, &[(&str, &str)]); 80] = [
         &[("/statement/ranking", "enum")],
     ),
     ("stated-terms-without-stated-at", &[("", "required")]),
+    ("stated-terms-without-a-tuple", &[("", "required")]),
     (
         "settlement-times-without-declared-seconds",
         &[("", "required")],
@@ -1044,6 +1057,36 @@ fn policy_bounds_without_a_slippage_limit_for_a_tuple_settling_within_three_days
     assert!(bounds.check().is_ok());
     assert!(bounds.check_against(&record.snapshot).is_err());
     assert!(record.bounds.check_against(&record.snapshot).is_ok());
+}
+
+// verifies: REQ-ORD-27
+#[test]
+fn the_floor_is_judged_on_what_the_operators_fee_leaves_the_customer() {
+    // Kept exactly at the floor after a capped fee: 248,250,500 arrives, the fee is min(ceil(248,250.5), 200,000).
+    let at =
+        valid_record("decision-record-kept-at-the-floor-after-a-capped-operator-s-fee").statement;
+    assert!(at.check().is_ok());
+    // One unit more of floor, and the kept candidate is refused.
+    let mut above = at.clone();
+    above.request.floor = Some(rutent_contracts::router_api::Amount::new("248050501").unwrap());
+    assert!(above.check().is_err());
+    for (name, rule) in [
+        (
+            "decision-record-chosen-candidate-below-the-floor-after-the-operator-s-fee",
+            "a kept candidate leaves the customer at least the floor after the operator's fee",
+        ),
+        (
+            "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
+            "a below-floor reason names a candidate that leaves the customer less than the floor",
+        ),
+        (
+            "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
+            "a below-floor reason names a candidate that leaves the customer less than the floor",
+        ),
+    ] {
+        let refusal = through_rust("decision-record", &fixture("invalid", name)).unwrap_err();
+        assert!(refusal.contains(rule), "{name}: {refusal}");
+    }
 }
 
 // verifies: REQ-QTE-15

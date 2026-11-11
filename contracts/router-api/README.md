@@ -71,7 +71,9 @@ the checks stay public functions of the router:
 - **The slippage limits** (`REQ-QTE-9`), `PolicyBounds::slippage_limits`: at most one per tuple, keyed by provider
   and ends as `excluded_tuples` are, so a limit holds across snapshots. Every exchange tuple that settles within
   three days (259,200 seconds, inclusive, `THREE_DAYS_SECONDS`), by its price or a fresh quote, has one
-  (`PolicyBounds::check_against`, which `DecisionRecord::check` runs). Reserves and ramps set no rate.
+  (`PolicyBounds::check_against`, which `DecisionRecord::check` runs). Reserves and ramps set no rate. A limit
+  is 1 to 10,000 basis points, as provider-role's bounded slippage is: a limit of 0 isn't allowed, and an exchange
+  held to no move at all states a firm rate in its own quote, which `commitments` takes where it is tighter.
 - **The history of stated terms** (`REQ-QTE-6`): `StatedTerms`, a fee formula and slippage regime with when they
   were stated. Core keeps each tuple's history.
 - **The actual settlement times** (`REQ-QTE-3`): `SettlementTimes`, a segment's declared seconds with when it
@@ -86,14 +88,15 @@ are Core's records over these types.
 
 - **The floor is judged after the operator's fee.** The floor is the least the customer accepts at `to`
   (`REQ-ORD-27`), so a candidate is `below_floor` when what is left after the operator's fee is below it, as the
-  price shown has it. The `no_std` contract can't multiply 78-digit amounts, so it checks only what it can: a kept
-  candidate arrives at the floor before the fee, and a `below_floor` reason has a floor to be below. The router
-  suite recomputes the rest (`floor-is-judged-after-the-operators-fee`).
+  price shown has it. The contract checks it exactly, both ways, with no division: for a whole `k` and a positive
+  `d`, `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`, and the cap is a second branch, `maximum ≤ a −
+  floor`. So a kept candidate leaves the customer at least the floor after the fee, and a `below_floor` candidate
+  less.
 - **Ranking is before it.** `lowest_total_cost` compares the providers' amounts before the operator's fee, and every
   record says so: `ranking` is `before_operator_fee`. The bounds hold one formula, taken from every candidate at the
   destination, with its proportion at most one, so what is left after it never falls as what arrives grows:
   ranking after it could differ only where the fee turns a difference into a tie, which goes to the lowest
-  `candidate_id`. **An item for the owner's form** (`qte11-operator-fee-by-tuple`): `REQ-QTE-2` lets the operator's
+  `candidate_id`. **An item for the owner's form** (`m3-rank-before-fee`): `REQ-QTE-2` lets the operator's
   formula follow `REQ-QTE-5`, which lets it depend on the tuple. A formula that differs by tuple would need ranking
   net of the fee to give `REQ-QTE-11`'s lowest total cost. The bounds can't state one today. Allowing it would be a
   new `ranking` value and a change to `operator_fee`, so a major.
@@ -190,11 +193,10 @@ only records that pass theirs, so a stored record recomputes.
 | A fresh quote's fee is in its tuple's input asset and at most its amount in; it names each void condition once | `uniqueItems` for the last | `CatalogueSnapshot::check` |
 | Every operation cites one tuple, of its own provider with its two ends, and every other figure it cites (price, fresh quote, dry run, judgement) names that tuple | can't be stated | `DecisionRecord::check` |
 | A kept candidate (chosen, or on the shortlist) cites no void statement (by `check_context`), no figure past its validity, no refused dry run and no judgement of no | can't be stated | `DecisionRecord::check` |
-| A kept candidate arrives at or above the floor (before the operator's fee; the suite checks it after) and with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
+| A kept candidate leaves the customer at least the floor after the operator's fee (3.0.0) and arrives with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
 | The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in, fee and amount out; an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
 | A drop reason that names a figure names one its candidate cites, and the figure supports the drop: stale past its validity, void by `check_context`, a refused dry run, a judgement of no; `quote_voided` names a quote that lists the condition, past its validity for `validity_passes` and at another amount for `amount_changes`, and is accepted on the listed condition alone for the others, which rest on facts outside the record | can't be stated | `DecisionRecord::check` |
-| `below_floor` names a candidate of a request with a floor; a kept candidate arrives at or above the floor before the operator's fee (3.0.0: the floor is judged after the fee, which the router suite recomputes) | can't be stated | `DecisionRecord::check` |
-| `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
+| `below_floor` (what is left after the operator's fee below the floor, computed exactly, 3.0.0), `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
 | Every operation but the one a `no_price` reason names cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
 | Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every usable judgement about its tuple; a fresh quote it cites is for its amount in, unless a `quote_voided` reason for `amount_changes` names it | can't be stated | `DecisionRecord::check` |
 | Usable accepted answers (fresh quotes included) for one tuple and amount agree on their fee and amount out | can't be stated | `DecisionRecord::check` |
@@ -228,8 +230,6 @@ the rest from the record alone; see `conformance/README.md`:
 - That a shortlist round's snapshot holds advertised figures only. The suite checks it.
 - That a segment names every call its provider declares to another provider of its part (3.0.0): here only that it
   names none outside them. The suite recomputes the calls from the calls figure.
-- That the floor holds after the operator's fee (3.0.0): here only that a kept candidate arrives at the floor before
-  the fee, and that a `below_floor` reason has a floor. The suite computes the fee and checks both ways.
 
 Unchecked by either:
 

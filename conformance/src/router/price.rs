@@ -57,20 +57,6 @@ pub(crate) fn fee(formula: &FeeFormula, amount_in: &BigUint) -> BigUint {
     flat + (amount_in * numerator + &denominator - 1u8) / denominator
 }
 
-/// The operator's own fee on what arrives at the destination (`REQ-QTE-2`, router-api's
-/// `PolicyBounds::operator_fee`): `flat + ceil(arrives × numerator / denominator)`, capped by its `maximum` where
-/// one is given and never raised to it, since the operator's fee is known before execution.
-pub(crate) fn operator_fee(formula: &FeeFormula, arrives: &BigUint) -> BigUint {
-    let flat = whole(formula.flat.as_str()).expect("an amount");
-    let numerator = whole(formula.proportional.numerator.as_str()).expect("an amount");
-    let denominator = whole(formula.proportional.denominator.amount().as_str()).expect("an amount");
-    let fee = flat + (arrives * numerator + &denominator - 1u8) / denominator;
-    match &formula.maximum {
-        Some(maximum) => fee.min(whole(maximum.as_str()).expect("an amount")),
-        None => fee,
-    }
-}
-
 /// What a net amount converts to, from `from`'s unit to `to`'s.
 ///
 /// With no rate, `floor(net × 10^to / 10^from)`. With a rate, the net fills the levels in order (a fixed rate is

@@ -36,7 +36,7 @@ pub use rutent_contracts::router_api::THREE_DAYS_SECONDS;
 use rutent_contracts::router_api::{
     Amount, Candidate, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, HeldQuote, Id,
     Operation, OperationKind, PositiveAmount, SettlementTimes, SlippageLimit, StatedTerms,
-    Timestamp,
+    Timestamp, Violation,
 };
 
 use crate::price::{fraction, number};
@@ -542,6 +542,32 @@ pub fn formula_fee(formula: &FeeFormula, amount_in: &Amount) -> Option<Amount> {
     Amount::new(formula_fee_of(formula, &number(amount_in)).to_string())
 }
 
+/// The operator's fee on what arrives at the destination (`REQ-QTE-2`): `operator`'s formula, capped by its
+/// maximum where it gives one, but never raised to it; `None` if it is past an amount's 78 digits. Unlike
+/// [`formula_fee`], which leaves a maximum aside to check a provider's charge, this is the fee the customer is
+/// shown and the floor is judged after.
+pub fn operator_fee(operator: &FeeFormula, arrives: &Amount) -> Option<Amount> {
+    Amount::new(operator_fee_of(operator, &number(arrives)).to_string())
+}
+
+/// What the customer receives at the destination after the operator's fee (`REQ-QTE-2`, `REQ-ORD-27`): what
+/// arrives less [`operator_fee`], and nothing where the fee would take it all. The router judges the floor on it,
+/// the price shown is it, and Core's checks at each settled segment (`AC-42`) read it from here, so all three
+/// agree.
+pub fn received_after_operator_fee(operator: &FeeFormula, arrives: &Amount) -> Amount {
+    to_amount(&received_of(operator, &number(arrives)))
+}
+
+/// What is left of `arrives` after the operator's fee, never below nothing.
+pub(crate) fn received_of(operator: &FeeFormula, arrives: &BigUint) -> BigUint {
+    let fee = operator_fee_of(operator, arrives);
+    if &fee <= arrives {
+        arrives - fee
+    } else {
+        BigUint::ZERO
+    }
+}
+
 /// The operator's fee on what arrives: its formula's fee, capped by its maximum where it gives one, but never
 /// raised to it (`REQ-QTE-2`). The price shown takes it, and the router judges the floor after it, so the two
 /// can't disagree.
@@ -806,12 +832,14 @@ pub fn may_start(firmness: &Firmness, accepted: bool) -> Result<(), NeedsAccepta
 // REQ-QTE-15: held quotes.
 
 /// Why a quote can't be held.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldRefused {
     /// The record chose no candidate, so there is no quote to hold.
     NothingChosen,
     /// The validity stated for the hold is before the record's snapshot was taken.
     ValidityBeforeQuote,
+    /// The record breaks router-api's rules: a value built field by field, never checked.
+    InvalidRecord(Violation),
 }
 
 /// Why a held quote is refused when it is used.
@@ -822,10 +850,13 @@ pub enum HeldQuoteRefused {
         /// Its validity.
         valid_until: Timestamp,
     },
+    /// Its record chose nothing: a hold built field by field that [`HeldQuote::check`] would refuse.
+    NothingChosen,
 }
 
-/// Holds the quote a choice round's record chose, until `valid_until` (`REQ-QTE-15`): the [`HeldQuote`] Core keeps,
-/// which passes [`HeldQuote::check`].
+/// Holds the quote a choice round's record chose, until `valid_until` (`REQ-QTE-15`). The [`HeldQuote`] it returns
+/// passes [`HeldQuote::check`], which it runs, the record's own check included; its fields are public, so one built
+/// by hand is held to the same check only when someone calls it.
 pub fn hold(record: DecisionRecord, valid_until: Timestamp) -> Result<HeldQuote, HoldRefused> {
     if record.chosen().is_none() {
         return Err(HoldRefused::NothingChosen);
@@ -833,10 +864,12 @@ pub fn hold(record: DecisionRecord, valid_until: Timestamp) -> Result<HeldQuote,
     if valid_until.unix_nanos() < record.snapshot.taken_at.unix_nanos() {
         return Err(HoldRefused::ValidityBeforeQuote);
     }
-    Ok(HeldQuote {
+    let held = HeldQuote {
         record,
         valid_until,
-    })
+    };
+    held.check().map_err(HoldRefused::InvalidRecord)?;
+    Ok(held)
 }
 
 /// How a held quote is labelled: always a quote (`REQ-QTE-7`, `REQ-QTE-15`).
@@ -853,6 +886,5 @@ pub fn redeem<'a>(held: &'a HeldQuote, now: &Timestamp) -> Result<&'a Candidate,
     if now.unix_nanos() > held.valid_until.unix_nanos() {
         return Err(past);
     }
-    // A checked hold's record chose a candidate.
-    held.record.chosen().ok_or(past)
+    held.record.chosen().ok_or(HeldQuoteRefused::NothingChosen)
 }

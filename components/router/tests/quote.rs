@@ -13,6 +13,7 @@ use common::{
 use rutent_contracts::provider_role::{ResultBody, TransferOutcome, TransferQuote};
 use rutent_contracts::router_api::{
     Amount, Decimal, DecisionRecord, FeeFormula, Figure, FigureValue, Id, StatedTerms, Timestamp,
+    TupleKey,
 };
 use rutent_router::quote::{
     Binding, Bound, ChargeFlag, Commitment, Executed, Firmness, HeldQuoteRefused, HoldRefused,
@@ -258,8 +259,21 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     );
 }
 
+/// The tuple the terms in these tests are for: an exchange `x0` at `hub`, USDC to EURC.
+fn x0() -> TupleKey {
+    parse(
+        "tuple",
+        json!({
+            "provider": "p-x0",
+            "from": endpoint(json!("hub"), "USDC", 6),
+            "to": endpoint(json!("hub"), "EURC", 6),
+        }),
+    )
+}
+
 fn terms(stated_at: &str, fee: FeeFormula, slippage: Option<Value>) -> StatedTerms {
     StatedTerms {
+        tuple: x0(),
         stated_at: at(stated_at),
         fee,
         slippage: slippage.map(|s| parse("slippage", s)),
@@ -782,6 +796,7 @@ fn no_terms_stated_after_a_segment_starts_ever_bind_it() {
         let day = 86_400;
         let history: Vec<StatedTerms> = (0..1 + draw.below(6))
             .map(|i| StatedTerms {
+                tuple: x0(),
                 stated_at: on_the_day(draw.below(day)),
                 fee: formula(&i.to_string(), "1", "1000", None),
                 slippage: None,
@@ -806,6 +821,7 @@ fn no_terms_stated_after_a_segment_starts_ever_bind_it() {
         if start + 1 < day {
             for _ in 0..1 + draw.below(3) {
                 later.push(StatedTerms {
+                    tuple: x0(),
                     stated_at: on_the_day(start + 1 + draw.below(day - start - 1)),
                     fee: formula("999999", "999", "1000", None),
                     slippage: Some(parse("slippage", json!({ "regime": "floating" }))),

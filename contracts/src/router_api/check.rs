@@ -5,11 +5,11 @@
 use alloc::{borrow::ToOwned, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-use super::atoms::{seconds_down, seconds_up};
+use super::atoms::{compare_products, seconds_down, seconds_up};
 use super::types::{
     CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
-    Endpoint, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part, PolicyBounds,
-    Pricing, Round, SettlementTimes, THREE_DAYS_SECONDS,
+    Endpoint, FeeFormula, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part,
+    PolicyBounds, Pricing, Round, SettlementTimes, THREE_DAYS_SECONDS,
 };
 use super::{Amount, Id, Timestamp, Violation};
 use crate::provider_role::{
@@ -325,7 +325,9 @@ impl PolicyBounds {
             }
             let (Some(provider), Some((from, to))) = (tuple.origin.provider(), tuple_ends(tuple))
             else {
-                continue;
+                return Err(Violation(
+                    "every exchange tuple has a provider and two ends a slippage limit can name",
+                ));
             };
             let declares_within = snapshot.figures.iter().any(|f| within(f, &tuple.figure_id));
             let limited = self
@@ -361,6 +363,32 @@ impl PolicyBounds {
                 .any(|c| &c.publisher == party && &c.asset == asset),
         }
     }
+}
+
+/// Whether what arrives leaves the customer at least `floor` after the operator's fee (`REQ-ORD-27`, 3.0.0): the
+/// fee is `flat + ceil(arrives × numerator / denominator)`, capped by its `maximum` and never raised to it, and
+/// what is left never goes below nothing. Exactly, with no division: for a whole `k` and a positive `d`,
+/// `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`.
+fn leaves_at_least(arrives: &Amount, fee: &FeeFormula, floor: &Amount) -> bool {
+    if floor.is_zero() {
+        return true;
+    }
+    // The fee may take up to `room` and leave the floor.
+    let Some(room) = arrives.checked_sub(floor) else {
+        return false;
+    };
+    if fee.maximum.as_ref().is_some_and(|maximum| maximum <= &room) {
+        return true;
+    }
+    let Some(proportional_room) = room.checked_sub(&fee.flat) else {
+        return false;
+    };
+    compare_products(
+        arrives,
+        &fee.proportional.numerator,
+        &proportional_room,
+        fee.proportional.denominator.amount(),
+    ) != core::cmp::Ordering::Greater
 }
 
 fn repeats<T: PartialEq>(items: &[T]) -> bool {
@@ -819,17 +847,16 @@ impl DecisionRecord {
     ///   `module_version`. Each call it names is declared there, and is to the provider of another operation of its
     ///   part (`REQ-MDL-21`).
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
-    ///   validity, no refused dry run and no judgement of no; arrives at or above the floor before the operator's
-    ///   fee, and with something in every part; passes no ceiling, counting the value its operations produce as well as what they take in;
+    ///   validity, no refused dry run and no judgement of no; leaves the customer at least the floor after the
+    ///   operator's fee, and arrives with something in every part; passes no ceiling, counting the value its operations produce as well as what they take in;
     ///   uses no excluded provider or tuple; keeps within the part and hop limits; and has every operation within
     ///   its tuple's bands and its price's levels.
     /// - A drop reason that names a figure names one its candidate cites, and the figure supports the drop: a
     ///   stale figure is past its validity, a void statement is void, a voided quote names the condition, a
-    ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor` names a candidate of
-    ///   a request with a floor: the floor is judged after the operator's fee, which needs multiplying amounts,
-    ///   so the router suite recomputes it (3.0.0, `T-020-02`). `no_positive_outcome`, `over_ceiling`,
-    ///   `excluded_by_policy` and `outside_band` are recomputed from the candidate's stated amounts and fees, the
-    ///   bounds and the exposures: they show the stated
+    ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor`,
+    ///   `no_positive_outcome`, `over_ceiling`, `excluded_by_policy` and `outside_band` are recomputed from the
+    ///   candidate's stated amounts and fees, the floor, the bounds (the operator's fee among them, since 3.0.0)
+    ///   and the exposures: they show the stated
     ///   amounts consistent with the drops, not with the prices cited, which the router suite recomputes
     ///   (`rutent-conformance`'s `router`, `T-004-02`). `no_positive_outcome` holds when any one part arrives with
     ///   nothing. `outranked` and `suspect_rate_cycle` rest on the ranking: here only that the outranking
@@ -1334,7 +1361,7 @@ impl DecisionRecord {
         let below_floor = request
             .floor
             .as_ref()
-            .is_some_and(|floor| &arriving < floor);
+            .is_some_and(|floor| !leaves_at_least(&arriving, &self.bounds.operator_fee, floor));
         let over: Vec<(CeilingScope, &Id, &Denomination)> = self.ceilings_passed(&placed);
         let excluded = placed
             .iter()
@@ -1359,7 +1386,9 @@ impl DecisionRecord {
                 ));
             }
             if below_floor {
-                return Err(Violation("a kept candidate arrives at or above the floor"));
+                return Err(Violation(
+                    "a kept candidate leaves the customer at least the floor after the operator's fee",
+                ));
             }
             if a_part_arrives_with_nothing {
                 return Err(Violation(
@@ -1500,11 +1529,8 @@ impl DecisionRecord {
                 }
                 Ok(())
             }
-            // The floor is judged after the operator's fee, which needs the multiplication of amounts this
-            // `no_std` contract doesn't carry: here only that a floor is set, and the router suite recomputes the
-            // rest. A kept candidate arriving below the floor before the fee is below it after, and refused above.
-            DropReason::BelowFloor {} if request.floor.is_none() => Err(Violation(
-                "a below-floor reason names a candidate of a request with a floor",
+            DropReason::BelowFloor {} if !below_floor => Err(Violation(
+                "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
             )),
             DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => Err(Violation(
                 "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
