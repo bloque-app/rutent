@@ -61,18 +61,22 @@ row implements its own in its own module, where its fail-closed stub sits until 
   `verified`, built or read. On append the log runs `attribute`: it fetches the kept bytes by the commitment
   (`KeptStatements`), refusing an entry whose bytes aren't kept, and records the entry `verified` to its claimed
   maker only where the bytes are an envelope of this deployment, made by that maker, of the entry's shape, time and
-  key, about the entry's transaction where both name one, with a signature that verifies (`Signatures`) under a key
+  key, about the transaction its body names wherever the entry names one, with a signature that verifies
+  (`Signatures`) under a key
   that signs the maker's statements at its `made_at` (`StatementKeys`); otherwise it records it unverified,
   attributed to no one (`REQ-AUD-2`). The keys come from the catalogue the state machine holds and the deployment,
   never from orchestration, which could otherwise call its own key a provider's. The receipt is of the entry
-  recorded. `fixtures/attribution/` holds a case for each part of the rule.
+  recorded. A statement about an order or a segment is verified only where its `about` names the transaction its
+  body names: the order is Core's reading, which no provider signs, so the signed transaction is what binds the
+  statement to it, and `transaction-belongs-to-one-order` keeps each transaction to the first order an entry names
+  it under (`REQ-ORD-32`, `REQ-ORD-38`). `fixtures/attribution/` holds a case for each part of the rule.
 - **The log is the guard of every citation.** Permits, receipts and ids can be built anywhere: `Decision::permit`
   makes a `Permit` from a permitting answer, but a permit deserialises, and a decision's fields are public. So the
-  log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS`: each row is a reference an
-  entry makes to earlier entries, derived from `SPEC.md`, with the kind of entry it must point to and the outcome
-  required, the fields that must match, and the ids that demand it. An `exists` row is refused when no earlier
-  entry answers, naming the field that failed on the closest one; a `none other` row when one does. A relation with
-  no `SPEC.md` id is not in the table.
+  log's append runs `admit_entry` on every entry, which reads one table, `RELATIONS` for a verified entry and
+  `STATED_RELATIONS` for a stated one: each row is a reference an entry makes to earlier entries, derived from
+  `SPEC.md`, with the kind of entry it must point to and the outcome required, the fields that must match, and the
+  ids that demand it. An `exists` row is refused when no earlier entry answers, naming the field that failed on the
+  closest one; a `none other` row when one does. A relation with no `SPEC.md` id is not in the table.
 
 ### The citation table
 
@@ -120,11 +124,12 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
 | `route-starts-on-the-withdrawal-proof` | `effect` of `move_value` on a segment after its part's first, by the `route_chosen` plan | an `input` (`segment_settled`) of the part's first segment, for the order | — | `REQ-ORD-40` | admitted: `world--*`; refused: `--missing` |
 | `fee-rests-on-a-settled-segment` | `fee`: its segment | an `input` (`segment_settled`) of that segment | order | `REQ-AUD-11` | admitted: `world--*`; refused: `--missing`, `--order` |
-| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): its `reserve_yes` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `origin_reserve`), order (its `about`) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order` |
+| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): its `reserve_yes` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `origin_reserve`), order (its `about`), transaction (its `about` names the one the reserve signed) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order`, `--transaction` |
 | `acceptance-is-asked-in-the-users-session` | `acceptance` (`given`): its `session` | an `open_session`, `permitted`, that opened that session | holder (the requester), expires_at (not before the acceptance) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--holder`, `--expires_at` |
 | `move-segment-is-in-its-orders-plan` | `effect` of `move_value`: its segment | an `input` (`route_chosen`, `route_recalculated` or `destination_changed`) whose plan lists that segment | order | `REQ-ORD-38`, `REQ-ORD-40` | admitted: `world--*`; refused: `--missing`, `--unplanned-segment`, `--order` |
 | `recalculation-starts-from-evidenced-value` | `input` (`route_recalculated`): its order and part | an `input` (`segment_settled`) of that order | part, node (the settled segment's `to` in its plan is the new route's first `from`) | `REQ-ORD-2`, `INV-4` | admitted: `world--*`; refused: `--missing`, `--part`, `--node` |
 | `order-is-opened-once` | `input` (`route_chosen`): its order | none other: no other `route_chosen` of that order (the same input retried is admitted; a linked order opened by `handed_on_from` is its own order) | — | `REQ-ORD-19` | admitted: `world--*`, `--retried`; refused: `--conflict` |
+| `transaction-belongs-to-one-order` | a stated entry about an order: its `about.transaction` | none other: no earlier stated entry naming the same transaction under another order (the first fixes it; the same entry retried is admitted) | — | `REQ-ORD-32`, `REQ-ORD-38` | admitted: `world--*`, `--retried`; refused: `--conflict` |
 
 Every row has a refused case for its target missing (or, for `none other`, present) and one for each field it
 matches, each named `<row>--<field>`; `world--<entry>` cases admit each entry of one coherent log on what came
@@ -446,11 +451,16 @@ These are defaults taken where the row left a choice open. Each is reversible by
   it recorded. Orchestration ties a statement to its maker's key before it relies on it (`T-020-05`), so it knows
   beforehand what the log will find; where the two differ, the log's entry is the one a relation reads, and an
   acceptance resting on a yes the log recorded unverified is refused.
-- **What a statement is about** (open, for `T-025-05`). The log checks a verified statement's transaction against
-  its bytes, but its `about.order` and `about.segment` are Core's reading, which no provider signs: a provider's
-  statements name transactions, not orders. `acceptance-rests-on-the-reserves-yes` matches the yes's order through
-  `about`, so orchestration could still cite a genuine yes about one order for another. Closing it needs a record
-  tying each transaction to its order that the log holds orchestration to; until then it is a residual.
+- **A statement is bound to its order through its signed transaction** (`REQ-ORD-32`, `REQ-ORD-38`). No provider
+  signs an order; it signs the transaction Core asked it under. So a statement is verified about an order or a
+  segment only where its `about` names the transaction its body names, `acceptance-rests-on-the-reserves-yes`
+  requires that transaction, and `transaction-belongs-to-one-order`, read over stated entries
+  (`STATED_RELATIONS`), refuses a later entry naming a transaction under another order than the first one did. A
+  genuine yes about one order can't be cited for another, with its transaction left out or kept.
+- **A fresh transaction for each yes** (`T-020-03`, `T-020-04`). Core asks each reserve's yes under a fresh
+  transaction for that order, never one an earlier order or question used, and appends the yes with that
+  transaction in its `about`; a yes asked under a reused transaction is refused when it is appended, or records
+  nothing an acceptance can rest on.
 - **One process** (a residual for `T-025-05`). The handles keep decision entries to the policy engine while Core's
   parts share one process, where only the assembly can reach the log. Were the parts split across processes, a
   decision entry would need the policy engine's signature, which the log checks before it admits one; no such

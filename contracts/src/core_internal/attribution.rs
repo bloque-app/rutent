@@ -10,12 +10,15 @@
 //! 3. its `maker` is the party the entry claims;
 //! 4. its `shape` is the entry's `what.statement`, and its `made_at` the entry's `when.at`;
 //! 5. its signature's scheme and key are the entry's `signed_with`;
-//! 6. where its body names a `transaction` and the entry's `about` names one, they are the same;
+//! 6. where the entry's `about` names a transaction, its body names the same one; and where the entry is about an
+//!    order or a segment, its `about` names a transaction, so a statement is verified for an order only through a
+//!    transaction its maker signed (`REQ-ORD-32`, `REQ-ORD-38`);
 //! 7. its signature verifies over its signing input;
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`).
 //!
-//! So a verified entry's shape, time and key are the bytes' own, and its transaction too where both name one. An
-//! entry whose commitment names no kept statement is refused: it would rest on nothing anyone can check.
+//! So a verified entry's shape, time, key and transaction are the bytes' own, and one about an order is tied to it
+//! through a signed transaction, which [`STATED_RELATIONS`](super::STATED_RELATIONS) keeps to one order. An entry
+//! whose commitment names no kept statement is refused: it would rest on nothing anyone can check.
 
 use alloc::vec::Vec;
 
@@ -101,20 +104,20 @@ pub fn attribute(
                 .statement
                 .get("transaction")
                 .and_then(|t| t.as_str());
-            let about_transaction = claim
-                .about
-                .as_ref()
+            let about = claim.about.as_ref();
+            let about_transaction = about
                 .and_then(|a| a.transaction.as_ref())
                 .map(|t| t.as_str());
+            let bound = about.is_some_and(|a| a.order.is_some() || a.segment.is_some());
             envelope.deployment == keys.deployment()?
                 && envelope.maker == claimed_by.party.as_str()
                 && envelope.shape == claim.what.statement.as_str()
                 && envelope.made_at == claim.when.at.as_str()
                 && envelope.signature.scheme == claim.signed_with.scheme
                 && envelope.signature.key == claim.signed_with.key
-                && match (body_transaction, about_transaction) {
-                    (Some(body), Some(about)) => body == about,
-                    _ => true,
+                && match about_transaction {
+                    Some(about) => body_transaction == Some(about),
+                    None => !bound,
                 }
                 && signatures.verifies(&bytes)
                 && keys.signs_for(&claimed_by.party, &claim.signed_with, &claim.when.at)?

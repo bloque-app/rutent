@@ -47,14 +47,16 @@ pub enum Match {
 /// The log's history: each entry it holds with its receipt, in order.
 pub type History = [(Receipt, Entry)];
 
-/// The citations an entry makes under a row, given the history.
-pub type Cites = fn(&VerifiedEntry, &History) -> Vec<Cite>;
+/// The citations an entry makes under a row, given the history: a verified entry's, or, for a row of
+/// [`STATED_RELATIONS`], a stated entry's.
+pub type Cites<C = VerifiedEntry> = fn(&C, &History) -> Vec<Cite>;
 
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
-pub type Answers = fn(&VerifiedEntry, &Cite, &Entry, &History) -> Match;
+pub type Answers<C = VerifiedEntry> = fn(&C, &Cite, &Entry, &History) -> Match;
 
-/// One row of the citation table.
-pub struct Relation {
+/// One row of the citation table, over the citing entries of kind `C`: verified entries ([`RELATIONS`]) or stated
+/// ones ([`STATED_RELATIONS`]).
+pub struct Relation<C: 'static = VerifiedEntry> {
     /// The row's name, which its fixtures are named after.
     pub name: &'static str,
     /// The `SPEC.md` ids that demand the relation.
@@ -66,9 +68,9 @@ pub struct Relation {
     /// The fields that must match, each with the refusal when the answering entry is found but that field differs.
     pub fields: &'static [(&'static str, &'static str)],
     /// The citations `entry` makes under this row, given the history; none where the row doesn't apply to it.
-    pub cites: Cites,
+    pub cites: Cites<C>,
     /// How `target`, an earlier entry, answers `cite` made by `entry`, given the whole history.
-    pub answers: Answers,
+    pub answers: Answers<C>,
 }
 
 fn verified(entry: &Entry) -> Option<&VerifiedEntry> {
@@ -1436,6 +1438,10 @@ pub static RELATIONS: [Relation; 47] = [
                 "an acceptance's reserve's yes is its origin reserve's statement",
             ),
             ("order", "an acceptance's reserve's yes is about its order"),
+            (
+                "transaction",
+                "an acceptance's yes names the transaction it was asked under, which the reserve signed",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::Acceptance {
@@ -1462,6 +1468,10 @@ pub static RELATIONS: [Relation; 47] = [
                     matches!(statement.attribution, Attribution::Verified { .. }),
                     maker(statement) == origin_reserve,
                     statement.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    statement
+                        .about
+                        .as_ref()
+                        .is_some_and(|a| a.transaction.is_some()),
                 ],
             )
         },
@@ -1762,6 +1772,32 @@ pub enum Through {
     Policy,
 }
 
+/// The transaction a stated entry is about, under the order it is about, where it names both.
+fn order_transaction(statement: &StatedEntry) -> Option<(&Id, &Id)> {
+    let about = statement.about.as_ref()?;
+    Some((about.order.as_ref()?, about.transaction.as_ref()?))
+}
+
+/// The rows a stated entry is held to, read as [`RELATIONS`] are. `contracts/core-internal/README.md` lists them in
+/// the same table.
+pub static STATED_RELATIONS: [Relation<StatedEntry>; 1] = [Relation {
+    name: "transaction-belongs-to-one-order",
+    spec: &["REQ-ORD-32", "REQ-ORD-38"],
+    quantifier: Quantifier::NoneOther,
+    refusal: "a transaction belongs to one order: the first entry that names it fixes its order",
+    fields: &[],
+    cites: |e, _| order_transaction(e).map_or_else(none, |_| by_fields(0)),
+    answers: |e, _, t, _| {
+        let (Some((order, transaction)), Some(t)) = (order_transaction(e), stated(t)) else {
+            return Match::NotTarget;
+        };
+        judge(
+            order_transaction(t).is_some_and(|(o, x)| x == transaction && o != order),
+            &[],
+        )
+    },
+}];
+
 /// Whether the log admits `entry`, given its `history`: each entry it holds with its receipt, in order. The log runs
 /// it on every append ([`calls::Log::append`](super::calls::Log::append)), since a permit, a receipt or an id can be
 /// built or read from anywhere. It reads [`RELATIONS`] row by row, and refuses on the first row the entry breaks:
@@ -1771,9 +1807,10 @@ pub enum Through {
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry cites nothing and is admitted. Before any row, the entry's handle is held to its kind: a decision
-/// kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry only on the
-/// general path, so a decision written by anyone but policy is refused even where its type was got round.
+/// A stated entry is held to [`STATED_RELATIONS`] alike. Before any row, the entry's handle is held to its kind: a
+/// decision kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry
+/// only on the general path, so a decision written by anyone but policy is refused even where its type was got
+/// round.
 pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
@@ -1789,10 +1826,19 @@ pub fn admit_entry(
         }
         _ => {}
     }
-    let Entry::Verified(entry) = entry else {
-        return Ok(());
-    };
-    for row in &RELATIONS {
+    match entry {
+        Entry::Verified(entry) => admit_under(&RELATIONS, entry, history),
+        Entry::Stated(entry) => admit_under(&STATED_RELATIONS, entry, history),
+    }
+}
+
+/// Holds `entry` to every row of `rows` over `history`, refusing on the first it breaks.
+fn admit_under<C>(
+    rows: &[Relation<C>],
+    entry: &C,
+    history: &[(Receipt, Entry)],
+) -> Result<(), Violation> {
+    for row in rows {
         for cite in (row.cites)(entry, history) {
             let candidates = history
                 .iter()

@@ -89,7 +89,8 @@
           "value": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
         },
         "about": {
-          "order": "ord-1"
+          "order": "ord-1",
+          "transaction": "tx-yes-1"
         }
       }
     },
@@ -133,7 +134,8 @@
           "value": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6"
         },
         "about": {
-          "order": "ord-2"
+          "order": "ord-2",
+          "transaction": "tx-yes-2"
         }
       }
     },

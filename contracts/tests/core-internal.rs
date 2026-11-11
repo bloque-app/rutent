@@ -23,7 +23,7 @@ use rutent_contracts::core_internal::{
     Receipt, ReportPair, SessionAnswer, SessionRequest, StatedEntry, StuckDecide, StuckMove,
     VERSION, VerifiedEntry,
 };
-use rutent_contracts::core_internal::{Quantifier, Through};
+use rutent_contracts::core_internal::{Quantifier, STATED_RELATIONS, Through};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::router_api::Id;
@@ -1014,6 +1014,26 @@ fn through(case: &Value, entry: &Entry) -> Through {
     }
 }
 
+/// A row of either table, as the tests read it: its name, ids, quantifier, refusal and fields.
+type Row = (
+    &'static str,
+    &'static [&'static str],
+    Quantifier,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// Every row of the citation table, the verified entries' and the stated entries'.
+fn rows() -> Vec<Row> {
+    let verified = RELATIONS
+        .iter()
+        .map(|r| (r.name, r.spec, r.quantifier, r.refusal, r.fields));
+    let stated = STATED_RELATIONS
+        .iter()
+        .map(|r| (r.name, r.spec, r.quantifier, r.refusal, r.fields));
+    verified.chain(stated).collect()
+}
+
 /// What a case expects of [`admit_entry`]: admitted, or refused with the row's own refusal or its field's.
 fn expected(name: &str, case: &Value) -> Result<(), Violation> {
     if case["breaks"] == "handle" {
@@ -1026,16 +1046,15 @@ fn expected(name: &str, case: &Value) -> Result<(), Violation> {
     let Some(row) = case["row"].as_str() else {
         return Ok(());
     };
-    let relation = RELATIONS
-        .iter()
-        .find(|r| r.name == row)
+    let (_, _, _, row_refusal, fields) = rows()
+        .into_iter()
+        .find(|r| r.0 == row)
         .unwrap_or_else(|| panic!("{name}: no row {row}"));
     match case["breaks"].as_str() {
         None => Ok(()),
-        Some("missing") | Some("conflict") => Err(Violation(relation.refusal)),
+        Some("missing") | Some("conflict") => Err(Violation(row_refusal)),
         Some(field) => {
-            let (_, refusal) = relation
-                .fields
+            let (_, refusal) = fields
                 .iter()
                 .find(|(f, _)| *f == field)
                 .unwrap_or_else(|| panic!("{name}: row {row} has no field {field}"));
@@ -1068,19 +1087,19 @@ fn every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say() {
         }
     }
     // Every row is refused without what it needs (or with what it forbids), and on each field it matches.
-    for row in &RELATIONS {
+    for (row, _, quantifier, _, fields) in rows() {
         let breaks: Vec<&str> = cases
             .iter()
-            .filter(|(_, c)| c["row"] == row.name)
+            .filter(|(_, c)| c["row"] == row)
             .filter_map(|(_, c)| c["breaks"].as_str())
             .collect();
-        let whole = match row.quantifier {
+        let whole = match quantifier {
             Quantifier::Exists => "missing",
             Quantifier::NoneOther => "conflict",
         };
-        for needed in std::iter::once(whole).chain(row.fields.iter().map(|(f, _)| *f)) {
+        for needed in std::iter::once(whole).chain(fields.iter().map(|(f, _)| *f)) {
             if !breaks.contains(&needed) {
-                failures.push(format!("{}: no case breaking {needed}", row.name));
+                failures.push(format!("{row}: no case breaking {needed}"));
             }
         }
     }
@@ -1401,7 +1420,11 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
         "maker": reserve.party.as_str(),
         "made_at": claim.when.at.as_str(),
         "signature": {"scheme": "ed25519", "key": claim.signed_with.key.as_str(), "value": "AA"},
-        "statement": {"kind": "balance_verification", "outcome": {"status": "answered", "sufficient": true}},
+        "statement": {
+            "kind": "balance_verification",
+            "transaction": claim.about.as_ref().and_then(|a| a.transaction.as_ref()).unwrap().as_str(),
+            "outcome": {"status": "answered", "sufficient": true},
+        },
     });
     let bytes = base64url(&serde_json::to_vec(&envelope).unwrap());
     let kept = serde_json::json!({
@@ -1437,6 +1460,149 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
     assert_eq!(admit_entry(&history, &acceptance, Through::General), Ok(()));
 }
 
+/// The kept bytes of `yes` as its maker signed them, about the transaction it names, and sources that verify them.
+fn signed_sources(yes: &StatedEntry, transaction: &str) -> Sources {
+    let envelope = serde_json::json!({
+        "deployment": {"name": "rutent-test", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},
+        "protocol_version": "2.0.1",
+        "shape": yes.what.statement.as_str(),
+        "maker": yes.attribution.maker().party.as_str(),
+        "made_at": yes.when.at.as_str(),
+        "signature": {"scheme": "ed25519", "key": yes.signed_with.key.as_str(), "value": "AA"},
+        "statement": {
+            "kind": "balance_verification",
+            "transaction": transaction,
+            "outcome": {"status": "answered", "sufficient": true},
+        },
+    });
+    let kept = serde_json::json!({
+        "commitment": yes.commitment,
+        "salt": base64url(&[7; 32]),
+        "bytes": base64url(&serde_json::to_vec(&envelope).unwrap()),
+    });
+    Sources {
+        kept: Some(serde_json::from_value(kept).unwrap()),
+        deployment: serde_json::from_value(envelope["deployment"].clone()).unwrap(),
+        keys: vec![(
+            yes.attribution.maker().party.as_str().to_string(),
+            yes.signed_with.clone(),
+            yes.when.at.clone(),
+        )],
+        signature: true,
+    }
+}
+
+fn attributed(claim: &StatedEntry, source: &Sources) -> StatedEntry {
+    let (mut kept, mut keys, signatures) = (
+        sources_like(source),
+        sources_like(source),
+        sources_like(source),
+    );
+    attribute(claim, &mut kept, &mut keys, &signatures).unwrap()
+}
+
+/// A genuine yes of the origin reserve about one order, re-appended for another: with its transaction left out the
+/// log records it unverified and an acceptance on it is refused; with its transaction kept the log refuses it, since
+/// the first entry naming the transaction fixed its order; and the genuine yes still admits its own acceptance.
+// verifies: REQ-ORD-32, REQ-ORD-38, REQ-AUD-2
+#[test]
+fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
+    let case = read_json(&contract_dir().join("fixtures/admission/world--acc1.json"));
+    let mut history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                serde_json::from_value(h["receipt"].clone()).unwrap(),
+                serde_json::from_value(h["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let acceptance: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let Entry::Verified(VerifiedEntry {
+        what:
+            What::Acceptance {
+                reserve_yes: Some(at),
+                order,
+                ..
+            },
+        ..
+    }) = &acceptance
+    else {
+        panic!("an acceptance resting on a yes");
+    };
+    // The genuine yes admits its own acceptance.
+    assert_eq!(admit_entry(&history, &acceptance, Through::General), Ok(()));
+    let Some((_, Entry::Stated(yes))) = history.iter().find(|(r, _)| r == at).cloned() else {
+        panic!("the yes is a stated entry");
+    };
+    let transaction = yes
+        .about
+        .as_ref()
+        .and_then(|a| a.transaction.clone())
+        .expect("a yes names its signed transaction");
+    let signed = signed_sources(&yes, transaction.as_str());
+    let as_claim = |about: serde_json::Value| StatedEntry {
+        attribution: Attribution::Unverified {
+            claimed_by: yes.attribution.maker().clone(),
+        },
+        about: Some(serde_json::from_value(about).unwrap()),
+        ..yes.clone()
+    };
+    let other = if order.as_str() == "ord-1" {
+        "ord-2"
+    } else {
+        "ord-1"
+    };
+
+    // Re-appended for another order with its transaction left out: recorded unverified, so no acceptance rests on it.
+    let left_out = attributed(&as_claim(serde_json::json!({"order": other})), &signed);
+    assert!(matches!(
+        left_out.attribution,
+        Attribution::Unverified { .. }
+    ));
+    let slot = history.iter().position(|(r, _)| r == at).unwrap();
+    let mut replayed = history.clone();
+    let mut moved = left_out.clone();
+    moved.about = yes.about.clone().map(|mut a| {
+        a.transaction = None;
+        a
+    });
+    replayed[slot].1 = Entry::Stated(moved);
+    assert!(admit_entry(&replayed, &acceptance, Through::General).is_err());
+
+    // Re-appended for another order with its transaction kept: the bytes bear it out, but the transaction is the
+    // first entry's, under its order, so the log refuses it.
+    let kept = attributed(
+        &as_claim(serde_json::json!({"order": other, "transaction": transaction})),
+        &signed,
+    );
+    assert!(matches!(kept.attribution, Attribution::Verified { .. }));
+    assert_eq!(
+        admit_entry(&history, &Entry::Stated(kept), Through::General),
+        Err(Violation(STATED_RELATIONS[0].refusal))
+    );
+
+    // The same yes appended again for its own order is the same order's, and admitted.
+    history.truncate(slot);
+    let again = attributed(&yes_claim(&yes), &signed);
+    assert_eq!(again.attribution, yes.attribution);
+    assert_eq!(
+        admit_entry(&history, &Entry::Stated(again), Through::General),
+        Ok(())
+    );
+}
+
+fn yes_claim(yes: &StatedEntry) -> StatedEntry {
+    StatedEntry {
+        attribution: Attribution::Unverified {
+            claimed_by: yes.attribution.maker().clone(),
+        },
+        ..yes.clone()
+    }
+}
+
 fn sources_like(s: &Sources) -> Sources {
     Sources {
         kept: s.kept.clone(),
@@ -1466,15 +1632,15 @@ fn base64url(raw: &[u8]) -> String {
 fn the_readme_lists_every_relation_of_the_citation_table_with_its_spec_ids() {
     let readme = fs::read_to_string(contract_dir().join("README.md")).unwrap();
     let rows: Vec<&str> = readme.lines().filter(|l| l.starts_with("| `")).collect();
-    for relation in &RELATIONS {
+    for (name, spec, ..) in self::rows() {
         let Some(line) = rows
             .iter()
-            .find(|l| l.starts_with(&format!("| `{}` |", relation.name)))
+            .find(|l| l.starts_with(&format!("| `{name}` |")))
         else {
-            panic!("the README's citation table lacks {}", relation.name);
+            panic!("the README's citation table lacks {name}");
         };
-        for id in relation.spec {
-            assert!(line.contains(&format!("`{id}`")), "{}: {id}", relation.name);
+        for id in spec {
+            assert!(line.contains(&format!("`{id}`")), "{name}: {id}");
         }
     }
 }

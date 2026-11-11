@@ -84,8 +84,8 @@ mod types;
 
 pub use attribution::{STATED_WITHOUT_ITS_KEPT_BYTES, attribute};
 pub use relations::{
-    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, Through, admit_entry,
-    covers,
+    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
+    Through, admit_entry, covers,
 };
 pub use types::*;
 

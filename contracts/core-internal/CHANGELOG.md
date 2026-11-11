@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 191 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 47 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 194 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 48 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -47,5 +47,11 @@
   transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
   otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
   `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
-  from the catalogue, never from orchestration; and `Signatures`, the signature check. Fourteen attribution cases,
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Eighteen attribution cases,
   under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a reserve's yes is bound to its order through its signed transaction. A
+  statement about an order or a segment is verified only where its `about` names the transaction its body names;
+  `acceptance-rests-on-the-reserves-yes` requires that transaction; and a new none-other row over stated entries,
+  `transaction-belongs-to-one-order` in `STATED_RELATIONS`, refuses a later entry naming a transaction under
+  another order than the first. `Relation`, `Cites` and `Answers` take the citing entry's kind as a parameter,
+  verified by default. 194 admission cases. (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, T-020-01)
