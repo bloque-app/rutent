@@ -568,7 +568,8 @@ ADR-0002), for it and for the memory it held.
 
 > **Corrected 2026-11-10, the review of `M2`'s pull request.** The run below showed the cut at `20567be`, before
 > `T-010-07`. At the head, `a3d241d`, run 42772739790 gave `recovered` on one node for the same damage, so the cut
-> is not shown at the head. See "At the head" below; the table is what run 42758365383 recorded and stays as it was.
+> is not shown by that run. The new test's run, 42814589946 at `878fc04`, shows it again at the head with the order
+> still running. See "At the head" below; the table is what run 42758365383 recorded and stays as it was.
 
 `G-54` (`scoring.md`): damage to the last frame of a store that returned its acknowledgement, **its length intact**,
 and a refusal or the entry kept. The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a
@@ -601,7 +602,7 @@ being allowed to fail. On one node the last submit wrote bytes 40582..46840 of `
 - **Not tried.** Power loss (a real torn write); a cut at a frame boundary. The VOS tests (two then, four now) fail on a
   silent cut by design (they need not pass); they did in this run, and the job stayed green.
 
-#### At the head (run 42772739790 at `a3d241d`; the test since changed)
+#### At the head (runs 42772739790 at `a3d241d` and 42814589946 at `878fc04`; the test since changed)
 
 - **Run 42758365383 (`20567be`) showed the cut:** on one node the torn tail lost 1 of 7 records with nothing in the
   log, the table above.
@@ -614,13 +615,25 @@ being allowed to fail. On one node the last submit wrote bytes 40582..46840 of `
   record is the journal's live tail. A cut that leaves every record is now reported `not reproduced` and not
   `recovered`, and the test fails on it, since the run then says nothing about a torn tail; a flipped byte that
   leaves every record is still `recovered`. As before, the result is recorded and the step need not pass.
-- **The new test's run will be recorded here when it lands.** Until then the torn tail is shown only by run
-  42758365383, before `T-010-07`.
+- **Run 42814589946 (`STM on VOS`, `878fc04`, the changed test) shows the cut again at the head,** with the order
+  still running:
 
-### Owner's item: `vos-g54-silent-tail-cut` (torn tail shown before `T-010-07`, not reproduced at the head)
+  | Damage | One node, last input ends the order | One node, order running | Leader of three, order ends | Leader of three, order running |
+  |---|---|---|---|---|
+  | Byte flipped in the id | refused | refused | refused | refused |
+  | The submit's last byte | recovered | recovered | undetermined, whole once the others joined (the lone node answered `Rejected(Behind)`) | undetermined, whole once the others joined |
+  | Journal cut after the id's first place | **not reproduced** (7 of 7 kept) | **cut silently**: 5 of 6 records, no log line names the damage | undetermined, whole once the others joined (`Rejected(Behind)`) | **cut and repaired by replication**: 5 of 6, caught up from the others |
 
-Evidence: torn tail, **shown** in run 42758365383 at `20567be` (not reproduced at the head, above): a journal cut inside the acknowledged append's bytes is cut silently
-by VOS on one node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it.
+- **Reading.** The residual is real at the head: a torn live tail on one node silently loses an acknowledged record,
+  and three replicas repair it. `T-010-07`'s sealing hid it only when the order's last input sealed the journal (the
+  `not reproduced` cell); with the order still running the record sits in the live tail and the cut takes it.
+
+### Owner's item: `vos-g54-silent-tail-cut` (torn tail shown in run 42758365383 and again at the head in run 42814589946)
+
+Evidence: torn tail, **shown** in run 42758365383 at `20567be` and again at the head, in run 42814589946 at `878fc04`
+with the order still running (an order's last input seals the journal and hides it, `T-010-07`): a journal cut inside
+the acknowledged append's bytes is cut silently by VOS on one node (6 of 7 records, then 5 of 6, nothing in the log),
+and on three the leader cut it and the others repaired it.
 Length-intact damage to the acknowledged batch with nothing behind it: **code reading only** (`EXP-1-vos-20261107-1`).
 Damage with frames behind it is refused (shown). Choose:
 
