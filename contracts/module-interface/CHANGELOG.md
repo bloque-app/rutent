@@ -10,6 +10,34 @@
   and `AssertionUnverified` (a signed assertion that doesn't verify). Each wire reason is in the schema's enum and
   the Rust type, with valid and invalid fixtures; the two admission reasons are Rust only, as 2.3.0's were, with a
   Rust test. (DEC-4, DEC-20, T-010-09)
+- An outbound call refused after a destination was sent the request has an outcome of its own,
+  `refused_after_delivery`, with the reason: a redirect the platform won't follow, an address or a peer it won't
+  connect to, or a limit, once a hop connected. `refused` now means nothing of the call was sent:
+  `validate_record` refuses a `refused` call whose hops show a destination was sent the request, a hop before
+  its last that connected or a connected last hop refused as a redirect (`RefusedThoughSent`), and a
+  `refused_after_delivery` call with no hop that connected (`RefusedAfterDeliveryOfNothing`). Before, a refused
+  redirect after a delivered request was `refused`, which a reader reconciling an unknown outcome could take for
+  nothing having been sent. A limit hit after a destination was sent the request is always
+  `refused_after_delivery`, never `refused`: the validator can't always tell it from the hops, so the README
+  states it as the contract's rule for every binding. In the schema's enum, `CallOutcome::RefusedAfterDelivery`,
+  the README, a valid fixture and four invalid ones; the redirect fixture is now `refused_after_delivery`. A new
+  wire value and a new variant of an exhaustive enum, and 4.0.0 is not released, so it joins this major.
+  (DEC-4, DEC-20)
+- No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a
+  cross-module call's outcome as it is recorded, `delivered`, `unanswered` or `refused`, so an unanswered call,
+  whose callee may have acted, is never told to its caller as refused; a format binding gives its caller all three.
+  The platform ends a callee's deadline before its caller's, so a callee stopped at its deadline leaves its caller
+  time to hear that its call went unanswered, and a call is made only when enough of the caller's deadline is left
+  for the callee's least budget and that reserve (`deadline_too_near` otherwise); the README says so.
+  `PlatformRefusal` gains three reasons, Rust only, as the other platform reasons are, with a Rust test:
+  `StatementKeyUnavailable` (the store holding the statement key couldn't answer; it may later),
+  `StatementKeyMisconfigured` (the key can't sign as declared: none or another held, or one the platform may not
+  resolve), both judged before the module is handed the operation, so nothing of it ran, where a store that couldn't
+  answer was `Unavailable`, judged after the module ran; and `OutcomeUnknown` (the module passed something out, an
+  outbound or cross-module call, and then gave no answer the platform passes on: a limit, a bad output, a stop or a
+  result that can't be signed, each of which was its own reason). Every other reason now says nothing of the
+  operation took effect, and each one's doc says so. New Rust variants of a `#[non_exhaustive]` enum, and 4.0.0 is
+  not released, so they join this major. (DEC-4, DEC-20)
 - The release lifecycle's refusals (`T-013-06`). `AdmissionRefusal` gains `ReleaseStaged` (a new release while
   another is staged on a share of the provider's traffic, ADR-0014) and `OlderRelease` (a release whose assertion
   was made before the provider's last accepted one, so publishing an older signed release never reinstates it,

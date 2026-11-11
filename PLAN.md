@@ -82,6 +82,7 @@ task tables are written as `M2` ends.
 | `exp2-adopt-format` | Wasm only for `M2`; PolkaVM dropped for v0 | `DEC-27`, §6.2 risk 3, §7.2 |
 | `licence-llvm-exception` | The standing permission covers `Apache-2.0 WITH LLVM-exception` | `DEC-27` |
 | `exp1-adopt-runtime` | VOS as the whole runtime, three replicas | `DEC-26`, §7.2 |
+| `vault-busl` | Support Vault (`BUSL-1.1`) beside OpenBao, through its HTTP API only (answered 2026-11-09): no Vault code is linked, so no `BUSL-1.1` code ships | `DEC-9`, `F-014`, `T-014-01`, `licences/RECORD` |
 
 ### Status of plan decisions
 
@@ -451,8 +452,9 @@ since one package can't build for two targets.
 - **Goal:** v0's one shared credential proxy and its two resolvers (`DEC-9`, ADR-0004), and the outside part's
   egress; owns `components/prov/src/proxy/` and `components/prov/src/egress/`.
 - **Serves:** `REQ-MDL-6` to `REQ-MDL-9`, `REQ-MDL-17`, `REQ-MDL-21`, `DEC-9`, `THR-79`.
-- **Gate, not a task:** Vault's `BUSL-1.1` line in `licences/RECORD` stays `pending` until the owner rules it
-  (`REQ-MOD-5`); until then the Vault resolver is tested against a server run apart and enters no lockfile.
+- **Ruled, not a gate:** the owner ruled Vault's `BUSL-1.1` on 2026-11-09 (`vault-busl`): Vault is reached through its
+  HTTP API only. No Vault code is linked, so its line in `licences/RECORD` is `permitted` and says so (`REQ-MOD-5`);
+  the Vault resolver is tested against a server run apart and enters no lockfile.
 
 | Task | Work | Depends on | Serves | Tests | Done when |
 |---|---|---|---|---|---|

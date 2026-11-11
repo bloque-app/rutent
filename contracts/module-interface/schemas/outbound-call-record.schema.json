@@ -87,7 +87,7 @@
       }
     },
     "outcome": {
-      "description": "By status: completed or failed, as the destination answered; unknown, when no answer came, the request perhaps sent or, with no address on the last hop, nothing connected; or refused by the platform, with the reason.",
+      "description": "By status: completed or failed, as the destination answered; unknown, when no answer came, the request perhaps sent or, with no address on the last hop, nothing connected; refused by the platform before anything was sent, with the reason; or refused_after_delivery, with the reason, when the platform refused a hop after a destination was sent the request, so what that destination did is not known (REQ-ORD-1).",
       "type": "object",
       "required": [
         "status"
@@ -98,7 +98,8 @@
             "completed",
             "failed",
             "unknown",
-            "refused"
+            "refused",
+            "refused_after_delivery"
           ]
         }
       },
@@ -110,7 +111,10 @@
             ],
             "properties": {
               "status": {
-                "const": "refused"
+                "enum": [
+                  "refused",
+                  "refused_after_delivery"
+                ]
               }
             }
           },

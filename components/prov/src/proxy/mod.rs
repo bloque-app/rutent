@@ -66,6 +66,6 @@ pub use settings::{
     Bucket, InvalidSettings, ProxySettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,
 };
 pub use shared::{Caller, CredentialProxy, InFlight, Refusal, Use, UseOf, answer, judge};
-pub use signing::{Answering, SigningError, sign_result};
+pub use signing::{Answering, SigningError, check_key, sign_result};
 pub use transport::{Header, Request, Response, Transport, TransportError};
 pub use world::{NoState, ProductionWorld, StateStore};

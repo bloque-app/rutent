@@ -15,6 +15,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   grade is its best piece's.
 - A receipt from the same publisher as the provider earns no check (`THR-124`): `receipt_check` returns `Unchecked`.
   It is downgraded to a statement rather than refusing the outcome, because the provider's own word still stands.
+  Since the PR #60 review, `receipt_check` takes a `VerifiedReceipt`, not two publisher strings (see the review
+  section below).
 - The network interface carries finality and the reorg rule as declared data (`NetworkRules`), and the verdict on a
   movement as `Status` (unknown, pending, final, reorged out). The checker trusts the network to say when a movement
   is final; interpreting depth or checkpoints is each network's task in `F-031`. `T-015-02` builds the simulated
@@ -69,3 +71,50 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - The module is `pub mod replay` and its items are not re-exported at the crate root, to keep `lib.rs` clear of
   `T-015-02`'s edits. One movement evidences one exit; reuse across routes is `distinct_movements`' job at the
   caller.
+
+## PR #60 review (finding 2)
+
+- Only two paths build a backing check, and a check is only as good as the network reader, the receipt verifier
+  and the publisher identities its caller supplies. A network reader that calls every movement final, or a
+  verifier that accepts every receipt, earns grade 1 or 2 through those paths. The checker owns the rules, not the
+  trust anchors; the `Check` docs say so first.
+- A receipt check rests on a verified receipt. `receipt_check` takes a `VerifiedReceipt`, whose fields are private:
+  only `verify_receipt` builds one, over a `ReceiptVerifier` the caller passes. `verify_receipt` refuses a receipt
+  that acknowledges no reference (empty or only whitespace), one the verifier doesn't find signed by its maker for
+  that reference, and one whose maker has no publisher in the verifier's catalogue. The receipt keeps its maker.
+- The publisher-difference rule (`THR-124`) stays in `receipt_check`, but both publishers are read earlier, in one
+  call: `verify_receipt` takes the provider whose outcome the receipt is meant to back, and the verifier's
+  `publishers(maker, provider)` answers for both from one catalogue snapshot. Two lookups could straddle a catalogue
+  change and let `THR-124` pass by mistake. A maker or a provider the verifier doesn't know refuses the receipt
+  (`UnknownMaker`, `UnknownProvider`). `receipt_check` then needs no verifier.
+- A receipt check records the provider it was judged for, and `grade_outcome` takes the outcome's provider: a
+  receipt check backs a piece only in that provider's outcome. A check judged for one provider can't be carried to
+  another's.
+- The crate doesn't verify signatures itself. That's a reversible default, for two reasons. The crate depends on
+  nothing of ours but the contracts. That is F-001's reading, stricter than `DEC-2`, which restricts only the
+  three outer libraries; `CMP-EVIDENCE` isn't one of them (`ARCHITECTURE.md`), and the boundary check enforces
+  the stricter reading. So the crate can't reuse the provider library's strict Ed25519 verifier, and a second copy
+  of that verifier would be a second `DEC-20` signature-checking path. And while the provider-role envelope
+  (`contracts/src/provider_role/envelope.rs`) defines the signed statement, a receipt's body has no shape in the
+  contracts, so the crate would have to invent one. The verifier is the trust anchor, on the same footing as the
+  network reader behind grade 1. Core implements it over the catalogue it accepted and the provider library's
+  verifier.
+- A check is bound to what it checked: a public record to its movement, a receipt to the reference it acknowledges
+  (`Check::bound_to`) and to its maker (`Check::receipt_maker`). A check backs a piece only when that is the piece's
+  `reference`, and a receipt only when its maker is the piece's `by`, the party whose evidence it is
+  (`REQ-ORD-33`). Otherwise the piece is graded a statement, like any unbacked claim. The comparisons are exact,
+  with no normalisation, so Core (`F-020`) must fill `reference` and `by` as the check names them. The rule is
+  applied in grading, not in a constructor, because `Claim`'s fields are public.
+- One receipt reference backing two pieces refuses the outcome (`ReceiptReused`), as one movement backing two does
+  (`MovementReused`).
+- A receipt backs grade 2 at most: a grade 1 claim on a receipt check is graded a statement, as before. A test and a
+  property now pin it.
+- The replay tests now pin four more rules, each with a fixture where only that rule can fire: an asset change
+  between segments in one node, an asset change at the handoff between two nodes, a stated asset other than the
+  replayed one, and the canonical spelling of amounts (`"0990"` and `"+5"`, which Rust's integer parse accepts).
+
+### Hand-offs to `M3`
+
+- Take a receipt as a provider-role `Statement`, so the crate reads `maker` from the signed bytes and computes
+  `signing_input` itself. The injected trait then shrinks to a signature under a key, and the catalogue lookup.
+  This needs a receipt body shape in the provider-role contract.

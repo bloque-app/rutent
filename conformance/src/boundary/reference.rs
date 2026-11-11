@@ -479,7 +479,12 @@ impl ReferenceDouble {
                     destination,
                     address: None,
                 });
-                outcome = CallOutcome::Refused(Refused { reason });
+                // A refusal once a hop connected came after a destination was sent the request.
+                outcome = if hop == 0 {
+                    CallOutcome::Refused(Refused { reason })
+                } else {
+                    CallOutcome::RefusedAfterDelivery(Refused { reason })
+                };
                 if !enforced {
                     self.received
                         .entry(current.clone())

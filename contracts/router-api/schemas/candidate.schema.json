@@ -507,7 +507,7 @@
             }
           },
           "then": {
-            "description": "What it would leave the customer at the destination, after the operator's fee in the bounds, is below the customer's floor (REQ-ORD-27; since 3.0.0).",
+            "description": "What it would leave the customer at the destination, after the operator's fee in the bounds, is below the customer's floor (REQ-ORD-27; since 4.0.0).",
             "type": "object",
             "additionalProperties": false,
             "required": [

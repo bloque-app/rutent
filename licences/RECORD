@@ -486,4 +486,7 @@ zmij 1.0.23 MIT permitted licence-permissive-standing
 # other package stays MIT; the libraries stay runtime-neutral behind the host contract. Mixed licensing, as counsel-licences
 # rules.
 vos not-adopted AGPL-3.0-or-later permitted DEC-26,vos-licence-v0
-vault not-adopted BUSL-1.1 pending DEC-9,ADR-0004
+# vault: reached through its HTTP API only (item vault-busl, 2026-11-09, ruled "HTTP API only"). No Vault code is
+# linked, so it is not a dependency and no BUSL-1.1 code ships; the resolver speaks the API through a transport
+# (T-014-01).
+vault not-adopted BUSL-1.1 permitted DEC-9,ADR-0004,vault-busl

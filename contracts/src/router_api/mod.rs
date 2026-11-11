@@ -55,7 +55,7 @@
 //!
 //! # The operator's fee, and the inputs Core keeps
 //!
-//! Since 3.0.0 (`T-020-02`) the [`PolicyBounds`] carry the operator's own fee formula and the slippage it sets per
+//! Since 4.0.0 (`T-020-02`) the [`PolicyBounds`] carry the operator's own fee formula and the slippage it sets per
 //! tuple, so a record names the bounds it ran under (`REQ-AUD-4`). The floor is judged on what is left after the
 //! operator's fee (`REQ-ORD-27`); ranking compares the providers' amounts before it, and every record says so in
 //! its [`Ranking`]. The other inputs of the router's quote rules are this contract's types too, so Core reaches
@@ -88,7 +88,7 @@ pub use atoms::{
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/router-api/CHANGELOG.md`.
-pub const VERSION: &str = "3.0.0";
+pub const VERSION: &str = "4.0.0";
 
 /// A rule of the contract that a value breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
