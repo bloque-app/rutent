@@ -14,6 +14,9 @@ and their records serialise to the schemas here. The version is the first headin
 | Priced operation, which extends it | `urn:rutent:router-api:operation` | `Operation` |
 | Candidate | `urn:rutent:router-api:candidate` | `Candidate` |
 | Decision record, in the envelope | `urn:rutent:router-api:decision-record` | `RecordedDecision` |
+| A provider's terms as stated at one time (3.0.0) | `urn:rutent:router-api:stated-terms` | `StatedTerms` |
+| A segment's declared and actual settlement time (3.0.0) | `urn:rutent:router-api:settlement-times` | `SettlementTimes` |
+| A held quote (3.0.0) | `urn:rutent:router-api:held-quote` | `HeldQuote` |
 
 ## What it refers to, never copies
 
@@ -55,6 +58,48 @@ its route names it (`judge_call`, `T-014-04`), so the route is what bounds a mod
   same part. An operation cites a calls figure exactly when it names a call.
 - **What a router names.** The contract refuses any call outside that; the router suite checks a router names every
   call it allows, every kind declared for every callee on the part, on every candidate.
+
+## The inputs Core keeps (3.0.0)
+
+The quote rules (`rutent_router::quote`, `T-011-03`) need inputs a decision record alone doesn't give. Since 3.0.0
+(`T-020-02`) they are this contract's types, so Core reaches them through the contract (`DEC-2`, `REQ-MOD-3`), and
+the checks stay public functions of the router:
+
+- **The operator's fee formula** (`REQ-QTE-2`), `PolicyBounds::operator_fee`: taken at the destination, in the
+  request's `to` unit, from what the providers' terms deliver there: `flat + ceil(a × numerator / denominator)`,
+  capped by its `maximum` where it gives one and never raised to it. Its proportion is at most one.
+- **The slippage limits** (`REQ-QTE-9`), `PolicyBounds::slippage_limits`: at most one per tuple, keyed by provider
+  and ends as `excluded_tuples` are, so a limit holds across snapshots. Every exchange tuple that settles within
+  three days (259,200 seconds, inclusive, `THREE_DAYS_SECONDS`), by its price or a fresh quote, has one
+  (`PolicyBounds::check_against`, which `DecisionRecord::check` runs). Reserves and ramps set no rate. A limit
+  is 1 to 10,000 basis points, as provider-role's bounded slippage is: a limit of 0 isn't allowed, and an exchange
+  held to no move at all states a firm rate in its own quote, which `commitments` takes where it is tighter.
+- **The history of stated terms** (`REQ-QTE-6`): `StatedTerms`, a fee formula and slippage regime with when they
+  were stated. Core keeps each tuple's history.
+- **The actual settlement times** (`REQ-QTE-3`): `SettlementTimes`, a segment's declared seconds with when it
+  started and settled, never backwards.
+- **The held quote** (`REQ-QTE-15`): `HeldQuote`, a choice round's record that chose a candidate, with a validity at
+  or after its snapshot.
+
+The first two sit in the policy bounds, so a decision record names the bounds it ran under (`REQ-AUD-4`); the rest
+are Core's records over these types.
+
+## The operator's fee: the floor after it, ranking before it
+
+- **The floor is judged after the operator's fee.** The floor is the least the customer accepts at `to`
+  (`REQ-ORD-27`), so a candidate is `below_floor` when what is left after the operator's fee is below it, as the
+  price shown has it. The contract checks it exactly, both ways, with no division: for a whole `k` and a positive
+  `d`, `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`, and the cap is a second branch, `maximum ≤ a −
+  floor`. So a kept candidate leaves the customer at least the floor after the fee, and a `below_floor` candidate
+  less.
+- **Ranking is before it.** `lowest_total_cost` compares the providers' amounts before the operator's fee, and every
+  record says so: `ranking` is `before_operator_fee`. The bounds hold one formula, taken from every candidate at the
+  destination, with its proportion at most one, so what is left after it never falls as what arrives grows:
+  ranking after it could differ only where the fee turns a difference into a tie, which goes to the lowest
+  `candidate_id`. **An item for the owner's form** (`m3-rank-before-fee`): `REQ-QTE-2` lets the operator's
+  formula follow `REQ-QTE-5`, which lets it depend on the tuple. A formula that differs by tuple would need ranking
+  net of the fee to give `REQ-QTE-11`'s lowest total cost. The bounds can't state one today. Allowing it would be a
+  new `ranking` value and a change to `operator_fee`, so a major.
 
 ## Two rounds
 
@@ -139,15 +184,19 @@ only records that pass theirs, so a stored record recomputes.
 | Candidate ids are unique; only the chosen candidate lacks a drop reason; every part runs from the request's origin to its destination; parts add up to the request's amount; every figure and candidate named is in the record | can't be stated | `DecisionRecord::check` |
 | Every figure's origin names provider, publisher, provider version and module version, or the operator's source; exposure alone comes from the operator | `required`, `if`/`then` | `Origin`, `CatalogueSnapshot::check` |
 | One ceiling per provider or publisher and asset; one exposure per provider and asset | can't be stated | `PolicyBounds::check`, `CatalogueSnapshot::check` |
+| At most one slippage limit per tuple; the operator's fee's proportion is at most one (3.0.0) | can't be stated | `PolicyBounds::check` |
+| Every exchange tuple of the snapshot settling within three days, by its price or a fresh quote, has a slippage limit in the bounds (3.0.0, `REQ-QTE-9`) | can't be stated | `PolicyBounds::check_against`, `DecisionRecord::check` |
+| A record's `ranking` is `before_operator_fee` (3.0.0) | `enum` | `Ranking` |
+| Stated terms say when they were stated; settlement times hold the declared seconds, and settle at or after they start; a held quote has a validity, at or after its record's snapshot, and its record chose a candidate (3.0.0) | `required` for the first, the second and the third | `StatedTerms`, `SettlementTimes::check`, `HeldQuote::check` |
 | A statement's envelope names its shape and its maker is its figure's provider | `const` | `check_shape`, `CatalogueSnapshot::check` |
 | A fresh quote is a transfer quote for a ramp's tuple or a conversion quote for an exchange's; a dry run answers for its tuple's kind of operation | `enum`, `const` on kind and status | `CatalogueSnapshot::check` |
 | A fresh quote's fee is in its tuple's input asset and at most its amount in; it names each void condition once | `uniqueItems` for the last | `CatalogueSnapshot::check` |
 | Every operation cites one tuple, of its own provider with its two ends, and every other figure it cites (price, fresh quote, dry run, judgement) names that tuple | can't be stated | `DecisionRecord::check` |
 | A kept candidate (chosen, or on the shortlist) cites no void statement (by `check_context`), no figure past its validity, no refused dry run and no judgement of no | can't be stated | `DecisionRecord::check` |
-| A kept candidate arrives at or above the floor and with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
+| A kept candidate leaves the customer at least the floor after the operator's fee (3.0.0) and arrives with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
 | The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in, fee and amount out; an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
 | A drop reason that names a figure names one its candidate cites, and the figure supports the drop: stale past its validity, void by `check_context`, a refused dry run, a judgement of no; `quote_voided` names a quote that lists the condition, past its validity for `validity_passes` and at another amount for `amount_changes`, and is accepted on the listed condition alone for the others, which rest on facts outside the record | can't be stated | `DecisionRecord::check` |
-| `below_floor`, `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
+| `below_floor` (what is left after the operator's fee below the floor, computed exactly, 3.0.0), `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
 | Every operation but the one a `no_price` reason names cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
 | Every operation cites every usable fresh quote and dry run about its tuple for its amount in, and every usable judgement about its tuple; a fresh quote it cites is for its amount in, unless a `quote_voided` reason for `amount_changes` names it | can't be stated | `DecisionRecord::check` |
 | Usable accepted answers (fresh quotes included) for one tuple and amount agree on their fee and amount out | can't be stated | `DecisionRecord::check` |

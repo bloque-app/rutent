@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:stated-terms",
+  "title": "Stated terms",
+  "description": "A provider's terms for one tuple as stated at one time (REQ-QTE-6): its fee formula and, where its tuple sets a rate, its slippage regime, with when it stated them. Core keeps each tuple's history of these, keyed by its tuple; the terms that bind a segment are the last stated at or before it started, and before that the route's total is a quote.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tuple",
+    "stated_at",
+    "fee"
+  ],
+  "properties": {
+    "tuple": {
+      "description": "The tuple they are for, by its provider and its two ends.",
+      "$ref": "urn:rutent:router-api:policy-bounds#/$defs/tuple_key"
+    },
+    "stated_at": {
+      "description": "When the provider stated them.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "fee": {
+      "$ref": "urn:rutent:router-api:catalogue-snapshot#/$defs/fee_formula"
+    },
+    "slippage": {
+      "description": "The slippage regime, where the tuple sets a rate.",
+      "$ref": "urn:rutent:provider-role:result#/$defs/slippage"
+    }
+  }
+}

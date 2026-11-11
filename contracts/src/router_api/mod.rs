@@ -53,6 +53,14 @@
 //! statements, the recorded decision among them, to the deployment's `operator_key`
 //! (`contracts/router-api/README.md`, "Unchecked by either").
 //!
+//! # The operator's fee, and the inputs Core keeps
+//!
+//! Since 3.0.0 (`T-020-02`) the [`PolicyBounds`] carry the operator's own fee formula and the slippage it sets per
+//! tuple, so a record names the bounds it ran under (`REQ-AUD-4`). The floor is judged on what is left after the
+//! operator's fee (`REQ-ORD-27`); ranking compares the providers' amounts before it, and every record says so in
+//! its [`Ranking`]. The other inputs of the router's quote rules are this contract's types too, so Core reaches
+//! them through it (`DEC-2`): [`StatedTerms`], [`SettlementTimes`] and [`HeldQuote`].
+//!
 //! # The calls a route makes
 //!
 //! Since 3.0.0 each segment names the cross-module calls it makes ([`Operation::calls`], `T-011-06`,
@@ -102,7 +110,8 @@ impl core::error::Error for Violation {}
 /// value: [`DecisionRecord::candidates`] and [`DecisionRecord::chosen`] are views into it, so the three can't
 /// disagree. A record with no chosen candidate means no route.
 ///
-/// Its inputs must pass their checks: [`CatalogueSnapshot::check`] and [`PolicyBounds::check`]. Then every record
+/// Its inputs must pass their checks: [`CatalogueSnapshot::check`], [`PolicyBounds::check`] and
+/// [`PolicyBounds::check_against`] the snapshot. Then every record
 /// it returns passes [`DecisionRecord::check`], holds `request`, `snapshot` and `bounds` unchanged,
 /// and names the implementation's version in [`DecisionRecord::router_version`]. The deployment puts it in its
 /// envelope ([`RecordedDecision`]) when it records it. The same arguments always give

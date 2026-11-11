@@ -1,0 +1,21 @@
+{
+  "base": "decision-record-split-of-one-part",
+  "patch": [
+    {
+      "op": "add",
+      "path": "/statement/request/floor",
+      "value": "248000000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/bounds/operator_fee",
+      "value": {
+        "flat": "0",
+        "proportional": {
+          "numerator": "2",
+          "denominator": "1000"
+        }
+      }
+    }
+  ]
+}

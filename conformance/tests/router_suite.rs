@@ -4,9 +4,9 @@
 mod router_double;
 
 use router_double::{
-    BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FOLLOWS_RATE_CYCLES,
-    IGNORES_DECIMALS, IGNORES_OBJECTIVE, LEAVES_OUT_CALLS, OMITS_UNSTATABLE, OUTRANKS_UNCONFIRMED,
-    ROUNDS_EACH_LEVEL, Reference,
+    BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FLOOR_BEFORE_THE_FEE,
+    FOLLOWS_RATE_CYCLES, IGNORES_DECIMALS, IGNORES_OBJECTIVE, LEAVES_OUT_CALLS, OMITS_UNSTATABLE,
+    OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL, Reference,
 };
 use rutent_conformance::router::{
     Case, Cell, Check, DROP_REASONS, cases, path, reason_name, recompute, run,
@@ -451,6 +451,37 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<FEE_ROUNDS_DOWN>>()));
     assert!(fails(run::<Reference<OMITS_UNSTATABLE>>()));
     assert!(fails(run::<Reference<LEAVES_OUT_CALLS>>()));
+    assert!(fails(run::<Reference<FLOOR_BEFORE_THE_FEE>>()));
+}
+
+// verifies: REQ-ORD-27, DEC-5
+#[test]
+fn a_router_that_judges_the_floor_before_the_operators_fee_fails_only_where_the_fee_crosses_it() {
+    let report = run::<Reference<FLOOR_BEFORE_THE_FEE>>();
+    let failed: Vec<(&str, Cell)> = report.failures().iter().map(|o| (o.case, o.cell)).collect();
+    assert!(
+        !failed.is_empty()
+            && failed
+                .iter()
+                .all(|(case, _)| *case == "floor-judged-after-the-operators-fee"),
+        "{}",
+        report.summary()
+    );
+    // The contract itself refuses it: the chosen route arrives above the floor before the fee, below it after.
+    let fee_case = case("floor-judged-after-the-operators-fee");
+    let record = Reference::<FLOOR_BEFORE_THE_FEE>::route(
+        &fee_case.request,
+        &fee_case.snapshot,
+        &fee_case.bounds,
+    );
+    assert_eq!(
+        record.check().map_err(|v| v.to_string()),
+        Err(
+            "a kept candidate leaves the customer at least the floor after the operator's fee"
+                .to_owned()
+        )
+    );
+    assert_eq!(recompute(&record).failed_checks(), vec![Check::Contract]);
 }
 
 // verifies: REQ-MDL-21, REQ-MDL-9, DEC-5

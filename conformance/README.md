@@ -251,7 +251,8 @@ alone, the same inputs give the same output, and a changed objective can change 
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
-rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
+rounds (each objective, and a floor no route meets), and a fourth with a floor of 250 USDC and a flat operator's fee
+of 10 USDC, which the slow route meets before the fee and not after it, so no route; a policy network with an excluded exchange, a ceiling passed
 by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price, a
 ramp whose fee is above what reaches it and one that keeps all that enters; and a tie, whose exchanges' modules
 declare calls to the reserve on their route and to each other, on none.
@@ -271,5 +272,7 @@ The suite's own tests (`tests/router_suite.rs`) run it against a test-only refer
 (`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
 record passes the contract and fails exactly one check. The double that leaves out the paths it can't state, as
 router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
-(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. They also recompute every valid decision record among the
+(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. The one that judges the floor
+before the operator's fee (`FLOOR_BEFORE_THE_FEE`) chooses the slow route on the fee case, which the contract
+refuses: since router-api 3.0.0 it judges the floor after the operator's fee itself. They also recompute every valid decision record among the
 contract's fixtures.
