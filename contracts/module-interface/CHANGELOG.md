@@ -13,10 +13,12 @@
 - An outbound call refused after a destination was sent the request has an outcome of its own,
   `refused_after_delivery`, with the reason: a redirect the platform won't follow, an address or a peer it won't
   connect to, or a limit, once a hop connected. `refused` now means nothing of the call was sent:
-  `validate_record` holds a `refused` call to one hop (`RefusedThoughSent`) and a `refused_after_delivery` call to a
-  hop that connected (`RefusedAfterDeliveryOfNothing`). Before, a refused redirect after a delivered request was
-  `refused`, which a reader reconciling an unknown outcome could take for nothing having been sent. In the schema's
-  enum, `CallOutcome::RefusedAfterDelivery`, the README, a valid fixture and three invalid ones; the redirect
+  `validate_record` refuses a `refused` call whose hops show a destination was sent the request, a hop before
+  its last that connected or a connected last hop refused as a redirect (`RefusedThoughSent`), and a
+  `refused_after_delivery` call with no hop that connected (`RefusedAfterDeliveryOfNothing`). Before, a refused
+  redirect after a delivered request was `refused`, which a reader reconciling an unknown outcome could take for
+  nothing having been sent. In the schema's
+  enum, `CallOutcome::RefusedAfterDelivery`, the README, a valid fixture and four invalid ones; the redirect
   fixture is now `refused_after_delivery`. A new wire value and a new variant of an exhaustive enum, and 4.0.0 is
   not released, so it joins this major. (DEC-4, DEC-20)
 - No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a

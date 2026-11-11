@@ -470,7 +470,8 @@ impl<W: World> Platform<W> {
         })
     }
 
-    /// Every running provider and its process id.
+    /// Every running provider and its process id. A callee whose process ended during a top-level operation isn't
+    /// listed until the platform's next call starts it again.
     pub fn processes(&self) -> Vec<(String, u32)> {
         self.providers
             .iter()
@@ -2001,7 +2002,8 @@ impl<W: World> Platform<W> {
         self.providers.get(provider)?.active.clone()
     }
 
-    /// The operating-system process the provider's module runs in, if it runs.
+    /// The operating-system process the provider's module runs in, if it runs. A callee whose process ended during
+    /// a top-level operation has none until the platform's next call starts it again.
     pub fn process(&self, provider: &str) -> Option<ProcessId> {
         let slot = self.providers.get(provider)?;
         slot.process.as_ref().map(|p| ProcessId::from(p.pid()))

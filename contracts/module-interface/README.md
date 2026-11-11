@@ -324,8 +324,9 @@ The platform's egress layer writes it, not the module, since the outside part is
   `refused_after_delivery` with the reason, when the platform refused a hop after a destination was sent the
   request: a redirect it won't follow, an address or a peer it won't connect to, or a limit. What that
   destination did is not known, so `refused_after_delivery` is never read as nothing having been sent
-  (`REQ-ORD-1`). A `refused` call's record has one hop; a hop before the last that connected makes it
-  `refused_after_delivery`.
+  (`REQ-ORD-1`). A `refused` call's record shows nothing was sent: a hop before the last that connected, or a last
+  hop that connected and was refused as a redirect, makes it `refused_after_delivery`. A last hop refused for its
+  address (`address_not_allowed`) names the address it refused, and was sent nothing.
 
 ## Cross-module calls
 
@@ -454,7 +455,7 @@ governs.
 | A hop's optional destination and address are absent or present, never `null` | schema, and Rust | `outbound-call-record-hop-with-a-null-destination`, `outbound-call-record-hop-with-a-null-address` |
 | A refused call, before or after delivery, states a known reason; any other outcome carries none | schema | `outbound-call-record-refused-without-a-reason`, `outbound-call-record-refused-for-an-unknown-reason`, `outbound-call-record-refused-after-delivery-without-a-reason`, `outbound-call-record-completed-carrying-a-reason` |
 | Every hop matched a declared destination and connected, except the last hop of a refused call and the last hop of an `unknown` call that matched a declared destination | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop`, `outbound-call-record-unknown-through-an-unconnected-hop-before-the-last`, `outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination` |
-| A `refused` call sent nothing, so has one hop; a call refused once a hop connected is `refused_after_delivery`, and has one that connected (since 4.0.0, `REQ-ORD-1`) | Rust, `RefusedThoughSent`, `RefusedAfterDeliveryOfNothing` | `outbound-call-record-refused-after-a-redirect-was-followed`, `outbound-call-record-refused-after-delivery-with-nothing-sent` |
+| A `refused` call sent nothing: no hop before its last connected, and a last hop that connected wasn't refused as a redirect; a call refused once a destination was sent the request is `refused_after_delivery`, and has a hop that connected (since 4.0.0, `REQ-ORD-1`) | Rust, `RefusedThoughSent`, `RefusedAfterDeliveryOfNothing` | `outbound-call-record-refused-after-a-redirect-was-followed`, `outbound-call-record-refused-with-its-hop-connected`, `outbound-call-record-refused-after-delivery-with-nothing-sent` |
 | A cross-module call names its transaction and its route segment, and carries no credentials | schema | `cross-module-call-without-a-transaction`, `cross-module-call-without-a-route`, `cross-module-call-route-without-its-segment`, `cross-module-call-carrying-credentials` |
 | A cross-module call's callee isn't its caller, and its operation names the call's transaction | Rust, `CallToOwnProvider`, `TransactionMismatch` | `cross-module-call-to-its-own-provider`, `cross-module-call-for-another-transaction` |
 | A cross-module call records its outcome; a refusal names the callee, the kind and a known reason; an unanswered call carries nothing | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason`, `cross-module-call-unanswered-carrying-a-reason` |

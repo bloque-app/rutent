@@ -7,7 +7,7 @@ use core::net::IpAddr;
 use super::admission::PartName;
 use super::types::{
     Addresses, CallOutcome, CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration,
-    Hop, OperationKind, OutboundCallRecord, SecretLookup,
+    Hop, OperationKind, OutboundCallRecord, RefusalReason, SecretLookup,
 };
 use crate::provider_role::{Advertisement, KeyPurpose, ResultBody, Statement};
 
@@ -93,9 +93,11 @@ pub enum RuleViolation {
         /// Index into `hops`.
         hop: usize,
     },
-    /// A call recorded `refused`, which says nothing of it was sent, though a hop before its last connected: a
-    /// redirect was followed, so a destination was sent the request, and the call is `refused_after_delivery`
-    /// (`REQ-ORD-1`).
+    /// A call recorded `refused`, which says nothing of it was sent, though its hops show a destination was sent
+    /// the request: a hop before its last connected, so a redirect was followed, or its last hop connected and the
+    /// call was refused as a redirect, which only an answer to a request sent can be. The call is
+    /// `refused_after_delivery` (`REQ-ORD-1`). A last hop that connected and was refused for its address, as
+    /// `address_not_allowed`, names the address it refused, and was sent nothing.
     RefusedThoughSent,
     /// A call recorded `refused_after_delivery` though no hop connected, so nothing of it was sent: it is `refused`.
     RefusedAfterDeliveryOfNothing,
@@ -352,8 +354,8 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
 /// - every hop matched a declared destination and connected, except the last hop of a refused call, and the last
 ///   hop of an `unknown` call that matched a declared destination and connected to nothing (its dial failed, so
 ///   nothing was sent);
-/// - a `refused` call has one hop, since a hop before the last connected and was sent the request, and such a
-///   call is `refused_after_delivery` (`RefusedThoughSent`);
+/// - a `refused` call shows nothing was sent: no hop before its last connected, and its last hop, if it
+///   connected, wasn't refused as a redirect, which only an answer to a request sent can be (`RefusedThoughSent`);
 /// - a `refused_after_delivery` call has a hop that connected (`RefusedAfterDeliveryOfNothing`).
 pub fn validate_record(record: &OutboundCallRecord) -> Result<(), Vec<RuleViolation>> {
     let last = record.hops.len().saturating_sub(1);
@@ -369,8 +371,12 @@ pub fn validate_record(record: &OutboundCallRecord) -> Result<(), Vec<RuleViolat
         .filter(|(i, hop)| !hop.connected() && !(*i == last && may_end_unconnected(hop)))
         .map(|(hop, _)| RuleViolation::HopNotConnected { hop })
         .collect();
-    match record.outcome {
-        CallOutcome::Refused(_) if record.hops.len() > 1 => {
+    match &record.outcome {
+        CallOutcome::Refused(refused)
+            if record.hops[..last].iter().any(Hop::connected)
+                || (refused.reason == RefusalReason::RedirectToUndeclaredDestination
+                    && record.hops.last().is_some_and(Hop::connected)) =>
+        {
             violations.push(RuleViolation::RefusedThoughSent);
         }
         CallOutcome::RefusedAfterDelivery(_) if !record.hops.iter().any(Hop::connected) => {

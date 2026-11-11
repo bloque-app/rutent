@@ -525,6 +525,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::RefusedThoughSent),
         ),
         (
+            "outbound-call-record-refused-with-its-hop-connected",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
             "outbound-call-record-refused-after-delivery-with-nothing-sent",
             one(RuleViolation::RefusedAfterDeliveryOfNothing),
         ),
