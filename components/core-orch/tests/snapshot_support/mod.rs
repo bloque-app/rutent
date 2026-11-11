@@ -8,7 +8,9 @@ use std::cell::Cell;
 use std::path::Path;
 
 use ed25519_dalek::{Signer, SigningKey};
-use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Fetched, Kept, Log};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Evidence, Fetched, GeneralEntry, Kept, Log,
+};
 use rutent_contracts::core_internal::{Actor, ActorKind, Entry, ReadCheck, Receipt, Role};
 use rutent_contracts::module_interface::AdmissionArtefact;
 use rutent_contracts::provider_role::{
@@ -484,7 +486,8 @@ fn digest(byte: u8) -> rutent_contracts::module_interface::Digest {
 }
 
 impl Log for KeptLog {
-    fn append(&mut self, entry: &Entry) -> Result<Receipt, AppendFailure> {
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        let entry = entry.entry();
         entry.check().map_err(AppendFailure::Refused)?;
         self.entries.push(entry.clone());
         Ok(Receipt {

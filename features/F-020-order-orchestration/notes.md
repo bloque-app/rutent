@@ -125,8 +125,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   is `T-020-06` (refused statements, before each round's record) and `T-020-08` (`check_part` before any segment is
   handed over, and the holds), whose `PLAN.md` rows say so since `T-020-05`'s review. `Formed` and `RouteRefused`
   are `#[must_use]`.
-- **One adapter to the log.** Per the coordinator (the log's append surface is being split, `T-020-01b`), every
-  append of this module goes through `snapshot/journal.rs`, and it writes no decision kind.
+- **One adapter to the log.** Per the coordinator (the log's append surface split, `T-020-01b`), every append of
+  this module goes through `snapshot/journal.rs`, and it writes no decision kind. Since m3 took the split, the
+  adapter builds a `calls::GeneralEntry` with its `TryFrom`, which refuses the decision kinds, and appends it through
+  orchestration's `calls::Log`.
 - **The route guard (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`).** `check_route` reads a route as received JSON,
   one part, so a contract type's own check on the way in can't mask Core's rule. Each rule has one owning check:
   typed and ordered (a non-empty list of the four kinds with two ends each, each starting where the one before
