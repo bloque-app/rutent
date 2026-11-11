@@ -395,13 +395,31 @@ fn module_hitting_each_limit_leaves_its_transaction_in_a_known_state() {
                 binding.take_limits();
                 let handled = binding.handle(&provider, &withdrawal(&provider, n));
                 let label = format!("{} [{language}], operation {n}", case.label);
+                // A limit hit after a call reached the endpoint leaves the outcome unknown, never a refusal: the
+                // endpoint may have acted on it (`REQ-ORD-1`). With nothing passed out, it is the limit.
+                let passed_out = case.records.1 > 0;
                 assert_eq!(
                     handled,
-                    Handled::Refused(PlatformRefusal::LimitReached),
-                    "{label}: the operation wasn't refused as a limit"
+                    Handled::Refused(if passed_out {
+                        PlatformRefusal::OutcomeUnknown
+                    } else {
+                        PlatformRefusal::LimitReached
+                    }),
+                    "{label}: the operation wasn't refused as it should be"
                 );
                 // Known state: one limit event, naming the bound, the provider and the transaction.
                 let events = binding.take_events();
+                let unknown = binding.take_unknown();
+                if passed_out {
+                    assert_eq!(unknown.len(), 1, "{label}: {unknown:?}");
+                    assert_eq!(
+                        unknown[0].ended_by,
+                        PlatformRefusal::LimitReached,
+                        "{label}"
+                    );
+                } else {
+                    assert!(unknown.is_empty(), "{label}: {unknown:?}");
+                }
                 let limits = binding.take_limits();
                 assert_eq!(limits.len(), 1, "{label}: {limits:?}");
                 assert_eq!(limits[0].provider, provider, "{label}");
@@ -472,8 +490,13 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
             binding.set_bounds(tight(|b| b.per_operation.module_calls = 2));
             binding.take_events();
             let handled = binding.handle(&caller, &withdrawal(&caller, 1));
-            assert_eq!(handled, Handled::Refused(PlatformRefusal::LimitReached));
+            // Two calls were delivered before the limit, so the caller's outcome is unknown, never a refusal, and
+            // the limit that ended it is recorded beside it (`REQ-ORD-1`).
+            assert_eq!(handled, Handled::Refused(PlatformRefusal::OutcomeUnknown));
             let events = binding.take_events();
+            let unknown = binding.take_unknown();
+            assert_eq!(unknown.len(), 1, "{unknown:?}");
+            assert_eq!(unknown[0].ended_by, PlatformRefusal::LimitReached);
             let limits = binding.take_limits();
             assert_eq!(limits.len(), 1, "{limits:?}");
             assert_eq!(limits[0].provider, caller);
@@ -650,7 +673,8 @@ fn call_refused_by_a_limit_names_its_own_reason() {
         binding.set_bounds(tight(|b| b.per_operation.module_calls = 1));
         binding.take_events();
         let handled = binding.handle(&caller, &withdrawal(&caller, 1));
-        assert_eq!(handled, Handled::Refused(PlatformRefusal::LimitReached));
+        // The first call was delivered before the limit: the caller's outcome is unknown (`REQ-ORD-1`).
+        assert_eq!(handled, Handled::Refused(PlatformRefusal::OutcomeUnknown));
         let events = binding.take_events();
         let refused = events.calls.last().expect("a record of the refused call");
         let reason = serde_json::to_value(&refused.outcome).expect("JSON")["reason"].clone();

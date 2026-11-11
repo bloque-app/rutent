@@ -24,7 +24,7 @@ module-boundary suite that runs hostile modules against this contract is `T-003-
 | `urn:rutent:module-interface:secret-lookup` | `schemas/secret-lookup.schema.json` | Outside part to credential proxy: resolve one declared secret by name, at call time, for one transaction and one outside operation |
 | `urn:rutent:module-interface:secret-answer` | `schemas/secret-answer.schema.json` | Credential proxy to outside part: the value, or a refusal |
 | `urn:rutent:module-interface:outbound-call-record` | `schemas/outbound-call-record.schema.json` | The platform's record of one outbound call, hop by hop |
-| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record: delivered, or refused with the callee, the kind and why |
+| `urn:rutent:module-interface:cross-module-call` | `schemas/cross-module-call.schema.json` | One module's call to another provider's module, through the platform, and its record: delivered, unanswered, or refused with the callee, the kind and why |
 | `urn:rutent:module-interface:release-assertion` | `schemas/release-assertion.schema.json` | The provider's signed assertion of one release: its declaration and each part's portable binary, by format and digest |
 | `urn:rutent:module-interface:admission-artefact` | `schemas/admission-artefact.schema.json` | The platform's record of one admitted release: the assertion, what was received, the build that made the machine code, the version history, the widenings and the acceptance |
 | `urn:rutent:module-interface:common` | `schemas/common.schema.json` | Shared atoms: declared name, scheme, host, port, address, address block, refusal reason, digest |
@@ -307,8 +307,8 @@ The checks run per hop: the first connection, then each redirect.
 
 The outbound call record shows each check was made. Each hop records the scheme, host and port asked for, the
 declared destination it matched, and the address connected to. Every hop matched and connected, but the last of a
-refused call, and, since 4.0.0, the last of an `unknown` call that matched a declared destination and connected to
-nothing: its dial failed, so the record names no address.
+refused call, before or after delivery, and, since 4.0.0, the last of an `unknown` call that matched a declared
+destination and connected to nothing: its dial failed, so the record names no address.
 
 ## The outbound call record
 
@@ -319,8 +319,18 @@ The platform's egress layer writes it, not the module, since the outside part is
 - the names of the secrets resolved for the call, never their values (`REQ-MDL-6`);
 - `started_at`;
 - the `hops`;
-- an `outcome`: `completed`, `failed` or `unknown` as the destination answered or didn't, or `refused` with the
-  reason.
+- an `outcome`: `completed`, `failed` or `unknown` as the destination answered or didn't; `refused` with the
+  reason, when the platform refused the call before anything of it was sent; or, since 4.0.0,
+  `refused_after_delivery` with the reason, when the platform refused a hop after a destination was sent the
+  request: a redirect it won't follow, an address or a peer it won't connect to, or a limit. What that
+  destination did is not known, so `refused_after_delivery` is never read as nothing having been sent
+  (`REQ-ORD-1`). A `refused` call's record shows nothing was sent: a hop before the last that connected, or a last
+  hop that connected and was refused as a redirect, makes it `refused_after_delivery`. A last hop refused for its
+  address (`address_not_allowed`) names the address it refused, and was sent nothing. A limit hit after a
+  destination was sent the request, during that hop's exchange or on a later hop, is always
+  `refused_after_delivery`, never `refused`. `validate_record` can't always tell it from the hops, since a limit
+  hit during the one hop's exchange leaves a record like one hit before it, so this is the contract's rule for
+  every binding (`REQ-ORD-1`).
 
 ## Cross-module calls
 
@@ -340,6 +350,13 @@ The platform's egress layer writes it, not the module, since the outside part is
   - `unanswered`: the platform passed it on and no answer came, the callee stopped, killed at a deadline or
     answering unreadably. What the callee did is not known;
   - `refused`: the platform passed nothing on.
+
+  The calling module is told the outcome as it is recorded (since 4.0.0): a format binding gives its caller all
+  three, and an unanswered call never reaches the caller as refused, since its callee may have acted on it
+  (`REQ-ORD-1`). The platform ends a callee's deadline before its caller's, so that a callee stopped at its deadline
+  leaves its caller time to hear that the call went unanswered: a call is made only when enough of the caller's
+  deadline is left for both the callee's least budget and that reserve, and is refused as `deadline_too_near`
+  otherwise.
 
   A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
   - `undeclared_callee`: the caller doesn't declare the callee;
@@ -369,10 +386,20 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
   of the provider's traffic (`ReleaseStaged`, `REQ-MDL-4`, ADR-0014), and a release whose assertion was made before
   the provider's last accepted one (`OlderRelease`, `THR-17`).
 - `PlatformRefusal`, for an operation's answer: malformed or oversized output (`REQ-MDL-12`), a part stopped by a
-  limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running
-  (`Unavailable`), or a kind the module doesn't handle (`NotHandled`), and since 4.0.0 a transaction identifier a
-  segment at another provider holds or an ended segment held (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), or a
-  segment whose version was declared actively exploited (`VersionExploited`, `REQ-MDL-20`).
+  limit before it answered while its module keeps running (`LimitReached`, `REQ-MDL-11`), no module running or one
+  that stopped before it passed anything out (`Unavailable`), or a kind the module doesn't handle (`NotHandled`),
+  and since 4.0.0 a transaction identifier a segment at another provider holds or an ended segment held
+  (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), a segment whose version was declared actively exploited
+  (`VersionExploited`, `REQ-MDL-20`), a statement key whose store couldn't answer (`StatementKeyUnavailable`, which
+  may pass) or that can't sign as declared (`StatementKeyMisconfigured`, which won't until it is fixed), both judged
+  before the module is handed the operation (`REQ-MDL-6`, `THR-4`), and a module that passed something out and then
+  gave no answer the platform passes on (`OutcomeUnknown`, `REQ-ORD-1`).
+
+  Every reason but `OutcomeUnknown` says that nothing of the operation took effect: the platform handed it to no
+  module, or the module passed nothing out, no outbound call and no cross-module call, before it ended. Once it
+  passed something out, a limit, a bad output, a stop or a result that can't be signed all end the operation as
+  `OutcomeUnknown`, never as a reason that says nothing took effect, and the outbound and cross-module call records
+  say what became of what it passed out.
 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.
@@ -430,8 +457,9 @@ governs.
 | An outbound call record names its transaction and module version, and has at least one hop | schema | `outbound-call-record-without-a-transaction`, `outbound-call-record-without-a-module-version`, `outbound-call-record-without-hops` |
 | It names the secrets used, never their values; a connected address is an IP address | schema, and Rust | `outbound-call-record-carrying-a-secret-value`, `outbound-call-record-connected-to-a-host-name-as-its-address`, `outbound-call-record-connected-to-a-malformed-ipv6-address` |
 | A hop's optional destination and address are absent or present, never `null` | schema, and Rust | `outbound-call-record-hop-with-a-null-destination`, `outbound-call-record-hop-with-a-null-address` |
-| A refused call states a known reason; any other outcome carries none | schema | `outbound-call-record-refused-without-a-reason`, `outbound-call-record-refused-for-an-unknown-reason`, `outbound-call-record-completed-carrying-a-reason` |
+| A refused call, before or after delivery, states a known reason; any other outcome carries none | schema | `outbound-call-record-refused-without-a-reason`, `outbound-call-record-refused-for-an-unknown-reason`, `outbound-call-record-refused-after-delivery-without-a-reason`, `outbound-call-record-completed-carrying-a-reason` |
 | Every hop matched a declared destination and connected, except the last hop of a refused call and the last hop of an `unknown` call that matched a declared destination | Rust, `HopNotConnected` | `outbound-call-record-completed-through-an-unconnected-hop`, `outbound-call-record-unknown-through-an-unconnected-hop-before-the-last`, `outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination` |
+| A `refused` call sent nothing: no hop before its last connected, and a last hop that connected wasn't refused as a redirect; a call refused once a destination was sent the request is `refused_after_delivery`, and has a hop that connected (since 4.0.0, `REQ-ORD-1`) | Rust, `RefusedThoughSent`, `RefusedAfterDeliveryOfNothing` | `outbound-call-record-refused-after-a-redirect-was-followed`, `outbound-call-record-refused-with-its-hop-connected`, `outbound-call-record-refused-after-delivery-with-nothing-sent` |
 | A cross-module call names its transaction and its route segment, and carries no credentials | schema | `cross-module-call-without-a-transaction`, `cross-module-call-without-a-route`, `cross-module-call-route-without-its-segment`, `cross-module-call-carrying-credentials` |
 | A cross-module call's callee isn't its caller, and its operation names the call's transaction | Rust, `CallToOwnProvider`, `TransactionMismatch` | `cross-module-call-to-its-own-provider`, `cross-module-call-for-another-transaction` |
 | A cross-module call records its outcome; a refusal names the callee, the kind and a known reason; an unanswered call carries nothing | schema | `cross-module-call-without-its-outcome`, `cross-module-call-refused-without-its-reason`, `cross-module-call-refused-with-a-null-reason`, `cross-module-call-refused-for-an-unknown-reason`, `cross-module-call-unanswered-carrying-a-reason` |

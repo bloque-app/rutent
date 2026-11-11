@@ -630,10 +630,12 @@ fn secret_is_answered_only_inside_the_outside_request_in_flight_on_the_running_p
                 .all(|e| e.outcome.is_none()),
             "the sandboxed part's lookup reached the proxy"
         );
-        // One use per lookup served, in order, with the lookup's transaction and operation, then the statement
-        // key's, resolved once the module answered, to sign the result.
+        // The statement key's use first, resolved once the operation began and before the module was handed it,
+        // to sign the result; then one use per lookup served, in order, with the lookup's transaction and
+        // operation.
         let mut uses = running.platform.world.proxy().take_uses();
-        let signing = uses.pop().expect("the statement key's use");
+        assert!(!uses.is_empty(), "no use was recorded");
+        let signing = uses.remove(0);
         assert_eq!(
             signing.of,
             UseOf::StatementKey(Some(public_key(&statements_key(RESERVE))))
@@ -755,13 +757,14 @@ fn call_back_into_a_running_provider_leaves_its_request_in_flight_in_the_proxy()
         .map(|u| (u.provider.as_str(), u.outcome.is_ok()))
         .collect();
     assert_eq!(secrets, vec![(RAMP, true), (RESERVE, true)], "{uses:?}");
-    // Each result, the callee's and the caller's, was signed with its own provider's key.
+    // Each result, the callee's and the caller's, was signed with its own provider's key, each resolved before its
+    // module was handed the operation: the caller's first, then the callee's.
     let signers: Vec<_> = uses
         .iter()
         .filter(|u| matches!(u.of, UseOf::StatementKey(_)))
         .map(|u| (u.provider.as_str(), u.outcome.is_ok()))
         .collect();
-    assert_eq!(signers, vec![(RAMP, true), (RESERVE, true)], "{uses:?}");
+    assert_eq!(signers, vec![(RESERVE, true), (RAMP, true)], "{uses:?}");
     assert_eq!(
         running.secrets.asked(),
         vec![
@@ -812,7 +815,9 @@ fn call_with_no_route_records_its_own_reason_and_a_valid_record() {
 }
 
 /// The platform signs a result only with the declared statement key, resolved through the proxy: a store holding
-/// another key under the declared one's name, or none, signs nothing, and the module's answer isn't passed on.
+/// another key under the declared one's name, or none, signs nothing. Either is judged before the module is handed
+/// the operation: another key is `StatementKeyMisconfigured`, and a store that can't answer is
+/// `StatementKeyUnavailable`, which may pass. Neither is `Unavailable`.
 // verifies: REQ-MDL-6, THR-4
 #[test]
 fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
@@ -840,7 +845,7 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     assert!(
         matches!(
             handled,
-            Handled::Refused(types::PlatformRefusal::Unavailable)
+            Handled::Refused(types::PlatformRefusal::StatementKeyMisconfigured)
         ),
         "{handled:?}"
     );
@@ -855,9 +860,160 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     assert!(
         matches!(
             handled,
-            Handled::Refused(types::PlatformRefusal::Unavailable)
+            Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
         ),
         "{handled:?}"
+    );
+}
+
+/// A key store that can't give the statement key refuses the operation before the module is handed it
+/// (`begin_operation`): no outbound call is made or recorded, no cross-module call is made or recorded, and the
+/// callee is handed nothing. It is `StatementKeyUnavailable`, never `Unavailable`, and with the key back the same
+/// module makes both calls.
+// verifies: REQ-ORD-1, REQ-MDL-6, THR-4
+#[test]
+fn key_store_outage_refuses_the_operation_before_anything_of_it_runs() {
+    let pki = tls::Pki::new();
+    let server = tls::TlsServer::serve(pki.server_for(&api(RESERVE)));
+    let dialer = tls::MappedDialer::default().with("185.12.64.40", &server);
+    let mut running = Running::new(&pki, dialer);
+    running.names.then(&api(RESERVE), &["185.12.64.40"]);
+    running.install(
+        &release(RESERVE, &[RAMP]),
+        vec![
+            call(&api(RESERVE)),
+            Step::CallModule {
+                callee: RAMP.to_owned(),
+                kind: OperationKind::Withdrawal,
+            },
+        ],
+    );
+    running.install(&release(RAMP, &[]), Vec::new());
+    running.platform.routes.name(
+        &id(&format!("tx-{RESERVE}-1")),
+        NamedCall {
+            route: RouteReference {
+                decision_record: id("decision-1"),
+                segment: id("segment-1"),
+            },
+            caller: id(RESERVE),
+            callee: id(RAMP),
+            kinds: vec![OperationKind::Withdrawal],
+        },
+    );
+    let declared = public_key(&statements_key(RESERVE));
+    running.keys.holds(
+        RESERVE,
+        declared.as_str(),
+        Err(ResolveError::Unavailable { status: 503 }),
+    );
+
+    let (handled, events) = running.run(RESERVE, 1);
+
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
+    );
+    assert!(events.records.is_empty(), "{:?}", events.records);
+    assert!(events.calls.is_empty(), "{:?}", events.calls);
+    assert!(running.dialer.dialled().is_empty(), "something was dialled");
+    assert!(server.requests().is_empty(), "the endpoint got a request");
+    assert_eq!(running.platform.operations_received(RAMP), 0);
+    assert!(
+        running
+            .secrets
+            .asked()
+            .iter()
+            .all(|(provider, _)| provider != RESERVE),
+        "the module ran and looked a secret up"
+    );
+
+    // The control: with the key back, the same operation makes both calls.
+    running.keys.holds(
+        RESERVE,
+        declared.as_str(),
+        Ok(&base64url(statements_key(RESERVE).as_bytes())),
+    );
+    let (handled, events) = running.run(RESERVE, 1);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert_eq!(events.records.len(), 1, "{:?}", events.records);
+    assert!(
+        matches!(
+            events.calls.first().map(|c| &c.outcome),
+            Some(CrossModuleOutcome::Delivered(_))
+        ),
+        "{:?}",
+        events.calls
+    );
+}
+
+/// A callee that runs past its deadline (its outbound call's name lookup hangs) leaves its caller's call
+/// unanswered, and the caller's module is told `unanswered`, never `refused`: the callee may have acted. The
+/// callee's deadline ends before its caller's, so the caller hears it and still answers its own operation.
+// verifies: REQ-ORD-1, REQ-MDL-21, REQ-MDL-11
+#[test]
+fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    running.platform.set_deadline(Duration::from_secs(2));
+    running.platform.set_call_budget(Duration::from_secs(1));
+    running.names.hang(&api(RAMP));
+    running.install_probing(
+        &release(RESERVE, &[RAMP]),
+        Vec::new(),
+        &[Probe::Ask {
+            callee: RAMP.to_owned(),
+            kind: OperationKind::Withdrawal,
+        }],
+    );
+    running.install(&release(RAMP, &[]), vec![call(&api(RAMP))]);
+    running.platform.routes.name(
+        &id(&format!("tx-{RESERVE}-1")),
+        NamedCall {
+            route: RouteReference {
+                decision_record: id("decision-1"),
+                segment: id("segment-1"),
+            },
+            caller: id(RESERVE),
+            callee: id(RAMP),
+            kinds: vec![OperationKind::Withdrawal],
+        },
+    );
+    let overdue = running.platform.measurements.overdue;
+
+    let (handled, events) = running.run(RESERVE, 1);
+    running.names.release();
+
+    assert_eq!(
+        running.platform.measurements.overdue,
+        overdue + 1,
+        "the callee wasn't stopped at its deadline"
+    );
+    let Handled::Answered(result) = &handled else {
+        panic!("the caller didn't answer: {handled:?}");
+    };
+    let reference = serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"]
+        [0]["reference"]
+        .clone();
+    assert_eq!(
+        reference,
+        format!("{RESERVE}-1.0.0-unanswered"),
+        "the caller's module was told another outcome"
+    );
+    assert_eq!(events.calls.len(), 1, "{:?}", events.calls);
+    assert!(
+        matches!(events.calls[0].outcome, CrossModuleOutcome::Unanswered(_)),
+        "{:?}",
+        events.calls[0]
+    );
+    assert_eq!(running.platform.operations_received(RAMP), 1);
+
+    // The callee's process was killed at its deadline, and is started again once the caller's answer was handed
+    // back: asked directly, it answers.
+    let (direct, _) = running.run(RAMP, 2);
+    assert!(
+        matches!(direct, Handled::Answered(_)),
+        "the callee wasn't started again: {direct:?}"
     );
 }
 
@@ -1103,9 +1259,11 @@ fn operator_wallets_results_are_signed_on_the_production_world() {
 }
 
 /// A peer that answers one byte at a time, each well within a read's own timeout, is cut off at the operation's
-/// deadline (`REQ-MDL-11`): the platform doesn't wait on it past the deadline, the operation ends as a limit, the
-/// call is recorded `unknown`, and another provider's operation runs right after.
-// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+/// deadline (`REQ-MDL-11`): the platform doesn't wait on it past the deadline, the call is recorded `unknown`, and
+/// another provider's operation runs right after. The withdrawal's call reached the peer before the deadline
+/// passed, so the operation is an outcome unknown, never a refusal: the deadline it hit is recorded as a limit,
+/// and as what ended it (`REQ-ORD-1`).
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8, REQ-ORD-1
 #[test]
 fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs() {
     let pki = tls::Pki::new();
@@ -1122,12 +1280,24 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     let took = started.elapsed();
 
     assert_eq!(slow.requests().len(), 1, "the slow peer got the call");
-    assert!(
-        matches!(
-            handled,
-            Handled::Refused(types::PlatformRefusal::LimitReached)
-        ),
-        "{handled:?}"
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::OutcomeUnknown)
+    );
+    let deadline = types::LimitHit {
+        kind: types::LimitKind::Deadline,
+        scope: None,
+    };
+    assert_eq!(
+        events.limits.iter().map(|l| l.hit).collect::<Vec<_>>(),
+        vec![deadline],
+        "the deadline wasn't recorded as the limit hit"
+    );
+    assert_eq!(events.limits[0].transaction, format!("tx-{RESERVE}-1"));
+    assert_eq!(events.unknown.len(), 1, "{:?}", events.unknown);
+    assert_eq!(
+        events.unknown[0].ended_by,
+        types::PlatformRefusal::LimitReached
     );
     assert!(took < Duration::from_secs(4), "held for {took:?}");
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
@@ -1145,9 +1315,10 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
 }
 
 /// A name lookup that never answers is given up at the operation's deadline (`REQ-MDL-11`): the platform doesn't
-/// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, the operation ends as a
-/// limit, and another provider's operation runs right after.
-// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+/// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, and another provider's
+/// operation runs right after. Nothing of the call was sent, no hop connected, so the operation ends as the limit
+/// it hit, the deadline, which is recorded: an outcome unknown would claim an effect that couldn't have happened.
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8, REQ-ORD-1
 #[test]
 fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs() {
     let pki = tls::Pki::new();
@@ -1162,12 +1333,14 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     let took = started.elapsed();
 
     assert!(took < Duration::from_secs(4), "held for {took:?}");
-    assert!(
-        matches!(
-            handled,
-            Handled::Refused(types::PlatformRefusal::LimitReached)
-        ),
-        "{handled:?}"
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::LimitReached)
+    );
+    assert!(events.unknown.is_empty(), "{:?}", events.unknown);
+    assert_eq!(
+        events.limits.iter().map(|l| l.hit.kind).collect::<Vec<_>>(),
+        vec![types::LimitKind::Deadline]
     );
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
     assert!(

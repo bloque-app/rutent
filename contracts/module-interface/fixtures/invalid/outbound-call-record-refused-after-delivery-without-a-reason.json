@@ -1,0 +1,28 @@
+{
+  "transaction": "tx-007",
+  "provider": "acme-bank",
+  "module_version": "1.4.2",
+  "operation": "statements.fetch",
+  "secrets": [
+    "bank.client_certificate",
+    "bank.client_key"
+  ],
+  "started_at": "2026-11-06T16:00:00.250Z",
+  "hops": [
+    {
+      "scheme": "https",
+      "host": "api.acme-bank.example",
+      "port": 8443,
+      "destination": "bank_api",
+      "address": "185.12.64.5"
+    },
+    {
+      "scheme": "https",
+      "host": "files.elsewhere.example",
+      "port": 443
+    }
+  ],
+  "outcome": {
+    "status": "refused_after_delivery"
+  }
+}

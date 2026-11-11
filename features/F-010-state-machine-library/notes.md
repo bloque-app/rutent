@@ -156,8 +156,12 @@ refusal reasons, the call-recording rules) names nothing the library reads. The 
   hand on a stuck order that never had a failed deposit, and because after a recalculation that moved the value on
   and failed there, the value sits at the new node, not where the deposit first failed. The refusals are
   `NotLinked` (the second doesn't name the first as `handed_on_from`), `NoValueToHandOn` and `StartsAwayFromTheValue`.
-  Core calls it with both orders after opening the second and before the first part's `handed_on`, or after; it holds
-  both ways.
+  Core must call it with both orders only after the first part's `handed_on` (corrected 2026-11-10, the review of
+  `M2`'s pull request): before that, every part that waits for the customer or is stuck holds value for any order
+  that names the first as `handed_on_from`, so the rule admits more than one second order (`hand_on.rs`,
+  `holds_value_for`), which `INV-4` forbids. Either Core's own rule is that it calls this only after `handed_on`, or
+  the rule is changed to require `HandedOn` with `linked_order == second`, and a two-second-orders test added. This is
+  an `M3` item (`T-020-13`), listed in the `M2` retrospective.
 - **No new contract need.** Nothing was missing from the contracts at `138281d`. If `T-010-03` publishes the start rule
   or an order-from-parts rule too, `rutent-stm`'s names (`handed_on_route_starts_where_value_sits`, `order_state_of`)
   should give way to the contract's.
@@ -562,6 +566,11 @@ ADR-0002), for it and for the memory it held.
 
 ### `G-54` on VOS: what the test found (scored: Linux x86_64, the JIT, CI run 42758365383)
 
+> **Corrected 2026-11-10, the review of `M2`'s pull request.** The run below showed the cut at `20567be`, before
+> `T-010-07`. At the head, `a3d241d`, run 42772739790 gave `recovered` on one node for the same damage, so the cut
+> is not shown by that run. The new test's run, 42814589946 at `878fc04`, shows it again at the head with the order
+> still running. See "At the head" below; the table is what run 42758365383 recorded and stays as it was.
+
 `G-54` (`scoring.md`): damage to the last frame of a store that returned its acknowledgement, **its length intact**,
 and a refusal or the entry kept. The test (`components/stm/vos-program/client/tests/damaged_frame.rs`, run by a
 `continue-on-error` step of `stm-vos.yml`, its lines in `g54.txt` of the run's artifact) writes one order's inputs
@@ -590,13 +599,41 @@ being allowed to fail. On one node the last submit wrote bytes 40582..46840 of `
   acknowledged record. The case `G-54` names, length-intact damage to the acknowledged batch with nothing behind it, is
   **not shown** by the run: for it there is only the code reading that `EXP-1-vos-20261107-1` recorded (fjall's
   `TolerateCorruptTail` recovery discards a corrupt tail without an error).
-- **Not tried.** Power loss (a real torn write); a cut at a frame boundary. The two VOS tests fail on a silent cut by
-  design (they need not pass); they did in this run, and the job stayed green.
+- **Not tried.** Power loss (a real torn write); a cut at a frame boundary. The VOS tests (two then, four now) fail on a
+  silent cut by design (they need not pass); they did in this run, and the job stayed green.
 
-### Owner's item: `vos-g54-silent-tail-cut` (confirmed by the scored run)
+#### At the head (runs 42772739790 at `a3d241d` and 42814589946 at `878fc04`; the test since changed)
 
-Evidence: torn tail, **shown** in run 42758365383: a journal cut inside the acknowledged append's bytes is cut silently
-by VOS on one node (6 of 7 records, nothing in the log), and on three the leader cut it and the others repaired it.
+- **Run 42758365383 (`20567be`) showed the cut:** on one node the torn tail lost 1 of 7 records with nothing in the
+  log, the table above.
+- **Run 42772739790 (`a3d241d`) gave `recovered`** for the same damage on one node. The likely reason, read and not
+  traced: `T-010-07` makes an order's last input seal the journal, and the test's last submit ended the order, so the
+  heuristic cut (just after the id's first place) no longer cost the record. Nothing in the program handles a torn
+  tail, so the residual is probably still there; the test no longer shows it.
+- **The test changed** (`damaged_frame.rs`): the last submit is now of two kinds, each its own test: one that ends the
+  order (seven inputs) and one that leaves it running (six, the last binding the order's last segment), so the
+  record is the journal's live tail. A cut that leaves every record is now reported `not reproduced` and not
+  `recovered`, and the test fails on it, since the run then says nothing about a torn tail; a flipped byte that
+  leaves every record is still `recovered`. As before, the result is recorded and the step need not pass.
+- **Run 42814589946 (`STM on VOS`, `878fc04`, the changed test) shows the cut again at the head,** with the order
+  still running:
+
+  | Damage | One node, last input ends the order | One node, order running | Leader of three, order ends | Leader of three, order running |
+  |---|---|---|---|---|
+  | Byte flipped in the id | refused | refused | refused | refused |
+  | The submit's last byte | recovered | recovered | undetermined, whole once the others joined (the lone node answered `Rejected(Behind)`) | undetermined, whole once the others joined |
+  | Journal cut after the id's first place | **not reproduced** (7 of 7 kept) | **cut silently**: 5 of 6 records, no log line names the damage | undetermined, whole once the others joined (`Rejected(Behind)`) | **cut and repaired by replication**: 5 of 6, caught up from the others |
+
+- **Reading.** The residual is real at the head: a torn live tail on one node silently loses an acknowledged record,
+  and three replicas repair it. `T-010-07`'s sealing hid it only when the order's last input sealed the journal (the
+  `not reproduced` cell); with the order still running the record sits in the live tail and the cut takes it.
+
+### Owner's item: `vos-g54-silent-tail-cut` (torn tail shown in run 42758365383 and again at the head in run 42814589946)
+
+Evidence: torn tail, **shown** in run 42758365383 at `20567be` and again at the head, in run 42814589946 at `878fc04`
+with the order still running (an order's last input seals the journal and hides it, `T-010-07`): a journal cut inside
+the acknowledged append's bytes is cut silently by VOS on one node (6 of 7 records, then 5 of 6, nothing in the log),
+and on three the leader cut it and the others repaired it.
 Length-intact damage to the acknowledged batch with nothing behind it: **code reading only** (`EXP-1-vos-20261107-1`).
 Damage with frames behind it is refused (shown). Choose:
 
