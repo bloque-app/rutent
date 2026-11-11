@@ -1,0 +1,224 @@
+//! What the segments reach outside Core's own records: the module platform, the credential proxy's records of use,
+//! and the grading of a settled segment's evidence. The assembly gives each; the tests give fakes, or the platform
+//! itself with simulated providers.
+//!
+//! **The platform is carried out on an effect only.** [`Modules::carry_out`] and [`Modules::promote`] take the
+//! [`Effect`] they carry out, whose entry the log admitted only on a permit, so `CMP-CORE-AUTHZ`'s scan of Core's
+//! entry points holds them to a decision (`REQ-AUZ-1`). Neither is named after a platform method the scan watches,
+//! and the one implementation for [`Platform`] passes its effect on to nothing: holding it is the rule.
+
+use rutent_contracts::core_internal::calls::{AppendFailure, Log};
+use rutent_contracts::core_internal::{
+    Actor, Effect, Entry, Outcome, Receipt, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+};
+use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
+use rutent_contracts::provider_role::{EvidenceGrade, Operation, Statement};
+use rutent_contracts::router_api::{DecisionRecord, Id, Timestamp};
+use rutent_prov::catalogue::Instant;
+use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
+use rutent_prov::module::platform::{Platform, World};
+use rutent_prov::module::types::{Events, Handled};
+use rutent_prov::proxy::{CredentialProxy, Resolver, RouteNotNamed, Use};
+
+use super::journal;
+
+/// What a provider's module gave back for one operation Core carried out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answered {
+    /// The result, as the platform passed it on: the bytes Core judges, keeps and logs.
+    Bytes(Vec<u8>),
+    /// The platform refused it. `OutcomeUnknown` once the module passed something out; any other refusal, before.
+    Refused(PlatformRefusal),
+}
+
+/// The module platform, as the segments use it (`T-013-06`, `T-014-04`).
+pub trait Modules {
+    /// Begins the segment of `transaction` at `provider`, answering the version it runs on
+    /// (`Platform::begin_segment`).
+    fn begin_segment(
+        &mut self,
+        provider: &Id,
+        transaction: &Identifier,
+    ) -> Result<String, PlatformRefusal>;
+
+    /// Names, in `transaction`, the calls the operation at `at` of `record`'s chosen candidate makes, against
+    /// `segment` (`RouteCalls::name_segment`, `REQ-MDL-21`).
+    fn name_calls(
+        &mut self,
+        transaction: &Identifier,
+        record: &DecisionRecord,
+        at: (usize, usize),
+        segment: &Identifier,
+    ) -> Result<usize, RouteNotNamed>;
+
+    /// Hands `operation`, the operation `effect` permits, to `provider`'s module (`Platform::handle`).
+    fn carry_out(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        operation: &Statement<Operation>,
+    ) -> Answered;
+
+    /// What the platform saw since it was last asked (`Platform::take_events`).
+    fn take_events(&mut self) -> Events;
+
+    /// Ends the segment of `transaction`, handing over its record (`Platform::end_segment`).
+    fn end_segment(&mut self, transaction: &Identifier) -> Option<SegmentRecord>;
+
+    /// Ends `transaction`'s route: no call is named in it any more (`RouteCalls::end`).
+    fn end_calls(&mut self, transaction: &Identifier);
+
+    /// The provider's staged version, if one is (`Lifecycle::staged`).
+    fn staged(&self, provider: &Id) -> Option<String>;
+
+    /// Puts the provider's staged release in force, by `by` at `at`, as `effect` permits (`Platform::promote`).
+    fn promote(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal>;
+}
+
+impl<W: World> Modules for Platform<W> {
+    fn begin_segment(
+        &mut self,
+        provider: &Id,
+        transaction: &Identifier,
+    ) -> Result<String, PlatformRefusal> {
+        Platform::begin_segment(self, provider.as_str(), transaction)
+    }
+
+    fn name_calls(
+        &mut self,
+        transaction: &Identifier,
+        record: &DecisionRecord,
+        at: (usize, usize),
+        segment: &Identifier,
+    ) -> Result<usize, RouteNotNamed> {
+        self.routes.name_segment(transaction, record, at, segment)
+    }
+
+    fn carry_out(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        operation: &Statement<Operation>,
+    ) -> Answered {
+        let _permitted = effect;
+        match Platform::handle(self, provider.as_str(), operation) {
+            Handled::Answered(result) => match serde_json::to_vec(&*result) {
+                Ok(bytes) => Answered::Bytes(bytes),
+                Err(_) => Answered::Refused(PlatformRefusal::MalformedOutput),
+            },
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn take_events(&mut self) -> Events {
+        Platform::take_events(self)
+    }
+
+    fn end_segment(&mut self, transaction: &Identifier) -> Option<SegmentRecord> {
+        Platform::end_segment(self, transaction.as_str())
+    }
+
+    fn end_calls(&mut self, transaction: &Identifier) {
+        self.routes.end(transaction);
+    }
+
+    fn staged(&self, provider: &Id) -> Option<String> {
+        self.lifecycle()
+            .staged(provider.as_str())
+            .map(str::to_owned)
+    }
+
+    fn promote(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        let _permitted = effect;
+        Platform::promote(self, provider.as_str(), by.as_str(), at)
+    }
+}
+
+/// The credential proxy's records of use, each with its transaction (`REQ-MDL-6`).
+pub trait Uses {
+    /// The records of every use since they were last taken, oldest first (`CredentialProxy::take_uses`).
+    fn take_uses(&mut self) -> Vec<Use>;
+}
+
+impl<R: Resolver> Uses for CredentialProxy<R> {
+    fn take_uses(&mut self) -> Vec<Use> {
+        CredentialProxy::take_uses(self)
+    }
+}
+
+/// No proxy: a world that resolves nothing through one, as the simulated providers' does, records no use.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoProxy;
+
+impl Uses for NoProxy {
+    fn take_uses(&mut self) -> Vec<Use> {
+        Vec::new()
+    }
+}
+
+/// A settled segment whose evidence is to be graded: what `segment_settled` cites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToGrade<'a> {
+    /// The id the evidence takes, which `segment_settled` cites.
+    pub evidence: &'a Id,
+    /// The order.
+    pub order: &'a Id,
+    /// The segment.
+    pub segment: &'a Id,
+    /// The segment's provider, whose result it is.
+    pub provider: &'a Id,
+    /// The receipt of the result's stated entry.
+    pub result: &'a Receipt,
+    /// Core, which writes the entry.
+    pub core: &'a Actor,
+    /// When, by Core's clock.
+    pub at: &'a Timestamp,
+}
+
+/// The grading of a settled segment's evidence through `CMP-EVIDENCE`, which is `T-020-09`'s: it appends the
+/// `evidence` entry the segment's `segment_settled` cites and answers its id.
+pub trait Grading {
+    /// Grades and records the evidence of `settled`.
+    fn grade(&mut self, log: &mut dyn Log, settled: &ToGrade<'_>) -> Result<Id, AppendFailure>;
+}
+
+/// Until `T-020-09` grades evidence: the provider's result alone, graded as its statement (grade 4), resting on the
+/// result's stated entry and the provider's evidence. A statement alone closes no order (`REQ-ORD-33`, `T-020-09`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProvidersWord;
+
+impl Grading for ProvidersWord {
+    fn grade(&mut self, log: &mut dyn Log, settled: &ToGrade<'_>) -> Result<Id, AppendFailure> {
+        let entry = Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: settled.core.clone(),
+            what: What::Evidence {
+                evidence: settled.evidence.clone(),
+                order: settled.order.clone(),
+                segment: settled.segment.clone(),
+                grade: EvidenceGrade::Statement,
+                whose: settled.provider.clone(),
+                rests_on: vec![settled.result.clone()],
+            },
+            when: When {
+                at: settled.at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome: Outcome::Observed {},
+        });
+        journal::append(log, entry)?;
+        Ok(settled.evidence.clone())
+    }
+}

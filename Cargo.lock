@@ -1573,12 +1573,15 @@ dependencies = [
 name = "rutent-scenarios"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "rutent-conformance",
  "rutent-contracts",
  "rutent-core-audit",
  "rutent-core-authz",
+ "rutent-core-orch",
  "rutent-evidence",
  "rutent-prov",
+ "rutent-router",
  "rutent-stm",
  "serde_json",
 ]

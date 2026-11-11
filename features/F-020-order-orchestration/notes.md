@@ -383,3 +383,120 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   the rows over them (`provider-asked-before-was-asked`, `asked-before-is-complete`,
   `shortlisted-authority-cites-its-shortlist`) aren't exercised; every receipt the tests' log hands out shares one
   digest; and `signs_for` always answers true, the key's tie to its maker resting on the catalogue's verification.
+
+## T-020-08
+
+- **One call per part, `Segments::run_part`.** It runs one part of an order's chosen route, segment after segment,
+  while each settles: the route guard, then for each segment policy's decision, its effect, the platform, the drains,
+  the result and the segment's one outcome. `Segments::hand_over` runs one segment at an explicit amount. What it
+  reaches comes in `segments::Parts`: Core's clock, the catalogue (results are attributed by its keys), the log, the
+  evidence store, policy's `Decisions`, and three seams of its own (`segments/ports.rs`): `Modules` (the platform:
+  begin and end a segment, name and end its calls, carry an operation out, drain events, the staged version and
+  promotion), implemented for `Platform<W>`; `Uses` (the proxy's `take_uses`), implemented for `CredentialProxy`,
+  with `NoProxy` for a world that resolves nothing through one, as the simulated providers' does; and `Grading`
+  (below). It reuses the rounds' `OperatorKey`, `Fresh` and `Issued` through their public API. `Segments` is Core's
+  record across orders (effects acted on, segments handed over, transactions assigned, items not yet appended,
+  segments in flight, orders followed), which the production assembly keeps durably (`F-030`), as `Issued`.
+- **The platform only on an effect.** `Modules::carry_out` and `Modules::promote` take the `Effect` they carry out,
+  so the entry-point scan holds them to a decision; neither is named after a method the scan watches, and the
+  `Platform` implementation hands its effect to nothing: holding it is the rule.
+- **The order, for each segment** (`segments/mod.rs`): the hand-over refused if the segment was handed over before;
+  a fresh transaction, never one the rounds issued nor one a segment ran under; the provider-role operation,
+  `exact_in` at the amount moved, carrying only the inputs its tuple's terms require, a withdrawal in the user's
+  session; `decide` of a `move_value`, and nothing more unless it permits; the operation signed with the operator key
+  and appended about its order, segment and transaction (so `answer-follows-its-question` holds the result to it);
+  the hold; the `effect` entry and its receipt; acted on once for that receipt; `begin_segment`; the calls named;
+  `provider_bound`; the operation carried out; the events and uses drained and handed over; the result kept and
+  appended as the provider's stated entry; judged; the outcome.
+- **Acting once (`INV-8`).** An append the log can't take now is tried again with the same entry, `APPEND_TRIES` (3)
+  times in all, and the log's answer to an equal entry is its first receipt. Core acts on each effect's receipt once
+  (`Segments::acted_on`), and hands each segment over once (`AlreadyHandedOver`), so a retried append, or a caller
+  that runs a part again, moves nothing twice. A hold already there is taken as this segment's, from a try that
+  stopped before its effect.
+- **What counts (`judge`, `REQ-ORD-1`, `INV-1`)**, in order: the catalogue's `verify_statement` over the bytes (keys
+  the maker listed for statements at its `made_at` and now, this deployment and protocol version); the maker is the
+  segment's provider; the result is of the operation's kind and transaction and isn't a dry-run answer;
+  `check_amounts` against the tuple's terms, read from the figures the chosen operation cites. A result that doesn't
+  count is still kept and appended as its maker's stated entry, unverified (the log attributes it), and is no result:
+  no `result` entry, no input, the hold kept and the segment in flight, waiting for one that counts.
+- **The outcomes, a reading.** Settled: the evidence `Grading` records, `segment_settled` citing it, `result: done`,
+  the settlement time, the segment ended and released. Failed: `result: failed`, `segment_failed`, the hold kept for
+  the reversal (`T-020-12`). The withdrawal failed or refused (final or lifting at a known time): `result: failed`,
+  `withdrawal_cancelled` for the part, the hold released, no later segment handed over (`REQ-ORD-40`). A later
+  segment refused that way: as failed. Outcome unknown: `segment_outcome_unknown`, no `result` yet (an effect has one
+  result, and this one isn't final), the hold kept and the segment in flight. Waits on the person: no outcome yet,
+  the provider's statement handed back labelled as its word. The platform refusing before the module passed anything
+  out: `result: unanswered`, the segment ended and released, nothing moved. Reversible.
+- **Outcome unknown only on stated evidence.** The provider's own `unknown`, in a result that counts, or the
+  platform's `OutcomeUnknown`, which it gives only once the module passed something out: what it passed out is in
+  the drain handed over with it. A module silent before passing anything out, a forged or mismatched result, and a
+  result whose amounts break leave no outcome unknown.
+- **The amount the next segment moves (`REQ-ORD-21`)** is what the one before gave out by its result that counted,
+  `amount_out`, never the quote. Until `T-020-09` grades evidence, that result is the evidence at the node; a
+  shortfall is the earlier segment's, and the next is handed what arrived. The first segment moves the chosen
+  route's `amount_in`. The `exact_out` remainder needs no rule here yet: Core writes every operation `exact_in`.
+- **Holds (`REQ-ORD-8`).** Taken just before the effect, from the chosen operation as the router counted it (its
+  quoted amounts, which over-count a short delivery and so only refuse more), released when the segment is settled,
+  its withdrawal cancelled, or it was never handed over; kept otherwise, for `T-020-11` and `T-020-12` to release.
+- **Hand-over (`REQ-MDL-8`, `REQ-MDL-6`, `REQ-MDL-5`).** One drain per `take_events`, one per `take_uses`, one per
+  segment record, each a fresh id, each item at its place. Items go to a queue first and are appended in order; an
+  append that fails keeps the rest whole for the next drain or `Segments::flush`, never drained again. prov's enums
+  map to tokens with exhaustive matches (`segments/drain.rs`). A segment's record is handed over when it ends, on a
+  final outcome.
+- **Gap: `Events::unknown`.** core-internal's `HandedOver` has no item for an operation that ended with no answer, so
+  it is carried into the segment's outcome (`UnknownBy::Platform`) and not appended. A new `F-020` row with a
+  core-internal bump; with it, an outcome unknown could cite the platform's own record.
+- **Gap: no approval place in provider-role.** provider-role 3.0.0 has no field naming a place a provider sends a
+  person to approve; the nearest is a `waits_on_person` refusal, with no detail. Core hands it back as
+  `ProvidersStatement` (its maker, its stated entry's receipt, its bytes as the platform checked them against the
+  result schema, `REQ-MDL-12`), and an altered one counts as no one's. A place with an address is a provider-role
+  bump; this label carries it unchanged.
+- **Evidence until `T-020-09` (`Grading`, a seam).** `ProvidersWord` writes an `evidence` entry of grade 4 by the
+  provider, resting on the result's stated entry, which `segment_settled` cites, so `route-starts-on-the-withdrawal-proof`
+  and `evidence-rests-on-statements` hold. A statement alone closes no order (`REQ-ORD-33`): `T-020-09` replaces it
+  through the same trait.
+- **The calls (`REQ-MDL-21`).** Named from the chosen record at hand-over (`RouteCalls::name_segment`), against the
+  segment's id, for its transaction; a record that can't name them names none, which fails closed; ended with the
+  segment.
+- **State and age (`REQ-ORD-5`).** `Segments::follow` takes the order's `route_chosen` as recorded and opens the
+  order in `rutent-stm`; each input the segments record moves it, and the time it reached its state is kept.
+  `Segments::status` answers its state, each part's, when it reached it and its age, only on a read check policy
+  allows, recorded either way. Age is the time in the current state. Reversible.
+- **Promotion (`REQ-AUZ-6`, `REQ-MDL-4`; `T-021-03`'s hand-off).** `Segments::promote` takes the effect and the
+  decision request it rests on: the effect must be the request's, a `change_catalogue: promote` about one release,
+  naming the version the platform has staged now, and not acted on before; the platform's `by` is the permitting
+  decision's caller. Written before `T-021-03` reached `m3` with no change promoting, and opened on `promote` when
+  it did.
+- **The caller.** `Live::caller` asks policy for each move: Core carrying the user's authorisation onward, or the
+  operator where the operator starts the move (`T-021-03`'s hand-off). The tests' policy is a fake that appends
+  each decision through the policy path, so `T-021-03`'s register inputs (`ActsFor`, `CarryOnward`) aren't asked
+  here; the assembly's engine asks them (`T-024-02`).
+- **Tests.** Fifteen of the row's seventeen on the running platform with the simulated providers
+  (`conformance/scenarios/tests/segments.rs`, kit in `segments_support/`), one beyond it
+  (`move_policy_does_not_permit_hands_nothing_over`), and the other two in `components/core-orch/tests/segments.rs` with fakes, beside a second record test,
+  `segment_record_reaches_the_log_with_each_move_when_it_ends`, whose segment moved off a version marked stale (the
+  simulated providers are admitted at one version, so the platform test's records carry no move):
+  `call_the_live_segment_doesnt_name_is_refused`, since no simulated release declares a call and no simulated
+  provider's nodes admit a route across two providers, and `promotion_whose_staged_version_differs_from_its_permit_is_refused`.
+  The route is the router's (`RouteFinder`) over a snapshot formed through `snapshot::Snapshots` from a catalogue of
+  the simulated reserve's advertisement and its own dry runs. Results the providers can't be scripted to give
+  (amounts that break, another provider's, another transaction's, a failed withdrawal) are the platform's result
+  changed on its way back and signed again with the key the module signs with. The kit's log replays every entry
+  through core-internal's `attribute` and `admit_entry` on the path it came by; what it leaves out is in
+  `Core::admitted`'s doc (a receipt is of the entry as handed in; `signs_for` answers true; the operator's
+  statements verify under the real key the deployment's placeholder `operator_key` stands for, the kit's
+  convention). It seeds the authorisation, an automatic deposit's acceptance, the decision record and `route_chosen`.
+- **Touches**: `conformance/scenarios/Cargo.toml` (dev-dependencies `rutent-core-orch`, `rutent-router`,
+  `ed25519-dalek`, all in the lock already) and `Cargo.lock`; no `licences/RECORD` line, no new package. No `DEC-20`
+  path.
+- **Rule-off, each red.** The code came first, so each rule was switched off once and its test seen red, then
+  restored: the route guard (the guard test); a segment handed over once (the retried-effect test); the result's
+  signature, its maker and its amounts (the approval test's altered response, the other-provider test, the amounts
+  test); the withdrawal cancelling the part (the failed-withdrawal test); the next amount from the result (the
+  next-segment test); undelivered items kept (the outbound-call test); the live segment's calls named (the calls
+  test); the platform's outcome unknown (the outcome-unknown test); the proxy's uses drained (the secret-use test);
+  the segment record handed over (the record test); its moves carried (the record-with-a-move test); the read checked by policy (the state-and-age test); the hold
+  (the held-in-flight test); no effect without its record (the retried-effect test's log that can't take the
+  effect); the actual settlement time (the settlement test); policy's permit required (the not-permitted test); and,
+  for promotion, the staged version compared and the effect acted on once (the promotion test). The explicit
+  transaction check in `judge` wasn't switched off alone: `check_amounts` refuses another transaction too.
