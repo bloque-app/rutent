@@ -78,8 +78,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `session-request-of-a-delegate` has the delegate as a party other than the holder. No contract call registers a
   delegation, so the fixed rule asks the holder, as an input (`Source::Holder { account, holder }`, the input the
   requester's party), and only a yes lets it through. A holder that says nothing gives a refusal, one out of reach not
-  known (`verifier_unreachable`, the only cause core-internal has for an input's source). The holder itself needs no
-  input. The requester's role isn't held to anything: the party is what holds the account.
+  known (`verifier_unreachable`, the only cause core-internal has for an input's source). The requester's role isn't
+  held to anything: the party is what holds the account.
+- **The named holder must hold the account** (review of `d2604d3`, B1). The request names its holder, so the holder
+  is held to the account's record (`Source::Account(account)`, the input the named holder), asked of every session,
+  the holder's own included. Without it a party opened a session on another's account by naming itself, or an
+  accomplice who vouched for it, the holder. The record is the reserve's, or the deployment's register of accounts,
+  which the assembly answers.
 - **Bounded in time.** An open session ends at its request's `until`, and the fixed rule refuses one asked to last
   longer than `LONGEST_SESSION_SECS`, 15 minutes, whoever asks. Default: a constant of the fixed rule, since the rules
   are plain functions of the request; a deployment's own bound is its policy service's to add, which can refuse

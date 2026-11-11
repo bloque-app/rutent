@@ -118,6 +118,8 @@ pub enum Source {
     Verifier(Id),
     /// A provider: its yes or no, to eligibility or to a dry run, or its vouching (`REQ-CPL-6`, `REQ-CPL-7`).
     Provider(Id),
+    /// An account's record, where the account is kept: whether the party the input names holds it (`REQ-CAT-3`).
+    Account(Id),
     /// An account's holder: whether the party the input names is its delegate on that account (`REQ-CAT-3`).
     Holder {
         /// The account, by reference.
@@ -1588,11 +1590,16 @@ mod tests {
                 },
             ),
             (
-                // The holder's own session, which needs no input of a source.
+                // The holder's own session, which needs only the account's record to say it holds the account.
                 "open_session",
                 Call::Built(|e| {
                     let mut request: SessionRequest = fixture!("session-request-of-a-delegate");
                     request.requester.party = request.holder.clone();
+                    let holds = Need {
+                        input: request.holder.clone(),
+                        from: Source::Account(request.account.clone()),
+                    };
+                    e.sources.says.push((holds, Reply::Given(Said::Yes)));
                     e.open_session(&request)
                         .is_ok_and(|a| matches!(a.outcome, SessionOutcome::Opened { .. }))
                 }),

@@ -7,10 +7,11 @@
 //! A session speaks for one account, and the catalogue's balance checks happen only inside one (`REQ-CAT-3`). The
 //! engine opens it only for the account's holder or its delegate, and only for a bounded time: the fixed rule refuses
 //! a session asked by anyone else, or asked to last longer than [`LONGEST_SESSION_SECS`], before the deployment's
-//! policy is asked, and the deployment's policy still decides the rest. The holder is the party the request names;
-//! a delegate is another party the holder names as its delegate on that account, an input asked of the holder
-//! (`Source::Holder`) like any other, so a holder that can't be reached gives not known and one that says nothing a
-//! refusal (`REQ-AUZ-5`). An open session ends when it was asked to, and its id is its request's. An id already
+//! policy is asked, and the deployment's policy still decides the rest. The holder the request names must hold the
+//! account, which the account's record says (`Source::Account`), whoever asks, so no party opens a session on
+//! another's account by naming itself, or an accomplice, its holder. A delegate is another party that holder names as
+//! its delegate on that account, an input asked of the holder (`Source::Holder`). Each is an input like any other, so
+//! one that can't be reached gives not known and one that says nothing a refusal (`REQ-AUZ-5`). An open session ends when it was asked to, and its id is its request's. An id already
 //! issued opens no other session: the catalogue holds one session per id, so a second would take the first one's
 //! place. That rule reads what the engine opened, so, like the permissions' below, it runs before the consultation.
 //!
@@ -157,32 +158,42 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
     refused.then_some(RefusalClass::NotPermitted)
 }
 
-/// The input the fixed rule needs for `asked`, where it needs one: the holder's word that the requester is its
-/// delegate, the order's record that the customer is its party, or the segment's that the provider is its own.
-fn need_of(asked: Asked<'_>) -> Option<Need> {
+/// The inputs the fixed rule needs for `asked`, all of which must say yes: for a session, the account's record that
+/// the named holder holds it, and, for a delegate, the holder's word that the requester is its delegate; for a read,
+/// the order's record that the customer is its party, or the segment's that the provider is its own.
+fn needs_of(asked: Asked<'_>) -> Vec<Need> {
     match asked {
-        Asked::OpenSession(r) if r.requester.party != r.holder => Some(Need {
-            input: r.requester.party.clone(),
-            from: Source::Holder {
-                account: r.account.clone(),
-                holder: r.holder.clone(),
-            },
-        }),
+        Asked::OpenSession(r) => {
+            let mut needs = vec![Need {
+                input: r.holder.clone(),
+                from: Source::Account(r.account.clone()),
+            }];
+            if r.requester.party != r.holder {
+                needs.push(Need {
+                    input: r.requester.party.clone(),
+                    from: Source::Holder {
+                        account: r.account.clone(),
+                        holder: r.holder.clone(),
+                    },
+                });
+            }
+            needs
+        }
         Asked::CheckRead(c) => match (c.reader.role, &c.reads) {
-            (Role::Customer, Read::Order { order } | Read::Segment { order, .. }) => Some(Need {
+            (Role::Customer, Read::Order { order } | Read::Segment { order, .. }) => vec![Need {
                 input: c.reader.party.clone(),
                 from: Source::OrderParties(order.clone()),
-            }),
-            (Role::Provider, Read::Segment { order, segment, .. }) => Some(Need {
+            }],
+            (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
                 input: c.reader.party.clone(),
                 from: Source::SegmentProvider {
                     order: order.clone(),
                     segment: segment.clone(),
                 },
-            }),
-            _ => None,
+            }],
+            _ => Vec::new(),
         },
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -192,25 +203,26 @@ pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
     if refused_outright(asked).is_some() {
         return Reply::Given(Vec::new());
     }
-    Reply::Given(need_of(asked).into_iter().collect())
+    Reply::Given(needs_of(asked))
 }
 
-/// The fixed rule's ruling: a session only for the holder or a delegate the holder names, never longer than
-/// [`LONGEST_SESSION_SECS`]; a read only of what the log admits its reader may read. Every other call passes.
+/// The fixed rule's ruling: a session only for a party the account's record says holds it, or a delegate that holder
+/// names, never longer than [`LONGEST_SESSION_SECS`]; a read only of what the log admits its reader may read. Every
+/// other call passes. Each input it needs must say yes: a no refuses, and one not given is missing.
 pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     if let Some(class) = refused_outright(asked) {
         return Reply::Given(Ruling::Refuse(class));
     }
-    let Some(need) = need_of(asked) else {
-        return Reply::Given(Ruling::Permit);
-    };
-    match inputs.iter().find(|i| i.need == need) {
-        Some(Input {
-            said: Said::Yes, ..
-        }) => Reply::Given(Ruling::Permit),
-        Some(_) => Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)),
-        None => Reply::Missing,
+    for need in needs_of(asked) {
+        match inputs.iter().find(|i| i.need == need) {
+            Some(Input {
+                said: Said::Yes, ..
+            }) => {}
+            Some(_) => return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)),
+            None => return Reply::Missing,
+        }
     }
+    Reply::Given(Ruling::Permit)
 }
 
 impl<L, P, S> Engine<L, P, S> {

@@ -157,6 +157,14 @@ impl Sources for Says {
     }
 }
 
+/// The record of `account`, asked whether `party` holds it.
+fn holds(party: &str, account: &str) -> Need {
+    Need {
+        input: id(party),
+        from: Source::Account(id(account)),
+    }
+}
+
 /// The holder of `account`, asked whether `party` is its delegate on it.
 fn delegation(party: &str, account: &str, holder: &str) -> Need {
     Need {
@@ -242,7 +250,10 @@ fn read_recorded<P: Policy, S: Sources>(
 // verifies: REQ-CAT-3
 #[test]
 fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
-    let open = |says: Vec<(Need, Reply<Said>)>, policy: Rules, request: &SessionRequest| {
+    // The account's record says `cust-1` holds `acct-ref-4`, in every case.
+    let holder = holds("cust-1", "acct-ref-4");
+    let open = |mut says: Vec<(Need, Reply<Said>)>, policy: Rules, request: &SessionRequest| {
+        says.push((holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes)));
         let mut engine = Engine::with_policy(Kept::default(), policy, Says::of(says));
         let answer = engine.open_session(request).unwrap();
         let entry = engine.log.last(&answer.receipt).clone();
@@ -255,7 +266,7 @@ fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
         class: RefusalClass::NotPermitted,
     };
 
-    // The holder's own: opened, its id its request's, ending when asked; nothing asked of a source.
+    // The holder's own: opened, its id its request's, ending when asked; only the account's record asked.
     let own = own_session("req-301");
     let (outcome, entry, engine) = open(Vec::new(), Rules::permitting(), &own);
     let opened = Opened {
@@ -276,7 +287,7 @@ fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
             opened: Some(opened.clone())
         }
     );
-    assert!(engine.sources.asked.is_empty());
+    assert_eq!(engine.sources.asked, std::slice::from_ref(&holder));
     assert_eq!(
         engine.register().sessions(),
         [OpenSession {
@@ -318,7 +329,7 @@ fn session_is_issued_only_to_the_accounts_holder_or_delegate() {
         &delegate,
     );
     assert!(matches!(outcome, SessionOutcome::Opened { .. }));
-    assert_eq!(engine.sources.asked, std::slice::from_ref(&names));
+    assert_eq!(engine.sources.asked, [holder.clone(), names.clone()]);
     assert_eq!(engine.register().sessions().len(), 1);
 
     // A stranger the holder doesn't name: refused, recorded without a session, and the deployment not asked.
@@ -427,10 +438,13 @@ fn expired_session_answers_no_balance_check() {
     let mut engine = Engine::with_policy(
         Kept::default(),
         Rules::permitting(),
-        Says::of(vec![(
-            delegation("acme-treasury", "acct-ref-4", "cust-1"),
-            Reply::Given(Said::No),
-        )]),
+        Says::of(vec![
+            (holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes)),
+            (
+                delegation("acme-treasury", "acct-ref-4", "cust-1"),
+                Reply::Given(Said::No),
+            ),
+        ]),
     );
     let answer = engine.open_session(&own_session("req-310")).unwrap();
     assert!(matches!(answer.outcome, SessionOutcome::Opened { .. }));
@@ -742,4 +756,63 @@ fn regulators_read_without_its_permission_is_refused_and_recorded() {
     let named = read("req-439", regulator, trail(), Some("perm-reg-1"));
     assert_eq!(read_recorded(&mut denying, &named), refused());
     assert_eq!(denying.policy.1.ruled, 1);
+}
+
+/// A session goes only to a party that holds the account, as the account's record says, or to its delegate: naming
+/// oneself the holder of another's account opens nothing, and neither does naming an accomplice holder who vouches
+/// for one. The real holder, the record saying so, is opened; the record out of reach gives not known.
+// verifies: REQ-CAT-3
+#[test]
+fn session_naming_a_party_that_does_not_hold_the_account_is_refused() {
+    let says = || {
+        Says::of(vec![
+            (holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes)),
+            (holds("mallory", "acct-ref-4"), Reply::Given(Said::No)),
+            (holds("accomplice", "acct-ref-4"), Reply::Given(Said::No)),
+            (
+                delegation("mallory", "acct-ref-4", "accomplice"),
+                Reply::Given(Said::Yes),
+            ),
+        ])
+    };
+    let open = |request: &SessionRequest, says: Says| {
+        let mut engine = Engine::with_policy(Kept::default(), Rules::permitting(), says);
+        let answer = engine.open_session(request).unwrap();
+        assert_eq!(
+            engine.log.last(&answer.receipt).outcome,
+            answer.outcome.outcome()
+        );
+        (answer.outcome, engine)
+    };
+    let refused = SessionOutcome::Refused {
+        class: RefusalClass::NotPermitted,
+    };
+
+    let mut herself = own_session("req-320");
+    herself.holder = id("mallory");
+    herself.requester = actor("mallory", "mallory", Role::Customer);
+    let (outcome, engine) = open(&herself, says());
+    assert_eq!(outcome, refused, "naming herself the holder");
+    assert_eq!(engine.sources.asked, [holds("mallory", "acct-ref-4")]);
+    assert!(engine.register().sessions().is_empty());
+
+    let mut accomplice = herself.clone();
+    accomplice.request = id("req-321");
+    accomplice.holder = id("accomplice");
+    let (outcome, engine) = open(&accomplice, says());
+    assert_eq!(outcome, refused, "an accomplice named holder");
+    assert!(engine.register().sessions().is_empty());
+
+    let (outcome, _) = open(&own_session("req-322"), says());
+    assert!(matches!(outcome, SessionOutcome::Opened { .. }));
+    let (outcome, _) = open(
+        &own_session("req-323"),
+        Says::of(vec![(holds("cust-1", "acct-ref-4"), Reply::Unreachable)]),
+    );
+    assert_eq!(
+        outcome,
+        SessionOutcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        }
+    );
 }
