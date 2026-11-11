@@ -5,8 +5,10 @@
 //!
 //! # How a decision is reached
 //!
-//! [`Engine`] holds the log it appends to, the deployment's [`Policy`] service and the [`Sources`] of the inputs a
-//! decision needs. Every call reaches one consultation, `Engine::consult`, through what it was [`Asked`]:
+//! [`Engine`] holds the log it appends to, the [`Fixed`] rules `SPEC.md` sets, the deployment's [`Policy`] service
+//! and the [`Sources`] of the inputs a decision needs. Every call reaches one consultation, `Engine::consult`,
+//! through what it was [`Asked`]. The fixed rules are asked first, then the deployment's service, each in three
+//! steps:
 //!
 //! 1. The policy service names the inputs the decision needs. If it can't be reached, the answer is not known; if it
 //!    answers without naming them, an input of the policy service's is missing, and the answer is a refusal
@@ -18,8 +20,10 @@
 //!    those inputs and never the decision: the service may refuse on it (`REQ-CPL-3`), and nothing is permitted
 //!    without its ruling.
 //!
-//! Only the ruling's permit mints a permitting answer, and only in `consult`: no other code of Core's three crates
-//! writes one, which the scan of every public entry point checks. External authentication said who the caller is
+//! Only a permitting verdict mints a permitting answer, and only in `consult`: no other code of Core's three crates
+//! writes one, which a scan of their source watches for as a tripwire. The guard is the log: a split of its append
+//! surface, pending in `T-020-01`'s follow-up, gives a decision's entry only to policy's handle, which this engine
+//! will append through. External authentication said who the caller is
 //! (`Actor::acts`) and nothing more (`REQ-AUZ-1`): the engine reads nothing of the caller to permit, and hands it to
 //! the policy service as it came. The answer is appended to the log before it is given, and an append that fails
 //! answers nothing (`INV-7`).
@@ -30,8 +34,11 @@
 //!   core-internal's README make it not known, never a refusal and never a permit. The engine answers not known, and
 //!   nothing moves on it, which is what `AC-17` asks of the value.
 //! - **A decision's id is its request's**, as the stubs had it, so a permit names one request and one decision.
-//! - **The seam for the later rows** is [`Policy`]: a row's rules are a policy of its own, composed with the
-//!   deployment's in a pair, where both must permit and the first that doesn't answers.
+//! - **The rules `SPEC.md` sets are the engine's.** [`Fixed`] holds them, one entry per later row of `F-021`, and
+//!   [`Engine::new`] asks them before the deployment's policy, so no assembly can leave one out. A refusal from either
+//!   beats not known from the other.
+//! - **An unreachable provider** gives `verifier_unreachable`: core-internal has no cause of its own for it.
+//! - **`AC-17`'s reading is pending** on the owner's form as `spec-ac17-not-known`, with "not known" the default.
 
 #[cfg(test)]
 mod entry_points;
@@ -147,8 +154,7 @@ pub enum Ruling {
 
 /// The deployment's policy service: what each call needs, and its ruling once those inputs are in.
 ///
-/// The rules `SPEC.md` fixes, a later row's each, are policies too, composed with the deployment's in a pair
-/// (`(A, B)`), where both must permit.
+/// The engine asks [`Fixed`], the rules `SPEC.md` sets, before it, and an assembly can't leave those out.
 pub trait Policy {
     /// The inputs the decision on `asked` needs, beside its request; `Given` with none where it needs none.
     fn needs(&mut self, asked: Asked<'_>) -> Reply<Vec<Need>>;
@@ -168,30 +174,102 @@ pub trait Sources {
     fn supply(&mut self, need: &Need) -> Reply<Said>;
 }
 
-/// Two policies, both of which must permit. Each is asked in turn, the first's needs, the second's, then the first's
-/// ruling and the second's, and the first answer that isn't a permit is the pair's: a refusal in the first's ruling
-/// answers even where the second's ruling can't be reached. Each ruling sees every input both named.
-impl<A: Policy, B: Policy> Policy for (A, B) {
-    fn needs(&mut self, asked: Asked<'_>) -> Reply<Vec<Need>> {
-        let mut first = match self.0.needs(asked) {
-            Reply::Given(needs) => needs,
-            Reply::Missing => return Reply::Missing,
-            Reply::Unreachable => return Reply::Unreachable,
-        };
-        match self.1.needs(asked) {
-            Reply::Given(second) => {
-                first.extend(second);
-                Reply::Given(first)
+/// The needs of two policies, asked in order: both lists where both name theirs. A missing answer from either is the
+/// answer, even where the other can't be reached, since it refuses whatever the other would say.
+fn needs_of_both(
+    first: Reply<Vec<Need>>,
+    second: impl FnOnce() -> Reply<Vec<Need>>,
+) -> Reply<Vec<Need>> {
+    match first {
+        Reply::Missing => Reply::Missing,
+        Reply::Given(mut needs) => match second() {
+            Reply::Given(more) => {
+                needs.extend(more);
+                Reply::Given(needs)
             }
             other => other,
-        }
+        },
+        Reply::Unreachable => match second() {
+            Reply::Missing => Reply::Missing,
+            _ => Reply::Unreachable,
+        },
+    }
+}
+
+/// The ruling of two policies, asked in order: a permit only where both permit. A refusal or a missing ruling from
+/// either is the answer, even where the other can't be reached; the second isn't asked once the first refused.
+fn ruling_of_both(first: Reply<Ruling>, second: impl FnOnce() -> Reply<Ruling>) -> Reply<Ruling> {
+    match first {
+        Reply::Given(Ruling::Permit) => second(),
+        Reply::Unreachable => match second() {
+            refused @ (Reply::Missing | Reply::Given(Ruling::Refuse(_))) => refused,
+            _ => Reply::Unreachable,
+        },
+        refused => refused,
+    }
+}
+
+/// Two policies, both of which must permit, asked in order. A refusal or a missing answer beats not known, so one
+/// policy refusing is the answer even where the other can't be reached, and the first refusal asked is the one given.
+/// Each ruling sees every input both named.
+impl<A: Policy, B: Policy> Policy for (A, B) {
+    fn needs(&mut self, asked: Asked<'_>) -> Reply<Vec<Need>> {
+        let first = self.0.needs(asked);
+        needs_of_both(first, || self.1.needs(asked))
     }
 
     fn rule(&mut self, asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
-        match self.0.rule(asked, inputs) {
-            Reply::Given(Ruling::Permit) => self.1.rule(asked, inputs),
-            other => other,
-        }
+        let first = self.0.rule(asked, inputs);
+        ruling_of_both(first, || self.1.rule(asked, inputs))
+    }
+}
+
+/// One rule `SPEC.md` sets, which the engine asks of every call before the deployment's policy: the inputs it needs,
+/// and its ruling.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rule {
+    /// The rule, by the row that adds it and what it holds to. Only tests read it, until a rule's refusal is recorded
+    /// with its name.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) name: &'static str,
+    /// The inputs it needs.
+    pub(crate) needs: fn(Asked<'_>) -> Reply<Vec<Need>>,
+    /// Its ruling.
+    pub(crate) rule: fn(Asked<'_>, &[Input]) -> Reply<Ruling>,
+}
+
+/// The fixed rules, in the order the engine asks them. Each later row of `F-021` adds its own entry here, and the lead
+/// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
+pub(crate) const FIXED: &[Rule] = &[];
+
+/// The rules `SPEC.md` sets, which every engine asks first: [`Engine::new`] puts them there, so no assembly can leave
+/// one out. Among them, as between two policies, a refusal beats not known.
+#[derive(Debug, Clone, Copy)]
+pub struct Fixed {
+    rules: &'static [Rule],
+}
+
+impl Default for Fixed {
+    fn default() -> Self {
+        Fixed { rules: FIXED }
+    }
+}
+
+impl Policy for Fixed {
+    fn needs(&mut self, asked: Asked<'_>) -> Reply<Vec<Need>> {
+        self.rules
+            .iter()
+            .fold(Reply::Given(Vec::new()), |so_far, r| {
+                needs_of_both(so_far, || (r.needs)(asked))
+            })
+    }
+
+    fn rule(&mut self, asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
+        self.rules
+            .iter()
+            .fold(Reply::Given(Ruling::Permit), |so_far, r| {
+                ruling_of_both(so_far, || (r.rule)(asked, inputs))
+            })
     }
 }
 
@@ -215,13 +293,13 @@ impl Sources for Absent {
     }
 }
 
-/// `CMP-CORE-AUTHZ`'s policy engine: the log it appends to, the policy service it consults and the sources of the
-/// inputs its decisions need. It implements [`Decisions`]; each other policy trait is its own row's, implemented in
-/// that row's module (`PLAN.md` §4.4).
-#[derive(Debug, Clone, Default)]
+/// `CMP-CORE-AUTHZ`'s policy engine: the log it appends to, the fixed rules and the deployment's policy service it
+/// consults, and the sources of the inputs its decisions need. It implements [`Decisions`]; each other policy trait
+/// is its own row's, implemented in that row's module (`PLAN.md` §4.4).
+#[derive(Debug)]
 pub struct Engine<L, P, S> {
     pub(crate) log: L,
-    pub(crate) policy: P,
+    pub(crate) policy: (Fixed, P),
     pub(crate) sources: S,
 }
 
@@ -235,11 +313,22 @@ pub type Unbuilt<L> = Engine<L, Absent, Absent>;
 pub(crate) const UNREACHABLE: NotKnownCause = NotKnownCause::PolicyUnreachable;
 
 impl<L, P, S> Engine<L, P, S> {
-    /// The engine that appends to `log`, consults `policy` and asks `sources` for each input.
+    /// The engine that appends to `log`, consults the fixed rules and then `policy`, and asks `sources` for each
+    /// input.
     pub fn new(log: L, policy: P, sources: S) -> Self {
         Engine {
             log,
-            policy,
+            policy: (Fixed::default(), policy),
+            sources,
+        }
+    }
+
+    /// The engine with `fixed` in place of the rules [`FIXED`] lists, for a test to plant a fixed rule.
+    #[cfg(test)]
+    pub(crate) fn with_fixed(log: L, fixed: &'static [Rule], policy: P, sources: S) -> Self {
+        Engine {
+            log,
+            policy: (Fixed { rules: fixed }, policy),
             sources,
         }
     }
@@ -310,30 +399,60 @@ impl<L: Log, P, S> Engine<L, P, S> {
     }
 }
 
-impl<L, P: Policy, S: Sources> Engine<L, P, S> {
-    /// The one consultation every call reaches: the inputs the policy service names, each asked of its source, and
-    /// the service's ruling over them. This is the only place in Core that mints a permitting answer.
-    pub(crate) fn consult(&mut self, asked: Asked<'_>) -> Answer {
-        let refuse = |class| Answer::Refuse { class };
-        let not_known = |cause| Answer::NotKnown { cause };
-        let needs = match self.policy.needs(asked) {
-            Reply::Given(needs) => needs,
-            Reply::Missing => return refuse(RefusalClass::MissingInput),
-            Reply::Unreachable => return not_known(NotKnownCause::PolicyUnreachable),
-        };
-        let mut inputs = Vec::with_capacity(needs.len());
-        for need in needs {
-            match self.sources.supply(&need) {
-                Reply::Given(said) => inputs.push(Input { need, said }),
-                Reply::Missing => return refuse(RefusalClass::MissingInput),
-                Reply::Unreachable => return not_known(NotKnownCause::VerifierUnreachable),
-            }
+/// What one policy, fixed or the deployment's, answered once its inputs were asked.
+enum Verdict {
+    Permit,
+    Refuse(RefusalClass),
+    NotKnown(NotKnownCause),
+}
+
+/// Asks `policy` what `asked` needs, asks each input of its source, and has `policy` rule over them.
+///
+/// A provider that can't be reached gives `verifier_unreachable`: core-internal's `NotKnownCause` has no cause of
+/// its own for a provider, and a provider answering eligibility stands where a verifier would (`REQ-CPL-6`).
+fn verdict(policy: &mut impl Policy, sources: &mut impl Sources, asked: Asked<'_>) -> Verdict {
+    let needs = match policy.needs(asked) {
+        Reply::Given(needs) => needs,
+        Reply::Missing => return Verdict::Refuse(RefusalClass::MissingInput),
+        Reply::Unreachable => return Verdict::NotKnown(NotKnownCause::PolicyUnreachable),
+    };
+    let mut inputs = Vec::with_capacity(needs.len());
+    for need in needs {
+        match sources.supply(&need) {
+            Reply::Given(said) => inputs.push(Input { need, said }),
+            Reply::Missing => return Verdict::Refuse(RefusalClass::MissingInput),
+            Reply::Unreachable => return Verdict::NotKnown(NotKnownCause::VerifierUnreachable),
         }
-        match self.policy.rule(asked, &inputs) {
-            Reply::Given(Ruling::Permit) => Answer::Permit {},
-            Reply::Given(Ruling::Refuse(class)) => refuse(class),
-            Reply::Missing => refuse(RefusalClass::MissingInput),
-            Reply::Unreachable => not_known(NotKnownCause::PolicyUnreachable),
+    }
+    match policy.rule(asked, &inputs) {
+        Reply::Given(Ruling::Permit) => Verdict::Permit,
+        Reply::Given(Ruling::Refuse(class)) => Verdict::Refuse(class),
+        Reply::Missing => Verdict::Refuse(RefusalClass::MissingInput),
+        Reply::Unreachable => Verdict::NotKnown(NotKnownCause::PolicyUnreachable),
+    }
+}
+
+impl<L, P: Policy, S: Sources> Engine<L, P, S> {
+    /// The one consultation every call reaches: the fixed rules first, each with its inputs, then the deployment's
+    /// policy service with its own. A refusal from either is the answer, even where the other can't be reached; the
+    /// service isn't asked once a fixed rule refused. This is the only place in Core that mints a permitting answer.
+    pub(crate) fn consult(&mut self, asked: Asked<'_>) -> Answer {
+        let fixed = verdict(&mut self.policy.0, &mut self.sources, asked);
+        let verdict = match fixed {
+            Verdict::Refuse(_) => fixed,
+            _ => match verdict(&mut self.policy.1, &mut self.sources, asked) {
+                Verdict::Permit => fixed,
+                deployment @ Verdict::Refuse(_) => deployment,
+                deployment @ Verdict::NotKnown(_) => match fixed {
+                    Verdict::NotKnown(_) => fixed,
+                    _ => deployment,
+                },
+            },
+        };
+        match verdict {
+            Verdict::Permit => Answer::Permit {},
+            Verdict::Refuse(class) => Answer::Refuse { class },
+            Verdict::NotKnown(cause) => Answer::NotKnown { cause },
         }
     }
 }
@@ -498,12 +617,13 @@ mod tests {
     }
 
     /// How a test's policy service rules.
-    type Rule = Box<dyn FnMut(Asked<'_>, &[Input]) -> Reply<Ruling>>;
+    type Ruler = Box<dyn FnMut(Asked<'_>, &[Input]) -> Reply<Ruling>>;
 
     /// A policy service whose answers the test sets, and which keeps what it ruled on.
     struct Service {
         needs: Reply<Vec<Need>>,
-        rule: Rule,
+        rule: Ruler,
+        asked: usize,
         ruled: Vec<(Actor, Vec<Input>)>,
     }
 
@@ -516,6 +636,7 @@ mod tests {
             Service {
                 needs,
                 rule: Box::new(rule),
+                asked: 0,
                 ruled: Vec::new(),
             }
         }
@@ -528,6 +649,7 @@ mod tests {
 
     impl Policy for Service {
         fn needs(&mut self, _: Asked<'_>) -> Reply<Vec<Need>> {
+            self.asked += 1;
             self.needs.clone()
         }
 
@@ -745,7 +867,7 @@ mod tests {
                 "{action:?}"
             );
         }
-        assert_eq!(policy.policy.ruled.len(), actions.len());
+        assert_eq!(policy.policy.1.ruled.len(), actions.len());
 
         let permits = Service::ruling(Reply::Given(Ruling::Permit));
         let mut policy = Engine::new(Guarded::with_a_decision_record(), permits, Given::default());
@@ -770,7 +892,11 @@ mod tests {
             Err(AppendFailure::Refused(_))
         ));
         assert_eq!(policy.log.0.len(), entries, "nothing recorded");
-        assert_eq!(policy.policy.ruled.len(), actions.len(), "policy not asked");
+        assert_eq!(
+            policy.policy.1.ruled.len(),
+            actions.len(),
+            "policy not asked"
+        );
     }
 
     /// External authentication says who the caller is and nothing more: whatever role, kind or party a caller
@@ -804,7 +930,13 @@ mod tests {
                 }
             }
         }
-        let seen: Vec<Actor> = policy.policy.ruled.iter().map(|(a, _)| a.clone()).collect();
+        let seen: Vec<Actor> = policy
+            .policy
+            .1
+            .ruled
+            .iter()
+            .map(|(a, _)| a.clone())
+            .collect();
         assert_eq!(seen, callers, "policy decided every caller, as it came");
 
         // The deployment's policy knows one operator login; another claiming the operator's role is still refused.
@@ -891,7 +1023,7 @@ mod tests {
             assert_eq!(decision.outcome, missing, "case {n}");
             assert_eq!(policy.log.last_decided(&decision), missing.outcome());
             assert_eq!(policy.sources.asked.len(), asked, "case {n}: inputs asked");
-            assert_eq!(!policy.policy.ruled.is_empty(), ruled, "case {n}: ruled");
+            assert_eq!(!policy.policy.1.ruled.is_empty(), ruled, "case {n}: ruled");
             assert_eq!(
                 policy.log.effect(&request.action, forged(&decision)),
                 no_permitting_decision()
@@ -971,7 +1103,7 @@ mod tests {
             Err(AppendFailure::Unavailable)
         );
         assert_eq!(
-            policy.policy.ruled.len(),
+            policy.policy.1.ruled.len(),
             1,
             "policy ruled, and nothing was answered"
         );
@@ -1003,7 +1135,7 @@ mod tests {
         let mut policy = Engine::new(Guarded::default(), refuses(), yes());
         let decision = policy.decide(&request).unwrap();
         assert_eq!(decision.outcome, refused);
-        let [(_, inputs)] = &policy.policy.ruled[..] else {
+        let [(_, inputs)] = &policy.policy.1.ruled[..] else {
             panic!("policy ruled once");
         };
         assert_eq!(
@@ -1045,6 +1177,7 @@ mod tests {
     // verifies: REQ-AUZ-1
     #[test]
     fn no_public_entry_point_of_core_reaches_an_effect_without_a_decision() {
+        entry_points::carry_out_is_pinned();
         entry_points::every_entry_point_of_core_holds();
         entry_points::each_rule_catches_its_planted_bypass();
 
@@ -1074,6 +1207,403 @@ mod tests {
         assert!(
             answered >= 3,
             "the decide, authorise and grant calls answer"
+        );
+    }
+
+    fn needs_nothing(_: Asked<'_>) -> Reply<Vec<Need>> {
+        Reply::Given(Vec::new())
+    }
+
+    fn refuses(_: Asked<'_>, _: &[Input]) -> Reply<Ruling> {
+        Reply::Given(Ruling::Refuse(RefusalClass::NoAccountableParty))
+    }
+
+    fn cannot_be_reached(_: Asked<'_>, _: &[Input]) -> Reply<Ruling> {
+        Reply::Unreachable
+    }
+
+    /// A fixed rule that refuses every call, as a later row's might.
+    const REFUSING: &[Rule] = &[Rule {
+        name: "test: refuses",
+        needs: needs_nothing,
+        rule: refuses,
+    }];
+
+    /// A fixed rule whose ruling can't be reached, then one that refuses.
+    const UNREACHABLE_THEN_REFUSING: &[Rule] = &[
+        Rule {
+            name: "test: can't be reached",
+            needs: needs_nothing,
+            rule: cannot_be_reached,
+        },
+        Rule {
+            name: "test: refuses",
+            needs: needs_nothing,
+            rule: refuses,
+        },
+    ];
+
+    /// A fixed rule whose ruling can't be reached.
+    const CANT_BE_REACHED: &[Rule] = &[Rule {
+        name: "test: can't be reached",
+        needs: needs_nothing,
+        rule: cannot_be_reached,
+    }];
+
+    /// The rules `SPEC.md` sets are asked before the deployment's policy, which every engine has from `Engine::new`:
+    /// a fixed rule's refusal is the answer, the deployment's policy not even asked, and it beats the deployment's
+    /// service being unreachable. A deployment's refusal likewise beats a fixed rule that can't be reached.
+    // verifies: REQ-AUZ-1, REQ-AUZ-5
+    #[test]
+    fn fixed_rules_are_asked_first_and_their_refusal_beats_an_unreachable_service() {
+        let engine = Engine::new(Taking::default(), Absent, Absent);
+        let names = |rules: &[Rule]| rules.iter().map(|r| r.name).collect::<Vec<_>>();
+        assert_eq!(
+            names(engine.policy.0.rules),
+            names(FIXED),
+            "every engine asks the fixed rules"
+        );
+
+        let request: DecisionRequest = fixture!("decision-request-to-move-value");
+        let refused = |class| Answer::Refuse { class };
+        let decide = |fixed: &'static [Rule], service: Service| {
+            let mut engine =
+                Engine::with_fixed(Guarded::default(), fixed, service, Given::default());
+            let answer = engine.decide(&request).unwrap().outcome;
+            (answer, engine.policy.1.asked)
+        };
+        let unreachable = || Service::new(Reply::Unreachable, |_, _| Reply::Unreachable);
+        let permits = || Service::ruling(Reply::Given(Ruling::Permit));
+        let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
+
+        assert_eq!(
+            decide(REFUSING, unreachable()),
+            (refused(RefusalClass::NoAccountableParty), 0)
+        );
+        assert_eq!(
+            decide(REFUSING, permits()),
+            (refused(RefusalClass::NoAccountableParty), 0)
+        );
+        assert_eq!(
+            decide(UNREACHABLE_THEN_REFUSING, unreachable()),
+            (refused(RefusalClass::NoAccountableParty), 0),
+            "among the fixed rules too, a refusal beats not known"
+        );
+        assert_eq!(
+            decide(CANT_BE_REACHED, denies()),
+            (refused(RefusalClass::NotPermitted), 1)
+        );
+        assert_eq!(
+            decide(CANT_BE_REACHED, permits()),
+            (
+                Answer::NotKnown {
+                    cause: NotKnownCause::PolicyUnreachable
+                },
+                1
+            )
+        );
+        assert_eq!(decide(&[], permits()), (Answer::Permit {}, 1));
+    }
+
+    /// Two policies composed: both are asked what they need, and either one's missing answer refuses, even where the
+    /// other can't be reached; either one's unreachable answer, with nothing refusing, gives not known. A refusal in
+    /// either ruling beats the other's being unreachable, and both must permit.
+    // verifies: REQ-AUZ-5
+    #[test]
+    fn a_pair_of_policies_permits_only_where_both_do_and_a_refusal_beats_not_known() {
+        let request: DecisionRequest = fixture!("decision-request-to-move-value");
+        let decide = |first: Service, second: Service, sources: Given| {
+            let mut engine = Engine::new(Guarded::default(), (first, second), sources);
+            let answer = engine.decide(&request).unwrap().outcome;
+            (answer, engine.sources.asked)
+        };
+        let permits = |needs| Service::new(needs, |_, _| Reply::Given(Ruling::Permit));
+        let nothing = || Reply::Given(Vec::new());
+        let missing = Answer::Refuse {
+            class: RefusalClass::MissingInput,
+        };
+        let not_known = Answer::NotKnown {
+            cause: NotKnownCause::PolicyUnreachable,
+        };
+        let judged = || Given {
+            says: vec![(a_verifiers_judgement(), Reply::Given(Said::Yes))],
+            asked: Vec::new(),
+        };
+
+        // The second policy's needs are asked: one with no source to give it refuses.
+        let (answer, asked) = decide(
+            permits(nothing()),
+            permits(Reply::Given(vec![a_providers_eligibility()])),
+            Given::default(),
+        );
+        assert_eq!((answer, asked), (missing, vec![a_providers_eligibility()]));
+        let (answer, asked) = decide(
+            permits(Reply::Given(vec![a_verifiers_judgement()])),
+            permits(nothing()),
+            judged(),
+        );
+        assert_eq!(
+            (answer, asked),
+            (Answer::Permit {}, vec![a_verifiers_judgement()])
+        );
+
+        // Either one's needs missing or unreachable answers.
+        assert_eq!(
+            decide(permits(nothing()), permits(Reply::Missing), judged()).0,
+            missing
+        );
+        assert_eq!(
+            decide(permits(nothing()), permits(Reply::Unreachable), judged()).0,
+            not_known
+        );
+        assert_eq!(
+            decide(permits(Reply::Missing), permits(nothing()), judged()).0,
+            missing
+        );
+        assert_eq!(
+            decide(
+                permits(Reply::Unreachable),
+                permits(Reply::Missing),
+                judged()
+            )
+            .0,
+            missing
+        );
+        assert_eq!(
+            decide(
+                permits(Reply::Missing),
+                permits(Reply::Unreachable),
+                judged()
+            )
+            .0,
+            missing
+        );
+
+        // Rulings: a refusal beats not known, in either order; both must permit.
+        let refusing = || {
+            Service::new(nothing(), |_, _| {
+                Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted))
+            })
+        };
+        let unreachable = || Service::new(nothing(), |_, _| Reply::Unreachable);
+        let refused = Answer::Refuse {
+            class: RefusalClass::NotPermitted,
+        };
+        assert_eq!(decide(unreachable(), refusing(), judged()).0, refused);
+        assert_eq!(decide(refusing(), unreachable(), judged()).0, refused);
+        assert_eq!(
+            decide(unreachable(), permits(nothing()), judged()).0,
+            not_known
+        );
+        assert_eq!(decide(permits(nothing()), refusing(), judged()).0, refused);
+        assert_eq!(
+            decide(permits(nothing()), permits(nothing()), judged()).0,
+            Answer::Permit {}
+        );
+    }
+
+    /// How a policy call came out: permitted, or not (refused, not known, over its bound, or no answer at all).
+    type Permitted = bool;
+
+    /// One policy call, driven on an engine that consults a policy that records being asked, or, where its row hasn't
+    /// built it yet, on the unbuilt engine, whose stub must permit nothing.
+    enum Call {
+        Built(fn(&mut Engine<Guarded, Service, Given>) -> Permitted),
+        Unbuilt {
+            row: &'static str,
+            call: fn(&mut Unbuilt<Guarded>) -> Permitted,
+        },
+    }
+
+    /// Every method of core-internal's policy traits. A row that builds its call moves it from `Unbuilt` to `Built`.
+    fn calls() -> Vec<(&'static str, Call)> {
+        vec![
+            (
+                "decide",
+                Call::Built(|e| {
+                    e.decide(&fixture!("decision-request-to-move-value"))
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
+            ),
+            (
+                "authorise",
+                Call::Unbuilt {
+                    row: "T-021-04",
+                    call: |e| {
+                        e.authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
+                            .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "decide_stuck",
+                Call::Unbuilt {
+                    row: "T-021-06",
+                    call: |e| {
+                        e.decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
+                            .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "move_stuck",
+                Call::Unbuilt {
+                    row: "T-021-06",
+                    call: |e| {
+                        e.move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
+                            .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "open_session",
+                Call::Unbuilt {
+                    row: "T-021-02",
+                    call: |e| {
+                        e.open_session(&fixture!("session-request-of-a-delegate"))
+                            .is_ok_and(|a| matches!(a.outcome, SessionOutcome::Opened { .. }))
+                    },
+                },
+            ),
+            (
+                "check_read",
+                Call::Unbuilt {
+                    row: "T-021-02",
+                    call: |e| {
+                        e.check_read(&fixture!("read-check-by-a-provider-of-its-segment"))
+                            .is_ok_and(|a| matches!(a.outcome, ReadOutcome::Allowed { .. }))
+                    },
+                },
+            ),
+            (
+                "grant_permission",
+                Call::Unbuilt {
+                    row: "T-021-02",
+                    call: |e| {
+                        e.grant_permission(&fixture!(
+                            "permission-change-granting-a-regulator-the-trail"
+                        ))
+                        .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "revoke_permission",
+                Call::Unbuilt {
+                    row: "T-021-02",
+                    call: |e| {
+                        e.revoke_permission(&fixture!(
+                            "permission-change-granting-a-regulator-the-trail"
+                        ))
+                        .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "charge",
+                Call::Unbuilt {
+                    row: "T-021-05",
+                    call: |e| {
+                        e.charge(&fixture!("charge-of-fanned-out-work"))
+                            .is_ok_and(|a| matches!(a.outcome, ChargeOutcome::Within { .. }))
+                    },
+                },
+            ),
+            (
+                "ask_about_person",
+                Call::Unbuilt {
+                    row: "T-021-07",
+                    call: |e| {
+                        e.ask_about_person(&fixture!(
+                            "person-question-on-the-persons-authority-first-asked"
+                        ))
+                        .is_ok_and(|a| matches!(a.outcome, PersonOutcome::Allowed { .. }))
+                    },
+                },
+            ),
+        ]
+    }
+
+    /// The methods of core-internal's policy traits, read from the contract's source.
+    fn policy_methods() -> Vec<String> {
+        let path = format!(
+            "{}/../../contracts/src/core_internal/calls.rs",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let parsed = syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let policy = [
+            "Decisions",
+            "Authorisations",
+            "StuckOrders",
+            "Sessions",
+            "Reads",
+            "Charges",
+            "PersonQuestions",
+        ];
+        let mut methods = Vec::new();
+        for item in &parsed.items {
+            let syn::Item::Trait(t) = item else { continue };
+            if !policy.contains(&t.ident.to_string().as_str()) {
+                continue;
+            }
+            for item in &t.items {
+                if let syn::TraitItem::Fn(f) = item {
+                    methods.push(f.sig.ident.to_string());
+                }
+            }
+        }
+        methods.sort();
+        methods
+    }
+
+    /// Every policy call reaches the one consultation: driven against a policy that records being asked, each built
+    /// call is asked of it, once, and answers as it rules. A call whose row hasn't built it yet is marked so, and its
+    /// stub permits nothing. The table holds every method of core-internal's policy traits.
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt() {
+        let calls = calls();
+        let mut named: Vec<String> = calls.iter().map(|(n, _)| n.to_string()).collect();
+        named.sort();
+        assert_eq!(named, policy_methods(), "the table holds every policy call");
+        let mut unbuilt = Vec::new();
+        for (name, call) in calls {
+            match call {
+                Call::Built(call) => {
+                    for (ruling, permitted) in [
+                        (Ruling::Permit, true),
+                        (Ruling::Refuse(RefusalClass::NotPermitted), false),
+                    ] {
+                        let service = Service::ruling(Reply::Given(ruling));
+                        let mut engine = Engine::new(
+                            Guarded::with_a_decision_record(),
+                            service,
+                            Given::default(),
+                        );
+                        assert_eq!(
+                            call(&mut engine),
+                            permitted,
+                            "{name} answers as policy rules"
+                        );
+                        assert_eq!(engine.policy.1.asked, 1, "{name} consulted once");
+                        assert_eq!(engine.policy.1.ruled.len(), 1, "{name} ruled once");
+                    }
+                }
+                Call::Unbuilt { row, call } => {
+                    let mut engine =
+                        Unbuilt::new(Guarded::with_a_decision_record(), Absent, Absent);
+                    assert!(
+                        !call(&mut engine),
+                        "{name}, {row}'s, permits nothing until it is built"
+                    );
+                    unbuilt.push(row);
+                }
+            }
+        }
+        unbuilt.dedup();
+        assert_eq!(
+            unbuilt,
+            ["T-021-04", "T-021-06", "T-021-02", "T-021-05", "T-021-07"]
         );
     }
 }

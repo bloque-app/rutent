@@ -1,18 +1,30 @@
 //! The scan behind `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` (`REQ-AUZ-1`).
 //!
+//! **It is a tripwire, not the guard.** It catches the plain ways a later edit could go around a decision, and says
+//! where. The guard is the log: its append surface is split so that only policy's handle takes a decision's entry,
+//! and orchestration's takes none, held by the crate graph (`T-020-01`'s follow-up). Anything the scan can't see,
+//! such as a value read through serde, is that handle's to refuse.
+//!
 //! It reads the source of Core's three crates, `core-orch`, `core-authz` and `core-audit`, as files, so it imports
 //! none of them (`DEC-2`). It walks each crate's module tree from `lib.rs`, leaves test code aside (`#[cfg(test)]`
 //! and `#[test]` items, and the files only they declare), and visits every function, closures and macro arguments
 //! included. Three rules:
 //!
 //! 1. **One permit site.** A permitting answer, `Answer::Permit`, is written in exactly one function of Core: the
-//!    engine's consultation. No code of Core writes `Outcome::Permitted` or `PermitAnswer::Permit`, and none but the
-//!    engine builds a `Decision`.
+//!    engine's consultation. The other permitting answers, `SessionOutcome::Opened`, `ReadOutcome::Allowed`,
+//!    `ChargeOutcome::Within` and `PersonOutcome::Allowed`, are written only in the engine. No code of Core writes
+//!    `Outcome::Permitted` or `PermitAnswer::Permit`, and none but the engine builds a `Decision`.
 //! 2. **Effects are orchestration's.** Only `core-orch` records an effect (`What::Effect`, an `Effect`) or calls an
 //!    outer library's method that carries out a decided action ([`CARRY_OUT`]).
 //! 3. **Only on a decision.** In `core-orch`, a function that records an effect holds a `Permit` or an `Effect` among
 //!    its parameters, or takes one from a decision (`.permit()`); a function that carries out an action holds the
 //!    `Effect` it carries out among its parameters, whose entry the log admitted only on a permit.
+//!
+//! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
+//! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
+//! elsewhere: an attribute with a `path` key, `cfg_attr` included, and `include!` are findings wherever they sit. This
+//! is boundary-check's rule on mounts, applied here on syn's parse, since Core's crates may not depend on
+//! boundary-check.
 //!
 //! Names are matched without types: a Core method that shares a name in [`CARRY_OUT`] is held to rule 3 as well. What
 //! no syntax shows is not checked here: whether an effect's receipt came from the log's append is the row's that
@@ -70,6 +82,242 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "revoke",
         "prov/src/catalogue/mod.rs",
         "change_catalogue: revoke_grant",
+    ),
+];
+
+/// Every other method of prov's platform and catalogue that changes them (`&mut self`), with why it carries out no
+/// action policy decides: none is one of `REQ-AUZ-6`'s permissions or a value-moving operation. A method added there
+/// fails [`carry_out_is_pinned`] until it is listed here or in [`CARRY_OUT`].
+pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
+    (
+        "set_bounds",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_call_budget",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_compile_deadline",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_measurement_cap",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_stderr_capacity",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_deadline",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_output_limit",
+        "prov/src/module/platform.rs",
+        "a platform setting",
+    ),
+    (
+        "set_staging",
+        "prov/src/module/platform.rs",
+        "a platform setting (ADR-0014)",
+    ),
+    (
+        "kill",
+        "prov/src/module/platform.rs",
+        "a process's life, not a release's standing",
+    ),
+    (
+        "restart",
+        "prov/src/module/platform.rs",
+        "a process's life, not a release's standing",
+    ),
+    (
+        "admit",
+        "prov/src/module/platform.rs",
+        "admission, before acceptance, which is `accept`",
+    ),
+    (
+        "begin_segment",
+        "prov/src/module/platform.rs",
+        "a segment's bounds; its value moves through `handle`",
+    ),
+    (
+        "end_segment",
+        "prov/src/module/platform.rs",
+        "a segment's bounds; its value moves through `handle`",
+    ),
+    (
+        "promote",
+        "prov/src/module/platform.rs",
+        "staging of a release already accepted (ADR-0014)",
+    ),
+    (
+        "roll_back",
+        "prov/src/module/platform.rs",
+        "staging of a release already accepted (ADR-0014)",
+    ),
+    (
+        "take_events",
+        "prov/src/module/platform.rs",
+        "drains the platform's records for the log",
+    ),
+    (
+        "set_context",
+        "prov/src/catalogue/advertisements.rs",
+        "a catalogue setting",
+    ),
+    (
+        "set_clock_skew",
+        "prov/src/catalogue/advertisements.rs",
+        "a catalogue setting",
+    ),
+    (
+        "trust_advertising_key",
+        "prov/src/catalogue/advertisements.rs",
+        "a key an advertisement is checked by",
+    ),
+    (
+        "record_statement_key",
+        "prov/src/catalogue/advertisements.rs",
+        "a key a statement is checked by",
+    ),
+    (
+        "join",
+        "prov/src/catalogue/advertisements.rs",
+        "an advertisement joining under a grant in force",
+    ),
+    (
+        "set_check_bound",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "set_answer_within",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "open_session",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "begin_check",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "answer_check",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "sweep_silent",
+        "prov/src/catalogue/balance.rs",
+        "the balance checks' register (REQ-CAT-3)",
+    ),
+    (
+        "record",
+        "prov/src/catalogue/declaration.rs",
+        "a declaration recorded (REQ-CAT-6)",
+    ),
+    (
+        "show_to",
+        "prov/src/catalogue/declaration.rs",
+        "a declaration shown (REQ-CAT-6)",
+    ),
+    (
+        "bound",
+        "prov/src/catalogue/mod.rs",
+        "an operator bound (REQ-CAT-1), not a REQ-AUZ-6 permission",
+    ),
+    (
+        "set_ceiling",
+        "prov/src/catalogue/mod.rs",
+        "a reversal ceiling (DEC-11), not a REQ-AUZ-6 permission",
+    ),
+    (
+        "rebond",
+        "prov/src/catalogue/mod.rs",
+        "a reversal bond re-checked (DEC-11)",
+    ),
+    (
+        "add_public_node",
+        "prov/src/catalogue/mod.rs",
+        "the catalogue's nodes",
+    ),
+    (
+        "register_public_holding",
+        "prov/src/catalogue/mod.rs",
+        "a holding account's register",
+    ),
+    (
+        "register_private_holding",
+        "prov/src/catalogue/mod.rs",
+        "a holding account's register",
+    ),
+    (
+        "set_evidence_floor",
+        "prov/src/catalogue/mod.rs",
+        "a tuple's evidence floor, not a REQ-AUZ-6 permission",
+    ),
+    (
+        "set_module_version",
+        "prov/src/catalogue/mod.rs",
+        "the version in force, as the platform reports it",
+    ),
+    (
+        "declarations_mut",
+        "prov/src/catalogue/mod.rs",
+        "hands over the declarations, whose methods are listed",
+    ),
+    (
+        "owed_mut",
+        "prov/src/catalogue/mod.rs",
+        "hands over the owed reversals, whose methods are listed",
+    ),
+    (
+        "publish_operator_module",
+        "prov/src/catalogue/operator.rs",
+        "the operator's own module published",
+    ),
+    (
+        "register",
+        "prov/src/catalogue/publisher.rs",
+        "a publisher's register (REQ-CAT-20)",
+    ),
+    (
+        "register_operator",
+        "prov/src/catalogue/publisher.rs",
+        "a publisher's register (REQ-CAT-20)",
+    ),
+    (
+        "set_ceiling",
+        "prov/src/catalogue/reversal.rs",
+        "a reversal ceiling (DEC-11)",
+    ),
+    (
+        "rebond",
+        "prov/src/catalogue/reversal.rs",
+        "a reversal bond re-checked (DEC-11)",
+    ),
+    (
+        "owe",
+        "prov/src/catalogue/reversal.rs",
+        "a reversal owed (REQ-CAT-7)",
+    ),
+    (
+        "observe",
+        "prov/src/catalogue/reversal.rs",
+        "an owed reversal observed (REQ-CAT-7)",
     ),
 ];
 
@@ -168,7 +416,46 @@ fn names(ty: &syn::Type) -> BTreeSet<String> {
 }
 
 /// The words the rules watch for in a macro they can't read.
-const WATCHED: &[&str] = &["Permit", "Permitted", "Effect", "Decision"];
+const WATCHED: &[&str] = &[
+    "Permit",
+    "Permitted",
+    "Effect",
+    "Decision",
+    "Opened",
+    "Allowed",
+    "Within",
+];
+
+/// The permitting answers, by enum and variant: `Answer::Permit` first, which only the consultation writes.
+const PERMITTING: &[(&str, &str)] = &[
+    ("Answer", "Permit"),
+    ("SessionOutcome", "Opened"),
+    ("ReadOutcome", "Allowed"),
+    ("ChargeOutcome", "Within"),
+    ("PersonOutcome", "Allowed"),
+];
+
+/// The enums whose variants the rules watch, which may not be imported bare.
+const WATCHED_ENUMS: &[&str] = &[
+    "Answer",
+    "SessionOutcome",
+    "ReadOutcome",
+    "ChargeOutcome",
+    "PersonOutcome",
+    "Outcome",
+    "PermitAnswer",
+    "What",
+];
+
+/// The types the rules watch by name, which may not be renamed.
+const WATCHED_TYPES: &[&str] = &["Decision", "Effect", "Permit"];
+
+/// Whether `name` is one the rules watch, so renaming it would take it out of their sight.
+fn watched(name: &str) -> bool {
+    WATCHED_ENUMS.contains(&name)
+        || WATCHED_TYPES.contains(&name)
+        || CARRY_OUT.iter().any(|(n, _, _)| *n == name)
+}
 
 impl Visitor<'_> {
     fn context(&mut self) -> &mut Context {
@@ -254,12 +541,12 @@ impl Visitor<'_> {
     /// Rule 1, and what rule 3 counts, for a value written at `path`.
     fn written(&mut self, path: &syn::Path) {
         let segs = segments(path);
-        if ends(&segs, &["Answer", "Permit"]) {
+        if let Some((kind, variant)) = PERMITTING.iter().find(|(e, v)| ends(&segs, &[e, v])) {
             let function = self.stack.last().map_or("", |c| c.name.as_str());
-            let site = format!("{}::{function}", self.file);
+            let site = format!("{}::{function}: {kind}::{variant}", self.file);
             self.scan.permit_sites.push(site);
             if !self.engine {
-                self.find("writes a permitting answer outside the engine".to_string());
+                self.find(format!("writes `{kind}::{variant}` outside the engine"));
             }
         } else if ends(&segs, &["Outcome", "Permitted"]) || ends(&segs, &["PermitAnswer", "Permit"])
         {
@@ -272,7 +559,81 @@ impl Visitor<'_> {
     }
 }
 
+/// What a `use` tree does that would take a watched name out of the rules' sight.
+fn hidden_by(tree: &syn::UseTree, last: Option<&str>, out: &mut Vec<String>) {
+    let under_an_enum = last.filter(|l| WATCHED_ENUMS.contains(l));
+    match tree {
+        syn::UseTree::Path(path) => {
+            let name = path.ident.to_string();
+            hidden_by(&path.tree, Some(&name), out);
+        }
+        syn::UseTree::Group(group) => {
+            for tree in &group.items {
+                hidden_by(tree, last, out);
+            }
+        }
+        syn::UseTree::Name(name) => {
+            if let Some(e) = under_an_enum {
+                out.push(format!("imports `{e}::{}` bare", name.ident));
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            let name = rename.ident.to_string();
+            if let Some(e) = under_an_enum {
+                out.push(format!("imports `{e}::{name}` bare"));
+            } else if watched(&name) {
+                out.push(format!("renames `{name}` as `{}`", rename.rename));
+            }
+        }
+        syn::UseTree::Glob(_) => {
+            if let Some(e) = under_an_enum {
+                out.push(format!("glob-imports the variants of `{e}`"));
+            }
+        }
+    }
+}
+
 impl<'ast> Visit<'ast> for Visitor<'_> {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if is_test(&item.attrs) {
+            return;
+        }
+        let mut found = Vec::new();
+        hidden_by(&item.tree, None, &mut found);
+        for what in found {
+            self.find(what);
+        }
+        visit::visit_item_use(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if is_test(&item.attrs) {
+            return;
+        }
+        let aliased: Vec<String> = names(&item.ty).into_iter().filter(|n| watched(n)).collect();
+        for name in aliased {
+            self.find(format!("aliases `{name}` as `{}`", item.ident));
+        }
+        visit::visit_item_type(self, item);
+    }
+
+    fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        let mounts = attr.path().is_ident("path")
+            || (attr.path().is_ident("cfg_attr")
+                && attr.meta.require_list().is_ok_and(|l| {
+                    let text = l.tokens.to_string();
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    words
+                        .windows(2)
+                        .any(|w| w[0].trim_start_matches(',') == "path" && w[1] == "=")
+                        || text.contains("path=")
+                }));
+        if mounts {
+            self.find("mounts a file with a `path` attribute".to_string());
+        }
+        visit::visit_attribute(self, attr);
+    }
+
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !is_test(&item.attrs) {
             visit::visit_item_mod(self, item);
@@ -325,6 +686,12 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
 
     fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
         self.written(&expr.path);
+        // `Platform::handle`, called or taken as a value to call later.
+        if expr.path.segments.len() > 1
+            && let Some(last) = expr.path.segments.last()
+        {
+            self.carry_out(&last.ident.to_string());
+        }
         visit::visit_expr_path(self, expr);
     }
 
@@ -338,7 +705,9 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
     }
 
     fn visit_expr_call(&mut self, expr: &'ast syn::ExprCall) {
+        // A plain `handle(..)`; a path of more than one segment counts where it is visited.
         if let Expr::Path(path) = &*expr.func
+            && path.path.segments.len() == 1
             && let Some(last) = path.path.segments.last()
         {
             self.carry_out(&last.ident.to_string());
@@ -347,6 +716,10 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if mac.path.is_ident("include") {
+            self.find("mounts a file with `include!`".to_string());
+            return;
+        }
         let matches = mac.path.is_ident("matches");
         let read = if matches {
             // Its pattern is a pattern, not a value written: only the scrutinee is read.
@@ -422,7 +795,8 @@ fn module_files(root: &Path) -> Vec<PathBuf> {
             let syn::Item::Mod(module) = item else {
                 continue;
             };
-            if is_test(&module.attrs) {
+            // A module mounted with a `path` attribute is a finding of its own, where its declaration is visited.
+            if is_test(&module.attrs) || module.attrs.iter().any(|a| a.path().is_ident("path")) {
                 continue;
             }
             let name = module.ident.to_string();
@@ -495,9 +869,60 @@ pub(super) fn every_entry_point_of_core_holds() {
     assert_eq!(scan.findings, Vec::new());
     assert_eq!(
         scan.permit_sites,
-        vec!["core-authz/src/engine/mod.rs::consult".to_string()],
+        vec!["core-authz/src/engine/mod.rs::consult: Answer::Permit".to_string()],
         "one permit site"
     );
+}
+
+/// Every method of prov's platform (`module/platform.rs`) and catalogue (`catalogue/`) that changes them is listed,
+/// either as carrying out a decided action ([`CARRY_OUT`]) or as carrying out none ([`CARRIES_OUT_NOTHING`]), and
+/// nothing listed is gone.
+pub(super) fn carry_out_is_pinned() {
+    let prov = components().join("prov/src");
+    let mut files = vec![prov.join("module/platform.rs")];
+    let mut catalogue: Vec<PathBuf> = std::fs::read_dir(prov.join("catalogue"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    catalogue.sort();
+    files.extend(catalogue);
+    let mut found = BTreeSet::new();
+    for file in &files {
+        let parsed = syn::parse_file(&std::fs::read_to_string(file).unwrap()).unwrap();
+        let shown = file
+            .strip_prefix(components())
+            .unwrap()
+            .display()
+            .to_string();
+        for item in &parsed.items {
+            let syn::Item::Impl(block) = item else {
+                continue;
+            };
+            for item in &block.items {
+                let syn::ImplItem::Fn(f) = item else { continue };
+                let changes = matches!(
+                    f.sig.inputs.first(),
+                    Some(syn::FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_some()
+                );
+                if changes && matches!(f.vis, syn::Visibility::Public(_)) {
+                    found.insert((f.sig.ident.to_string(), shown.clone()));
+                }
+            }
+        }
+    }
+    let listed: BTreeSet<(String, String)> = CARRY_OUT
+        .iter()
+        .chain(CARRIES_OUT_NOTHING)
+        .map(|(n, f, _)| (n.to_string(), f.to_string()))
+        .collect();
+    let unlisted: Vec<_> = found.difference(&listed).collect();
+    let gone: Vec<_> = listed.difference(&found).collect();
+    assert!(
+        unlisted.is_empty(),
+        "prov methods that change state, unlisted: {unlisted:?}"
+    );
+    assert!(gone.is_empty(), "listed but no longer there: {gone:?}");
 }
 
 /// Each rule finds the bypass planted for it, and passes the same code written on a decision.
@@ -515,7 +940,7 @@ pub(super) fn each_rule_catches_its_planted_bypass() {
     // Rule 1: a permit minted outside the engine, a decision built there, an entry's outcome written permitted.
     assert_eq!(
         orch("pub fn mint() -> Answer { Answer::Permit {} }"),
-        ["mint: writes a permitting answer outside the engine"]
+        ["mint: writes `Answer::Permit` outside the engine"]
     );
     assert_eq!(
         found(
@@ -541,6 +966,84 @@ pub(super) fn each_rule_catches_its_planted_bypass() {
         orch("fn f(d: &Decision) -> bool { matches!(d.outcome, Answer::Permit {}) }"),
         Vec::<String>::new(),
         "a pattern writes nothing"
+    );
+
+    // The other permitting answers, outside the engine.
+    for (written, finding) in [
+        (
+            "SessionOutcome::Opened { session, expires_at }",
+            "SessionOutcome::Opened",
+        ),
+        ("ReadOutcome::Allowed {}", "ReadOutcome::Allowed"),
+        ("ChargeOutcome::Within { left }", "ChargeOutcome::Within"),
+        ("PersonOutcome::Allowed {}", "PersonOutcome::Allowed"),
+    ] {
+        assert_eq!(
+            found(
+                Crate::Authz,
+                false,
+                &format!("fn f() {{ let a = {written}; }}")
+            ),
+            [format!("f: writes `{finding}` outside the engine")]
+        );
+    }
+
+    // Watched names kept in sight: no rename, alias or bare import of a watched enum's variants.
+    assert_eq!(
+        orch("use rutent_contracts::core_internal::Answer as A;"),
+        ["<module>: renames `Answer` as `A`"]
+    );
+    assert_eq!(
+        orch("use rutent_contracts::core_internal::{Decision as D, Permit};"),
+        ["<module>: renames `Decision` as `D`"]
+    );
+    assert_eq!(
+        orch(
+            "fn f() { use rutent_prov::module::Platform; let h = Platform::handle; } use x::handle as h;"
+        ),
+        [
+            "f: carries out `handle` without the effect it rests on",
+            "<module>: renames `handle` as `h`"
+        ]
+    );
+    assert_eq!(
+        orch("use rutent_contracts::core_internal::Answer::*;"),
+        ["<module>: glob-imports the variants of `Answer`"]
+    );
+    assert_eq!(
+        orch("use rutent_contracts::core_internal::{Answer::Permit, SessionOutcome::{Opened}};"),
+        [
+            "<module>: imports `Answer::Permit` bare",
+            "<module>: imports `SessionOutcome::Opened` bare"
+        ]
+    );
+    assert_eq!(
+        orch("type D = Decision; type Many = Vec<Effect>;"),
+        [
+            "<module>: aliases `Decision` as `D`",
+            "<module>: aliases `Effect` as `Many`"
+        ]
+    );
+    assert_eq!(
+        orch(
+            "use rutent_contracts::core_internal::*; use rutent_contracts::core_internal::{Answer, Decision};"
+        ),
+        Vec::<String>::new(),
+        "names kept as they are"
+    );
+
+    // No file mounted from elsewhere.
+    assert_eq!(
+        orch("#[path = \"elsewhere.rs\"] mod m;"),
+        ["<module>: mounts a file with a `path` attribute"]
+    );
+    assert_eq!(
+        orch("#[cfg_attr(unix, path = \"elsewhere.rs\")] mod m;"),
+        ["<module>: mounts a file with a `path` attribute"]
+    );
+    assert_eq!(
+        orch("fn f() { include!(\"elsewhere.rs\"); }"),
+        ["f: mounts a file with `include!`"]
     );
 
     // Rule 2: an effect or a carried-out action outside orchestration.
