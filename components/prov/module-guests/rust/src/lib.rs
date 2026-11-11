@@ -20,6 +20,10 @@
 //!   `name=value` joined by `,` (a `!` before the name flags the value as a credential; `-` for none; a path or a value ending in `*N` is
 //!   that text followed by `N` bytes of `x`, so a program of a few lines can make a request of any size);
 //! - `reason <operation> <name>`: looks the secret up and obtains the refusal's reason, if refused;
+//! - `tell <operation> <https|wss> <host> <port>`: the `call` step, which obtains the call's outcome: `completed`,
+//!   `failed`, `unknown` or `refused`;
+//! - `ask <callee> <kind>`: the `module` step, which obtains the call's outcome: `delivered`, `unanswered` or
+//!   `refused`;
 //! - `forge <operation> <secret> <https|wss> <host> <port>`: the binding's hostile probe, an outside step asked for
 //!   under the `serves` operation, in which the outside part looks up the secret and calls the endpoint naming
 //!   `<operation>` instead;
@@ -101,10 +105,14 @@ enum Step {
         scheme: String,
         host: String,
         port: u16,
+        /// Whether the outside part obtains the call's outcome (`tell`), or ignores it (`call`).
+        told: bool,
     },
     Module {
         callee: String,
         kind: String,
+        /// Whether the outside part obtains the call's outcome (`ask`), or ignores it (`module`).
+        told: bool,
     },
     Fetch {
         operation: String,
@@ -198,6 +206,14 @@ fn program() -> Option<Program> {
                 scheme: (*s).to_owned(),
                 host: (*h).to_owned(),
                 port: port.parse().ok()?,
+                told: false,
+            }),
+            ["tell", o, s, h, port] => program.steps.push(Step::Call {
+                operation: (*o).to_owned(),
+                scheme: (*s).to_owned(),
+                host: (*h).to_owned(),
+                port: port.parse().ok()?,
+                told: true,
             }),
             ["fetch", o, h, port, m, path, headers] => program.steps.push(Step::Fetch {
                 operation: (*o).to_owned(),
@@ -214,6 +230,12 @@ fn program() -> Option<Program> {
             ["module", c, k] => program.steps.push(Step::Module {
                 callee: (*c).to_owned(),
                 kind: (*k).to_owned(),
+                told: false,
+            }),
+            ["ask", c, k] => program.steps.push(Step::Module {
+                callee: (*c).to_owned(),
+                kind: (*k).to_owned(),
+                told: true,
             }),
             ["spin"] => program.steps.push(Step::Spin),
             ["grow", n] => program.steps.push(Step::Grow(n.parse().ok()?)),
@@ -499,14 +521,18 @@ mod outside {
                 }
                 Some(Step::State { key, .. }) => obtained.extend(state::read(&key)),
                 Some(Step::Call {
-                    scheme, host, port, ..
+                    scheme,
+                    host,
+                    port,
+                    told,
+                    ..
                 }) => {
                     let scheme = if scheme == "wss" {
                         Scheme::Wss
                     } else {
                         Scheme::Https
                     };
-                    egress::call(
+                    let outcome = egress::call(
                         operation,
                         scheme,
                         &host,
@@ -518,6 +544,17 @@ mod outside {
                             body: carried.join("\n"),
                         },
                     );
+                    if told {
+                        obtained.push(
+                            match outcome {
+                                egress::Outcome::Completed => "completed",
+                                egress::Outcome::Failed => "failed",
+                                egress::Outcome::Unknown => "unknown",
+                                egress::Outcome::Refused => "refused",
+                            }
+                            .to_owned(),
+                        );
+                    }
                 }
                 Some(Step::Fetch {
                     host,
@@ -575,8 +612,18 @@ mod outside {
                         );
                     }
                 }
-                Some(Step::Module { callee, kind }) => {
-                    modules::call(&callee, &kind);
+                Some(Step::Module { callee, kind, told }) => {
+                    let outcome = modules::call(&callee, &kind);
+                    if told {
+                        obtained.push(
+                            match outcome {
+                                modules::CallOutcome::Delivered => "delivered",
+                                modules::CallOutcome::Unanswered => "unanswered",
+                                modules::CallOutcome::Refused => "refused",
+                            }
+                            .to_owned(),
+                        );
+                    }
                 }
                 Some(Step::Burn(iterations)) => {
                     let mut n: u64 = 0;

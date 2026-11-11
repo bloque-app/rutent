@@ -1,9 +1,19 @@
 # DEC-20: changes to these paths wait for the owner's review, after a separate security review.
-# Enforced only once main's protection requires code-owner review (an owner action, not this file).
+# main's protection requires code-owner review. enforce_admins is off, so the owner's own merge of the release
+# is the click.
 /contracts/                @pandres95
 /tools/contract-guard/     @pandres95
 /tools/licence-check/      @pandres95
 /licences/                 @pandres95
 /.github/                  @pandres95
+/components/prov/src/proxy/                 @pandres95
+/components/prov/src/egress/                @pandres95
+/components/prov/src/module/admission.rs    @pandres95
+/components/prov/src/module/platform.rs     @pandres95
+/components/prov/src/module/engine.rs       @pandres95
+/components/prov/src/module/bin/compiler.rs @pandres95
+/components/prov/src/catalogue/signature.rs @pandres95
+/components/core-authz/    @pandres95
+/components/core-audit/    @pandres95
 /experiments/2026-11-07-module-format/wasm-binding/  @pandres95
 /experiments/2026-11-07-module-format/pvm-binding/   @pandres95

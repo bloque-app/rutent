@@ -23,7 +23,7 @@
     }
   ],
   "outcome": {
-    "status": "refused",
+    "status": "refused_after_delivery",
     "reason": "redirect_to_undeclared_destination"
   }
 }

@@ -189,6 +189,15 @@ jobs:
         env:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+      # A skipped job ends green (a required check must not fail on a draw of runner), so the skip has a step of
+      # its own, named for it, and a heading in the step summary: the summary says no comparison was made.
+      - name: "Note: no cross-vendor re-derivation on this runner"
+        if: steps.cpu.outputs.skip == 'true'
+        run: |
+          {
+            echo "## No cross-vendor re-derivation on this runner: this run compared nothing across vendors"
+            echo "The job ended green because it skipped. Re-run it until it lands on a runner of the other vendor."
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: steps.cpu.outputs.skip != 'true'
         with:

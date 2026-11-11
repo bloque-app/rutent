@@ -1455,6 +1455,9 @@ dependencies = [
 [[package]]
 name = "rutent-boundary-check"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "rutent-conformance"
@@ -1568,6 +1571,12 @@ dependencies = [
 [[package]]
 name = "rutent-scenarios"
 version = "0.0.0"
+dependencies = [
+ "rutent-contracts",
+ "rutent-core-audit",
+ "rutent-core-authz",
+ "serde_json",
+]
 
 [[package]]
 name = "rutent-stm"

@@ -73,6 +73,22 @@ pub enum Probe {
         /// The secret.
         name: String,
     },
+    /// The outside part calls `endpoint` under `operation`, as the suite's `Step::Call` does, and obtains the
+    /// outcome the binding gives it: `completed`, `failed`, `unknown` or `refused`.
+    Tell {
+        /// The outside operation it is made under.
+        operation: String,
+        /// Where it calls.
+        endpoint: rutent_conformance::boundary::Endpoint,
+    },
+    /// The outside part calls `callee`'s module for `kind`, as the suite's `Step::CallModule` does, and obtains
+    /// the outcome the binding gives it: `delivered`, `unanswered` or `refused`.
+    Ask {
+        /// The provider called.
+        callee: String,
+        /// The kind named.
+        kind: OperationKind,
+    },
 }
 
 fn part(part: PartName) -> &'static str {
@@ -170,6 +186,20 @@ pub fn encode(spec: &ModuleSpec, probes: &[Probe]) -> String {
                 )
             }
             Probe::Reason { operation, name } => format!("reason {operation} {name}"),
+            Probe::Ask { callee, kind } => format!("ask {callee} {}", kind_name(*kind)),
+            Probe::Tell {
+                operation,
+                endpoint,
+            } => {
+                let scheme = match endpoint.scheme {
+                    Scheme::Https => "https",
+                    Scheme::Wss => "wss",
+                };
+                format!(
+                    "tell {operation} {scheme} {} {}",
+                    endpoint.host, endpoint.port
+                )
+            }
             Probe::Forge {
                 claimed,
                 secret,

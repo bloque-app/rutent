@@ -1753,6 +1753,15 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
     }
 }
 
+/// Which of the log's handles an entry came through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Through {
+    /// The general handle, [`calls::Log`](super::calls::Log): orchestration's and the checks'.
+    General,
+    /// Policy's handle, [`calls::PolicyLog`](super::calls::PolicyLog).
+    Policy,
+}
+
 /// Whether the log admits `entry`, given its `history`: each entry it holds with its receipt, in order. The log runs
 /// it on every append ([`calls::Log::append`](super::calls::Log::append)), since a permit, a receipt or an id can be
 /// built or read from anywhere. It reads [`RELATIONS`] row by row, and refuses on the first row the entry breaks:
@@ -1762,8 +1771,24 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry cites nothing and is admitted.
-pub fn admit_entry(history: &[(Receipt, Entry)], entry: &Entry) -> Result<(), Violation> {
+/// A stated entry cites nothing and is admitted. Before any row, the entry's handle is held to its kind: a decision
+/// kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry only on the
+/// general path, so a decision written by anyone but policy is refused even where its type was got round.
+pub fn admit_entry(
+    history: &[(Receipt, Entry)],
+    entry: &Entry,
+    through: Through,
+) -> Result<(), Violation> {
+    let decision = matches!(entry, Entry::Verified(v) if super::calls::is_decision(&v.what));
+    match (through, decision) {
+        (Through::General, true) => {
+            return Err(Violation(super::calls::DECISION_ON_THE_GENERAL_HANDLE));
+        }
+        (Through::Policy, false) => {
+            return Err(Violation(super::calls::RECORD_ON_THE_POLICY_HANDLE));
+        }
+        _ => {}
+    }
     let Entry::Verified(entry) = entry else {
         return Ok(());
     };

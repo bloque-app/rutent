@@ -322,6 +322,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/outcome", "required")],
         ),
         (
+            "outbound-call-record-refused-after-delivery-without-a-reason",
+            vec![("/outcome", "required")],
+        ),
+        (
             "outbound-call-record-completed-carrying-a-reason",
             vec![("/outcome", "additionalProperties")],
         ),
@@ -515,6 +519,18 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "outbound-call-record-unknown-ending-at-a-hop-that-matched-no-destination",
             one(RuleViolation::HopNotConnected { hop: 0 }),
+        ),
+        (
+            "outbound-call-record-refused-after-a-redirect-was-followed",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
+            "outbound-call-record-refused-with-its-hop-connected",
+            one(RuleViolation::RefusedThoughSent),
+        ),
+        (
+            "outbound-call-record-refused-after-delivery-with-nothing-sent",
+            one(RuleViolation::RefusedAfterDeliveryOfNothing),
         ),
         (
             "cross-module-call-to-its-own-provider",
@@ -1980,6 +1996,36 @@ fn lifecycle_refusals_are_distinct_reasons_that_print_their_names() {
     ] {
         assert_eq!(reason, name);
     }
+}
+
+// verifies: DEC-4, REQ-ORD-1, REQ-MDL-6, THR-4
+#[test]
+fn an_unknown_outcome_and_each_statement_key_failure_are_reasons_of_their_own() {
+    let platform = [
+        PlatformRefusal::Unavailable,
+        PlatformRefusal::StatementKeyUnavailable,
+        PlatformRefusal::StatementKeyMisconfigured,
+        PlatformRefusal::OutcomeUnknown,
+        PlatformRefusal::LimitReached,
+        PlatformRefusal::MalformedOutput,
+    ];
+    for (i, a) in platform.iter().enumerate() {
+        for b in &platform[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyUnavailable),
+        "StatementKeyUnavailable"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyMisconfigured),
+        "StatementKeyMisconfigured"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::OutcomeUnknown),
+        "OutcomeUnknown"
+    );
 }
 
 // verifies: DEC-4

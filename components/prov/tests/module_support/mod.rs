@@ -173,7 +173,14 @@ pub struct TestWorld {
     /// ([`statements_key`]).
     statement_keys: BTreeMap<String, String>,
     derive: Option<fn(&str) -> Ed25519Key>,
+    /// The world's clock, set by [`TestWorld::set_clock`]: [`WORLD_AT`] until it is.
+    clock: Option<Instant>,
+    /// The providers whose statement key the store can't give: the key store is down for them.
+    keys_down: BTreeSet<String>,
 }
+
+/// The test world's clock until a test sets it: 2026-11-07T00:00:00Z.
+pub const WORLD_AT: Instant = Instant(1_794_009_600);
 
 /// A request an endpoint received, as the connector would have sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +215,16 @@ impl TestWorld {
         self.derive = Some(derive);
     }
 
+    /// Sets the world's clock, which the platform's records take their times from.
+    pub fn set_clock(&mut self, at: Instant) {
+        self.clock = Some(at);
+    }
+
+    /// Takes down the store holding `provider`'s statement key: it is refused as `store_unavailable`.
+    pub fn make_key_store_unavailable(&mut self, provider: &str) {
+        self.keys_down.insert(provider.to_owned());
+    }
+
     /// Holds `key` as `provider`'s statement key, in place of the standard one.
     pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
         self.statement_keys.insert(
@@ -218,6 +235,16 @@ impl TestWorld {
 }
 
 impl World for TestWorld {
+    fn now(
+        &mut self,
+    ) -> Result<rutent_contracts::module_interface::Time, rutent_prov::module::platform::ClockError>
+    {
+        let at = self.clock.unwrap_or(WORLD_AT);
+        at.rfc3339()
+            .and_then(rutent_contracts::module_interface::Time::new)
+            .ok_or(rutent_prov::module::platform::ClockError::PastYear9999)
+    }
+
     fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
         let value = self
             .secrets
@@ -297,6 +324,9 @@ impl World for TestWorld {
         rutent_contracts::module_interface::SecretRefusalReason,
     > {
         let provider = caller.provider().as_str();
+        if self.keys_down.contains(provider) {
+            return Err(rutent_contracts::module_interface::SecretRefusalReason::StoreUnavailable);
+        }
         let key = self
             .statement_keys
             .get(provider)
@@ -323,6 +353,7 @@ pub struct WasmBinding {
     category: String,
     standins: PathBuf,
     limits: Vec<types::LimitEvent>,
+    unknown: Vec<types::UnknownOutcome>,
     /// Every release accepted, whose declared calls the suite's route names (`WasmBinding::handle`).
     accepted: Vec<Declaration>,
 }
@@ -365,6 +396,7 @@ impl WasmBinding {
             category: category.to_owned(),
             standins: standins(),
             limits: Vec::new(),
+            unknown: Vec::new(),
             accepted: Vec::new(),
         })
     }
@@ -372,6 +404,13 @@ impl WasmBinding {
     /// The limits modules hit since this was last asked, which the suite's events have no place for.
     pub fn take_limits(&mut self) -> Vec<types::LimitEvent> {
         std::mem::take(&mut self.limits)
+    }
+
+    /// The operations that ended as an outcome unknown since this was last asked, and what ended each, which the
+    /// suite's events have no place for either. Like [`WasmBinding::take_limits`], they are kept when the events
+    /// are taken.
+    pub fn take_unknown(&mut self) -> Vec<types::UnknownOutcome> {
+        std::mem::take(&mut self.unknown)
     }
 
     /// The directory the stand-ins are read from.
@@ -527,6 +566,7 @@ impl ModuleBinding for WasmBinding {
             types::Admitted::Unverified(_) => {
                 suite::Admitted::Refused(suite::AdmissionRefusal::AssertionUnverified)
             }
+            types::Admitted::ClockOutOfRange => panic!("the suite's clock is in range"),
         }
     }
 
@@ -599,6 +639,7 @@ impl ModuleBinding for WasmBinding {
     fn take_events(&mut self) -> suite::Events {
         let events = self.platform.take_events();
         self.limits.extend(events.limits);
+        self.unknown.extend(events.unknown);
         suite::Events {
             records: events.records,
             lookups: events
