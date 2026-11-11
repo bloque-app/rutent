@@ -441,13 +441,18 @@ impl<S: Store> Run<S> {
     }
 }
 
-/// `provider`'s advertisement for the test deployment, stating for `publisher`, signed with `key`.
+/// `provider`'s advertisement for the test deployment, stating for `publisher`, declaring its own ledger, signed with
+/// `key`.
 fn advertised(provider: &str, key: &Ed25519Key, publisher: &str) -> Vec<u8> {
     let context = SuiteContext {
         deployment: deployment(),
         ..SuiteContext::default()
     };
-    let mut value: Value = serde_json::from_slice(&advertisement(provider, &context)).unwrap();
+    // Each provider's ledger is its own private node, so no two publishers declare one node.
+    let own = String::from_utf8(advertisement(provider, &context))
+        .unwrap()
+        .replace("stand-in-ledger", &format!("{provider}-ledger"));
+    let mut value: Value = serde_json::from_str(&own).unwrap();
     value["statement"]["publisher"] = publisher.into();
     sign_value(&mut value, key);
     serde_json::to_vec(&value).unwrap()
@@ -2114,5 +2119,113 @@ fn a_catalogue_change_dated_off_the_logs_clock_or_behind_its_tuple_is_refused() 
         &statements_key("us-bank"),
         "tx-c-5",
         "2026-11-07T12:00:00Z"
+    ));
+}
+
+/// The catalogue's rules on what an advertisement declares hold in the log's register too: a successor naming
+/// another publisher, one offering no way to follow an outcome, and a first one declaring a private node another
+/// publisher declared each change no key; the provider's own, as the catalogue has it, signs in its key.
+// verifies: REQ-AUD-2, REQ-CAT-20, REQ-CAT-16
+#[test]
+fn an_advertisement_the_catalogue_would_refuse_changes_no_key() {
+    let mut run = Run::new(MemoryStore::new());
+    for p in ["us-bank", "fx-desk"] {
+        run.grant(p, GRANTED_AT);
+    }
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    let listed = |key: &Ed25519Key, purpose: &str| json!({"scheme": "ed25519", "public_key": public_key(key).as_str(), "purpose": purpose});
+    let fresh = signing_key("us-bank's key under another publisher", 11);
+    let successor = |made_at: &str, edit: &dyn Fn(&mut Value)| {
+        let mut ad: Value = serde_json::from_slice(&advertised(
+            "us-bank",
+            &advertising_key("us-bank"),
+            "us-bank",
+        ))
+        .unwrap();
+        ad["made_at"] = made_at.into();
+        ad["statement"]["keys"] = json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&fresh, "statements")
+        ]);
+        edit(&mut ad);
+        sign_value(&mut ad, &advertising_key("us-bank"));
+        serde_json::to_vec(&ad).unwrap()
+    };
+    // Another publisher.
+    run.advertise(
+        "us-bank",
+        &successor("2026-11-06T01:00:00Z", &|ad| {
+            ad["statement"]["publisher"] = "fx-desk".into()
+        }),
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-p-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    // No way to follow an outcome.
+    run.advertise(
+        "us-bank",
+        &successor("2026-11-06T02:00:00Z", &|ad| {
+            ad["statement"]["declarations"]["tracking"] = json!([])
+        }),
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-p-2",
+        "2026-11-06T15:04:05Z"
+    ));
+    // fx-desk's first advertisement, declaring us-bank's ledger.
+    let mut ad: Value = serde_json::from_slice(&advertised(
+        "fx-desk",
+        &advertising_key("fx-desk"),
+        "fx-desk",
+    ))
+    .unwrap();
+    let own = serde_json::to_string(&ad)
+        .unwrap()
+        .replace("fx-desk-ledger", "us-bank-ledger");
+    ad = serde_json::from_str(&own).unwrap();
+    sign_value(&mut ad, &advertising_key("fx-desk"));
+    run.advertise("fx-desk", &serde_json::to_vec(&ad).unwrap())
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-p-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    // The provider's own successor and first advertisement, as the catalogue has them.
+    run.advertise("us-bank", &successor("2026-11-06T03:00:00Z", &|_| {}))
+        .unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &fresh,
+        "tx-p-5",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.advertise(
+        "fx-desk",
+        &advertised("fx-desk", &advertising_key("fx-desk"), "fx-desk"),
+    )
+    .unwrap();
+    assert!(answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-p-6",
+        "2026-11-06T15:04:05Z"
     ));
 }

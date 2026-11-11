@@ -61,9 +61,15 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `Settings::operator_party`. A provider's grant is in force from an admitted `change_catalogue` effect of `grant`
   for one of its tuples until one of `revoke_grant` for it, each at its effect's own time. A provider's advertisement
   is a stated entry of the advertisement's shape whose bytes the evidence store keeps, held to provider-role's rules
-  and the catalogue's (`F-012`): this deployment and protocol version, `validate_statement`, every listed key a key
-  to accept, dated no more than the skew ahead of its `received_at`, a grant in force then, the signature strict, no
-  dropped `statements` key listed again, and no key across purposes for any provider.
+  and to the catalogue's (`F-012`) rules on keys and publishers: this deployment and protocol version,
+  `validate_statement`, every listed key a key to accept, a way to follow an outcome (`NoTracking`), dated no more
+  than the skew ahead of its `received_at`, a grant in force then, the signature strict, a successor naming the
+  same publisher (`ProviderChangedPublisher`), each private node it declares on record for no other publisher
+  (`NodeDeclaredByAnotherPublisher`), no dropped `statements` key listed again, and no key across purposes for any
+  provider. The catalogue's other rules on an advertisement are not the register's, since they bear on routing, not
+  on whose key signs: its declarations' record (`REQ-CAT-6`), a private node the operator lists as public
+  (`REQ-CAT-22`, whose list the log isn't given) and a provider the operator publishes (`REQ-MDL-1`, whose
+  statements the log verifies under no advertisement).
 - **First trust (a default, and an item).** `core-internal`'s `change_catalogue` action names a provider and a tuple
   but no key, so a grant's effect can't say which advertising key the operator trusts. Taking the first
   advertisement recorded after a grant would be trust on first use: orchestration could append a self-signed

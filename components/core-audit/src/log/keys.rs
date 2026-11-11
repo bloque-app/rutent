@@ -17,11 +17,14 @@
 //!   the entry's `received_at`. It is held to provider-role's rules and the catalogue's, as `F-012` holds them:
 //!   - it is this deployment's and protocol version's, of the advertisement's shape, and passes
 //!     `validate_statement`, every key it lists a canonical point that isn't of small order;
+//!   - it offers a way to follow an outcome, and each private node it declares is on record for no other
+//!     publisher;
 //!   - it is dated no more than the skew ahead of its `received_at`;
 //!   - **first trust is the operator's**: a provider's first advertisement is signed with an advertising key the
 //!     deployment's settings trust for it, and every advertising key it lists is one ([`Settings::first_trust`]).
 //!     Listing a key vouches for nothing;
-//!   - every later one passes `validate_successor` against the one accepted last, and is newer than it;
+//!   - every later one passes `validate_successor` against the one accepted last, and is newer than it, and names
+//!     the same publisher;
 //!   - its signature verifies, strictly;
 //!   - it lists no `statements` key an accepted advertisement of the provider dropped, and no key with the other
 //!     purpose than any accepted advertisement of any provider listed it for.
@@ -166,6 +169,8 @@ pub(super) struct Register {
     /// Each provider's tuples, each with its grants and revocations in the log's order: the time and whether it
     /// granted.
     grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool)>>>,
+    /// The publisher each private node an accepted advertisement declares is on record for.
+    nodes: BTreeMap<String, String>,
 }
 
 fn nanos(text: &str) -> Option<i128> {
@@ -279,6 +284,16 @@ impl Register {
             .ok()?;
         validate_statement(&statement).ok()?;
         let ad = &statement.statement;
+        // The catalogue's rules on what an advertisement declares (`REQ-CAT-16`, `REQ-CAT-20`): a way to follow an
+        // outcome, and each private node its publisher's alone.
+        if ad.declarations.tracking.is_empty()
+            || ad
+                .private_nodes
+                .iter()
+                .any(|n| self.nodes.get(n).is_some_and(|p| *p != ad.publisher))
+        {
+            return None;
+        }
         let made_at = nanos(&statement.made_at)?;
         let skew = i128::from(settings.clock_skew_seconds) * 1_000_000_000;
         if made_at > at.saturating_add(skew) || !self.in_force(&ad.provider, at) {
@@ -299,8 +314,14 @@ impl Register {
                     return None;
                 }
             }
-            // `validate_successor` holds it newer than `previous` too.
-            Some(previous) => validate_successor(&previous.statement, &statement).ok()?,
+            // `validate_successor` holds it newer than `previous` too. A provider's publisher never changes
+            // (the catalogue's `ProviderChangedPublisher`), so the party it states for doesn't either.
+            Some(previous) => {
+                validate_successor(&previous.statement, &statement).ok()?;
+                if previous.statement.statement.publisher != ad.publisher {
+                    return None;
+                }
+            }
         }
         verify_envelope(
             &statement.signature.key,
@@ -317,6 +338,10 @@ impl Register {
             if !seen.contains(&listed.public_key) {
                 seen.push(listed.public_key.clone());
             }
+        }
+        for node in &statement.statement.private_nodes {
+            self.nodes
+                .insert(node.clone(), statement.statement.publisher.clone());
         }
         let provider = statement.statement.provider.clone();
         self.ads
