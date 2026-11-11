@@ -1089,3 +1089,37 @@ fn read_the_log_refuses_is_recorded_as_refused() {
     let mut down = Engine::with_policy(Down, Rules::permitting(), lying());
     assert_eq!(down.check_read(&other), Err(AppendFailure::Unavailable));
 }
+
+/// Who the checker is is named to customers and providers, so they read it without a permission; any other resource
+/// of the deployment rests on a permission, whatever its name, even where the deployment's policy would allow it.
+// verifies: REQ-AUZ-7, REQ-AUD-10
+#[test]
+fn only_the_checkers_name_is_read_without_a_permission() {
+    let mut engine = Engine::with_policy(Kept::world(), Rules::permitting(), Says::default());
+    let resource = |name: &str| json!({"kind": "resource", "resource": name});
+    for (n, role) in [Role::Customer, Role::Provider].into_iter().enumerate() {
+        let reader = actor("cust-1", "cust-1", role);
+        let checker = read(
+            &format!("req-50{n}"),
+            reader.clone(),
+            resource("checker"),
+            None,
+        );
+        assert_eq!(
+            read_recorded(&mut engine, &checker),
+            ReadOutcome::Allowed {},
+            "{role:?}"
+        );
+        let keys = read(
+            &format!("req-51{n}"),
+            reader,
+            resource("operator_keys"),
+            None,
+        );
+        assert_eq!(read_recorded(&mut engine, &keys), refused(), "{role:?}");
+    }
+    assert_eq!(
+        engine.policy.1.ruled, 2,
+        "only the checker's name reached the deployment"
+    );
+}

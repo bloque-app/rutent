@@ -36,8 +36,9 @@
 //! - a provider reads only a segment it names itself the provider of, which the segment's record says
 //!   (`Source::SegmentProvider`), and never an order or the trail;
 //! - a regulator's or a checker's read names its permission;
-//! - a customer and a provider read a resource of the deployment, such as who its checker is (`REQ-AUD-10`), and any
-//!   party a kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`);
+//! - a customer and a provider read who the deployment's checker is ([`CHECKER`], `REQ-AUD-10`), and any party a
+//!   kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`); any other
+//!   resource rests on a permission;
 //! - any other read, the operator's, a verifier's and Core's own parts' included, rests on a permission.
 //!
 //! A read naming a permission is held to the register: the permission was granted, through
@@ -62,6 +63,10 @@ use crate::engine::{
     Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources, read_outcome,
     session_outcome,
 };
+
+/// The one resource of the deployment read without a permission: who its checker is, which `REQ-AUD-10` names to
+/// customers and providers. Any other resource rests on a permission.
+pub const CHECKER: &str = "checker";
 
 /// The longest a session may last, in seconds, from Core's now when it is asked for to when it ends. A session asked
 /// to last longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that
@@ -229,7 +234,7 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
 /// - a customer reads an order, or a segment of it, the order's record naming it a party, and never the trail;
 /// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order
 ///   or the trail;
-/// - a customer and a provider read a resource of the deployment, such as who its checker is (`REQ-AUD-10`);
+/// - a customer and a provider read who the deployment's checker is (`REQ-AUD-10`), and no other resource;
 /// - any party reads, without a permission, a kept statement the evidence store's record says is its own
 ///   (`REQ-AUD-5`);
 /// - any other read rests on a permission, which the register holds it to; a segment read as one of its order.
@@ -266,7 +271,11 @@ fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
                 segment: segment.clone(),
             },
         }],
-        (Role::Customer | Role::Provider, Read::Resource { .. }) => Vec::new(),
+        (Role::Customer | Role::Provider, Read::Resource { resource })
+            if resource.as_str() == CHECKER =>
+        {
+            Vec::new()
+        }
         (_, Read::Evidence { commitment }) if !permitted => vec![Need {
             input: party.clone(),
             from: Source::Statement(commitment.clone()),
