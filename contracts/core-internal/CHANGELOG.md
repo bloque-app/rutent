@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 105 valid fixtures and 105 invalid ones, each
-  breaking one rule, and 219 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 224 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -77,5 +77,9 @@
   (DEC-4, DEC-20, REQ-ORD-32, REQ-ORD-38, REQ-AUD-2, REQ-AUZ-7, T-020-01)
 - Folded into 1.0.0 before its release: graded evidence claiming a signature rests on verified statements. Every
   statement a grade-2 or grade-3 evidence entry cites must be one the log verified; a grade-1 public record rests on
-  the network and a grade-4 bare statement claims no signature, so neither is held to it. 219 admission cases and 20
-  attribution cases. (DEC-4, DEC-20, REQ-ORD-39, REQ-AUD-2, T-020-01)
+  the network. (DEC-4, DEC-20, REQ-ORD-39, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: evidence of any grade is bound to its order and segment. A grade-4 bare
+  statement is its provider's word, so it rests on a verified statement made by the provider this log's `move_value`
+  names for the segment (`REQ-ORD-38`, `REQ-AUD-2`); and a statement that isn't verified, which only a grade-1 public
+  record may rest on, must name a transaction bound to the evidence's order and segment. 224 admission cases and 20
+  attribution cases. (DEC-4, DEC-20, REQ-ORD-38, REQ-ORD-39, REQ-AUD-2, T-020-01)

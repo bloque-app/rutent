@@ -1,6 +1,6 @@
 {
   "row": "evidence-rests-on-statements",
-  "breaks": null,
+  "breaks": "bound",
   "history": [
     {
       "receipt": {
@@ -347,11 +347,6 @@
         "commitment": {
           "algorithm": "sha-256",
           "value": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-        },
-        "about": {
-          "order": "ord-1",
-          "transaction": "tx-b1",
-          "segment": "p1-s1"
         }
       }
     },
@@ -1302,7 +1297,7 @@
       "evidence": "ev-0007",
       "order": "ord-1",
       "segment": "p1-s1",
-      "grade": 4,
+      "grade": 1,
       "whose": "bank-co",
       "rests_on": [
         {

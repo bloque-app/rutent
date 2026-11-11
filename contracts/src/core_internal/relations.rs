@@ -138,6 +138,24 @@ fn effect_action(entry: &VerifiedEntry) -> Option<(&Action, &Permit)> {
     }
 }
 
+/// The provider of `segment` of `order`: the one this log's `move_value` effect for it names.
+fn segment_provider<'a>(order: &Id, segment: &Id, history: &'a History) -> Option<&'a Id> {
+    history
+        .iter()
+        .find_map(|(_, e)| match effect_action(verified(e)?)? {
+            (
+                Action::MoveValue {
+                    order: o,
+                    segment: s,
+                    provider,
+                    ..
+                },
+                _,
+            ) if o == order && s == segment => Some(provider),
+            _ => None,
+        })
+}
+
 /// The citing entry's recorded input, if it records one.
 fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
     match &entry.what {
@@ -1030,13 +1048,21 @@ pub static RELATIONS: [Relation; 47] = [
     },
     Relation {
         name: "evidence-rests-on-statements",
-        spec: &["REQ-ORD-39"],
+        spec: &["REQ-ORD-39", "REQ-ORD-38", "REQ-AUD-2"],
         quantifier: Quantifier::Exists,
         refusal: "graded evidence rests on stated entries of this log",
         fields: &[
             (
                 "verified",
-                "evidence graded as signed, by another party or by the provider, rests on verified statements",
+                "evidence graded as signed, or as its provider's word, rests on verified statements",
+            ),
+            (
+                "provider",
+                "evidence graded as its provider's word rests on its segment's provider's statement",
+            ),
+            (
+                "bound",
+                "an unverified statement under evidence names a transaction of its order and segment",
             ),
             (
                 "about",
@@ -1061,16 +1087,25 @@ pub static RELATIONS: [Relation; 47] = [
                 },
                 Some(s),
             ) => {
-                // Grades 2 and 3 claim a signature, so each statement they rest on is one the log verified; a
-                // public record (1) rests on the network, and a bare statement (4) claims nothing more.
-                let signed = matches!(
-                    grade,
-                    EvidenceGrade::SignedByAnotherParty | EvidenceGrade::SignedByProvider
-                );
+                // Grades 2 and 3 claim a signature, and a bare statement (4) is its provider's word, which an
+                // unverified statement is no one's (`REQ-AUD-2`, `REQ-ORD-38`): each rests on a statement the log
+                // verified, a bare statement on the segment's provider's. A public record (1) rests on the network,
+                // so its statement may be unverified, but like any it is bound to the order and segment through a
+                // transaction it names.
+                let verified = matches!(s.attribution, Attribution::Verified { .. });
+                let word = *grade == EvidenceGrade::Statement;
+                let provider = segment_provider(order, segment, h);
                 judge(
                     true,
                     &[
-                        !signed || matches!(s.attribution, Attribution::Verified { .. }),
+                        verified || *grade == EvidenceGrade::PublicRecord,
+                        !word || provider == Some(maker(s)),
+                        verified
+                            || s.about
+                                .as_ref()
+                                .and_then(|a| a.transaction.as_ref())
+                                .and_then(|t| binding_of(t, h))
+                                == Some((order, Some(segment))),
                         about_agrees(s, Some(order), Some(segment), h),
                     ],
                 )
