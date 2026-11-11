@@ -188,10 +188,12 @@ pub trait KeptStatements {
     fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure>;
 }
 
-/// Whose keys sign statements here, as the log reads them to attribute a statement: from the catalogue the state
-/// machine holds, a provider's `statements` keys from its advertisements, and the operator's key from the
-/// deployment. `T-022-01`'s log reads them itself, through `rutent-stm`, which `core-audit` may import; never from
-/// orchestration, which could otherwise name its own key a provider's and sign that provider's word.
+/// Whose keys sign statements here, as the log reads them to attribute a statement: a provider's `statements` keys
+/// from its advertisements, and the operator's key, which signs Core's questions, from the deployment. The catalogue
+/// the state machine holds is state orchestration drives, so `T-022-01`'s log takes a provider's keys only from
+/// advertisements it recorded itself under permitted `change_catalogue` effects; never from orchestration, which
+/// could otherwise name its own key a provider's and sign that provider's word. A key is current at the statement's
+/// own `made_at`, so a key revoked since still verifies a statement dated before (`THR-3`, a residual).
 pub trait StatementKeys {
     /// This deployment, which every statement made for it names (`REQ-PRT-1`).
     fn deployment(&mut self) -> Result<Deployment, AppendFailure>;

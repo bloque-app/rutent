@@ -1508,7 +1508,7 @@ fn attributed(claim: &StatedEntry, source: &Sources) -> StatedEntry {
 #[test]
 fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
     let case = read_json(&contract_dir().join("fixtures/admission/world--acc1.json"));
-    let mut history: Vec<(Receipt, Entry)> = case["history"]
+    let history: Vec<(Receipt, Entry)> = case["history"]
         .as_array()
         .unwrap()
         .iter()
@@ -1572,26 +1572,84 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
     replayed[slot].1 = Entry::Stated(moved);
     assert!(admit_entry(&replayed, &acceptance, Through::General).is_err());
 
-    // Re-appended for another order with its transaction kept: the bytes bear it out, but the transaction is the
-    // first entry's, under its order, so the log refuses it.
+    // Re-appended for another order with its transaction kept: the bytes bear it out, but Core asked the question
+    // under that transaction for the yes's own order, so the log refuses it.
     let kept = attributed(
         &as_claim(serde_json::json!({"order": other, "transaction": transaction})),
         &signed,
     );
     assert!(matches!(kept.attribution, Attribution::Verified { .. }));
     assert_eq!(
-        admit_entry(&history, &Entry::Stated(kept), Through::General),
-        Err(Violation(STATED_RELATIONS[0].refusal))
+        admit_entry(&history, &Entry::Stated(kept.clone()), Through::General),
+        Err(Violation(
+            "an answer is about the order its question asked for"
+        ))
+    );
+    // Behind a question asked again under the same transaction with a false label, the first entry naming the
+    // transaction still fixed its order.
+    let question_at = history
+        .iter()
+        .position(|(_, e)| {
+            matches!(e, Entry::Stated(q) if q.what.statement.as_str() == "urn:rutent:provider-role:operation"
+                && q.about.as_ref().and_then(|a| a.transaction.as_ref()) == Some(&transaction))
+        })
+        .expect("Core asked the yes's question before it");
+    assert!(question_at < slot, "the question comes before its answer");
+    let Entry::Stated(question) = history[question_at].1.clone() else {
+        unreachable!()
+    };
+    let mut relabelled = question.clone();
+    relabelled.about = Some(
+        serde_json::from_value(serde_json::json!({"order": other, "transaction": transaction}))
+            .unwrap(),
+    );
+    let mut with_false_label = history.clone();
+    with_false_label.push((
+        serde_json::from_value(serde_json::json!({
+            "log": "log-main", "index": 9000,
+            "entry": {"algorithm": "sha-256", "value": "fe".repeat(32)},
+        }))
+        .unwrap(),
+        Entry::Stated(relabelled),
+    ));
+    assert_eq!(
+        admit_entry(
+            &with_false_label,
+            &Entry::Stated(kept.clone()),
+            Through::General
+        ),
+        Err(Violation(stated_row("transaction-belongs-to-one-order")))
     );
 
-    // The same yes appended again for its own order is the same order's, and admitted.
-    history.truncate(slot);
+    // The reviewer's order of events: the genuine yes appended first, before Core's question is in the log, under
+    // another order with its transaction kept. With no question asked under it for that order, it is refused, and
+    // the genuine question and answer that follow are admitted.
+    let before: Vec<(Receipt, Entry)> = history[..question_at].to_vec();
+    assert_eq!(
+        admit_entry(&before, &Entry::Stated(kept), Through::General),
+        Err(Violation(stated_row("answer-follows-its-question")))
+    );
+    let mut genuine = before.clone();
+    assert_eq!(
+        admit_entry(&genuine, &Entry::Stated(question.clone()), Through::General),
+        Ok(())
+    );
+    genuine.push(history[question_at].clone());
     let again = attributed(&yes_claim(&yes), &signed);
     assert_eq!(again.attribution, yes.attribution);
     assert_eq!(
-        admit_entry(&history, &Entry::Stated(again), Through::General),
+        admit_entry(&genuine, &Entry::Stated(again), Through::General),
         Ok(())
     );
+}
+
+/// The refusal of the stated entries' row `name`.
+fn stated_row(name: &str) -> &'static str {
+    STATED_RELATIONS
+        .iter()
+        .find(|r| r.name == name)
+        .unwrap()
+        .refusal
 }
 
 fn yes_claim(yes: &StatedEntry) -> StatedEntry {

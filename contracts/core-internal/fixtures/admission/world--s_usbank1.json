@@ -47,6 +47,51 @@
           "status": "permitted"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 101,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0202020202020202020202020202020202020202020202020202020202020202"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "core-orch",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-yes-1"
+        }
+      }
     }
   ],
   "entry": {
