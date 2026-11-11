@@ -16,10 +16,10 @@ use rutent_contracts::core_internal::{
     PersonQuestion, ReadCheck, Receipt, Role, RoutingRound, What,
 };
 use rutent_contracts::provider_role::{
-    Advertisement, EvidenceGrade, PublicKey, RESULT_SHAPE, SafeInteger, Statement,
+    Advertisement, EvidenceGrade, JUDGEMENT_SHAPE, PublicKey, RESULT_SHAPE, SafeInteger, Statement,
 };
 use rutent_contracts::router_api::{
-    FeeFormula, Id, PolicyBounds, Request, Timestamp, TupleKey, Version,
+    FeeFormula, Id, PolicyBounds, Request, Router, Timestamp, TupleKey, Version,
 };
 use rutent_core_orch::rounds::{
     self, Fresh, History, Issued, OperatorKey, Order, Parts, Presence, Providers, Routed, Routing,
@@ -282,7 +282,14 @@ impl Providers for Sim {
         let now = self.clock.now().seconds;
         self.clock.set(now + 1);
         if operation["kind"] == "judgement" {
-            return None;
+            let body = json!({
+                "subject": operation["subject"],
+                "class": operation["class"],
+                "answer": "yes",
+                "valid_until": Instant(now + 86_400).rfc3339().unwrap(),
+            });
+            let value = envelope(&deployment(), JUDGEMENT_SHAPE, &provider, now, body);
+            return Some(sign(value, &statements_key(&provider, 1)));
         }
         let fee = self.fees.get(&provider).copied().unwrap_or(0);
         let value = answer(
@@ -350,8 +357,18 @@ impl Env {
         Sim::new(self.clock.clone())
     }
 
-    /// Runs one routing.
+    /// Runs one routing with `RouteFinder`.
     pub fn route(
+        &mut self,
+        sim: &mut Sim,
+        routing: Routing<'_>,
+        history: &mut History,
+    ) -> Result<Routed, RoutingError> {
+        self.route_with::<RouteFinder>(sim, routing, history)
+    }
+
+    /// Runs one routing with router `R`.
+    pub fn route_with<R: Router>(
         &mut self,
         sim: &mut Sim,
         routing: Routing<'_>,
@@ -371,7 +388,7 @@ impl Env {
             fresh: &mut *self.ids,
             issued: &mut self.issued,
         };
-        rounds::route::<RouteFinder>(&mut parts, routing, history)
+        rounds::route::<R>(&mut parts, routing, history)
     }
 
     /// Every `decision_record` entry, with its place in the log.
@@ -483,15 +500,17 @@ pub fn excluding(bounds: &PolicyBounds, providers: &[&str]) -> PolicyBounds {
     serde_json::from_value(value).unwrap()
 }
 
-// A ramp between two networks --------------------------------------------------------------------------------------
+// Ramps between two networks --------------------------------------------------------------------------------------
 
-/// The two reserves on `polygon` an order may leave from; the second charges 10 to withdraw.
+/// The reserve on `polygon` the order leaves from.
 pub const FREE_RESERVE: &str = "polygon-reserve-a";
-pub const DEAR_RESERVE: &str = "polygon-reserve-b";
 /// The reserve on `base` it arrives at.
 pub const BASE_RESERVE: &str = "base-reserve";
-/// The ramp from `polygon` to `base`.
-pub const RAMP: &str = "bridge";
+/// Two ramps from `polygon` to `mid`; the second charges 10.
+pub const RAMP_A: &str = "bridge-a";
+pub const RAMP_B: &str = "bridge-b";
+/// The ramp from `mid` to `base`, which both paths reach.
+pub const RAMP_C: &str = "bridge-c";
 
 fn polygon_to_base(value: &mut Value) {
     match value {
@@ -502,16 +521,16 @@ fn polygon_to_base(value: &mut Value) {
     }
 }
 
-/// A ramp's advertisement, from `polygon` to `base`, in USDC.
-pub fn ramp_ad(provider: &str) -> Advertisement {
+/// A ramp's advertisement, from `origin` to `destination`, in USDC.
+pub fn ramp_ad(provider: &str, origin: &str, destination: &str) -> Advertisement {
     serde_json::from_value(json!({
         "provider": provider,
         "publisher": "acme",
         "version": "1.0.0",
         "keys": [],
         "offers": { "ramp": { "tuples": [{
-            "origin": "polygon",
-            "destination": "base",
+            "origin": origin,
+            "destination": destination,
             "asset": "USDC",
             "decimals": { "origin": 6, "destination": 6 },
             "terms": {
@@ -530,6 +549,20 @@ pub fn ramp_ad(provider: &str) -> Advertisement {
     .unwrap()
 }
 
+fn bond() -> ReversalCapacity {
+    ReversalCapacity::check(
+        Bond {
+            asset: "USDC".into(),
+            amount: 1_000,
+            held_by: "escrow-co".into(),
+        },
+        500,
+        "ops-lead",
+        Instant(1_000),
+    )
+    .unwrap()
+}
+
 fn grant_of(id: &str, ad: &Advertisement, category: Category) -> Grant {
     Grant::new(GrantTerms {
         id: id.into(),
@@ -539,29 +572,71 @@ fn grant_of(id: &str, ad: &Advertisement, category: Category) -> Grant {
         granted_at: Instant(1_000),
         expires_at: Instant(100_000),
         categories: vec![category],
-        tuples: tuples_of(ad),
-        reversal_capacity: ReversalCapacity::check(
-            Bond {
-                asset: "USDC".into(),
-                amount: 1_000,
-                held_by: "escrow-co".into(),
-            },
-            500,
-            "ops-lead",
-            Instant(1_000),
-        )
-        .unwrap(),
+        tuples: if category == Category::Verifier {
+            Vec::new()
+        } else {
+            tuples_of(ad)
+        },
+        reversal_capacity: bond(),
     })
     .unwrap()
 }
 
-/// A catalogue of two reserves on `polygon`, one on `base`, and a ramp between them, each joined at
-/// [`JOINED_AT`].
+/// Joins `ad` to `catalogue` under a grant of `category`, listing its first statements key.
+fn join(catalogue: &mut Catalogue, grant: &str, ad: &Advertisement, category: Category) {
+    catalogue.grant(grant_of(grant, ad, category)).unwrap();
+    catalogue
+        .trust_advertising_key(grant, public_key(&advertising_key(&ad.provider)))
+        .unwrap();
+    let keys = keys_of(&ad.provider, &[&statements_key(&ad.provider, 1)]);
+    catalogue
+        .join(
+            &advertisement_bytes(ad, keys, JOINED_AT),
+            Instant(JOINED_AT),
+        )
+        .unwrap();
+    catalogue.set_module_version(&ad.provider, Version::new("1.0.0").unwrap());
+    for key in tuples_of(ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+}
+
+/// A verifier's advertisement, from provider-role's fixture, as `provider`: it judges `kyc.natural_person` and
+/// `aml.sanctions_screening`.
+pub fn verifier_ad(provider: &str) -> Advertisement {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../contracts/provider-role/fixtures/valid/advertisement-verifier-without-evidence-or-retry-declarations.json",
+    );
+    let ad: Statement<Advertisement> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut ad = ad.statement;
+    ad.provider = provider.into();
+    ad
+}
+
+impl Env {
+    /// Joins a verifier to the catalogue, granted judgements until 100 000, with an accepted release.
+    pub fn add_verifier(&mut self, provider: &str) {
+        let ad = verifier_ad(provider);
+        join(
+            &mut self.catalogue,
+            &format!("g-{provider}"),
+            &ad,
+            Category::Verifier,
+        );
+        self.releases
+            .record(&accepted_release(provider, json!([])))
+            .unwrap();
+    }
+}
+
+/// A catalogue of a reserve on `polygon`, one on `base`, two ramps from `polygon` to `mid` and one from `mid` to
+/// `base`, each joined at [`JOINED_AT`].
 pub fn ramp_catalogue() -> Catalogue {
     let mut catalogue = Catalogue::new();
     catalogue.set_context(deployment(), rutent_contracts::provider_role::VERSION);
     catalogue.publish_operator_module("wallet-module").unwrap();
-    for node in ["polygon", "base"] {
+    for node in ["polygon", "mid", "base"] {
         catalogue.add_public_node(node).unwrap();
         catalogue
             .register_public_holding(node, "wallet-module")
@@ -573,27 +648,13 @@ pub fn ramp_catalogue() -> Catalogue {
     base.offers = serde_json::from_value(offers).unwrap();
     let ads = [
         (reserve(FREE_RESERVE, "acme"), Category::Reserve),
-        (reserve(DEAR_RESERVE, "acme"), Category::Reserve),
         (base, Category::Reserve),
-        (ramp_ad(RAMP), Category::Ramp),
+        (ramp_ad(RAMP_A, "polygon", "mid"), Category::Ramp),
+        (ramp_ad(RAMP_B, "polygon", "mid"), Category::Ramp),
+        (ramp_ad(RAMP_C, "mid", "base"), Category::Ramp),
     ];
     for (i, (ad, category)) in ads.iter().enumerate() {
-        let grant = format!("g-{i}");
-        catalogue.grant(grant_of(&grant, ad, *category)).unwrap();
-        catalogue
-            .trust_advertising_key(&grant, public_key(&advertising_key(&ad.provider)))
-            .unwrap();
-        let keys = keys_of(&ad.provider, &[&statements_key(&ad.provider, 1)]);
-        catalogue
-            .join(
-                &advertisement_bytes(ad, keys, JOINED_AT),
-                Instant(JOINED_AT),
-            )
-            .unwrap();
-        catalogue.set_module_version(&ad.provider, Version::new("1.0.0").unwrap());
-        for key in tuples_of(ad) {
-            catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
-        }
+        join(&mut catalogue, &format!("g-{i}"), ad, *category);
     }
     catalogue
 }
@@ -609,9 +670,9 @@ fn tuple(provider: &str, from: Value, to: Value) -> TupleKey {
     .unwrap()
 }
 
-/// The ramp's tuple.
+/// The ramp both paths reach.
 pub fn ramp_tuple() -> TupleKey {
-    tuple(RAMP, json!("polygon"), json!("base"))
+    tuple(RAMP_C, json!("mid"), json!("base"))
 }
 
 /// A price of a flat `fee` and a minute's settlement for `tuple`, stated at [`JOINED_AT`].
@@ -628,8 +689,8 @@ pub fn priced(tuple: TupleKey, fee: u64) -> Price {
     }
 }
 
-/// Moving 1 000 USDC units from `polygon` to `base` over the ramp catalogue, from [`FREE_RESERVE`]; the dear
-/// reserve's price charges 10 to withdraw.
+/// Moving 1 000 USDC units from `polygon` to `base` over the ramp catalogue, from [`FREE_RESERVE`]: through
+/// [`RAMP_A`] free, or [`RAMP_B`] for 10, then [`RAMP_C`].
 pub fn polygon_to_base_inputs() -> Inputs {
     let outer = |network: &str| json!({ "network": network });
     let request = serde_json::from_value(json!({
@@ -646,7 +707,8 @@ pub fn polygon_to_base_inputs() -> Inputs {
         bounds: no_ceilings(),
         prices: vec![
             priced(tuple(FREE_RESERVE, outer("polygon"), json!("polygon")), 0),
-            priced(tuple(DEAR_RESERVE, outer("polygon"), json!("polygon")), 10),
+            priced(tuple(RAMP_A, json!("polygon"), json!("mid")), 0),
+            priced(tuple(RAMP_B, json!("polygon"), json!("mid")), 10),
             priced(ramp_tuple(), 0),
             priced(tuple(BASE_RESERVE, json!("base"), outer("base")), 0),
         ],
@@ -654,6 +716,15 @@ pub fn polygon_to_base_inputs() -> Inputs {
         core: core_actor(),
         operator: operator(),
     }
+}
+
+/// The ramp scenario: [`RAMP_A`] refuses and [`RAMP_B`] charges 10, so the choice round has only the dear path,
+/// which reaches [`RAMP_C`] with 990 after it was asked at 1 000.
+pub fn ramp_sim(env: &Env) -> Sim {
+    let mut sim = env.sim();
+    sim.refuse.insert(RAMP_A.into());
+    sim.fees.insert(RAMP_B.into(), 10);
+    sim
 }
 
 /// A statement's bytes, as a JSON value.

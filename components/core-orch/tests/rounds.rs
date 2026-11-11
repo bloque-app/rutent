@@ -1,15 +1,21 @@
 //! The routing rounds (`T-020-06`): two rounds per routing, questions only to the shortlist, each its own
-//! transaction, the reserve's yes in the user's session, and every record chained and logged in order.
+//! transaction, the origin reserve's yes in the user's session, and every record chained and logged in order.
 
 mod rounds_support;
 mod snapshot_support;
 
+use std::cell::RefCell;
+
 use rounds_support::*;
-use rutent_contracts::core_internal::{About, Entry, RoutingRound, What};
-use rutent_contracts::router_api::{DropReason, FigureValue, Round};
-use rutent_core_orch::rounds::{History, Need, NotOffered, Offer, RoutingError};
-use rutent_core_orch::rounds::{Presence, Routed};
-use rutent_prov::catalogue::CheckRefusal;
+use rutent_contracts::core_internal::{About, Authority, Entry, RoutingRound, What};
+use rutent_contracts::provider_role::{JUDGEMENT_SHAPE, VoidedBy};
+use rutent_contracts::router_api::{
+    CatalogueSnapshot, DecisionRecord, DropReason, FigureValue, PolicyBounds, Request, Round,
+    Router,
+};
+use rutent_core_orch::rounds::{History, Need, NotOffered, Offer, Presence, Routed, RoutingError};
+use rutent_prov::catalogue::{CheckRefusal, Instant};
+use rutent_router::RouteFinder;
 use serde_json::json;
 use snapshot_support::*;
 
@@ -18,8 +24,15 @@ fn run(env: &mut Env, sim: &mut Sim, inputs: &Inputs) -> Routed {
         .expect("the routing runs")
 }
 
-fn last_choice(routed: &Routed) -> &rutent_contracts::router_api::DecisionRecord {
+fn last_choice(routed: &Routed) -> &DecisionRecord {
     &routed.choices.last().expect("a choice round").record
+}
+
+fn withdrawals_asked(sim: &Sim, provider: &str) -> usize {
+    sim.asked(provider)
+        .iter()
+        .filter(|op| op["kind"] == "withdrawal")
+        .count()
 }
 
 // verifies: REQ-ORD-32
@@ -36,19 +49,39 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
         "{:?}",
         routed.offer
     );
-    assert!(
-        sim.asked(RESERVE)
-            .iter()
-            .all(|op| op["kind"] != "withdrawal"),
-        "the reserve was asked about the holder's funds outside a session"
-    );
+    assert_eq!(withdrawals_asked(&sim, RESERVE), 0);
     assert_eq!(
         routed.refused_checks,
         vec![(id(RESERVE), CheckRefusal::NoSession)]
     );
 
-    // In the user's session, the route is offered on the reserve's yes: the receipt it names is of the reserve's
-    // own answer, appended about the order and the transaction Core asked it under.
+    // Only the origin reserve's yes counts: with the origin refusing, another reserve that could withdraw is
+    // excluded from the routing, asked nothing about the holder's funds, and gives no route.
+    let mut inputs = on_polygon(&[RESERVE, SIBLING], RESERVE);
+    inputs.bounds = no_ceilings();
+    let reserves = [(RESERVE, "acme"), (SIBLING, "acme")];
+    let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
+    let mut sim = env.sim();
+    sim.refuse.insert(RESERVE.into());
+    let routed = run(&mut env, &mut sim, &inputs);
+    assert!(
+        matches!(routed.offer, Offer::NotOffered(_)),
+        "{:?}",
+        routed.offer
+    );
+    assert_eq!(withdrawals_asked(&sim, SIBLING), 0);
+    assert!(
+        routed
+            .shortlist
+            .record
+            .bounds
+            .excluded_tuples
+            .contains(&withdrawal_tuple(SIBLING))
+    );
+
+    // In the user's session, the route is offered on the origin reserve's yes: the receipt it names is of the
+    // reserve's own answer, appended about the order and the transaction Core asked it under.
+    let inputs = on_polygon(&[RESERVE], RESERVE);
     let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
     let mut sim = env.sim();
     let routed = run(&mut env, &mut sim, &inputs);
@@ -67,7 +100,7 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
     let withdrawal = routed
         .sent
         .iter()
-        .find(|s| s.provider == id(RESERVE) && s.tuple == withdrawal_tuple(RESERVE))
+        .find(|s| s.tuple == withdrawal_tuple(RESERVE))
         .expect("the withdrawal was asked");
     let Entry::Stated(entry) = &env.log.entries[yes.index.get() as usize] else {
         panic!("the yes is a stated entry");
@@ -78,7 +111,7 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
         Some(About {
             order: Some(id(ORDER)),
             segment: None,
-            transaction: withdrawal.transaction.clone(),
+            transaction: Some(withdrawal.transaction.clone()),
         })
     );
 }
@@ -130,7 +163,10 @@ fn yes_carried_by_the_user_is_refused() {
         .iter()
         .find(|s| s.tuple == withdrawal_tuple(RESERVE))
         .unwrap();
-    assert_eq!(entry.about.as_ref().unwrap().transaction, asked.transaction);
+    assert_eq!(
+        entry.about.as_ref().unwrap().transaction.as_ref(),
+        Some(&asked.transaction)
+    );
 }
 
 // verifies: REQ-CAT-3
@@ -145,80 +181,72 @@ fn own_order_is_claimed_only_for_a_check_that_belongs_to_the_holders_order() {
     let mut sim = env.sim();
     let _ = run(&mut env, &mut sim, &inputs);
     let checks = env.catalogue.check_log("acct-1");
-    let of = |provider: &str| {
-        checks
-            .iter()
-            .find(|c| c.provider == provider)
-            .unwrap_or_else(|| panic!("{provider} was checked"))
+    // The one check is the withdrawal at the order's origin reserve, the holder's own order: logged, not
+    // counted. The other reserve isn't checked at all.
+    let [check] = checks.as_slice() else {
+        panic!("one check: {checks:?}");
     };
-    // The withdrawal at the order's origin reserve is the holder's own order: logged, not counted.
-    assert_eq!(of(RESERVE).own_order.as_deref(), Some(ORDER));
-    assert!(!of(RESERVE).counted);
-    // The one at the other reserve isn't: it counts.
-    assert_eq!(of(SIBLING).own_order, None);
-    assert!(of(SIBLING).counted);
+    assert_eq!(check.provider, RESERVE);
+    assert_eq!(check.own_order.as_deref(), Some(ORDER));
+    assert!(!check.counted);
     assert_eq!(
-        env.catalogue
-            .counted_checks("acct-1", rutent_prov::catalogue::Instant(START + 60)),
-        1
+        env.catalogue.counted_checks("acct-1", Instant(START + 60)),
+        0
     );
 }
 
 // verifies: REQ-QTE-1
 #[test]
 fn operation_asked_at_another_amount_is_dropped_as_quote_voided_citing_that_quote() {
-    // The ramp is asked at the free reserve's 1 000, the path ranked first. The free reserve then refuses, so the
-    // choice round has only the dear reserve's path, which reaches the ramp with 990: the ramp's quote at 1 000
-    // lists `amount_changes`, so it is void for 990, and Core asks again at 990.
+    // The last ramp is asked at the free path's 1 000, the path ranked first. The free ramp then refuses, so the
+    // choice round has only the dear path, which reaches the last ramp with 990: its quote at 1 000 lists
+    // `amount_changes`, so it is void for 990.
     let inputs = polygon_to_base_inputs();
     let mut env = Env::new(ramp_catalogue(), true, 100);
-    let mut sim = env.sim();
-    sim.refuse.insert(FREE_RESERVE.into());
-    sim.fees.insert(DEAR_RESERVE.into(), 10);
+    let mut sim = ramp_sim(&env);
     let routed = run(&mut env, &mut sim, &inputs);
 
     let first = &routed.choices[0].record;
     assert!(first.chosen.is_none());
-    let [voided] = routed.voided.as_slice() else {
-        panic!("one voided quote: {:?}", routed.voided);
-    };
-    assert_eq!(voided.record, first.request.request_id);
-    assert_eq!(voided.tuple, ramp_tuple());
-    assert_eq!(
-        (voided.quoted.as_str(), voided.needed.amount().as_str()),
-        ("1000", "990")
-    );
-    let figure = first
-        .snapshot
-        .figures
-        .iter()
-        .find(|f| f.figure_id == voided.figure)
-        .expect("the voided quote is in the round's snapshot");
-    let FigureValue::FreshQuote { quote, .. } = &figure.value else {
-        panic!("the voided figure is a fresh quote");
-    };
-    assert_eq!(quote.maker, RAMP);
-    // The router's record keeps the dear path unconfirmed, at the ramp, at 990.
     let dear = first
         .candidates
         .iter()
-        .find(|c| c.parts.first().operations.first().provider == id(DEAR_RESERVE))
-        .unwrap();
-    assert!(matches!(
-        dear.dropped,
-        Some(DropReason::Unconfirmed {
-            part: 0,
-            operation: 1
+        .find(|c| {
+            c.parts
+                .first()
+                .operations
+                .iter()
+                .any(|o| o.provider == id(RAMP_B))
         })
-    ));
+        .unwrap();
+    let Some(DropReason::QuoteVoided { figure, condition }) = &dear.dropped else {
+        panic!("dropped as {:?}", dear.dropped);
+    };
+    assert_eq!(*condition, VoidedBy::AmountChanges);
+    let quote = first
+        .snapshot
+        .figures
+        .iter()
+        .find(|f| &f.figure_id == figure)
+        .expect("the voided quote is in the round's snapshot");
+    let FigureValue::FreshQuote { quote, .. } = &quote.value else {
+        panic!("the voided figure is a fresh quote");
+    };
+    assert_eq!(quote.maker, RAMP_C);
+    let at_ramp = dear.parts.first().operations.get(2).unwrap();
+    assert_eq!(at_ramp.amount_in.amount().as_str(), "990");
+    assert!(
+        at_ramp.figures.contains(figure),
+        "the operation cites the voided quote"
+    );
 
     // Asked again at 990, the ramp confirms, and the dear path is chosen.
-    let ramp_amounts: Vec<&str> = sim
-        .asked(RAMP)
+    let amounts: Vec<&str> = sim
+        .asked(RAMP_C)
         .iter()
         .map(|op| op["amount"].as_str().unwrap())
         .collect();
-    assert_eq!(ramp_amounts, ["1000", "990"]);
+    assert_eq!(amounts, ["1000", "990"]);
     assert!(
         matches!(routed.offer, Offer::Offered { .. }),
         "{:?}",
@@ -231,13 +259,11 @@ fn operation_asked_at_another_amount_is_dropped_as_quote_voided_citing_that_quot
 fn questions_at_one_tuple_at_two_amounts_share_no_transaction_identifier() {
     let inputs = polygon_to_base_inputs();
     let mut env = Env::new(ramp_catalogue(), true, 100);
-    let mut sim = env.sim();
-    sim.refuse.insert(FREE_RESERVE.into());
-    sim.fees.insert(DEAR_RESERVE.into(), 10);
+    let mut sim = ramp_sim(&env);
     let routed = run(&mut env, &mut sim, &inputs);
 
     let at_ramp: Vec<&str> = sim
-        .asked(RAMP)
+        .asked(RAMP_C)
         .iter()
         .map(|op| op["transaction"].as_str().unwrap())
         .collect();
@@ -260,7 +286,10 @@ fn questions_at_one_tuple_at_two_amounts_share_no_transaction_identifier() {
             panic!("a question is a stated entry");
         };
         assert_eq!(entry.attribution.maker().party, id("rutent-operator"));
-        assert_eq!(entry.about.as_ref().unwrap().transaction, sent.transaction);
+        assert_eq!(
+            entry.about.as_ref().unwrap().transaction.as_ref(),
+            Some(&sent.transaction)
+        );
     }
 
     // A source that draws one identifier twice stops the routing before a second question shares it.
@@ -275,25 +304,32 @@ fn questions_at_one_tuple_at_two_amounts_share_no_transaction_identifier() {
     assert!(sim.received.len() <= 1);
 }
 
+fn need(provider: &str, verifier: &str, class: &str) -> Need {
+    Need {
+        tuple: deposit_tuple(provider),
+        person: id("person-1"),
+        verifier: id(verifier),
+        subject: format!("subject-at-{provider}"),
+        class: class.into(),
+    }
+}
+
 // verifies: REQ-CPL-6, REQ-CAT-5
 #[test]
 fn provider_off_the_shortlist_is_asked_nothing() {
     const COLD: &str = "polygon-cold-reserve";
     let mut inputs = on_polygon(&[RESERVE, COLD], RESERVE);
     inputs.bounds = excluding(&inputs.bounds, &[COLD]);
-    let need = |provider: &str| Need {
-        tuple: deposit_tuple(provider),
-        person: id("person-1"),
-        verifier: id("kyc-verifier"),
-        subject: format!("subject-at-{provider}"),
-        class: "kyc-basic".into(),
-    };
-    inputs.order.needs = vec![need(RESERVE), need(COLD)];
+    inputs.order.needs = vec![
+        need(RESERVE, "id-check", "kyc.natural_person"),
+        need(COLD, "id-check", "kyc.natural_person"),
+    ];
     let mut env = Env::new(
         catalogue(&[(RESERVE, "acme"), (COLD, "acme")], 100_000),
         true,
         100,
     );
+    env.add_verifier("id-check");
     let mut sim = env.sim();
     let routed = run(&mut env, &mut sim, &inputs);
 
@@ -306,11 +342,24 @@ fn provider_off_the_shortlist_is_asked_nothing() {
     let asked: Vec<_> = env.people.questions.iter().map(|q| q.ask.clone()).collect();
     assert_eq!(asked, vec![vec![id(RESERVE)]]);
     let judged: Vec<_> = sim
-        .asked("kyc-verifier")
+        .asked("id-check")
         .iter()
         .map(|op| op["subject"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(judged, [format!("subject-at-{RESERVE}")]);
+    // The verifier's question has a transaction of its own on the record.
+    let to_verifier = routed
+        .sent
+        .iter()
+        .find(|s| s.provider == id("id-check"))
+        .unwrap();
+    let Entry::Stated(entry) = &env.log.entries[to_verifier.receipt.index.get() as usize] else {
+        unreachable!()
+    };
+    assert_eq!(
+        entry.about.as_ref().unwrap().transaction.as_ref(),
+        Some(&to_verifier.transaction)
+    );
     // The shortlist record names who it shortlisted, and the questions' authority is that record.
     let (_, shortlist) = env.records()[0];
     let What::DecisionRecord {
@@ -322,7 +371,7 @@ fn provider_off_the_shortlist_is_asked_nothing() {
         unreachable!()
     };
     assert_eq!(shortlisted.as_deref(), Some(&[id(RESERVE)][..]));
-    let rutent_contracts::core_internal::Authority::ShortlistedRoute {
+    let Authority::ShortlistedRoute {
         shortlist,
         providers,
     } = &env.people.questions[0].authority
@@ -333,12 +382,77 @@ fn provider_off_the_shortlist_is_asked_nothing() {
         (shortlist, providers.as_slice()),
         (record, &[id(RESERVE)][..])
     );
-    // With no judgement, the tuple that needs one isn't offered.
-    assert_eq!(
-        routed.offer,
-        Offer::NotOffered(NotOffered::NotEligible {
-            tuple: deposit_tuple(RESERVE)
-        })
+    assert!(
+        matches!(routed.offer, Offer::Offered { .. }),
+        "{:?}",
+        routed.offer
+    );
+}
+
+// verifies: REQ-CPL-6, REQ-AUZ-5
+#[test]
+fn tuple_needing_two_judgements_is_refused_while_one_verifier_is_silent() {
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.order.needs = vec![
+        need(RESERVE, "id-check", "kyc.natural_person"),
+        need(RESERVE, "sanctions-check", "aml.sanctions_screening"),
+    ];
+    let env_with_verifiers = || {
+        let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+        env.add_verifier("id-check");
+        env.add_verifier("sanctions-check");
+        env
+    };
+    let judgements = |routed: &Routed| {
+        last_choice(routed)
+            .snapshot
+            .figures
+            .iter()
+            .filter(|f| matches!(f.value, FigureValue::Eligibility { .. }))
+            .count()
+    };
+    let refused = Offer::NotOffered(NotOffered::NotEligible {
+        tuple: deposit_tuple(RESERVE),
+    });
+
+    // One verifier silent: the other's judgement doesn't stand for it.
+    let mut env = env_with_verifiers();
+    let mut sim = env.sim();
+    sim.silent.insert("sanctions-check".into());
+    let routed = run(&mut env, &mut sim, &inputs);
+    assert_eq!(judgements(&routed), 1);
+    assert_eq!(routed.offer, refused);
+
+    // The other answers with the first verifier's judgement: not its own, so it is kept out.
+    let mut env = env_with_verifiers();
+    let mut sim = env.sim();
+    let foreign = sign(
+        envelope(
+            &deployment(),
+            JUDGEMENT_SHAPE,
+            "id-check",
+            START,
+            json!({
+                "subject": format!("subject-at-{RESERVE}"), "class": "aml.sanctions_screening", "answer": "yes",
+                "valid_until": Instant(START + 86_400).rfc3339().unwrap(),
+            }),
+        ),
+        &statements_key("id-check", 1),
+    );
+    sim.relay.insert("sanctions-check".into(), foreign);
+    let routed = run(&mut env, &mut sim, &inputs);
+    assert_eq!(judgements(&routed), 1);
+    assert_eq!(routed.offer, refused);
+
+    // Both answer, each about the subject and class asked: the route is offered.
+    let mut env = env_with_verifiers();
+    let mut sim = env.sim();
+    let routed = run(&mut env, &mut sim, &inputs);
+    assert_eq!(judgements(&routed), 2);
+    assert!(
+        matches!(routed.offer, Offer::Offered { .. }),
+        "{:?}",
+        routed.offer
     );
 }
 
@@ -362,12 +476,12 @@ fn questions_fanned_out_count_against_the_callers_bound() {
     );
 
     // Over it, none is.
-    let mut env = Env::new(catalogue(&reserves, 100_000), true, 3);
+    let mut env = Env::new(catalogue(&reserves, 100_000), true, 2);
     let mut sim = env.sim();
     let routed = run(&mut env, &mut sim, &inputs);
     assert!(sim.received.is_empty(), "{:?}", sim.received);
     assert_eq!(env.bound.charges.len(), 1);
-    assert_eq!(env.bound.charges[0].count.get(), 4);
+    assert_eq!(env.bound.charges[0].count.get(), 3);
     assert!(matches!(
         routed.offer,
         Offer::NotOffered(NotOffered::OverBound { .. })
@@ -379,9 +493,7 @@ fn questions_fanned_out_count_against_the_callers_bound() {
 fn every_routing_calls_decision_record_is_chained_to_the_orders_history() {
     let inputs = polygon_to_base_inputs();
     let mut env = Env::new(ramp_catalogue(), true, 100);
-    let mut sim = env.sim();
-    sim.refuse.insert(FREE_RESERVE.into());
-    sim.fees.insert(DEAR_RESERVE.into(), 10);
+    let mut sim = ramp_sim(&env);
     let mut history = History::new();
     let first = env.route(&mut sim, inputs.routing(), &mut history).unwrap();
     // And the order routed again, as at a recalculation, under the same history.
@@ -437,9 +549,7 @@ fn every_routing_calls_decision_record_is_chained_to_the_orders_history() {
 fn refines_names_the_shortlist_record_it_was_taken_from() {
     let inputs = polygon_to_base_inputs();
     let mut env = Env::new(ramp_catalogue(), true, 100);
-    let mut sim = env.sim();
-    sim.refuse.insert(FREE_RESERVE.into());
-    sim.fees.insert(DEAR_RESERVE.into(), 10);
+    let mut sim = ramp_sim(&env);
     let routed = run(&mut env, &mut sim, &inputs);
 
     let shortlist = &routed.shortlist.record;
@@ -494,7 +604,24 @@ fn statement_refused_before_the_record_reaches_the_log_before_the_record_is_form
         routed.offer
     );
 
+    // Refused again in every later round, it is recorded once.
+    let inputs = polygon_to_base_inputs();
+    let mut env = Env::new(ramp_catalogue(), true, 100);
+    let mut sim = ramp_sim(&env);
+    sim.refuse.remove(RAMP_A);
+    sim.wrong_key.insert(RAMP_A.into());
+    let routed = run(&mut env, &mut sim, &inputs);
+    assert!(routed.choices.len() > 1);
+    let kept = env
+        .evidence
+        .kept
+        .iter()
+        .filter(|b| value_of(b)["maker"] == RAMP_A)
+        .count();
+    assert_eq!(kept, 1);
+
     // Where its record can't be appended, no choice record is formed.
+    let inputs = on_polygon(&[RESERVE, SIBLING], RESERVE);
     let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
     env.evidence.refuse = Some(SIBLING.into());
     let mut sim = env.sim();
@@ -508,6 +635,48 @@ fn statement_refused_before_the_record_reaches_the_log_before_the_record_is_form
             .iter()
             .any(|(_, w)| is_round(w, RoutingRound::Choice))
     );
+}
+
+thread_local! {
+    static ECHOED: RefCell<Option<DecisionRecord>> = const { RefCell::new(None) };
+}
+
+/// A router that answers every round with the record it was handed beforehand.
+struct Echo;
+
+impl Router for Echo {
+    fn route(
+        request: &Request,
+        snapshot: &CatalogueSnapshot,
+        bounds: &PolicyBounds,
+    ) -> DecisionRecord {
+        ECHOED
+            .with(|e| e.borrow().clone())
+            .unwrap_or_else(|| RouteFinder::route(request, snapshot, bounds))
+    }
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn record_of_another_routing_is_refused_before_it_is_recorded() {
+    // Another order, of 999.
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.request = shortlist_request("999");
+    let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+    let mut sim = env.sim();
+    let other = run(&mut env, &mut sim, &inputs).shortlist.record;
+
+    // Another order's shortlist, echoed for this one: a record that passes its contract, of another request.
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.order.order = id("ord-8");
+    let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+    let mut sim = env.sim();
+    ECHOED.with(|e| *e.borrow_mut() = Some(other));
+    let outcome = env.route_with::<Echo>(&mut sim, inputs.routing(), &mut History::new());
+    ECHOED.with(|e| *e.borrow_mut() = None);
+    assert_eq!(outcome.unwrap_err(), RoutingError::NotItsRecord);
+    assert!(env.records().is_empty());
+    assert!(sim.received.is_empty());
 }
 
 // verifies: REQ-ORD-32

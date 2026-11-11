@@ -13,7 +13,9 @@
 //! 2. **The questions.** Only what [`shortlist::asks`] gives: each shortlisted provider about each of its tuples, at
 //!    one amount (`REQ-CAT-5`, `cat5-single-amount-asks`), and eligibility only for a shortlisted tuple, for the
 //!    parties its rules name, each first put to policy as a question about a person on the shortlisted route
-//!    (`REQ-CPL-6`, `REQ-CPL-2`, `F-021`). Before any is sent, all of them are charged to the caller's accountable
+//!    (`REQ-CPL-6`, `REQ-CPL-2`, `F-021`). A judgement enters only from the verifier its need names, about its
+//!    subject and class, and a tuple with needs is offered only with a judgement cited for each (`REQ-AUZ-5`).
+//!    Before any is sent, all of them are charged to the caller's accountable
 //!    party as fanned-out work, and over its bound none is (`REQ-OPS-1`). Each question is its own transaction,
 //!    drawn fresh ([`Fresh`]), never one Core asked under before ([`Issued`]) and never naming the order, so
 //!    two questions share nothing a provider could link them by. Each is signed with the operator key and appended
@@ -22,10 +24,12 @@
 //! 3. **The reserve's yes** (`REQ-ORD-32`). A withdrawal's dry run reveals whether funds suffice, so it is a balance
 //!    check (`REQ-CAT-4`): it is sent only once the catalogue's `begin_check` lets it, in the order's session, and
 //!    its answer is read through `answer_check`. `own_order` is set only where the check is the order's own: a
-//!    withdrawal at the order's origin reserve (`REQ-CAT-3`, `F-012`'s notes); every other check counts. A yes
-//!    counts only as the answer to Core's own question, under the transaction Core asked it: a yes the user
-//!    carries names a transaction Core never issued, and is refused wherever it arrives. A route is offered only on
-//!    a yes for each of its parts' withdrawals, asked in the user's session, except on an automatic deposit.
+//!    withdrawal at the order's origin reserve (`REQ-CAT-3`, `F-012`'s notes). Only the origin reserve is asked for
+//!    a withdrawal: the routing runs under the caller's bounds with every other reserve's withdrawal tuple excluded,
+//!    so the record shows it. A yes counts only as the answer to Core's own question, under the transaction Core
+//!    asked it: a yes the user carries names a transaction Core never issued, and is refused wherever it arrives. A
+//!    route is offered only on the origin reserve's yes for each of its parts' withdrawals, asked in the user's
+//!    session, except on an automatic deposit.
 //! 4. **The choice round.** A snapshot adding the answers that name Core's transactions, and nothing else; every
 //!    statement it refuses recorded before the record is formed ([`record_refused`], `REQ-AUD-2`), and every other
 //!    answer appended with its transaction in its `about`; `route` with `refines` copied from the shortlist record
@@ -34,13 +38,12 @@
 //! 5. **Later rounds.** Where the choice round chooses nothing, the operations it left unconfirmed at a shortlisted
 //!    tuple, at an amount that tuple wasn't asked at, are asked again at their own amounts, each its own
 //!    transaction, charged as before, and a further choice round refines the same shortlist, at most
-//!    [`LATER_ROUNDS`] times. An operation whose fresh quote at another amount lists `amount_changes` is held as
-//!    [`Voided`], citing that quote (`REQ-QTE-1`, `F-011`'s notes).
+//!    [`LATER_ROUNDS`] times. The router drops a candidate whose operation's fresh quote, at another amount, lists
+//!    `amount_changes` as `quote_voided`, citing that quote (`REQ-QTE-1`, `F-011`'s notes), and one with no answer at
+//!    its amount as `unconfirmed`; both are asked again.
 //!
-//! **What the record says of a voided quote.** The router's record keeps such an operation's candidate
-//! `unconfirmed`: `RouteFinder` emits no `quote_voided`, and a record Core rewrote would no longer be what `route`
-//! gives on its own inputs (`AC-2`, `REQ-AUD-4`). [`Voided`] is Core's own reading of the record, by the rule the
-//! contract checks a `quote_voided` reason against.
+//! **Core checks the router's record against what it gave it.** A record whose request, snapshot or bounds aren't
+//! the round's own is refused before it is recorded or acted on ([`RoutingError::NotItsRecord`]).
 
 mod ask;
 mod journal;
@@ -56,12 +59,12 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
-    ConversionOutcome, JUDGEMENT_SHAPE, ResultBody, SafeInteger, Statement, TransferOutcome,
-    VoidedBy,
+    Denomination, JUDGEMENT_SHAPE, Judgement, NodeRef, ResultBody, SafeInteger, Statement,
 };
 use rutent_contracts::router_api::{
-    DecisionRecord, DropReason, FigureValue, Id, OperationKind, PolicyBounds, PositiveAmount,
-    Refines, Request, Round, Router, Timestamp, TupleKey, Violation,
+    CatalogueSnapshot, DecisionRecord, Distinct, DropReason, Endpoint, FigureValue, Id, Operation,
+    OperationKind, PolicyBounds, PositiveAmount, Refines, Request, Round, Router, Timestamp,
+    TupleKey, Violation,
 };
 use rutent_prov::catalogue::{Catalogue, CheckRefusal, Publisher, Verdict};
 use rutent_router::shortlist::{self, Wanted};
@@ -247,8 +250,9 @@ pub struct Recorded {
 pub struct Sent {
     /// The provider or verifier asked.
     pub provider: Id,
-    /// The transaction it was asked under; a judgement's request carries none.
-    pub transaction: Option<Id>,
+    /// The transaction it was asked under. A judgement's request can't carry one, so only its stated entry names
+    /// it: the verifier's answer names none (a residual, `T-025-05`).
+    pub transaction: Id,
     /// The tuple and amount it was about; a judgement's names the relying tuple and no amount.
     pub tuple: TupleKey,
     /// The amount, for a provider's question.
@@ -257,22 +261,6 @@ pub struct Sent {
     pub batch: usize,
     /// The receipt of its stated entry, appended before it was sent.
     pub receipt: Receipt,
-}
-
-/// An operation a choice round left unconfirmed whose provider's fresh quote for its tuple, at another amount,
-/// lists `amount_changes`: the quote is void for it (`REQ-QTE-1`), and Core asks again at its own amount.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Voided {
-    /// The choice round's record.
-    pub record: Id,
-    /// The voided quote, by its figure id in that record's snapshot.
-    pub figure: Id,
-    /// The tuple.
-    pub tuple: TupleKey,
-    /// The amount the quote was for.
-    pub quoted: String,
-    /// The amount the operation takes in.
-    pub needed: PositiveAmount,
 }
 
 /// Why no route was offered.
@@ -288,9 +276,10 @@ pub enum NotOffered {
     /// The set asked about a person for the order would pass its bound: the order has no route left
     /// (`REQ-CPL-5`).
     PersonQuestionsPastBound,
-    /// A part's withdrawal has no yes from its reserve, asked in the user's session (`REQ-ORD-32`).
+    /// A part's withdrawal has no yes from the order's origin reserve, asked in the user's session (`REQ-ORD-32`).
     NoReservesYes,
-    /// An operation of the choice whose tuple needs a judgement cites none (`REQ-CPL-6`, `REQ-AUZ-5`).
+    /// An operation of the choice whose tuple needs a judgement cites none from the verifier the need names, about
+    /// its subject and class (`REQ-CPL-6`, `REQ-AUZ-5`).
     NotEligible {
         /// The tuple.
         tuple: TupleKey,
@@ -325,8 +314,6 @@ pub struct Routed {
     pub offer: Offer,
     /// Every question Core asked, in order.
     pub sent: Vec<Sent>,
-    /// The voided quotes Core found, in order.
-    pub voided: Vec<Voided>,
     /// The balance checks the catalogue refused to let out, by reserve: those questions weren't sent.
     pub refused_checks: Vec<(Id, CheckRefusal)>,
 }
@@ -338,6 +325,11 @@ pub enum RoutingError {
     Form(FormError),
     /// The router returned a record that fails its contract.
     Router(Violation),
+    /// The router returned a record of another request, snapshot or bounds than the round gave it.
+    NotItsRecord,
+    /// The bounds with the other reserves' withdrawals excluded fail their contract or their check against the
+    /// snapshot.
+    Bounds(Violation),
     /// The log, the evidence store or policy refused or failed.
     Log(AppendFailure),
     /// The operator key didn't sign.
@@ -346,6 +338,8 @@ pub enum RoutingError {
     Clock,
     /// A fresh identifier was one Core used before, or names the order.
     Transaction,
+    /// A batch's questions are more than a charge can count.
+    Uncountable,
 }
 
 impl From<AppendFailure> for RoutingError {
@@ -367,17 +361,23 @@ struct Answer {
     asked: Asked,
     transaction: Option<Id>,
     bytes: Vec<u8>,
-    /// Whether it names the transaction Core asked it under (a judgement names none, so it can't be told).
+    /// Whether it answers Core's own question: a provider's names the transaction Core asked it under; a
+    /// judgement is made by the verifier asked, about the subject and class asked.
     ours: bool,
-    /// A withdrawal's dry run the catalogue read as a yes, asked in the user's session.
+    /// A withdrawal's dry run at the origin reserve the catalogue read as a yes, asked in the user's session.
     yes: bool,
     receipt: Option<Receipt>,
+    /// Whether a snapshot's refusal of it was recorded: each refusal is recorded once.
+    refusal_recorded: bool,
 }
 
 /// One routing's state as it runs.
 struct Run<'r, 'p> {
     parts: &'r mut Parts<'p>,
     routing: Routing<'r>,
+    /// The bounds every round runs under: the caller's, with the other reserves' withdrawals excluded, once the
+    /// shortlist's snapshot shows them.
+    bounds: Option<PolicyBounds>,
     answers: Vec<Answer>,
     asked: Vec<(TupleKey, String)>,
     sent: Vec<Sent>,
@@ -405,6 +405,7 @@ impl<R: Router> Rounds<R> {
         let mut run = Run {
             parts,
             routing,
+            bounds: None,
             answers: Vec::new(),
             asked: Vec::new(),
             sent: Vec::new(),
@@ -415,13 +416,11 @@ impl<R: Router> Rounds<R> {
         request.round = Round::Shortlist {};
         let shortlist = self.round(&mut run, &request, RoutingRound::Shortlist, history)?;
         let mut choices = Vec::new();
-        let mut voided = Vec::new();
-        let finish = |run: Run<'_, '_>, shortlist, choices, voided, offer| Routed {
+        let finish = |run: Run<'_, '_>, shortlist, choices, offer| Routed {
             shortlist,
             choices,
             offer,
             sent: run.sent,
-            voided,
             refused_checks: run.refused_checks,
         };
         let Ok(asks) = shortlist::asks(&shortlist.record) else {
@@ -429,7 +428,6 @@ impl<R: Router> Rounds<R> {
                 run,
                 shortlist,
                 choices,
-                voided,
                 Offer::NotOffered(NotOffered::NoRoute),
             ));
         };
@@ -461,7 +459,6 @@ impl<R: Router> Rounds<R> {
                 run,
                 shortlist,
                 choices,
-                voided,
                 Offer::NotOffered(NotOffered::OverBound { bound }),
             ));
         }
@@ -471,7 +468,6 @@ impl<R: Router> Rounds<R> {
                     run,
                     shortlist,
                     choices,
-                    voided,
                     Offer::NotOffered(NotOffered::PersonQuestionsPastBound),
                 ));
             }
@@ -493,13 +489,9 @@ impl<R: Router> Rounds<R> {
             };
             let recorded = self.round(&mut run, &choice, RoutingRound::Choice, history)?;
             let chosen = recorded.record.chosen.is_some();
-            let (found, again) = unconfirmed(&recorded.record, &tuples, &run.asked);
+            let again = unconfirmed(&recorded.record, &tuples, &run.asked);
             choices.push(recorded);
-            if chosen || batch > LATER_ROUNDS {
-                break;
-            }
-            voided.extend(found);
-            if again.is_empty() {
+            if chosen || batch > LATER_ROUNDS || again.is_empty() {
                 break;
             }
             if let Some(bound) = run.charge(again.len())? {
@@ -515,11 +507,12 @@ impl<R: Router> Rounds<R> {
             Some(bound) => Offer::NotOffered(NotOffered::OverBound { bound }),
             None => run.offer(&choices.last().expect("a choice round").record, &needs),
         };
-        Ok(finish(run, shortlist, choices, voided, offer))
+        Ok(finish(run, shortlist, choices, offer))
     }
 
-    /// One round: its snapshot formed, its refused statements recorded and its answers appended, then `route`, and
-    /// the record signed and appended, chained to the order's previous one.
+    /// One round: its snapshot formed, its refused statements recorded and its answers appended, then `route`; the
+    /// record checked to be of what the round gave the router, then signed and appended, chained to the order's
+    /// previous one.
     fn round(
         &self,
         run: &mut Run<'_, '_>,
@@ -549,15 +542,30 @@ impl<R: Router> Rounds<R> {
         )
         .form(&Ask {
             snapshot_id: snapshot_id.as_str(),
-            bounds: run.routing.bounds,
+            bounds: run.bounds.as_ref().unwrap_or(run.routing.bounds),
             prices: run.routing.prices,
             statements: &statements,
         })
         .map_err(RoutingError::Form)?;
+        if run.bounds.is_none() {
+            let bounds = origin_only(
+                run.routing.bounds,
+                &formed.snapshot,
+                &run.routing.order.origin_reserve,
+            )?;
+            run.bounds = Some(bounds);
+        }
+        let bounds = run.bounds.clone().expect("the routing's bounds");
         run.record_answers(&formed)?;
 
-        let record = R::route(request, &formed.snapshot, run.routing.bounds);
+        let record = R::route(request, &formed.snapshot, &bounds);
         record.check().map_err(RoutingError::Router)?;
+        if &record.request != request
+            || record.snapshot != formed.snapshot
+            || record.bounds != bounds
+        {
+            return Err(RoutingError::NotItsRecord);
+        }
         let maker = &run.routing.operator.party;
         let made_at = run.now()?;
         let recorded = ask::sign_record(run.parts.operator_key, &record, maker, &made_at)?;
@@ -594,6 +602,54 @@ impl<R: Router> Rounds<R> {
     }
 }
 
+/// The caller's bounds with every withdrawal tuple of the snapshot excluded but the origin reserve's: the yes an
+/// order is routed on is its origin reserve's (`REQ-ORD-32`), and no other reserve is asked about the holder's funds.
+fn origin_only(
+    bounds: &PolicyBounds,
+    snapshot: &CatalogueSnapshot,
+    origin: &Id,
+) -> Result<PolicyBounds, RoutingError> {
+    let mut excluded: Vec<TupleKey> = bounds.excluded_tuples.to_vec();
+    for figure in &snapshot.figures {
+        let FigureValue::ReserveTuple { tuple } = &figure.value else {
+            continue;
+        };
+        let Some(provider) = figure.origin.provider() else {
+            continue;
+        };
+        if provider == origin || !matches!(tuple.origin, NodeRef::Outer(_)) {
+            continue;
+        }
+        let unit = |decimals| Denomination {
+            id: tuple.asset.clone(),
+            decimals,
+        };
+        let key = TupleKey {
+            provider: provider.clone(),
+            from: Endpoint {
+                node: tuple.origin.clone(),
+                asset: unit(tuple.decimals.origin),
+            },
+            to: Endpoint {
+                node: tuple.destination.clone(),
+                asset: unit(tuple.decimals.destination),
+            },
+        };
+        if !excluded.contains(&key) {
+            excluded.push(key);
+        }
+    }
+    let mut bounds = bounds.clone();
+    bounds.excluded_tuples = Distinct::new(excluded).ok_or(RoutingError::Bounds(Violation(
+        "excluded tuples are distinct",
+    )))?;
+    bounds.check().map_err(RoutingError::Bounds)?;
+    bounds
+        .check_against(snapshot)
+        .map_err(RoutingError::Bounds)?;
+    Ok(bounds)
+}
+
 impl Run<'_, '_> {
     fn now(&self) -> Result<Timestamp, RoutingError> {
         self.parts
@@ -615,11 +671,13 @@ impl Run<'_, '_> {
         Ok(id)
     }
 
-    /// Charges `count` questions to the caller's accountable party; `Some(bound)` where it is over its bound.
+    /// Charges `count` questions to the caller's accountable party; `Some(bound)` where it is over its bound. A
+    /// count a charge can't hold is refused, never taken as within.
     fn charge(&mut self, count: usize) -> Result<Option<SafeInteger>, RoutingError> {
-        let Some(count) = u64::try_from(count).ok().and_then(Count::new) else {
-            return Ok(None);
-        };
+        let count = u64::try_from(count)
+            .ok()
+            .and_then(Count::new)
+            .ok_or(RoutingError::Uncountable)?;
         let caller = &self.routing.order.caller;
         let charge = Charge {
             request: self.parts.fresh.id(),
@@ -647,6 +705,9 @@ impl Run<'_, '_> {
     ) -> Result<bool, RoutingError> {
         let order = self.routing.order;
         let relying = need.tuple.provider.clone();
+        // T-020-01d: REQ-CPL-5 records the providers and verifiers asked, so `ask` and `asked_before` should name
+        // the verifier; core-internal's `PersonQuestion` lets a shortlisted route's question ask only shortlisted
+        // providers, so until its shape changes they name the relying provider.
         let question = PersonQuestion {
             request: self.parts.fresh.id(),
             asker: order.caller.clone(),
@@ -668,11 +729,14 @@ impl Run<'_, '_> {
         if !history.asked_about_person.contains(&relying) {
             history.asked_about_person.push(relying);
         }
+        // A judgement request carries no transaction, so the verifier's answer can't name one: the fresh
+        // transaction is the question's stated entry's alone (a residual, `T-025-05`).
+        let transaction = self.transaction()?;
         let operation = ask::judgement(&need.verifier, &need.subject, &need.class);
         let made_at = self.now()?;
         let bytes = ask::sign_question(
             self.parts.operator_key,
-            self.routing.bounds,
+            self.bounds.as_ref().unwrap_or(self.routing.bounds),
             &self.routing.operator.party,
             &made_at,
             operation,
@@ -680,34 +744,42 @@ impl Run<'_, '_> {
         let about = About {
             order: Some(order.order.clone()),
             segment: None,
-            transaction: None,
+            transaction: Some(transaction.clone()),
         };
         let receipt = self.append_question(&bytes, about)?;
         self.sent.push(Sent {
             provider: need.verifier.clone(),
-            transaction: None,
+            transaction,
             tuple: need.tuple.clone(),
             amount: None,
             batch: 0,
             receipt,
         });
         if let Some(answer) = self.parts.providers.ask(&need.verifier, &bytes) {
+            let ours = serde_json::from_slice::<Statement<Judgement>>(&answer)
+                .ok()
+                .is_some_and(|j| {
+                    j.maker == need.verifier.as_str()
+                        && j.statement.subject == need.subject
+                        && j.statement.class == need.class
+                });
             self.answers.push(Answer {
                 provider: need.verifier.clone(),
                 tuple: need.tuple.clone(),
                 asked: Asked::Eligibility,
                 transaction: None,
                 bytes: answer,
-                ours: true,
+                ours,
                 yes: false,
                 receipt: None,
+                refusal_recorded: false,
             });
         }
         Ok(true)
     }
 
-    /// Asks one provider one question, under a fresh transaction, logged before it is sent; a withdrawal only as a
-    /// balance check the catalogue lets out.
+    /// Asks one provider one question, under a fresh transaction, logged before it is sent; a withdrawal only at the
+    /// order's origin reserve, as a balance check the catalogue lets out.
     fn ask(
         &mut self,
         question: &Question,
@@ -716,19 +788,22 @@ impl Run<'_, '_> {
     ) -> Result<(), RoutingError> {
         let order = self.routing.order;
         let provider = question.tuple.provider.clone();
+        let withdrawal = question.kind == OperationKind::Withdrawal;
+        if withdrawal && provider != order.origin_reserve {
+            return Ok(());
+        }
         self.asked.push((
             question.tuple.clone(),
             question.amount_in.amount().as_str().to_owned(),
         ));
         let transaction = self.transaction()?;
-        let withdrawal = question.kind == OperationKind::Withdrawal;
         let inputs = ask::inputs_for(&record.snapshot, &question.tuple, &order.inputs);
         let session = withdrawal.then(|| order.presence.session());
         let Some(operation) = ask::operation(question, &transaction, session, inputs) else {
             return Ok(());
         };
         let ticket = if withdrawal {
-            // The holder's own order only: a withdrawal at its origin reserve, in its session.
+            // The holder's own order: a withdrawal at its origin reserve, in its session.
             let own = (provider == order.origin_reserve).then_some(order.order.as_str());
             match self
                 .parts
@@ -747,7 +822,7 @@ impl Run<'_, '_> {
         let made_at = self.now()?;
         let bytes = ask::sign_question(
             self.parts.operator_key,
-            self.routing.bounds,
+            self.bounds.as_ref().unwrap_or(self.routing.bounds),
             &self.routing.operator.party,
             &made_at,
             operation,
@@ -760,7 +835,7 @@ impl Run<'_, '_> {
         let receipt = self.append_question(&bytes, about)?;
         self.sent.push(Sent {
             provider: provider.clone(),
-            transaction: Some(transaction.clone()),
+            transaction: transaction.clone(),
             tuple: question.tuple.clone(),
             amount: Some(question.amount_in.clone()),
             batch,
@@ -800,6 +875,7 @@ impl Run<'_, '_> {
             ours,
             yes,
             receipt: None,
+            refusal_recorded: false,
         });
         Ok(())
     }
@@ -819,12 +895,15 @@ impl Run<'_, '_> {
         })
     }
 
-    /// Before a round's record is formed: every statement its snapshot refused, recorded through
+    /// Before a round's record is formed: every statement its snapshot refused, recorded once through
     /// [`record_refused`], and every other answer not yet appended, appended with its transaction in its `about`.
     fn record_answers(&mut self, formed: &Formed) -> Result<(), RoutingError> {
         let order = &self.routing.order.order;
         for refused in &formed.refused {
             let answer = self.answers.iter_mut().find(|a| a.bytes == refused.bytes);
+            if answer.as_ref().is_some_and(|a| a.refusal_recorded) {
+                continue;
+            }
             let about = answer.as_ref().and_then(|a| about_answer(order, a));
             match record_refused(
                 self.parts.evidence,
@@ -837,6 +916,7 @@ impl Run<'_, '_> {
                 Ok(receipt) => {
                     if let Some(answer) = answer {
                         answer.receipt.get_or_insert(receipt);
+                        answer.refusal_recorded = true;
                     }
                 }
                 Err(RecordError::Unrecordable) => {}
@@ -866,8 +946,8 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    /// What the last choice round offers: its chosen candidate, only on its reserves' yes and with every judgement
-    /// its tuples need.
+    /// What the last choice round offers: its chosen candidate, only on its origin reserve's yes and with every
+    /// judgement its tuples need.
     fn offer(&self, record: &DecisionRecord, needs: &[&Need]) -> Offer {
         let Some(chosen) = record.chosen() else {
             return Offer::NotOffered(NotOffered::NoRoute);
@@ -887,11 +967,15 @@ impl Run<'_, '_> {
                         }
             });
             match (yes.and_then(|a| a.receipt.clone()), &order.presence) {
-                (Some(receipt), _) => reserve_yes.push(receipt),
-                (None, Presence::User { .. }) => {
+                (Some(receipt), Presence::User { .. })
+                    if first.provider == order.origin_reserve =>
+                {
+                    reserve_yes.push(receipt);
+                }
+                (_, Presence::User { .. }) => {
                     return Offer::NotOffered(NotOffered::NoReservesYes);
                 }
-                (None, Presence::AutomaticDeposit { .. }) => {}
+                (_, Presence::AutomaticDeposit { .. }) => {}
             }
         }
         for operation in chosen.parts.iter().flat_map(|p| p.operations.iter()) {
@@ -900,18 +984,10 @@ impl Run<'_, '_> {
                 from: operation.from.clone(),
                 to: operation.to.clone(),
             };
-            if !needs.iter().any(|n| n.tuple == key) {
-                continue;
-            }
-            let tuple = operation.figures.first();
-            let judged = operation.figures.iter().any(|id| {
-                record.snapshot.figures.iter().any(|f| {
-                    &f.figure_id == id
-                        && matches!(&f.value, FigureValue::Eligibility { tuple: t, .. } if t == tuple)
-                })
-            });
-            if !judged {
-                return Offer::NotOffered(NotOffered::NotEligible { tuple: key });
+            for need in needs.iter().filter(|n| n.tuple == key) {
+                if !judged(record, operation, need) {
+                    return Offer::NotOffered(NotOffered::NotEligible { tuple: key });
+                }
             }
         }
         Offer::Offered {
@@ -923,6 +999,21 @@ impl Run<'_, '_> {
             },
         }
     }
+}
+
+/// Whether `operation` cites a judgement of its tuple by the verifier `need` names, about its subject and class.
+fn judged(record: &DecisionRecord, operation: &Operation, need: &Need) -> bool {
+    let tuple = operation.figures.first();
+    operation.figures.iter().any(|id| {
+        record.snapshot.figures.iter().any(|f| {
+            &f.figure_id == id
+                && matches!(&f.value, FigureValue::Eligibility { tuple: t, judgement }
+                    if t == tuple
+                        && judgement.maker == need.verifier.as_str()
+                        && judgement.statement.subject == need.subject
+                        && judgement.statement.class == need.class)
+        })
+    })
 }
 
 /// What an answer is about: its order and the transaction Core asked it under; a judgement, which names no
@@ -986,18 +1077,19 @@ fn providers_of(record: &DecisionRecord) -> Vec<Id> {
     providers
 }
 
-/// A choice round's operations to ask again: each of a candidate dropped as unconfirmed, at a shortlisted tuple,
-/// at an amount that tuple wasn't asked at; and of those, each whose fresh quote at another amount lists
-/// `amount_changes`.
+/// A choice round's operations to ask again: each of a candidate it dropped as unconfirmed or for a voided quote,
+/// at a tuple the shortlist asked about, at an amount that tuple wasn't asked at.
 fn unconfirmed(
     record: &DecisionRecord,
     shortlisted: &[TupleKey],
     asked: &[(TupleKey, String)],
-) -> (Vec<Voided>, Vec<Question>) {
-    let mut voided = Vec::new();
+) -> Vec<Question> {
     let mut again: Vec<Question> = Vec::new();
     for candidate in record.candidates() {
-        if !matches!(candidate.dropped, Some(DropReason::Unconfirmed { .. })) {
+        if !matches!(
+            candidate.dropped,
+            Some(DropReason::Unconfirmed { .. } | DropReason::QuoteVoided { .. })
+        ) {
             continue;
         }
         for operation in candidate.parts.iter().flat_map(|p| p.operations.iter()) {
@@ -1015,27 +1107,6 @@ fn unconfirmed(
             {
                 continue;
             }
-            let tuple = operation.figures.first();
-            for figure in &record.snapshot.figures {
-                let FigureValue::FreshQuote { tuple: t, quote } = &figure.value else {
-                    continue;
-                };
-                if t != tuple {
-                    continue;
-                }
-                if let Some((quoted, voided_by)) = quote_terms(&quote.statement)
-                    && quoted != amount
-                    && voided_by.contains(&VoidedBy::AmountChanges)
-                {
-                    voided.push(Voided {
-                        record: record.record_id().clone(),
-                        figure: figure.figure_id.clone(),
-                        tuple: key.clone(),
-                        quoted: quoted.to_owned(),
-                        needed: operation.amount_in.clone(),
-                    });
-                }
-            }
             again.push(Question {
                 tuple: key,
                 kind: operation.kind,
@@ -1043,20 +1114,5 @@ fn unconfirmed(
             });
         }
     }
-    (voided, again)
-}
-
-/// An accepted fresh quote's amount in and what voids it.
-fn quote_terms(body: &ResultBody) -> Option<(&str, &[VoidedBy])> {
-    match body {
-        ResultBody::Transfer(r) => match &r.outcome {
-            TransferOutcome::DryRunAccepted(q) => Some((q.amount_in.as_str(), &q.voided_by)),
-            _ => None,
-        },
-        ResultBody::Conversion(r) => match &r.outcome {
-            ConversionOutcome::DryRunAccepted(q) => Some((q.amount_in.as_str(), &q.voided_by)),
-            _ => None,
-        },
-        _ => None,
-    }
+    again
 }

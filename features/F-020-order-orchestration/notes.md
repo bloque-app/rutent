@@ -205,7 +205,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   id, the caller whose work it is, its origin reserve, whether a user is present (`Presence::User { session }` or
   `Presence::AutomaticDeposit { session }`), the inputs it carries, and the judgements its tuples need. `History`
   (the last decision record's receipt, and who was asked about a person) and `Issued` (every transaction Core asked
-  under) are kept by the caller across routings. Reversible.
+  under) are kept by the caller across routings: `Issued` by the assembly, `rutent-scenarios` in `M3`
+  (`T-024-02`) and the production assembly in `M4` (`F-030`), which must keep it durably, since a transaction reused
+  after a restart would let two questions be linked. Reversible.
 - **One adapter to the log** (`rounds/journal.rs`). Every stated entry the rounds write, each question and each answer,
   is appended `unverified { claimed_by }` with `about { order, transaction }`, its bytes kept first; the rounds never
   write `verified`. Every `decision_record` entry goes through it too. The switch to the log attributing a stated
@@ -230,8 +232,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   acceptance cites, and the session. On an automatic deposit no yes is needed; its withdrawal's dry run still goes
   as a check, in the session Core opened for the deposit (the dry run's schema requires one). Reading, reversible.
 - **`own_order` (`REQ-CAT-3`, `F-012`'s notes).** Set only for a withdrawal's dry run at the order's origin reserve,
-  in the order's session. Any other check, a withdrawal at another shortlisted reserve among them, is counted.
-  Core computes it; nothing the caller passes sets it.
+  in the order's session; since the review, that is the only withdrawal asked, so every check a routing makes is
+  the holder's own. Core computes it; nothing the caller passes sets it.
 - **Eligibility, a reading.** No catalogue API says which verifier and class a tuple needs, so they come as
   `rounds::Need`s on the order. A need is asked only when its tuple is shortlisted: first to policy, as a question
   about a person on the shortlisted route (`ask` the relying provider, the authority the shortlist record's digest
@@ -241,16 +243,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   judgement is not offered (`NotOffered::NotEligible`, `REQ-AUZ-5`). Reversible.
 - **`refines`** is copied from the shortlist record Core keeps: its request id and its snapshot's `taken_at`, never
   read from the clock. Every later round refines the same shortlist.
-- **`quote_voided`: a gap in the router, not closed here.** `RouteFinder` emits no `quote_voided` (no code of the
-  router or the router suite produces it), and Core can't rewrite the router's record: a record so edited would no
-  longer be what `route` gives on its own inputs (`AC-2`, `REQ-AUD-4`, `THR-10`). So the record keeps such a
-  candidate `unconfirmed`. Core reads it itself, by the rule the contract checks a `quote_voided` reason against: an
-  operation of a candidate dropped as unconfirmed, at a shortlisted tuple, whose fresh quote at another amount lists
-  `amount_changes`, is held as `rounds::Voided`, citing that quote's figure id in that round's record, and asked again
-  at its own amount. The test `operation_asked_at_another_amount_is_dropped_as_quote_voided_citing_that_quote`
-  asserts that reading. For the record's own drop reason to say `quote_voided`, a router row must emit it; a gap for a
-  new `F-020` row (retrospective lesson 5).
-- **Later rounds.** Where a choice round chooses nothing, every operation of a candidate it dropped as unconfirmed, at
+- **`quote_voided`, emitted by the router** (since the review; see below). The first version kept the router's
+  record verbatim and held the case as Core's own `rounds::Voided`, since `RouteFinder` emitted no `quote_voided` and
+  Core may not rewrite the router's record (`AC-2`, `REQ-AUD-4`, `THR-10`). The router now emits it and
+  `rounds::Voided` is gone.
+- **Later rounds.** Where a choice round chooses nothing, every operation of a candidate it dropped as unconfirmed
+  or for a voided quote, at
   a tuple the shortlist asked about, at an amount that tuple wasn't asked at, is asked again at its own amount, each
   its own transaction, and another choice round refines the same shortlist. A provider off the shortlist, or a
   tuple the shortlist didn't ask about, is never asked, whatever a choice round lists. At most `LATER_ROUNDS` later
@@ -283,3 +281,49 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Touches**: no shared manifest and no dependency; only `components/core-orch/src/rounds/`, its tests
   (`tests/rounds.rs`, `tests/rounds_support/`, which reuses `T-020-05`'s `tests/snapshot_support/` unchanged), and
   these notes. No `DEC-20` path.
+
+### T-020-06, review answers
+
+- **B1, a route offered on a non-origin reserve's yes.** The yes must be the order's origin reserve's under
+  `Presence::User`: `offer` requires each part's withdrawal to be at the origin reserve. And only the origin is
+  asked (should-fix 1): every other reserve's withdrawal tuple is added to the routing's `excluded_tuples`, read from
+  the shortlist's snapshot (`origin_only`), so the record shows the exclusion and recomputes; `ask` also skips any
+  withdrawal question not at the origin. The reviewer's probe (two reserves, the origin refusing) is now part of
+  `route_is_not_offered_without_the_reserves_yes_in_the_users_session`: no route, and the other reserve asked no
+  withdrawal. The exclusion and the yes check back each other: off alone, the yes check stays green, since the
+  exclusion keeps the other reserve off every route; with the exclusion off too, the probe is offered on the other
+  reserve's yes.
+- **B2 and should-fix 3, judgements.** A judgement answer is admitted only if its maker is the need's verifier and
+  its subject and class are the need's; any other never reaches a snapshot. A tuple with needs is offered only where
+  its operation cites, for each need, a judgement by that verifier about that subject and class. The test kit gains
+  verifiers (`Env::add_verifier`, from provider-role's fixture) that answer judgements; new test
+  `tuple_needing_two_judgements_is_refused_while_one_verifier_is_silent`. Binding a judgement to a transaction stays
+  a residual: a judgement request carries none.
+- **Should-fix 2, who a person question asks.** A `// T-020-01d:` note at the call: `ask` and `asked_before` name
+  the relying provider until core-internal's `PersonQuestion` may name the verifier on a shortlisted route.
+- **Should-fix 4, the router's record checked.** A record whose request, snapshot or bounds aren't the round's own is
+  refused as `RoutingError::NotItsRecord` before it is signed, recorded or acted on. New test
+  `record_of_another_routing_is_refused_before_it_is_recorded`, with a router that echoes another order's shortlist.
+- **Should-fix 5, `quote_voided` in the router.** `RouteFinder` now drops a choice-round candidate whose first
+  unconfirmed operation has a usable fresh quote for its tuple, accepted for another amount and listing
+  `amount_changes`, as `quote_voided { figure, condition: amount_changes }`, and that operation cites the quote (the
+  contract's one exception to citing only quotes at an operation's amount). Edited: the router's `judge.rs`,
+  `search.rs` (`Search::voided_quote`), `lib.rs` (`cite_voided`), `shortlist.rs`'s docs, and its shortlist test
+  `provider_reached_at_two_amounts_is_asked_at_one_only`, which pinned `unconfirmed` for this case. `PLAN.md`'s
+  `T-020-06` row names the router change, on the coordinator's word. No contract change: router-api 4.0.0 holds the
+  reason. The same inputs now give another record, so `rutent_router::VERSION` is `rutent-router-0.5.0`, and the
+  router-api fixtures naming the router's version (the valid record the router's own test compares with, and the five
+  invalid ones made from it) name `0.5.0`, folded into router-api 4.0.0, still unreleased on `m3`, on the
+  coordinator's word. As at `T-020-02`'s bump, the fixture's envelope signature is left as it was: no test verifies
+  a fixture's signature. Touches a `DEC-20` path, `contracts/router-api/`.
+- **Should-fix 6, `record_refused` at the attribution switch.** Waits for the coordinator's word that it has landed
+  in `m3`; then m3 is merged here.
+- **Nits.** A refusal is recorded once per answer, however many later rounds refuse it again. A judgement question is
+  logged under a fresh transaction of its own, which the verifier's answer can't name (a residual for `T-025-05`). A
+  count a charge can't hold is refused as `RoutingError::Uncountable`, never taken as within. Who keeps `Issued` is
+  above.
+- **Rule-off, each red:** the origin-only exclusion (the probe's other reserve asked a withdrawal); the exclusion and
+  the yes check's origin rule together (the probe offered); the verifier, subject and class match at admission (the
+  foreign judgement entered the snapshot); the per-need check at offer (any judgement stood for both); the record
+  check (another order's record taken); the router's `quote_voided` (the record said `unconfirmed`); refusals
+  recorded once (the refused statement kept twice).
