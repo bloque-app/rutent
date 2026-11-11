@@ -277,6 +277,52 @@
         "attribution": {
           "signature": "verified",
           "who": {
+            "party": "operator",
+            "acts": "core-orch",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-b1",
+          "segment": "p1-s1"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 107,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0808080808080808080808080808080808080808080808080808080808080808"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
             "party": "bridge-pay",
             "acts": "bridge-pay",
             "role": "provider",
@@ -301,16 +347,67 @@
         "commitment": {
           "algorithm": "sha-256",
           "value": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-b1",
+          "segment": "p1-s1"
         }
       }
     },
     {
       "receipt": {
         "log": "log-main",
-        "index": 107,
+        "index": 108,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0808080808080808080808080808080808080808080808080808080808080808"
+          "value": "0909090909090909090909090909090909090909090909090909090909090909"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "core-orch",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-f1",
+          "segment": "p1-s1"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 109,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
         }
       },
       "entry": {
@@ -342,16 +439,66 @@
         "commitment": {
           "algorithm": "sha-256",
           "value": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-f1",
+          "segment": "p1-s1"
         }
       }
     },
     {
       "receipt": {
         "log": "log-main",
-        "index": 108,
+        "index": 110,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0909090909090909090909090909090909090909090909090909090909090909"
+          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "core-orch",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-k1"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 111,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
         }
       },
       "entry": {
@@ -383,16 +530,20 @@
         "commitment": {
           "algorithm": "sha-256",
           "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-k1"
         }
       }
     },
     {
       "receipt": {
         "log": "log-main",
-        "index": 109,
+        "index": 112,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+          "value": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
         }
       },
       "entry": {
@@ -430,10 +581,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 110,
+        "index": 113,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
         }
       },
       "entry": {
@@ -487,10 +638,10 @@
       },
       "previous": {
         "log": "log-main",
-        "index": 110,
+        "index": 113,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
         }
       }
     },

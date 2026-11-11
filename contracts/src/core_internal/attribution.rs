@@ -10,9 +10,10 @@
 //! 3. its `maker` is the party the entry claims;
 //! 4. its `shape` is the entry's `what.statement`, and its `made_at` the entry's `when.at`;
 //! 5. its signature's scheme and key are the entry's `signed_with`;
-//! 6. where the entry's `about` names a transaction, its body names the same one; and where the entry is about an
-//!    order or a segment, its `about` names a transaction, so a statement is verified for an order only through a
-//!    transaction its maker signed (`REQ-ORD-32`, `REQ-ORD-38`);
+//! 6. its `about` names a transaction exactly when its body names one, and the same one; and where the entry is
+//!    about an order or a segment, its `about` names a transaction, so a statement is verified for an order only
+//!    through a transaction its maker signed, and one whose body names a transaction never about nothing
+//!    (`REQ-ORD-32`, `REQ-ORD-38`). A judgement names no transaction, so it is verified about nothing;
 //! 7. its signature verifies over its signing input;
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`).
 //!
@@ -117,7 +118,7 @@ pub fn attribute(
                 && envelope.signature.key == claim.signed_with.key
                 && match about_transaction {
                     Some(about) => body_transaction == Some(about),
-                    None => !bound,
+                    None => body_transaction.is_none() && !bound,
                 }
                 && signatures.verifies(&bytes)
                 && keys.signs_for(&claimed_by.party, &claim.signed_with, &claim.when.at)?

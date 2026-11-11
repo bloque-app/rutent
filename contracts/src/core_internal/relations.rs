@@ -156,18 +156,25 @@ fn maker(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().party
 }
 
-/// The order `transaction` belongs to: the one the first stated entry naming it under an order names (see
-/// `transaction-belongs-to-one-order`).
-fn order_of<'a>(transaction: &Id, history: &'a History) -> Option<&'a Id> {
+/// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
+/// under an order names (see `transaction-belongs-to-one-order`).
+fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
     history.iter().find_map(|(_, e)| {
-        let (order, t) = order_transaction(stated(e)?)?;
-        (t == transaction).then_some(order)
+        let s = stated(e)?;
+        let (order, t) = order_transaction(s)?;
+        (t == transaction).then(|| (order, segment_of(s)))
     })
 }
 
+/// The segment a stated entry is about, where it names one.
+fn segment_of(statement: &StatedEntry) -> Option<&Id> {
+    statement.about.as_ref()?.segment.as_ref()
+}
+
 /// Whether `statement` is about what the entry citing it is about: the order its `about` names is `order`, the
-/// segment it names is `segment` where the citing entry names one, and the transaction it names belongs to `order`.
-/// A statement about nothing is citable on its body.
+/// segment it names is `segment` where the citing entry names one, and the transaction it names belongs to `order`
+/// and, where the citing entry names a segment, to that segment. A statement about nothing is citable on its body;
+/// the log verifies none whose body names a transaction ([`attribute`](super::attribute)).
 fn about_agrees(
     statement: &StatedEntry,
     order: Option<&Id>,
@@ -185,7 +192,10 @@ fn about_agrees(
         && about
             .transaction
             .as_ref()
-            .is_none_or(|t| order_of(t, history) == order)
+            .is_none_or(|t| match binding_of(t, history) {
+                Some((o, s)) => Some(o) == order && segment.is_none_or(|c| s == Some(c)),
+                None => order.is_none() && segment.is_none(),
+            })
 }
 
 /// A stated entry attributed to `party`, about what its citing entry is about: its signature verified, `party` its
@@ -1285,8 +1295,9 @@ pub static RELATIONS: [Relation; 47] = [
         quantifier: Quantifier::Exists,
         refusal: "a revocation names a permission granted in this log",
         fields: &[],
+        // Only a permitted revocation revokes; a refused one of a permission never granted is recorded as refused.
         cites: |e, _| match &e.what {
-            What::RevokePermission { .. } => by_fields(0),
+            What::RevokePermission { .. } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
@@ -1357,27 +1368,43 @@ pub static RELATIONS: [Relation; 47] = [
         spec: &["REQ-AUZ-7"],
         quantifier: Quantifier::Exists,
         refusal: "a customer's permitted read is of an order accepted in this log",
-        fields: &[(
-            "party",
-            "a customer's permitted read is of an order whose requester, beneficiary or payer it is",
-        )],
+        fields: &[
+            (
+                "party",
+                "a customer's permitted read is of an order whose requester, beneficiary or payer it is",
+            ),
+            (
+                "segment",
+                "a customer's permitted read of a segment is of a segment its order's plan lists",
+            ),
+        ],
         cites: |e, _| match (&e.what, read_of_order(e)) {
             (What::CheckRead { check }, Some(_)) if check.reader.role == Role::Customer => {
                 by_fields(0)
             }
             _ => none(),
         },
-        answers: |e, _, t, _| {
+        answers: |e, _, t, h| {
             let (What::CheckRead { check }, Some(read)) = (&e.what, read_of_order(e)) else {
                 return Match::NotTarget;
+            };
+            // A segment read names its order; the segment must be that order's, by the plans this log holds.
+            let of_its_order = match &check.reads {
+                Reads::Segment { order, segment, .. } => {
+                    planned_end(order.as_str(), segment.as_str(), h).is_some()
+                }
+                _ => true,
             };
             match verified(t).map(|t| &t.what) {
                 Some(What::Acceptance { order, parties, .. }) => {
                     let party = &check.reader.party;
                     judge(
                         order == read,
-                        &[[&parties.requester, &parties.beneficiary, &parties.payer]
-                            .contains(&party)],
+                        &[
+                            [&parties.requester, &parties.beneficiary, &parties.payer]
+                                .contains(&party),
+                            of_its_order,
+                        ],
                     )
                 }
                 _ => Match::NotTarget,
@@ -1882,9 +1909,19 @@ fn answered_transaction(statement: &StatedEntry) -> Option<&Id> {
         .flatten()
 }
 
+/// A stated entry as the rows of [`STATED_RELATIONS`] read it: with the party this deployment's operator makes its
+/// statements as, which Core's questions are verified to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatedCiting {
+    /// The stated entry.
+    pub entry: StatedEntry,
+    /// The deployment's operator party.
+    pub operator: Id,
+}
+
 /// The rows a stated entry is held to, read as [`RELATIONS`] are. `contracts/core-internal/README.md` lists them in
 /// the same table.
-pub static STATED_RELATIONS: [Relation<StatedEntry>; 2] = [
+pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
     Relation {
         name: "answer-follows-its-question",
         spec: &["REQ-ORD-32", "REQ-AUD-2"],
@@ -1898,8 +1935,9 @@ pub static STATED_RELATIONS: [Relation<StatedEntry>; 2] = [
                 "an answer is about the order its question asked for",
             ),
         ],
-        cites: |e, _| answered_transaction(e).map_or_else(none, |_| by_fields(0)),
-        answers: |e, _, t, _| {
+        cites: |e, _| answered_transaction(&e.entry).map_or_else(none, |_| by_fields(0)),
+        answers: |citing, _, t, _| {
+            let e = &citing.entry;
             let (Some(transaction), Some(t)) = (answered_transaction(e), stated(t)) else {
                 return Match::NotTarget;
             };
@@ -1914,7 +1952,7 @@ pub static STATED_RELATIONS: [Relation<StatedEntry>; 2] = [
                 true,
                 &[
                     matches!(t.attribution, Attribution::Verified { .. }),
-                    t.attribution.maker().role == Role::Operator,
+                    t.attribution.maker().party == citing.operator,
                     asked.order.is_some() && order.is_none_or(|o| asked.order.as_ref() == Some(o)),
                 ],
             )
@@ -1924,15 +1962,18 @@ pub static STATED_RELATIONS: [Relation<StatedEntry>; 2] = [
         name: "transaction-belongs-to-one-order",
         spec: &["REQ-ORD-32", "REQ-ORD-38"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a transaction belongs to one order: the first entry that names it fixes its order",
+        refusal: "a transaction belongs to one order and one segment: the first entry that names it fixes them",
         fields: &[],
-        cites: |e, _| order_transaction(e).map_or_else(none, |_| by_fields(0)),
-        answers: |e, _, t, _| {
+        cites: |e, _| order_transaction(&e.entry).map_or_else(none, |_| by_fields(0)),
+        answers: |citing, _, t, _| {
+            let e = &citing.entry;
             let (Some((order, transaction)), Some(t)) = (order_transaction(e), stated(t)) else {
                 return Match::NotTarget;
             };
             judge(
-                order_transaction(t).is_some_and(|(o, x)| x == transaction && o != order),
+                order_transaction(t).is_some_and(|(o, x)| {
+                    x == transaction && (o != order || segment_of(t) != segment_of(e))
+                }),
                 &[],
             )
         },
@@ -1948,7 +1989,8 @@ pub static STATED_RELATIONS: [Relation<StatedEntry>; 2] = [
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry is held to [`STATED_RELATIONS`] alike. Before any row, the entry's handle is held to its kind: a
+/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the party this deployment's operator makes
+/// its statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the entry's handle is held to its kind: a
 /// decision kind ([`calls::is_decision`](super::calls::is_decision)) only on the policy path, and any other entry
 /// only on the general path, so a decision written by anyone but policy is refused even where its type was got
 /// round.
@@ -1956,6 +1998,7 @@ pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
     through: Through,
+    operator: &Id,
 ) -> Result<(), Violation> {
     let decision = matches!(entry, Entry::Verified(v) if super::calls::is_decision(&v.what));
     match (through, decision) {
@@ -1969,7 +2012,13 @@ pub fn admit_entry(
     }
     match entry {
         Entry::Verified(entry) => admit_under(&RELATIONS, entry, history),
-        Entry::Stated(entry) => admit_under(&STATED_RELATIONS, entry, history),
+        Entry::Stated(entry) => {
+            let citing = StatedCiting {
+                entry: entry.clone(),
+                operator: operator.clone(),
+            };
+            admit_under(&STATED_RELATIONS, &citing, history)
+        }
     }
 }
 

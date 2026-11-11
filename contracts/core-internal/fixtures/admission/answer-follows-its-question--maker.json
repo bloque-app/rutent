@@ -62,9 +62,9 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "operator",
+            "party": "someone-else",
             "acts": "core-orch",
-            "role": "provider",
+            "role": "operator",
             "kind": "component"
           }
         },
