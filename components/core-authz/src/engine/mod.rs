@@ -130,6 +130,9 @@ pub enum Source {
     /// The record of an order, as the log holds its acceptance: whether the party the input names is its
     /// requester, beneficiary or payer (`REQ-AUZ-7`).
     OrderParties(Id),
+    /// The record of a segment, as the log holds the plan that lists it: whether the order the input names is the
+    /// order it belongs to (`REQ-AUZ-7`, `REQ-ORD-38`).
+    SegmentOrder(Id),
     /// The record of a segment, as the log holds the effect that moved value on it: whether the party the input
     /// names is the provider it moved through (`REQ-AUZ-7`).
     SegmentProvider {

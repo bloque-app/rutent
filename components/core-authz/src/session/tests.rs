@@ -184,6 +184,14 @@ fn party_of(party: &str, order: &str) -> Need {
     }
 }
 
+/// The record of `segment`, asked whether it belongs to `order`.
+fn segment_of(order: &str, segment: &str) -> Need {
+    Need {
+        input: id(order),
+        from: Source::SegmentOrder(id(segment)),
+    }
+}
+
 /// The record of a segment, asked whether `party` is its provider.
 fn provider_of(party: &str, order: &str, segment: &str) -> Need {
     Need {
@@ -512,6 +520,7 @@ fn customer_cannot_read_another_customers_order() {
         Says::of(vec![
             (party_of("cust-1", "ord-1"), Reply::Given(Said::Yes)),
             (party_of("cust-2", "ord-1"), Reply::Given(Said::No)),
+            (segment_of("ord-1", "p1-s1"), Reply::Given(Said::Yes)),
         ])
     };
     let mut engine = Engine::with_policy(Kept::world(), Rules::permitting(), says());
@@ -650,7 +659,14 @@ fn provider_cannot_read_another_providers_segment() {
 // verifies: REQ-AUZ-7, REQ-AUD-12
 #[test]
 fn regulators_read_without_its_permission_is_refused_and_recorded() {
-    let mut engine = Engine::with_policy(Kept::world(), Rules::permitting(), Says::default());
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(vec![(
+            segment_of("ord-1", "p1-s1"),
+            Reply::Given(Said::Yes),
+        )]),
+    );
     let regulator = actor("fin-regulator", "examiner-3", Role::Regulator);
     let trail = || json!({"kind": "trail"});
 
@@ -815,4 +831,53 @@ fn session_naming_a_party_that_does_not_hold_the_account_is_refused() {
             cause: NotKnownCause::VerifierUnreachable
         }
     );
+}
+
+/// A segment read is of a segment of the order it names, as the segment's record says: a customer naming its own
+/// order beside another order's segment is refused, and so is a checker whose permission covers that order. The same
+/// readers are allowed a segment of the order, and the log admits each.
+// verifies: REQ-AUZ-7
+#[test]
+fn customer_cannot_read_another_orders_segment_by_naming_its_own_order() {
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(vec![
+            (party_of("cust-1", "ord-1"), Reply::Given(Said::Yes)),
+            (segment_of("ord-1", "p1-s1"), Reply::Given(Said::Yes)),
+            (segment_of("ord-1", "ord-9-s1"), Reply::Given(Said::No)),
+        ]),
+    );
+    let segment = |seg: &str| json!({"kind": "segment", "order": "ord-1", "segment": seg, "provider": "bridge-pay"});
+    let customer = actor("cust-1", "cust-1", Role::Customer);
+
+    let foreign = read("req-450", customer.clone(), segment("ord-9-s1"), None);
+    assert_eq!(read_recorded(&mut engine, &foreign), refused());
+    let own = read("req-451", customer, segment("p1-s1"), None);
+    assert_eq!(read_recorded(&mut engine, &own), ReadOutcome::Allowed {});
+
+    let checker = actor("audit-firm", "checker-7", Role::Checker);
+    let mut over_an_order: PermissionChange =
+        valid!("permission-change-granting-a-regulator-the-trail");
+    over_an_order.request = id("req-g2");
+    over_an_order.permission = id("perm-chk-1");
+    over_an_order.grantee = checker.clone();
+    over_an_order.scope =
+        serde_json::from_value(json!({"kind": "order", "order": "ord-1"})).unwrap();
+    assert!(
+        engine
+            .grant_permission(&over_an_order)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    let foreign = read(
+        "req-452",
+        checker.clone(),
+        segment("ord-9-s1"),
+        Some("perm-chk-1"),
+    );
+    assert_eq!(read_recorded(&mut engine, &foreign), refused());
+    let own = read("req-453", checker, segment("p1-s1"), Some("perm-chk-1"));
+    assert_eq!(read_recorded(&mut engine, &own), ReadOutcome::Allowed {});
 }

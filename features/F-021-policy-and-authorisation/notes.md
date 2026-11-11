@@ -106,6 +106,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   record whether value moved through it (`Source::SegmentProvider`). The assembly answers both from the log, which
   holds the acceptance and the effect; were it to say yes wrongly, the log still refuses the read
   (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`), and nothing is answered.
+- **A segment is read as one of the order the read names** (review of `d2604d3`, B2). A segment read names its
+  order and segment apart, and neither the customer's rule nor `covers` tied the two, so a customer naming its own
+  order beside another order's segment was allowed, and a permission over one order covered another's segments. A
+  segment read now asks the segment's record (`Source::SegmentOrder(segment)`, the input the named order) whether it
+  belongs to that order, for every reader but a provider, whose record (`SegmentProvider`) already names both. The
+  log's half, `customer-read-is-of-its-own-order` and `covers` checking the order alone, is a core-internal change,
+  `F-020`'s, raised with the contract's author.
 - **A read naming a permission is held to the register.** The permission was granted, through `grant_permission`,
   to the reader's party over a scope that covers the read, and isn't revoked: the log's rows
   `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`, held by policy first. That rule reads what

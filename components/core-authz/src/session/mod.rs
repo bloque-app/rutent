@@ -27,6 +27,8 @@
 //!
 //! - a customer reads only an order, or a segment of an order, whose requester, beneficiary or payer it is, which the
 //!   order's record says (`Source::OrderParties`), and never the trail;
+//! - a segment is read only as one of the order the read names, which the segment's record says
+//!   (`Source::SegmentOrder`), so a permission over an order covers that order's segments and no other's;
 //! - a provider reads only a segment it names itself the provider of, which the segment's record says
 //!   (`Source::SegmentProvider`), and never an order or the trail;
 //! - a regulator's or a checker's read names its permission.
@@ -179,20 +181,33 @@ fn needs_of(asked: Asked<'_>) -> Vec<Need> {
             }
             needs
         }
-        Asked::CheckRead(c) => match (c.reader.role, &c.reads) {
-            (Role::Customer, Read::Order { order } | Read::Segment { order, .. }) => vec![Need {
+        Asked::CheckRead(c) => {
+            let party_of = |order: &Id| Need {
                 input: c.reader.party.clone(),
                 from: Source::OrderParties(order.clone()),
-            }],
-            (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
-                input: c.reader.party.clone(),
-                from: Source::SegmentProvider {
-                    order: order.clone(),
-                    segment: segment.clone(),
-                },
-            }],
-            _ => Vec::new(),
-        },
+            };
+            // A segment is read as one of the order the read names, which the segment's record must say.
+            let segment_of = |order: &Id, segment: &Id| Need {
+                input: order.clone(),
+                from: Source::SegmentOrder(segment.clone()),
+            };
+            match (c.reader.role, &c.reads) {
+                (Role::Customer, Read::Order { order }) => vec![party_of(order)],
+                (Role::Customer, Read::Segment { order, segment, .. }) => {
+                    vec![party_of(order), segment_of(order, segment)]
+                }
+                // The record of the effect that moved value on the segment names both its order and its provider.
+                (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
+                    input: c.reader.party.clone(),
+                    from: Source::SegmentProvider {
+                        order: order.clone(),
+                        segment: segment.clone(),
+                    },
+                }],
+                (_, Read::Segment { order, segment, .. }) => vec![segment_of(order, segment)],
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     }
 }
