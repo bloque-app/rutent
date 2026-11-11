@@ -2166,7 +2166,12 @@ fn an_advertisement_the_catalogue_would_refuse_changes_no_key() {
     run.advertise(
         "us-bank",
         &successor("2026-11-06T01:00:00Z", &|ad| {
-            ad["statement"]["publisher"] = "fx-desk".into()
+            // Its ledger renamed too, so no node of another publisher's stands in the way.
+            let renamed = ad
+                .to_string()
+                .replace("us-bank-ledger", "us-bank-new-ledger");
+            *ad = serde_json::from_str(&renamed).unwrap();
+            ad["statement"]["publisher"] = "fx-desk".into();
         }),
     )
     .unwrap();
@@ -2177,6 +2182,22 @@ fn an_advertisement_the_catalogue_would_refuse_changes_no_key() {
         "tx-p-1",
         "2026-11-06T15:04:05Z"
     ));
+    // Nor does a statement of us-bank's stating for the publisher the refused successor named verify.
+    let question = run.claim(
+        &question_of("tx-p-1b"),
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": "tx-p-1b"}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer("us-bank", "tx-p-1b");
+    answer["attribution"]["who"]["party"] = "fx-desk".into();
+    let answer = run.claim(
+        &answer,
+        &fresh,
+        json!({"kind": "balance_verification", "transaction": "tx-p-1b"}),
+    );
+    let receipt = run.append(answer).unwrap();
+    assert!(!verified_at(&run, &receipt));
     // No way to follow an outcome.
     run.advertise(
         "us-bank",

@@ -125,9 +125,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - `REQ-AUD-6`'s scan puts the run's secrets and a balance into kept statements' bodies, asserts the evidence
   store's stand-in holds each, and then that the log's file holds none of them, nor any kept statement's bytes or
   salt.
-- Every rule of the append path and of the register was switched off in turn, and its test failed: the `check`,
-  `attribute`, `admit_entry`, the retry rule, the read-back after a failed write, writing before taking an entry
-  in, the canonical form on opening, first trust, the successor rule, the advertisement's signature, its context,
-  `validate_statement`, its listed keys, the skew, the read-back failing as unavailable, the grant at the advertisement and at the statement, the
-  revocation, the key in force at `made_at` and in the advertisement accepted last, the dropped and the crossed
-  key, the operator's key, the publisher and the strict verifier.
+- Every rule of the append path, of the register and of the file store was switched off in turn, and its test
+  failed: the `check`, `attribute`, `admit_entry`, the retry rule, the read-back after a failed write, writing
+  before taking an entry in, the canonical form on opening, the read-back failing as unavailable, the read-back
+  keeping what the log answered, an advertisement kept on reopening, kept bytes bearing out their commitment on
+  reopening and on append, first trust, the successor rule, the advertisement's signature, its context,
+  `validate_statement`, its listed keys, the skew, the grant at the advertisement and at the statement, the
+  revocation, the log's clock, a tuple's changes in order, the publisher kept, tracking, a private node's publisher,
+  the key in force at `made_at` and in the advertisement accepted last, the dropped and the crossed key, the
+  operator's key, the publisher, the strict verifier and the file's lock. The path check before the retry rule
+  can't be reached past the handles' types, and the sync before a read-back can't be made to fail in a test.
