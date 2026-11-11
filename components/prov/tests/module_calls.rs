@@ -377,3 +377,106 @@ fn caller_is_told_each_cross_module_outcome_as_it_is_recorded() {
         }
     }
 }
+
+/// A caller whose cross-module call was delivered and that then traps may have set its callee acting: its
+/// operation is an outcome unknown, never `Unavailable`, and what ended it is recorded beside it.
+// verifies: REQ-ORD-1, REQ-MDL-21
+#[test]
+fn caller_that_traps_after_a_cross_module_call_has_an_unknown_outcome() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &caller_of(&caller, &callee),
+            &language,
+            "reserve",
+            &[Probe::Trap],
+        );
+        binding.take_events();
+        binding.take_unknown();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert_eq!(
+            handled,
+            Handled::Refused(PlatformRefusal::OutcomeUnknown),
+            "{language}: a trap after a delivered call was given another reason"
+        );
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Delivered(_))
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        let unknown = binding.take_unknown();
+        assert_eq!(unknown.len(), 1, "{language}: {unknown:?}");
+        assert_eq!(unknown[0].provider, caller);
+        assert_eq!(unknown[0].ended_by, PlatformRefusal::Unavailable);
+    }
+}
+
+/// A call is made only when the callee's whole budget and the caller's reserve after it are both left of the
+/// caller's deadline: with the budget left but not the reserve, it is refused as `deadline_too_near`, and the
+/// callee is handed nothing.
+// verifies: REQ-MDL-11, REQ-ORD-1
+#[test]
+fn call_needs_the_callees_budget_and_the_callers_reserve_left() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
+        install(
+            &mut binding,
+            &spec(&callee, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[],
+        );
+        install(
+            &mut binding,
+            &caller_of(&caller, &callee),
+            &language,
+            "reserve",
+            &[],
+        );
+        // A budget of one second leaves a reserve of half a second: the call needs one and a half left. A
+        // deadline of 1.4 seconds leaves the budget but not the reserve.
+        binding.set_call_budget(Duration::from_secs(1));
+        binding.set_deadline(Duration::from_millis(1400));
+        binding.take_events();
+        let handled = binding.handle(&caller, &withdrawal(&caller, 1));
+        assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Refused(r)) if r.reason == CallRefusalReason::DeadlineTooNear
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        assert_eq!(binding.operations_received(&callee), 0, "{language}");
+
+        // The control: with both left, the same call is delivered.
+        binding.set_deadline(Duration::from_secs(3));
+        binding.handle(&caller, &withdrawal(&caller, 2));
+        let events = binding.take_events();
+        assert!(
+            matches!(
+                events.calls.first().map(|c| &c.outcome),
+                Some(CrossModuleOutcome::Delivered(_))
+            ),
+            "{language}: {:?}",
+            events.calls
+        );
+        binding.set_deadline(OPERATION_DEADLINE);
+    }
+}

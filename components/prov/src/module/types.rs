@@ -40,6 +40,9 @@ pub enum Admitted {
     Refused(AdmissionRefusal),
     /// Refused: the assertion isn't one the platform admits on its word.
     Unverified(crate::module::admission::Unverified),
+    /// Refused before anything was judged: the caller's clock is past what a record's time can hold (the year
+    /// 9999), so the admission couldn't be recorded at it (`REQ-AUD-1`).
+    ClockOutOfRange,
 }
 
 pub use rutent_contracts::module_interface::{AdmissionRefusal, PlatformRefusal};
@@ -90,7 +93,8 @@ pub struct StateEvent {
 }
 
 /// One bound a module hit (`REQ-MDL-11`): the operation it was handling was refused as
-/// [`PlatformRefusal::LimitReached`], and every later request of that operation was refused too.
+/// [`PlatformRefusal::LimitReached`], or as [`PlatformRefusal::OutcomeUnknown`] where its module had passed
+/// something out, and every later request of that operation was refused too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitEvent {
     /// The provider whose module hit it.
@@ -99,6 +103,18 @@ pub struct LimitEvent {
     pub transaction: String,
     /// Which bound, and which budget of it where it was a count or a total.
     pub hit: LimitHit,
+}
+
+/// An operation that ended as [`PlatformRefusal::OutcomeUnknown`]: its module passed something out, and then what
+/// is recorded here ended it before an answer the platform passes on (`REQ-ORD-1`, `REQ-AUD-1`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownOutcome {
+    /// The provider whose module handled it.
+    pub provider: String,
+    /// The transaction of the operation, as it names it.
+    pub transaction: String,
+    /// What ended it: the reason it would have been refused for had the module passed nothing out.
+    pub ended_by: PlatformRefusal,
 }
 
 /// What the platform saw since it was last asked.
@@ -115,6 +131,9 @@ pub struct Events {
     pub calls: Vec<CrossModuleCall>,
     /// The bounds modules hit.
     pub limits: Vec<LimitEvent>,
+    /// The operations whose module passed something out and then ended with no answer the platform passes on, and
+    /// what ended each.
+    pub unknown: Vec<UnknownOutcome>,
 }
 
 /// An operating-system process, as the platform names it.

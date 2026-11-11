@@ -416,3 +416,47 @@ fn acceptance_given_at_a_set_time_is_recorded_at_that_time() {
         "the automatic acceptance isn't recorded at the admission's clock"
     );
 }
+
+/// A caller's clock past what a record's time can hold, the year 9999, admits nothing and accepts nothing: no time
+/// is made up for the record. The release waiting stays waiting, and is accepted at a clock that can be written.
+// verifies: REQ-MDL-1, REQ-AUD-1
+#[test]
+fn clock_past_the_year_9999_admits_and_accepts_nothing() {
+    // 10000-01-01T00:00:00Z.
+    let past = Instant(253_402_300_800);
+    let mut s = Signed::new();
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal"]);
+    let received = signed::assertion(&declaration, &binaries, &key);
+    assert_eq!(
+        s.platform
+            .admit(&received, &binaries, &mut s.catalogue, past),
+        Admitted::ClockOutOfRange
+    );
+    assert_eq!(s.platform.pending(RESERVE), None, "a release was kept");
+
+    let Admitted::Artefact(artefact) = s.admit(&received, &binaries) else {
+        panic!("the release wasn't admitted at a clock that can be written");
+    };
+    assert!(
+        s.platform
+            .accept(
+                RESERVE,
+                &artefact.assertion_digest,
+                "test-reviewer",
+                &s.catalogue,
+                past,
+            )
+            .is_none(),
+        "an acceptance was recorded at a time made up"
+    );
+    assert_eq!(
+        s.platform.pending(RESERVE).map(|a| &a.assertion_digest),
+        Some(&artefact.assertion_digest),
+        "the release stopped waiting"
+    );
+    assert!(
+        s.accept(RESERVE, &artefact.assertion_digest, "test-reviewer")
+            .is_some()
+    );
+}

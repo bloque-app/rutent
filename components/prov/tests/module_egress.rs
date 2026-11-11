@@ -148,3 +148,70 @@ fn an_outside_part_naming_another_operation_than_the_one_in_flight_is_refused() 
         }
     }
 }
+
+/// The module is told each outbound call's outcome so that a refusal is only ever one where nothing was sent: a call
+/// the declared destination answers is `completed`; one to an undeclared destination, sent nowhere, is `refused`;
+/// and one the declared destination took and redirected to an undeclared one is `unknown`, never `refused`, though
+/// its record says the redirect was refused, since the first destination may have acted on it.
+// verifies: REQ-ORD-1, REQ-MDL-7, REQ-MDL-8
+#[test]
+fn module_is_told_a_refusal_after_a_delivered_hop_as_unknown() {
+    for language in languages() {
+        let mut binding = binding("reserve");
+        let provider = format!("told-{language}");
+        let address = |last| IpAddr::V4(Ipv4Addr::new(185, 12, 64, last));
+        let api = Endpoint::https(&format!("api.{provider}.example"));
+        let undeclared = Endpoint::https(&format!("evil.{provider}.example"));
+        binding.serve(&undeclared, address(42), None);
+        let tell = |endpoint: &Endpoint| Probe::Tell {
+            operation: common::OPERATION.to_owned(),
+            endpoint: endpoint.clone(),
+        };
+        install(
+            &mut binding,
+            &common::spec(&provider, "1.0.0", Vec::new(), true),
+            &language,
+            "reserve",
+            &[tell(&api), tell(&undeclared)],
+        );
+        let evidence = |handled: Handled| {
+            let Handled::Answered(result) = handled else {
+                panic!("{language}: the module didn't answer: {handled:?}")
+            };
+            serde_json::to_value(&result.statement).expect("JSON")["outcome"]["evidence"][0]
+                ["reference"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+
+        // The declared destination answers.
+        binding.serve(&api, address(40), None);
+        binding.take_events();
+        assert_eq!(
+            evidence(binding.handle(&provider, &withdrawal(&provider, 1))),
+            format!("{provider}-1.0.0-completed-refused"),
+            "{language}"
+        );
+
+        // The declared destination takes the request and redirects it to the undeclared one.
+        binding.serve(&api, address(40), Some(&undeclared));
+        binding.take_events();
+        assert_eq!(
+            evidence(binding.handle(&provider, &withdrawal(&provider, 2))),
+            format!("{provider}-1.0.0-unknown-refused"),
+            "{language}: a refusal after a delivered hop was told as a refusal"
+        );
+        let events = binding.take_events();
+        let redirected = &events.records[0];
+        assert_eq!(
+            redirected.outcome,
+            CallOutcome::Refused(rutent_contracts::module_interface::Refused {
+                reason: RefusalReason::RedirectToUndeclaredDestination
+            }),
+            "{language}"
+        );
+        assert!(redirected.hops[0].address.is_some(), "{language}");
+        assert_eq!(validate_record(redirected), Ok(()), "{language}");
+    }
+}

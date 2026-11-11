@@ -385,10 +385,11 @@ impl egress::Host for OutsideState {
             Reply::Egress { outcome } => match outcome.as_str() {
                 "completed" => egress::Outcome::Completed,
                 "failed" => egress::Outcome::Failed,
-                "unknown" => egress::Outcome::Unknown,
-                _ => egress::Outcome::Refused,
+                "refused" => egress::Outcome::Refused,
+                // Anything else the platform says is unknown, never refused: the call may have been made.
+                _ => egress::Outcome::Unknown,
             },
-            _ => egress::Outcome::Refused,
+            _ => egress::Outcome::Unknown,
         })
     }
 }

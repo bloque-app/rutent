@@ -816,7 +816,8 @@ fn call_with_no_route_records_its_own_reason_and_a_valid_record() {
 
 /// The platform signs a result only with the declared statement key, resolved through the proxy: a store holding
 /// another key under the declared one's name, or none, signs nothing. Either is judged before the module is handed
-/// the operation, so the operation is refused as `StatementKeyUnavailable`, never `Unavailable`.
+/// the operation: another key is `StatementKeyMisconfigured`, and a store that can't answer is
+/// `StatementKeyUnavailable`, which may pass. Neither is `Unavailable`.
 // verifies: REQ-MDL-6, THR-4
 #[test]
 fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
@@ -844,7 +845,7 @@ fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     assert!(
         matches!(
             handled,
-            Handled::Refused(types::PlatformRefusal::StatementKeyUnavailable)
+            Handled::Refused(types::PlatformRefusal::StatementKeyMisconfigured)
         ),
         "{handled:?}"
     );
@@ -1250,9 +1251,11 @@ fn operator_wallets_results_are_signed_on_the_production_world() {
 }
 
 /// A peer that answers one byte at a time, each well within a read's own timeout, is cut off at the operation's
-/// deadline (`REQ-MDL-11`): the platform doesn't wait on it past the deadline, the operation ends as a limit, the
-/// call is recorded `unknown`, and another provider's operation runs right after.
-// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+/// deadline (`REQ-MDL-11`): the platform doesn't wait on it past the deadline, the call is recorded `unknown`, and
+/// another provider's operation runs right after. The withdrawal's call reached the peer before the deadline
+/// passed, so the operation is an outcome unknown, never a refusal: the deadline it hit is recorded as a limit,
+/// and as what ended it (`REQ-ORD-1`).
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8, REQ-ORD-1
 #[test]
 fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs() {
     let pki = tls::Pki::new();
@@ -1269,12 +1272,24 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     let took = started.elapsed();
 
     assert_eq!(slow.requests().len(), 1, "the slow peer got the call");
-    assert!(
-        matches!(
-            handled,
-            Handled::Refused(types::PlatformRefusal::LimitReached)
-        ),
-        "{handled:?}"
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::OutcomeUnknown)
+    );
+    let deadline = types::LimitHit {
+        kind: types::LimitKind::Deadline,
+        scope: None,
+    };
+    assert_eq!(
+        events.limits.iter().map(|l| l.hit).collect::<Vec<_>>(),
+        vec![deadline],
+        "the deadline wasn't recorded as the limit hit"
+    );
+    assert_eq!(events.limits[0].transaction, format!("tx-{RESERVE}-1"));
+    assert_eq!(events.unknown.len(), 1, "{:?}", events.unknown);
+    assert_eq!(
+        events.unknown[0].ended_by,
+        types::PlatformRefusal::LimitReached
     );
     assert!(took < Duration::from_secs(4), "held for {took:?}");
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
@@ -1292,9 +1307,10 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
 }
 
 /// A name lookup that never answers is given up at the operation's deadline (`REQ-MDL-11`): the platform doesn't
-/// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, the operation ends as a
-/// limit, and another provider's operation runs right after.
-// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
+/// wait on the resolver past it, the call is recorded `unknown` with nothing dialled, and another provider's
+/// operation runs right after. The call was handed to the egress layer, so the operation is an outcome unknown,
+/// with the limit that ended it recorded (`REQ-ORD-1`).
+// verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8, REQ-ORD-1
 #[test]
 fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs() {
     let pki = tls::Pki::new();
@@ -1309,12 +1325,17 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     let took = started.elapsed();
 
     assert!(took < Duration::from_secs(4), "held for {took:?}");
-    assert!(
-        matches!(
-            handled,
-            Handled::Refused(types::PlatformRefusal::LimitReached)
-        ),
-        "{handled:?}"
+    assert_eq!(
+        handled,
+        Handled::Refused(types::PlatformRefusal::OutcomeUnknown)
+    );
+    assert_eq!(
+        events
+            .unknown
+            .iter()
+            .map(|u| u.ended_by)
+            .collect::<Vec<_>>(),
+        vec![types::PlatformRefusal::LimitReached]
     );
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
     assert!(

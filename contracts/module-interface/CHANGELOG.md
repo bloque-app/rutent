@@ -12,14 +12,19 @@
   Rust test. (DEC-4, DEC-20, T-010-09)
 - No outcome that is only unknown reaches anyone as a refusal (`REQ-ORD-1`). The calling module is told a
   cross-module call's outcome as it is recorded, `delivered`, `unanswered` or `refused`, so an unanswered call,
-  whose callee may have acted, is never told to its caller as refused; the README says so, and a format binding
-  gives its caller all three. `PlatformRefusal` gains `StatementKeyUnavailable` (the statement key the running
-  release declares couldn't be had, or isn't that key's, judged before the module is handed the operation, so
-  nothing of it ran; a key store that can't answer was `Unavailable`, judged after the module ran) and
-  `OutcomeUnknown` (the module passed something out, an outbound or cross-module call, and then gave no answer the
-  platform can pass on; this was `Unavailable`). `Unavailable` now says nothing took effect, and the README and the
-  enum name the reasons that do. Both are Rust only, as the other platform reasons are, with a Rust test. New Rust
-  variants of a `#[non_exhaustive]` enum, and 4.0.0 is not released, so they join this major. (DEC-4, DEC-20)
+  whose callee may have acted, is never told to its caller as refused; a format binding gives its caller all three.
+  The platform ends a callee's deadline before its caller's, so a callee stopped at its deadline leaves its caller
+  time to hear that its call went unanswered, and a call is made only when enough of the caller's deadline is left
+  for the callee's least budget and that reserve (`deadline_too_near` otherwise); the README says so.
+  `PlatformRefusal` gains three reasons, Rust only, as the other platform reasons are, with a Rust test:
+  `StatementKeyUnavailable` (the store holding the statement key couldn't answer; it may later),
+  `StatementKeyMisconfigured` (the key can't sign as declared: none or another held, or one the platform may not
+  resolve), both judged before the module is handed the operation, so nothing of it ran, where a store that couldn't
+  answer was `Unavailable`, judged after the module ran; and `OutcomeUnknown` (the module passed something out, an
+  outbound or cross-module call, and then gave no answer the platform passes on: a limit, a bad output, a stop or a
+  result that can't be signed, each of which was its own reason). Every other reason now says nothing of the
+  operation took effect, and each one's doc says so. New Rust variants of a `#[non_exhaustive]` enum, and 4.0.0 is
+  not released, so they join this major. (DEC-4, DEC-20)
 - The release lifecycle's refusals (`T-013-06`). `AdmissionRefusal` gains `ReleaseStaged` (a new release while
   another is staged on a share of the provider's traffic, ADR-0014) and `OlderRelease` (a release whose assertion
   was made before the provider's last accepted one, so publishing an older signed release never reinstates it,

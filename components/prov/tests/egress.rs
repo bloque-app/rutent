@@ -265,7 +265,10 @@ fn redirect_to_a_declared_host_re_resolved_to_an_undeclared_address_is_refused()
         &mut log,
     );
 
-    assert_eq!(outcome, Outcome::Refused(Refusal::AddressNotAllowed));
+    assert_eq!(
+        outcome,
+        Outcome::RefusedAfterDelivery(Refusal::AddressNotAllowed)
+    );
     assert_eq!(connector.dials().len(), 1);
     assert_eq!(connector.dials()[0].to, SocketAddr::new(ip(API), 443));
     assert_eq!(log.len(), 1);
@@ -369,7 +372,7 @@ fn redirect_to_an_undeclared_destination_is_refused() {
 
     assert_eq!(
         outcome,
-        Outcome::Refused(Refusal::RedirectToUndeclaredDestination)
+        Outcome::RefusedAfterDelivery(Refusal::RedirectToUndeclaredDestination)
     );
     assert_eq!(
         attacker.accepted(),
@@ -415,7 +418,7 @@ fn redirect_to_a_destination_only_another_operation_lists_is_refused() {
 
     assert_eq!(
         outcome,
-        Outcome::Refused(Refusal::RedirectToUndeclaredDestination)
+        Outcome::RefusedAfterDelivery(Refusal::RedirectToUndeclaredDestination)
     );
     assert_eq!(connector.dials().len(), 1);
     assert_eq!(log[0].hops[1].destination, None);
@@ -457,7 +460,7 @@ fn redirect_to_plain_http_or_an_unreadable_location_is_refused() {
 
         assert_eq!(
             outcome,
-            Outcome::Refused(Refusal::RedirectToUndeclaredDestination),
+            Outcome::RefusedAfterDelivery(Refusal::RedirectToUndeclaredDestination),
             "{location:?}"
         );
         assert_eq!(connector.dials().len(), 1, "{location:?}");
@@ -703,7 +706,7 @@ fn rustls_connector_returns_redirects_and_refuses_an_untrusted_chain() {
     );
     assert_eq!(
         outcome,
-        Outcome::Refused(Refusal::RedirectToUndeclaredDestination)
+        Outcome::RefusedAfterDelivery(Refusal::RedirectToUndeclaredDestination)
     );
     assert_eq!(
         mover.requests().len(),

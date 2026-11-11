@@ -235,10 +235,14 @@ impl TestWorld {
 }
 
 impl World for TestWorld {
-    fn now(&mut self) -> rutent_contracts::module_interface::Time {
+    fn now(
+        &mut self,
+    ) -> Result<rutent_contracts::module_interface::Time, rutent_prov::module::platform::ClockError>
+    {
         let at = self.clock.unwrap_or(WORLD_AT);
-        rutent_contracts::module_interface::Time::new(at.rfc3339().expect("a time"))
-            .expect("a time")
+        at.rfc3339()
+            .and_then(rutent_contracts::module_interface::Time::new)
+            .ok_or(rutent_prov::module::platform::ClockError::PastYear9999)
     }
 
     fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
@@ -349,6 +353,7 @@ pub struct WasmBinding {
     category: String,
     standins: PathBuf,
     limits: Vec<types::LimitEvent>,
+    unknown: Vec<types::UnknownOutcome>,
     /// Every release accepted, whose declared calls the suite's route names (`WasmBinding::handle`).
     accepted: Vec<Declaration>,
 }
@@ -391,6 +396,7 @@ impl WasmBinding {
             category: category.to_owned(),
             standins: standins(),
             limits: Vec::new(),
+            unknown: Vec::new(),
             accepted: Vec::new(),
         })
     }
@@ -398,6 +404,13 @@ impl WasmBinding {
     /// The limits modules hit since this was last asked, which the suite's events have no place for.
     pub fn take_limits(&mut self) -> Vec<types::LimitEvent> {
         std::mem::take(&mut self.limits)
+    }
+
+    /// The operations that ended as an outcome unknown since this was last asked, and what ended each, which the
+    /// suite's events have no place for either. Like [`WasmBinding::take_limits`], they are kept when the events
+    /// are taken.
+    pub fn take_unknown(&mut self) -> Vec<types::UnknownOutcome> {
+        std::mem::take(&mut self.unknown)
     }
 
     /// The directory the stand-ins are read from.
@@ -553,6 +566,7 @@ impl ModuleBinding for WasmBinding {
             types::Admitted::Unverified(_) => {
                 suite::Admitted::Refused(suite::AdmissionRefusal::AssertionUnverified)
             }
+            types::Admitted::ClockOutOfRange => panic!("the suite's clock is in range"),
         }
     }
 
@@ -625,6 +639,7 @@ impl ModuleBinding for WasmBinding {
     fn take_events(&mut self) -> suite::Events {
         let events = self.platform.take_events();
         self.limits.extend(events.limits);
+        self.unknown.extend(events.unknown);
         suite::Events {
             records: events.records,
             lookups: events

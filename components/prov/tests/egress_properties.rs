@@ -405,7 +405,9 @@ fn every_call_leaves_one_record_its_declaration_accepts() {
         // A dial that failed its TLS check, or connected to nothing, leaves its hop with no address.
         let unconnected = usize::from(matches!(
             outcome,
-            Outcome::Refused(rutent_prov::egress::Refusal::NotVerified) | Outcome::Unreachable
+            Outcome::Refused(rutent_prov::egress::Refusal::NotVerified)
+                | Outcome::RefusedAfterDelivery(rutent_prov::egress::Refusal::NotVerified)
+                | Outcome::Unreachable
         ));
         assert_eq!(connected + unconnected, dials, "seed {seed}: {record:?}");
         assert!(record.hops.len() <= MAX_HOPS, "seed {seed}");
@@ -413,21 +415,38 @@ fn every_call_leaves_one_record_its_declaration_accepts() {
             (Outcome::Completed(_), CallOutcome::Completed(_))
             | (Outcome::Failed(_), CallOutcome::Failed(_))
             | (Outcome::NoAnswer | Outcome::Unreachable, CallOutcome::Unknown(_)) => true,
-            (Outcome::Refused(r), CallOutcome::Refused(refused)) => r.reason() == refused.reason,
+            (
+                Outcome::Refused(r) | Outcome::RefusedAfterDelivery(r),
+                CallOutcome::Refused(refused),
+            ) => r.reason() == refused.reason,
             _ => false,
         };
+        // A refusal is told as one only when nothing connected: once a hop was sent the request, it is a refusal
+        // after delivery, which the module is told as unknown (`REQ-ORD-1`).
+        match &outcome {
+            Outcome::Refused(_) => assert_eq!(connected, 0, "seed {seed}: {record:?}"),
+            Outcome::RefusedAfterDelivery(_) => {
+                assert!(connected > 0, "seed {seed}: {record:?}");
+            }
+            _ => {}
+        }
         assert!(
             status,
             "seed {seed}: {outcome:?} recorded as {:?}",
             record.outcome
         );
         let kind = match &outcome {
-            Outcome::Refused(r) => format!("{r:?}"),
+            Outcome::Refused(r) | Outcome::RefusedAfterDelivery(r) => format!("{r:?}"),
             other => format!("{other:?}").split('(').next().unwrap().to_owned(),
         };
         *kinds.entry(kind).or_insert(0) += 1;
         if connected >= 2 {
             *kinds.entry("followed a redirect".to_owned()).or_insert(0) += 1;
+        }
+        if matches!(outcome, Outcome::RefusedAfterDelivery(_)) {
+            *kinds
+                .entry("refused after delivery".to_owned())
+                .or_insert(0) += 1;
         }
     }
     // The cases reach every outcome, and redirects that were followed, so the properties are not held vacuously.
@@ -442,6 +461,7 @@ fn every_call_leaves_one_record_its_declaration_accepts() {
         "AddressNotAllowed",
         "NotVerified",
         "followed a redirect",
+        "refused after delivery",
     ] {
         assert!(
             kinds.get(kind).is_some_and(|n| *n > 0),

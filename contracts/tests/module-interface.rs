@@ -1984,10 +1984,11 @@ fn lifecycle_refusals_are_distinct_reasons_that_print_their_names() {
 
 // verifies: DEC-4, REQ-ORD-1, REQ-MDL-6, THR-4
 #[test]
-fn an_unknown_outcome_and_an_unavailable_statement_key_are_reasons_of_their_own() {
+fn an_unknown_outcome_and_each_statement_key_failure_are_reasons_of_their_own() {
     let platform = [
         PlatformRefusal::Unavailable,
         PlatformRefusal::StatementKeyUnavailable,
+        PlatformRefusal::StatementKeyMisconfigured,
         PlatformRefusal::OutcomeUnknown,
         PlatformRefusal::LimitReached,
         PlatformRefusal::MalformedOutput,
@@ -2000,6 +2001,10 @@ fn an_unknown_outcome_and_an_unavailable_statement_key_are_reasons_of_their_own(
     assert_eq!(
         format!("{:?}", PlatformRefusal::StatementKeyUnavailable),
         "StatementKeyUnavailable"
+    );
+    assert_eq!(
+        format!("{:?}", PlatformRefusal::StatementKeyMisconfigured),
+        "StatementKeyMisconfigured"
     );
     assert_eq!(
         format!("{:?}", PlatformRefusal::OutcomeUnknown),

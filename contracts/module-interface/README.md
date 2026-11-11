@@ -344,7 +344,9 @@ The platform's egress layer writes it, not the module, since the outside part is
   The calling module is told the outcome as it is recorded (since 4.0.0): a format binding gives its caller all
   three, and an unanswered call never reaches the caller as refused, since its callee may have acted on it
   (`REQ-ORD-1`). The platform ends a callee's deadline before its caller's, so that a callee stopped at its deadline
-  leaves its caller time to hear that the call went unanswered.
+  leaves its caller time to hear that the call went unanswered: a call is made only when enough of the caller's
+  deadline is left for both the callee's least budget and that reserve, and is refused as `deadline_too_near`
+  otherwise.
 
   A refusal names the callee, the kind asked and the reason, the first check the call fails, in this order:
   - `undeclared_callee`: the caller doesn't declare the callee;
@@ -378,14 +380,16 @@ Since 2.3.0 the reasons a platform gives are the contract's, in Rust, naming no 
   that stopped before it passed anything out (`Unavailable`), or a kind the module doesn't handle (`NotHandled`),
   and since 4.0.0 a transaction identifier a segment at another provider holds or an ended segment held
   (`DuplicateTransaction`, `REQ-MDL-14`, `INV-8`), a segment whose version was declared actively exploited
-  (`VersionExploited`, `REQ-MDL-20`), a statement key that couldn't be had, judged before the module is handed the
-  operation (`StatementKeyUnavailable`, `REQ-MDL-6`, `THR-4`), and a module that passed something out and then gave
-  no answer the platform can pass on (`OutcomeUnknown`, `REQ-ORD-1`).
+  (`VersionExploited`, `REQ-MDL-20`), a statement key whose store couldn't answer (`StatementKeyUnavailable`, which
+  may pass) or that can't sign as declared (`StatementKeyMisconfigured`, which won't until it is fixed), both judged
+  before the module is handed the operation (`REQ-MDL-6`, `THR-4`), and a module that passed something out and then
+  gave no answer the platform passes on (`OutcomeUnknown`, `REQ-ORD-1`).
 
-  `Unavailable`, `NotHandled`, `DuplicateTransaction`, `VersionExploited` and `StatementKeyUnavailable` say that
-  nothing of the operation took effect. Every other reason may follow the module's outbound and cross-module calls,
-  whose records say what became of them. A failure after the module passed something out is never given as a
-  reason that says nothing took effect: it is `OutcomeUnknown` unless another reason names it.
+  Every reason but `OutcomeUnknown` says that nothing of the operation took effect: the platform handed it to no
+  module, or the module passed nothing out, no outbound call and no cross-module call, before it ended. Once it
+  passed something out, a limit, a bad output, a stop or a result that can't be signed all end the operation as
+  `OutcomeUnknown`, never as a reason that says nothing took effect, and the outbound and cross-module call records
+  say what became of what it passed out.
 
 The module-boundary suite re-exports both; `EXP-2`'s bindings stood in `UnreadableBinary` and `Unavailable` for
 the three reasons added.

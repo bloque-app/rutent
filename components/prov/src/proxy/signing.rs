@@ -84,8 +84,8 @@ pub fn sign_result(
 }
 
 /// Whether `key` is the private half of `declared`, the statement key a release declares: what the platform checks
-/// before it hands a module an operation, so a store holding another key, or none, refuses the operation before
-/// anything of it runs (module-interface 4.0.0's `StatementKeyUnavailable`).
+/// before it hands a module an operation, so a store holding another key refuses the operation before anything of it
+/// runs (module-interface 4.0.0's `StatementKeyMisconfigured`).
 pub fn check_key(key: &SecretValue, declared: &PublicKey) -> Result<(), SigningError> {
     signing_key(key, declared).map(|_| ())
 }
