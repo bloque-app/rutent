@@ -75,6 +75,11 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "change_catalogue: mark_stale",
     ),
     (
+        "promote",
+        "prov/src/module/platform.rs",
+        "change_catalogue: promote",
+    ),
+    (
         "grant",
         "prov/src/catalogue/mod.rs",
         "change_catalogue: grant",
@@ -143,7 +148,7 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
     (
         "admit",
         "prov/src/module/platform.rs",
-        "admission, before acceptance, which is `accept`",
+        "admission; it starts only a release that needs no fresh acceptance (`REQ-MDL-3`), a fresh one is `accept`",
     ),
     (
         "begin_segment",
@@ -156,14 +161,9 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "a segment's bounds; its value moves through `handle`",
     ),
     (
-        "promote",
-        "prov/src/module/platform.rs",
-        "staging of a release already accepted (ADR-0014)",
-    ),
-    (
         "roll_back",
         "prov/src/module/platform.rs",
-        "staging of a release already accepted (ADR-0014)",
+        "ends a staging and keeps the version in force (ADR-0014); no row names it a permission",
     ),
     (
         "take_events",

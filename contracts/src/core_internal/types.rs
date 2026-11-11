@@ -335,6 +335,9 @@ pub enum CatalogueChange {
     WithdrawRelease,
     /// Setting a tuple's slippage limit.
     SetSlippage,
+    /// Putting a staged release in force, once its staging has run (`REQ-MDL-4`, ADR-0014). It names the staged
+    /// version, so a permit to promote one release promotes no other.
+    Promote,
 }
 
 impl CatalogueChange {
@@ -348,6 +351,7 @@ impl CatalogueChange {
                 | CatalogueChange::DeclareExploited
                 | CatalogueChange::Reinstate
                 | CatalogueChange::WithdrawRelease
+                | CatalogueChange::Promote
         )
     }
 

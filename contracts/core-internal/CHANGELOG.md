@@ -40,3 +40,7 @@
   holding the other's kinds, and `admit_entry` takes the path an entry came by and refuses a decision kind on the
   general one, so no part but the policy engine can write the decision an effect is admitted on. Twenty-two of the
   admission cases name the path. (DEC-2, DEC-4, DEC-20, REQ-AUZ-1, INV-7, T-020-01)
+- Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
+  about one module release, so it names the version it puts in force. Before it, no decided action carried the
+  platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
+  permissions takes in (`REQ-MDL-4`, ADR-0014). One valid fixture added. (DEC-4, DEC-20, REQ-AUZ-6, T-021-03)

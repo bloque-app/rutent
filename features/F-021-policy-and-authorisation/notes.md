@@ -154,3 +154,66 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   refused or not, and the call answers `Err`, nothing recorded. The read rows cite only permitted reads. Reading:
   the row should cite only a permitted revocation, which is a core-internal change, so it is `F-020`'s; until then
   the engine refuses it and the log keeps it out.
+
+## T-021-03
+
+- **What it builds.** One entry of `FIXED`, its two functions in `components/core-authz/src/roles/`, over
+  `decide` (built by `T-021-01`) and `authorise` (`T-021-04`'s). No call of its own: `T-021-03` owns no trait method
+  of core-internal, so no row of the built and unbuilt table in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`
+  moves. The engine edits are the shared type's, made in this row's turn: two `Source` variants appended
+  (`Permissions`, `Declarations`), the `FIXED` entry after `T-021-02`'s, `promote` moved in the scan from
+  `CARRIES_OUT_NOTHING` to `CARRY_OUT`, and `T-021-01`'s tests given the inputs the new rule asks for (below).
+- **Only the operator posts a route** (`REQ-AUZ-2`). A `post_route` asked in any other role is refused before the
+  deployment's policy or any source is asked. A suggestion has no call of its own: it reaches a route only as the
+  operator's post naming its suggester (`suggested_by`), which the decide entry holds whole beside the operator as
+  `who`. Whether the operator names a suggestion it posts is orchestration's to keep; the engine can't see a
+  suggestion that never reached it (`THR-90`).
+- **Each permission is held actor by actor.** The operator's permissions (`roles::Permission`: posting a route and
+  each `CatalogueChange`, ten with promotion) are asked of the deployment's register (`Source::Permissions { party,
+  permission }`, the input the actor, `acts`), one input per decision, for a caller in the operator's role only.
+  Keyed by party, every login of the operator would hold every permission, which is the insider of `THR-88` and no
+  separation at all. A caller in any other role is refused a catalogue change outright, the publisher's included
+  (`REQ-MDL-5`). A register that says no refuses, one that says nothing gives a missing input, one out of reach not
+  known. Default: posting a route needs the register's yes too, since the role is only what the caller's request
+  says; reversible by dropping that one input.
+- **The role is the request's.** The engine, as `T-021-01` and `T-021-02` read it, takes the caller's role as the
+  assembly hands it from external authentication. The register's yes is what binds an operator's permission to an
+  actor; a caller claiming the operator's role without one is refused. A source that also checked a party's roles
+  would be the deployment's to add (`F-030`).
+- **The operator acts for a user only where the reserve declared it** (`REQ-AUZ-9`). An authorisation the operator
+  gives, and a `move_value` the operator asks for, ask the origin reserve's declarations (`Source::Declarations(reserve)`,
+  the input `cannot_require_user_withdrawal`, `REQ-CAT-6`). Never declared is a missing input, declared it can
+  require the user's own withdrawal is a no, and either refuses. An authorisation is given by the user (a customer,
+  its agent included) or so by the operator; value moves on the request of the user, of Core carrying the user's
+  authorisation onward, or so of the operator. Every other role is refused, by default. The decide entry's `who` is
+  who acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
+- **The automatic-deposit reserve is refused for now** (a reading, reversible). `REQ-AUZ-9` and `REQ-ORD-13` let a
+  reserve that declared it start a route on an automatic deposit, authorising the withdrawal with no user present.
+  The row's Work doesn't name it, and the rule refuses an authorisation given in a provider's role. Allowing it is
+  one more line: a provider's authorisation where its party is the origin reserve and the reserve's declarations say
+  `starts_on_automatic_deposit`. It belongs with `T-020-04`'s automatic deposit, or `T-021-04`.
+- **The rule on an authorisation waits for `T-021-04`.** Its stub answers not known without consulting, so the rule
+  holds from when that row builds `authorise` through `consult`. The test drives the rule through `consult` directly
+  until then.
+- **Promotion** (the review of PR #60, hand-off from `retrospectives/M2.md`). The platform's `promote` put a staged
+  release in force for any caller, and no decided action carried it. `T-021-03` adds `promote` to core-internal's
+  `CatalogueChange`, about one release so it names the staged version, folded into 1.0.0 (core-internal isn't on
+  `develop` yet), with one valid fixture; `PLAN.md` §4.4 gives `contracts/` to `T-020-01` and `T-020-02` alone in
+  `M3`, and this edit is the one exception, made because the brief gave this row promotion and no action existed for
+  it. The alternative was a new `F-020` row. The row's Work and Tests in `PLAN.md` name it now. The scan lists the
+  platform's `promote` as carrying out `change_catalogue: promote`, so core-orch reaches it only holding its effect.
+- **The lifecycle hand-off is closed in the scan, not in `platform.rs`.** `accept`, `withdraw`, `revoke`,
+  `declare_exploited`, `mark_stale` and now `promote` are each reached only by core-orch holding the effect of a
+  permitted decision for that change. The platform still takes any `by`: `T-020-08` must pass it the permitting
+  decision's caller, so the platform's records name the same actor as the log's.
+- **Left as they are.** `roll_back` ends a staging and keeps the version in force (ADR-0014); no row names it a
+  permission, so it stays in `CARRIES_OUT_NOTHING`, an item for the owner's form beside promotion. `admit` starts
+  only a release that needs no fresh acceptance (`REQ-MDL-3`'s automated acceptance); a widened one waits for
+  `accept`, which is decided. Its reason in the scan said "before acceptance", which was inaccurate, and now says so.
+  Whether an automated acceptance should itself be a decision is the same item.
+- **`T-021-01`'s tests, given their inputs.** `every_decided_action` lists `promote` (13 actions); the request of a
+  post or a catalogue change is the operator's login, and the sources say yes to every input the fixed rules name,
+  so the deployment's ruling is what is decided. `authenticated_caller_is_still_decided_by_policy` now expects the
+  deployment's policy to see each caller the fixed rules let through, as it came, and the rest refused by the fixed
+  rule, and its known operator holds the permission the rule asks for, so the refusal of the other login stays the
+  deployment's.

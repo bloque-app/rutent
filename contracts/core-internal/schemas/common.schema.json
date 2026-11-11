@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate and withdraw_release are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it. The Rust types check both.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release and promote are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it. The Rust types check both.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -199,7 +199,8 @@
         "declare_exploited",
         "reinstate",
         "withdraw_release",
-        "set_slippage"
+        "set_slippage",
+        "promote"
       ]
     },
     "action": {
