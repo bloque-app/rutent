@@ -1,0 +1,59 @@
+{
+  "claim": {
+    "kind": "stated",
+    "attribution": {
+      "signature": "unverified",
+      "claimed_by": {
+        "party": "acme-co",
+        "acts": "acme-co",
+        "role": "provider",
+        "kind": "component"
+      }
+    },
+    "what": {
+      "statement": "urn:rutent:provider-role:result"
+    },
+    "when": {
+      "at": "2026-11-06T15:04:05Z",
+      "source": "party_stated"
+    },
+    "received_at": "2026-11-06T15:04:06Z",
+    "outcome": {
+      "status": "stated"
+    },
+    "signed_with": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    },
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "about": {
+      "order": "ord-17",
+      "segment": "seg-3",
+      "transaction": "tx-005"
+    }
+  },
+  "kept": {
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "bytes": "bm90IGFuIGVudmVsb3Bl"
+  },
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "keys": [
+    {
+      "maker": "acme-co",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "at": "2026-11-06T15:04:05Z"
+    }
+  ],
+  "signature": true,
+  "expect": "unverified"
+}

@@ -40,3 +40,12 @@
   holding the other's kinds, and `admit_entry` takes the path an entry came by and refuses a decision kind on the
   general one, so no part but the policy engine can write the decision an effect is admitted on. Twenty-two of the
   admission cases name the path. (DEC-2, DEC-4, DEC-20, REQ-AUZ-1, INV-7, T-020-01)
+- Folded into 1.0.0 before its release: the log, not the writer, attributes a stated entry. A `GeneralEntry`
+  refuses a stated entry attributed `verified`, so a statement reaches the general handle naming only its claimed
+  maker and its bytes' commitment. `attribute` records it verified only where the bytes the evidence store keeps
+  under that commitment are an envelope of this deployment, by that maker, of the entry's shape, time, key and
+  transaction, whose signature verifies under a key that signs the maker's statements at its `made_at`, and
+  otherwise unverified; it refuses an entry whose bytes aren't kept. The log holds three new traits for it:
+  `KeptStatements`, the evidence store's read by commitment; `StatementKeys`, the deployment and the makers' keys
+  from the catalogue, never from orchestration; and `Signatures`, the signature check. Fourteen attribution cases,
+  under `fixtures/attribution/`. (DEC-4, DEC-20, REQ-AUD-2, REQ-PRT-1, THR-3, T-020-01, T-022-01)

@@ -5,15 +5,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
+use rutent_contracts::core_internal::Attribution;
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, Charges, Comparisons, DECISION_ON_THE_GENERAL_HANDLE,
-    DecisionEntry, Decisions, Delivery, Evidence, Fetched, GeneralEntry, Kept, Log, Measures,
-    Operator, PersonQuestions, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, Reads, Sessions,
-    StuckOrders, is_decision,
+    ATTRIBUTED_BY_ITS_WRITER, AppendFailure, Authorisations, Charges, Comparisons,
+    DECISION_ON_THE_GENERAL_HANDLE, DecisionEntry, Decisions, Delivery, Evidence, Fetched,
+    GeneralEntry, Kept, KeptStatements, Log, Measures, Operator, PersonQuestions, PolicyLog,
+    RECORD_ON_THE_POLICY_HANDLE, Reads, Sessions, Signatures, StatementKeys, StuckOrders,
+    is_decision,
 };
 use rutent_contracts::core_internal::{
     Action, ActorKind, CatalogueChange, KeptStatement, PermissionChange, RELATIONS, Role,
-    Violation, What, admit_entry,
+    STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry, attribute,
 };
 use rutent_contracts::core_internal::{
     Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest, Effect, Entry, HandedOver,
@@ -22,7 +24,10 @@ use rutent_contracts::core_internal::{
     VERSION, VerifiedEntry,
 };
 use rutent_contracts::core_internal::{Quantifier, Through};
+use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::router_api::Id;
+use rutent_contracts::router_api::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -1173,9 +1178,20 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
     }
     // Every decision kind has a fixture here, so none can leave `is_decision` unseen.
     assert_eq!(seen, DECISION_CALLS.into_iter().collect());
-    // A stated entry is never a decision's.
+    // A stated entry is never a decision's, and reaches the general handle only unverified: the log attributes it.
+    let unverified = fixture("valid", "stated-entry-relayed-and-unverified");
+    assert!(serde_json::from_value::<GeneralEntry>(unverified.clone()).is_ok());
+    assert!(serde_json::from_value::<DecisionEntry>(unverified).is_err());
     let stated = fixture("valid", "stated-entry-of-a-quote");
-    assert!(serde_json::from_value::<GeneralEntry>(stated.clone()).is_ok());
+    let error = serde_json::from_value::<GeneralEntry>(stated.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(ATTRIBUTED_BY_ITS_WRITER), "{error}");
+    let entry: Entry = serde_json::from_value(stated.clone()).unwrap();
+    assert_eq!(
+        GeneralEntry::try_from(entry),
+        Err(Violation(ATTRIBUTED_BY_ITS_WRITER))
+    );
     assert!(serde_json::from_value::<DecisionEntry>(stated).is_err());
 
     // The probe: orchestration writes its own permitted `decide` and an effect on a permit naming it. The decide
@@ -1191,6 +1207,258 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
     let effect: Entry =
         serde_json::from_value(fixture("valid", "verified-entry-of-an-effect")).unwrap();
     assert!(admit_entry(&[], &effect, Through::General).is_err());
+}
+
+/// The log's sources for an attribution, as a case states them.
+struct Sources {
+    kept: Option<KeptStatement>,
+    deployment: Deployment,
+    keys: Vec<(String, SignedWith, Timestamp)>,
+    signature: bool,
+}
+
+impl KeptStatements for Sources {
+    fn kept(&mut self, _: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        Ok(self.kept.clone())
+    }
+}
+
+impl StatementKeys for Sources {
+    fn deployment(&mut self) -> Result<Deployment, AppendFailure> {
+        Ok(self.deployment.clone())
+    }
+
+    fn signs_for(
+        &mut self,
+        maker: &Id,
+        key: &SignedWith,
+        at: &Timestamp,
+    ) -> Result<bool, AppendFailure> {
+        Ok(self
+            .keys
+            .iter()
+            .any(|(m, k, t)| m == maker.as_str() && k == key && t == at))
+    }
+}
+
+impl Signatures for Sources {
+    fn verifies(&self, _: &[u8]) -> bool {
+        self.signature
+    }
+}
+
+fn sources(case: &Value) -> Sources {
+    let scheme = serde_json::json!("ed25519");
+    Sources {
+        kept: serde_json::from_value(case["kept"].clone()).unwrap(),
+        deployment: serde_json::from_value(case["deployment"].clone()).unwrap(),
+        keys: case["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| {
+                let with = serde_json::json!({"scheme": scheme, "key": k["key"]});
+                (
+                    k["maker"].as_str().unwrap().to_string(),
+                    serde_json::from_value(with).unwrap(),
+                    serde_json::from_value(k["at"].clone()).unwrap(),
+                )
+            })
+            .collect(),
+        signature: case["signature"].as_bool().unwrap(),
+    }
+}
+
+fn attribution_cases() -> Vec<(String, Value)> {
+    let dir = contract_dir().join("fixtures").join("attribution");
+    let mut out: Vec<(String, Value)> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .map(|p| {
+            (
+                p.file_stem().unwrap().to_string_lossy().into_owned(),
+                read_json(&p),
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Each case's claim, attributed over its sources, comes out as the case says: verified only where the kept bytes
+/// bear every part of the claim out, unverified where one part fails, and refused where the writer attributed it
+/// or no statement is kept under its commitment.
+// verifies: REQ-AUD-2, REQ-PRT-1, THR-3
+#[test]
+fn the_log_not_the_writer_attributes_a_stated_entry() {
+    let cases = attribution_cases();
+    assert!(cases.len() >= 14, "{}", cases.len());
+    // The log holds each source as a trait object, as it holds the others.
+    let (_, case) = &cases[0];
+    let _: [Box<dyn std::any::Any>; 3] = [
+        Box::new(Box::new(sources(case)) as Box<dyn KeptStatements>),
+        Box::new(Box::new(sources(case)) as Box<dyn StatementKeys>),
+        Box::new(Box::new(sources(case)) as Box<dyn Signatures>),
+    ];
+    for (name, case) in &cases {
+        let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+        let mut from = sources(case);
+        let mut keys = sources(case);
+        let signatures = sources(case);
+        let got = attribute(&claim, &mut from, &mut keys, &signatures);
+        let maker = claim.attribution.maker().clone();
+        match case["expect"].as_str().unwrap() {
+            "verified" => {
+                let entry = got.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+                assert_eq!(
+                    entry.attribution,
+                    Attribution::Verified { who: maker },
+                    "{name}"
+                );
+                let mut rest = entry.clone();
+                rest.attribution = claim.attribution.clone();
+                assert_eq!(rest, claim, "{name}: only the attribution changes");
+            }
+            "unverified" => assert_eq!(got, Ok(claim.clone()), "{name}"),
+            "attributed" => assert_eq!(
+                got,
+                Err(AppendFailure::Refused(Violation(ATTRIBUTED_BY_ITS_WRITER))),
+                "{name}"
+            ),
+            "no_kept" => assert_eq!(
+                got,
+                Err(AppendFailure::Refused(Violation(
+                    STATED_WITHOUT_ITS_KEPT_BYTES
+                ))),
+                "{name}"
+            ),
+            other => panic!("{name}: no expectation {other}"),
+        }
+    }
+}
+
+/// The reviewer's probe: orchestration logs a yes from the origin reserve as verified, which the reserve never
+/// signed. Attributed `verified` by its writer, it is no general entry. Handed in as the claim it can be, with bytes
+/// whose signature doesn't verify, the log records it unverified, and an acceptance resting on it is refused.
+// verifies: REQ-AUD-2, REQ-ORD-32
+#[test]
+fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures/admission/acceptance-rests-on-the-reserves-yes--verified.json"),
+    );
+    let mut history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                serde_json::from_value(h["receipt"].clone()).unwrap(),
+                serde_json::from_value(h["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let acceptance: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let Entry::Verified(VerifiedEntry {
+        what: What::Acceptance {
+            reserve_yes: Some(at),
+            ..
+        },
+        ..
+    }) = &acceptance
+    else {
+        panic!("an acceptance resting on a yes");
+    };
+    let slot = history.iter().position(|(r, _)| r == at).unwrap();
+    let Entry::Stated(yes) = history[slot].1.clone() else {
+        panic!("the yes is a stated entry");
+    };
+    let reserve = yes.attribution.maker().clone();
+
+    // The forgery: the yes, attributed verified by its writer.
+    let mut forged = yes.clone();
+    forged.attribution = Attribution::Verified {
+        who: reserve.clone(),
+    };
+    assert_eq!(
+        GeneralEntry::try_from(Entry::Stated(forged.clone())),
+        Err(Violation(ATTRIBUTED_BY_ITS_WRITER))
+    );
+    let wire = serde_json::to_value(Entry::Stated(forged.clone())).unwrap();
+    assert!(serde_json::from_value::<GeneralEntry>(wire).is_err());
+
+    // Handed in as a claim, with bytes the reserve's key never signed: the log records it unverified.
+    let claim = StatedEntry {
+        attribution: Attribution::Unverified {
+            claimed_by: reserve.clone(),
+        },
+        ..yes.clone()
+    };
+    let envelope = serde_json::json!({
+        "deployment": {"name": "rutent-test", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},
+        "protocol_version": "2.0.1",
+        "shape": claim.what.statement.as_str(),
+        "maker": reserve.party.as_str(),
+        "made_at": claim.when.at.as_str(),
+        "signature": {"scheme": "ed25519", "key": claim.signed_with.key.as_str(), "value": "AA"},
+        "statement": {"kind": "balance_verification", "outcome": {"status": "answered", "sufficient": true}},
+    });
+    let bytes = base64url(&serde_json::to_vec(&envelope).unwrap());
+    let kept = serde_json::json!({
+        "commitment": claim.commitment,
+        "salt": base64url(&[7; 32]),
+        "bytes": bytes,
+    });
+    let mut source = Sources {
+        kept: Some(serde_json::from_value(kept).unwrap()),
+        deployment: serde_json::from_value(envelope["deployment"].clone()).unwrap(),
+        keys: vec![(
+            reserve.party.as_str().to_string(),
+            claim.signed_with.clone(),
+            claim.when.at.clone(),
+        )],
+        signature: false,
+    };
+    let signatures = sources_like(&source);
+    let mut keys = sources_like(&source);
+    let recorded = attribute(&claim, &mut source, &mut keys, &signatures).unwrap();
+    assert_eq!(recorded, claim);
+    history[slot].1 = Entry::Stated(recorded);
+    assert!(admit_entry(&history, &acceptance, Through::General).is_err());
+
+    // Where the reserve's key did sign it, the log attributes it to the reserve, and the acceptance is admitted.
+    let mut signed = sources_like(&source);
+    signed.signature = true;
+    let mut keys = sources_like(&signed);
+    let signatures = sources_like(&signed);
+    let recorded = attribute(&claim, &mut signed, &mut keys, &signatures).unwrap();
+    assert_eq!(recorded.attribution, Attribution::Verified { who: reserve });
+    history[slot].1 = Entry::Stated(recorded);
+    assert_eq!(admit_entry(&history, &acceptance, Through::General), Ok(()));
+}
+
+fn sources_like(s: &Sources) -> Sources {
+    Sources {
+        kept: s.kept.clone(),
+        deployment: s.deployment.clone(),
+        keys: s.keys.clone(),
+        signature: s.signature,
+    }
+}
+
+fn base64url(raw: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in raw.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+    }
+    out
 }
 
 // verifies: DEC-4

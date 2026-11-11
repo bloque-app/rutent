@@ -1,8 +1,8 @@
 //! The assembly hands policy's handle on the log to the policy engine alone (`T-020-01`).
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DECISION_ON_THE_GENERAL_HANDLE, DecisionEntry, Decisions, GeneralEntry, Log,
-    PolicyLog,
+    ATTRIBUTED_BY_ITS_WRITER, AppendFailure, DECISION_ON_THE_GENERAL_HANDLE, DecisionEntry,
+    Decisions, GeneralEntry, Log, PolicyLog,
 };
 use rutent_contracts::core_internal::{
     DecisionRequest, Entry, Receipt, VerifiedEntry, Violation, What,
@@ -88,6 +88,15 @@ fn the_assembly_hands_policys_handle_to_the_policy_engine_alone() {
     let error = read.unwrap_err().to_string();
     assert!(error.contains(DECISION_ON_THE_GENERAL_HANDLE), "{error}");
     assert_eq!(core.log().general.len(), 1);
+
+    // Nor can it attribute a statement: a stated entry its writer calls verified is no general entry.
+    let attributed = serde_json::from_str::<GeneralEntry>(&valid("stated-entry-of-a-quote"));
+    let error = attributed.unwrap_err().to_string();
+    assert!(error.contains(ATTRIBUTED_BY_ITS_WRITER), "{error}");
+    let claim: GeneralEntry =
+        serde_json::from_str(&valid("stated-entry-relayed-and-unverified")).unwrap();
+    orchestration.append(&claim).unwrap();
+    assert_eq!(core.log().general.len(), 2);
 }
 
 /// The assembly around the log before its row builds it: policy holds the handle and the log takes nothing.
