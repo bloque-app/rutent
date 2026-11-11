@@ -512,6 +512,15 @@ impl Env {
     /// `attribute`), and every entry admitted over the ones before it on the general path (`admit_entry`), with its
     /// rows `answer-follows-its-question`, `transaction-belongs-to-one-order` and the decision records' chain.
     /// Refused at the first entry the log wouldn't admit, with its place.
+    ///
+    /// What it leaves out:
+    /// - policy's question and charge entries go to the fakes ([`People`], [`Bound`]), not this log, so the rows over
+    ///   them (`provider-asked-before-was-asked`, `asked-before-is-complete`, `shortlisted-authority-cites-its-shortlist`)
+    ///   aren't exercised;
+    /// - every receipt this log hands out shares one digest, so a row matching a receipt by its digest alone can't
+    ///   tell two entries apart;
+    /// - `signs_for` always answers true: whether a key signs for its maker at its `made_at` rests on the
+    ///   catalogue's verification in `Signatures`, not on keys the log recorded itself.
     pub fn admitted(&self) -> Result<Vec<Entry>, (usize, String)> {
         let mut history: Vec<(Receipt, Entry)> = Vec::new();
         for (i, entry) in self.log.entries.iter().enumerate() {

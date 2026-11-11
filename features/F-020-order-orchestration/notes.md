@@ -368,3 +368,18 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   a question signed under the operator's party, and answers appended without their transaction, each went red.
 - **Superseded above:** the hand-off on `record_refused` (it appends unverified since the merge) and the empty
   shortlist's gap.
+
+### T-020-06, third review answers
+
+- **An empty shortlist, pinned.** `shortlist_that_keeps_nothing_is_recorded_and_asks_no_one`: with the only reserve
+  excluded, one shortlist entry names no provider and no verifier, `History::previous` is its receipt, no one is
+  asked or charged, and the replayed log admits it.
+- **The record's maker, pinned.** `recorded_decision_is_the_operators_own_statement`: each recorded decision's
+  envelope is made by the operator's `acts` and signed with the operator key, and the catalogue ties it to the
+  deployment's `operator_key`. The test names Core's own party apart from the operator's maker, since the kit's
+  Core acts for `operator`, the same text, which left the reviewer's switch to `routing.core.party` green; with them
+  apart, that switch goes red.
+- **What `Env::admitted` leaves out**, said in its doc too: policy's question and charge entries go to the fakes, so
+  the rows over them (`provider-asked-before-was-asked`, `asked-before-is-complete`,
+  `shortlisted-authority-cites-its-shortlist`) aren't exercised; every receipt the tests' log hands out shares one
+  digest; and `signs_for` always answers true, the key's tie to its maker resting on the catalogue's verification.

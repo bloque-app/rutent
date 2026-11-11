@@ -743,6 +743,65 @@ fn record_of_another_routing_is_refused_before_it_is_recorded() {
     assert!(sim.received.is_empty());
 }
 
+// verifies: REQ-AUD-4, REQ-QTE-13
+#[test]
+fn shortlist_that_keeps_nothing_is_recorded_and_asks_no_one() {
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.bounds = excluding(&inputs.bounds, &[RESERVE]);
+    let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+    let mut sim = env.sim();
+    let mut history = History::new();
+    let routed = env
+        .route(&mut sim, inputs.routing(), &mut history)
+        .expect("the routing runs");
+
+    assert_eq!(routed.offer, Offer::NotOffered(NotOffered::NoRoute));
+    assert!(routed.choices.is_empty());
+    assert!(sim.received.is_empty(), "{:?}", sim.received);
+    assert!(env.bound.charges.is_empty());
+    let records = env.records();
+    let [(at, what)] = records.as_slice() else {
+        panic!("one decision record: {records:?}");
+    };
+    let What::DecisionRecord {
+        shortlisted,
+        verifiers,
+        ..
+    } = what
+    else {
+        unreachable!()
+    };
+    assert_eq!(shortlisted.as_deref(), Some(&[][..]));
+    assert!(verifiers.is_empty());
+    assert_eq!(history.previous(), Some(&routed.shortlist.receipt));
+    assert_eq!(routed.shortlist.receipt.index.get() as usize, *at);
+    env.admitted().expect("the log admits the empty shortlist");
+}
+
+// verifies: REQ-AUD-4
+#[test]
+fn recorded_decision_is_the_operators_own_statement() {
+    // Core's own party is named apart from the operator's maker, so the two can't be confused.
+    let mut inputs = on_polygon(&[RESERVE], RESERVE);
+    inputs.core.party = id("rutent-core-party");
+    let mut env = Env::new(catalogue(&[(RESERVE, "acme")], 100_000), true, 100);
+    let mut sim = env.sim();
+    let routed = run(&mut env, &mut sim, &inputs);
+    for recorded in std::iter::once(&routed.shortlist).chain(&routed.choices) {
+        let envelope = value_of(&recorded.recorded);
+        assert_eq!(envelope["maker"], operator().acts.as_str());
+        assert_eq!(
+            envelope["signature"]["key"],
+            public_key(&operator_key()).as_str()
+        );
+        assert!(
+            env.catalogue
+                .verify_operator_statement(&recorded.recorded, Instant(START))
+                .is_ok()
+        );
+    }
+}
+
 // verifies: REQ-ORD-32
 #[test]
 fn automatic_deposit_is_routed_without_a_users_yes() {
