@@ -938,6 +938,7 @@ impl Stuck {
         let request = StuckDecide {
             request: parts.fresh.id(),
             order: deciding.order.clone(),
+            part: deciding.part.clone(),
             decider: deciding.decider.clone(),
             resolution: deciding.resolution.clone(),
             evidence: deciding.evidence.to_vec(),
