@@ -73,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 39] = [
+const RUST_RULES: [(&str, &str); 38] = [
     (
         "verified-entry-of-a-replay-of-a-silent-node-not-replayed",
         "a replay's node that recorded nothing is one it replayed",
@@ -149,10 +149,6 @@ const RUST_RULES: [(&str, &str); 39] = [
     (
         "verified-entry-of-an-acceptance-given-without-the-reserves-yes",
         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
-    ),
-    (
-        "verified-entry-of-a-command-by-a-provider",
-        "an operator command is the operator's",
     ),
     (
         "charge-to-another-party-than-its-callers",

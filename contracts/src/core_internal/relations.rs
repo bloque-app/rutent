@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 77] = [
+pub static RELATIONS: [Relation; 78] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3181,6 +3181,24 @@ pub static RELATIONS: [Relation; 77] = [
             },
             None => Match::NotTarget,
         },
+    },
+    Relation {
+        name: "operator-command-is-the-deployment-operators",
+        spec: &["REQ-AUD-10", "REQ-AUD-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "an operator command is the deployment operator's: an operator acting for its party",
+        fields: &[],
+        // Read by party, as a refiling's filer is: not any actor stating the operator's role, nor anyone of another
+        // role. None to point to: the command is refused where its actor isn't the deployment's operator.
+        cites: |e, _| match &e.what {
+            What::Command { .. }
+                if !(e.who.role == Role::Operator && e.who.party == e.operator.party) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
         name: "input-not-taken-is-one-refused",
