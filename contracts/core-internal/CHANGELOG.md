@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 426 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 429 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 81 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -356,6 +356,13 @@
   signature, so the reserve's notice appended again unverified, claiming another transaction, keyed a second order
   apart. The notice must now be verified (field `verified`), and the key reads only a verified one. 426 admission
   cases. (DEC-4, DEC-20, REQ-ORD-23, REQ-AUD-2, INV-8, T-020-01)
+- Folded into 1.0.0 before its release: an outcome's evidence is newer than its move (round 6 of `T-020-01`'s
+  review). `outcome-confirmation-cites-verified-evidence` admitted a statement made before the move, which can't say
+  what the move came to, and a `move_value`'s evidence about any segment of its part. Each evidence now follows the
+  move's effect in the log (field `after`), and a `move_value`'s is about the moved segment itself, through a
+  transaction first bound to it. Refused: the probe, a report of `p3`'s delivery citing the statement about `p3-s1`
+  at position 60, before the effect at 69; a `move_value`'s evidence about another segment of its part. 429 admission
+  cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -1124,8 +1124,9 @@ pub static RELATIONS: [Relation; 76] = [
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part, through the transaction it names",
+                "an outcome's evidence is about its move's own order and part, a move_value's own segment, through the transaction it names",
             ),
+            ("after", "an outcome's evidence follows its move in the log"),
         ],
         cites: |e, _| match &e.what {
             What::ReportOutcome { request, .. } => alloc::vec![by_receipt(&request.evidence, 0)],
@@ -1143,15 +1144,31 @@ pub static RELATIONS: [Relation; 76] = [
             let Some(s) = stated(t) else {
                 return Match::NotTarget;
             };
-            let about = entry_at(effect, h)
-                .and_then(verified)
-                .and_then(|m| moved_part(m, h))
-                .is_some_and(|(order, part)| {
-                    part.is_some_and(|part| about_the_part(s, order, part, h))
-                });
+            let moved = entry_at(effect, h);
+            let about =
+                moved
+                    .and_then(verified)
+                    .is_some_and(|m| match effect_action(m).map(|(a, _)| a) {
+                        // A move_value's evidence is about the segment it moved, through that segment's transaction.
+                        Some(Action::MoveValue { order, segment, .. }) => {
+                            about_the_segment(s, order, segment, h)
+                        }
+                        _ => moved_part(m, h).is_some_and(|(order, part)| {
+                            part.is_some_and(|part| about_the_part(s, order, part, h))
+                        }),
+                    });
+            // Evidence older than the move can't say what the move came to.
+            let after = match (moved.and_then(|m| position(m, h)), position(t, h)) {
+                (Some(m), Some(at)) => at > m,
+                _ => false,
+            };
             judge(
                 true,
-                &[matches!(s.attribution, Attribution::Verified { .. }), about],
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    about,
+                    after,
+                ],
             )
         },
     },
@@ -3478,6 +3495,21 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
         }),
         _ => false,
     }
+}
+
+/// Whether `statement` is about `segment` of `order` itself: it names the order and a transaction first bound to that
+/// segment of that order (`binding_of`), and, where it names a segment, that one.
+fn about_the_segment(statement: &StatedEntry, order: &Id, segment: &Id, history: &History) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    about.order.as_ref() == Some(order)
+        && about.segment.as_ref().is_none_or(|named| named == segment)
+        && about
+            .transaction
+            .as_ref()
+            .and_then(|t| binding_of(t, history))
+            .is_some_and(|(o, s)| o == order && s == Some(segment))
 }
 
 /// Whether `statement` is about `part` of `order`: it names the order, and a segment of the part, its own or the
