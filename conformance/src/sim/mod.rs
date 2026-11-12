@@ -43,6 +43,11 @@ use rutent_contracts::provider_role::{Advertisement, Operation, Statement};
 /// [`Entry`]. It is a shared key, readable by the provider's outside part for any transaction.
 pub const BOOK_KEY: &str = "book";
 
+/// The state key under which the platform's world names the deployment a simulated provider serves, as the JSON of
+/// provider-role's `Deployment`: the provider holds every operation to it. Where the world names none, it serves the
+/// suite's default context (`T-024-02`: the assembly's deployment names the operator's real key).
+pub const DEPLOYMENT_KEY: &str = "deployment";
+
 /// The prefix of the state keys a script's next behaviour is read under: `script/next/{kind}/{dry|real}`. Reading
 /// one takes the behaviour out of the queue, which is how a script is consumed.
 pub const SCRIPT_PREFIX: &str = "script/next";

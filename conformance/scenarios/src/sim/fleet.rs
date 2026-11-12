@@ -8,7 +8,7 @@ use rutent_conformance::role::{
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
-    BEGIN, BOOK, CHAIN, Role, SETTLE, Spec, Standin, chain_host, rail_host,
+    BEGIN, BOOK, CHAIN, DEPLOYMENT_KEY, Role, SETTLE, Spec, Standin, chain_host, rail_host,
 };
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
@@ -117,7 +117,12 @@ impl Fleet {
     /// A platform with no provider, whose upgrades take effect at once and whose operations have the deadline
     /// `deadline`.
     pub fn new(deadline: std::time::Duration) -> Self {
-        let context = SuiteContext::default();
+        Self::with_context(deadline, SuiteContext::default())
+    }
+
+    /// [`Fleet::new`], in `context`: the assembly's, whose deployment names the operator's real key, so the log
+    /// verifies Core's questions by it (`T-024-02`).
+    pub fn with_context(deadline: std::time::Duration, context: SuiteContext) -> Self {
         let mut catalogue = Catalogue::new();
         catalogue.set_context(context.deployment.clone(), &context.protocol_version);
         let mut platform = Platform::new(
@@ -252,6 +257,11 @@ impl Fleet {
             &real(key_of(&placeholders.keys, KeyPurpose::Statements).as_str()),
         );
         self.platform.world.serve_rail(&spec.provider);
+        self.platform.world.seed_state(
+            &spec.provider,
+            DEPLOYMENT_KEY,
+            &serde_json::to_string(&self.context.deployment).expect("a deployment is JSON"),
+        );
         let networks = networks_of(&spec);
         for network in &networks {
             if self.platform.world.network(network).is_none() {
@@ -285,7 +295,12 @@ impl Fleet {
         );
         let advertising = key_of(&placeholders.keys, KeyPurpose::Advertising);
         let admitted = self.admit(
-            &assertion_signed_by(&declaration, &binaries, &real(advertising.as_str())),
+            &assertion_in(
+                &self.context,
+                &declaration,
+                &binaries,
+                &real(advertising.as_str()),
+            ),
             &binaries,
         );
         let Admitted::Artefact(artefact) = admitted else {
@@ -395,7 +410,16 @@ pub fn assertion_signed_by(
     binaries: &Parts<Vec<u8>>,
     key: &rutent_conformance::signing::Ed25519Key,
 ) -> Statement<ReleaseAssertion> {
-    let context = SuiteContext::default();
+    assertion_in(&SuiteContext::default(), declaration, binaries, key)
+}
+
+/// [`assertion_signed_by`], in `context`.
+pub fn assertion_in(
+    context: &SuiteContext,
+    declaration: &Declaration,
+    binaries: &Parts<Vec<u8>>,
+    key: &rutent_conformance::signing::Ed25519Key,
+) -> Statement<ReleaseAssertion> {
     let part = |bytes: &[u8]| BinaryPart {
         format: BinaryFormat::new("wasm-component").expect("a format name the contract takes"),
         digest: Digest {
