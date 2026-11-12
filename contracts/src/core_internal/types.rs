@@ -690,6 +690,9 @@ pub struct StuckDecide {
     pub request: Id,
     /// The stuck order.
     pub order: Id,
+    /// The order's stuck part: a resolution resolves one part, and the log admits it only for a part that stands
+    /// stuck (`only-a-declared-stuck-part-is-resolved`).
+    pub part: Id,
     /// Who decides.
     pub decider: Actor,
     /// The outcome decided.

@@ -2985,6 +2985,7 @@
           "request": {
             "request": "req-200",
             "order": "ord-1",
+            "part": "p3",
             "decider": {
               "party": "operator",
               "acts": "op-login-2",
@@ -3253,6 +3254,7 @@
           "request": {
             "request": "req-210",
             "order": "ord-1",
+            "part": "p3",
             "decider": {
               "party": "operator",
               "acts": "op-login-2",
@@ -3422,7 +3424,7 @@
             "standing": "stated",
             "subject": {
               "order": "ord-1",
-              "part": "p1"
+              "part": "p3"
             },
             "observed": {
               "kind": "handed_on",

@@ -8,6 +8,7 @@
   "required": [
     "request",
     "order",
+    "part",
     "decider",
     "resolution",
     "evidence",
@@ -20,6 +21,10 @@
     },
     "order": {
       "description": "The stuck order.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "part": {
+      "description": "The order's stuck part: a resolution resolves one part, and the log admits it only for a part that stands stuck.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "decider": {

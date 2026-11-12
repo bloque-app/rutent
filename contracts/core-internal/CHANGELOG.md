@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
-  breaking one rule, and 298 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 60 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 311 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 65 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -186,6 +186,18 @@
   cites the statement, as it did the decision and the record, and `nothing-cites-an-erased-statement` refuses a
   citation from the effect on, unless its result failed. Refused cases for each; 298 admission cases. (DEC-4, DEC-20,
   REQ-ORD-2, INV-4, REQ-AUD-13, T-020-01, T-020-10, T-022-03)
+- Folded into 1.0.0 before its release, after review: a part's standing, read once. One fold of the log's inputs
+  for a part, over the state machine's published rules, tells whether the part is in flight, held or ended, and
+  the part rows read it. A `done` result no longer releases a move that never settled: only its segment's
+  settlement, reversal or failed deposit, or a `failed` result, does (`recalculation-waits-for-moves-in-flight`),
+  and a recalculation starts from the part's latest settled segment. New rows: `floor-wait-waits-for-moves-in-flight`,
+  `segment-is-moved-once` (no second move on a segment, an identical retry aside; the retired row's settled
+  exemption goes), `ended-part-takes-no-more` (after a hand-on, a cancellation, an end on request, completion or a
+  resolution, no new route, wait, no-route or move), `held-part-takes-no-move`, and, from `T-020-11`,
+  `only-a-declared-stuck-part-is-resolved`, for which a stuck decision now names its `part`. The world log's
+  hand-on moves to its stuck part p3, so p1 goes on routing. `REQ-ORD-22` leaves the in-flight row's citation.
+  311 admission cases, 65 relations. (DEC-4, DEC-20, INV-4, INV-8, REQ-ORD-2, REQ-ORD-27, REQ-ORD-28, REQ-AUZ-4,
+  REQ-STM-6, T-020-01, T-020-10, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
