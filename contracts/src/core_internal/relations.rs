@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 81] = [
+pub static RELATIONS: [Relation; 83] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1694,6 +1694,52 @@ pub static RELATIONS: [Relation; 81] = [
         },
     },
     Relation {
+        name: "hand-on-links-an-unopened-order",
+        spec: &["REQ-ORD-43", "REQ-ORD-13"],
+        quantifier: Quantifier::Exists,
+        refusal: "a hand-on links an order not yet opened: its own route, handed on from it, opens it",
+        fields: &[],
+        // None to point to: a `handed_on` whose linked order already has a route is refused, so the value handed
+        // on never joins an order opened on its own.
+        cites: |e, h| match input(e).map(|i| &i.observed) {
+            Some(Observed::HandedOn { linked_order, .. }) if opened(linked_order.as_str(), h) => {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "linked-order-opens-on-its-hand-on",
+        spec: &["REQ-ORD-43", "REQ-ORD-13"],
+        quantifier: Quantifier::Exists,
+        refusal: "an order a hand-on links is opened only by its own route, handed on from the order it links",
+        fields: &[],
+        // None to point to: a `route_chosen` opening an order an earlier `handed_on` names as its linked order is
+        // refused unless it names that order as `handed_on_from`.
+        cites: |e, h| match input(e) {
+            Some(
+                i @ crate::state_machine::RecordedInput {
+                    observed: Observed::RouteChosen { handed_on_from, .. },
+                    ..
+                },
+            ) if !opened(i.subject.order.as_str(), h)
+                && h.iter().any(|(_, x)| {
+                    verified(x).and_then(input).is_some_and(|earlier| {
+                        matches!(&earlier.observed, Observed::HandedOn { linked_order, .. }
+                            if linked_order.as_str() == i.subject.order.as_str()
+                                && handed_on_from.as_ref().map(|f| f.as_str())
+                                    != Some(earlier.subject.order.as_str()))
+                    })
+                }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
         name: "chosen-route-rests-on-its-orders-acceptance",
         spec: &["REQ-ORD-34"],
         quantifier: Quantifier::Exists,
@@ -1787,6 +1833,10 @@ pub static RELATIONS: [Relation; 81] = [
                 "requester",
                 "a linked order keeps the requester of the order handed on",
             ),
+            (
+                "given",
+                "a hand-on of a part that isn't stuck rests on an acceptance the customer gave",
+            ),
         ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::HandedOn { .. }) => by_fields(0),
@@ -1800,17 +1850,33 @@ pub static RELATIONS: [Relation; 81] = [
             else {
                 return Match::NotTarget;
             };
-            match verified(t).map(|t| &t.what) {
-                Some(What::Acceptance {
-                    acceptance: a,
-                    order,
-                    parties,
-                    ..
-                }) => judge(
+            // A stuck part is handed on on the operator's resolution; any other is the customer's own choice, given.
+            let stuck = input(e)
+                .and_then(|i| i.subject.part.as_ref())
+                .and_then(|p| standing(input_order(e), p.as_str(), h))
+                .is_some_and(|s| s.part.state == crate::state_machine::OrderState::Stuck);
+            match verified(t) {
+                Some(
+                    v @ VerifiedEntry {
+                        what:
+                            What::Acceptance {
+                                acceptance: a,
+                                order,
+                                parties,
+                                basis,
+                                ..
+                            },
+                        ..
+                    },
+                ) => judge(
                     a.as_str() == acceptance.as_str(),
                     &[
                         order.as_str() == linked_order.as_str(),
                         requester_of(input_order(e), h) == Some(&parties.requester),
+                        stuck
+                            || (*basis == AcceptanceBasis::Given
+                                && v.who.role == Role::Customer
+                                && v.who.party == parties.requester),
                     ],
                 ),
                 _ => Match::NotTarget,
@@ -3686,6 +3752,15 @@ fn resolution_transaction_in(transaction: &Id, history: &History) -> bool {
     history.iter().any(|(_, e)| {
         matches!(verified(e).map(|v| &v.what), Some(What::StuckDecide { request, .. })
             if &request.transaction == transaction)
+    })
+}
+
+/// Whether `order` is opened in `history`: a `route_chosen` of it is recorded.
+fn opened(order: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|i| {
+            i.subject.order.as_str() == order && matches!(i.observed, Observed::RouteChosen { .. })
+        })
     })
 }
 

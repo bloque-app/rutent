@@ -4682,6 +4682,65 @@
       "entry": {
         "kind": "verified",
         "who": {
+          "party": "cust-1",
+          "acts": "cust-1",
+          "role": "customer",
+          "kind": "person"
+        },
+        "what": {
+          "call": "acceptance",
+          "acceptance": "acc-0042",
+          "order": "ord-42",
+          "request": "client-acc-0042",
+          "quote": {
+            "algorithm": "sha-256",
+            "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+          },
+          "authorisation": "auth-42",
+          "basis": "given",
+          "parties": {
+            "requester": "cust-1",
+            "beneficiary": "cust-1",
+            "payer": "cust-1"
+          },
+          "origin_reserve": "us-bank",
+          "yeses": [
+            {
+              "part": "p1",
+              "origin_reserve": "us-bank",
+              "reserve_yes": {
+                "log": "log-main",
+                "index": 102,
+                "entry": {
+                  "algorithm": "sha-256",
+                  "value": "0303030303030303030303030303030303030303030303030303030303030303"
+                }
+              }
+            }
+          ],
+          "session": "sess-1"
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 81,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
           "party": "rutent",
           "acts": "core-orch",
           "role": "core",
@@ -4735,10 +4794,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 81,
+        "index": 82,
         "entry": {
           "algorithm": "sha-256",
-          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+          "value": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
         }
       },
       "entry": {
@@ -4779,10 +4838,10 @@
             "answer": "permit",
             "receipt": {
               "log": "log-main",
-              "index": 80,
+              "index": 81,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+                "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
               }
             }
           }
@@ -4822,8 +4881,8 @@
         },
         "observed": {
           "kind": "handed_on",
-          "linked_order": "ord-2",
-          "acceptance": "acc-0002"
+          "linked_order": "ord-42",
+          "acceptance": "acc-0042"
         }
       }
     },
