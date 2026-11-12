@@ -153,9 +153,19 @@ impl Authorised {
         self.standing(order).map(|(terms, _)| terms)
     }
 
+    /// The register of `permitted`, the authorisations a log holds as permitted, in its order ([`permitted_in`]): for
+    /// a part of Core outside the engine that needs the register's view of the same log, such as the assembly's
+    /// start of an order.
+    pub fn of(permitted: Vec<Authorisation>) -> Self {
+        Authorised {
+            permitted,
+            appended: None,
+        }
+    }
+
     /// The terms `authorisation` acts under, where it is in force for `order`: permitted for it, and one of the ids in
-    /// force under the terms in force.
-    fn in_force_as(&self, order: &Id, authorisation: &Id) -> Option<&Authorisation> {
+    /// force under the terms in force. The engine holds a move to exactly this.
+    pub fn in_force_as(&self, order: &Id, authorisation: &Id) -> Option<&Authorisation> {
         self.standing(order)
             .filter(|(_, ids)| ids.contains(&authorisation))
             .map(|(terms, _)| terms)

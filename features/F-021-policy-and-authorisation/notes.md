@@ -364,16 +364,19 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   replaces the earlier one only for those parts. It waits on a `part` field in core-internal 1.0.0's authorisation,
   the contract author's; `customers_new_destination_after_a_failed_deposit_is_authorised_anew` is marked as the
   single-part case until then.
-- **Hand-off to the assembly (`T-024-02`).** `PolicySide::authorise` answers beside the engine and writes on
-  policy's handle outside `consult`, where the permit scan doesn't look: the scan covers Core's three crates, and the
-  stand-in is in the assembly, so a permit it writes is no finding. `T-024-02` merges first, so this row carries the
-  switch when it merges m3: `PolicySide::authorise` forwards to the engine's `authorise`, and the assembly's policy
-  handle implements `funds::Recorded` over the same `CoreLog`, `permitted_in` over its entries, owned, the log's
-  borrow dropped before the engine appends. Without the read the engine doesn't build over the handle. The assembly's
-  `Records` already answer what `authorise` asks (`ActsFor`, `Requester`, and for the operator or the reserve,
-  `Permissions`, `OrderOrigin`, `Declarations`). No source was added, so `Records::supply` builds unchanged. A Core
-  opened again over a `durable::Disk` then rebuilds its register from the log, which closes the register's part of
-  the restart hand-off to `F-030`.
+- **The switch in the assembly (`T-024-02`).** `T-024-02` merged into m3 first, and this row carried the switch when
+  it merged m3 (`970828a`). `PolicySide::authorise`, which answered beside the engine and wrote on policy's handle
+  outside `consult`, where the permit scan doesn't look, now forwards to the engine's `authorise`. `AuditLog`, and so
+  the assembly's `PolicyHandle<CoreLog>`, reads its entries for the engine through `Entries`, owned, the log's borrow
+  dropped before the engine appends. The assembly's `Records` already answered what `authorise` asks, so no source
+  changed. Its start of an order looked up the acceptance's authorisation as the first permitted `authorise` of that
+  id and order (T-024-02's L2 fix); it agreed with the register for a first authorisation, but not once one was
+  replaced. It now reads through the register (`Authorised::of`, `in_force_as`, the view the engine holds a move to),
+  so an order starts only under an authorisation in force. A Core opened again over a `durable::Disk` rebuilds its
+  register from the log, which closes the register's part of the restart hand-off to `F-030`. Tests in the assembly:
+  `authorisation given again with other terms is refused by the engine`, which the stand-in would have permitted, and
+  `order starts under no authorisation the customer replaced`. Rule-offs, `cargo test -p rutent-scenarios --lib
+  assembly::tests`: the stand-in put back turned the first red, the first-permitted lookup put back the second.
 - **The segments kit, and the scenarios' handle.** `conformance/scenarios/tests/segments_support/` seeded the order's
   authorisation as a permitted `authorise` entry straight into the log, so every move of `T-020-08`'s and
   `T-020-10`'s scenario tests was refused. The kit now gives the customer's authorisation through the engine

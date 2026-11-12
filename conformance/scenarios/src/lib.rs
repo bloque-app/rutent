@@ -135,6 +135,22 @@ impl Entries for rutent_core_audit::log::Unbuilt {
     }
 }
 
+impl<S, K> Entries for rutent_core_audit::log::AuditLog<S, K>
+where
+    S: rutent_core_audit::log::store::Store,
+    K: rutent_contracts::core_internal::calls::KeptStatements,
+{
+    /// The log's entries, as it holds them.
+    fn entries(&self) -> Option<Vec<Entry>> {
+        Some(
+            rutent_core_audit::log::AuditLog::entries(self)
+                .iter()
+                .map(|(_, entry)| entry.clone())
+                .collect(),
+        )
+    }
+}
+
 /// Policy's read of the log, on policy's handle itself, so the read and the append are one wire (`T-021-04`).
 impl<L: Entries> rutent_core_authz::funds::Recorded for PolicyHandle<L> {
     fn permitted(

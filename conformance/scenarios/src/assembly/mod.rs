@@ -1208,19 +1208,15 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
     serde_json::from_value(value["statement"].clone()).ok()
 }
 
-/// The authorisation `authorisation` of `order` that a move rests on, as the log holds it: an `authorise` of that
-/// authorisation and that order whose outcome is permitted, as `move-rests-on-its-authorisation` holds a move to. A
-/// refusal under the same id, or the same id for another order, is no authorisation of this one's.
+/// The terms the authorisation `authorisation` of `order` acts under, as the policy engine's register reads the log
+/// (`T-021-04`): an `authorise` of that authorisation and that order whose outcome is permitted, as
+/// `move-rests-on-its-authorisation` holds a move to, and in force, not replaced since. A refusal under the same id,
+/// the same id for another order, or one replaced, is no authorisation this order starts under. The engine holds each
+/// of the order's moves to the same view.
 fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
-    entries.iter().find_map(|e| match e {
-        Entry::Verified(v) if v.outcome == Outcome::Permitted {} => match &v.what {
-            What::Authorise {
-                authorisation: a, ..
-            } if &a.authorisation == authorisation && &a.order == order => Some(a.clone()),
-            _ => None,
-        },
-        _ => None,
-    })
+    rutent_core_authz::funds::Authorised::of(rutent_core_authz::funds::permitted_in(entries))
+        .in_force_as(order, authorisation)
+        .cloned()
 }
 
 /// Every input `log` took, in its order.
@@ -1405,5 +1401,118 @@ mod tests {
             unreachable!()
         };
         assert_eq!(found, want);
+    }
+
+    /// The assembly starts an order under the authorisation its acceptance names only while the policy engine's
+    /// register holds it in force (`T-021-04`): once the customer's new authorisation of other terms replaces it, the
+    /// order starts under it no more, and the new one is found; another's authorisation of other terms, which only
+    /// engines racing over one log could leave, replaces nothing.
+    // verifies: REQ-AUZ-3, INV-10
+    #[test]
+    fn order_starts_under_no_authorisation_the_customer_replaced() {
+        let (core, order) = floored();
+        let acceptance = core
+            .verified_whats()
+            .into_iter()
+            .find_map(|w| match w {
+                What::Acceptance {
+                    order: o,
+                    authorisation,
+                    ..
+                } if o == order => Some(authorisation),
+                _ => None,
+            })
+            .unwrap();
+        let entries: Vec<Entry> = core
+            .log()
+            .entries()
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect();
+        let permitted = entries
+            .iter()
+            .find_map(|e| match e {
+                Entry::Verified(v) if matches!(&v.what, What::Authorise { authorisation: a, .. } if a.authorisation == acceptance) => Some(v.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let anew = |id: &str, by: Actor| {
+            let mut entry = permitted.clone();
+            if let What::Authorise { authorisation, .. } = &mut entry.what {
+                authorisation.authorisation = kit::id(id);
+                authorisation.destination.account = kit::id("acct-anew");
+                authorisation.given_by = by;
+            }
+            Entry::Verified(entry)
+        };
+        let operator = Actor {
+            party: kit::id("operator"),
+            acts: kit::id("op-login-2"),
+            role: rutent_contracts::core_internal::Role::Operator,
+            kind: rutent_contracts::core_internal::ActorKind::Person,
+        };
+        let mut raced = entries.clone();
+        raced.push(anew("auth-raced", operator));
+        assert!(
+            authorised(&raced, &order, &acceptance).is_some(),
+            "another's authorisation replaces nothing"
+        );
+        assert!(authorised(&raced, &order, &kit::id("auth-raced")).is_none());
+
+        let mut replaced = entries;
+        replaced.push(anew("auth-anew", kit::customer()));
+        assert!(authorised(&replaced, &order, &acceptance).is_none());
+        let found = authorised(&replaced, &order, &kit::id("auth-anew")).expect("the new one");
+        assert_eq!(found.destination.account.as_str(), "acct-anew");
+    }
+    /// The assembly's authorisations are the policy engine's (`T-021-04`), held to the register it reads from the
+    /// log: the customer giving the order's authorisation again under its id, with other terms, is refused, as no
+    /// answer beside the engine would refuse it, and the log records the refusal as the engine's.
+    // verifies: REQ-AUZ-3
+    #[test]
+    fn authorisation_given_again_with_other_terms_is_refused_by_the_engine() {
+        let (mut core, order) = floored();
+        let given = core
+            .log()
+            .entries()
+            .iter()
+            .find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Authorise { authorisation, .. }
+                        if authorisation.order == order && v.outcome == Outcome::Permitted {} =>
+                    {
+                        Some(authorisation.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+            .expect("the order's authorisation");
+        let mut again = given.clone();
+        again.destination.account = kit::id("acct-anew");
+        let decision = rutent_contracts::core_internal::calls::Authorisations::authorise(
+            &mut core.policy,
+            &again,
+        )
+        .unwrap();
+        assert_eq!(
+            decision.outcome,
+            rutent_contracts::core_internal::Answer::Refuse {
+                class: RefusalClass::NotPermitted
+            }
+        );
+        assert!(
+            authorised(
+                &core
+                    .log()
+                    .entries()
+                    .iter()
+                    .map(|(_, e)| e.clone())
+                    .collect::<Vec<_>>(),
+                &order,
+                &given.authorisation
+            )
+            .is_some()
+        );
     }
 }
