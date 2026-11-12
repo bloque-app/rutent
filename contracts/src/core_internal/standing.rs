@@ -110,6 +110,16 @@ fn order_after(order: &str, history: &History) -> Option<Order> {
     current
 }
 
+/// The input an entry records, and whether the log took it: an `input`'s, taken, or an `input_not_taken`'s, kept as
+/// refused. Both hold their record id (the host recorded them).
+fn recorded(entry: &Entry) -> Option<(&RecordedInput, bool)> {
+    match verified(entry).map(|v| &v.what) {
+        Some(What::Input { input }) => Some((input, true)),
+        Some(What::InputNotTaken { input, .. }) => Some((input, false)),
+        _ => None,
+    }
+}
+
 /// Why `input` isn't taken after `history`, or `None` where it is: the host's refusal of a reused record id, or the
 /// state machine's not-applicable reason.
 pub(crate) fn not_taken(
@@ -120,8 +130,8 @@ pub(crate) fn not_taken(
         return None;
     }
     let reused = history.iter().any(|(_, e)| {
-        matches!(verified(e).map(|v| &v.what), Some(What::Input { input: earlier })
-            if earlier.record_id == input.record_id && earlier != input)
+        recorded(e)
+            .is_some_and(|(earlier, _)| earlier.record_id == input.record_id && earlier != input)
     });
     if reused {
         return Some(super::types::NotTaken::RecordIdReused {});
@@ -146,18 +156,21 @@ pub(crate) fn not_taken(
 /// does (`input-is-one-the-state-machine-takes`). An input before its order's route is recorded with no state, as
 /// the host contract records it, and taken; a `route_chosen` is taken where it opens a valid order.
 pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
-    // One record id names one content, in the whole log (the host contract's exactly-once, `RecordIdReused`): an
-    // input under a record id an earlier input holds is that input sent again, or refused.
-    let earlier = history
+    // One record id names one content, in the whole log (the host contract's exactly-once, `RecordIdReused`), a
+    // refused input's kept in `input_not_taken` too: an input under a record id an earlier taken input holds is that
+    // input sent again, or refused; under a refused input's, it is refused unless it is that same input, which the
+    // machine then judges again.
+    for (earlier, taken) in history
         .iter()
-        .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
-            Some(What::Input { input: earlier }) if earlier.record_id == input.record_id => {
-                Some(earlier)
-            }
-            _ => None,
-        });
-    if let Some(earlier) = earlier {
-        return earlier == input;
+        .filter_map(|(_, e)| recorded(e))
+        .filter(|(earlier, _)| earlier.record_id == input.record_id)
+    {
+        if earlier != input {
+            return false;
+        }
+        if taken {
+            return true;
+        }
     }
     match order_after(input.subject.order.as_str(), history) {
         None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),

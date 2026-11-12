@@ -23,24 +23,45 @@ fn admission_dir() -> PathBuf {
         .join("../../contracts/core-internal/fixtures/admission")
 }
 
+/// A log's input as the host recorded it: taken by the log as an `input`, or kept as an `input_not_taken` trace.
+pub enum Recorded {
+    /// An `input` entry's input.
+    Input(RecordedInput),
+    /// An `input_not_taken` entry's input: the host recorded it, so its record id is used, but no order moved.
+    NotTaken(RecordedInput),
+}
+
 /// What the host and the state machine do with a log's inputs, in order: an input under a record id an earlier one
-/// holds is that one again, or the host's refusal; otherwise `Applied`, `Late` or `Repeat` is a taking, anything
-/// else a refusal, named with its record id.
-pub fn replay(inputs: &[RecordedInput]) -> Result<(), String> {
+/// holds, taken or kept as refused, is that one again, or the host's refusal; otherwise `Applied`, `Late` or
+/// `Repeat` is a taking, anything else a refusal, named with its record id.
+pub fn replay(inputs: &[Recorded]) -> Result<(), String> {
     let mut orders: BTreeMap<String, Order> = BTreeMap::new();
-    let mut recorded: BTreeMap<String, &RecordedInput> = BTreeMap::new();
-    for input in inputs {
-        // The host's exactly-once: one record id names one content (`RecordIdReused`).
+    let mut recorded: BTreeMap<String, (&RecordedInput, bool)> = BTreeMap::new();
+    for item in inputs {
+        let input = match item {
+            Recorded::Input(input) => input,
+            Recorded::NotTaken(input) => {
+                recorded
+                    .entry(input.record_id.as_str().to_owned())
+                    .or_insert((input, false));
+                continue;
+            }
+        };
+        // The host's exactly-once: one record id names one content (`RecordIdReused`), a refused input's too.
         match recorded.get(input.record_id.as_str()) {
-            Some(earlier) if *earlier != input => {
+            Some((earlier, _)) if *earlier != input => {
                 return Err(format!(
                     "{} names two inputs, refused by the host",
                     input.record_id.as_str()
                 ));
             }
-            Some(_) => continue,
+            Some((_, true)) => continue,
+            // The same input as one refused before: the machine judges it again.
+            Some((_, false)) => {
+                recorded.insert(input.record_id.as_str().to_owned(), (input, true));
+            }
             None => {
-                recorded.insert(input.record_id.as_str().to_owned(), input);
+                recorded.insert(input.record_id.as_str().to_owned(), (input, true));
             }
         }
         let order = input.subject.order.as_str().to_owned();
@@ -71,11 +92,19 @@ pub fn replay(inputs: &[RecordedInput]) -> Result<(), String> {
     Ok(())
 }
 
-/// The state-machine inputs among `entries`, in order.
-pub fn inputs_of<'a>(entries: impl Iterator<Item = &'a Value>) -> Vec<RecordedInput> {
+/// The state-machine inputs among `entries`, in order, each taken or kept as refused.
+pub fn inputs_of<'a>(entries: impl Iterator<Item = &'a Value>) -> Vec<Recorded> {
     entries
-        .filter(|e| e["kind"] == "verified" && e["what"]["call"] == "input")
-        .map(|e| serde_json::from_value(e["what"]["input"].clone()).expect("a recorded input"))
+        .filter(|e| e["kind"] == "verified")
+        .filter_map(|e| {
+            let input =
+                || serde_json::from_value(e["what"]["input"].clone()).expect("a recorded input");
+            match e["what"]["call"].as_str() {
+                Some("input") => Some(Recorded::Input(input())),
+                Some("input_not_taken") => Some(Recorded::NotTaken(input())),
+                _ => None,
+            }
+        })
         .collect()
 }
 
