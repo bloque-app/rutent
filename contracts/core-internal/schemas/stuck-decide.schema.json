@@ -11,6 +11,7 @@
     "part",
     "decider",
     "resolution",
+    "transaction",
     "evidence",
     "at"
   ],
@@ -33,6 +34,10 @@
     },
     "resolution": {
       "$ref": "#/$defs/resolution"
+    },
+    "transaction": {
+      "description": "The transaction the resolution goes under at its provider: part of what is decided, so the move step can't choose another, and its outcome's evidence binds through it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "evidence": {
       "description": "The evidence relied on, by digest, at least one, each once.",

@@ -459,8 +459,9 @@ pub enum Action {
         /// The outcome it moves, exactly as the decide step named it, the provider that moves it included: the log
         /// admits it only so (`admit_entry`).
         resolution: Resolution,
-        /// The transaction the move goes under at that provider: what its outcome's evidence is about, as a
-        /// `move_value`'s is about its segment (`outcome-confirmation-cites-verified-evidence`).
+        /// The transaction the move goes under at that provider, exactly as the decide step named it: what its
+        /// outcome's evidence is about, as a `move_value`'s is about its segment
+        /// (`outcome-confirmation-cites-verified-evidence`).
         transaction: Id,
     },
 }
@@ -718,6 +719,9 @@ pub struct StuckDecide {
     pub decider: Actor,
     /// The outcome decided.
     pub resolution: Resolution,
+    /// The transaction the resolution goes under at its provider: part of what is decided, so the move step can't
+    /// choose another, and its outcome's evidence binds through it.
+    pub transaction: Id,
     /// The evidence relied on, by digest, at least one, each once.
     pub evidence: Vec<Digest>,
     /// When, by Core's clock.

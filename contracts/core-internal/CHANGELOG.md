@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 454 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 455 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 83 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -431,6 +431,12 @@
   (`verified-entry-of-a-command-by-a-provider`) give way to admission cases. The world appoints a checker. Refused:
   another operator party, a provider, a party named as the operator's maker. 124 invalid fixtures, 454 admission
   cases, 83 relations. (DEC-4, DEC-20, REQ-AUD-10, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution's transaction is decided (round 8 of `T-020-01`'s
+  review). The `resolve_stuck` effect named its transaction on its own, so the move step chose it. `StuckDecide`
+  gains `transaction` (schema and Rust), the one the resolution goes under at its provider, and
+  `stuck-effect-moves-the-decided-resolution` holds the effect to it (field `transaction`). The world's delivery is
+  decided under `tx-d3` and its hand-on under `tx-h3`. Refused: a hand-on effect under another transaction than its
+  decide step's. 455 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

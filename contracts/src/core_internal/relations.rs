@@ -857,6 +857,10 @@ pub static RELATIONS: [Relation; 78] = [
                 "resolution",
                 "a stuck order's effect moves exactly the resolution its decide step named",
             ),
+            (
+                "transaction",
+                "a stuck order's effect goes under the transaction its decide step named",
+            ),
         ],
         cites: |e, _| match effect_action(e) {
             Some((Action::ResolveStuck { .. }, _)) => by_fields(0),
@@ -869,7 +873,7 @@ pub static RELATIONS: [Relation; 78] = [
                         order,
                         carries_out,
                         resolution,
-                        ..
+                        transaction,
                     },
                     _,
                 )),
@@ -881,7 +885,11 @@ pub static RELATIONS: [Relation; 78] = [
             match &t.what {
                 What::StuckDecide { request, decision } => judge(
                     request.request == carries_out.request && decision == &carries_out.decision,
-                    &[&request.order == order, &request.resolution == resolution],
+                    &[
+                        &request.order == order,
+                        &request.resolution == resolution,
+                        &request.transaction == transaction,
+                    ],
                 ),
                 _ => Match::NotTarget,
             }
