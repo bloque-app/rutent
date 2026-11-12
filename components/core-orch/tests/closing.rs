@@ -6,7 +6,7 @@
 mod snapshot_support;
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Destination, Entry, FeeTo, MismatchKind, PublicMovement, Receipt,
@@ -342,7 +342,7 @@ impl Log {
         part: Option<&str>,
         segment: Option<&str>,
         observed: Value,
-        n: usize,
+        record: &str,
     ) -> Entry {
         let mut subject = json!({ "order": order });
         if let Some(part) = part {
@@ -352,7 +352,7 @@ impl Log {
             subject["segment"] = segment.into();
         }
         Self::verified(json!({ "call": "input", "input": {
-            "record_id": format!("rec-{order}-{n}"), "recorded_at": "2026-11-10T09:00:00Z",
+            "record_id": record, "recorded_at": "2026-11-10T09:00:00Z",
             "time_source": "core_clock", "source": { "kind": "orchestrator", "id": "rutent-core" },
             "standing": "stated", "subject": subject, "observed": observed,
         }}))
@@ -385,13 +385,19 @@ impl Log {
     }
 }
 
-/// One order's part, graded segment by segment as the segments would grade it, over `log`.
+/// One order's part, graded segment by segment as the segments would grade it, over `log`: each segment bound to its
+/// provider before its result, as the segments bind it before they carry its operation out, and graded only once the
+/// one before it settled, as the state machine takes them (`input-is-one-the-state-machine-takes`).
 struct Part<'a> {
     order: Id,
     segments: Vec<Id>,
     operations: &'a [Operation],
     end: RouteEnd,
     log: &'a Log,
+    /// The places bound to their provider, each once.
+    bound: RefCell<BTreeSet<usize>>,
+    /// The places settled.
+    settled: RefCell<BTreeSet<usize>>,
 }
 
 impl<'a> Part<'a> {
@@ -413,7 +419,7 @@ impl<'a> Part<'a> {
             None,
             None,
             json!({ "kind": "route_chosen", "decision_record": "dr-1", "parts": [{ "part_id": "p1", "segments": plan }] }),
-            0,
+            &format!("rec-{order}-0"),
         ));
         for (op, segment) in operations.iter().zip(&segments) {
             log.push(Log::verified(json!({
@@ -431,6 +437,44 @@ impl<'a> Part<'a> {
             operations,
             end,
             log,
+            bound: RefCell::default(),
+            settled: RefCell::default(),
+        }
+    }
+
+    /// Settles every segment before `place` not settled yet, each on a result its provider signs for at grade 3 and
+    /// moving what its operation moves, graded by `grading`: the part as the state machine would have it before the
+    /// segment at `place` runs.
+    fn settle_before(&self, grading: &mut dyn Grading, place: usize) {
+        for before in 0..place {
+            if self.settled.borrow().contains(&before) {
+                continue;
+            }
+            let op = &self.operations[before];
+            let kind = match op.kind {
+                rutent_contracts::router_api::OperationKind::Withdrawal => "withdrawal",
+                rutent_contracts::router_api::OperationKind::Deposit => "deposit",
+                rutent_contracts::router_api::OperationKind::Route => "transfer",
+                rutent_contracts::router_api::OperationKind::Exchange => "conversion",
+            };
+            let tx = format!("tx-{}-{before}", self.order.as_str());
+            let provider = op.provider.as_str();
+            let bytes = result(
+                kind,
+                provider,
+                &tx,
+                (op.amount_in.amount().as_str(), op.amount_out.as_str()),
+                (&op.from.asset.id, "0"),
+                json!([piece(3, &format!("book-{before}"), provider)]),
+            );
+            settles(self.grade(
+                grading,
+                before,
+                provider,
+                &tx,
+                &bytes,
+                op.amount_out.as_str(),
+            ));
         }
     }
 
@@ -462,6 +506,20 @@ impl<'a> Part<'a> {
         amount_out: &str,
     ) -> (Graded, Result<(), String>) {
         let fee = no_fee();
+        assert!(
+            (0..place).all(|before| self.settled.borrow().contains(&before)),
+            "a segment runs once the one before it settled"
+        );
+        // Bound to its provider before its operation is carried out, once (`segments`: `provider_bound`).
+        if self.bound.borrow_mut().insert(place) {
+            self.log.push(Log::input(
+                self.order.as_str(),
+                Some("p1"),
+                Some(self.segments[place].as_str()),
+                json!({ "kind": "provider_bound" }),
+                &format!("rec-{}-bound-{place}", self.order.as_str()),
+            ));
+        }
         let result = self.log.push(Log::stated(
             provider,
             "provider",
@@ -496,9 +554,12 @@ impl<'a> Part<'a> {
                         Some("p1"),
                         Some(self.segments[place].as_str()),
                         json!({ "kind": "segment_settled", "evidence": cites }),
-                        place + 1,
+                        &format!("rec-{}-{}", self.order.as_str(), place + 1),
                     ))
                     .map(|_| ());
+            }
+            if admitted.is_ok() {
+                self.settled.borrow_mut().insert(place);
             }
         }
         (graded, admitted)
@@ -1235,6 +1296,8 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
         .iter()
         .zip(["tx-d1", "tx-d2"])
         .map(|(part, tx)| {
+            // Each order's exchange inside the node settles, then its deposit runs.
+            part.settle_before(&mut grading(&catalogue, &nets, &books, &mut closing), 2);
             let bytes = deposit(tx, json!([piece(1, "poly-shared", "polygon")]));
             part.grade(
                 &mut grading(&catalogue, &nets, &books, &mut closing),
@@ -1276,6 +1339,10 @@ fn one_payment_closes_one_order_across_a_restart() {
         .collect();
     let bytes = |tx: &str| deposit(tx, json!([piece(3, "book", "reserve-wallet")]));
     let mut before = Closing::new();
+    // Each order's withdrawal and exchange settle before its deposit runs.
+    for part in &parts {
+        part.settle_before(&mut grading(&catalogue, &nets, &books, &mut before), 2);
+    }
     let first = parts[0].grade(
         &mut grading(&catalogue, &nets, &books, &mut before),
         2,
@@ -1423,12 +1490,6 @@ fn movements_core_checked_are_taken_live_and_after_a_restart() {
         end("polygon", "acct-9", ("USDC", 6), D.1),
         &log,
     );
-    let b = Part::new(
-        "ord-b",
-        &route,
-        end("polygon", "acct-9", ("USDC", 6), D.1),
-        &log,
-    );
     let mut live = Closing::new();
     let exchange = result(
         "conversion",
@@ -1487,6 +1548,8 @@ fn movements_core_checked_are_taken_live_and_after_a_restart() {
             &b_withdrawal,
             W.1,
         ));
+        // B's exchange inside the node, then its deposit.
+        b.settle_before(&mut grading(&catalogue, &nets, &books, closing), 2);
         let d = b.grade(
             &mut grading(&catalogue, &nets, &books, closing),
             2,
@@ -1497,7 +1560,6 @@ fn movements_core_checked_are_taken_live_and_after_a_restart() {
         );
         (named(&w), d)
     };
-    let _ = b;
     // Live.
     let (w, d) = after(&mut live, &log);
     assert_eq!(
@@ -1792,6 +1854,7 @@ fn evidence_for_another_segment_does_not_close_an_order() {
             &log,
         );
         let mut closing = Closing::new();
+        part.settle_before(&mut grading(&catalogue, &nets, &books, &mut closing), 2);
         let graded = part.grade(
             &mut grading(&catalogue, &nets, &books, &mut closing),
             2,
@@ -1845,7 +1908,7 @@ fn public_record_is_the_networks_whatever_the_piece_names() {
 }
 
 /// The stand-in grading settles a segment on its provider's word, but never a part's final deposit: a statement
-/// alone closes no order.
+/// alone closes no order. The part reaches its deposit as the state machine takes it, each segment before it settled.
 // verifies: REQ-ORD-33
 #[test]
 fn providers_word_never_closes_a_part() {
@@ -1862,6 +1925,8 @@ fn providers_word_never_closes_a_part() {
         part.grade(&mut ProvidersWord, 0, "reserve-bank-co", "tx-w", &w, W.1),
         Graded::Settles { .. }
     ));
+    // The exchange inside the node settles on its provider's word too: then the part reaches its deposit.
+    part.settle_before(&mut ProvidersWord, 2);
     let d = deposit("tx-d", json!([piece(3, "book-d", "reserve-wallet")]));
     assert_eq!(
         part.grade(&mut ProvidersWord, 2, "reserve-wallet", "tx-d", &d, D.1),
