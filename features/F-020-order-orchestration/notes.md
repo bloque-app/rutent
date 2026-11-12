@@ -2352,7 +2352,10 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
   (`F-030`), as `Segments`. What it reaches comes in `hand_on::Parts` (Core's clock, the log, fresh ids, `Segments`,
   `Exposures`). Every input is built once and appended until the log takes it; one the log refuses is dropped. The
   rules are pure functions in `hand_on/rule.rs` (`new_terms`, `destination_change`, `proves_start`,
-  `requester_of`, `acceptance_of`), each held by a test of its own.
+  `requester_of`, `acceptance_of`, `in_force`, `fresh_terms`), each held by a test of its own. Every pending
+  input is appended as built while the log can't take it now, and dropped where the log refuses it; the
+  exception is a linked order's `route_chosen` refused after its `handed_on` went in, which is recorded as refused
+  (below). Pending inputs live in memory only (the durability gap below).
 - **A failed final deposit never rolls the order back** (`REQ-ORD-43`). Nothing here asks for a reversal or
   releases the value: the deposit leaves it at its node, and the first answer is `T-020-10`'s recalculation to the
   same destination. Only a part the state machine has waiting for the customer (`T-020-11`'s `no_route` at a failed
@@ -2436,6 +2439,9 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
   path doesn't reach a stuck part. Test `operators_hand_on_follows_its_done_resolution`: refused with no done
   resolution, nothing recorded; decided by one desk, moved by another (the kit's `PermitsEveryStep` and `Moves`), then
   handed on, source `operator`, the log admitting every entry.
+- **Which destinations the kit reaches.** Each simulated reserve routes only between its own bank network and its own
+  ledger; no provider links two reserves, so the router can reach no other destination. The destination change's
+  success path (below) runs on a choice record the kit writes for the other reserve's deposit.
 - **The kit** (additive, for `T-024-02` to fold): `seed_linked` in `segments_support/mod.rs` (a linked order's
   authorisation through policy, its arrival, its acceptance by a named requester, its decision record, and no
   route), and `segments_support/handing.rs` (`hand_parts`, `recorded_with_receipts`, `linked_plan`,
@@ -2499,10 +2505,9 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
   - a customer's destination change is recorded with source `customer`, standing `stated`; the linked order's route
     with the source of whoever stated it (customer or operator).
 - **Gaps, each with its owner:**
-  - **The customer's new destination taken on the platform** (`T-024-06`, `AC-40`; the kit, `F-024`). The
-    simulated providers route to no other destination, so a `destination_changed` taken and run is shown by Core's
-    rules over the state machine (the unit test) and its refusals on the kit, not by a scenario, as `T-020-10`'s
-    `INV-10` guard is.
+  - **The customer's new destination run on the platform** (`T-024-06`, `AC-40`; the kit, `F-024`). The change is
+    taken and admitted on the kit (below), on a record the kit writes; its deposit isn't run, since no simulated
+    reserve deposits from another's ledger.
   - **The holding account's record isn't in the log** (the contract's author). `REQ-ORD-40` makes it the proof of a
     handed-on route's start, but core-internal has no kind for it, so Core holds it (`Segments`' proven starts) and
     the log admits the linked order's first move without it. A kind for the holding account's withdrawal record,
@@ -2529,3 +2534,53 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
 - **Touches**: `components/core-orch/src/hand_on/`, the seams above, `components/core-orch/tests/hand_on.rs`,
   `conformance/scenarios/tests/hand_on.rs` and the kit's additions. No manifest, no dependency, no lock or
   `licences/RECORD` line, no contract, no `DEC-20` path.
+
+### T-020-13, review answers (of `55bd1bc`)
+
+The reviewer found 3 high, 5 medium and 2 low; the coordinator ruled on each, reversibly, on the owner's form. Each
+test below was written first against `55bd1bc`'s API, compiled with only inert error variants added, and seen red
+for its own reason before any fix (the run is in the branch's history: nine tests red, each on its assertion; the
+two that write a record for the other reserve first failed on the kit's own record, fixed in the test). The two
+unit assertions of finding 9 were written before their rules and are shown red by rule-off only. Then each new
+rule was switched off once (the table below).
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | High: a hand-on stranded when the log refuses the linked route | Before the first append, Core checks what `route_chosen(linked, handed_on_from)` needs: the linked order not followed already (`AlreadyOpened`), its decision record of the linked order in the log (`NoDecisionRecord`), and its plan within its acceptance, one yes per part in order, each from the reserve its first segment runs at (`PlanOutsideItsAcceptance`, `chosen-route-rests-on-its-orders-acceptance`). Where the log still refuses the `route_chosen` outright after the `handed_on` went in, an `order_refusal` of the linked order (`malformed_request`, citing its decision record) is recorded once, the order Core follows takes the `handed_on` as the log holds it, and `LinkedRefused` is the answer from then. The state machine has no input that takes a hand-on back: the contract row is with the contract's author | `hand_on_is_checked_whole_before_its_first_record`, `linked_route_the_log_refuses_is_recorded_as_refused` |
+| 2 | High: the customer's hand-on must be the customer's | `by` must be role `customer` with the requester's party (`NotTheCustomer`); the linked acceptance must be `given`, its entry's `who` the customer or its agent, by the requester's party (`NotTheCustomersAcceptance`); `source_kind` maps only `customer` to a customer source, `operator` to operator, `core` to orchestrator, and refuses any other role. The operator's path takes only an `operator` (`NotTheOperator`). Fail-closed, the coordinator's default: the customer's hand-on is unreachable in production until `T-020-03` gives a linked order an intake path (a hand-off). The kit now builds the linked order's given acceptance: the customer's permitted `open_session`, the quote `shown`, the reserve's signed yes on the operator's question, the acceptance in that session | `customers_hand_on_is_the_customers_own` |
+| 3 | High: `INV-10` for the customer's hand-on | It needs a failed final deposit, as a new destination does (`NoFailedDeposit`) | `customers_hand_on_from_a_floor_wait_is_refused` |
+| 4 | Medium: trusted inputs | `change_destination` and `resume` read the customer's terms from the log (`fresh_terms`: in force for the part by the log's rule, as `Stuck::follow` reads it, a later one of the customer's replacing the first, permitted after the part's last wait), never the caller's; `Change` and `Resume` carry no authorisation. A resume under the terms the part waited under is refused (`NotItsAuthorisation`). `authorise` reads the terms in force and the requester from the log reader; `Terms` is gone. Every part the new terms speak for must have the same terms in force | `customers_choice_rests_on_terms_the_log_holds` (a change under terms policy never permitted; a resume under terms never permitted and under the old ones; a new destination with a new floor from a floor wait refused, whatever a caller would have claimed in force) |
+| 5 | Medium: the start proof | The starting reserve is derived when the value is handed on, from Core's records: the reserve the customer's linked route starts at (the yes's origin reserve), or the provider the operator's resolution names. `prove_start` takes no reserve; a linked order Core didn't hand on is `Unknown`. A record's reference, once spent on one linked order, proves no other (`ReferenceSpent`) | `holding_accounts_record_proves_one_start_from_its_own_reserve` (`NoReference`; another reserve's record refused, the caller's word taken for nothing; the same record refused for a second linked order in another world) |
+| 6 | Medium: unfollowed orders | `run_part` refuses a route starting at an inner node of an order Core doesn't follow (`StartUnproven`), so a restart fails closed until Core follows it again. The real fix is a log kind for the holding account's record (with the contract's author) | `route_handed_on_isnt_run_by_a_core_that_doesnt_follow_it` (a fresh `Segments`, a linked record that claims to follow another round: nothing handed over) |
+| 7 | Medium: `done_hand_on` | The resolution's asset is the one the value sits in, its amount the part's whole held value, and its `by` is the linked order's starting reserve | `operators_hand_on_needs_a_resolution_of_the_whole_value` (a done resolution of 1, written into the kit's log as Core never would) |
+| 8 | Medium: the destination change's success path untested | Run on the kit: the customer's new destination through policy, the customer's acceptance of it, a choice record the kit writes for the other reserve's deposit from the ledger, `destination_changed` taken, the part's destination the customer's, `Stuck`'s ends followed to it, the log admitting every entry; an acceptance of the old terms refused first | `customers_new_destination_is_taken_from_where_the_value_sits` |
+| 9 | Low: the origin account | `new_terms` refuses a change of origin account (`ChangesOrigin`), the default "payer only" | in `new_terms_are_asked_only_for_a_part_waiting_for_the_customer` |
+| 10 | Low: durability | Named: `HandOn`'s pending changes, resumes and hand-ons, its stranded refusals, the linked orders' starts and the spent records are memory only; after a restart a linked order's start can't be proven again and its segments are refused (fail closed). `F-030`'s | — |
+| nit | `NotItsAuthorisation` for terms covering no part; the "kept until the log takes it" and sim-routing claims | `Refused::NotItsAuthorisation`; the claims corrected in the module's docs and above | in the unit test |
+
+- **Rule-off of the review's rules, each red** (`t-020-13-ruleoff2.py`, the file restored and touched each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the linked decision record in the log | `hand_on_is_checked_whole_before_its_first_record` |
+  | the linked plan within its acceptance | the same |
+  | the linked order opened once | the same |
+  | the linked route's refusal recorded | `linked_route_the_log_refuses_is_recorded_as_refused` |
+  | the customer's hand-on by the customer | `customers_hand_on_is_the_customers_own` |
+  | the linked acceptance the customer's own | the same |
+  | the customer's hand-on after a failed final deposit | `customers_hand_on_from_a_floor_wait_is_refused` |
+  | fresh terms: a replacement, permitted after the wait | `customers_choice_rests_on_terms_the_log_holds` |
+  | a destination change rests on the acceptance of the new terms | `customers_new_destination_is_taken_from_where_the_value_sits` |
+  | `authorise` reads the terms in force from the log | the floor, held-route, recalculated-first, destination-taken and choice tests |
+  | the starting reserve from Core's records | `holding_accounts_record_proves_one_start_from_its_own_reserve`, `handed on route's withdrawal is proven ...` |
+  | one record proves one start | `holding_accounts_record_proves_one_start_from_its_own_reserve` |
+  | an unfollowed order's inner-start route refused | `route_handed_on_isnt_run_by_a_core_that_doesnt_follow_it` |
+  | the operator's resolution moves the whole value | `operators_hand_on_needs_a_resolution_of_the_whole_value` |
+  | new terms keep the origin account | `new_terms_are_asked_only_for_a_part_waiting_for_the_customer` |
+  | new terms cover a part | the same |
+
+  `source_kind` refusing another role is reached by no test: every path refuses such an actor before it builds an
+  input (the customer's `NotTheCustomer`, the operator's `NotTheOperator`), so it is defence in depth.
+- **Seams, after the review:** `segments/mod.rs`'s guard now refuses an inner-start route of an unfollowed order too
+  (one condition). The kit gained `On::Chosen`, `append_entry`, `seed_linked` (a given acceptance) beside
+  `seed_linked_on_a_deposit`, and `stated_results`, which `results_after_the_move` now calls.

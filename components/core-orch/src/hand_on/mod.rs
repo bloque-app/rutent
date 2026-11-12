@@ -14,21 +14,27 @@
 //!    the destination or the to asset, each of those parts waits at a final deposit that failed (`INV-10`). A new
 //!    floor alone may resolve any wait. A split order's other part goes on under its own terms.
 //! 2. **Another destination, from where the value sits** ([`HandOn::change_destination`]). The router's choice to
-//!    the customer's new destination is held to the new authorisation ([`check_route`]), then to the state
+//!    the customer's new destination is held to the customer's new authorisation as the log holds it in force for
+//!    the part ([`fresh_terms`]), never the caller's ([`check_route`]), then to the state
 //!    machine's rules ([`destination_change`]: it changes the destination and starts where the value sits), and
 //!    recorded as `destination_changed`, citing the choice round's decision record and the customer's acceptance.
 //!    The order Core follows takes it, and the value's rest hold goes: the new route's segments hold it as they run.
 //! 3. **Handed on to a linked order** ([`HandOn::hand_on`]). The linked order's route starts at the inner node where
 //!    the value sits, with no withdrawal: its route is opened ([`Stm::open`]) and held to the first order by the
 //!    start rule across the two orders, `handed_on_route_starts_where_value_sits`, before anything is recorded
-//!    (`INV-4`). The linked order's acceptance keeps the original customer as requester (`REQ-ORD-13`). Then the
-//!    first order's `handed_on`, naming the linked order and its acceptance, and the linked order's `route_chosen`,
-//!    naming `handed_on_from`, are recorded in that order, so the two records point to each other
-//!    (`handed-on-route-points-back`). Each is built once and appended until the log takes it.
+//!    (`INV-4`). The customer's hand-on is the customer's own word, on its given acceptance of the linked order,
+//!    which keeps the original customer as requester (`REQ-ORD-13`), and only after a failed final deposit
+//!    (`INV-10`). Everything the linked order's `route_chosen` needs is checked first: the order not open, its
+//!    decision record in the log, its plan within its acceptance. Then the first order's `handed_on`, naming the
+//!    linked order and its acceptance, and the linked order's `route_chosen`, naming `handed_on_from`, are recorded
+//!    in that order, so the two records point to each other (`handed-on-route-points-back`). Each is appended as
+//!    built while the log can't take it now; a `route_chosen` the log refuses outright after the `handed_on` went in
+//!    is recorded as the linked order's refusal ([`HandOnError::LinkedRefused`]).
 //! 4. **The holding account's record proves the start** ([`HandOn::prove_start`], `REQ-ORD-40`, `INV-5`). No
 //!    segment of a route handed on is handed over until the holding account's own record of the withdrawal, made by
-//!    the linked order's starting reserve, at the route's first node, of the first order's value and of all the part
-//!    held, is held for it ([`proves_start`]); the segments refuse it before then
+//!    the linked order's starting reserve (from Core's records, never the caller's), at the route's first node, of the
+//!    first order's value and of all the part held, is held for it ([`proves_start`]), one record for one start; the
+//!    segments refuse it before then, and refuse an inner-start route of an order they don't follow
 //!    ([`SegmentsError::StartUnproven`](crate::segments::SegmentsError::StartUnproven)).
 //!
 //! 5. **A wait at the floor, resumed** ([`HandOn::resume`], `REQ-ORD-27`). A part waiting for the customer resumes
@@ -42,6 +48,10 @@
 //!
 //! Every value-moving effect of the linked order, or of the new route, stays under policy's decision and its own
 //! authorisation, as every move does (`F-021`).
+//!
+//! **In memory only.** The pending changes, resumes and hand-ons, the refusals recorded for linked orders, the linked
+//! orders' starts and the spent records live in [`HandOn`]; after a restart a linked order's start can't be proven
+//! again and its segments are refused, failing closed. Keeping them durably is `F-030`'s.
 
 mod rule;
 
@@ -365,7 +375,7 @@ impl Step {
     }
 }
 
-/// A destination change built, kept until the log takes it.
+/// A destination change built: appended as built while the log can't take it now, dropped where it refuses it.
 #[derive(Debug, Clone)]
 struct PendingChange {
     step: Step,
@@ -374,7 +384,7 @@ struct PendingChange {
     released: Vec<Id>,
 }
 
-/// A resumption built, kept until the log takes it.
+/// A resumption built: appended as built while the log can't take it now, dropped where it refuses it.
 #[derive(Debug, Clone)]
 struct PendingResume {
     step: Step,
@@ -382,7 +392,8 @@ struct PendingResume {
     released: Vec<Id>,
 }
 
-/// A hand-on built, kept until the log takes both its inputs.
+/// A hand-on built: appended as built while the log can't take it now; its `handed_on` dropped where the log refuses
+/// it, its `route_chosen` recorded as the linked order's refusal where the log refuses that.
 #[derive(Debug, Clone)]
 struct PendingHandOn {
     handed_on: (Step, RecordedInput),
@@ -539,11 +550,13 @@ impl HandOn {
 
     /// Resumes a part waiting for the customer on a route to its own destination, under the customer's new terms in
     /// force for it (a lower floor, say; [`authorise`]): the waits at the floor `T-020-10b` records end this way
-    /// (`REQ-ORD-27`, `AC-12`). The router's choice is held to the new authorisation ([`check_route`]): from where
-    /// the value sits, all of it, to the authorisation's destination and to asset, leaving its floor; and to the
-    /// state machine's rules, as a `route_recalculated`, citing the choice round's decision record. It changes no
-    /// destination (`INV-10`). Built once and appended until the log takes it; the order Core follows then takes
-    /// it, and the next recalculation follows that round ([`Recalculations::followed_by`](crate::recalc::Recalculations::followed_by)).
+    /// (`REQ-ORD-27`, `AC-12`). The router's choice is held to the customer's fresh terms as the log holds them in
+    /// force for the part ([`fresh_terms`], [`check_route`]): from where the value sits, all of it, to their
+    /// destination and to asset, leaving their floor; and to the state machine's rules, as a `route_recalculated`,
+    /// citing the choice round's decision record, once the log holds the customer's acceptance of those terms. It
+    /// changes no destination (`INV-10`). Built once, appended as built while the log can't take it now and dropped
+    /// where it refuses it; the order Core follows then takes it, and the next recalculation follows that round
+    /// ([`Recalculations::followed_by`](crate::recalc::Recalculations::followed_by)).
     pub fn resume(
         &mut self,
         parts: &mut Parts<'_>,
