@@ -23,7 +23,8 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          # The version `rust-toolchain.toml` pins: moving it is a deliberate change (T-020-11d).
+          toolchain: 1.98.0
           components: clippy, rustfmt
           # A target with no `std`, so the no_std build below proves the contracts need only `core` and `alloc`.
           targets: riscv32imac-unknown-none-elf,wasm32-unknown-unknown
@@ -221,7 +222,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: steps.cpu.outputs.skip != 'true'
         with:
-          toolchain: stable
+          # The version `rust-toolchain.toml` pins (T-020-11d).
+          toolchain: 1.98.0
       - name: Allow unprivileged user namespaces on this runner
         if: steps.cpu.outputs.skip != 'true'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
