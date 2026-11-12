@@ -79,8 +79,9 @@ impl crate::funds::Recorded for Kept {
         order: &Id,
         segment: &Id,
     ) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        let plan = crate::funds::plan_of_the_fixtures_move();
         Ok(crate::funds::part_in(
-            self.0.iter().map(|(_, e)| e),
+            std::iter::once(&plan).chain(self.0.iter().map(|(_, e)| e)),
             order,
             segment,
         ))

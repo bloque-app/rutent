@@ -697,7 +697,12 @@ mod tests {
         }
 
         fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
-            Ok(crate::funds::part_in(&self.0, order, segment))
+            let plan = crate::funds::plan_of_the_fixtures_move();
+            Ok(crate::funds::part_in(
+                std::iter::once(&plan).chain(&self.0),
+                order,
+                segment,
+            ))
         }
     }
 
@@ -746,8 +751,9 @@ mod tests {
         }
 
         fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            let plan = crate::funds::plan_of_the_fixtures_move();
             Ok(crate::funds::part_in(
-                self.0.iter().map(|(_, e)| e),
+                std::iter::once(&plan).chain(self.0.iter().map(|(_, e)| e)),
                 order,
                 segment,
             ))
@@ -2184,7 +2190,12 @@ mod tests {
                 .iter()
                 .map(|d| Entry::Verified(d.entry().clone()))
                 .collect();
-            Ok(crate::funds::part_in(&entries, order, segment))
+            let plan = crate::funds::plan_of_the_fixtures_move();
+            Ok(crate::funds::part_in(
+                std::iter::once(&plan).chain(&entries),
+                order,
+                segment,
+            ))
         }
     }
 

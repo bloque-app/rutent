@@ -94,7 +94,12 @@ impl crate::funds::Recorded for Kept {
         if self.unreadable {
             return Err(crate::funds::ReadFailure::Unavailable);
         }
-        Ok(crate::funds::part_in(&self.entries, order, segment))
+        let plan = crate::funds::plan_of_the_fixtures_move();
+        Ok(crate::funds::part_in(
+            std::iter::once(&plan).chain(&self.entries),
+            order,
+            segment,
+        ))
     }
 }
 

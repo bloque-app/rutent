@@ -28,7 +28,8 @@
 //! its segment belongs to by the plans the log holds ([`Recorded::part_of`]), and the route ends inside it: at its
 //! destination, the reserve, the node and the account, in its to asset, delivering at least its floor. Anything else
 //! is refused as outside the authorisation, and needs a new one (`REQ-AUZ-3`, `INV-10`). A move whose segment no plan
-//! lists is held to the order as a whole, which only an authorisation naming no part speaks for. These are what the
+//! lists is in no part, and refused so, as the log admits no such move (`move-segment-is-in-its-orders-plan`). These
+//! are what the
 //! log holds a move's effect to (`move-rests-on-its-authorisation`: the order, the four ends, the part, in force for
 //! it); the register is stricter than the log in one way, that an id replaced covers nothing more even once its
 //! terms are given again under another.
@@ -179,8 +180,8 @@ fn same_terms(a: &Authorisation, b: &Authorisation) -> bool {
 }
 
 /// Whether `a` speaks for `part` of its order: a part it names, or any part where it names none. For no part, the
-/// order as a whole, which only an authorisation naming no part speaks for: a move whose segment no plan lists is held
-/// to it, as the log holds one (`move-rests-on-its-authorisation`).
+/// order as a whole, which only an authorisation naming no part speaks for: the order's start, before any part has one
+/// of its own. No move is held to it: a move is of a part, or refused.
 fn speaks_for(a: &Authorisation, part: Option<&Id>) -> bool {
     match (part, &a.parts) {
         (_, None) => true,
@@ -290,7 +291,8 @@ impl Authorised {
 
     /// Why `action` is refused, where it is a move that doesn't act inside the authorisation it names: one in force
     /// for the move's own part, by the log as read now, its route ending at its destination, in its to asset,
-    /// delivering at least its floor. A part that can't be read is an input missing.
+    /// delivering at least its floor. A part that can't be read is an input missing, and a segment no plan lists is in
+    /// no part, so outside every authorisation.
     pub(crate) fn refuses_move(
         &mut self,
         log: &mut impl Recorded,
@@ -312,8 +314,13 @@ impl Authorised {
         let Ok(part) = log.part_of(order, segment) else {
             return Some(RefusalClass::MissingInput);
         };
+        // A segment no plan of the order lists is in no part, and moves under no authorisation, as the log admits no
+        // such move (`move-segment-is-in-its-orders-plan`).
+        let Some(part) = part else {
+            return Some(RefusalClass::OutsideAuthorisation);
+        };
         let inside = self
-            .in_force_as(order, part.as_ref(), authorisation)
+            .in_force_as(order, Some(&part), authorisation)
             .is_some_and(|a| {
                 a.destination == route.destination
                     && a.to_asset == route.to_asset
@@ -349,6 +356,22 @@ impl Authorised {
         });
         (anew && a.given_by.role != Role::Customer).then_some(RefusalClass::NotPermitted)
     }
+}
+
+/// The plan of the fixtures' order, `ord-17`, as a log would hold it: a `route_chosen` placing the fixtures' move's
+/// segment, `seg-2`, in part `p1`. For other rows' test logs, whose moves are of it, since a move of a segment no plan
+/// lists is refused (`T-021-04`).
+#[cfg(test)]
+pub(crate) fn plan_of_the_fixtures_move() -> Entry {
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/valid/verified-entry-of-a-recorded-input-route-chosen-three-parts.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    plan["what"]["input"]["subject"]["order"] = "ord-17".into();
+    plan["what"]["input"]["observed"]["parts"][0]["segments"][1]["segment_id"] = "seg-2".into();
+    serde_json::from_value(plan).unwrap()
 }
 
 /// The consultation's `answer`, held to the register's `refusal`: a refusal stands, and otherwise the register's

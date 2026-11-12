@@ -67,12 +67,23 @@ enum Wiring {
 
 /// A log that takes every decision entry, shared by every engine over it, as one log is across a restart or between
 /// two engines; each handle on it reads as its wiring says.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct Shared {
     entries: Rc<RefCell<Vec<Entry>>>,
     wiring: Rc<RefCell<Wiring>>,
     /// The order's plan as the log holds it: each segment, by id, and the part it belongs to.
     plan: Rc<RefCell<Vec<(Id, Id)>>>,
+}
+
+impl Default for Shared {
+    /// A log whose plan places the fixtures' move's segment, `seg-2`, in a part of its own, `p0`.
+    fn default() -> Self {
+        Shared {
+            entries: Rc::default(),
+            wiring: Rc::default(),
+            plan: Rc::new(RefCell::new(vec![(id("seg-2"), id("p0"))])),
+        }
+    }
 }
 
 impl Shared {
@@ -475,6 +486,10 @@ impl Model {
     /// Whether a move of `order`'s `part` under `id`, on `route`, should be permitted: `id` in force for the part,
     /// the route inside the part's terms in force.
     fn permits_move(&self, order: &Id, part: Option<&Id>, id: &Id, route: &RouteEnd) -> bool {
+        // A segment no plan lists is in no part, and moves under no authorisation.
+        if part.is_none() {
+            return false;
+        }
         let Some((terms, ids)) = self.standing(part) else {
             return false;
         };
@@ -1372,8 +1387,8 @@ fn split_orders_other_part_moves_on_under_its_authorisation_after_one_parts_new_
 }
 
 /// A replacement for one part covers that part alone: a move of `p2` under `auth-18`, which names `p1`, is refused,
-/// whether to `auth-18`'s destination or to the order's, and so is a move of a segment no plan lists, which is held
-/// to the order as a whole.
+/// whether to `auth-18`'s destination or to the order's, and so is a move of a segment no plan lists, which is in no
+/// part.
 // verifies: REQ-AUZ-3, INV-10
 #[test]
 fn move_on_another_part_under_a_parts_replacement_is_refused() {
@@ -1498,4 +1513,57 @@ fn move_whose_part_cannot_be_read_is_refused() {
         end_of(&first, "2500000"),
     );
     assert_eq!(decided(&mut policy, &request), MISSING);
+}
+
+/// A move of a segment no plan of the order lists acts under no authorisation, as the log admits no such move
+/// (`move-segment-is-in-its-orders-plan`): the order's `auth-17`, replaced for `p1` by `auth-18`, moves no segment
+/// the plans don't place in a part, and neither does `auth-18`.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn move_of_a_segment_no_plan_lists_is_refused() {
+    let (first, mut anew, _) = the_reviewers_three();
+    anew.parts = Some(vec![id("p1")]);
+    let order = first.order.clone();
+    let log = Shared::default();
+    split(&log);
+    let mut policy = engine_over(&log);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    for (n, (under, route)) in [
+        (&first, end_of(&first, "2500000")),
+        (&anew, end_of(&anew, "120000")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = move_on(n, &order, &id("s-unplanned"), &under.authorisation, route);
+        assert_eq!(
+            decided(&mut policy, &request),
+            REFUSED_OUTSIDE,
+            "{}",
+            under.authorisation.as_str()
+        );
+    }
+}
+
+/// A segment two plans list is read as of the part the first one places it in, as the log reads it
+/// (core-internal's `part_of_segment` takes the first plan that lists it).
+// verifies: REQ-AUZ-3
+#[test]
+fn segment_two_plans_list_is_of_the_part_the_first_places_it_in() {
+    let chosen: Entry = valid!("verified-entry-of-a-recorded-input-route-chosen-three-parts");
+    let mut changed: Value =
+        read_fixture("verified-entry-of-a-recorded-input-destination-changed-with-acceptance");
+    changed["what"]["input"]["subject"]["part"] = json!("p2");
+    changed["what"]["input"]["observed"]["segments"][0]["segment_id"] = json!("p1-s1");
+    let changed: Entry = serde_json::from_value(changed).unwrap();
+    let segment = id("p1-s1");
+    assert_eq!(
+        part_in([&chosen, &changed], &id("ord-1"), &segment),
+        Some(id("p1"))
+    );
+    assert_eq!(
+        part_in([&changed, &chosen], &id("ord-1"), &segment),
+        Some(id("p2"))
+    );
 }

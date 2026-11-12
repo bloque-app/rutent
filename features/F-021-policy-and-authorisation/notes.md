@@ -429,14 +429,17 @@ Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's 
 (`41257db`) in it.
 
 - **The register is keyed by part.** An authorisation speaks for the parts it names, or every part where it names
-  none; the order as a whole, for a move whose segment no plan lists, only one naming no part speaks for, as the log
-  reads it. Each part's terms in force fold the authorisations that speak for it, by the same rules as before: the
+  none; the order as a whole, which the order's start reads, only one naming no part speaks for. Each part's terms in force fold the authorisations that speak for it, by the same rules as before: the
   first sets them, the same terms join, the customer's other terms replace, and anyone else's other terms set nothing
   (the race rule, kept). A replacement naming `p1` replaces nothing for `p2`, which goes on under `auth-17`.
 - **A move is held to its own part.** The move doesn't name its part, so the engine reads it, on the same read, from
   the plans the log holds: `Recorded::part_of`, one definition, `funds::part_in`, core-internal's own reading
   (`part_of_segment`, private in `relations.rs`): a `route_chosen` part listing the segment, or the part a
-  `route_recalculated` or `destination_changed` gave it to. A part that can't be read is `missing_input`. Every
+  `route_recalculated` or `destination_changed` gave it to, the first plan listing it winning, as the contract's
+  `find_map` does. A part that can't be read is `missing_input`. A segment no plan lists is in no part and refused
+  `outside_authorisation`, as the log admits no such move (`move-segment-is-in-its-orders-plan`): first it was held to
+  the order as a whole, which let `auth-17`, replaced for `p1`, move such a segment (approval of `8556f36`, low 1).
+  Every
   read implements it: the core-authz test logs, the segments kit's `PolicyPath`, and the scenarios' `PolicyHandle`
   through `Entries`. That the part is the plan's is the assembly's word, as the rest of the read is; the trait's docs
   say so.
@@ -485,6 +488,16 @@ Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's 
   | `part_in` of the order alone | `segment's part is read from the plans the log holds` |
   | an id given again held to being in force for every part | `authorisation replaced for one part given again is refused`; the property |
   | the order held (rechecked on the new path) | the property; `route outside the authorisation needs a new one` |
+  | a segment no plan lists is refused (low 1) | `move of a segment no plan lists is refused`; the property |
+  | the first plan listing a segment wins (low 2) | `segment two plans list is of the part the first places it in` |
+
+- **The lows of the approval of `8556f36`.** The two tests above are new: the reviewer's sequence (`auth-17` for the
+  whole order, `auth-18` naming `p1`, a move of `s-unplanned` under either) went red before the fix; the first-plan
+  test passed when written and went red with `part_in` reading the last plan. `T-021-01`'s, `T-021-03`'s and
+  `T-021-05`'s test logs now read a plan placing the fixtures' move's segment, `seg-2`, in a part
+  (`funds::plan_of_the_fixtures_move`, test-only), and the funds tests' log places it in `p0`; the property's model
+  refuses a move of a segment no plan lists. Rechecked on the new path, each red: the order as a whole only by one
+  naming no part, a move held to its own part, one naming no part held to every part named.
 
 ## T-021-05
 
