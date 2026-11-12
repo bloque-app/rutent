@@ -123,6 +123,9 @@
           "$ref": "#/$defs/withdrawal_cancelled"
         },
         {
+          "$ref": "#/$defs/waiting_at_floor"
+        },
+        {
           "$ref": "#/$defs/end_requested"
         },
         {
@@ -236,6 +239,7 @@
                 "destination_changed",
                 "no_route",
                 "withdrawal_cancelled",
+                "waiting_at_floor",
                 "stuck_declared",
                 "handed_on"
               ]
@@ -529,6 +533,19 @@
       "properties": {
         "kind": {
           "const": "withdrawal_cancelled"
+        }
+      },
+      "additionalProperties": false
+    },
+    "waiting_at_floor": {
+      "description": "The part is past the customer's floor, its worst acceptable outcome (REQ-ORD-27, AC-12, AC-42): the value evidenced at its node and the quotes still ahead, or every route a recalculation found, fall below it. Core judges the floor and records the judgement; the state machine reads no amount. By the published rule, a part whose value is evidenced at a node waits for the customer, from the input's recorded_at; one already waiting or stuck, or whose value is in flight, doesn't change.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "waiting_at_floor"
         }
       },
       "additionalProperties": false

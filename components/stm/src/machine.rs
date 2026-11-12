@@ -28,8 +28,9 @@ use alloc::{collections::BTreeSet, vec::Vec};
 use rutent_contracts::state_machine::{
     Destination, Id, LastInput, NotApplicableReason, Observed, OperationKind, Order, OrderState,
     Outcome, Part, RecordedInput, Scope, Segment, SegmentPlan, SegmentState, StateMachine,
-    after_no_route, deposit_failed_at_after, destination_change_applies,
+    after_no_route, after_waiting_at_floor, deposit_failed_at_after, destination_change_applies,
     recalculation_keeps_destination, recalculation_starts_where_value_sits, value_at,
+    waiting_since_after,
 };
 
 use crate::parts::{is_ended, order_state_of};
@@ -73,6 +74,7 @@ impl StateMachine for Stm {
                     retired_segments: Vec::new(),
                     destination: Destination::of(&p.segments)?,
                     deposit_failed_at: None,
+                    waiting_since: None,
                 })
             })
             .collect::<Option<Vec<Part>>>()?;
@@ -191,7 +193,14 @@ fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
                 .cloned()
                 .collect();
             let order_id = order.order_id.clone();
-            apply_to_part(&mut order.parts[index], &order_id, &used, input)
+            let before = order.parts[index].clone();
+            let part = &mut order.parts[index];
+            let outcome = apply_to_part(part, &order_id, &used, input);
+            if outcome == (Outcome::Applied {}) {
+                // The published update rule: a part says since when it waits, exactly while it waits.
+                part.waiting_since = waiting_since_after(&before, part.state, input);
+            }
+            outcome
         }
     }
 }
@@ -260,6 +269,13 @@ fn apply_to_part(
                 Outcome::Applied {}
             }
             _ => not_from_this_state(),
+        },
+        Observed::WaitingAtFloor {} => match after_waiting_at_floor(part) {
+            Some(state) => {
+                part.state = state;
+                Outcome::Applied {}
+            }
+            None => not_from_this_state(),
         },
         Observed::StuckDeclared { .. } => {
             if part.state == OrderState::Stuck {

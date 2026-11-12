@@ -287,7 +287,8 @@ impl Gen {
                 let route = self.restart_route(&part, new_destination);
                 (None, destination_changed(route))
             }
-            71..=75 => (None, no_route()),
+            71..=73 => (None, no_route()),
+            74..=75 => (None, Observed::WaitingAtFloor {}),
             76..=79 => (
                 None,
                 Observed::StuckDeclared {

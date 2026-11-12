@@ -41,6 +41,7 @@ impl StateMachine for Probe {
                         .collect(),
                     retired_segments: Vec::new(),
                     deposit_failed_at: None,
+                    waiting_since: None,
                 })
             })
             .collect::<Option<Vec<Part>>>()?;

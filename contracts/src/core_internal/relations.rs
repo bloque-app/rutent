@@ -347,7 +347,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 57] = [
+pub static RELATIONS: [Relation; 58] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2279,6 +2279,44 @@ pub static RELATIONS: [Relation; 57] = [
                     }),
                 &[],
             )
+        },
+    },
+    Relation {
+        name: "waiting-at-floor-rests-on-the-customers-floor",
+        spec: &["REQ-ORD-27", "REQ-AUZ-3"],
+        quantifier: Quantifier::Exists,
+        refusal: "a part waits at its floor only on an authorisation of this log that sets one",
+        fields: &[
+            (
+                "order",
+                "a part waits at its floor on its own order's authorisation",
+            ),
+            (
+                "floor",
+                "a part waits at its floor only where the customer set one",
+            ),
+        ],
+        // Core judges the floor (REQ-ORD-27); the floor it judges by is the customer's, in its authorisation.
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::WaitingAtFloor {}) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (Some(i), Some(t)) = (input(e), permitted(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Authorise {
+                    authorisation: a, ..
+                } => judge(
+                    true,
+                    &[
+                        a.order.as_str() == i.subject.order.as_str(),
+                        a.floor.is_some(),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
         },
     },
     Relation {
