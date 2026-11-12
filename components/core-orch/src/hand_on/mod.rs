@@ -64,7 +64,7 @@ use crate::recalc::{Rejected, check_route, route_end};
 use crate::rounds::Fresh;
 use crate::segments::Segments;
 use crate::snapshot::{Clock, Exposures, OrchestrationLog};
-use crate::stuck::is_receipt_of;
+use crate::stuck::{Stuck, StuckError, is_receipt_of};
 
 pub use rule::{
     Accepted, Refused, Unproven, acceptance_of, after_failed_final_deposit, destination_change,
@@ -90,6 +90,9 @@ pub struct Parts<'a> {
     pub segments: &'a mut Segments,
     /// Core's record of value in flight and at rest.
     pub exposures: &'a mut Exposures,
+    /// Core's stuck record, whose ends for each part are followed again once a new destination is taken
+    /// ([`Stuck::follow`]), so its ends check is never stale.
+    pub stuck: &'a mut Stuck,
 }
 
 /// Why the hand-on did nothing.
@@ -117,6 +120,9 @@ pub enum HandOnError {
     NoDoneResolution,
     /// The holding account's record doesn't prove the route's start (`REQ-ORD-40`).
     Unproven(Unproven),
+    /// Core's stuck record couldn't follow the order's ends again after its new terms ([`Stuck::follow`]). Where this
+    /// answers a destination change, its input was recorded and the order Core follows took it.
+    Follow(StuckError),
     /// Core follows no such order, or holds no amount at rest for the part.
     Unknown,
     /// The log refused or failed an append. One it can't take now is kept and appended as built by the next call.
@@ -144,18 +150,47 @@ impl From<AppendFailure> for HandOnError {
 /// Asks policy to register `new`, the customer's new terms for `order`, only where [`new_terms`] holds them to a
 /// waiting part (the gate `T-021-04` leaves to orchestration): `current` are the terms in force, `requester` the
 /// order's customer as the log holds it ([`requester_of`]). Refused, with nothing asked, otherwise.
+///
+/// Once policy permits terms that keep the destination (a new floor), `stuck` follows the order's ends again over
+/// `recorded`, the log's entries as the log holds them then, so its ends check is never stale (`T-020-11b`). Terms
+/// that move the destination are followed once the order Core follows takes the change
+/// ([`HandOn::change_destination`]): until then the part's destination is the old one, which `Stuck::follow` holds
+/// the authorisation to.
 pub fn authorise(
     segments: &Segments,
+    stuck: &mut Stuck,
     authorisations: &mut dyn Authorisations,
-    current: &Authorisation,
-    new: &Authorisation,
-    requester: &Id,
+    terms: Terms<'_>,
+    recorded: &mut dyn FnMut() -> Vec<Entry>,
 ) -> Result<Decision, HandOnError> {
+    let Terms {
+        current,
+        new,
+        requester,
+    } = terms;
     let order = segments
         .order(&new.order)
         .ok_or(HandOnError::Refused(Refused::Unknown))?;
     new_terms(order, current, new, requester)?;
-    Ok(authorisations.authorise(new)?)
+    let decision = authorisations.authorise(new)?;
+    let keeps_ends = new.destination == current.destination && new.to_asset == current.to_asset;
+    if decision.permit().is_some() && keeps_ends {
+        stuck
+            .follow(segments, &recorded(), &new.order)
+            .map_err(HandOnError::Follow)?;
+    }
+    Ok(decision)
+}
+
+/// The terms [`authorise`] asks for.
+#[derive(Debug, Clone, Copy)]
+pub struct Terms<'a> {
+    /// The terms in force for the parts.
+    pub current: &'a Authorisation,
+    /// The customer's new terms.
+    pub new: &'a Authorisation,
+    /// The order's customer as the log holds it ([`requester_of`]).
+    pub requester: &'a Id,
 }
 
 /// The customer's new destination for one part.
@@ -383,6 +418,12 @@ impl HandOn {
             for segment in &pending.released {
                 parts.exposures.release(change.order, segment);
             }
+            // The part's destination is the customer's now: Core's stuck record follows its new ends
+            // (`T-020-11b`), read from the log's entries, the new authorisation's among them.
+            parts
+                .stuck
+                .follow(parts.segments, change.recorded, change.order)
+                .map_err(HandOnError::Follow)?;
         }
         Ok(changed)
     }

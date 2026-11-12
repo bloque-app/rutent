@@ -10,8 +10,12 @@ use rutent_core_orch::hand_on::Parts;
 
 use super::{Core, General, PART, RESERVE, id, ledger};
 
-/// Runs `with` over Core's hand-on parts: the kit's clock, log, identifiers, segments and exposures.
-pub fn hand_parts<T>(core: &mut Core, with: impl FnOnce(&mut Parts<'_>) -> T) -> T {
+/// Runs `with` over Core's hand-on parts: the kit's clock, log, identifiers, segments and exposures, and `stuck`.
+pub fn hand_parts<T>(
+    core: &mut Core,
+    stuck: &mut rutent_core_orch::stuck::Stuck,
+    with: impl FnOnce(&mut Parts<'_>) -> T,
+) -> T {
     let mut general = General(Rc::clone(&core.log));
     let mut parts = Parts {
         clock: &*core.clock,
@@ -19,8 +23,21 @@ pub fn hand_parts<T>(core: &mut Core, with: impl FnOnce(&mut Parts<'_>) -> T) ->
         fresh: &mut core.ids,
         segments: &mut core.segments,
         exposures: &mut core.exposures,
+        stuck,
     };
     with(&mut parts)
+}
+
+/// A reader of the kit's log, its entries as the log holds them whenever it is called.
+pub fn log_entries(core: &Core) -> impl FnMut() -> Vec<Entry> + use<> {
+    let log = Rc::clone(&core.log);
+    move || {
+        log.borrow()
+            .entries
+            .iter()
+            .map(|(e, _)| e.clone())
+            .collect()
+    }
 }
 
 /// The kit's log, each entry with its receipt, as the log holds them.

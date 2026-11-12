@@ -21,7 +21,8 @@ use rutent_core_orch::stuck::{NoRouteLeft, Stuck};
 use rutent_prov::holding::wallet::WithdrawalRecord;
 use rutent_stm::HandOnRefusal;
 use segments_support::handing::{
-    from_the_ledger, hand_parts, linked_plan, linked_record, linked_route, recorded_with_receipts,
+    from_the_ledger, hand_parts, linked_plan, linked_record, linked_route, log_entries,
+    recorded_with_receipts,
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{PermitsEveryStep, on_parts, recorded, staff};
@@ -156,7 +157,7 @@ fn hand_on_to(
         id(acceptance),
     );
     let (customer, actor) = (customer(), segments_support::core());
-    hand_parts(core, |parts| {
+    hand_parts(core, &mut Stuck::new(), |parts| {
         hand_on.hand_on(
             parts,
             Handing {
@@ -214,13 +215,18 @@ fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
     // The customer's choice isn't open yet: the part doesn't wait for it.
     let (before, authorised) = (entries(&core), count(&core, is_authorise));
     let current = authorisation_of(&Named::first(), None);
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
     assert_eq!(
         hand_on::authorise(
             &core.segments,
+            &mut stuck,
             &mut core.policy,
-            &current,
-            &new_destination(customer()),
-            &customer().party,
+            hand_on::Terms {
+                current: &current,
+                new: &new_destination(customer()),
+                requester: &customer().party,
+            },
+            &mut reader,
         ),
         Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
             PART
@@ -312,14 +318,21 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
 
     // Anyone else's new destination is never asked of policy.
     let current = authorisation_of(&Named::first(), None);
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    segments_support::resolving::follow(&core, &mut stuck).expect("its ends are Core's");
+    let held = stuck.ends_of(&id(ORDER), &id(PART));
     let authorised = count(&core, is_authorise);
     assert_eq!(
         hand_on::authorise(
             &core.segments,
+            &mut stuck,
             &mut core.policy,
-            &current,
-            &new_destination(operator()),
-            &customer().party,
+            hand_on::Terms {
+                current: &current,
+                new: &new_destination(operator()),
+                requester: &customer().party,
+            },
+            &mut reader,
         ),
         Err(HandOnError::Refused(Refused::NotTheCustomer))
     );
@@ -328,10 +341,14 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
     assert_eq!(
         hand_on::authorise(
             &core.segments,
+            &mut stuck,
             &mut core.policy,
-            &current,
-            &whole_order,
-            &customer().party,
+            hand_on::Terms {
+                current: &current,
+                new: &whole_order,
+                requester: &customer().party,
+            },
+            &mut reader,
         ),
         Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
             "p9"
@@ -342,14 +359,23 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
     // The customer's own, for the waiting part, is.
     let decision = hand_on::authorise(
         &core.segments,
+        &mut stuck,
         &mut core.policy,
-        &current,
-        &new_destination(customer()),
-        &customer().party,
+        hand_on::Terms {
+            current: &current,
+            new: &new_destination(customer()),
+            requester: &customer().party,
+        },
+        &mut reader,
     )
     .expect("asked");
     assert!(decision.permit().is_some(), "{decision:?}");
     assert_eq!(count(&core, is_authorise), authorised + 1);
+    assert_eq!(
+        stuck.ends_of(&id(ORDER), &id(PART)),
+        held,
+        "a new destination is followed once the part takes it, not before"
+    );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
@@ -666,7 +692,7 @@ fn customers_new_route_is_held_to_its_new_authorisation() {
     let (order, part, acceptance) = (id(ORDER), id(PART), id("acc-ord-1"));
     let (customer, actor) = (customer(), segments_support::core());
     let mut change = |core: &mut Core, authorisation: &Authorisation| {
-        hand_parts(core, |parts| {
+        hand_parts(core, &mut Stuck::new(), |parts| {
             hand_on.change_destination(
                 parts,
                 hand_on::Change {
@@ -841,7 +867,7 @@ fn operator_hand_on(
         id("acc-ord-2"),
     );
     let actor = segments_support::core();
-    hand_parts(core, |parts| {
+    hand_parts(core, &mut Stuck::new(), |parts| {
         hand_on.hand_on(
             parts,
             Handing {
@@ -892,26 +918,42 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
     lower.given_by = customer();
     let mut elsewhere = new_destination(customer());
     elsewhere.floor = current.floor.clone();
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
     assert_eq!(
         hand_on::authorise(
             &core.segments,
+            &mut stuck,
             &mut core.policy,
-            &current,
-            &elsewhere,
-            &customer().party
+            hand_on::Terms {
+                current: &current,
+                new: &elsewhere,
+                requester: &customer().party,
+            },
+            &mut reader,
         ),
         Err(HandOnError::Refused(Refused::NoFailedDeposit)),
         "no new destination from a floor wait"
     );
     let decision = hand_on::authorise(
         &core.segments,
+        &mut stuck,
         &mut core.policy,
-        &current,
-        &lower,
-        &customer().party,
+        hand_on::Terms {
+            current: &current,
+            new: &lower,
+            requester: &customer().party,
+        },
+        &mut reader,
     )
     .expect("asked");
     assert!(decision.permit().is_some(), "{decision:?}");
+    let (destination, _) = stuck
+        .ends_of(&id(ORDER), &id(PART))
+        .expect("followed again on the new terms");
+    assert_eq!(
+        destination, current.destination,
+        "a new floor keeps the ends"
+    );
 
     let record_id = id("dr-resume-ord-1");
     let record = segments_support::handing::route_from_the_ledger(
@@ -926,7 +968,7 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
     let (order, part_id, actor) = (id(ORDER), id(PART), segments_support::core());
     let mut resume = |core: &mut Core, acceptance: &str| {
         let (recorded, acceptance) = (recorded(core), id(acceptance));
-        hand_parts(core, |parts| {
+        hand_parts(core, &mut Stuck::new(), |parts| {
             hand_on.resume(
                 parts,
                 hand_on::Resume {

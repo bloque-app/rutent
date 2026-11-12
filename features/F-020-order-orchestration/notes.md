@@ -2344,7 +2344,8 @@ rule was switched off once, its test seen red, the file restored and touched.
 
 ## T-020-13
 
-Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` (`T-020-10b`) merged in.
+Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` (`T-020-10b`) and at `d4da424`
+(`T-020-11b`) merged in.
 
 - **One record, `hand_on::HandOn`** (`components/core-orch/src/hand_on/`). Core's record of the parts it resolves
   on the customer's choice and the orders it hands value on to, which the production assembly keeps durably
@@ -2367,6 +2368,14 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
   part speaks for every part, so every part must wait: a split order's other part goes on under its own terms.
   Tests `with no route to it the order waits for the customer` and
   `new_terms_are_asked_only_for_a_part_waiting_for_the_customer` (unit).
+- **Core's stuck ends followed again** (`T-020-11b`, the coordinator's word). `Stuck::follow` holds each part's
+  authorisation to its destination as the order Core follows has it, so a new destination can't be followed before
+  the part takes it. Core follows again at both points that change a part's terms: `hand_on::authorise`, once
+  policy permits terms that keep the destination (a new floor), over the log's entries read then; and
+  `HandOn::change_destination`, once the order Core follows takes the `destination_changed`. `hand_on::Parts` carries
+  the `Stuck`, so neither can skip it; a follow that fails is `HandOnError::Follow` (after a change, its input stays
+  recorded). In `with no route ...`, the ends Core holds stay the old ones after the customer's new destination is
+  permitted and before it is taken; in the floor test, the ends are followed again on the new floor.
 - **The customer's new destination** (`HandOn::change_destination`, `REQ-ORD-43`, `INV-4`, `INV-10`). The router's
   choice is taken from the assembly as its choice round's `DecisionRecord`; Core holds it to the customer's new
   authorisation, never the record (`recalc::check_route` with that authorisation: from where the value sits, all of
@@ -2468,12 +2477,14 @@ Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` 
   | the operator's hand-on only after its done resolution | `operators_hand_on_follows_its_done_resolution` |
   | the new route held to the new authorisation (`check_route`) | `customers_new_route_is_held_to_its_new_authorisation` |
   | a resume rests on the customer's acceptance of the new terms | `customers_new_floor_resumes_a_part_waiting_at_it` |
+  | `Stuck` followed again after new terms that keep the destination | `customers_new_floor_resumes_a_part_waiting_at_it` |
 
   Two stayed green, each defence in depth: a part handed on read as ended by `run_part` (its failed deposit's
   outcome is final, so nothing is handed over again, and the log's `ended-part-takes-no-more` would refuse a
   move), and a resume's own keeps-destination check (`check_route` against an authorisation of the same
   destination refuses first). `Stm::open` refusing a route that starts with a withdrawal can't be switched off
-  alone: it is what builds the linked order.
+  alone: it is what builds the linked order. The follow after a destination change taken has no test of its own:
+  no scenario takes one (the gap below).
 - **Defaults taken** (reversible, none asked):
   - a new destination or to asset only for a part waiting at a failed final deposit; a floor wait takes a new floor
     alone. The contract's world fixture `world--in_dest` has a destination change after a floor wait, which the log
