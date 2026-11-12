@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 65] = [
+pub static RELATIONS: [Relation; 66] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1047,9 +1047,77 @@ pub static RELATIONS: [Relation; 65] = [
                     s.part.state == crate::state_machine::OrderState::Stuck,
                     s.resolved,
                 ),
-                None => (matches!(i.observed, Observed::StuckDeclared { .. }), false),
+                // Without a plan, a declaration counts only for a part the order's acceptance names.
+                None => (
+                    matches!(i.observed, Observed::StuckDeclared { .. })
+                        && accepted_part(order, part, h),
+                    false,
+                ),
             };
             judge(true, &[stuck, !resolved])
+        },
+    },
+    Relation {
+        name: "delivery-goes-to-the-parts-ends",
+        spec: &["REQ-AUZ-4", "REQ-AUZ-3", "INV-10"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck part's delivery rests on the authorisation in force for the part",
+        fields: &[(
+            "to",
+            "a stuck part's delivery goes to the part's authorised destination, whole, or back to its origin",
+        )],
+        // Checked where the value is decided and where it is moved, not only once it arrived (`stuck_resolved`).
+        cites: |e, _| match &e.what {
+            What::StuckDecide { request, .. }
+                if matches!(request.resolution, Resolution::Deliver { .. }) =>
+            {
+                by_fields(0)
+            }
+            What::Effect {
+                action:
+                    Action::ResolveStuck {
+                        resolution: Resolution::Deliver { .. },
+                        ..
+                    },
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (order, part, resolution) = match &e.what {
+                What::StuckDecide { request, .. } => (
+                    request.order.as_str(),
+                    Some(request.part.as_str()),
+                    &request.resolution,
+                ),
+                What::Effect {
+                    action:
+                        Action::ResolveStuck {
+                            order,
+                            carries_out,
+                            resolution,
+                        },
+                    ..
+                } => (
+                    order.as_str(),
+                    decided_part(order.as_str(), carries_out, h),
+                    resolution,
+                ),
+                _ => return Match::NotTarget,
+            };
+            let (
+                Some(part),
+                Some(What::Authorise {
+                    authorisation: a, ..
+                }),
+            ) = (part, permitted(t).map(|v| &v.what))
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                in_force(order, Some(part), h).is_some_and(|current| core::ptr::eq(current, a)),
+                &[resolved_to(order, part, resolution, h).is_some()],
+            )
         },
     },
     Relation {
@@ -1120,7 +1188,7 @@ pub static RELATIONS: [Relation; 65] = [
             };
             let to = match (&i.observed, resolution) {
                 (Observed::StuckResolved { to, .. }, _) => {
-                    resolved_to(order, resolution, h) == Some(*to)
+                    resolved_to(order, part.as_str(), resolution, h) == Some(*to)
                 }
                 (
                     Observed::HandedOn { linked_order, .. },
@@ -2834,29 +2902,45 @@ fn part_of_segment<'a>(order: &str, segment: &str, history: &'a History) -> Opti
     })
 }
 
-/// Where a stuck resolution sends the value of `order`, by the order's authorisation in `history`: its destination,
-/// or its origin, a destination at its origin reserve. `None` for a hand-on, or where neither holds.
+/// Where a stuck resolution sends the value of `part` of `order`, by the authorisation in force for the part
+/// (`in_force`), whole: its destination (reserve, node and account), or its origin, the in-force origin reserve at
+/// the node the part's first segment withdrew from. `None` for a hand-on, or where neither holds. No entry records
+/// the origin's account, so a delivery back to the origin isn't held to one: a shape gap, named in the README.
 fn resolved_to(
     order: &str,
+    part: &str,
     resolution: &Resolution,
     history: &History,
 ) -> Option<crate::state_machine::ResolvedTo> {
     let Resolution::Deliver { to, .. } = resolution else {
         return None;
     };
-    history.iter().find_map(|(_, e)| match &permitted(e)?.what {
-        What::Authorise {
-            authorisation: a, ..
-        } if a.order.as_str() == order => {
-            if &a.destination == to {
-                Some(crate::state_machine::ResolvedTo::Destination)
-            } else if to.reserve == a.origin_reserve {
-                Some(crate::state_machine::ResolvedTo::Origin)
-            } else {
-                None
-            }
-        }
-        _ => None,
+    let a = in_force(order, Some(part), history)?;
+    if &a.destination == to {
+        return Some(crate::state_machine::ResolvedTo::Destination);
+    }
+    let origin_node = history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+        .filter(|i| i.subject.order.as_str() == order)
+        .find_map(|i| match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts
+                .iter()
+                .find(|p| p.part_id.as_str() == part)
+                .and_then(|p| p.segments.first())
+                .map(|s| &s.from.node),
+            _ => None,
+        });
+    let from_origin = to.reserve == a.origin_reserve
+        && matches!(origin_node, Some(crate::provider_role::NodeRef::Outer(n)) if n == &to.node);
+    from_origin.then_some(crate::state_machine::ResolvedTo::Origin)
+}
+
+/// Whether an acceptance of `order` in `history` has a yes for `part`.
+fn accepted_part(order: &str, part: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(&verified(e).map(|v| &v.what), Some(What::Acceptance { order: o, yeses, .. })
+            if o.as_str() == order && yeses.iter().any(|y| y.part.as_str() == part))
     })
 }
 

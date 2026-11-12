@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 117 invalid ones, each
-  breaking one rule, and 345 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 67 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 353 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 68 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -256,6 +256,14 @@
   motion, a resolution moved while another is, a route recalculated around a delivery in motion, a waiting part
   handed on with a move in motion, a stuck part handed on before its hand-on is done. 345 admission cases, 67
   relations. (DEC-4, DEC-20, INV-4, REQ-ORD-2, REQ-AUZ-4, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a stuck part's delivery goes to its ends, checked where it is decided and
+  moved (the round-3 review's finding 5). The row `delivery-goes-to-the-parts-ends` holds a `deliver` decision and its
+  `resolve_stuck` effect to the authorisation in force for the part, whole: its destination's reserve, node and
+  account, or its origin, the in-force origin reserve at the node the part's first segment withdrew from; and
+  `stuck_resolved` reads the same. Shape gap, named: no entry records the origin's account, so a delivery back to the
+  origin isn't held to one. And without a plan, a declaration of stuck counts only for a part the order's acceptance
+  names (low 7; an arrival names no part, a second shape gap). 353 admission cases, 68 relations. (DEC-4, DEC-20,
+  REQ-AUZ-3, REQ-AUZ-4, INV-10, T-020-01, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -82,7 +82,7 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
   turns on) needs a bullet in `contracts/CHANGELOG.md` naming a `DEC-*`, like a shared file, and no contract's bump.
 - A contract whose major version moves changes every shape that references it. A contract whose schemas name its
   URNs (`urn:rutent:<name>:`), or whose Rust module uses its module (`crate::<module>`, a re-export such as
-  router-api's `CallKind` included, mapped through `CONTRACTS`), needs a major bump too, though none of its own paths
+  router-api's `CallKind` included, braces expanded at every depth, and `super::` read from the file's own module, mapped through `CONTRACTS`), needs a major bump too, though none of its own paths
   changed; one new at the base needs none. Only direct references count: the host follows the state machine, and a
   contract referencing the host would follow the host's own bump. A changelog whose first heading isn't a version is
   refused, touched or not, so it can't hide a major.

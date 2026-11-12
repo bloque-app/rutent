@@ -656,7 +656,8 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// The erasures carried out that the log hadn't settled when the store was bound, by the receipt of their `done`
     /// result, with why: one with no `erasure` entry recording it done ([`ERASURE_NOT_RECORDED`]: a crash between the
     /// store's erasure and the entry, which orchestration appends on its retry), one recorded as failed though its
-    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]), or one whose statement an entry of
+    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]: an admitted log can't hold one, since the log refuses such an
+    /// entry; kept as a defence against a log that skipped admission), or one whose statement an entry of
     /// the log cites ([`ERASED_YET_CITED`]: a citation that landed between the done result and the entry). A
     /// finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`] and
     /// [`BoundStore::refused_erasures`].
