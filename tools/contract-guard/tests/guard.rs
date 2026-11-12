@@ -746,3 +746,69 @@ fn base_files_without_a_changelog_fail() {
         "a contract that owns base files must keep a base changelog, got {violations:?}"
     );
 }
+
+/// The state machine's major moves, and the host's schemas reference its shapes; `host` is the host's version at
+/// the head, its changelog changed only if it moved.
+fn referenced_major(state_machine: &str, host: &str) -> (Fixture, Vec<&'static str>) {
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            &format!(
+                "# state-machine changelog\n\n## {state_machine}\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"
+            ),
+        )
+        .at_both(
+            "contracts/state-machine/schemas/order.schema.json",
+            "{\"$id\": \"urn:rutent:state-machine:order\"}",
+        )
+        .at_both(
+            "contracts/state-machine/host/schemas/snapshot.schema.json",
+            "{\"$ref\": \"urn:rutent:state-machine:order\"}",
+        )
+        .base_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let mut changed = vec![
+        "contracts/state-machine/CHANGELOG.md",
+        "contracts/state-machine/schemas/order.schema.json",
+    ];
+    if host == "2.1.0" {
+        fixture = fixture.head_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/state-machine/host/CHANGELOG.md",
+            &format!("# host changelog\n\n## {host}\n- Follows state-machine. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"),
+        );
+        changed.push("contracts/state-machine/host/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_referenced_contract_s_major_bump_needs_the_referencing_contract_s_major_bump() {
+    let (fixture, changed) = referenced_major("3.0.0", "2.1.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("reference state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "2.2.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("major bump")),
+        "a minor bump of the host is not enough, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+    // A minor bump of the referenced contract asks nothing of the host.
+    let (fixture, changed) = referenced_major("2.2.0", "2.1.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}

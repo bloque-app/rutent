@@ -18,6 +18,9 @@
 //!   touches every contract, since they ship as one crate.
 //! - A change that only adds or drops dependency edges of such packages (a feature another crate turns on) needs the
 //!   shared changelog's entry naming a `DEC-<n>`, like a shared file, and no contract's bump.
+//! - A contract whose major version moves changes every shape that references its schemas: a contract whose head
+//!   schemas name its URNs (`urn:rutent:<name>:`) needs a major bump too, though none of its own paths changed. A
+//!   contract new at the base needs none. Only direct references count: a chain of them moves one major at a time.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -570,6 +573,65 @@ pub fn check(
                 } else {
                     bumped.insert(name.clone());
                 }
+            }
+        }
+    }
+
+    // A referenced contract's major bump changes the shapes that reference it, though no path of theirs changed.
+    let top = |text: Option<String>| {
+        text.and_then(|t| {
+            sections(&t)
+                .into_iter()
+                .next()
+                .and_then(|s| semver(&s.version))
+        })
+    };
+    let majors = |contract: &Contract| {
+        let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
+        Some((top(files.base(&log))?, top(files.head(&log))?))
+    };
+    let schema_paths: BTreeSet<&String> = base_files.iter().chain(changed).collect();
+    for moved in &head_contracts {
+        let Some((base_version, head_version)) = majors(moved) else {
+            continue;
+        };
+        if head_version.0 <= base_version.0 {
+            continue;
+        }
+        let urn = format!("urn:rutent:{}:", moved.name);
+        for (index, referencing) in head_contracts.iter().enumerate() {
+            if referencing.name == moved.name {
+                continue;
+            }
+            let schemas = format!("{}/schemas", referencing.artefact_dir);
+            let references = schema_paths.iter().any(|path| {
+                within(path, &schemas)
+                    && path.ends_with(".json")
+                    && owner(path, &head_contracts) == Some(index)
+                    && files.head(path).is_some_and(|text| text.contains(&urn))
+            });
+            if !references || !base_contracts.iter().any(|c| c.name == referencing.name) {
+                continue;
+            }
+            let Some((own_base, own_head)) = majors(referencing) else {
+                continue;
+            };
+            if own_head.0 <= own_base.0 {
+                violations.push(violation(
+                    &referencing.name,
+                    format!(
+                        "its schemas reference {}, whose major moved from {} to {}, so its shapes changed with it and need a major bump too (the base is {}.{}.{} and the head is {}.{}.{})",
+                        moved.name,
+                        base_version.0,
+                        head_version.0,
+                        own_base.0,
+                        own_base.1,
+                        own_base.2,
+                        own_head.0,
+                        own_head.1,
+                        own_head.2
+                    ),
+                ));
             }
         }
     }

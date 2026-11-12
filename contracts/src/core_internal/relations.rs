@@ -171,10 +171,14 @@ fn erased_by<'a>(
     })
 }
 
-/// The commitment `entry` erases: an `erasure` entry's, or an `erase_statement` decision's.
+/// The commitment `entry` erases: an `erasure` entry's, or an `erase_statement` decision's or effect's.
 fn erasing(entry: &VerifiedEntry) -> Option<&crate::module_interface::Digest> {
     match &entry.what {
         What::Erasure { evidence } => Some(evidence),
+        What::Effect {
+            action: Action::EraseStatement { commitment, .. },
+            ..
+        } => Some(commitment),
         What::Decide { request, .. } => match &request.action {
             Action::EraseStatement { commitment, .. } => Some(commitment),
             _ => None,
@@ -1501,8 +1505,8 @@ pub static RELATIONS: [Relation; 58] = [
         quantifier: Quantifier::NoneOther,
         refusal: "no statement is erased while an entry of this log rests on it",
         fields: &[],
-        // Refused while cited (the owner's default): its decision and its record both, so the log holds no done
-        // erasure the store must refuse.
+        // Refused while cited (the owner's default): its decision, its effect and its record, so the log holds no
+        // done erasure the store must refuse, and no erase effect a citation made since its decision would block.
         cites: |e, _| match erasing(e) {
             Some(_) => by_fields(0),
             None => none(),
@@ -1519,7 +1523,7 @@ pub static RELATIONS: [Relation; 58] = [
         name: "nothing-cites-an-erased-statement",
         spec: &["REQ-AUD-13"],
         quantifier: Quantifier::NoneOther,
-        refusal: "no entry cites a statement whose erasure is done",
+        refusal: "no entry cites a statement whose erasure has begun or is done",
         fields: &[],
         cites: |e, _| {
             if rests_on_statements(e) {
@@ -1538,6 +1542,19 @@ pub static RELATIONS: [Relation; 58] = [
                 Some(commitment) => judge(cites_statement(e, commitment, h), &[]),
                 None => Match::NotTarget,
             },
+            // Erasure starts with the erase effect: nothing cites the statement between it and its result, unless
+            // that result failed and the bytes stay.
+            Some((
+                What::Effect {
+                    action: Action::EraseStatement { commitment, .. },
+                    ..
+                },
+                _,
+            )) => judge(
+                !verified(t).is_some_and(|t| result_failed(t, h))
+                    && cites_statement(e, commitment, h),
+                &[],
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -2226,12 +2243,15 @@ pub static RELATIONS: [Relation; 58] = [
         name: "recalculation-waits-for-moves-in-flight",
         spec: &["REQ-ORD-2", "INV-4", "REQ-ORD-22"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a part is recalculated only once every move on its later segments has a final result",
+        refusal: "a part's route restarts only once every move on its later segments has a final result",
         fields: &[],
-        // A move in flight may still deliver: recalculating around it moves the same value twice. A failed deposit
-        // or a completed reversal settles where the value is, so the part may move on.
+        // A move in flight may still deliver: restarting the route around it, by a recalculation or a change of
+        // destination, moves the same value twice. A failed deposit or a completed reversal settles where the
+        // value is, so the part may move on.
         cites: |e, _| match input(e).map(|i| &i.observed) {
-            Some(Observed::RouteRecalculated { .. }) => by_fields(0),
+            Some(Observed::RouteRecalculated { .. } | Observed::DestinationChanged { .. }) => {
+                by_fields(0)
+            }
             _ => none(),
         },
         answers: |e, _, t, h| {
@@ -2262,7 +2282,7 @@ pub static RELATIONS: [Relation; 58] = [
         name: "retired-segment-takes-no-move",
         spec: &["INV-4", "REQ-ORD-2"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a segment a recalculation retired takes no further move",
+        refusal: "a segment a recalculation or a change of destination retired takes no further move",
         fields: &[],
         cites: |e, _| match effect_action(e) {
             Some((Action::MoveValue { .. }, _)) => by_fields(0),
@@ -2274,7 +2294,9 @@ pub static RELATIONS: [Relation; 58] = [
             else {
                 return Match::NotTarget;
             };
-            let Observed::RouteRecalculated { segments, .. } = &i.observed else {
+            let (Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. }) = &i.observed
+            else {
                 return Match::NotTarget;
             };
             let (order, segment) = (order.as_str(), segment.as_str());
@@ -2509,6 +2531,19 @@ fn segment_input(
                     .as_ref()
                     .is_some_and(|s| s.as_str() == segment)
                 && found(&i.observed, kind)
+        })
+    })
+}
+
+/// Whether the effect `effect` has a `failed` result in `history`.
+fn result_failed(effect: &VerifiedEntry, history: &History) -> bool {
+    let Some((at, _)) = history.iter().find(|(_, e)| verified(e) == Some(effect)) else {
+        return false;
+    };
+    history.iter().any(|(_, e)| {
+        verified(e).is_some_and(|r| {
+            matches!(&r.what, What::Result { effect } if effect == at)
+                && r.outcome == (Outcome::Failed {})
         })
     })
 }

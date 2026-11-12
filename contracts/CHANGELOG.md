@@ -39,3 +39,5 @@ directory (see `README.md`).
   core_internal` in `src/lib.rs`, and the sixth row of this README's table. Its own changelog opens at 1.0.0, and it
   refers to the provider-role, module-interface and state-machine shapes it carries; no other contract changed.
   (DEC-2, DEC-4, DEC-20, T-020-01)
+- The guard follows references: a contract whose schemas name another's URNs needs a major bump when that one's
+  major moves, since its shapes change through the reference though none of its paths do. (DEC-4, DEC-20, T-020-01)
