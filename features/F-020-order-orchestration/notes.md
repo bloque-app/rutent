@@ -2372,7 +2372,11 @@ rule was switched off once, its test seen red, the file restored and touched.
   order read again first. Once taken: `Segments::observe`, the hold released, the owed reversal discharged. The part's
   value is evidenced at the segment's start again, so `T-020-10`'s recalculation goes on from there (its hand-off,
   the 1449 note: asserted in the origin-reserve test with `recalc::evidenced`). An answer that doesn't count is kept,
-  and the next call asks again under a fresh transaction.
+  and the next call asks again under a fresh transaction. Only a segment starting at the node the withdrawal took
+  the value to, where the origin reserve holds it, is asked about (`NoReserveAtNode` otherwise, nothing asked or
+  recorded, the reversal owed and held): the reserve's word is about its own node, and taken for a later node's
+  segment it would place the value where it isn't (`INV-4`); the log's `reversal_answers` keys on the order's
+  origin reserve too, so it wouldn't catch it.
 - **Defaults taken** (reversible, each for the form):
   - The **publisher half** (core-internal's README, "A reversal's evidence and the failed provider's publisher",
     left to `T-020-12`) is held strictly: a reserve sharing the failed provider's publisher completes nothing, and
@@ -2396,8 +2400,10 @@ rule was switched off once, its test seen red, the file restored and touched.
 - **Who carries it** (`REQ-ORD-11`). `Reversals::carrier`: the failed provider by default; `show_fault` keeps the
   provider's verified statement that the fault was the customer's or the operator's; `accept_fault` by that party's
   role makes it the carrier; `dispute` by it declares the part stuck through `Stuck::dispute` (`stuck_declared`,
-  `dispute`), so the stuck orders hold the declaration and resolve it in their two steps; the provider carries it
-  meanwhile. An undone start's carrier is the origin reserve (`REQ-ORD-30`).
+  `dispute`), so the stuck orders hold the declaration; the provider carries it meanwhile. The failed segment's
+  value stays in motion until it is reversed (`part-waits-for-value-in-motion`), so the stuck orders decide a
+  disputed part only once its reversal completed, which `confirm` still does on a stuck part (asserted in the
+  dispute test); until then it is held, failing closed. An undone start's carrier is the origin reserve (`REQ-ORD-30`).
 - **Ending** (`Reversals::end`, `REQ-ORD-12`): `end_requested` once the state machine takes it (a part not past its
   first segment) and nothing of such a part is in motion; then no segment of an ended part is handed over
   (`SegmentsError::Ended`). After the first segment settles the state machine takes no end, and Core records none. A
@@ -2435,6 +2441,12 @@ rule was switched off once, its test seen red, the file restored and touched.
     entry names a node's publisher. Item for core-internal's author.
   - A multi-reserve node (ADR-0008's own open point) has no settlement path: the origin reserve asked is the
     withdrawal's.
+  - A failed segment starting at an inner node after the first (a route through two inner nodes) has no party to
+    confirm its reversal: ADR-0008's reserve "at the origin node" is read as the withdrawal's, and no entry names the
+    reserve or holding account at a later node. Such a reversal stays owed and held, for the stuck orders. Item for
+    core-internal's author and ADR-0008's follow-up (who confirms at a later inner node, its holding account's
+    reserve perhaps), apart from the multi-reserve point; `reversal-rests-on-its-evidence` keys on the order's
+    origin reserve and fails open there.
 - **Seams in other rows' modules** (the coordinator's word not asked; reversible; each its own function or guard):
   - `segments/mod.rs` (`T-020-08`, last `T-020-11`'s): `observe` also takes `reversal_completed` and
     `end_requested`; `Segments::sent` (the transaction and the operation Core signed for a segment); a private
@@ -2442,7 +2454,7 @@ rule was switched off once, its test seen red, the file restored and touched.
     (`SegmentsError::Ended`, a new variant); and the header paragraph naming them.
   - `stuck/mod.rs` (`T-020-11`): `Stuck::dispute`, `no_route`'s twin for `stuck_declared { dispute }`, and a paragraph
     in its docs.
-- **Tests.** Ten in `components/core-orch/tests/reversal.rs`, with fakes over the router-api fixture's route across
+- **Tests.** Ten in `components/core-orch/tests/reversal.rs`, and one unit test in the module (the node rule), with fakes over the router-api fixture's route across
   three providers (withdrawal at `reserve-bank-co`, exchange at `exchange-a` inside `ledger-in`, deposit at
   `reserve-wallet`), run through `Segments::run_part`: the simulated providers' routes stay at one reserve, whose
   failed withdrawal is cancelled and whose failed deposit owes nothing, so no kit segment can owe a reversal. Each
@@ -2483,6 +2495,7 @@ rule was switched off once, its test seen red, the file restored and touched.
   | an undone start's loss the origin reserve's | the undone-start and partial-evidence tests |
   | the order Core follows takes the reversal (`observe` called) | the undone-start and origin reserve's tests |
   | the hold released | the origin reserve's test |
+  | only a segment starting at the withdrawal's node (after the review) | its unit test, `origin_reserve_confirms_only_a_segment_starting_at_its_node`: no fixture route reaches a later inner node |
   | a statement only of the maker it must be (destination, origin reserve) | the return test |
   | a showing answered only in its party's role | the dispute test |
   | seam: `observe` takes `reversal_completed` | the undone-start and origin reserve's tests |

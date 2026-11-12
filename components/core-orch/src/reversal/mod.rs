@@ -230,6 +230,10 @@ pub enum ReversalError {
     NotOwed,
     /// The part has no withdrawal whose reserve is its origin reserve.
     NoOriginReserve,
+    /// The segment doesn't start at the node the part's withdrawal took the value to, where its origin reserve
+    /// holds it: no reserve Core can ask shows the value back at the segment's origin node (`REQ-ORD-3`). Nothing is
+    /// asked or recorded; the reversal stays owed.
+    NoReserveAtNode,
     /// The state machine wouldn't take the input from the order as it stands: nothing is recorded.
     NotApplicable(stm::Outcome),
     /// A segment of a part that would end moves value: it is handed over with no final outcome.
@@ -838,6 +842,10 @@ impl Reversals {
             segment.state == SegmentState::FailedReversalOwed,
         );
         let provider = Id::new(segment.provider.as_str()).ok_or(ReversalError::Id("a provider"))?;
+        let at_node = part
+            .segments
+            .first()
+            .is_some_and(|withdrawal| starts_where_withdrawn(withdrawal, segment));
         if start {
             let (transaction, operation) = parts
                 .segments
@@ -864,6 +872,10 @@ impl Reversals {
                 .is_some_and(|r| r.completion.is_some());
         if !failed && !done {
             return Err(ReversalError::NotOwed);
+        }
+        // The origin reserve can show the value back only at its own node: the one the withdrawal took it to.
+        if !at_node {
+            return Err(ReversalError::NoReserveAtNode);
         }
         let owing = match self.owing(at.order, at.segment) {
             Some(owing) => owing.clone(),
@@ -1154,6 +1166,12 @@ fn find<'o>(
     Ok((part, segment))
 }
 
+/// Whether `segment` starts where `withdrawal`, a part's first segment, took the value: at the inner node the origin
+/// reserve holds it at, in the same asset, so the origin reserve's word is about the segment's origin node.
+fn starts_where_withdrawn(withdrawal: &stm::Segment, segment: &stm::Segment) -> bool {
+    withdrawal.kind == OperationKind::Withdrawal && withdrawal.to == segment.from
+}
+
 /// A part's origin reserve: the provider of its withdrawal, its first segment.
 fn origin_of(part: &stm::Part) -> Result<Id, ReversalError> {
     part.segments
@@ -1268,4 +1286,59 @@ fn base64url(bytes: &[u8]) -> String {
 
 fn key(order: &Id, segment: &Id) -> (String, String) {
     (order.as_str().to_owned(), segment.as_str().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use rutent_contracts::state_machine::{Segment, SegmentPlan, SegmentState};
+
+    use super::starts_where_withdrawn;
+
+    fn segment(
+        kind: &str,
+        provider: &str,
+        from: serde_json::Value,
+        to: serde_json::Value,
+    ) -> Segment {
+        let plan: SegmentPlan = serde_json::from_value(serde_json::json!({
+            "segment_id": format!("{provider}-s"), "provider": provider, "kind": kind, "from": from, "to": to,
+        }))
+        .unwrap();
+        Segment::new(plan, SegmentState::FailedReversalOwed)
+    }
+
+    fn at(node: serde_json::Value, asset: &str) -> serde_json::Value {
+        serde_json::json!({ "node": node, "asset": { "id": asset, "decimals": 2 } })
+    }
+
+    /// The origin reserve's word is about the node its withdrawal took the value to: a segment starting there is
+    /// one whose reversal it can confirm, and one starting at a later inner node isn't.
+    // verifies: REQ-ORD-3
+    #[test]
+    fn origin_reserve_confirms_only_a_segment_starting_at_its_node() {
+        let withdrawal = segment(
+            "withdrawal",
+            "bank",
+            at(serde_json::json!({ "network": "co-ach" }), "COP"),
+            at("ledger-in".into(), "COP"),
+        );
+        let first = segment(
+            "route",
+            "ramp",
+            at("ledger-in".into(), "COP"),
+            at("ledger-out".into(), "COP"),
+        );
+        let later = segment(
+            "route",
+            "ramp-2",
+            at("ledger-out".into(), "COP"),
+            at("ledger-far".into(), "COP"),
+        );
+        assert!(starts_where_withdrawn(&withdrawal, &first));
+        assert!(!starts_where_withdrawn(&withdrawal, &later));
+        assert!(
+            !starts_where_withdrawn(&first, &later),
+            "only from a withdrawal"
+        );
+    }
 }

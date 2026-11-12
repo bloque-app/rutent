@@ -1153,7 +1153,8 @@ fn origin_reserves_statement_completes_a_reversal_as_its_word() {
 /// The exchange shows the failure was the customer's. Until the customer accepts, the exchange carries the reversal;
 /// the operator can't accept for the customer. The customer disputes it: the part is declared stuck in a dispute, in
 /// the order Core follows and in the stuck orders', so it is resolved in their two steps, and the order is marked
-/// stuck. A showing the operator accepts makes the operator the carrier. Another provider's statement is no showing.
+/// stuck. Its reversal still completes on the stuck part, after which the stuck orders can decide it. A showing the
+/// operator accepts makes the operator the carrier. Another provider's statement is no showing.
 // verifies: REQ-ORD-11
 #[test]
 fn dispute_over_a_fault_makes_the_order_stuck() {
@@ -1213,6 +1214,16 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         w,
         What::Input { input } if input.observed == stm::Observed::StuckDeclared { reason: stm::StuckReason::Dispute }
     )));
+    // The reversal still completes on the stuck part, and only then is its value no longer in motion
+    // (`part-waits-for-value-in-motion`), so the stuck orders can decide it.
+    assert!(matches!(
+        world
+            .confirm(&mut Answering::confirming(), "p1-s2")
+            .unwrap(),
+        Confirmation::Completed(_)
+    ));
+    assert_eq!(world.state_of("p1-s2"), SegmentState::ReversalComplete);
+    assert_eq!(world.followed().parts[0].state, OrderState::Stuck);
     assert_eq!(world.admitted_from(mark), Ok(world.log.0.len() - mark));
 
     // Accepted, the operator's fault is the operator's to carry.
