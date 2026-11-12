@@ -6,7 +6,7 @@
 use rutent_conformance::signing::{real, sign_value};
 use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::{ArrivalMatch, Parties, What};
-use rutent_contracts::provider_role::{Denomination, KeyPurpose, OuterNode, RESULT_SHAPE};
+use rutent_contracts::provider_role::{Denomination, KeyPurpose, OuterNode};
 use rutent_contracts::router_api::PositiveAmount;
 use rutent_core_orch::arrival::{ArrivalError, Arrived, Filing, Report};
 use rutent_scenarios::assembly::machine::Reference;
@@ -14,6 +14,10 @@ use rutent_scenarios::assembly::{Core, Staged, StepError, context};
 use rutent_scenarios::harness::{Given, Scenario, base_request};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
 use serde_json::json;
+
+/// The shape the scenario gives the reserve's notice: provider-role names none for a notice of value arriving
+/// (`T-020-04`'s gap), so it is one no contract names.
+const NOTICE_SHAPE: &str = "urn:rutent:scenario:arrival-notice";
 
 /// The simulated reserve's statements key, the real one its placeholder stands for.
 fn statements_key() -> ed25519_dalek::SigningKey {
@@ -32,7 +36,7 @@ fn statements_key() -> ed25519_dalek::SigningKey {
     real(placeholder.as_str())
 }
 
-/// The reserve's notice that `amount` arrived, signed, naming no transaction, made at Core's clock.
+/// The reserve's notice that `amount` arrived, signed, naming the transaction it gave the credit, made at Core's clock.
 fn report(core: &Core, amount: &str) -> Report {
     let request = base_request("req-shape", amount, &id("session-shape"));
     let rutent_contracts::provider_role::NodeRef::Outer(node) = request.route.from.node.clone()
@@ -43,11 +47,11 @@ fn report(core: &Core, amount: &str) -> Report {
     let mut notice = json!({
         "deployment": context().deployment,
         "protocol_version": rutent_contracts::provider_role::VERSION,
-        "shape": RESULT_SHAPE,
+        "shape": NOTICE_SHAPE,
         "maker": RESERVE,
         "made_at": core.clock.timestamp().as_str(),
         "signature": { "scheme": "ed25519", "key": "", "value": "" },
-        "statement": { "kind": "arrival", "amount": amount, "reference": "credit-1" },
+        "statement": { "kind": "arrival", "transaction": "credit-1", "amount": amount },
     });
     sign_value(&mut notice, &statements_key());
     Report {
@@ -78,6 +82,7 @@ fn value_arriving_with_no_order_opens_none_and_an_undeclared_reserve_starts_noth
         What::Arrival {
             order: None,
             matched: ArrivalMatch::NoOrder,
+            notice: Some(_),
             ..
         }
     )));

@@ -61,9 +61,10 @@ impl Core {
         out
     }
 
-    /// The orders open at a reserve: each order a customer requested through intake that started and whose first
-    /// segment hasn't settled, with its holder and its session. Every session the assembly opens speaks for the
-    /// conformance account, so that is each order's account.
+    /// The orders open at a reserve: each order a customer requested through intake that started, one for each part
+    /// whose first segment hasn't settled, with its payer as the holder of the account the value leaves and its session.
+    /// A split order names each part, at that part's amount; an order of one part names none. Every session the
+    /// assembly opens speaks for the conformance account, so that is each order's account.
     fn open_orders(&self) -> Vec<OpenOrder> {
         let settled: BTreeSet<String> = self
             .inputs()
@@ -72,29 +73,45 @@ impl Core {
             .filter_map(|i| i.subject.segment.map(|s| s.as_str().to_owned()))
             .collect();
         let account = kit::id(&context().account);
-        self.started
-            .iter()
-            .filter_map(|(order, started)| {
-                let request = self.requests.get(order)?;
-                let first = started.plan.first()?.segments.first()?;
-                if settled.contains(first.segment_id.as_str()) {
-                    return None;
-                }
-                let NodeRef::Outer(node) = &request.route.from.node else {
-                    return None;
+        let mut open = Vec::new();
+        for (order, started) in &self.started {
+            let Some(request) = self.requests.get(order) else {
+                continue;
+            };
+            let NodeRef::Outer(node) = &request.route.from.node else {
+                continue;
+            };
+            let split = started.plan.len() > 1;
+            let chosen = started.record.chosen();
+            for (at, part) in started.plan.iter().enumerate() {
+                let Some(first) = part.segments.first() else {
+                    continue;
                 };
-                Some(OpenOrder {
+                if settled.contains(first.segment_id.as_str()) {
+                    continue;
+                }
+                let amount = if split {
+                    match chosen.and_then(|c| c.parts.get(at)) {
+                        Some(p) => p.operations.first().amount_in.clone(),
+                        None => continue,
+                    }
+                } else {
+                    request.route.amount.clone()
+                };
+                open.push(OpenOrder {
                     order: kit::id(order),
                     reserve: request.origin_reserve.clone(),
                     node: node.clone(),
                     asset: request.route.from.asset.clone(),
                     account: account.clone(),
-                    holder: request.parties.requester.clone(),
-                    amount: request.route.amount.clone(),
+                    holder: request.parties.payer.clone(),
+                    amount,
                     session: request.session.clone(),
-                })
-            })
-            .collect()
+                    part: split.then(|| kit::id(part.part_id.as_str())),
+                });
+            }
+        }
+        open
     }
 
     /// Takes value arriving at a reserve, as the reserve's `report` tells it.
