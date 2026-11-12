@@ -689,11 +689,11 @@ impl HandOn {
         // Before the first record, and again before each retry of it: the linked order is free, in the log and
         // among the hand-ons pending here, so the `route_chosen` that follows is the linked order's first
         // (`order-is-opened-once`). A hand-on whose linked order was taken meanwhile is dropped, nothing recorded.
-        if self
-            .hand_ons
-            .get(&at)
-            .is_some_and(|p| p.handed_on.0.receipt.is_none())
-            && let Err(taken) = self.linked_is_free(parts.segments, &handing, &at)
+        // One whose own `handed_on` the log took already, its answer lost, is past that point: it goes on to the
+        // `route_chosen`, so Core and the log never part on whether the part was handed on.
+        if self.hand_ons.get(&at).is_some_and(|p| {
+            p.handed_on.0.receipt.is_none() && !in_the_log(handing.recorded, &p.handed_on.1)
+        }) && let Err(taken) = self.linked_is_free(parts.segments, &handing, &at)
         {
             self.hand_ons.remove(&at);
             return Err(taken);
@@ -1080,6 +1080,14 @@ fn at_rest(
         .and_then(|a| PositiveAmount::new(a.as_str()))
         .ok_or(HandOnError::Unknown)?;
     Ok((at, settled, amount))
+}
+
+/// Whether `recorded`, the log's entries, holds `input` already, by its record id.
+fn in_the_log(recorded: &[(Receipt, Entry)], input: &RecordedInput) -> bool {
+    recorded.iter().any(|(_, e)| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what,
+            What::Input { input: held } if held.record_id == input.record_id))
+    })
 }
 
 /// The segments of `part` a new route retires: from its first that hasn't settled.

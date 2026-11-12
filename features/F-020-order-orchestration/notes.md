@@ -2609,3 +2609,10 @@ rule was switched off once (the table below).
 - **The contract's half** is with the contract's author (the coordinator's word): a log row refusing a `handed_on`
   whose linked order is opened already, and a state-machine input taking back a hand-on whose linked order was
   refused.
+- **Low, after the approval of `3f30c50`: a hand-on whose record the log took.** Where the log took this hand-on's
+  `handed_on` and its answer was lost, the retry found the linked order taken by its own record, or by another opener
+  meanwhile, and dropped the hand-on: the log held the part handed on and Core held it waiting. Now a hand-on whose
+  own `handed_on` record id is in the log skips the free-order check and goes on to the `route_chosen`; a refusal of
+  that is recorded as the linked order's, and Core takes the `handed_on` as the log holds it. Test
+  `hand_on_whose_record_the_log_took_goes_on_whatever_opened_its_linked_order`, written first and seen red
+  (`AlreadyOpened`); rule-off (the record in the log ignored), red.
