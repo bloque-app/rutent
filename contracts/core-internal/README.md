@@ -129,6 +129,9 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `reliance-names-its-judges-statement` | `reliance`: its `judgement` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `judge`), about (nothing but the relying order: a judgement is appended about no order) | `REQ-CPL-12` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--about` |
 | `measure-cites-entries-of-the-log` | `measure`: each of `cites` | an entry at that receipt | — | `REQ-AUD-2` | admitted: `world--*`; refused: `--missing` |
 | `raise-cites-entries-of-the-log` | `raise`: each of `cites` | an entry at that receipt | — | `REQ-ORD-9`, `REQ-AUD-15` | admitted: `world--*`; refused: `--missing` |
+| `erasure-is-carried-out-on-its-decision` | `erasure`: its `evidence` | a `result` of an `erase_statement` effect of that commitment, which itself rests on a permitted `decide` (`effect-permits-a-decided-action`) | done (the result is `done`: the store erases only then) | `REQ-AUD-13`, `REQ-AUZ-1` | admitted: `world--*`; refused: `--missing`, `--done` |
+| `erasure-waits-while-anything-rests-on-the-statement` | `erasure`, and the `erase_statement` `decide`: its commitment | none other: no earlier entry citing the statement, by its stated entry's receipt or its commitment (the erasure's own path and reads aside) | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--conflict`, `--decided-while-cited` |
+| `nothing-cites-an-erased-statement` | any verified entry but the erasure's own path and reads: anything it records | none other: no `erasure`, `done`, of a statement it cites, by its stated entry's receipt or its commitment | — | `REQ-AUD-13` | admitted: `--another-statement`, `--a-failed-erasure`; refused: `--conflict` |
 | `erasure-names-a-kept-statement` | `erasure`: its `evidence` | a stated entry holding that commitment | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--missing` |
 | `acceptance-is-of-the-quote-shown` | `acceptance` (`given`): its `quote` | a `shown` with that digest | order, shown_as (a quote, never a price) | `REQ-ORD-34`, `REQ-QTE-7` | admitted: `world--*`; refused: `--missing`, `--order`, `--shown_as`, `--never` |
 | `shortlisted-authority-cites-its-shortlist` | `ask_about_person` on a shortlisted route: its `shortlist` | a `decision_record` with that digest | order, round (`shortlist`), providers (among its `shortlisted`), verifiers (among the `verifiers` its tuples need) | `REQ-CPL-2`, `REQ-CPL-6`, `REQ-CPL-5` | admitted: `world--*`, `--asking-a-verifier-it-needs`; refused: `--missing`, `--order`, `--round`, `--providers`, `--verifiers` |
@@ -137,7 +140,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `revocation-revokes-a-grant` | `revoke_permission`, `permitted`: its `permission` (a refused one cites nothing) | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`, `--refused`; refused: `--missing` |
 | `permitted-read-rests-on-its-grant` | `check_read`, `permitted`, naming a `permission` | a `grant_permission`, `permitted`, of that permission | grantee (the reader's party), scope (covers what it reads) | `REQ-AUZ-7`, `REQ-AUD-12` | admitted: `world--*`; refused: `--missing`, `--grantee`, `--scope`, `--order-state-under-the-trail`, `--order-state-under-its-order`; refused also: `--order-state-under-another-order` |
 | `permitted-read-is-not-revoked` | `check_read`, `permitted`, naming a `permission` | none other: no `revoke_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`; refused: `--conflict` |
-| `own-evidence-read-is-of-the-readers-statement` | `check_read`, `permitted`, of `evidence`, naming no `permission`: its `commitment` | a stated entry holding that commitment | maker (the statement's `acts` is the reader's; or, for an operator-role reader of the operator's party, the statement is the operator's own) | `REQ-AUD-5`, `REQ-AUZ-7` | admitted: `world--*`, `--operator-login`; refused: `--missing`, `--maker`, `--operator-login-of-another-party` |
+| `own-evidence-read-is-of-the-readers-statement` | `check_read`, `permitted`, of `evidence`, naming no `permission`: its `commitment` | a stated entry holding that commitment | verified (the log verified the statement), maker (the statement's `acts` is the reader's; or, for an operator-role reader of the operator's party, the statement is the operator's own) | `REQ-AUD-5`, `REQ-AUZ-7` | admitted: `world--*`, `--operator-login`; refused: `--missing`, `--verified`, `--maker`, `--operator-login-of-another-party` |
 | `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order, its state or a segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer), segment (a segment read's segment is one its order's plan lists) | `REQ-AUZ-7` | admitted: `world--*`, `--segment-of-its-order`; refused: `--missing`, `--party`, `--beneficiary`, `--segment`, `--order-state-of-its-order`; refused also: `--order-state-of-another-order`, `--order-state-of-an-order-not-its-own` |
 | `provider-read-is-of-its-own-segment` | `check_read`, `permitted`, by a provider, of a segment: its order and segment | an `effect` of `move_value` on that segment of that order | provider (the reader, as the effect and the read name it) | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--provider`, `--as` |
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
@@ -450,11 +453,24 @@ These are defaults taken where the row left a choice open. Each is reversible by
   recorded state and age and nothing else: the operator reads it without a permission, its customer reads its own,
   and no provider reads it. A permission over the trail or over the order covers it. `T-021-02`'s policy allows
   the operator's and the customer's `order_state` reads; `T-020-08` serves them.
-- **Its own evidence** (`REQ-AUD-5`). A permitted evidence read that names no permission, the operator's, a
-  customer's or a provider's, is of a statement this log holds whose maker (`acts`) is the reader; any other
-  party's kept bytes, a holding account's balance among them, are read only under a permission whose scope covers
-  them. The operator's own statements are made as the operator, and a person logged in as the operator reads them
-  as the operator's party, which policy's `ActsFor` binds the login to before any read is permitted.
+- **Erasure is a decided action** (`REQ-AUD-13`, `REQ-AUZ-1`). The operator asks policy to erase a kept statement
+  (`Action::EraseStatement { commitment, reason }`, through `Decisions::decide`); the log admits its effect on the
+  permit, like any decided action, and its `result`; the `erasure` entry records the erasure only after that result
+  is `done` (`erasure-is-carried-out-on-its-decision`). Once an erasure is done, no new entry cites the statement,
+  by its stated entry's receipt or by its commitment (`nothing-cites-an-erased-statement`), so a statement isn't
+  cited after its bytes are gone, not only at the moment of erasure. And no statement is erased, or decided to be,
+  while an earlier entry rests on it (`erasure-waits-while-anything-rests-on-the-statement`, the owner's default
+  "refuse while cited"), so the log holds no done erasure the store must refuse.
+- **Erasure hand-offs** (`T-022-03`, `T-021-03`). The evidence store erases a statement's bytes only on the `done`
+  result of a permitted `erase_statement` effect, then records the `erasure`; its check that nothing rests on a
+  statement leaves out the erasure's own decided path, which names the commitment. Policy refuses `EraseStatement` until
+  its rows add the operator's permission to erase (the role table answers no rule for it today).
+- **Its own evidence** (`REQ-AUD-5`). A permitted evidence read that names no permission, the operator's, a customer's
+  or a provider's, is of a statement this log holds whose maker (`acts`) is the reader; any other party's kept bytes, a
+  holding account's balance among them, are read only under a permission whose scope covers them. The statement must be
+  one the log verified: an unverified one is no one's (`REQ-AUD-2`). The operator's own statements are made as the
+  operator, and a person logged in as the operator reads them as the operator's party, which policy's `ActsFor` binds
+  the login to before any read is permitted.
 - **Refusal classes for orders** are the eight `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
   A change of the destination's owner is `destination_owner_changed`: the order waits for the customer, told so by
   its own class, and the refusal rests on the `destination_check` that found `owner_changed`

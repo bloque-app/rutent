@@ -172,6 +172,50 @@ fn erasure_by(who: Value, commitment: &Digest, status: &str) -> GeneralEntry {
     .unwrap()
 }
 
+/// The operator's permitted decision to erase what `commitment` names, its effect and its done result, in `log`:
+/// the path the log admits an erasure on. `n` tells its request and decision apart from others'.
+fn decide_erasure(
+    log: &mut (impl Log + PolicyLog),
+    n: usize,
+    commitment: &Digest,
+) -> Result<(), AppendFailure> {
+    let (request, decision) = (format!("req-erase-{n}"), format!("dec-erase-{n}"));
+    let action =
+        json!({"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"});
+    let operator = actor(OPERATOR, "op-login-2", "operator", "person");
+    let decided: VerifiedEntry = serde_json::from_value(json!({
+        "kind": "verified",
+        "who": operator,
+        "what": {"call": "decide", "decision": decision,
+                 "request": {"request": request, "caller": operator, "action": action, "at": NOW}},
+        "when": {"at": NOW, "source": "core_clock"},
+        "outcome": {"status": "permitted"},
+    }))
+    .unwrap();
+    let permit = log.append_decision(&DecisionEntry::try_from(decided).unwrap())?;
+    let core = actor("rutent", "core-orch", "core", "component");
+    let effect: GeneralEntry = serde_json::from_value(json!({
+        "kind": "verified",
+        "who": core,
+        "what": {"call": "effect", "action": action,
+                 "decision": {"request": request, "decision": decision, "answer": "permit", "receipt": permit}},
+        "when": {"at": NOW, "source": "core_clock"},
+        "outcome": {"status": "to_take_effect"},
+    }))
+    .unwrap();
+    let effect = log.append(&effect)?;
+    let result: GeneralEntry = serde_json::from_value(json!({
+        "kind": "verified",
+        "who": core,
+        "what": {"call": "result", "effect": effect},
+        "when": {"at": NOW, "source": "core_clock"},
+        "outcome": {"status": "done"},
+    }))
+    .unwrap();
+    log.append(&result)?;
+    Ok(())
+}
+
 /// A valid fixture of the contract.
 fn valid(name: &str) -> Value {
     let path = format!(
@@ -353,8 +397,23 @@ impl Run {
         (kept.commitment, receipt)
     }
 
+    /// Appends `entry`; an erasure first on its decided path, as the log admits one only after the done result of
+    /// a permitted erase effect (core-internal's `erasure-is-carried-out-on-its-decision`).
     fn append(&self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if let Entry::Verified(VerifiedEntry {
+            what: rutent_contracts::core_internal::What::Erasure { evidence },
+            ..
+        }) = entry.entry()
+        {
+            self.decide_erasure(evidence)?;
+        }
         self.log.borrow_mut().append(entry)
+    }
+
+    /// The operator's permitted decision to erase what `commitment` names, its effect and its done result.
+    fn decide_erasure(&self, commitment: &Digest) -> Result<(), AppendFailure> {
+        let n = self.log.borrow().entries().len();
+        decide_erasure(&mut *self.log.borrow_mut(), n, commitment)
     }
 
     fn entries(&self) -> Vec<(Receipt, Entry)> {
@@ -853,6 +912,8 @@ fn a_shelf_that_cant_write_keeps_and_erases_nothing() {
         .append(&stated(&bytes, &kept.commitment, None))
         .unwrap();
     store.erasable(&kept.commitment).unwrap();
+    let n = log.borrow().entries().len();
+    decide_erasure(&mut *log.borrow_mut(), n, &kept.commitment).unwrap();
     let at = log
         .borrow_mut()
         .append(&erasure(&kept.commitment, "done"))
@@ -1201,6 +1262,8 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
     assert_eq!(scratch_kept.keep(&bytes, salt), commitment);
     let mut scratch = AuditLog::open(settings(), MemoryStore::new(), scratch_kept).unwrap();
     scratch.append(&stated(&bytes, &commitment, None)).unwrap();
+    let n = scratch.entries().len();
+    decide_erasure(&mut scratch, n, &commitment).unwrap();
     let elsewhere = scratch.append(&erasure(&commitment, "done")).unwrap();
     assert_eq!(
         run.store.erase(&elsewhere),
@@ -1226,7 +1289,8 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
 }
 
 /// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
-/// on is erased; a read of a statement rests on nothing.
+/// on is erased; a read of a statement rests on nothing. The log refuses the erasure's decision too, so it records
+/// no erasure the store must refuse (core-internal's `erasure-waits-while-anything-rests-on-the-statement`).
 // verifies: REQ-AUD-13, REQ-AUD-2
 #[test]
 fn no_erasure_reaches_a_statement_an_entry_rests_on() {
@@ -1241,8 +1305,12 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
     let refused = Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
 
     assert_eq!(run.store.erasable(&cited), refused);
-    let recorded = run.append(&erasure(&cited, "done")).unwrap();
-    assert_eq!(run.store.erase(&recorded), refused);
+    assert_eq!(
+        run.append(&erasure(&cited, "done")),
+        Err(AppendFailure::Refused(Violation(
+            "no statement is erased while an entry of this log rests on it"
+        )))
+    );
     assert!(matches!(
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
@@ -1287,16 +1355,13 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
     run.erase(&free).unwrap();
     assert_eq!(run.fetch("bank-co", &free).unwrap(), Fetched::Erased);
     drop(run);
-    // Reopened, the refused erasure stays not carried out, and is reported.
+    // Reopened, the statement rested on is still kept, and no erasure of it was recorded to refuse.
     let mut run = Run::open(&dir).unwrap();
     assert!(matches!(
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
     ));
-    assert_eq!(
-        run.store.refused_erasures(),
-        [(recorded, Violation(EVIDENCE_RESTED_ON))]
-    );
+    assert!(run.store.refused_erasures().is_empty());
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------

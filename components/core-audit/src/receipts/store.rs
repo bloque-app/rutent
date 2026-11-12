@@ -38,8 +38,8 @@ use rutent_contracts::core_internal::calls::{
     self, AppendFailure, Evidence, Fetched, Kept, KeptStatements,
 };
 use rutent_contracts::core_internal::{
-    Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt, Role,
-    Salt, Violation, What,
+    Action, Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt,
+    Role, Salt, Violation, What,
 };
 use rutent_contracts::module_interface::{Digest, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, signing_input};
@@ -507,7 +507,8 @@ fn holds_value(value: &serde_json::Value, needle: &serde_json::Value) -> bool {
 
 /// Whether an entry of `entries` rests on the statement kept under `commitment`: cites the receipt of a stated
 /// entry naming it, or names the commitment itself, as a stuck order's decision names its evidence. Stated entries,
-/// erasures and reads (a read of a statement, and a permission over one) rest on nothing they name.
+/// erasures, the erasure's decided path, and reads (a read of a statement, and a permission over one) rest on nothing
+/// they name.
 fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
     let mut needles: Vec<serde_json::Value> = entries
         .iter()
@@ -518,14 +519,25 @@ fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
     entries.iter().any(|(_, e)| match e {
         Entry::Stated(_) => false,
         Entry::Verified(v) => {
-            !matches!(
-                v.what,
-                What::Erasure { .. }
-                    | What::CheckRead { .. }
-                    | What::GrantPermission { .. }
-                    | What::RevokePermission { .. }
-            ) && serde_json::to_value(&v.what)
-                .is_ok_and(|what| needles.iter().any(|n| holds_value(&what, n)))
+            // The erasure's own path (its decision, its effect and their result) rests on nothing it names.
+            let erasing = match &v.what {
+                What::Decide { request, .. } => {
+                    matches!(request.action, Action::EraseStatement { .. })
+                }
+                What::Effect { action, .. } => matches!(action, Action::EraseStatement { .. }),
+                What::Result { .. } => true,
+                _ => false,
+            };
+            !erasing
+                && !matches!(
+                    v.what,
+                    What::Erasure { .. }
+                        | What::CheckRead { .. }
+                        | What::GrantPermission { .. }
+                        | What::RevokePermission { .. }
+                )
+                && serde_json::to_value(&v.what)
+                    .is_ok_and(|what| needles.iter().any(|n| holds_value(&what, n)))
         }
     })
 }
