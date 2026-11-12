@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 80] = [
+pub static RELATIONS: [Relation; 81] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -605,6 +605,33 @@ pub static RELATIONS: [Relation; 80] = [
                 &[],
             )
         },
+    },
+    Relation {
+        name: "only-the-payer-moves-the-origin-account",
+        spec: &["REQ-AUZ-3", "REQ-AUZ-4", "REQ-ORD-17"],
+        quantifier: Quantifier::Exists,
+        refusal: "a part's origin account is set by its first authorisation, and moved only by the order's payer",
+        fields: &[],
+        // A delivery back to the origin is a refund of the payer's value, so neither the requester nor the operator
+        // redirects it (the owner's form default). None to point to: the authorisation is refused where it names
+        // another origin account than the one in force for a part it covers, and isn't the payer's.
+        cites: |e, h| match (&e.what, &e.outcome) {
+            (
+                What::Authorise {
+                    authorisation: a, ..
+                },
+                Outcome::Permitted {},
+            ) if !by_the_payer(a, h)
+                && covered_parts(a, h).into_iter().any(|p| {
+                    origin_account_in_force(a.order.as_str(), p, h)
+                        .is_some_and(|current| current != a.origin_account.as_ref())
+                }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
         name: "owner-change-rests-on-its-destination-check",
@@ -3450,7 +3477,7 @@ fn resolved_to(
             _ => None,
         });
     let from_origin = to.reserve == a.origin_reserve
-        && a.origin_account.as_ref() == Some(&to.account)
+        && origin_account_in_force(order, Some(part), history).flatten() == Some(&to.account)
         && matches!(origin_node, Some(crate::provider_role::NodeRef::Outer(n)) if n == &to.node);
     from_origin.then_some(crate::state_machine::ResolvedTo::Origin)
 }
@@ -3491,9 +3518,48 @@ fn terms(
     )
 }
 
-/// Whether the order's customer gave `a`: its requester, or one acting for it as its party.
+/// Whether the order's customer gave `a`: its requester, or one acting for it as its party, in the customer's role,
+/// as the engine and Core read it.
 fn by_the_customer(a: &Authorisation, history: &History) -> bool {
-    requester_of(a.order.as_str(), history).is_some_and(|r| &a.given_by.party == r)
+    a.given_by.role == Role::Customer
+        && requester_of(a.order.as_str(), history).is_some_and(|r| &a.given_by.party == r)
+}
+
+/// Whether the order's payer gave `a`: one acting for the party its acceptance names as payer, in the customer's
+/// role. A refund back to the origin is the payer's, so only the payer moves it (`origin_account_in_force`).
+fn by_the_payer(a: &Authorisation, history: &History) -> bool {
+    a.given_by.role == Role::Customer
+        && history.iter().any(|(_, e)| {
+            matches!(verified(e).map(|v| &v.what), Some(What::Acceptance { order, parties, .. })
+                if order == &a.order && parties.payer == a.given_by.party)
+        })
+}
+
+/// The origin account in force for `part` of `order` after `history`: the one the first permitted authorisation
+/// covering the part names, then each later one the payer gave. Anyone else's names the one in force or is refused
+/// (`only-the-payer-moves-the-origin-account`); which accounts the payer holds is policy's register, not the log's.
+fn origin_account_in_force<'a>(
+    order: &str,
+    part: Option<&str>,
+    history: &'a History,
+) -> Option<Option<&'a Id>> {
+    let mut current: Option<Option<&Id>> = None;
+    for (_, e) in history {
+        let Some(What::Authorise {
+            authorisation: a, ..
+        }) = permitted(e).map(|v| &v.what)
+        else {
+            continue;
+        };
+        let covers = match part {
+            Some(p) => covers_part(a, p),
+            None => a.parts.is_none(),
+        };
+        if a.order.as_str() == order && covers && (current.is_none() || by_the_payer(a, history)) {
+            current = Some(a.origin_account.as_ref());
+        }
+    }
+    current
 }
 
 /// The authorisation whose terms are in force for `part` of `order` after `history` (`None`: one naming no part,

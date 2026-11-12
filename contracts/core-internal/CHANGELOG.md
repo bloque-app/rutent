@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 463 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 85 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 469 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 86 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -461,6 +461,16 @@
   probe, a question and its answer under `tx-z` before `p3`'s hand-on decision under `tx-z`. Admitted: the hand-on's
   own question and answer under `tx-h3`, after its decision. 463 admission cases. (DEC-4, DEC-20, REQ-AUZ-4,
   REQ-ORD-38, T-020-01)
+- Folded into 1.0.0 before its release: the customer is in the customer's role, and the origin account is the
+  payer's to move (the reviews since `T-020-01` landed). `by_the_customer` read only the actor's party, so one of the
+  requester's party in another role set new terms; it now also requires the customer's role, as the engine and Core
+  read it. A part's origin account was moved by any authorisation the customer gave, so a requester could redirect
+  a payer's refund; `only-the-payer-moves-the-origin-account` holds each later authorisation to the account in force
+  unless the order's payer gave it, and a delivery back to the origin goes to that account. Which accounts the payer
+  holds is policy's register, handed to `T-021-04` and `T-021-06`. Refused: the requester's party in the operator's
+  role setting a new destination; the requester, and the operator, redirecting the payer's refund. Admitted: the
+  payer moving it, and a restatement before and after. 469 admission cases, 86 relations. (DEC-4, DEC-20,
+  REQ-AUZ-3, REQ-AUZ-4, REQ-ORD-17, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
