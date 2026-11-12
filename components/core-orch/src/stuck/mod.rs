@@ -12,35 +12,44 @@
 //!    customer where the value sits at the node a failed final deposit left it at (`REQ-ORD-43`). Nothing is rolled
 //!    back: no reversal is asked, no hold released and nothing handed over, and a stuck part is never handed over
 //!    again ([`SegmentsError::Stuck`](crate::segments::SegmentsError::Stuck)) nor recalculated
-//!    ([`NotRecalculable::Held`](crate::recalc::NotRecalculable::Held)).
+//!    ([`NotRecalculable::Held`](crate::recalc::NotRecalculable::Held)). The value resting at the node is held
+//!    there ([`Exposures::hold_resting`]), so the ceilings in flight count it.
 //! 2. **Over time** ([`Stuck::watch`], `REQ-ORD-29`). A segment carried out with no final outcome (no result that
 //!    counts, an outcome unknown, or the person to act) is timed from when it was carried out. Past twice the p99
-//!    of its tuple's settlements, or twice its advertised time until the tuple has [`HISTORY`], the figures are
+//!    of its tuple's latest [`WINDOW`] settlements, or twice its advertised time until the tuple has [`HISTORY`]
+//!    settlements, the figures are
 //!    recorded (`stuck_call`, `REQ-ORD-6`) and then the part declared stuck (`stuck_declared`, `over_time`), and the
 //!    declaration is handed back as the operator's warning ([`StuckCalled`]). Exactly twice is not over.
 //! 3. **A material change in a provider's p99** ([`Stuck::learn`], `REQ-ORD-6`, `THR-24`). Each settled
-//!    segment's actual time joins its tuple's history once; when the p99 moves by [`MATERIAL_BPS`] of the one last
-//!    taken as its baseline, either way, it is raised to the operator (`Operator::raise`, a
-//!    `settlement_time` difference citing the settlements it rests on), and the raise is recorded with whether it
-//!    was delivered.
+//!    segment's actual time joins its tuple's history once. The first p99, formed at [`HISTORY`] settlements, is
+//!    compared with the advertised time; each later one, over the latest [`WINDOW`], with the one last raised or
+//!    first formed, so it can fall as well as rise. A move of [`MATERIAL_BPS`] of what it is compared with, either
+//!    way, is raised to the operator (`Operator::raise`, a `settlement_time` difference citing the settlements it
+//!    rests on), and the raise is recorded with whether it was delivered. Detection never holds up the clock.
 //! 4. **Seen by value and age** ([`Stuck::stuck_values`], `REQ-OPS-2`): every stuck order's value in each asset,
-//!    what its parts hold in flight and what rests at the node its value is evidenced at, ranked largest first
-//!    within each asset, then oldest. The customer reads its order's state through [`Segments::status`]; the
+//!    what its parts hold in flight or at rest, less what resolutions moved, ranked largest first within each asset,
+//!    then oldest. The customer reads its order's state through [`Segments::status`]; the
 //!    provider reads its own segment's through [`seen_by_provider`], each on a read policy allows
 //!    (`REQ-ORD-6`).
 //! 5. **Resolved in two steps** ([`Stuck::decide`], [`Stuck::carry_out`], `REQ-AUZ-4`, ADR-0011). One actor
 //!    decides the outcome and names its evidence; policy decides that step. Another actor, of another accountable
 //!    party, moves the value; policy decides that step too, and only its permit backs the `resolve_stuck` effect.
 //!    Core holds both rules itself whatever policy answers: it carries out a move only for a decision it holds,
-//!    permitted, of a part it declared stuck and that is still unresolved, and only where the mover's party isn't
-//!    the decider's. A resolution moves no more than the part holds, through a provider of the part, to the order's
-//!    destination or back to its origin. The effect is acted on once for its receipt (`INV-8`), and the part is
-//!    resolved once.
+//!    permitted and answering its own request, of a part it declared stuck and that is still unresolved, and only
+//!    where the mover is neither of the decider's party nor its login. A resolution moves no more than the part
+//!    still holds, through a provider of the part, to the order's destination or back to its origin, both read
+//!    from Core's records ([`Stuck::follow`]), never from the caller. One move of a part at a time: while one is in
+//!    progress, or its outcome unknown, nothing more is decided or moved for the part, and a move is finished only
+//!    by its own mover. Each decision is spent by the move that carried it out, whatever its outcome. The effect is
+//!    acted on once for its receipt, in the one register the segments keep too (`INV-8`), and only on a receipt
+//!    that is its own; the part is resolved once all its value moved.
 //!
 //! **Gaps, each named in `F-020`'s notes.** Policy's `StuckOrders` is unbuilt (`T-021-06`): it answers not known,
-//! so nothing moves until it is built, and it holds no rule comparing the two actors yet. state-machine 2.1.0 has no
-//! input that ends a part a resolution delivered, so the part stays `stuck` there and Core holds it resolved. The
-//! production [`Resolutions`] that carries a resolution out on the platform is a later row's.
+//! so nothing moves until it is built, and it holds no rule comparing the two actors yet, nor the roles a decider
+//! and a mover may hold. state-machine 2.1.0 has no input that ends a part a resolution delivered, so the part stays
+//! `stuck` there and Core holds it resolved (`T-020-01f` is adding one). The order's authorisation and its payer's
+//! account reach [`Stuck::follow`] from the assembly until policy registers authorisations (`T-021-04`). No row
+//! owns the production [`Resolutions`] yet: `hand_on` is `T-020-13`'s, and `deliver` needs a new row.
 
 mod journal;
 mod timing;
@@ -52,12 +61,15 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, Delivery, Operator, Reads, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, Answer, Decided, Decision, Destination, Difference, Effect, Outcome, Permit,
-    Raise, ReadCheck, ReadOutcome, Receipt, Resolution, StuckBasis, StuckDecide, StuckMove, What,
+    Action, Actor, Answer, Authorisation, Decided, Decision, Destination, Difference, Effect,
+    Outcome, Permit, Raise, ReadCheck, ReadOutcome, Receipt, Resolution, StuckBasis, StuckDecide,
+    StuckMove, What,
 };
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{Denomination, SafeInteger};
-use rutent_contracts::router_api::{Amount, DecisionRecord, Endpoint, Id, Timestamp};
+use rutent_contracts::provider_role::{Denomination, NodeRef, SafeInteger};
+use rutent_contracts::router_api::{
+    Amount, DecisionRecord, Endpoint, Id, OperationKind, Timestamp,
+};
 use rutent_contracts::state_machine::{
     self as stm, Observed, OrderState, RecordedInput, SegmentState, Source, SourceKind, Standing,
     StateMachine, StuckReason, Subject,
@@ -68,11 +80,11 @@ use rutent_stm::Stm;
 use crate::recalc::Recalculation;
 use crate::rounds::Fresh;
 use crate::segments::{Segments, StatusError};
-use crate::snapshot::{Clock, Exposures, OrchestrationLog, Reading};
+use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
 pub use journal::APPEND_TRIES;
 use journal::{NO_TIME, Step};
-pub use timing::{HISTORY, MATERIAL_BPS, clock_figure, material, over_time, p99};
+pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
 
 /// What the stuck orders reach. The assembly builds it; Core's clock, segments and exposures are those the rest of
@@ -196,22 +208,15 @@ pub enum StuckError {
     Append(AppendFailure),
     /// An identifier Core holds isn't one the state machine's input can carry.
     Id(&'static str),
+    /// The authorisation isn't the order's as Core follows it: another destination, or another origin reserve, or
+    /// an order whose first segment isn't a withdrawal from an outer node.
+    NotItsAuthorisation,
 }
 
 impl From<AppendFailure> for StuckError {
     fn from(failure: AppendFailure) -> Self {
         StuckError::Append(failure)
     }
-}
-
-/// The two places a resolution may deliver a stuck order's value to, from Core's own records: the order's
-/// destination, as its authorisation names it, and its origin, the account the value came from.
-#[derive(Debug, Clone, Copy)]
-pub struct Ends<'a> {
-    /// The order's destination.
-    pub destination: &'a Destination,
-    /// The order's origin.
-    pub origin: &'a Destination,
 }
 
 /// A decide step to ask (`REQ-AUZ-4`).
@@ -227,8 +232,6 @@ pub struct Deciding<'a> {
     pub resolution: &'a Resolution,
     /// The evidence relied on, by digest in the evidence store: at least one, each once.
     pub evidence: &'a [Digest],
-    /// Where the value may go.
-    pub ends: Ends<'a>,
 }
 
 /// A move step to carry out (`REQ-AUZ-4`).
@@ -255,14 +258,27 @@ pub enum ResolveError {
     NoEvidence,
     /// The resolution delivers elsewhere than the order's destination or its origin.
     ElsewhereThanItsEnds,
-    /// The resolution moves another asset, more than the part holds, or through a provider that isn't the part's.
+    /// Core holds no destination and origin for the order ([`Stuck::follow`]): nothing is decided for it.
+    NoEnds,
+    /// The resolution moves another asset, more than the part still holds, or through a provider that isn't the
+    /// part's.
     NotItsValue,
+    /// A move of the part is in progress: nothing more is decided or moved for it until it ends.
+    MoveInProgress,
+    /// A move of the part ended with its outcome unknown: the part stays held, and nothing more is decided or moved
+    /// for it until the outcome is known.
+    OutcomeUnknown,
+    /// Policy's answer is to another request than the one Core sent: it is kept for nothing.
+    NotItsAnswer,
     /// The move names no decide step Core holds permitted for this order: one never asked, refused, not known, or
     /// of another order (`REQ-AUZ-4`).
     NoDecision,
     /// The mover acts for the decider's accountable party: one party would both decide and move (`REQ-AUZ-4`,
     /// ADR-0011).
     SameParty,
+    /// The mover is the decider's own login, under another stated party: one actor would both decide and move
+    /// (`REQ-AUZ-4`).
+    SameLogin,
     /// A move in progress is taken on again only by the mover policy permitted it to (`REQ-AUZ-4`).
     NotTheMover,
     /// The effect was acted on already (`INV-8`).
@@ -283,8 +299,11 @@ impl From<AppendFailure> for ResolveError {
 pub enum Resolved {
     /// The value moved as the decision named.
     Done,
-    /// It didn't: nothing moved, and the part's value stays held.
+    /// It didn't: nothing moved, and the part's value stays held. Its decision is spent.
     Failed,
+    /// Whether it moved is unknown: the part stays held, its decision spent, and nothing more is decided or moved
+    /// for it until the outcome is known. No result is recorded yet.
+    Unknown,
 }
 
 /// What a move step did.
@@ -298,8 +317,8 @@ pub enum Moved {
         effect: Receipt,
         /// How it went.
         resolved: Resolved,
-        /// The receipt of its `result` entry.
-        result: Receipt,
+        /// The receipt of its `result` entry; none while its outcome is unknown.
+        result: Option<Receipt>,
     },
 }
 
@@ -312,7 +331,8 @@ pub trait Resolutions {
 }
 
 /// No way to carry a resolution out yet: each fails, so nothing moves and the part's value stays held. The
-/// production one, which writes the move to the platform, is a later row's.
+/// production one, which writes the move to the platform, has no row yet: `hand_on` is `T-020-13`'s, `deliver` a
+/// new row's.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unbuilt;
 
@@ -344,8 +364,10 @@ struct Declared {
     since: Reading,
     /// The part's segments, and the providers they run at.
     segments: Vec<(Id, Id)>,
-    /// What rests at the node the part's value is evidenced at, which no hold counts.
-    resting: Option<(Denomination, Amount)>,
+    /// What its resolutions moved so far, by asset.
+    moved: Vec<(Denomination, Amount)>,
+    /// The move of the part in progress, by the request its decision answered.
+    in_motion: Option<String>,
     resolved: bool,
 }
 
@@ -393,9 +415,10 @@ struct InMotion {
 #[derive(Debug, Clone, Default)]
 struct Timings {
     seen: BTreeSet<(String, String)>,
-    /// Each tuple's settlement times, in seconds, in the order the log took them.
-    samples: BTreeMap<String, Vec<u64>>,
-    baseline: BTreeMap<String, (u64, Receipt)>,
+    /// Each tuple's settlement history.
+    tuples: BTreeMap<String, History>,
+    /// The settlement each tuple's baseline rests on.
+    baseline: BTreeMap<String, Receipt>,
     /// Raises delivered whose entry the log hasn't taken yet: appended as built, never raised again.
     raises: Vec<(Step, Raise, bool)>,
 }
@@ -409,7 +432,8 @@ pub struct Stuck {
     timings: Timings,
     kept: BTreeMap<String, Kept>,
     moving: BTreeMap<String, InMotion>,
-    acted: BTreeSet<String>,
+    /// Each order's destination and origin, from Core's records ([`Stuck::follow`]).
+    ends: BTreeMap<String, (Destination, Destination)>,
 }
 
 impl Stuck {
@@ -487,8 +511,13 @@ impl Stuck {
         // answers its failure when called on its own (`REQ-ORD-9`'s "only detects").
         let _ = self.learn(parts, operator, watching.core);
         let at = key(watching.order, watching.part);
-        if self.pending.get(&at).is_some_and(|p| p.call.is_some()) {
-            return self.finish_watch(parts, &at);
+        match self.pending.get(&at).map(|p| p.call.is_some()) {
+            Some(true) => return self.finish_watch(parts, &at),
+            // A `no_route` the log hasn't taken yet is appended as built, never overwritten.
+            Some(false) => {
+                self.record_pending(parts, &at)?;
+            }
+            None => {}
         }
         if parts.segments.stuck(watching.order, watching.part) {
             return Ok(Watch::AlreadyStuck);
@@ -512,17 +541,15 @@ impl Stuck {
                 .get(place)
                 .ok_or(StuckError::Plan("the route has no operation there"))?;
             let tuple = tuple_key(&operation.provider, &operation.from, &operation.to);
-            let history: Vec<u64> = self
-                .timings
-                .samples
-                .get(&tuple)
-                .cloned()
-                .unwrap_or_default();
             let declared = advertised
                 .iter()
                 .find(|t| t.part as usize == watching.at && t.operation as usize == place)
                 .map_or(u64::MAX, |t| t.declared_seconds);
-            let Some((basis, figure)) = clock_figure(&history, declared) else {
+            let figure = match self.timings.tuples.get(&tuple) {
+                Some(history) => history.figure(declared),
+                None => History::new().figure(declared),
+            };
+            let Some((basis, figure)) = figure else {
                 continue;
             };
             let held = now.floor().0.saturating_sub(since.floor().0);
@@ -609,56 +636,52 @@ impl Stuck {
             };
             self.timings.seen.insert(seen);
             let tuple = tuple_key(&s.provider, &segment.from, &segment.to);
-            let samples = self.timings.samples.entry(tuple.clone()).or_default();
-            samples.push(s.actual_seconds);
-            if samples.len() < HISTORY {
+            let history = self.timings.tuples.entry(tuple.clone()).or_default();
+            let Some(change) = history.add(s.actual_seconds, s.declared_seconds) else {
+                if !self.timings.baseline.contains_key(&tuple) && history.figure(u64::MAX).is_some()
+                {
+                    self.timings.baseline.insert(tuple, s.receipt.clone());
+                }
                 continue;
+            };
+            // The first p99 rests on the settlement that formed it; a later change on the baseline's too.
+            let mut cites = Vec::new();
+            if !change.formed
+                && let Some(rests_on) = self.timings.baseline.get(&tuple)
+            {
+                cites.push(rests_on.clone());
             }
-            let Some(now) = p99(samples) else { continue };
-            match self.timings.baseline.get(&tuple).cloned() {
-                None => {
-                    self.timings
-                        .baseline
-                        .insert(tuple, (now, s.receipt.clone()));
-                }
-                Some((before, rests_on)) if material(before, now) => {
-                    let mut cites = vec![rests_on];
-                    if !cites.contains(&s.receipt) {
-                        cites.push(s.receipt.clone());
-                    }
-                    let raise = Raise {
-                        raise: parts.fresh.id(),
-                        difference: Difference::SettlementTime {
-                            provider: s.provider.clone(),
-                            before_seconds: safe(before)?,
-                            now_seconds: safe(now)?,
-                        },
-                        cites,
-                        at: now_at(parts.clock.now())?,
-                    };
-                    let delivered = matches!(operator.raise(&raise), Delivery::Delivered);
-                    let outcome = if delivered {
-                        Outcome::Done {}
-                    } else {
-                        Outcome::Failed {}
-                    };
-                    let entry = journal::built(
-                        core,
-                        What::Raise {
-                            raise: raise.clone(),
-                        },
-                        &raise.at,
-                        outcome,
-                    )?;
-                    self.timings
-                        .raises
-                        .push((Step::new(entry), raise, delivered));
-                    self.timings
-                        .baseline
-                        .insert(tuple, (now, s.receipt.clone()));
-                }
-                Some(_) => {}
+            if !cites.contains(&s.receipt) {
+                cites.push(s.receipt.clone());
             }
+            let raise = Raise {
+                raise: parts.fresh.id(),
+                difference: Difference::SettlementTime {
+                    provider: s.provider.clone(),
+                    before_seconds: safe(change.before)?,
+                    now_seconds: safe(change.now)?,
+                },
+                cites,
+                at: now_at(parts.clock.now())?,
+            };
+            let delivered = matches!(operator.raise(&raise), Delivery::Delivered);
+            let outcome = if delivered {
+                Outcome::Done {}
+            } else {
+                Outcome::Failed {}
+            };
+            let entry = journal::built(
+                core,
+                What::Raise {
+                    raise: raise.clone(),
+                },
+                &raise.at,
+                outcome,
+            )?;
+            self.timings
+                .raises
+                .push((Step::new(entry), raise, delivered));
+            self.timings.baseline.insert(tuple, s.receipt.clone());
         }
         // Every raise delivered is recorded: one the log can't take now waits, one it refuses is dropped, and the
         // others go on.
@@ -686,11 +709,10 @@ impl Stuck {
     }
 
     /// Every stuck order's value in each asset, as the operator sees it: ranked largest first within each asset,
-    /// then oldest (`REQ-OPS-2`, [`rank`]). A part's value is what it holds in flight ([`Exposures::stuck`]) and
-    /// what rests at the node it is evidenced at; a resolved part counts no more.
+    /// then oldest (`REQ-OPS-2`, [`rank`]). A part's value is what it holds, in flight or resting at the node it is
+    /// evidenced at ([`Exposures::stuck`]), less what its resolutions moved; a resolved part counts no more.
     pub fn stuck_values(&self, exposures: &Exposures, clock: &dyn Clock) -> Vec<StuckValue> {
         let now = clock.now().floor().0;
-        let held = exposures.stuck();
         let mut values: BTreeMap<(String, String, u8), StuckValue> = BTreeMap::new();
         for ((order, _), declared) in &self.declared {
             if declared.state != OrderState::Stuck || declared.resolved {
@@ -700,7 +722,7 @@ impl Stuck {
                 continue;
             };
             let age = now.saturating_sub(declared.since.floor().0);
-            let mut add = |asset: &Denomination, amount: &Amount| {
+            for (asset, amount) in remaining(exposures, &order_id, declared) {
                 let slot = values
                     .entry((order.clone(), asset.id.clone(), asset.decimals))
                     .or_insert_with(|| StuckValue {
@@ -709,26 +731,65 @@ impl Stuck {
                         amount: Amount::zero(),
                         age_seconds: 0,
                     });
-                if let Some(sum) = slot.amount.checked_add(amount) {
+                if let Some(sum) = slot.amount.checked_add(&amount) {
                     slot.amount = sum;
                 }
                 slot.age_seconds = slot.age_seconds.max(age);
-            };
-            for h in held.iter().filter(|h| {
-                h.order.as_str() == order.as_str()
-                    && declared.segments.iter().any(|(s, _)| s == &h.segment)
-            }) {
-                add(&h.asset, &h.amount);
-            }
-            if let Some((asset, amount)) = &declared.resting {
-                add(asset, amount);
             }
         }
         rank(values.into_values().collect())
     }
 
+    /// Follows `authorisation`'s order for its resolution: the two places a resolution may deliver its value to,
+    /// read from Core's own records, never from the decision's caller. The destination is the authorisation's,
+    /// held to the destination of every part of the order Core follows; the origin is the reserve and outer node
+    /// the order's first withdrawal took the value from, held to the authorisation's origin reserve, and the
+    /// account there the value came from, `origin_account`, the order's own record of its payer. The assembly
+    /// calls it with the order's authorisation as intake recorded it; once policy registers authorisations
+    /// (`T-021-04`), it is read from there.
+    pub fn follow(
+        &mut self,
+        segments: &Segments,
+        authorisation: &Authorisation,
+        origin_account: &Id,
+    ) -> Result<(), StuckError> {
+        let order = segments
+            .order(&authorisation.order)
+            .ok_or(StuckError::Unknown)?;
+        let destination = &authorisation.destination;
+        let to_destination = order.parts.iter().all(|p| {
+            p.destination.provider.as_str() == destination.reserve.as_str()
+                && p.destination.to.node == NodeRef::Outer(destination.node.clone())
+        });
+        let first = order
+            .parts
+            .first()
+            .and_then(|p| p.segments.first())
+            .ok_or(StuckError::Unknown)?;
+        let origin_node = match &first.from.node {
+            NodeRef::Outer(node) if first.kind == OperationKind::Withdrawal => node.clone(),
+            _ => return Err(StuckError::NotItsAuthorisation),
+        };
+        if !to_destination || first.provider.as_str() != authorisation.origin_reserve.as_str() {
+            return Err(StuckError::NotItsAuthorisation);
+        }
+        self.ends.insert(
+            authorisation.order.as_str().to_owned(),
+            (
+                destination.clone(),
+                Destination {
+                    reserve: authorisation.origin_reserve.clone(),
+                    node: origin_node,
+                    account: origin_account.clone(),
+                },
+            ),
+        );
+        Ok(())
+    }
+
     /// The decide step (see the module's docs): Core's own checks first, then policy's decision, recorded by
-    /// policy. A permitting decision is kept for its move; any other is answered and kept for nothing.
+    /// policy. A permitting decision answering Core's own request is kept for its move; any other is answered and
+    /// kept for nothing.
     pub fn decide(
         &mut self,
         parts: &mut Parts<'_>,
@@ -736,6 +797,12 @@ impl Stuck {
         deciding: Deciding<'_>,
     ) -> Result<Decision, ResolveError> {
         let declared = self.unresolved(parts.segments, deciding.order, deciding.part)?;
+        // While a move of the part is in progress, or its outcome unknown, nothing more is decided for it.
+        self.idle(declared)?;
+        let (destination, origin) = self
+            .ends
+            .get(deciding.order.as_str())
+            .ok_or(ResolveError::NoEnds)?;
         let request = StuckDecide {
             request: parts.fresh.id(),
             order: deciding.order.clone(),
@@ -747,30 +814,25 @@ impl Stuck {
         if request.check().is_err() {
             return Err(ResolveError::NoEvidence);
         }
-        let (by, asset, amount) = match deciding.resolution {
-            Resolution::Deliver {
-                by,
-                to,
-                asset,
-                amount,
-            } => {
-                if to != deciding.ends.destination && to != deciding.ends.origin {
-                    return Err(ResolveError::ElsewhereThanItsEnds);
-                }
-                (by, asset, amount)
-            }
-            Resolution::HandOn {
-                by, asset, amount, ..
-            } => (by, asset, amount),
-        };
-        let holds = self.value_of(parts.exposures, deciding.order, declared, asset);
-        if !declared.segments.iter().any(|(_, p)| p == by) || amount.amount() > &holds {
-            return Err(ResolveError::NotItsValue);
+        if let Resolution::Deliver { to, .. } = deciding.resolution
+            && to != destination
+            && to != origin
+        {
+            return Err(ResolveError::ElsewhereThanItsEnds);
         }
+        within(
+            parts.exposures,
+            deciding.order,
+            declared,
+            deciding.resolution,
+        )?;
         let decision = policy.decide_stuck(&request)?;
+        if decision.request != request.request {
+            return Err(ResolveError::NotItsAnswer);
+        }
         if decision.permit().is_some() {
             self.kept.insert(
-                decision.request.as_str().to_owned(),
+                request.request.as_str().to_owned(),
                 Kept {
                     request,
                     part: deciding.part.clone(),
@@ -783,7 +845,7 @@ impl Stuck {
 
     /// The move step (see the module's docs): Core's own checks, then policy's decision, then the `resolve_stuck`
     /// effect on its permit, carried out once by `resolutions`, and its result. A move that stopped after its effect
-    /// was built goes on from there, asking policy nothing again.
+    /// was built goes on from there, asking policy nothing again, for its own mover and order only.
     pub fn carry_out(
         &mut self,
         parts: &mut Parts<'_>,
@@ -811,10 +873,23 @@ impl Stuck {
             })
             .cloned()
             .ok_or(ResolveError::NoDecision)?;
+        // Another accountable party, and another login: one person with logins under two stated parties is one
+        // actor (`REQ-AUZ-4`, ADR-0011).
         if kept.request.decider.party == moving.mover.party {
             return Err(ResolveError::SameParty);
         }
-        self.unresolved(parts.segments, moving.order, &kept.part)?;
+        if kept.request.decider.acts == moving.mover.acts {
+            return Err(ResolveError::SameLogin);
+        }
+        let declared = self.unresolved(parts.segments, moving.order, &kept.part)?;
+        self.idle(declared)?;
+        // What it moves is held to what the part still holds now, after every move since it was decided.
+        within(
+            parts.exposures,
+            moving.order,
+            declared,
+            &kept.request.resolution,
+        )?;
         let request = StuckMove {
             request: parts.fresh.id(),
             order: moving.order.clone(),
@@ -823,6 +898,9 @@ impl Stuck {
             at: now(parts.clock)?,
         };
         let decision = policy.move_stuck(&request)?;
+        if decision.request != request.request {
+            return Err(ResolveError::NotItsAnswer);
+        }
         let Some(permit) = decision.permit() else {
             return Ok(Moved::NotPermitted(decision.outcome));
         };
@@ -840,6 +918,10 @@ impl Stuck {
             &now(parts.clock)?,
             Outcome::ToTakeEffect {},
         )?;
+        let part = key(moving.order, &kept.part);
+        if let Some(declared) = self.declared.get_mut(&part) {
+            declared.in_motion = Some(at.clone());
+        }
         self.moving.insert(
             at.clone(),
             InMotion {
@@ -857,7 +939,7 @@ impl Stuck {
     }
 
     /// Takes a move on from where it stopped: its effect appended, acted on once, its result recorded, and the
-    /// part's value released once it moved.
+    /// part's value released once all of it moved.
     fn advance(
         &mut self,
         parts: &mut Parts<'_>,
@@ -867,30 +949,56 @@ impl Stuck {
     ) -> Result<Moved, ResolveError> {
         let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
         let receipt = motion.effect.append(parts.log)?;
-        let prior = motion.resolved;
-        let resolved = match prior {
+        let part = key(&motion.order, &motion.part);
+        let resolved = match motion.resolved {
             Some(resolved) => resolved,
             None => {
+                // The part is read again before anything moves: a part resolved since is moved no more.
+                if self.declared.get(&part).is_none_or(|d| d.resolved) {
+                    self.moving.remove(at);
+                    return Err(ResolveError::Resolved);
+                }
+                // One register of effects acted on, the segments' and the resolutions' (`INV-8`).
+                if !parts.segments.act_on(&receipt) {
+                    return Err(ResolveError::AlreadyActed(receipt));
+                }
+                let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                 let effect = effect_of(
                     motion.action.clone(),
                     motion.permit.clone(),
                     receipt.clone(),
                 );
-                if !self.acted.insert(receipt_key(&receipt)) {
-                    return Err(ResolveError::AlreadyActed(receipt));
-                }
                 let resolved = resolutions.resolve(&effect);
-                let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                 motion.resolved = Some(resolved);
+                // Its decision is spent, whatever came of it: a new move needs a new decision.
+                let decided = carried_out_of(&motion.action);
+                if let Some(decided) = decided {
+                    self.kept.remove(decided.request.as_str());
+                }
+                if resolved == Resolved::Done
+                    && let Some((asset, amount)) = moved_by(&self.moving[at].action)
+                    && let Some(declared) = self.declared.get_mut(&part)
+                {
+                    add_moved(&mut declared.moved, &asset, &amount);
+                }
                 resolved
+            }
+        };
+        let outcome = match resolved {
+            Resolved::Done => Outcome::Done {},
+            Resolved::Failed => Outcome::Failed {},
+            // An outcome unknown has no result yet: the part stays held, and nothing more moves for it until its
+            // outcome is known (`REQ-ORD-1`).
+            Resolved::Unknown => {
+                return Ok(Moved::CarriedOut {
+                    effect: receipt,
+                    resolved,
+                    result: None,
+                });
             }
         };
         let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
         if motion.result.is_none() {
-            let outcome = match resolved {
-                Resolved::Done => Outcome::Done {},
-                Resolved::Failed => Outcome::Failed {},
-            };
             let entry = journal::built(
                 core,
                 What::Result {
@@ -907,34 +1015,51 @@ impl Stuck {
             .ok_or(ResolveError::NoDecision)?
             .append(parts.log)?;
         let motion = self.moving.remove(at).ok_or(ResolveError::NoDecision)?;
+        if let Some(declared) = self.declared.get_mut(&part) {
+            declared.in_motion = None;
+        }
         if resolved == Resolved::Done {
-            let part = key(&motion.order, &motion.part);
-            if let Some(declared) = self.declared.get_mut(&part) {
-                declared.resolved = true;
-                for (segment, _) in &declared.segments {
-                    parts.exposures.release(&motion.order, segment);
-                }
-                declared.resting = None;
+            let order = motion.order.clone();
+            let all_moved = self
+                .declared
+                .get(&part)
+                .is_some_and(|d| remaining(parts.exposures, &order, d).is_empty());
+            if all_moved {
+                self.release_part(parts.exposures, &order, &motion.part);
             }
-            // The order's stuck mark goes only once it holds nothing more: another part, stuck or still in flight,
-            // keeps its holds and the mark, which over-reports a stuck exposure rather than drop a live one
-            // (`REQ-ORD-8`).
-            let unresolved = self.declared.iter().any(|((o, _), d)| {
-                o == motion.order.as_str() && d.state == OrderState::Stuck && !d.resolved
-            });
-            let holds = parts.exposures.held().any(|h| h.order == motion.order);
-            if !unresolved && !holds {
-                parts.exposures.release_order(&motion.order);
-            }
-            // Every other decision kept for the part is spent: it is resolved once.
-            self.kept
-                .retain(|_, k| key(&k.request.order, &k.part) != part);
         }
         Ok(Moved::CarriedOut {
             effect: receipt,
             resolved,
-            result,
+            result: Some(result),
         })
+    }
+
+    /// Resolves a part all of whose value moved: its holds released, every decision kept for it spent, any move of
+    /// it that never acted dropped, and the order's stuck mark released once the order holds nothing more. Another
+    /// part, stuck or still in flight, keeps its holds and the mark, which over-reports a stuck exposure rather than
+    /// drop a live one (`REQ-ORD-8`).
+    fn release_part(&mut self, exposures: &mut Exposures, order: &Id, part: &Id) {
+        let at = key(order, part);
+        if let Some(declared) = self.declared.get_mut(&at) {
+            declared.resolved = true;
+            declared.in_motion = None;
+            for (segment, _) in &declared.segments {
+                exposures.release(order, segment);
+            }
+        }
+        self.kept
+            .retain(|_, k| key(&k.request.order, &k.part) != at);
+        self.moving
+            .retain(|_, m| key(&m.order, &m.part) != at || m.resolved.is_some());
+        let unresolved = self
+            .declared
+            .iter()
+            .any(|((o, _), d)| o == order.as_str() && d.state == OrderState::Stuck && !d.resolved);
+        let holds = exposures.held().any(|h| &h.order == order);
+        if !unresolved && !holds {
+            exposures.release_order(order);
+        }
     }
 
     /// The part as Core declared it, stuck and unresolved, and stuck in the order Core follows.
@@ -958,29 +1083,13 @@ impl Stuck {
         Ok(declared)
     }
 
-    /// What a declared part holds in `asset`: in flight at its providers, and resting at its node.
-    fn value_of(
-        &self,
-        exposures: &Exposures,
-        order: &Id,
-        declared: &Declared,
-        asset: &Denomination,
-    ) -> Amount {
-        let mut sum = Amount::zero();
-        for h in exposures.stuck() {
-            if &h.order == order
-                && &h.asset == asset
-                && declared.segments.iter().any(|(s, _)| s == &h.segment)
-            {
-                sum = sum.checked_add(&h.amount).unwrap_or(sum);
-            }
+    /// Whether no move of the part is in progress: one whose outcome is unknown holds the part until it is known.
+    fn idle(&self, declared: &Declared) -> Result<(), ResolveError> {
+        match declared.in_motion.as_ref().and_then(|m| self.moving.get(m)) {
+            None => Ok(()),
+            Some(m) if m.resolved == Some(Resolved::Unknown) => Err(ResolveError::OutcomeUnknown),
+            Some(_) => Err(ResolveError::MoveInProgress),
         }
-        if let Some((a, amount)) = &declared.resting
-            && a == asset
-        {
-            sum = sum.checked_add(amount).unwrap_or(sum);
-        }
-        sum
     }
 
     /// Appends a part's kept declaration and finishes it.
@@ -1064,6 +1173,20 @@ impl Stuck {
             .collect();
         let state = now_part.state;
         if state == OrderState::Stuck {
+            // What rests at the node is held there, so the ceilings in flight and the stuck view count it.
+            if let Some((segment, provider, asset, amount)) = resting {
+                match parts
+                    .exposures
+                    .hold_resting(&order, &segment, &provider, &asset, &amount)
+                {
+                    Ok(()) | Err(HoldError::AlreadyHeld) => {}
+                    Err(HoldError::Overflow) => {
+                        return Err(StuckError::Plan(
+                            "the value resting there overflows its provider's",
+                        ));
+                    }
+                }
+            }
             parts.exposures.mark_stuck(&order);
         }
         self.declared.insert(
@@ -1072,7 +1195,8 @@ impl Stuck {
                 state,
                 since: parts.clock.now(),
                 segments,
-                resting: (state == OrderState::Stuck).then_some(resting).flatten(),
+                moved: Vec::new(),
+                in_motion: None,
                 resolved: false,
             },
         );
@@ -1178,13 +1302,14 @@ pub fn seen_by_provider(
 }
 
 /// What rests at the node `part`'s value is evidenced at, where no segment of the part holds anything in flight:
-/// what its last settled segment handed on there, in the asset it arrived in.
+/// what its last settled segment handed on there, in the asset it arrived in, under that segment and at its
+/// provider.
 fn resting(
     segments: &Segments,
     exposures: &Exposures,
     order: &Id,
     part: &Id,
-) -> Option<(Denomination, Amount)> {
+) -> Option<(Id, Id, Denomination, Amount)> {
     let followed = segments.order(order)?;
     let part = followed
         .parts
@@ -1206,8 +1331,94 @@ fn resting(
         .position(|s| s.state != SegmentState::Settled)
         .unwrap_or(part.segments.len());
     let settled = part.segments.get(index.checked_sub(1)?)?;
-    let amount = segments.handed_on(order, &Id::new(settled.segment_id.as_str())?)?;
-    Some((settled.to.asset.clone(), amount.clone()))
+    let segment = Id::new(settled.segment_id.as_str())?;
+    let amount = segments.handed_on(order, &segment)?.clone();
+    let provider = Id::new(settled.provider.as_str())?;
+    Some((segment, provider, settled.to.asset.clone(), amount))
+}
+
+/// What a declared part still holds, by asset: what it holds in flight or resting at its node, less what its
+/// resolutions moved. Only the assets it holds something of.
+fn remaining(
+    exposures: &Exposures,
+    order: &Id,
+    declared: &Declared,
+) -> Vec<(Denomination, Amount)> {
+    let mut held: Vec<(Denomination, Amount)> = Vec::new();
+    for h in exposures.stuck() {
+        if &h.order == order && declared.segments.iter().any(|(s, _)| s == &h.segment) {
+            add_moved(&mut held, &h.asset, &h.amount);
+        }
+    }
+    held.into_iter()
+        .filter_map(|(asset, amount)| {
+            let moved = declared
+                .moved
+                .iter()
+                .find(|(a, _)| a == &asset)
+                .map_or_else(Amount::zero, |(_, m)| m.clone());
+            let left = amount.checked_sub(&moved).unwrap_or_else(Amount::zero);
+            (!left.is_zero()).then_some((asset, left))
+        })
+        .collect()
+}
+
+/// Whether `resolution` moves the part's own value: through a provider of the part, in an asset it holds, no more
+/// than it still holds there (`THR-77`).
+fn within(
+    exposures: &Exposures,
+    order: &Id,
+    declared: &Declared,
+    resolution: &Resolution,
+) -> Result<(), ResolveError> {
+    let (by, asset, amount) = match resolution {
+        Resolution::Deliver {
+            by, asset, amount, ..
+        }
+        | Resolution::HandOn {
+            by, asset, amount, ..
+        } => (by, asset, amount),
+    };
+    let left = remaining(exposures, order, declared)
+        .into_iter()
+        .find(|(a, _)| a == asset)
+        .map_or_else(Amount::zero, |(_, l)| l);
+    if !declared.segments.iter().any(|(_, p)| p == by) || amount.amount() > &left {
+        return Err(ResolveError::NotItsValue);
+    }
+    Ok(())
+}
+
+/// The decision a `resolve_stuck` action carries out.
+fn carried_out_of(action: &Action) -> Option<Decided> {
+    match action {
+        Action::ResolveStuck { carries_out, .. } => Some(carries_out.clone()),
+        _ => None,
+    }
+}
+
+/// What a `resolve_stuck` action moves: its asset and amount.
+fn moved_by(action: &Action) -> Option<(Denomination, Amount)> {
+    match action {
+        Action::ResolveStuck {
+            resolution:
+                Resolution::Deliver { asset, amount, .. } | Resolution::HandOn { asset, amount, .. },
+            ..
+        } => Some((asset.clone(), amount.amount().clone())),
+        _ => None,
+    }
+}
+
+/// Adds `amount` of `asset` to `sums`.
+fn add_moved(sums: &mut Vec<(Denomination, Amount)>, asset: &Denomination, amount: &Amount) {
+    match sums.iter_mut().find(|(a, _)| a == asset) {
+        Some((_, sum)) => {
+            if let Some(total) = sum.checked_add(amount) {
+                *sum = total;
+            }
+        }
+        None => sums.push((asset.clone(), amount.clone())),
+    }
 }
 
 /// The effect its entry recorded, on the permit it rests on, at its entry's receipt.
@@ -1221,10 +1432,6 @@ fn effect_of(action: Action, decision: Permit, receipt: Receipt) -> Effect {
 
 fn key(order: &Id, part: &Id) -> (String, String) {
     (order.as_str().to_owned(), part.as_str().to_owned())
-}
-
-fn receipt_key(receipt: &Receipt) -> String {
-    format!("{}:{}", receipt.log.as_str(), u64::from(receipt.index))
 }
 
 /// A tuple's key: its provider and the endpoints it runs between.
@@ -1253,7 +1460,6 @@ fn now_at(reading: Reading) -> Result<Timestamp, AppendFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::Reading;
 
     struct At(u64);
 
@@ -1274,14 +1480,32 @@ mod tests {
         Id::new(text).unwrap()
     }
 
-    fn declared(stuck: &mut Stuck, order: &str, since: u64, amount: &str) {
+    fn declared(
+        stuck: &mut Stuck,
+        exposures: &mut Exposures,
+        order: &str,
+        since: u64,
+        amount: &str,
+    ) {
+        let segment = id(&format!("{order}-s1"));
+        exposures
+            .hold_resting(
+                &id(order),
+                &segment,
+                &id("reserve"),
+                &cop(),
+                &Amount::new(amount).unwrap(),
+            )
+            .unwrap();
+        exposures.mark_stuck(&id(order));
         stuck.declared.insert(
             (order.to_owned(), "p1".to_owned()),
             Declared {
                 state: OrderState::Stuck,
                 since: Reading::at(since),
-                segments: vec![(id(&format!("{order}-s1")), id("reserve"))],
-                resting: Some((cop(), Amount::new(amount).unwrap())),
+                segments: vec![(segment, id("reserve"))],
+                moved: Vec::new(),
+                in_motion: None,
                 resolved: false,
             },
         );
@@ -1293,26 +1517,32 @@ mod tests {
     // verifies: REQ-OPS-2
     #[test]
     fn one_large_stuck_order_is_seen_among_many_small() {
-        let mut stuck = Stuck::new();
+        let (mut stuck, mut exposures) = (Stuck::new(), Exposures::new());
         for n in 0..50 {
-            declared(&mut stuck, &format!("small-{n:02}"), 1_000 + n, "1000");
+            declared(
+                &mut stuck,
+                &mut exposures,
+                &format!("small-{n:02}"),
+                1_000 + n,
+                "1000",
+            );
         }
-        declared(&mut stuck, "large", 4_540, "500000000");
-        declared(&mut stuck, "resolved", 0, "900000000");
+        declared(&mut stuck, &mut exposures, "large", 4_540, "500000000");
+        declared(&mut stuck, &mut exposures, "resolved", 0, "900000000");
         if let Some(d) = stuck
             .declared
             .get_mut(&("resolved".to_owned(), "p1".to_owned()))
         {
             d.resolved = true;
         }
-        declared(&mut stuck, "waiting", 0, "800000000");
+        declared(&mut stuck, &mut exposures, "waiting", 0, "800000000");
         if let Some(d) = stuck
             .declared
             .get_mut(&("waiting".to_owned(), "p1".to_owned()))
         {
             d.state = OrderState::WaitingForCustomer;
         }
-        let seen = stuck.stuck_values(&Exposures::new(), &At(4_600));
+        let seen = stuck.stuck_values(&exposures, &At(4_600));
         assert_eq!(seen.len(), 51);
         assert_eq!(
             seen[0],
@@ -1330,5 +1560,35 @@ mod tests {
             seen.iter()
                 .all(|v| v.order.as_str() != "resolved" && v.order.as_str() != "waiting")
         );
+    }
+
+    /// A split order's first part is stuck and resolved; its second was never declared stuck and still holds its
+    /// segment in flight. Resolving the first releases its own hold and keeps the second's, and the order's stuck
+    /// mark with it, so a live hold is never dropped from the ceilings.
+    // verifies: REQ-ORD-8, REQ-AUZ-4
+    #[test]
+    fn resolving_one_part_keeps_another_parts_live_hold() {
+        let (mut stuck, mut exposures) = (Stuck::new(), Exposures::new());
+        declared(&mut stuck, &mut exposures, "split", 0, "600");
+        exposures
+            .hold_resting(
+                &id("split"),
+                &id("p2-s1"),
+                &id("reserve"),
+                &cop(),
+                &Amount::new("400").unwrap(),
+            )
+            .unwrap();
+        stuck.release_part(&mut exposures, &id("split"), &id("p1"));
+        let left: Vec<_> = exposures
+            .held()
+            .map(|h| (h.segment.as_str().to_owned(), h.amount.clone()))
+            .collect();
+        assert_eq!(
+            left,
+            vec![("p2-s1".to_owned(), Amount::new("400").unwrap())]
+        );
+        assert_eq!(exposures.stuck().len(), 1, "the order's stuck mark stays");
+        assert!(stuck.stuck_values(&exposures, &At(10)).is_empty());
     }
 }

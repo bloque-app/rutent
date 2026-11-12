@@ -42,9 +42,11 @@
 //!
 //! **A part stuck** (`T-020-11`'s seams, additive): [`Segments::observe`] takes a part's `no_route` and
 //! `stuck_declared` too, so a stuck or waiting part reads so; [`Segments::run_part`] refuses a stuck part whole
-//! ([`SegmentsError::Stuck`]), so nothing of it is handed over or taken on again while its resolution may move its
-//! value; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what the stuck
-//! clock runs on.
+//! ([`SegmentsError::Stuck`]), so nothing of it is handed over or carried out again while its resolution may move
+//! its value, though what a segment carried out already gave back is still recorded; [`Segments::act_on`] holds a
+//! resolution's effect to the one register of effects acted on; [`Segments::follow_recorded`] rebuilds an order's
+//! state from the log; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what
+//! the stuck clock runs on.
 //!
 //! **A part recalculated** (`T-020-10`'s seams, the one change to this module outside its owning row): a record whose
 //! request `follows` another is a recalculation, so its part is checked by [`check_recalculated_part`], which starts
@@ -268,6 +270,8 @@ pub struct Settlement {
     pub provider: Id,
     /// How long it took, in seconds.
     pub actual_seconds: u64,
+    /// The time it declared with its quote, in seconds.
+    pub declared_seconds: u64,
     /// The receipt of its `settlement` entry.
     pub receipt: Receipt,
 }
@@ -289,8 +293,9 @@ pub enum SegmentsError {
     /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
     /// again (`INV-4`, `T-020-10`).
     Retired(Id),
-    /// The part is stuck: nothing of it is handed over or taken on again, and only its resolution under policy
-    /// moves its value (`REQ-ORD-28`, `REQ-AUZ-4`, `T-020-11`).
+    /// The part is stuck, and no segment of it was carried out with something still to record: nothing of it is
+    /// handed over or carried out again, and only its resolution under policy moves its value (`REQ-ORD-28`,
+    /// `REQ-AUZ-4`, `T-020-11`).
     Stuck(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
@@ -474,6 +479,38 @@ impl Segments {
         self.acted.contains(&key(receipt))
     }
 
+    /// Marks the effect at `receipt` acted on, in the one register every effect Core carries out is held to, a stuck
+    /// order's resolution among them: false where it was acted on already, by a segment or a resolution, and so
+    /// isn't acted on again (`INV-8`, `T-020-11`).
+    pub fn act_on(&mut self, receipt: &Receipt) -> bool {
+        self.acted.insert(key(receipt))
+    }
+
+    /// Follows the order `inputs` open, rebuilt from the log: its `route_chosen` and every input recorded about it
+    /// since, in order, as a restart finds them (`F-030`, `T-020-11`). The effects acted on and the segments in
+    /// flight are not rebuilt; only the order's state is. False if they open no order.
+    pub fn follow_recorded(&mut self, clock: &dyn Clock, inputs: &[RecordedInput]) -> bool {
+        let Some((first, rest)) = inputs.split_first() else {
+            return false;
+        };
+        let Some(mut order) = Stm::open(first) else {
+            return false;
+        };
+        for input in rest {
+            if input.subject.order.as_str() == order.order_id.as_str() {
+                order = Stm::transition(&order, input);
+            }
+        }
+        self.orders.insert(
+            order.order_id.as_str().to_owned(),
+            Tracked {
+                order,
+                since: clock.now(),
+            },
+        );
+        true
+    }
+
     /// The transaction a segment of `order` in flight runs under, until its outcome is final.
     pub fn in_flight(&self, order: &Id, segment: &Id) -> Option<&Id> {
         self.flights
@@ -624,7 +661,12 @@ impl Segments {
                 let step = flight.steps.get("settlement")?;
                 let receipt = step.receipt.clone()?;
                 let Entry::Verified(VerifiedEntry {
-                    what: What::Settlement { actual_seconds, .. },
+                    what:
+                        What::Settlement {
+                            actual_seconds,
+                            declared_seconds,
+                            ..
+                        },
                     ..
                 }) = step.entry.entry()
                 else {
@@ -635,6 +677,7 @@ impl Segments {
                     segment: Id::new(segment.as_str())?,
                     provider: flight.provider.clone(),
                     actual_seconds: u64::from(*actual_seconds),
+                    declared_seconds: u64::from(*declared_seconds),
                     receipt,
                 })
             })
@@ -727,9 +770,29 @@ impl Segments {
             .parts
             .get(live.at)
             .ok_or(SegmentsError::Plan("the chosen route has no part there"))?;
-        // A stuck part hands nothing over and takes nothing on: its value moves only on its resolution (`T-020-11`).
+        // A stuck part hands nothing over and carries nothing out: its value moves only on its resolution. What a
+        // segment carried out already gave back is still recorded, each step as it was built, so nothing it kept
+        // is lost; nothing is asked of its module again (`T-020-11`).
         if self.stuck(live.order, live.part) {
-            return Err(SegmentsError::Stuck(live.part.clone()));
+            let mut taken = Vec::new();
+            for (place, segment) in live.segments.iter().enumerate() {
+                let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+                let carried = self
+                    .flights
+                    .get(&at)
+                    .is_some_and(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)));
+                if !carried {
+                    continue;
+                }
+                let operation = part.operations.get(place).ok_or(SegmentsError::Plan(
+                    "the chosen route has no operation there",
+                ))?;
+                taken.push(self.advance(parts, live, &at, operation)?);
+            }
+            if taken.is_empty() {
+                return Err(SegmentsError::Stuck(live.part.clone()));
+            }
+            return Ok(Ran::Segments(taken));
         }
         // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
         // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).

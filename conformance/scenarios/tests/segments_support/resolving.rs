@@ -3,6 +3,7 @@
 //! that permits every step, so Core's own rules are seen to hold where policy wrongly permits.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
@@ -71,14 +72,15 @@ impl Operator for Raises {
     }
 }
 
-/// What carries a resolution out, watched: every effect it was handed, each moved as named.
+/// What carries a resolution out, watched: every effect it was handed, each answered as scripted, or moved as
+/// named once the script runs out.
 #[derive(Default)]
-pub struct Moves(pub Vec<Effect>);
+pub struct Moves(pub Vec<Effect>, pub VecDeque<Resolved>);
 
 impl Resolutions for Moves {
     fn resolve(&mut self, effect: &Effect) -> Resolved {
         self.0.push(effect.clone());
-        Resolved::Done
+        self.1.pop_front().unwrap_or(Resolved::Done)
     }
 }
 
@@ -88,6 +90,8 @@ impl Resolutions for Moves {
 pub struct PermitsEveryStep {
     pub log: PolicyPath,
     pub asked: usize,
+    /// It answers as if to another request than the one it was sent.
+    pub answers_another: bool,
 }
 
 impl PermitsEveryStep {
@@ -95,6 +99,7 @@ impl PermitsEveryStep {
         PermitsEveryStep {
             log: PolicyPath(Rc::clone(log)),
             asked: 0,
+            answers_another: false,
         }
     }
 
@@ -118,6 +123,11 @@ impl PermitsEveryStep {
         };
         let entry = DecisionEntry::try_from(entry).map_err(AppendFailure::Refused)?;
         let receipt = self.log.append_decision(&entry)?;
+        let request = if self.answers_another {
+            id("another-request")
+        } else {
+            request.clone()
+        };
         Ok(Decision {
             request: request.clone(),
             decision: request.clone(),
@@ -183,4 +193,13 @@ pub fn watch(
             },
         )
     })
+}
+
+/// Follows the kit's current order for its resolution, from its authorisation and its payer's account (`acct-1`).
+pub fn follow(core: &Core, stuck: &mut Stuck) -> Result<(), rutent_core_orch::stuck::StuckError> {
+    stuck.follow(
+        &core.segments,
+        &authorisation_of(&core.named, None),
+        &id("acct-1"),
+    )
 }
