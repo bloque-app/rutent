@@ -9,7 +9,9 @@
 //! the exposures of its providers.
 //!
 //! A stuck order's exposure stays held until its resolution releases it, and is readable at any time
-//! ([`Exposures::stuck`]): the read needs no snapshot, no clock and no grant in force.
+//! ([`Exposures::stuck`]): the read needs no snapshot, no clock and no grant in force. The value a stuck order rests at
+//! a node, which no segment holds once the one that took it there settled, is held there too
+//! ([`Exposures::hold_resting`], `T-020-11`'s addition).
 
 use std::collections::BTreeMap;
 
@@ -91,6 +93,37 @@ impl Exposures {
         self.held.insert(
             (order.as_str().to_owned(), segment.as_str().to_owned()),
             held,
+        );
+        Ok(())
+    }
+
+    /// Holds the value resting at a node for a stuck order (`REQ-ORD-8`, `T-020-11`): `amount` of `asset` at
+    /// `provider`, under `segment`, the settled segment that took it there. The value sits at that provider's node
+    /// until the order's resolution moves it, so the ceilings in flight count it as they count a segment's. A
+    /// segment is held once.
+    pub fn hold_resting(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        provider: &Id,
+        asset: &Denomination,
+        amount: &Amount,
+    ) -> Result<(), HoldError> {
+        if self.held.keys().any(|(_, s)| s == segment.as_str()) {
+            return Err(HoldError::AlreadyHeld);
+        }
+        self.in_flight(provider, asset)
+            .checked_add(amount)
+            .ok_or(HoldError::Overflow)?;
+        self.held.insert(
+            (order.as_str().to_owned(), segment.as_str().to_owned()),
+            vec![Held {
+                order: order.clone(),
+                segment: segment.clone(),
+                provider: provider.clone(),
+                asset: asset.clone(),
+                amount: amount.clone(),
+            }],
         );
         Ok(())
     }
