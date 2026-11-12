@@ -383,6 +383,8 @@ pub struct Engine<L, P, S> {
     pub(crate) sources: S,
     /// The sessions opened and the read permissions granted and revoked (`T-021-02`).
     pub(crate) register: crate::session::Register,
+    /// The authorisations to move funds permitted (`T-021-04`).
+    pub(crate) authorised: crate::funds::Authorised,
 }
 
 /// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
@@ -411,6 +413,7 @@ impl<L, P, S> Engine<L, P, S> {
             policy: (Fixed::default(), policy),
             sources,
             register: crate::session::Register::default(),
+            authorised: crate::funds::Authorised::default(),
         }
     }
 
@@ -422,6 +425,7 @@ impl<L, P, S> Engine<L, P, S> {
             policy: (Fixed { rules: fixed }, policy),
             sources,
             register: crate::session::Register::default(),
+            authorised: crate::funds::Authorised::default(),
         }
     }
 
@@ -584,7 +588,12 @@ pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
 impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
-        let answer = self.consult(Asked::Decide(request));
+        // A move acts only inside the authorisation in force for its order (`T-021-04`), held after the
+        // consultation so its fixed rules' refusals stand.
+        let answer = crate::funds::held(
+            self.consult(Asked::Decide(request)),
+            self.authorised.refuses_move(&request.action),
+        );
         let what = |decision| What::Decide {
             request: request.clone(),
             decision,
@@ -723,6 +732,15 @@ mod tests {
             });
             self.append(&GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?)
         }
+    }
+
+    /// `engine` with the fixtures' authorisation, `auth-17` for `ord-17`, already permitted, so the fixtures' move,
+    /// which acts inside it, is decided on the rules these tests drive (`T-021-04`).
+    fn authorised<L, P, S>(mut engine: Engine<L, P, S>) -> Engine<L, P, S> {
+        engine
+            .authorised
+            .plant(fixture!("authorisation-of-one-order-with-a-floor"));
+        engine
     }
 
     /// A permit for `decision`, built by hand whatever it answered: what a path around policy would hold.
@@ -964,9 +982,19 @@ mod tests {
         let mut policy = Unbuilt::new(Taking::default());
 
         // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
-        // which no source can give.
+        // which no source can give, and acts under an authorisation the engine never permitted, so it is refused as
+        // outside it (`T-021-04`), a refusal beating not known.
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
+            .unwrap();
+        assert!(decision.permit().is_none());
+        assert_eq!(
+            last(&mut policy),
+            refused(RefusalClass::OutsideAuthorisation)
+        );
+        // The authorisation waits on the register's word that its giver acts for the party it states (`T-021-03`).
+        let decision = policy
+            .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();
         assert!(decision.permit().is_none());
         assert_eq!(
@@ -975,11 +1003,6 @@ mod tests {
                 cause: NotKnownCause::VerifierUnreachable
             }
         );
-        let decision = policy
-            .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
-            .unwrap();
-        assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
@@ -1059,11 +1082,11 @@ mod tests {
         let actions = every_decided_action();
         assert_eq!(actions.len(), 13);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
-        let mut policy = Engine::with_policy(
+        let mut policy = authorised(Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies(),
             yes_to_the_fixed_rules(&requests),
-        );
+        ));
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             assert_eq!(
@@ -1089,11 +1112,11 @@ mod tests {
         assert_eq!(policy.policy.1.ruled.len(), actions.len());
 
         let permits = Service::ruling(Reply::Given(Ruling::Permit));
-        let mut policy = Engine::with_policy(
+        let mut policy = authorised(Engine::with_policy(
             Guarded::with_a_decision_record(),
             permits,
             yes_to_the_fixed_rules(&requests),
-        );
+        ));
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             let permit = decision.permit().expect("a permit");
@@ -1150,11 +1173,11 @@ mod tests {
         }
         // Every input the fixed rules name is given yes, so each caller they let through is the deployment's to decide.
         let denies = Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
-        let mut policy = Engine::with_policy(
+        let mut policy = authorised(Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies,
             yes_to_the_fixed_rules(&requests),
-        );
+        ));
         let mut callers = Vec::new();
         for asked in &requests {
             let caller = &asked.caller;
@@ -1210,11 +1233,11 @@ mod tests {
         other.request = id("req-103");
         other.caller.acts = id("op-login-9");
         // Both logins hold the permission the fixed rule asks for, so the refusal is the deployment's policy's.
-        let mut policy = Engine::with_policy(
+        let mut policy = authorised(Engine::with_policy(
             Guarded::default(),
             knows_one_operator,
             yes_to_the_fixed_rules([&stale, &other]),
-        );
+        ));
         assert!(policy.decide(&stale).unwrap().permit().is_some());
         stale = other;
         let decision = policy.decide(&stale).unwrap();
@@ -1279,7 +1302,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, asked, ruled)) in cases.into_iter().enumerate() {
-            let mut policy = Engine::with_policy(Guarded::default(), service, given);
+            let mut policy = authorised(Engine::with_policy(Guarded::default(), service, given));
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, missing, "case {n}");
@@ -1292,11 +1315,11 @@ mod tests {
             );
         }
 
-        let mut policy = Engine::with_policy(
+        let mut policy = authorised(Engine::with_policy(
             Guarded::default(),
             permits(Reply::Given(both())),
             sources(yes.clone(), yes),
-        );
+        ));
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
@@ -1344,7 +1367,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, cause)) in cases.into_iter().enumerate() {
-            let mut policy = Engine::with_policy(Guarded::default(), service, given);
+            let mut policy = authorised(Engine::with_policy(Guarded::default(), service, given));
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, Answer::NotKnown { cause }, "case {n}");
@@ -1359,7 +1382,11 @@ mod tests {
             );
         }
 
-        let mut policy = Engine::with_policy(Refusing, permits(both()), sources(yes.clone(), yes));
+        let mut policy = authorised(Engine::with_policy(
+            Refusing,
+            permits(both()),
+            sources(yes.clone(), yes),
+        ));
         assert_eq!(
             policy.decide(&fixture!("decision-request-to-move-value")),
             Err(AppendFailure::Unavailable)
@@ -1394,7 +1421,7 @@ mod tests {
         };
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
 
-        let mut policy = Engine::with_policy(Guarded::default(), refuses(), yes());
+        let mut policy = authorised(Engine::with_policy(Guarded::default(), refuses(), yes()));
         let decision = policy.decide(&request).unwrap();
         assert_eq!(decision.outcome, refused);
         let [(_, inputs)] = &policy.policy.1.ruled[..] else {
@@ -1419,14 +1446,22 @@ mod tests {
         );
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::with_policy(Guarded::default(), (permits, refuses()), yes());
+        let mut policy = authorised(Engine::with_policy(
+            Guarded::default(),
+            (permits, refuses()),
+            yes(),
+        ));
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::with_policy(Guarded::default(), (refuses(), permits), yes());
+        let mut policy = authorised(Engine::with_policy(
+            Guarded::default(),
+            (refuses(), permits),
+            yes(),
+        ));
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = Engine::with_policy(Guarded::default(), permits, yes());
+        let mut policy = authorised(Engine::with_policy(Guarded::default(), permits, yes()));
         assert_eq!(policy.decide(&request).unwrap().outcome, Answer::Permit {});
     }
 
@@ -1519,7 +1554,7 @@ mod tests {
     // verifies: REQ-AUZ-1, REQ-AUZ-5
     #[test]
     fn fixed_rules_are_asked_first_and_their_refusal_beats_an_unreachable_service() {
-        let engine = Engine::with_policy(Taking::default(), Absent, Absent);
+        let engine = authorised(Engine::with_policy(Taking::default(), Absent, Absent));
         let names = |rules: &[Rule]| rules.iter().map(|r| r.name).collect::<Vec<_>>();
         assert_eq!(
             names(engine.policy.0.rules),
@@ -1530,8 +1565,12 @@ mod tests {
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
         let refused = |class| Answer::Refuse { class };
         let decide = |fixed: &'static [Rule], service: Service| {
-            let mut engine =
-                Engine::with_fixed(Guarded::default(), fixed, service, Given::default());
+            let mut engine = authorised(Engine::with_fixed(
+                Guarded::default(),
+                fixed,
+                service,
+                Given::default(),
+            ));
             let answer = engine.decide(&request).unwrap().outcome;
             (answer, engine.policy.1.asked)
         };
@@ -1576,7 +1615,11 @@ mod tests {
     fn a_pair_of_policies_permits_only_where_both_do_and_a_refusal_beats_not_known() {
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
         let decide = |first: Service, second: Service, sources: Given| {
-            let mut engine = Engine::with_policy(Guarded::default(), (first, second), sources);
+            let mut engine = authorised(Engine::with_policy(
+                Guarded::default(),
+                (first, second),
+                sources,
+            ));
             let answer = engine.decide(&request).unwrap().outcome;
             (answer, engine.sources.asked)
         };
@@ -1729,14 +1772,19 @@ mod tests {
                 }),
             ),
             (
+                // The customer's own, which needs only the order's record to say its party requested the order.
                 "authorise",
-                Call::Unbuilt {
-                    row: "T-021-04",
-                    call: |e| {
-                        e.authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let authorisation: Authorisation =
+                        fixture!("authorisation-of-one-order-with-a-floor");
+                    let requested = Need {
+                        input: authorisation.given_by.party.clone(),
+                        from: Source::Requester(authorisation.order.clone()),
+                    };
+                    e.sources.says.push((requested, Reply::Given(Said::Yes)));
+                    e.authorise(&authorisation)
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
                 "decide_stuck",
@@ -1937,8 +1985,11 @@ mod tests {
                         (Ruling::Refuse(RefusalClass::NotPermitted), false),
                     ] {
                         let service = Service::ruling(Reply::Given(ruling));
-                        let mut engine =
-                            Engine::with_policy(Seen::default(), service, Given::default());
+                        let mut engine = authorised(Engine::with_policy(
+                            Seen::default(),
+                            service,
+                            Given::default(),
+                        ));
                         assert_eq!(
                             call(&mut engine),
                             permitted,
@@ -1961,7 +2012,7 @@ mod tests {
             }
         }
         unbuilt.dedup();
-        assert_eq!(unbuilt, ["T-021-04", "T-021-06", "T-021-05", "T-021-07"]);
+        assert_eq!(unbuilt, ["T-021-06", "T-021-05", "T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.

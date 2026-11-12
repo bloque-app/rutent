@@ -372,9 +372,14 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
     asked
 }
 
-/// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`.
+/// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`,
+/// with the fixtures' authorisation already permitted, so the fixtures' move acts inside it (`T-021-04`).
 fn engine(log: Kept, register: Register) -> Engine<Kept, Permits, Register> {
-    Engine::with_policy(log, Permits::default(), register)
+    let mut engine = Engine::with_policy(log, Permits::default(), register);
+    engine
+        .authorised
+        .plant(valid!("authorisation-of-one-order-with-a-floor"));
+    engine
 }
 
 /// The refusal of a caller no rule lets ask for its action.

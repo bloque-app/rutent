@@ -16,5 +16,6 @@ rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
 
 [dev-dependencies]
+proptest = "1.12.0"
 serde_json = "1.0.154"
 syn = { version = "2.0.119", features = ["full", "visit"] }
