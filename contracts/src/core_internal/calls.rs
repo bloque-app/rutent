@@ -61,6 +61,7 @@ pub fn is_decision(what: &What) -> bool {
             | What::Authorise { .. }
             | What::StuckDecide { .. }
             | What::StuckMove { .. }
+            | What::ConfirmOutcome { .. }
             | What::OpenSession { .. }
             | What::CheckRead { .. }
             | What::GrantPermission { .. }
@@ -324,6 +325,13 @@ pub trait StuckOrders {
     /// The move step: permitted only to an actor whose accountable party is not the decider's, and only for the
     /// outcome the decision named. Its permit is what an [`Action::ResolveStuck`] effect cites.
     fn move_stuck(&mut self, request: &StuckMove) -> Result<Decision, AppendFailure>;
+
+    /// The confirmation of a move's outcome, once unknown, by an actor of another party and login than its reporter,
+    /// each naming its evidence; permitted, it settles the move (`unknown-outcome-settles-on-its-confirmation`).
+    fn confirm_outcome(
+        &mut self,
+        request: &super::types::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure>;
 }
 
 /// Questions about people (`REQ-CPL-2`, `REQ-CPL-5`).

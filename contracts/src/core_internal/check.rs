@@ -297,6 +297,7 @@ impl What {
             | What::Authorise { .. }
             | What::StuckDecide { .. }
             | What::StuckMove { .. }
+            | What::ConfirmOutcome { .. }
             | What::OpenSession { .. }
             | What::Charge { .. }
             | What::AskAboutPerson { .. }
@@ -332,7 +333,6 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Refiling { .. }
-            | What::ResolutionOutcome { .. }
             | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
@@ -439,7 +439,7 @@ impl What {
             | What::Reliance { .. }
             | What::Command { .. }
             | What::Erasure { .. }
-            | What::ResolutionOutcome { .. }
+            | What::ConfirmOutcome { .. }
             | What::InputNotTaken { .. } => Ok(()),
         }
     }

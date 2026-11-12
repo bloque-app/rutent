@@ -1695,6 +1695,7 @@ mod tests {
             What::Authorise { .. } => "authorise",
             What::StuckDecide { .. } => "decide_stuck",
             What::StuckMove { .. } => "move_stuck",
+            What::ConfirmOutcome { .. } => "confirm_outcome",
             What::OpenSession { .. } => "open_session",
             What::CheckRead { .. } => "check_read",
             What::GrantPermission { .. } => "grant_permission",
@@ -1754,6 +1755,20 @@ mod tests {
                     row: "T-021-06",
                     call: |e| {
                         e.move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
+                            .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
+                "confirm_outcome",
+                Call::Unbuilt {
+                    row: "T-021-06",
+                    call: |e| {
+                        let entry: serde_json::Value =
+                            fixture!("verified-entry-of-an-outcome-confirmed");
+                        let request =
+                            serde_json::from_value(entry["what"]["request"].clone()).unwrap();
+                        e.confirm_outcome(&request)
                             .is_ok_and(|d| d.permit().is_some())
                     },
                 },

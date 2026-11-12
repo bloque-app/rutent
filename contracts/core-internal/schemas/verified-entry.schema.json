@@ -136,7 +136,7 @@
             "reliance",
             "command",
             "erasure",
-            "resolution_outcome",
+            "confirm_outcome",
             "input_not_taken"
           ]
         }
@@ -644,12 +644,12 @@
             ],
             "properties": {
               "call": {
-                "const": "resolution_outcome"
+                "const": "confirm_outcome"
               }
             }
           },
           "then": {
-            "$ref": "#/$defs/what_resolution_outcome"
+            "$ref": "#/$defs/what_confirm_outcome"
           }
         },
         {
@@ -1692,48 +1692,73 @@
         }
       }
     },
-    "what_resolution_outcome": {
-      "description": "A stuck resolution's move whose outcome was unknown, its outcome now known on two actors' word (REQ-AUZ-4, ADR-0011): its mover reported it, and an actor of another party and another login confirmed it, each naming its evidence. Its effect's final result follows it.",
+    "what_confirm_outcome": {
+      "description": "A move whose outcome was unknown, a move_value or a stuck resolution's resolve_stuck, its outcome confirmed on two actors' word: a decision on policy's handle, answered by policy for its confirmer (REQ-AUZ-4, ADR-0011). Each evidence is a verified stated entry of the log, by receipt.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "call",
-        "effect",
-        "outcome",
-        "reported_by",
-        "reported_with",
-        "confirmed_by",
-        "confirmed_with"
+        "request",
+        "decision"
       ],
       "properties": {
         "call": {
-          "const": "resolution_outcome"
+          "const": "confirm_outcome"
         },
-        "effect": {
-          "description": "The receipt of the resolve_stuck effect.",
-          "$ref": "urn:rutent:core-internal:receipt"
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request",
+            "order",
+            "effect",
+            "outcome",
+            "reported_by",
+            "reported_with",
+            "confirmer",
+            "confirmed_with",
+            "at"
+          ],
+          "properties": {
+            "request": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "order": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "effect": {
+              "description": "The receipt of the effect whose outcome was unknown.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "outcome": {
+              "description": "What the move came to.",
+              "enum": [
+                "done",
+                "failed"
+              ]
+            },
+            "reported_by": {
+              "description": "Who reported it: a stuck resolution's mover.",
+              "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+            },
+            "reported_with": {
+              "description": "The report's evidence: a verified stated entry, by receipt.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "confirmer": {
+              "description": "Who confirms it: another accountable party and another login than its reporter.",
+              "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+            },
+            "confirmed_with": {
+              "description": "The confirmation's evidence: a verified stated entry, by receipt.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "at": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+            }
+          }
         },
-        "outcome": {
-          "description": "What the move came to.",
-          "enum": [
-            "done",
-            "failed"
-          ]
-        },
-        "reported_by": {
-          "description": "Who reported it: the move's mover.",
-          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
-        },
-        "reported_with": {
-          "description": "The evidence the report named, by an opaque reference.",
-          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
-        },
-        "confirmed_by": {
-          "description": "Who confirmed it.",
-          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
-        },
-        "confirmed_with": {
-          "description": "The evidence the confirmation named, by an opaque reference.",
+        "decision": {
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

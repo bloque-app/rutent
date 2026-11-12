@@ -586,7 +586,7 @@ fn kind(entry: &Entry) -> &'static str {
         What::Reliance { .. } => "reliance",
         What::Command { .. } => "command",
         What::Erasure { .. } => "erasure",
-        What::ResolutionOutcome { .. } => "resolution_outcome",
+        What::ConfirmOutcome { .. } => "confirm_outcome",
         What::InputNotTaken { .. } => "input_not_taken",
     }
 }
@@ -626,7 +626,7 @@ const KINDS: [&str; 36] = [
     "reliance",
     "command",
     "erasure",
-    "resolution_outcome",
+    "confirm_outcome",
     "input_not_taken",
     "stated",
 ];

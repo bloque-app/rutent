@@ -1212,11 +1212,12 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
         .filter(|(n, _)| shape_of(n) == "verified-entry")
         .collect();
     // The decision kinds, by their tag on the wire, written out apart from `is_decision`.
-    const DECISION_CALLS: [&str; 10] = [
+    const DECISION_CALLS: [&str; 11] = [
         "decide",
         "authorise",
         "stuck_decide",
         "stuck_move",
+        "confirm_outcome",
         "open_session",
         "check_read",
         "grant_permission",
@@ -2431,6 +2432,12 @@ impl StuckOrders for Unbuilt {
         Err(AppendFailure::Unavailable)
     }
     fn move_stuck(&mut self, _: &StuckMove) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+    fn confirm_outcome(
+        &mut self,
+        _: &rutent_contracts::core_internal::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
 }

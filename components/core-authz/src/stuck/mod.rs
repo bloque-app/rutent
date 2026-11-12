@@ -3,7 +3,9 @@
 //! Declared by `T-020-01`; `T-021-06` owns it, and only its owning row edits it (`PLAN.md` §4.4).
 
 use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, StuckOrders};
-use rutent_contracts::core_internal::{Decision, StuckDecide, StuckMove, What};
+use rutent_contracts::core_internal::{
+    Decision, OutcomeConfirmation, StuckDecide, StuckMove, What,
+};
 
 use crate::engine::Unbuilt;
 
@@ -24,5 +26,16 @@ impl<L: PolicyLog> StuckOrders for Unbuilt<L> {
             decision,
         };
         self.not_known(&request.request, &request.mover, what, &request.at)
+    }
+
+    fn confirm_outcome(
+        &mut self,
+        request: &OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure> {
+        let what = |decision| What::ConfirmOutcome {
+            request: request.clone(),
+            decision,
+        };
+        self.not_known(&request.request, &request.confirmer, what, &request.at)
     }
 }

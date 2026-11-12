@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 70] = [
+pub static RELATIONS: [Relation; 72] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -904,15 +904,14 @@ pub static RELATIONS: [Relation; 70] = [
             What::Result { .. } => by_fields(0),
             _ => none(),
         },
-        // One exception: a stuck resolution's move whose outcome was unknown, `unanswered`, takes one final
-        // result once its outcome is known on two actors' word (`unknown-resolution-settles-on-two-actors`).
-        answers: |e, _, t, h| {
+        // One exception: a move whose outcome was unknown, `unanswered`, takes one final result, which settles only
+        // on its outcome's confirmation (`unknown-outcome-settles-on-its-confirmation`).
+        answers: |e, _, t, _| {
             let (What::Result { effect }, Some(t)) = (&e.what, verified(t)) else {
                 return Match::NotTarget;
             };
             let settles = t.outcome == (Outcome::Unanswered {})
-                && matches!(e.outcome, Outcome::Done {} | Outcome::Failed {})
-                && resolves_stuck(effect, h);
+                && matches!(e.outcome, Outcome::Done {} | Outcome::Failed {});
             judge(
                 t != &e.entry
                     && !settles
@@ -922,64 +921,136 @@ pub static RELATIONS: [Relation; 70] = [
         },
     },
     Relation {
-        name: "unknown-resolution-settles-on-two-actors",
+        name: "unknown-outcome-settles-on-its-confirmation",
         spec: &["REQ-AUZ-4", "REQ-ORD-1"],
         quantifier: Quantifier::Exists,
-        refusal: "a stuck resolution's move whose outcome was unknown settles on its outcome recorded in this log",
-        fields: &[
-            (
-                "outcome",
-                "a stuck resolution's move settles on the outcome reported and confirmed",
-            ),
-            (
-                "party",
-                "a stuck resolution's outcome is confirmed by another accountable party than its reporter's",
-            ),
-            (
-                "login",
-                "a stuck resolution's outcome is confirmed by another login than its reporter's",
-            ),
-        ],
-        // Its first result `unanswered`, its final one follows the mover's report and another party's and login's
-        // confirmation, each naming its evidence (ADR-0011).
+        refusal: "a move whose outcome was unknown settles only on a permitted confirmation of its outcome in this log",
+        fields: &[(
+            "outcome",
+            "a move whose outcome was unknown settles on the outcome its confirmation names",
+        )],
+        // Its first result `unanswered`, its final one follows policy's permitted confirmation, on two actors'
+        // word (`outcome-confirmation-rests-on-its-move`).
         cites: |e, h| match (&e.what, &e.outcome) {
             (What::Result { effect }, Outcome::Done {} | Outcome::Failed {})
-                if resolves_stuck(effect, h)
-                    && h.iter().any(|(_, x)| {
-                        verified(x).is_some_and(|r| {
-                            matches!(&r.what, What::Result { effect: other } if other == effect)
-                                && r.outcome == (Outcome::Unanswered {})
-                        })
-                    }) =>
+                if h.iter().any(|(_, x)| {
+                    verified(x).is_some_and(|r| {
+                        matches!(&r.what, What::Result { effect: other } if other == effect)
+                            && r.outcome == (Outcome::Unanswered {})
+                    })
+                }) =>
             {
                 by_fields(0)
             }
             _ => none(),
         },
         answers: |e, _, t, _| {
-            let (What::Result { effect }, Some(t)) = (&e.what, verified(t)) else {
+            let (What::Result { effect }, Some(t)) = (&e.what, permitted(t)) else {
                 return Match::NotTarget;
             };
             match &t.what {
-                What::ResolutionOutcome {
-                    effect: settled,
-                    outcome,
-                    reported_by,
-                    confirmed_by,
-                    ..
-                } => judge(
-                    settled == effect,
-                    &[
-                        match outcome {
-                            MoveOutcome::Done => e.outcome == (Outcome::Done {}),
-                            MoveOutcome::Failed => e.outcome == (Outcome::Failed {}),
-                        },
-                        confirmed_by.party != reported_by.party,
-                        confirmed_by.acts != reported_by.acts,
-                    ],
+                What::ConfirmOutcome { request, .. } => judge(
+                    &request.effect == effect,
+                    &[match request.outcome {
+                        MoveOutcome::Done => e.outcome == (Outcome::Done {}),
+                        MoveOutcome::Failed => e.outcome == (Outcome::Failed {}),
+                    }],
                 ),
                 _ => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "outcome-confirmation-rests-on-its-move",
+        spec: &["REQ-AUZ-4", "REQ-ORD-1", "ADR-0011"],
+        quantifier: Quantifier::Exists,
+        refusal: "an outcome's confirmation is of a move of this log whose outcome is unknown",
+        fields: &[
+            (
+                "unknown",
+                "an outcome is confirmed only where its move's result is unanswered",
+            ),
+            (
+                "mover",
+                "a stuck resolution's outcome is reported by its move's mover",
+            ),
+            (
+                "party",
+                "an outcome is confirmed by another accountable party than its reporter's",
+            ),
+            (
+                "login",
+                "an outcome is confirmed by another login than its reporter's",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::ConfirmOutcome { request, .. } => alloc::vec![by_receipt(&request.effect, 0)],
+            _ => none(),
+        },
+        answers: |e, _, entry, h| {
+            let (What::ConfirmOutcome { request, .. }, Some(t)) = (&e.what, verified(entry)) else {
+                return Match::NotTarget;
+            };
+            let Some((action, _)) = effect_action(t) else {
+                return Match::NotTarget;
+            };
+            let (order, mover) = match action {
+                Action::MoveValue { order, .. } => (order, None),
+                Action::ResolveStuck {
+                    order, carries_out, ..
+                } => (
+                    order,
+                    Some(h.iter().find_map(|(_, x)| match &permitted(x)?.what {
+                        What::StuckMove { request: m, .. } if m.carries_out == *carries_out => {
+                            Some(&m.mover)
+                        }
+                        _ => None,
+                    })),
+                ),
+                _ => return Match::NotTarget,
+            };
+            let at = position(entry, h).map(|i| &h[i].0);
+            let unknown = at.is_some_and(|at| {
+                h.iter().any(|(_, x)| {
+                    verified(x).is_some_and(|r| {
+                        matches!(&r.what, What::Result { effect } if effect == at)
+                            && r.outcome == (Outcome::Unanswered {})
+                    })
+                })
+            });
+            judge(
+                order == &request.order,
+                &[
+                    unknown,
+                    mover.is_none_or(|m| m == Some(&request.reported_by)),
+                    request.confirmer.party != request.reported_by.party,
+                    request.confirmer.acts != request.reported_by.acts,
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "outcome-confirmation-cites-verified-evidence",
+        spec: &["REQ-AUZ-4", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "an outcome's report and its confirmation each cite a stated entry of this log",
+        fields: &[(
+            "verified",
+            "an outcome's report and its confirmation each cite a verified statement",
+        )],
+        cites: |e, _| match &e.what {
+            What::ConfirmOutcome { request, .. } => alloc::vec![
+                by_receipt(&request.reported_with, 0),
+                by_receipt(&request.confirmed_with, 1)
+            ],
+            _ => none(),
+        },
+        answers: |_, _, t, _| match stated(t) {
+            Some(s) => judge(
+                true,
+                &[matches!(s.attribution, Attribution::Verified { .. })],
+            ),
+            None => Match::NotTarget,
         },
     },
     Relation {
@@ -3170,19 +3241,11 @@ fn covers_part(authorisation: &Authorisation, part: &str) -> bool {
         .is_none_or(|parts| parts.iter().any(|p| p.as_str() == part))
 }
 
-/// Whether the effect at `effect` in `history` is a `resolve_stuck`.
-fn resolves_stuck(effect: &Receipt, history: &History) -> bool {
-    history.iter().any(|(r, e)| {
-        r == effect
-            && verified(e).is_some_and(|v| {
-                matches!(
-                    &v.what,
-                    What::Effect {
-                        action: Action::ResolveStuck { .. },
-                        ..
-                    }
-                )
-            })
+/// The permitted confirmation of the outcome of the effect at `effect` in `history`, where one is.
+fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a OutcomeConfirmation> {
+    history.iter().find_map(|(_, e)| match &permitted(e)?.what {
+        What::ConfirmOutcome { request, .. } if &request.effect == effect => Some(request),
+        _ => None,
     })
 }
 
@@ -3288,9 +3351,11 @@ fn in_motion(order: &str, part: &str, target: &Entry, history: &History) -> Matc
         } if o.as_str() == order
             && part_of_segment(order, segment.as_str(), history) == Some(part) =>
         {
+            let settled = position(target, history)
+                .is_some_and(|at| confirmation_of(&history[at].0, history).is_some());
             match standing(order, part, history) {
                 Some(s) => judge(
-                    !s.released(segment.as_str()) && !result_failed(t, history),
+                    !s.released(segment.as_str()) && !result_failed(t, history) && !settled,
                     &[],
                 ),
                 None => Match::NotTarget,
@@ -3321,7 +3386,9 @@ fn in_motion(order: &str, part: &str, target: &Entry, history: &History) -> Matc
                     })
                 })
             });
-            judge(!ended && !result_failed(t, history), &[])
+            let settled = position(target, history)
+                .is_some_and(|at| confirmation_of(&history[at].0, history).is_some());
+            judge(!ended && !result_failed(t, history) && !settled, &[])
         }
         _ => Match::NotTarget,
     }

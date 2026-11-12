@@ -2123,22 +2123,13 @@ pub enum What {
         /// Why it wasn't taken.
         reason: NotTaken,
     },
-    /// A stuck resolution's move whose outcome was unknown, its outcome now known on two actors' word
-    /// (`REQ-AUZ-4`, ADR-0011): its mover reported it and an actor of another party and another login confirmed it,
-    /// each naming its evidence. Its effect's final `result` follows it (`unknown-resolution-settles-on-two-actors`).
-    ResolutionOutcome {
-        /// The receipt of the `resolve_stuck` effect.
-        effect: Receipt,
-        /// What the move came to.
-        outcome: MoveOutcome,
-        /// Who reported it: the move's mover.
-        reported_by: Actor,
-        /// The evidence the report named, by an opaque reference.
-        reported_with: Id,
-        /// Who confirmed it.
-        confirmed_by: Actor,
-        /// The evidence the confirmation named, by an opaque reference.
-        confirmed_with: Id,
+    /// A move whose outcome was unknown, a `move_value` or a stuck resolution's `resolve_stuck`, its outcome
+    /// confirmed: a decision on policy's handle, answered by policy for its confirmer (`REQ-AUZ-4`, ADR-0011).
+    ConfirmOutcome {
+        /// The request.
+        request: OutcomeConfirmation,
+        /// The decision.
+        decision: Id,
     },
 }
 
@@ -2153,6 +2144,33 @@ pub enum NotTaken {
     },
     /// Its record id names another input this log holds: the host's exactly-once refuses it (`RecordIdReused`).
     RecordIdReused {},
+}
+
+/// The confirmation of a move's outcome, once unknown, on two actors' word (`REQ-AUZ-4`, ADR-0011): its mover (or,
+/// for a `move_value`, whoever reported it) reports the outcome with its evidence, and an actor of another
+/// accountable party and another login confirms it with its own. Policy decides it, the way it decides a stuck
+/// order's steps. Each evidence is a verified stated entry of the log, by receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeConfirmation {
+    /// The request's id.
+    pub request: Id,
+    /// The order.
+    pub order: Id,
+    /// The receipt of the effect whose outcome was unknown.
+    pub effect: Receipt,
+    /// What the move came to.
+    pub outcome: MoveOutcome,
+    /// Who reported it: a stuck resolution's mover.
+    pub reported_by: Actor,
+    /// The report's evidence: a verified stated entry, by receipt.
+    pub reported_with: Receipt,
+    /// Who confirms it.
+    pub confirmer: Actor,
+    /// The confirmation's evidence: a verified stated entry, by receipt.
+    pub confirmed_with: Receipt,
+    /// When, by Core's clock.
+    pub at: Timestamp,
 }
 
 /// What a move whose outcome was unknown came to.
