@@ -265,7 +265,30 @@ fn policys_sources_answer_from_the_records() {
         sources.supply(&need(order.as_str(), Source::Kept(unkept))),
         no()
     );
-    // The register's `ActsFor` chains (`T-021-06`): a desk acting for the operator, its person, and the operator's.
+    // The stated entry's own order, as the decision's evidence about the order itself must be.
+    let about = Source::KeptAbout(commitment_at(&core, result));
+    assert_eq!(sources.supply(&need(order.as_str(), about.clone())), yes());
+    assert_eq!(sources.supply(&need("another-order", about)), no());
+    // A statement about no order in particular is kept, but not about the order itself.
+    let unbound = core
+        .log()
+        .entries()
+        .iter()
+        .position(|(_, e)| {
+            matches!(e, Entry::Stated(s) if s.about.as_ref().and_then(|a| a.order.as_ref()).is_none())
+        })
+        .expect("a statement about no order");
+    let unbound = commitment_at(&core, unbound);
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::Kept(unbound.clone()))),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::KeptAbout(unbound))),
+        no()
+    );
+    // The register's `ActsFor` chains (`T-021-06`): two desks acting for the operator, one's person, and the
+    // operator's own. A chain reaches what lies up it; two desks' chains meet at the operator and reach neither desk.
     let listed = |acts: &str, party: &str| rutent_contracts::core_internal::Actor {
         acts: id(acts),
         party: id(party),
@@ -273,16 +296,33 @@ fn policys_sources_answer_from_the_records() {
     };
     for (acts, party) in [
         ("desk-b", "operator"),
+        ("desk-c", "operator"),
         ("bob", "desk-b"),
-        ("alice", "operator"),
+        ("carol", "desk-c"),
     ] {
         core.registers().list(&listed(acts, party));
     }
-    let common = |with: &str| Source::CommonParty { with: id(with) };
-    assert_eq!(sources.supply(&need("bob", common("alice"))), yes());
-    assert_eq!(sources.supply(&need("bob", common("operator"))), yes());
-    assert_eq!(sources.supply(&need("bob", common("bob"))), yes());
-    assert_eq!(sources.supply(&need("bob", common("user-1"))), no());
+    let reaches = |from: &str, to: &str| Source::Reaches {
+        from: id(from),
+        to: id(to),
+    };
+    assert_eq!(
+        sources.supply(&need("bob", reaches("bob", "desk-b"))),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need("bob", reaches("bob", "operator"))),
+        yes()
+    );
+    assert_eq!(sources.supply(&need("bob", reaches("bob", "desk-c"))), no());
+    assert_eq!(
+        sources.supply(&need("carol", reaches("carol", "desk-b"))),
+        no()
+    );
+    assert_eq!(sources.supply(&need("bob", reaches("bob", party))), no());
+    // The deployment's operator: its people along their chains, and no one else.
+    assert_eq!(sources.supply(&need("bob", Source::OfOperator)), yes());
+    assert_eq!(sources.supply(&need("user-1", Source::OfOperator)), no());
     // The reserve's declarations, from its advertisement as listed in the log.
     let declaration = core.installed[0]
         .advertisement

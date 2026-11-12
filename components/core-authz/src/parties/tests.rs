@@ -228,6 +228,8 @@ impl Sources for Registers {
             // The read fixture's order, `ord-19`, is its reader's; no caller here is a party of the stuck fixtures'
             // orders, whose decider and confirmer never are (`T-021-06`).
             Source::OrderParties(order) => yes(order.as_str() == "ord-19"),
+            // No caller here reaches another party along a chain: each is its own party's alone (`T-021-06`).
+            Source::Reaches { .. } => yes(false),
             _ => Reply::Given(Said::Yes),
         }
     }

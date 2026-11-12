@@ -1,10 +1,13 @@
-//! `T-021-06`'s tests: a stuck order's decide and move steps are separate permissions, their actors compared at the
-//! accountable party, the decision naming evidence the store keeps; a move's outcome confirmed only by an actor whose
-//! `ActsFor` chain doesn't meet its reporter's; neither the order's customer nor the desk of the provider holding the
-//! funds deciding, moving or confirming where `THR-70` would have them.
+//! `T-021-06`'s tests: a stuck order's decide and move steps are separate permissions of the operator's, their actors
+//! one where they share a login or a party or either's `ActsFor` chain reaches the other's party, the decision naming
+//! evidence the store keeps about its order; a move's outcome confirmed only by another actor than its reporter on the
+//! same reading; neither the order's customer nor the desk of the provider holding the funds deciding, moving or
+//! confirming where `THR-70` would have them.
 //!
 //! The logs are the contract's own coherent world (`fixtures/admission/world--*.json`), as the log holds it before
-//! each step, so every request is one the log would admit, and the register is these tests' own.
+//! each step, so every request is one the log would admit, and the register is these tests' own. The operator's staff
+//! sit on desks under it: `operator-desk-a` (`alice`) and `operator-desk-b` (`op-login-5`, the world's mover and
+//! reporter), each acting for `operator`, so each is the operator's and neither reaches the other.
 
 use super::*;
 use crate::engine::{Asked, Input, Need, Policy, Reply, Ruling, Said, Source, Sources};
@@ -12,7 +15,7 @@ use crate::parties::Scope;
 use crate::roles::Permission;
 use rutent_contracts::core_internal::calls::DecisionEntry;
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, Decided, NotKnownCause, Outcome, RefusalClass, Role,
+    Actor, ActorKind, Answer, Decided, MoveOutcome, NotKnownCause, Outcome, RefusalClass, Role,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{Id, Timestamp};
@@ -64,7 +67,18 @@ fn agent(party: &str, acts: &str) -> Actor {
     }
 }
 
-/// The log policy appends to, through its handle, each entry with its receipt; its read fails where it is set to.
+/// The decider and confirmer of these tests: a person on the operator's first desk.
+fn alice() -> Actor {
+    person("operator-desk-a", "alice")
+}
+
+/// The world's mover and reporter: a person on the operator's second desk.
+fn bob() -> Actor {
+    person("operator-desk-b", "op-login-5")
+}
+
+/// The log policy appends to, through its handle, each entry with a receipt of its own; its read fails where it is
+/// set to.
 #[derive(Default)]
 struct Log {
     entries: Vec<(Receipt, Entry)>,
@@ -136,23 +150,25 @@ struct Register {
     kept: Vec<(Digest, Option<Id>)>,
     /// The register of chains can't be reached.
     chains_unreachable: bool,
-    /// The register of chains says every two chains are apart, so only the rules that need no chain are left.
-    chains_apart: bool,
+    /// The register of chains says no chain reaches anything, so only the rules that need no chain are left.
+    reaches_nothing: bool,
 }
 
+/// The deployment operator's party.
+const OPERATOR: &str = "operator";
+
 impl Register {
-    /// The world's actors, each acting for its own party: its operator's two people, `op-login-2` for `operator` and
-    /// `op-login-5` for `operator-desk-b`, each holding every permission of a stuck order's steps; the customer
-    /// `cust-1` of `ord-1`; the provider `bank-co`; and Core's `core-orch`. The store keeps the world's decision's
-    /// evidence, about `ord-1`.
+    /// The world's actors, each acting for its own party: the operator's people, `alice` on its first desk,
+    /// `op-login-5` on its second and `op-login-2` in its own party, each holding every permission of a stuck
+    /// order's steps; the customer `cust-1` of `ord-1`; the provider `bank-co`; and Core's `core-orch`. Both desks act
+    /// for the operator. The store keeps the world's decision's evidence, about `ord-1`.
     fn of_the_world() -> Self {
-        let mut register = Register::default();
-        for actor in [
-            person("operator", "op-login-2"),
-            person("operator-desk-b", "op-login-5"),
-        ] {
-            register = register.with(&actor);
-        }
+        let mut register = Register::default()
+            .with(&alice())
+            .with(&bob())
+            .with(&person(OPERATOR, "op-login-2"));
+        register.link("operator-desk-a", OPERATOR);
+        register.link("operator-desk-b", OPERATOR);
         register.list("cust-1", "cust-1", ActorKind::Person);
         register.list("bank-co", "bank-co", ActorKind::Component);
         register.list("core-orch", "rutent", ActorKind::Component);
@@ -163,6 +179,11 @@ impl Register {
 
     fn list(&mut self, acts: &str, party: &str, kind: ActorKind) {
         self.acts_for.push((id(acts), id(party), kind));
+    }
+
+    /// The party `from` acting for `to`.
+    fn link(&mut self, from: &str, to: &str) {
+        self.links.push((id(from), id(to)));
     }
 
     /// `actor` listed for its party, holding every permission of a stuck order's steps, and, an agent, scoped to
@@ -195,7 +216,7 @@ impl Register {
         let mut i = 0;
         while i < reached.len() {
             let at = reached[i].clone();
-            let next = self
+            let next: Vec<Id> = self
                 .acts_for
                 .iter()
                 .filter(|(a, _, _)| a == &at)
@@ -205,8 +226,9 @@ impl Register {
                         .iter()
                         .filter(|(from, _)| from == &at)
                         .map(|(_, to)| to.clone()),
-                );
-            for party in next.collect::<Vec<_>>() {
+                )
+                .collect();
+            for party in next {
                 if !reached.contains(&party) {
                     reached.push(party);
                 }
@@ -249,15 +271,17 @@ impl Sources for Register {
             Source::Kept(commitment) => said(self.kept.iter().any(|(c, about)| {
                 c == commitment && about.as_ref().is_none_or(|o| o == &need.input)
             })),
-            Source::CommonParty { with } => {
+            Source::KeptAbout(commitment) => said(
+                self.kept
+                    .iter()
+                    .any(|(c, about)| c == commitment && about.as_ref() == Some(&need.input)),
+            ),
+            Source::OfOperator => said(self.chain(&need.input).contains(&id(OPERATOR))),
+            Source::Reaches { from, to } => {
                 if self.chains_unreachable {
                     return Reply::Unreachable;
                 }
-                if self.chains_apart {
-                    return Reply::Given(Said::No);
-                }
-                let theirs = self.chain(with);
-                said(self.chain(&need.input).iter().any(|p| theirs.contains(p)))
+                said(!self.reaches_nothing && self.chain(from).contains(to))
             }
             _ => Reply::Given(Said::Yes),
         }
@@ -280,10 +304,15 @@ fn refused(class: RefusalClass) -> Outcome {
     Outcome::Refused { class }
 }
 
-/// The world's decision (`req-200`, by `op-login-2` for `operator`, of `ord-1`), decided by `decider`.
-fn decision_by(request: &Value, decider: &Actor) -> StuckDecide {
+const fn refuse(class: RefusalClass) -> Answer {
+    Answer::Refuse { class }
+}
+
+/// The world's decision (`req-200`, of `ord-1`, delivered by `bank-co`), decided by `decider` as request `request_id`.
+fn decision_by(request: &Value, decider: &Actor, request_id: &str) -> StuckDecide {
     let mut decide: StuckDecide = serde_json::from_value(request.clone()).unwrap();
     decide.decider = decider.clone();
+    decide.request = id(request_id);
     decide
 }
 
@@ -301,24 +330,45 @@ fn move_of(decided: &Decision, request: &str, mover: &Actor) -> StuckMove {
     }
 }
 
+/// The world's confirmation of `op-login-5`'s report of its resolution's outcome, by `confirmer`, as `request_id`.
+fn confirmation_by(request: &Value, confirmer: &Actor, request_id: &str) -> OutcomeConfirmation {
+    let mut confirmation: OutcomeConfirmation = serde_json::from_value(request.clone()).unwrap();
+    confirmation.confirmer = confirmer.clone();
+    confirmation.request = id(request_id);
+    confirmation
+}
+
+/// `alice`'s decision of the world's stuck order, permitted.
+fn alices_decision(policy: &mut Tested, request: &Value) -> Decision {
+    let decided = policy
+        .decide_stuck(&decision_by(request, &alice(), "req-alice"))
+        .unwrap();
+    assert!(decided.permit().is_some(), "{decided:?}");
+    decided
+}
+
 /// One actor attempting both steps of a resolution is refused at the move, its refusal recorded: the decider itself,
-/// another login of its party, and its own login stating another party, which the register lists it for too. An actor
-/// of another party and another login moves it.
+/// another login of its party, its own login stating another party, a bot whose party acts for the decider's, and a
+/// person of the operator's own party, which the decider's chain reaches. A person on the operator's other desk, whose
+/// chain meets the decider's only at the operator, moves it.
 // verifies: REQ-AUZ-4, AC-6
 #[test]
 fn one_actor_attempting_both_decide_and_move_is_refused() {
-    let alice = person("operator", "op-login-2");
-    let register = Register::of_the_world()
-        .with(&person("operator", "op-login-7"))
-        .with(&person("operator-desk-c", "op-login-2"));
+    let mut register = Register::of_the_world()
+        .with(&person("operator-desk-a", "alice-second"))
+        .with(&person("operator-desk-c", "alice"))
+        .with(&agent("desk-a-bots", "alice-bot"));
+    register.link("operator-desk-c", OPERATOR);
+    register.link("desk-a-bots", "operator-desk-a");
     let (mut policy, request) = engine("sd", register);
-    let decided = policy.decide_stuck(&decision_by(&request, &alice)).unwrap();
-    assert!(decided.permit().is_some(), "{decided:?}");
+    let decided = alices_decision(&mut policy, &request);
 
     for (n, mover) in [
-        alice.clone(),
-        person("operator", "op-login-7"),
-        person("operator-desk-c", "op-login-2"),
+        alice(),
+        person("operator-desk-a", "alice-second"),
+        person("operator-desk-c", "alice"),
+        agent("desk-a-bots", "alice-bot"),
+        person(OPERATOR, "op-login-2"),
     ]
     .iter()
     .enumerate()
@@ -326,52 +376,43 @@ fn one_actor_attempting_both_decide_and_move_is_refused() {
         let moved = policy
             .move_stuck(&move_of(&decided, &format!("req-move-{n}"), mover))
             .unwrap();
-        assert_eq!(
-            moved.outcome,
-            Answer::Refuse {
-                class: RefusalClass::SameActor
-            },
-            "{mover:?}"
-        );
+        assert_eq!(moved.outcome, refuse(RefusalClass::SameActor), "{mover:?}");
         assert_eq!(policy.log.last().0, refused(RefusalClass::SameActor));
     }
 
-    let bob = person("operator-desk-b", "op-login-5");
     let moved = policy
-        .move_stuck(&move_of(&decided, "req-move-bob", &bob))
+        .move_stuck(&move_of(&decided, "req-move-bob", &bob()))
         .unwrap();
     assert!(moved.permit().is_some(), "{moved:?}");
 }
 
 /// Two agents of one accountable party are one actor: one decides, and the other's move is refused, as its party's
-/// person's is; an agent of another party moves it. Their report and confirmation of a move's outcome are held the
-/// same way.
+/// person's is; an agent of another desk moves it. Their report and confirmation of a move's outcome are held the
+/// same way, even where the register's chains reach nothing.
 // verifies: REQ-AUZ-4, REQ-AUZ-8
 #[test]
 fn two_agents_of_one_party_count_as_one_actor() {
-    let (first, second) = (agent("desk-a", "agent-a1"), agent("desk-a", "agent-a2"));
-    let register = Register::of_the_world()
+    let (first, second) = (agent("desk-x", "agent-x1"), agent("desk-x", "agent-x2"));
+    let mut register = Register::of_the_world()
         .with(&first)
         .with(&second)
-        .with(&person("desk-a", "desk-a-lead"))
+        .with(&person("desk-x", "desk-x-lead"))
         .with(&agent("desk-z", "agent-z1"));
+    register.link("desk-x", OPERATOR);
+    register.link("desk-z", OPERATOR);
     let (mut policy, request) = engine("sd", register);
-    let decided = policy.decide_stuck(&decision_by(&request, &first)).unwrap();
+    let decided = policy
+        .decide_stuck(&decision_by(&request, &first, "req-by-agent"))
+        .unwrap();
     assert!(decided.permit().is_some(), "{decided:?}");
-    for (n, mover) in [second.clone(), person("desk-a", "desk-a-lead")]
+    for (n, mover) in [second.clone(), person("desk-x", "desk-x-lead")]
         .iter()
         .enumerate()
     {
         let moved = policy
             .move_stuck(&move_of(&decided, &format!("req-move-{n}"), mover))
             .unwrap();
-        assert_eq!(
-            moved.outcome,
-            Answer::Refuse {
-                class: RefusalClass::SameActor
-            },
-            "{mover:?}"
-        );
+        assert_eq!(moved.outcome, refuse(RefusalClass::SameActor), "{mover:?}");
     }
     let moved = policy
         .move_stuck(&move_of(
@@ -382,19 +423,15 @@ fn two_agents_of_one_party_count_as_one_actor() {
         .unwrap();
     assert!(moved.permit().is_some(), "{moved:?}");
 
-    // The world's report is `op-login-5`'s; here an agent of `desk-a` reported it, and another of `desk-a` confirms,
-    // even where the register's chains would keep them apart: one party is one actor, whatever its chains.
+    // The world's report is `op-login-5`'s; here an agent of `desk-x` reported it, and another of `desk-x` confirms.
     let mut register = Register::of_the_world().with(&first).with(&second);
-    register.chains_apart = true;
+    register.reaches_nothing = true;
     let (mut policy, request) = engine("settled_es", register);
-    let mut confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
+    let confirmation = confirmation_by(&request, &second, "req-confirm");
     report_by(&mut policy.log, &confirmation.report, &first);
-    confirmation.confirmer = second;
     assert_eq!(
         policy.confirm_outcome(&confirmation).unwrap().outcome,
-        Answer::Refuse {
-            class: RefusalClass::SameActor
-        }
+        refuse(RefusalClass::SameActor)
     );
 }
 
@@ -415,9 +452,10 @@ fn report_by(log: &mut Log, receipt: &Receipt, reporter: &Actor) {
     request.reporter = reporter.clone();
 }
 
-/// A resolution naming no evidence is refused: one naming none at all fails its check, unrecorded, and one naming
+/// A resolution naming no evidence is refused: one naming none at all fails its check, unrecorded; one naming
 /// evidence the store keeps nothing under, or keeps about another order, is refused and recorded, even beside
-/// evidence it keeps. One naming only evidence the store keeps about its order is permitted.
+/// evidence it keeps; and so is one whose evidence is all about no order in particular. One naming evidence about its
+/// order, beside evidence about none, is permitted.
 // verifies: REQ-AUZ-4
 #[test]
 fn resolution_naming_no_evidence_is_refused() {
@@ -425,11 +463,9 @@ fn resolution_naming_no_evidence_is_refused() {
     register.kept.push((digest("ee"), Some(id("ord-2"))));
     register.kept.push((digest("ef"), None));
     let (mut policy, request) = engine("sd", register);
-    let alice = person("operator", "op-login-2");
     let named = |evidence: Vec<Digest>, request_id: &str| StuckDecide {
-        request: id(request_id),
         evidence,
-        ..decision_by(&request, &alice)
+        ..decision_by(&request, &alice(), request_id)
     };
 
     let before = policy.log.entries.len();
@@ -443,6 +479,7 @@ fn resolution_naming_no_evidence_is_refused() {
         vec![digest("aa")],
         vec![digest("db"), digest("aa")],
         vec![digest("ee")],
+        vec![digest("ef")],
     ]
     .into_iter()
     .enumerate()
@@ -452,9 +489,7 @@ fn resolution_naming_no_evidence_is_refused() {
             .unwrap();
         assert_eq!(
             decided.outcome,
-            Answer::Refuse {
-                class: RefusalClass::MissingInput
-            },
+            refuse(RefusalClass::MissingInput),
             "{evidence:?}"
         );
         assert_eq!(
@@ -481,45 +516,56 @@ fn resolution_naming_no_evidence_is_refused() {
 }
 
 /// Deciding, moving and confirming are each a permission of its own, held login by login: one alone allows only its
-/// own step, and none is the operator's party's. A stuck order's steps are the operator's: no other role decides or
-/// moves, whatever its register says.
+/// own step. A stuck order's steps are the operator's: no other role decides or moves, whatever its register says, and
+/// stating the operator's role is not enough for a login the register doesn't give the operator.
 // verifies: REQ-AUZ-4, THR-77
 #[test]
 fn deciding_moving_and_confirming_are_separate_permissions() {
-    let mut register = Register::of_the_world();
     let (decides, moves, confirms) = (
         person("desk-d", "only-decides"),
         person("desk-m", "only-moves"),
         person("desk-c", "only-confirms"),
     );
-    for (actor, permission) in [
-        (&decides, Permission::DecideStuck),
-        (&moves, Permission::MoveStuck),
-        (&confirms, Permission::ConfirmOutcome),
-    ] {
-        register.list(actor.acts.as_str(), actor.party.as_str(), ActorKind::Person);
-        register.permissions.push((actor.acts.clone(), permission));
-    }
+    let register = || {
+        let mut register = Register::of_the_world();
+        for (actor, permission) in [
+            (&decides, Permission::DecideStuck),
+            (&moves, Permission::MoveStuck),
+            (&confirms, Permission::ConfirmOutcome),
+        ] {
+            register.list(actor.acts.as_str(), actor.party.as_str(), ActorKind::Person);
+            register.permissions.push((actor.acts.clone(), permission));
+            register.link(actor.party.as_str(), OPERATOR);
+        }
+        register
+    };
     let provider = Actor {
         role: Role::Provider,
         ..person("desk-p", "provider-desk")
     };
-    register = register.with(&provider);
-    let (mut policy, request) = engine("sd", register);
-    let not_permitted = Answer::Refuse {
-        class: RefusalClass::NotPermitted,
-    };
+    let outsider = person("acme", "acme-staff");
+    let mut with_others = register().with(&provider).with(&outsider);
+    with_others.link("desk-p", OPERATOR);
+    let (mut policy, request) = engine("sd", with_others);
+    let not_permitted = refuse(RefusalClass::NotPermitted);
 
-    for decider in [&moves, &confirms, &provider] {
-        let mut decide = decision_by(&request, decider);
-        decide.request = id(&format!("req-by-{}", decider.acts.as_str()));
-        assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
+    for decider in [&moves, &confirms, &provider, &outsider] {
+        let decide = decision_by(
+            &request,
+            decider,
+            &format!("req-by-{}", decider.acts.as_str()),
+        );
+        assert_eq!(
+            policy.decide_stuck(&decide).unwrap().outcome,
+            not_permitted,
+            "{decider:?}"
+        );
     }
     let decided = policy
-        .decide_stuck(&decision_by(&request, &decides))
+        .decide_stuck(&decision_by(&request, &decides, "req-decides"))
         .unwrap();
     assert!(decided.permit().is_some(), "{decided:?}");
-    for mover in [&decides, &confirms, &provider] {
+    for mover in [&decides, &confirms, &provider, &outsider] {
         let request = format!("req-move-by-{}", mover.acts.as_str());
         assert_eq!(
             policy
@@ -535,40 +581,31 @@ fn deciding_moving_and_confirming_are_separate_permissions() {
         .unwrap();
     assert!(moved.permit().is_some(), "{moved:?}");
 
-    let mut register = Register::of_the_world();
-    for (actor, permission) in [
-        (&decides, Permission::DecideStuck),
-        (&moves, Permission::MoveStuck),
-        (&confirms, Permission::ConfirmOutcome),
-    ] {
-        register.list(actor.acts.as_str(), actor.party.as_str(), ActorKind::Person);
-        register.permissions.push((actor.acts.clone(), permission));
-    }
-    let (mut policy, request) = engine("settled_es", register);
-    let confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
-    for (n, confirmer) in [&decides, &moves].into_iter().enumerate() {
-        let c = OutcomeConfirmation {
-            request: id(&format!("req-confirm-{n}")),
-            confirmer: confirmer.clone(),
-            ..confirmation.clone()
-        };
+    let (mut policy, request) = engine("settled_es", register());
+    for confirmer in [&decides, &moves] {
+        let c = confirmation_by(
+            &request,
+            confirmer,
+            &format!("req-{}", confirmer.acts.as_str()),
+        );
         assert_eq!(policy.confirm_outcome(&c).unwrap().outcome, not_permitted);
     }
-    let c = OutcomeConfirmation {
-        confirmer: confirms.clone(),
-        ..confirmation
-    };
-    let confirmed = policy.confirm_outcome(&c).unwrap();
+    let confirmed = policy
+        .confirm_outcome(&confirmation_by(&request, &confirms, "req-confirms"))
+        .unwrap();
     assert!(confirmed.permit().is_some(), "{confirmed:?}");
 }
 
-/// `THR-70`'s colluding customer and provider: no party of the order decides its resolution or confirms a move's
-/// outcome, even through a login listed for the operator's role and every permission; and no actor that reaches the
-/// provider holding the funds, its own desk or one whose chain reaches it, moves the value or confirms its outcome.
+/// `THR-70`'s colluding customer and provider. No party of the order decides its resolution or confirms a move's
+/// outcome, nor any actor whose chain reaches one, even one the operator's too and holding every permission. The
+/// provider holding the funds decides nothing, nor does an actor reaching it. No actor that is the holder's desk, by
+/// its party or by its chain reaching the holder, moves the value or confirms its outcome; an operator's desk whose
+/// chain meets the holder's only at the operator moves it.
 // verifies: REQ-AUZ-4, THR-70
 #[test]
 fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
     let customer = person("cust-1", "cust-1-staff");
+    let customers_ops = person("cust-1-ops", "cust-1-ops-1");
     let (holders, chained) = (
         person("bank-co", "bank-co-desk"),
         person("bank-co-ops", "bank-co-ops-1"),
@@ -576,23 +613,33 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
     let register = || {
         let mut register = Register::of_the_world()
             .with(&customer)
+            .with(&customers_ops)
             .with(&holders)
             .with(&chained);
-        register.links.push((id("bank-co-ops"), id("bank-co")));
+        // Each is the operator's too, so only this test's rules refuse them; `bank-co` and the operator are one legal
+        // party's, `REQ-CAT-20`.
+        register.link("cust-1", OPERATOR);
+        register.link("cust-1-ops", "cust-1");
+        register.link("bank-co", OPERATOR);
+        register.link("bank-co-ops", "bank-co");
         register
     };
-    let not_permitted = Answer::Refuse {
-        class: RefusalClass::NotPermitted,
-    };
+    let not_permitted = refuse(RefusalClass::NotPermitted);
 
     let (mut policy, request) = engine("sd", register());
-    let mut decide = decision_by(&request, &customer);
-    decide.request = id("req-by-customer");
-    assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
-    let decided = policy
-        .decide_stuck(&decision_by(&request, &person("operator", "op-login-2")))
-        .unwrap();
-    assert!(decided.permit().is_some(), "{decided:?}");
+    for decider in [&customer, &customers_ops, &holders, &chained] {
+        let decide = decision_by(
+            &request,
+            decider,
+            &format!("req-by-{}", decider.acts.as_str()),
+        );
+        assert_eq!(
+            policy.decide_stuck(&decide).unwrap().outcome,
+            not_permitted,
+            "{decider:?}"
+        );
+    }
+    let decided = alices_decision(&mut policy, &request);
     for mover in [&holders, &chained] {
         let request = format!("req-move-by-{}", mover.acts.as_str());
         assert_eq!(
@@ -604,14 +651,29 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
             "{mover:?}"
         );
     }
-
-    // The provider's own desk is its desk by its party, even where the register's chains say nothing of it.
-    let mut apart = register();
-    apart.chains_apart = true;
-    let (mut policy, request) = engine("sd", apart);
-    let decided = policy
-        .decide_stuck(&decision_by(&request, &person("operator", "op-login-2")))
+    let moved = policy
+        .move_stuck(&move_of(&decided, "req-move-by-bob", &bob()))
         .unwrap();
+    assert!(moved.permit().is_some(), "{moved:?}");
+
+    // The holder's own desk is its desk by its party, and the customer's staff its by theirs, even where the
+    // register's chains reach nothing.
+    let mut apart = register();
+    apart.reaches_nothing = true;
+    let (mut policy, request) = engine("sd", apart);
+    for decider in [&customer, &holders] {
+        let decide = decision_by(
+            &request,
+            decider,
+            &format!("req-apart-{}", decider.acts.as_str()),
+        );
+        assert_eq!(
+            policy.decide_stuck(&decide).unwrap().outcome,
+            not_permitted,
+            "{decider:?}"
+        );
+    }
+    let decided = alices_decision(&mut policy, &request);
     assert_eq!(
         policy
             .move_stuck(&move_of(&decided, "req-move-by-the-holder", &holders))
@@ -620,29 +682,42 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
         not_permitted
     );
 
+    // The fixed rule alone, asked before the deployment's policy, refuses the order's customer on the order's own
+    // record, before any chain is read from the log.
+    let (mut policy, request) = engine("settled_es", register());
+    let confirmation = confirmation_by(&request, &customer, "req-fixed-confirm");
+    assert_eq!(
+        policy.consult(Asked::ConfirmOutcome(&confirmation)),
+        not_permitted
+    );
+    let (mut policy, request) = engine("sd", register());
+    let decide = decision_by(&request, &customer, "req-fixed-decide");
+    assert_eq!(policy.consult(Asked::DecideStuck(&decide)), not_permitted);
+
     // The world's resolution is delivered by `bank-co`; its report is `op-login-5`'s.
     let (mut policy, request) = engine("settled_es", register());
-    let confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
-    for (n, confirmer) in [&customer, &holders, &chained].into_iter().enumerate() {
-        let c = OutcomeConfirmation {
-            request: id(&format!("req-confirm-{n}")),
-            confirmer: confirmer.clone(),
-            ..confirmation.clone()
-        };
+    for confirmer in [&customer, &customers_ops, &holders, &chained] {
+        let c = confirmation_by(
+            &request,
+            confirmer,
+            &format!("req-{}", confirmer.acts.as_str()),
+        );
         assert_eq!(
             policy.confirm_outcome(&c).unwrap().outcome,
             not_permitted,
             "{confirmer:?}"
         );
     }
-    let confirmed = policy.confirm_outcome(&confirmation).unwrap();
+    let confirmed = policy
+        .confirm_outcome(&confirmation_by(&request, &alice(), "req-by-alice"))
+        .unwrap();
     assert!(confirmed.permit().is_some(), "{confirmed:?}");
 
     // A segment's silent `move_value`, the world's withdrawal at `us-bank`, reported by Core's own actor: the provider
     // it moved through holds the funds, and its desk doesn't confirm it.
     let us_bank = person("us-bank", "us-bank-desk");
     let (mut policy, request) = engine("settled_es", register().with(&us_bank));
-    let world: OutcomeConfirmation = serde_json::from_value(request).unwrap();
+    let world = confirmation_by(&request, &alice(), "req-world");
     let effect = policy
         .log
         .entries
@@ -687,89 +762,76 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
         not_permitted
     );
     let confirmed = policy
-        .confirm_outcome(&of_the_withdrawal(
-            "req-by-op",
-            &person("operator", "op-login-2"),
-        ))
+        .confirm_outcome(&of_the_withdrawal("req-by-alice", &alice()))
         .unwrap();
     assert!(confirmed.permit().is_some(), "{confirmed:?}");
 }
 
-/// A move's outcome is confirmed only by an actor whose `ActsFor` chain meets its reporter's nowhere: the reporter's
-/// own login or party, a party the reporter's acts for, and a third party both act for, through the register's links,
-/// are each refused; the decider of another chain confirms it (core-internal's README, `T-021-06`).
+/// A move's outcome is confirmed only by another actor than its reporter: one of the reporter's own login or party,
+/// one whose chain reaches the reporter's party, and one whose party the reporter's chain reaches are each refused.
+/// The operator's staff on sibling desks, whose chains meet the reporter's only at the operator, confirm it
+/// (core-internal's README, `T-021-06`).
 // verifies: REQ-AUZ-4, THR-77
 #[test]
-fn confirmer_whose_chain_meets_the_reporters_is_refused() {
-    let same = Answer::Refuse {
-        class: RefusalClass::SameActor,
-    };
-    // The world's report is `op-login-5`'s, for `operator-desk-b`; its confirmer `op-login-2`, for `operator`.
+fn confirmer_whose_chain_reaches_the_reporters_is_refused() {
+    // The world's report is `op-login-5`'s, for `operator-desk-b`.
     let ask = |register: Register, confirmer: &Actor| {
         let (mut policy, request) = engine("settled_es", register);
-        let confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
         policy
-            .confirm_outcome(&OutcomeConfirmation {
-                confirmer: confirmer.clone(),
-                ..confirmation
-            })
+            .confirm_outcome(&confirmation_by(&request, confirmer, "req-confirm"))
             .unwrap()
             .outcome
     };
-    let alice = person("operator", "op-login-2");
-    assert!(matches!(
-        ask(Register::of_the_world(), &alice),
-        Answer::Permit {}
-    ));
-
     for confirmer in [
         person("operator-desk-b", "op-login-9"),
         person("operator-desk-x", "op-login-5"),
+        person("desk-b-night", "night-1"),
+        person(OPERATOR, "op-login-2"),
     ] {
-        let register = Register::of_the_world().with(&confirmer);
-        assert_eq!(ask(register, &confirmer), same, "{confirmer:?}");
+        let mut register = Register::of_the_world().with(&confirmer);
+        register.link("desk-b-night", "operator-desk-b");
+        assert_eq!(
+            ask(register, &confirmer),
+            refuse(RefusalClass::SameActor),
+            "{confirmer:?}"
+        );
     }
 
-    // The reporter's desk acts for the operator.
-    let mut register = Register::of_the_world();
-    register.links.push((id("operator-desk-b"), id("operator")));
-    assert_eq!(ask(register, &alice), same);
-
-    // Both desks act for one umbrella party, two links up from the confirmer.
-    let mut register = Register::of_the_world();
-    register.links.push((id("operator-desk-b"), id("umbrella")));
-    register.links.push((id("operator"), id("operator-group")));
-    register.links.push((id("operator-group"), id("umbrella")));
-    assert_eq!(ask(register, &alice), same);
+    for sibling in [alice(), person("operator-desk-c", "carol")] {
+        let mut register = Register::of_the_world().with(&sibling);
+        register.link("operator-desk-c", OPERATOR);
+        assert!(
+            matches!(ask(register, &sibling), Answer::Permit {}),
+            "{sibling:?}"
+        );
+    }
 }
 
 /// A move that carries out no permitted decision of the log is refused: one naming a decision the log never took, one
-/// of another order, and one carrying out a refused decision. A confirmation is refused citing what is no report, a
-/// report of another outcome, one of another move than its own, or one the log holds as refused.
+/// naming another request than the decision answered, one of another order, and one carrying out a refused decision.
+/// A confirmation is refused citing what is no report, a report of another outcome, one of another move than its own,
+/// one of another order, or one the log holds as refused.
 // verifies: REQ-AUZ-4
 #[test]
 fn step_with_nothing_permitted_behind_it_is_refused() {
-    let not_permitted = Answer::Refuse {
-        class: RefusalClass::NotPermitted,
-    };
+    let not_permitted = refuse(RefusalClass::NotPermitted);
     let (mut policy, request) = engine("sd", Register::of_the_world());
-    let bob = person("operator-desk-b", "op-login-5");
-    let decided = policy
-        .decide_stuck(&decision_by(&request, &person("operator", "op-login-2")))
-        .unwrap();
-    let mut never = move_of(&decided, "req-never", &bob);
+    let decided = alices_decision(&mut policy, &request);
+    let mut never = move_of(&decided, "req-never", &bob());
     never.carries_out.decision = id("dec-never");
-    let mut elsewhere = move_of(&decided, "req-elsewhere", &bob);
+    let mut other_request = move_of(&decided, "req-other-request", &bob());
+    other_request.carries_out.request = id("req-other");
+    let mut elsewhere = move_of(&decided, "req-elsewhere", &bob());
     elsewhere.order = id("ord-2");
-    let mut unkept = decision_by(&request, &person("operator", "op-login-2"));
-    unkept.request = id("req-unkept");
+    let mut unkept = decision_by(&request, &alice(), "req-unkept");
     unkept.evidence = vec![digest("aa")];
     let refused_decision = policy.decide_stuck(&unkept).unwrap();
     assert!(refused_decision.permit().is_none());
     for step in [
         never,
+        other_request,
         elsewhere,
-        move_of(&refused_decision, "req-of-refused", &bob),
+        move_of(&refused_decision, "req-of-refused", &bob()),
     ] {
         assert_eq!(
             policy.move_stuck(&step).unwrap().outcome,
@@ -779,22 +841,14 @@ fn step_with_nothing_permitted_behind_it_is_refused() {
     }
 
     let (mut policy, request) = engine("settled_es", Register::of_the_world());
-    let confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
-    let report_of_another = policy
+    let confirmation = confirmation_by(&request, &alice(), "req-confirm");
+    let first_effect = policy
         .log
         .entries
         .iter()
         .find(|(_, e)| matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. })))
         .map(|(r, _)| r.clone())
         .unwrap();
-    let mut failed_reported_done = confirmation.clone();
-    failed_reported_done.outcome = rutent_contracts::core_internal::MoveOutcome::Done;
-    // The world's report, cited for another move than its own: the world's withdrawal.
-    let of_another_move = OutcomeConfirmation {
-        effect: report_of_another.clone(),
-        ..confirmation.clone()
-    };
-    // A report the log holds as refused: the world's, by a login the register doesn't list.
     let world_report = policy
         .log
         .entries
@@ -815,18 +869,27 @@ fn step_with_nothing_permitted_behind_it_is_refused() {
         })
         .unwrap();
     assert!(refused_report.permit().is_none());
-    let of_a_refused_report = OutcomeConfirmation {
-        report: refused_report.receipt.clone(),
-        ..confirmation.clone()
-    };
     for c in [
         OutcomeConfirmation {
-            report: report_of_another,
+            report: first_effect.clone(),
             ..confirmation.clone()
         },
-        failed_reported_done,
-        of_another_move,
-        of_a_refused_report,
+        OutcomeConfirmation {
+            outcome: MoveOutcome::Done,
+            ..confirmation.clone()
+        },
+        OutcomeConfirmation {
+            effect: first_effect,
+            ..confirmation.clone()
+        },
+        OutcomeConfirmation {
+            order: id("ord-2"),
+            ..confirmation.clone()
+        },
+        OutcomeConfirmation {
+            report: refused_report.receipt.clone(),
+            ..confirmation.clone()
+        },
     ] {
         assert_eq!(
             policy.confirm_outcome(&c).unwrap().outcome,
@@ -836,38 +899,45 @@ fn step_with_nothing_permitted_behind_it_is_refused() {
     }
 }
 
-/// What policy can't read or reach moves nothing: a log it can't read refuses a move and a confirmation as missing
-/// the input they need, and a register of chains out of reach leaves a confirmation not known.
+/// What policy can't read or reach moves nothing: a log it can't read refuses a decision, a move and a confirmation as
+/// missing the input they need, and so does an order the log has no acceptance of; a register of chains out of reach
+/// leaves a confirmation not known.
 // verifies: REQ-AUZ-5, REQ-AUZ-4
 #[test]
 fn unread_log_or_unreached_register_moves_nothing() {
-    let (mut policy, request) = engine("sd", Register::of_the_world());
-    let decided = policy
-        .decide_stuck(&decision_by(&request, &person("operator", "op-login-2")))
-        .unwrap();
-    policy.log.unreadable = true;
-    let moved = policy
-        .move_stuck(&move_of(
-            &decided,
-            "req-move",
-            &person("operator-desk-b", "op-login-5"),
-        ))
-        .unwrap();
+    let missing = refuse(RefusalClass::MissingInput);
+    let mut register = Register::of_the_world();
+    register.kept.push((digest("dc"), Some(id("ord-9"))));
+    let (mut policy, request) = engine("sd", register);
+    let decided = alices_decision(&mut policy, &request);
+    let never_accepted = StuckDecide {
+        order: id("ord-9"),
+        evidence: vec![digest("dc")],
+        ..decision_by(&request, &alice(), "req-never-accepted")
+    };
     assert_eq!(
-        moved.outcome,
-        Answer::Refuse {
-            class: RefusalClass::MissingInput
-        }
+        policy.decide_stuck(&never_accepted).unwrap().outcome,
+        missing
     );
+    policy.log.unreadable = true;
+    assert_eq!(
+        policy
+            .decide_stuck(&decision_by(&request, &alice(), "req-unread"))
+            .unwrap()
+            .outcome,
+        missing
+    );
+    let moved = policy
+        .move_stuck(&move_of(&decided, "req-move", &bob()))
+        .unwrap();
+    assert_eq!(moved.outcome, missing);
 
     let (mut policy, request) = engine("settled_es", Register::of_the_world());
-    let confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
+    let confirmation = confirmation_by(&request, &alice(), "req-confirm");
     policy.log.unreadable = true;
     assert_eq!(
         policy.confirm_outcome(&confirmation).unwrap().outcome,
-        Answer::Refuse {
-            class: RefusalClass::MissingInput
-        }
+        missing
     );
     policy.log.unreadable = false;
     policy.sources.chains_unreachable = true;

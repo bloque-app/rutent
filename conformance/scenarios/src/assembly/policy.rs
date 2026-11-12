@@ -111,11 +111,10 @@ impl Registers {
         reached
     }
 
-    /// Whether the chains of `a` and `b`, each a login or a party, reach an accountable party in common: policy's word
-    /// (`Source::CommonParty`) on a confirmer and a reporter, or an actor and the provider holding the funds.
-    pub fn common_party(&self, a: &Id, b: &Id) -> bool {
-        let theirs = self.chain(b);
-        self.chain(a).iter().any(|p| theirs.contains(p))
+    /// Whether `from`, a login or a party, reaches the party `to` along its chain: policy's word (`Source::Reaches`) on
+    /// two actors, an actor and the order's customer, or an actor and the provider holding the funds (`T-021-06`).
+    pub fn reaches(&self, from: &Id, to: &Id) -> bool {
+        self.chain(from).iter().any(|p| p.as_str() == to.as_str())
     }
 
     /// Whether the agent `agent` may make the call `scope` for `party`, where its party set it a scope at all.
@@ -237,24 +236,24 @@ impl Records {
         }
     }
 
-    /// Whether the evidence store keeps a statement under `commitment`, about `order` or about no order: the log's
-    /// stated entries name each statement Core kept by its commitment (`Evidence::keep`, `T-022-03`).
+    /// Whether the evidence store keeps a statement under `commitment`, about `order`, or, unless `itself`, about no
+    /// order: the log's stated entries name each statement Core kept by its commitment (`Evidence::keep`, `T-022-03`).
     fn kept(
         &self,
         commitment: &rutent_contracts::module_interface::Digest,
         order: &Id,
+        itself: bool,
     ) -> Reply<Said> {
-        said(self.log.borrow().entries().iter().any(|(_, e)| {
-            match e {
-                Entry::Stated(s) => {
-                    &s.commitment == commitment
-                        && s.about
-                            .as_ref()
-                            .and_then(|a| a.order.as_ref())
-                            .is_none_or(|o| o == order)
-                }
-                Entry::Verified(_) => false,
+        said(self.log.borrow().entries().iter().any(|(_, e)| match e {
+            Entry::Stated(s) => {
+                let about = s.about.as_ref().and_then(|a| a.order.as_ref());
+                &s.commitment == commitment
+                    && match about {
+                        Some(o) => o == order,
+                        None => !itself,
+                    }
             }
+            Entry::Verified(_) => false,
         }))
     }
 
@@ -312,8 +311,11 @@ impl authz::Sources for Records {
             }
             Source::Statement(commitment) => self.statement(commitment, input),
             Source::Declarations(reserve) => self.declared(reserve, input),
-            Source::Kept(commitment) => self.kept(commitment, input),
-            Source::CommonParty { with } => said(registers.common_party(input, with)),
+            Source::Kept(commitment) => self.kept(commitment, input, false),
+            Source::KeptAbout(commitment) => self.kept(commitment, input, true),
+            Source::Reaches { from, to } => said(registers.reaches(from, to)),
+            // The deployment's operator is the kit's: Core signs in its name.
+            Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
             // No verifier's judgement or provider's answer is a source in M3's assembly yet.
             Source::Verifier(_) | Source::Provider(_) => Reply::Missing,
         }
