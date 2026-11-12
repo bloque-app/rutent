@@ -18,6 +18,7 @@
     },
     "amount": "1000000000"
   },
+  "transaction": "tx-h28",
   "evidence": [
     {
       "algorithm": "sha-256",

@@ -3614,10 +3614,10 @@
           "statement": "urn:rutent:provider-role:result"
         },
         "when": {
-          "at": "2026-11-06T15:04:05Z",
+          "at": "2026-11-10T09:00:05Z",
           "source": "party_stated"
         },
-        "received_at": "2026-11-06T15:04:06Z",
+        "received_at": "2026-11-10T09:00:05Z",
         "outcome": {
           "status": "stated"
         },
@@ -3660,10 +3660,10 @@
           "statement": "urn:rutent:provider-role:result"
         },
         "when": {
-          "at": "2026-11-06T15:04:05Z",
+          "at": "2026-11-10T09:00:05Z",
           "source": "party_stated"
         },
-        "received_at": "2026-11-06T15:04:06Z",
+        "received_at": "2026-11-10T09:00:05Z",
         "outcome": {
           "status": "stated"
         },
@@ -3844,6 +3844,7 @@
           },
           "amount": "2500000"
         },
+        "transaction": "tx-d3",
         "evidence": [
           {
             "algorithm": "sha-256",
