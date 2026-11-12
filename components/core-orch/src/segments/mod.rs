@@ -39,6 +39,15 @@
 //!    Each settled segment's actual time is recorded beside the one its price declared (`REQ-QTE-3`).
 //!
 //! An order's state and its age are readable by whoever policy lets read it ([`Segments::status`], `REQ-ORD-5`).
+//!
+//! **A part recalculated** (`T-020-10`'s seams, the one change to this module outside its owning row): a record whose
+//! request `follows` another is a recalculation, so its part is checked by [`check_recalculated_part`], which starts
+//! it at the inner node where the value is evidenced rather than with a withdrawal; only a withdrawal's failure
+//! cancels the part, so a recalculated route's first segment fails as any later one does; a route recalculated
+//! elsewhere reaches the order Core follows through [`Segments::observe`]; [`Segments::run_part`] checks the part's floor at each settled segment, holding it there below it, handing nothing more over
+//! (`REQ-ORD-27`); a segment the followed order retired is never handed over again; and [`Segments::order`],
+//! [`Segments::handed_on`], [`Segments::handed_over`], [`Segments::retired`] and [`Segments::waiting`] read where
+//! the value is, what arrived there and what may still move.
 
 mod drain;
 mod journal;
@@ -70,10 +79,11 @@ use rutent_prov::module::lifecycle::LifecycleRefusal;
 use rutent_prov::module::types::UnknownOutcome;
 use rutent_stm::Stm;
 
+use crate::recalc::{holds_floor, left_after};
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
     Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefused, check_part,
-    record_route_refusal,
+    check_recalculated_part, record_route_refusal,
 };
 
 pub use drain::Uncarried;
@@ -144,6 +154,10 @@ pub struct Live<'a> {
     pub session: Option<&'a Id>,
     /// The order's inputs, by name; an operation carries only those its tuple's terms require.
     pub inputs: &'a BTreeMap<String, String>,
+    /// The least the customer takes at the destination, as its authorisation names it: checked at each settled
+    /// segment against what is evidenced there and the quotes still ahead, before the next is handed over
+    /// (`REQ-ORD-27`, `AC-42`, `T-020-10`).
+    pub floor: Option<&'a PositiveAmount>,
 }
 
 /// A provider's statement, labelled as its word: what Core passes on of it is its maker's, never rutent's
@@ -225,6 +239,18 @@ pub enum Ran {
     Segments(Vec<Accounted>),
 }
 
+/// Where a part waits for the customer past its floor (`REQ-ORD-27`, `T-020-10`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waits {
+    /// The settled segment it waits after, where its value is evidenced.
+    pub after: Id,
+    /// What is evidenced there.
+    pub evidenced: PositiveAmount,
+    /// What the quotes still ahead would leave the customer after the operator's fee; `None` where Core couldn't
+    /// count it, which holds no floor.
+    pub left: Option<Amount>,
+}
+
 /// Why a segment couldn't be run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentsError {
@@ -239,6 +265,9 @@ pub enum SegmentsError {
     NoFreshTransaction,
     /// The segment was handed over already (`INV-8`).
     AlreadyHandedOver(Id),
+    /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
+    /// again (`INV-4`, `T-020-10`).
+    Retired(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The segment's value couldn't be held in flight.
@@ -389,6 +418,8 @@ pub struct Segments {
     undelivered: Vec<Drain>,
     flights: BTreeMap<(String, String), InFlight>,
     orders: BTreeMap<String, Tracked>,
+    /// The parts that wait for the customer past their floor, by order and part.
+    waiting: BTreeMap<(String, String), Waits>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -472,6 +503,67 @@ impl Segments {
         Ok(())
     }
 
+    /// Where `part` of `order` waits for the customer past its floor, if it does (`REQ-ORD-27`).
+    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&Waits> {
+        self.waiting
+            .get(&(order.as_str().to_owned(), part.as_str().to_owned()))
+    }
+
+    /// Whether the order Core follows retired `segment`: a recalculation replaced it (`T-020-10`).
+    pub fn retired(&self, order: &Id, segment: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order.parts.iter().any(|p| {
+                p.retired_segments
+                    .iter()
+                    .any(|r| r.as_str() == segment.as_str())
+            })
+        })
+    }
+
+    /// Whether `segment` of `order` was handed over and has no final outcome: from its permit on, its effect may be
+    /// in the log and its value about to move, whatever the state machine says of it yet (`INV-4`, `T-020-10`).
+    pub fn handed_over(&self, order: &Id, segment: &Id) -> bool {
+        self.in_flight(order, segment).is_some()
+    }
+
+    /// The order Core follows, as the inputs recorded so far left it: where each part's value sits
+    /// (`T-020-10`).
+    pub fn order(&self, order: &Id) -> Option<&stm::Order> {
+        self.orders.get(order.as_str()).map(|t| &t.order)
+    }
+
+    /// What `segment` of `order` gave out by its result that counted, net of its charge as its tuple reports it,
+    /// once it settled: what is evidenced at its end, and what the segment after it moves (`REQ-ORD-21`,
+    /// `T-020-10`).
+    pub fn handed_on(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        let flight = self
+            .flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?;
+        match &flight.outcome {
+            Some(SegmentOutcome::Settled { amount_out, .. }) => Some(amount_out),
+            _ => None,
+        }
+    }
+
+    /// Moves the order Core follows by `input`, a `route_recalculated` recorded outside the segments (`T-020-10`),
+    /// so the inputs the segments record next apply to its new route. Only that kind: every other input the
+    /// segments record themselves. False where it is another kind, Core follows no such order, or it moved nothing.
+    pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
+        if !matches!(input.observed, Observed::RouteRecalculated { .. }) {
+            return false;
+        }
+        let Some(tracked) = self.orders.get_mut(input.subject.order.as_str()) else {
+            return false;
+        };
+        let next = Stm::transition(&tracked.order, input);
+        let applied = next.last_input.outcome == (stm::Outcome::Applied {});
+        if applied {
+            tracked.order = next;
+            tracked.since = clock.now();
+        }
+        applied
+    }
+
     /// Follows `chosen`, the order's `route_chosen` input as recorded, so its state and age can be read and the
     /// inputs the segments record move it. False if it opens no order.
     pub fn follow(&mut self, clock: &dyn Clock, chosen: &RecordedInput) -> bool {
@@ -540,6 +632,11 @@ impl Segments {
     /// Runs one part of an order's chosen route: the route guard, then each segment in turn, while each settles. A
     /// segment that stopped before its outcome was final is resumed from where it stopped, with what it gave back;
     /// one whose outcome is final is refused as handed over.
+    ///
+    /// After each segment that settles with a later one to hand over, the part's floor ([`Live::floor`]) is checked
+    /// against what that segment gave out and the quotes still ahead (`recalc::left_after`, `REQ-ORD-27`, `AC-42`):
+    /// below it, nothing more is handed over and the part waits for the customer ([`Segments::waiting`]), however
+    /// often it is run. Every run goes through here, so the check can't be skipped (`T-020-10`).
     pub fn run_part(
         &mut self,
         parts: &mut Parts<'_>,
@@ -553,8 +650,13 @@ impl Segments {
             .parts
             .get(live.at)
             .ok_or(SegmentsError::Plan("the chosen route has no part there"))?;
-        // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`).
-        if let Err(refused) = check_part(part) {
+        // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
+        // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
+        let guard = match live.record.request.follows {
+            Some(_) => check_recalculated_part(part),
+            None => check_part(part),
+        };
+        if let Err(refused) = guard {
             let receipt = record_route_refusal(
                 parts.log,
                 parts.clock,
@@ -614,6 +716,30 @@ impl Segments {
             accounted.push(done);
             // What the next segment moves is what this one gave out, by its result that counted (`REQ-ORD-21`).
             match next {
+                Some(next) if place + 1 < part.operations.len() => {
+                    let left = left_after(
+                        part.operations.as_slice(),
+                        &live.record.bounds.operator_fee,
+                        place,
+                        &next,
+                    );
+                    if !holds_floor(left.as_ref(), live.floor) {
+                        let waits = Waits {
+                            after: live.segments[place].clone(),
+                            evidenced: next,
+                            left,
+                        };
+                        self.waiting.insert(
+                            (
+                                live.order.as_str().to_owned(),
+                                live.part.as_str().to_owned(),
+                            ),
+                            waits,
+                        );
+                        break;
+                    }
+                    amount = next;
+                }
                 Some(next) => amount = next,
                 None => break,
             }
@@ -660,6 +786,11 @@ impl Segments {
             .get(place)
             .ok_or(SegmentsError::Plan("the plan has no segment there"))?;
         let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+        // A segment the order Core follows retired is never handed over or taken on again, whatever it kept: its
+        // value moves only on the route that replaced it (`INV-4`, `T-020-10`).
+        if self.retired(live.order, segment) {
+            return Err(SegmentsError::Retired(segment.clone()));
+        }
         if let Some(flight) = self.flights.get(&at) {
             if flight.outcome.as_ref().is_some_and(is_final) {
                 return Err(SegmentsError::AlreadyHandedOver(segment.clone()));
@@ -984,7 +1115,9 @@ impl Segments {
                 verdict
             }
         };
-        let first = place == 0;
+        // Only a withdrawal's failure cancels the part: a recalculated route's first segment is no withdrawal.
+        let first =
+            place == 0 && operation.kind == rutent_contracts::router_api::OperationKind::Withdrawal;
         // A final outcome ends the segment and hands its record over before its result is appended, so the log
         // knows which release it ran on when it attributes the result: a release revoked mid-flight keeps its key
         // only for segments whose record shows they ran on it (`REQ-MDL-20`).

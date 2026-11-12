@@ -1278,3 +1278,21 @@ fn even_split_answered_by_one_yes_is_not_shown() {
     assert!(env.acceptances().is_empty() && env.started().is_empty());
     assert_admitted(&env);
 }
+
+/// Only Core recalculates (`T-020-10`): a request whose route claims to follow another routing is refused before an
+/// order exists, so no customer can route from where its value isn't evidenced, or past the withdrawal and its yes.
+// verifies: REQ-ORD-2, REQ-ORD-32
+#[test]
+fn request_claiming_to_follow_another_routing_is_refused() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let mut following = order_request("client-req-follows", customer());
+    following.route.follows = Some(id("req-choice-of-another"));
+    assert_eq!(
+        env.open(&mut sim, &following).unwrap(),
+        Told::Refused {
+            class: OrderRefusalClass::MalformedRequest
+        }
+    );
+    assert!(sim.received.is_empty(), "no provider was asked");
+}

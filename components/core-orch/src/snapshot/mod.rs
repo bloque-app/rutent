@@ -36,7 +36,10 @@ pub use clock::{Clock, Reading, SystemClock};
 pub use exposure::{Exposures, Held, HoldError};
 pub use journal::OrchestrationLog;
 pub use releases::{Release, ReleaseError, Releases};
-pub use route::{RouteRefusal, RouteRefused, Step, check_part, check_route, record_route_refusal};
+pub use route::{
+    RouteRefusal, RouteRefused, Step, check_part, check_recalculated_part, check_route,
+    record_route_refusal,
+};
 pub use span::PathStep;
 pub use statements::{
     RecordError, Refusal, RefusedStatement, bind_operator_statement, bind_statement, record_refused,
