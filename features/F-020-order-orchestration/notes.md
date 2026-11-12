@@ -1129,9 +1129,10 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   other decision for it spent, only once all of it moved. `failed` records its result and leaves the part held for a
   new decision. `unknown` records no result yet, and holds the part: nothing more is decided or moved for it until
   its outcome is known, on two actors' word: its own mover, for its own order, reports done or failed naming its
-  evidence by an opaque reference (`Stuck::known_outcome`), which settles nothing, a later report replacing it; an
-  actor of another party and login confirms it naming its own (`Stuck::confirm_outcome`; the decider may, under
-  ADR-0011), and only then is it recorded as the effect's result, once, with both actors and their evidence kept
+  evidence by an opaque reference (`Stuck::known_outcome`), which settles nothing, a later report replacing it and
+  counting one more version; an actor of another party and login confirms it naming the report it confirms (its
+  outcome, version and evidence, all the current report's, or nothing is recorded) and its own evidence
+  (`Stuck::confirm_outcome`; the decider may, under ADR-0011), and only then is it recorded as the effect's result, once, with both actors and their evidence kept
   (`Stuck::outcome_of`). Done counts what moved and the part resolves once all of it moved; failed frees the part.
   The real answer is evidence Core checks, the provider's stated result for the effect's transaction, which the
   production `Resolutions` mover row (the coordinator's) or `T-020-12` owns. The order's stuck mark goes only once the order holds nothing more, so resolving one part of
@@ -1196,7 +1197,7 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   not to touch that file in parallel);
   `resolving.rs` holds `staff`, `destination`, `origin`, `Raises`, `Moves` (with scripted outcomes),
   `PermitsEveryStep` (which can answer another request), `on_parts`, `watch` and `follow`.
-- **Tests.** Twenty-nine in `conformance/scenarios/tests/stuck.rs`; all but
+- **Tests.** Thirty in `conformance/scenarios/tests/stuck.rs`; all but
   `real_logs_receipt_passes_the_receipt_rule` run on the platform with the simulated providers and replay the log
   through `attribute` and `admit_entry`, the timing ones moving the kit's clock.
   - The row's: the no-route, twice-the-p99, no-history, figures, material-change and move-step tests.
@@ -1216,6 +1217,7 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
     extended.
   - Round 4's: `unknown_move_takes_its_known_outcome_once_on_two_actors_word` (the known-outcome test, renamed) and
     `confirmed_failure_frees_the_part_for_a_new_decision`.
+  - Round 5's: `confirmation_names_the_report_it_confirms`.
   - Nine unit tests in the module: `one_large_stuck_order_is_seen_among_many_small`,
     `resolving_one_part_keeps_another_parts_live_hold`, `only_the_payers_account_is_the_origins`, and six over the
     clock's figures and history.
@@ -1353,4 +1355,13 @@ against the old API, then each rule switched off once more after its fix.
 - **Rule-off, each red:** a confirmer of another party, and of another login; only the last report pending; nothing
   confirmed without a report (the two-actors test). That the mover's done alone resolves nothing is held by the
   report step and those checks together: `known_outcome` records nothing and takes no `Parts`.
+
+### T-020-11, round 5 answer (of `66b5881`)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| T1 | Medium: the confirmer didn't say which outcome it confirmed, so the mover could re-report after the confirmer committed | Each report of a move counts a version (`Moved::AwaitsConfirmation { report }`). `Confirming` names the outcome, the report's version and the report's evidence; a confirmation is refused (`NotTheReport`) and records nothing unless all three are the current report's | `confirmation_names_the_report_it_confirms`: failed then done, a confirmation of the first refused and nothing recorded; mixed ones refused; the same in reverse; the current report's confirmed |
+
+- **Red first:** the test was written first and seen red by not compiling against the old `Confirming`.
+- **Rule-off, red:** the report's outcome, version and evidence matched (the round 5 test).
 

@@ -262,6 +262,12 @@ pub struct Confirming<'a> {
     pub carries_out: &'a Decided,
     /// Who confirms the outcome: of another party and login than the mover.
     pub confirmer: &'a Actor,
+    /// The outcome the confirmer read in the report it confirms.
+    pub outcome: Resolved,
+    /// The version of the report it confirms ([`Moved::AwaitsConfirmation`]).
+    pub report: u64,
+    /// The evidence the report it confirms named.
+    pub reported_with: &'a Id,
     /// The evidence the confirmation relies on, by an opaque reference: the provider's stated result for the
     /// effect's transaction, say.
     pub evidence: &'a Id,
@@ -316,6 +322,9 @@ pub enum ResolveError {
     SameLogin,
     /// A move in progress is taken on again only by the mover policy permitted it to (`REQ-AUZ-4`).
     NotTheMover,
+    /// A confirmation names another report than the mover's current one: another outcome, version or evidence.
+    /// Nothing is recorded.
+    NotTheReport,
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
@@ -347,8 +356,12 @@ pub enum Moved {
     /// Policy didn't permit it: nothing was recorded as an effect, and nothing moved.
     NotPermitted(Answer),
     /// Its mover reported the outcome of a move of unknown outcome: nothing is recorded and the part stays held until
-    /// an actor of another party and login confirms it ([`Stuck::confirm_outcome`]).
-    AwaitsConfirmation,
+    /// an actor of another party and login confirms it ([`Stuck::confirm_outcome`]), naming this report.
+    AwaitsConfirmation {
+        /// The report's version: each report of the move counts one more, and a confirmation names the one it
+        /// confirms.
+        report: u64,
+    },
     /// The effect was recorded and carried out.
     CarriedOut {
         /// The receipt of the `resolve_stuck` effect's entry.
@@ -490,9 +503,12 @@ struct InMotion {
     part: Id,
     /// Who moves it: only that mover takes the move on again.
     mover: Actor,
-    /// The outcome its mover reported, after it was unknown, with the evidence named: recorded, the part resolved
-    /// or freed, only once another actor confirms it. A later report replaces it.
-    reported: Option<(Resolved, Id)>,
+    /// The outcome its mover reported, after it was unknown, with the evidence named and the report's version:
+    /// recorded, the part resolved or freed, only once another actor confirms that very report. A later report
+    /// replaces it.
+    reported: Option<(Resolved, Id, u64)>,
+    /// How many reports its mover made.
+    reports: u64,
     /// Why the move was dropped before it acted, its effect recorded: its result is recorded `failed`, since it
     /// never took effect, and then the move answers this.
     dropped: Option<ResolveError>,
@@ -1042,6 +1058,7 @@ impl Stuck {
                 part: kept.part,
                 mover: moving.mover.clone(),
                 reported: None,
+                reports: 0,
                 dropped: None,
                 effect: Step::new(entry),
                 action,
@@ -1078,12 +1095,17 @@ impl Stuck {
         if outcome == Resolved::Unknown {
             return Err(ResolveError::OutcomeUnknown);
         }
-        motion.reported = Some((outcome, evidence.clone()));
-        Ok(Moved::AwaitsConfirmation)
+        motion.reports = motion.reports.saturating_add(1);
+        motion.reported = Some((outcome, evidence.clone(), motion.reports));
+        Ok(Moved::AwaitsConfirmation {
+            report: motion.reports,
+        })
     }
 
-    /// Confirms the outcome a move's mover reported ([`Stuck::known_outcome`]), naming the evidence relied on: only by
-    /// an actor of another party and another login than the mover, as a decision and its move are (`REQ-AUZ-4`,
+    /// Confirms the outcome a move's mover reported ([`Stuck::known_outcome`]), naming the report it confirms (its
+    /// outcome, version and evidence, which must all be the current report's, so the mover can't change the outcome
+    /// after the confirmer committed) and the evidence relied on: only by an actor of another party and another login
+    /// than the mover, as a decision and its move are (`REQ-AUZ-4`,
     /// ADR-0011; the decider may). Once confirmed, the outcome is recorded as the effect's result, once, with who
     /// reported and confirmed it and their evidence kept ([`Stuck::outcome_of`]): done counts what moved, and the part
     /// resolves once all of it moved; failed frees the part for a new decision. The roles a confirmer may hold (no
@@ -1100,7 +1122,7 @@ impl Stuck {
             .get_mut(&at)
             .filter(|m| m.order == *confirming.order && m.resolved == Some(Resolved::Unknown))
             .ok_or(ResolveError::NoDecision)?;
-        let Some((outcome, reported_with)) = motion.reported.clone() else {
+        let Some((outcome, reported_with, report)) = motion.reported.clone() else {
             return Err(ResolveError::NoDecision);
         };
         if motion.mover.party == confirming.confirmer.party {
@@ -1108,6 +1130,16 @@ impl Stuck {
         }
         if motion.mover.acts == confirming.confirmer.acts {
             return Err(ResolveError::SameLogin);
+        }
+        // The confirmer confirms the report it read, never one the mover made since: its outcome, version and
+        // evidence must all be the current report's, or nothing is recorded.
+        if (
+            confirming.outcome,
+            confirming.report,
+            confirming.reported_with,
+        ) != (outcome, report, &reported_with)
+        {
+            return Err(ResolveError::NotTheReport);
         }
         motion.resolved = Some(outcome);
         if outcome == Resolved::Done

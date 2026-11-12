@@ -2236,17 +2236,19 @@ fn known_outcome(
     )
 }
 
-/// Confirms, as `confirmer`, naming `evidence`, the outcome `decision`'s mover reported.
+/// Confirms, as `confirmer`, naming `evidence`, the report `report` of `decision`'s move: its outcome, its version
+/// and its evidence, as the confirmer read them.
 fn confirm_outcome(
     core: &mut Core,
     stuck: &mut Stuck,
     order: &str,
     decision: &rutent_contracts::core_internal::Decision,
     confirmer: &rutent_contracts::core_internal::Actor,
+    report: (Resolved, u64, &str),
     evidence: &str,
 ) -> Result<Moved, ResolveError> {
     let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
-    let evidence = id(evidence);
+    let (evidence, reported_with) = (id(evidence), id(report.2));
     on_parts(core, |parts| {
         stuck.confirm_outcome(
             parts,
@@ -2254,6 +2256,9 @@ fn confirm_outcome(
                 order: &order,
                 carries_out: &carries_out,
                 confirmer,
+                outcome: report.0,
+                report: report.1,
+                reported_with: &reported_with,
                 evidence: &evidence,
                 core: &actor,
             },
@@ -2310,15 +2315,28 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         Err(ResolveError::OutcomeUnknown)
     );
     assert_eq!(
-        confirm_outcome(&mut core, &mut stuck, ORDER, &first, &alice, "res-1"),
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 1, "res-d"),
+            "res-1"
+        ),
         Err(ResolveError::NoDecision),
         "nothing to confirm before a report"
     );
     // The mover reports failed, then done: only the last report is pending, and done alone settles nothing.
-    for outcome in [Resolved::Failed, Resolved::Done] {
+    for (report, (outcome, evidence)) in [(Resolved::Failed, "res-f"), (Resolved::Done, "res-d")]
+        .into_iter()
+        .enumerate()
+    {
         assert_eq!(
-            known_outcome(&mut stuck, ORDER, &first, &bob, outcome, "res-1"),
-            Ok(Moved::AwaitsConfirmation)
+            known_outcome(&mut stuck, ORDER, &first, &bob, outcome, evidence),
+            Ok(Moved::AwaitsConfirmation {
+                report: report as u64 + 1
+            })
         );
     }
     assert!(
@@ -2335,7 +2353,15 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         (staff("desk-c", "bob"), ResolveError::SameLogin),
     ] {
         assert_eq!(
-            confirm_outcome(&mut core, &mut stuck, ORDER, &first, &confirmer, "res-1"),
+            confirm_outcome(
+                &mut core,
+                &mut stuck,
+                ORDER,
+                &first,
+                &confirmer,
+                (Resolved::Done, 2, "res-d"),
+                "res-1"
+            ),
             Err(refused)
         );
     }
@@ -2346,6 +2372,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             ORDER,
             &first,
             &alice,
+            (Resolved::Done, 2, "res-d"),
             "res-1-checked"
         ),
         Ok(Moved::CarriedOut {
@@ -2365,14 +2392,22 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             settled.confirmed_by.acts.as_str(),
             settled.confirmed_with.as_str(),
         ),
-        (Resolved::Done, "bob", "res-1", "alice", "res-1-checked")
+        (Resolved::Done, "bob", "res-d", "alice", "res-1-checked")
     );
     assert!(
         !stuck.is_stuck(&id(ORDER), &id(PART)),
         "a confirmed done resolves the part"
     );
     assert_eq!(
-        confirm_outcome(&mut core, &mut stuck, ORDER, &first, &alice, "res-1"),
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 2, "res-d"),
+            "res-1"
+        ),
         Err(ResolveError::NoDecision),
         "recorded once"
     );
@@ -2402,7 +2437,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
     assert_eq!(
         known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Failed, "res-2"),
-        Ok(Moved::AwaitsConfirmation)
+        Ok(Moved::AwaitsConfirmation { report: 1 })
     );
     assert!(matches!(
         confirm_outcome(
@@ -2411,6 +2446,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
             ORDER,
             &first,
             &alice,
+            (Resolved::Failed, 1, "res-2"),
             "res-2-checked"
         ),
         Ok(Moved::CarriedOut {
@@ -2587,6 +2623,80 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         core.exposures.in_flight(&id(RESERVE), &cop_unit()),
         Amount::zero(),
         "a resolved part takes no rest hold"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A confirmation names the report it confirms: its outcome, its version and its evidence. The mover reports failed
+/// with E1 and then done with E2; a confirmation of the first report, as the confirmer read it, is refused and
+/// records nothing, and so is one that mixes the two. The same in reverse. Only a confirmation of the current report
+/// records it, so the mover can't choose the outcome after the second actor committed.
+// verifies: REQ-AUZ-4, ADR-0011
+#[test]
+fn confirmation_names_the_report_it_confirms() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
+    let entries = |core: &Core| core.log.borrow().entries.len();
+    let refused = |core: &mut Core, stuck: &mut Stuck, report: (Resolved, u64, &str)| {
+        let before = entries(core);
+        let answer = confirm_outcome(core, stuck, ORDER, &first, &alice, report, "checked");
+        assert_eq!(answer, Err(ResolveError::NotTheReport), "{report:?}");
+        assert_eq!(entries(core), before, "nothing recorded for {report:?}");
+        assert!(stuck.outcome_of(&decided(&first)).is_none());
+        assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    };
+    assert_eq!(
+        known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Failed, "e1"),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    assert_eq!(
+        known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Done, "e2"),
+        Ok(Moved::AwaitsConfirmation { report: 2 })
+    );
+    refused(&mut core, &mut stuck, (Resolved::Failed, 1, "e1"));
+    refused(&mut core, &mut stuck, (Resolved::Done, 1, "e2"));
+    refused(&mut core, &mut stuck, (Resolved::Done, 2, "e1"));
+    refused(&mut core, &mut stuck, (Resolved::Failed, 2, "e2"));
+    // In reverse: done, then failed; a confirmation of the done is refused.
+    assert_eq!(
+        known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Failed, "e3"),
+        Ok(Moved::AwaitsConfirmation { report: 3 })
+    );
+    refused(&mut core, &mut stuck, (Resolved::Done, 2, "e2"));
+    assert!(matches!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Failed, 3, "e3"),
+            "checked"
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            result: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        stuck
+            .outcome_of(&decided(&first))
+            .map(|o| (o.outcome, o.reported_with.as_str())),
+        Some((Resolved::Failed, "e3"))
     );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
