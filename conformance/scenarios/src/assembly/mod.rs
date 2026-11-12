@@ -47,9 +47,9 @@ use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::Spec;
 use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, CatalogueChange, DecisionRequest, Entry, Outcome, Receipt,
-    RefusalClass, Role, RouteEnd, SessionOutcome, SessionRequest, TimeSource, VerifiedEntry,
-    VerifiedKind, What, When,
+    Action, Actor, ActorKind, Authorisation, CatalogueChange, DecisionRequest, Entry, Outcome,
+    Receipt, RefusalClass, Role, RouteEnd, SessionOutcome, SessionRequest, TimeSource,
+    VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, Operation, ReserveDeclaration, Statement,
@@ -984,17 +984,16 @@ impl Core {
                 _ => None,
             })
             .ok_or(StepError::NotNow("an order starts on its acceptance"))?;
-        let authorised = entries
+        let logged: Vec<Entry> = self
+            .log
+            .borrow()
+            .entries()
             .iter()
-            .find_map(|w| match w {
-                What::Authorise {
-                    authorisation: a, ..
-                } if a.authorisation == authorisation => Some(a.clone()),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow(
-                "an acceptance rests on its authorisation",
-            ))?;
+            .map(|(_, e)| e.clone())
+            .collect();
+        let authorised = authorised(&logged, order, &authorisation).ok_or(StepError::NotNow(
+            "an acceptance rests on its authorisation",
+        ))?;
         let quote = self
             .quotes
             .get(order.as_str())
@@ -1209,6 +1208,21 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
     serde_json::from_value(value["statement"].clone()).ok()
 }
 
+/// The authorisation `authorisation` of `order` that a move rests on, as the log holds it: an `authorise` of that
+/// authorisation and that order whose outcome is permitted, as `move-rests-on-its-authorisation` holds a move to. A
+/// refusal under the same id, or the same id for another order, is no authorisation of this one's.
+fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
+    entries.iter().find_map(|e| match e {
+        Entry::Verified(v) if v.outcome == Outcome::Permitted {} => match &v.what {
+            What::Authorise {
+                authorisation: a, ..
+            } if &a.authorisation == authorisation && &a.order == order => Some(a.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
 /// Every input `log` took, in its order.
 pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
     log.entries()
@@ -1279,5 +1293,117 @@ mod tests {
             ))
         ));
         assert!(!core.started.contains_key(order.as_str()));
+    }
+
+    /// An order of 1 000 000 whose customer takes no less than 995 000, accepted, and its withdrawal scripted to
+    /// settle 1 % short.
+    fn floored() -> (Core, Id) {
+        let (mut core, _) =
+            Scenario::new("Core alone", "AC-42", Given::one_reserve(Staged::AtOnce))
+                .core(1, &mut machine::Reference);
+        let customer = kit::customer();
+        let session = core.open_session(&customer).unwrap();
+        let mut request = base_request("req-floor", AMOUNT, &session);
+        request.route.floor = Some(rutent_contracts::router_api::Amount::new("995000").unwrap());
+        let order = Core::order_of(&core.request(request).unwrap()).unwrap();
+        let Told::Exists {
+            status: Status::Quoted { digest, .. },
+            ..
+        } = core.quote(&customer, &order).unwrap()
+        else {
+            panic!("no quote")
+        };
+        core.accept(&customer, &order, &digest).unwrap();
+        core.fleet.world().script_for(
+            kit::RESERVE,
+            "withdrawal",
+            rutent_conformance::sim::Behaviour::delivering(
+                rutent_conformance::sim::Delivery::Short { bps: 100 },
+            ),
+        );
+        (core, order)
+    }
+
+    // verifies: DEC-18
+    #[test]
+    fn floor_the_authorisation_names_holds_the_part_at_the_segment_that_crosses_it() {
+        let (mut core, order) = floored();
+        core.run(&order).unwrap();
+        let moves = core
+            .verified_whats()
+            .into_iter()
+            .filter(|w| {
+                matches!(
+                    w,
+                    What::Effect {
+                        action: Action::MoveValue { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(moves, 1, "the deposit is not handed over");
+        let started = &core.started[order.as_str()];
+        let part = kit::id(started.plan[0].part_id.as_str());
+        let waits = core
+            .segments
+            .waiting(&order, &part)
+            .expect("the part waits at its floor");
+        assert_eq!(waits.evidenced.amount().as_str(), "990000");
+    }
+
+    // verifies: DEC-18
+    #[test]
+    fn order_runs_under_its_permitted_authorisation_not_an_earlier_refusal_of_its_id() {
+        let (core, order) = floored();
+        let acceptance = core
+            .verified_whats()
+            .into_iter()
+            .find_map(|w| match w {
+                What::Acceptance {
+                    order: o,
+                    authorisation,
+                    ..
+                } if o == order => Some(authorisation),
+                _ => None,
+            })
+            .unwrap();
+        let mut entries: Vec<Entry> = core
+            .log()
+            .entries()
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect();
+        let permitted = entries
+            .iter()
+            .find_map(|e| match e {
+                Entry::Verified(v) if matches!(&v.what, What::Authorise { authorisation: a, .. } if a.authorisation == acceptance) => Some(v.clone()),
+                _ => None,
+            })
+            .unwrap();
+        // The same id refused earlier, for another destination, and the same id permitted for another order.
+        let mut refused = permitted.clone();
+        refused.outcome = Outcome::Refused {
+            class: RefusalClass::NotPermitted,
+        };
+        let mut other = permitted.clone();
+        if let What::Authorise { authorisation, .. } = &mut refused.what {
+            authorisation.destination.account = kit::id("acct-elsewhere");
+        }
+        if let What::Authorise { authorisation, .. } = &mut other.what {
+            authorisation.order = kit::id("another-order");
+            authorisation.destination.account = kit::id("acct-of-another");
+        }
+        entries.insert(0, Entry::Verified(refused));
+        entries.insert(0, Entry::Verified(other));
+        let found = authorised(&entries, &order, &acceptance).expect("the permitted authorisation");
+        let What::Authorise {
+            authorisation: want,
+            ..
+        } = permitted.what
+        else {
+            unreachable!()
+        };
+        assert_eq!(found, want);
     }
 }
