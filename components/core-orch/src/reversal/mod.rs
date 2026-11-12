@@ -312,9 +312,12 @@ struct Reversal {
     completion: Option<Completion>,
     completed: Option<Completed>,
     /// The statements kept as they arrived, each once, by their bytes.
-    reports: Vec<(Vec<u8>, Step)>,
+    reports: Statements,
     showing: Option<Showing>,
 }
+
+/// Statements kept as they arrived, each once, by their bytes.
+type Statements = Vec<(Vec<u8>, Step)>;
 
 /// Something after an order ended, built once.
 #[derive(Debug, Clone)]
@@ -333,7 +336,7 @@ pub struct Reversals {
     reversals: BTreeMap<(String, String), Reversal>,
     ends: BTreeMap<String, (Step, RecordedInput)>,
     afterwards: BTreeMap<String, Vec<After>>,
-    later: BTreeMap<(String, String), Vec<(Vec<u8>, Step)>>,
+    later: BTreeMap<(String, String), Statements>,
 }
 
 impl Reversals {
