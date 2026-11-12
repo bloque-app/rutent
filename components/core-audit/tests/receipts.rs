@@ -34,9 +34,9 @@ use rutent_core_audit::log::{
 };
 use rutent_core_audit::receipts::receipt::{KEY_ACROSS_PURPOSES, NOT_A_RECEIPT, NOT_COVERED};
 use rutent_core_audit::receipts::store::{
-    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE,
-    MARK_WITHOUT_ITS_ERASURE, NAMED_BY_NO_ENTRY, NO_DECIDED_ERASURE, NOT_A_KEPT_STATEMENT,
-    NOT_KEPT, NOTHING_TO_KEEP,
+    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, ERASED_YET_CITED, ERASURE_NOT_RECORDED,
+    EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE, NAMED_BY_NO_ENTRY,
+    NO_DECIDED_ERASURE, NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
 };
 use rutent_core_audit::receipts::{
     BoundStore, EvidenceStore, Issued, Issuer, Keeper, LogsRead, MemoryShelf, PartyReceipt, Shelf,
@@ -1241,6 +1241,60 @@ fn binding_carries_out_an_erasure_the_log_recorded_before_a_crash() {
         assert!(!holds(&b, kept.bytes.as_str().as_bytes()));
     }
     assert!(run.store.missing().is_empty());
+}
+
+/// An erasure the store carried out on its done result, cut short by a crash before its `erasure` entry, is
+/// reported when the store is bound again; so is one whose statement an entry came to cite in that gap. Once the
+/// entry is appended, and nothing cites it, it is settled and no longer reported.
+// verifies: REQ-AUD-13, REQ-AUD-9
+#[test]
+fn a_carried_out_erasure_without_its_record_is_reported() {
+    let dir = TempDir::new("unrecorded");
+    let mut run = Run::open(&dir).unwrap();
+    let (quiet, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let (cited, cited_at) = run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
+    let quiet_done = run.decide_erasure(&quiet, "done").unwrap();
+    run.store.erase(&quiet_done).unwrap();
+    let cited_done = run.decide_erasure(&cited, "done").unwrap();
+    run.store.erase(&cited_done).unwrap();
+    // In the gap before its record, an entry cites the second.
+    let mut measure = valid("verified-entry-of-a-measure");
+    measure["what"]["record"]["cites"] = json!([cited_at]);
+    // The log admits it today: whether the statement counts as erased from its done result is the contract's.
+    let cites = run
+        .append(&serde_json::from_value(measure).unwrap())
+        .is_ok();
+    drop(run);
+    // The crash: neither erasure entry was appended.
+
+    let run = Run::open(&dir).unwrap();
+    let unrecorded = Violation(ERASURE_NOT_RECORDED);
+    let mut expected = vec![
+        (quiet_done.clone(), unrecorded.clone()),
+        (cited_done.clone(), unrecorded),
+    ];
+    if cites {
+        expected.push((cited_done.clone(), Violation(ERASED_YET_CITED)));
+    }
+    assert_eq!(run.store.unsettled_erasures(), expected);
+    assert!(run.store.missing().is_empty());
+
+    // Its record appended on the retry, the first is settled.
+    run.append(&erasure(&quiet, "done")).unwrap();
+    drop(run);
+    let run = Run::open(&dir).unwrap();
+    assert!(
+        !run.store
+            .unsettled_erasures()
+            .iter()
+            .any(|(at, _)| *at == quiet_done)
+    );
+    assert!(
+        run.store
+            .unsettled_erasures()
+            .iter()
+            .any(|(at, _)| *at == cited_done)
+    );
 }
 
 /// A statement marked erased that no erasure the log decided accounts for refuses the binding: its bytes went with

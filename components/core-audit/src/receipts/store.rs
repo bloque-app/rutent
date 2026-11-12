@@ -66,6 +66,13 @@ pub const NOT_KEPT: &str = "a statement is kept under that commitment, or was an
 /// result of an `erase_statement` effect, on a permitting `decide` of that action (`REQ-AUD-13`, `REQ-AUZ-1`).
 pub const NO_DECIDED_ERASURE: &str = "an erasure is carried out only on the done result of a permitted erase effect for its commitment";
 
+/// A carried-out erasure the log holds no `erasure` entry for: a finding, not a refusal.
+pub const ERASURE_NOT_RECORDED: &str =
+    "every erasure the store carried out has its erasure entry in the log";
+
+/// A carried-out erasure whose statement an entry of the log cites: a finding, not a refusal.
+pub const ERASED_YET_CITED: &str = "no entry of the log cites a statement the store erased";
+
 /// The refusal to erase what no stated entry of the log names: an erasure reaches only what a reference names.
 pub const NAMED_BY_NO_ENTRY: &str =
     "an erasure reaches only a statement a stated entry of the log names";
@@ -442,7 +449,8 @@ impl EvidenceStore {
     /// - every erasure the log decided, the `done` result of a permitted erase effect, of a statement still kept,
     ///   is carried out, where [`BoundStore::erasable`] allows it (an erasure cut short after its result and before
     ///   its mark); one the store refuses is reported ([`BoundStore::refused_erasures`]), a finding for the outside
-    ///   checker (`T-022-04`);
+    ///   checker (`T-022-04`); one carried out that the log has no `erasure` entry for, or whose statement an entry
+    ///   cites, is reported too ([`BoundStore::unsettled_erasures`]);
     /// - a statement marked erased with no such decided erasure in the log refuses the binding
     ///   ([`MARK_WITHOUT_ITS_ERASURE`]): bytes went with no decision behind it;
     /// - every stated entry whose bytes the store neither keeps nor marks erased is reported
@@ -456,6 +464,7 @@ impl EvidenceStore {
             log,
             missing: Vec::new(),
             refused: Vec::new(),
+            unsettled: Vec::new(),
         };
         bound.reconcile()?;
         Ok(bound)
@@ -468,6 +477,7 @@ pub struct BoundStore<S: Store, K: KeptStatements> {
     log: Rc<RefCell<AuditLog<S, K>>>,
     missing: Vec<Receipt>,
     refused: Vec<(Receipt, Violation)>,
+    unsettled: Vec<(Receipt, Violation)>,
 }
 
 /// The verified entry `entries` records at `at`, where `at` is that entry's own receipt.
@@ -583,6 +593,25 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
                 Err(e) => return Err(e),
             }
         }
+        // An erasure carried out is settled once the log records it, and while nothing cites what it erased: the
+        // store erases on the done result, and the `erasure` entry, and the end of citations, follow.
+        self.unsettled = Vec::new();
+        for (at, commitment) in &decided {
+            if !self.is_erased(commitment) {
+                continue;
+            }
+            let recorded = entries.iter().any(|(_, e)| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Erasure { evidence } if evidence == commitment))
+            });
+            if !recorded {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASURE_NOT_RECORDED)));
+            }
+            if cited(&entries, commitment) {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASED_YET_CITED)));
+            }
+        }
         let inner = self.inner.borrow();
         self.missing = entries
             .iter()
@@ -610,6 +639,16 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// one no stated entry names. A finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`].
     pub fn refused_erasures(&self) -> &[(Receipt, Violation)] {
         &self.refused
+    }
+
+    /// The erasures carried out that the log hadn't settled when the store was bound, by the receipt of their `done`
+    /// result, with why: one with no `erasure` entry recording it ([`ERASURE_NOT_RECORDED`]: a crash between the
+    /// store's erasure and the entry, which orchestration appends on its retry), or one whose statement an entry of
+    /// the log cites ([`ERASED_YET_CITED`]: a citation that landed between the done result and the entry). A
+    /// finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`] and
+    /// [`BoundStore::refused_erasures`].
+    pub fn unsettled_erasures(&self) -> &[(Receipt, Violation)] {
+        &self.unsettled
     }
 
     /// Whether the statement kept under `commitment` may be erased, over the log's history: it is kept, or was and

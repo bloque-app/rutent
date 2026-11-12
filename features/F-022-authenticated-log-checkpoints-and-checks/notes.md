@@ -240,6 +240,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   reported beside it, by its result's receipt and why, in `BoundStore::refused_erasures`. A crash after the store
   erased and before the `erasure` entry leaves the bytes erased and the decision recorded; orchestration appends the
   entry on its retry.
+- **An erasure carried out but not settled is reported** (the review of `f236b41`). The store erases on the `done`
+  result, and the `erasure` entry follows, so there is a gap. On binding, every erasure the store carried out is
+  reported in `BoundStore::unsettled_erasures`, by its result's receipt, where the log holds no `erasure` entry for
+  it (`ERASURE_NOT_RECORDED`: a crash in the gap) or an entry cites its statement (`ERASED_YET_CITED`: a citation
+  that landed in the gap, which the log admits today, since it counts a statement erased from its `erasure` entry).
+  Both are findings for `T-022-04`, beside `missing` and `refused_erasures`. Counting a statement erased from its
+  done result, so no citation lands in the gap, is the contract author's half; the test admits either.
 - **No erasure reaches what an entry rests on** (the review of `746e398`, S3, the coordinator's cautious default
   until the owner rules). `erasable` refuses a statement any verified entry of the log cites: by the receipt of a
   stated entry naming its commitment (a report pair, an arrival, graded evidence, a reliance, an acceptance, a
@@ -330,7 +337,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   order's state covering no entry, and a refused recorded erasure being reported, whoever recorded it. After the
   erasure fold: only a `done` result, only the log's own entry at its receipt, only what a stated entry names,
   binding carrying out a decided erasure, a mark needing its decided erasure, and a refused decided erasure being
-  reported. The operator-label rules of the review of `746e398` are gone with the check.
+  reported. The operator-label rules of the review of `746e398` are gone with the check. After the review of
+  `f236b41`: an unrecorded, and a cited, carried-out erasure being reported.
 - Some checks are implied by others, so switching one off alone fails no test: a receipt's key being the log's (the
   signature is verified under the log's key), its shape (only the issuer signs, and it signs that shape), its entry
   digest and its inclusion proof (each implies the other for a receipt the log signed; off together, they fail), and
