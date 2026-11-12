@@ -1580,6 +1580,21 @@ pub enum OrderRefusalClass {
     OverBound,
     /// The request breaks this deployment's rules for one.
     MalformedRequest,
+    /// The destination's owner changed since it was resolved: the order waits for the customer (`REQ-ORD-24`).
+    DestinationOwnerChanged,
+}
+
+/// One part's yes on an acceptance: the part, its origin reserve, and the receipt of that reserve's stated yes to
+/// the part's route (`REQ-ORD-32`). Schema: `urn:rutent:core-internal:verified-entry#/$defs/part_yes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartYes {
+    /// The part.
+    pub part: Id,
+    /// The part's origin reserve: the provider of its first withdrawal.
+    pub origin_reserve: Id,
+    /// The receipt of that reserve's stated yes.
+    pub reserve_yes: Receipt,
 }
 
 /// How a destination came out when it was resolved or confirmed (`REQ-ORD-24`).
@@ -1829,14 +1844,11 @@ pub enum What {
         parties: Parties,
         /// The order's origin reserve: the one whose yes it rests on, or whose automatic deposit started it.
         origin_reserve: Id,
-        /// The receipt of the origin reserve's stated yes to the route: present exactly when its basis is given; an
-        /// automatic deposit carries none (`REQ-ORD-32`).
-        #[serde(
-            default,
-            deserialize_with = "some",
-            skip_serializing_if = "Option::is_none"
-        )]
-        reserve_yes: Option<Receipt>,
+        /// Each part's yes, keyed by part: the receipt of its origin reserve's stated yes to the part's route, each
+        /// part once. Present exactly when its basis is given; an automatic deposit carries none (`REQ-ORD-32`). A
+        /// split order has one per part, so no part moves on another's yes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        yeses: Vec<PartYes>,
         /// The user's session it was asked in: present exactly when its basis is given (`REQ-ORD-32`).
         #[serde(
             default,

@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 112 valid fixtures and 110 invalid ones, each
-  breaking one rule, and 230 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 49 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 114 valid fixtures and 112 invalid ones, each
+  breaking one rule, and 244 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 51 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -119,6 +119,15 @@
   transaction whose segment began or ran on that release, by its handed-over segment record, and drops for any
   other (`REQ-MDL-20`); `reinstate` restores it. `release_statement_keys` takes the statement's transaction.
   35 attribution cases. (DEC-4, DEC-20, REQ-MDL-20, REQ-AUD-2, REQ-AUD-9, T-020-01)
+- Folded into 1.0.0 before its release: an acceptance names each part's yes, and a change of owner has its class. An
+  acceptance given names `yeses`, one per part, each with the part, its origin reserve and the receipt of that reserve's
+  yes, in place of one `reserve_yes`; `acceptance-rests-on-the-reserves-yes` holds every part to its own yes, reserve
+  and transaction, and the new `first-move-rests-on-its-parts-yes` holds a part's first move to its part's yes, an
+  automatic deposit's order moving on none (`REQ-ORD-32`); `chosen-route-rests-on-its-orders-acceptance` holds the yeses
+  to one per part of the plan, in its order, and each part cites a yes receipt of its own. `destination_owner_changed`
+  joins the order refusal classes, and the new `owner-change-rests-on-its-destination-check` rests it on the destination
+  check that found the change (`REQ-ORD-24`). 114 valid fixtures, 112 invalid, 244 admission cases. (DEC-4, DEC-20,
+  REQ-ORD-24, REQ-ORD-32, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

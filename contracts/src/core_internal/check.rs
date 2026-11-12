@@ -350,14 +350,25 @@ impl What {
             }
             What::Acceptance {
                 basis,
-                reserve_yes,
+                yeses,
                 session,
                 ..
             } => {
                 let given = *basis == AcceptanceBasis::Given;
-                if given != reserve_yes.is_some() || given != session.is_some() {
+                if given != !yeses.is_empty() || given != session.is_some() {
                     return Err(Violation(
                         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
+                    ));
+                }
+                let parts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.part).collect();
+                if !distinct(&parts) {
+                    return Err(Violation("an acceptance names each part's yes once"));
+                }
+                // Each part rests on a yes of its own: two parts never cite one receipt.
+                let receipts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.reserve_yes).collect();
+                if !distinct(&receipts) {
+                    return Err(Violation(
+                        "an acceptance cites a yes of its own for each part",
                     ));
                 }
                 Ok(())

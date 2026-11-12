@@ -100,6 +100,8 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `stuck-effect-permits-a-stuck-move` | `effect` of `resolve_stuck`: its permit's receipt | a `stuck_move`, `permitted`, at that receipt (never a `decide`) | request, decision, order, carries_out | `REQ-AUZ-4` | admitted: `world--*`; refused: `--missing`, `--request`, `--decision`, `--order`, `--carries_out` |
 | `permit-backs-one-effect` | `effect`: its permit | none other: no other `effect` citing the same permit (the same effect retried is admitted) | — | `INV-8` | admitted: `world--*`; refused: `--conflict` |
 | `move-rests-on-its-authorisation` | `effect` of `move_value`: its `authorisation` | an `authorise`, `permitted`, of that authorisation | order, destination (`route.destination`), to_asset (`route.to_asset`), floor (`route.delivers` at least the floor, where one is set) | `REQ-AUZ-3`, `INV-10` | admitted: `world--*`; refused: `--missing`, `--order`, `--destination`, `--to_asset`, `--floor`, `--where` |
+| `first-move-rests-on-its-parts-yes` | `effect` of `move_value` on a part's first segment, by its order's `route_chosen` plan | an `acceptance` of its order: given, with that part's yes; or an automatic deposit, which moves on no yes | origin_reserve (the move is from that yes's origin reserve) | `REQ-ORD-32` | admitted: `world--*`, `--automatic-deposit`; refused: `--missing`, `--origin_reserve` |
+| `owner-change-rests-on-its-destination-check` | `order_refusal` of `destination_owner_changed` | a `destination_check` of its order that found `owner_changed` | — | `REQ-ORD-24` | admitted: `world--*`; refused: `--missing`, `--no-check` |
 | `move-rests-on-its-orders-acceptance` | `effect` of `move_value`: its `order` | an `acceptance` of that order (before or after its `authorise`) | authorisation | `REQ-ORD-34` | admitted: `world--*`; refused: `--missing`, `--authorisation` |
 | `stuck-effect-moves-the-decided-resolution` | `effect` of `resolve_stuck`: its `carries_out` | a `stuck_decide`, `permitted`, with that request and decision | order, resolution | `REQ-AUZ-4` | admitted: `world--*`; refused: `--missing`, `--order`, `--resolution` |
 | `hand-on-rests-on-the-linked-orders-acceptance` | `effect` of `resolve_stuck` handing on: its `linked_order` | an `acceptance` of the linked order | requester (the order handed on's) | `REQ-ORD-13`, `REQ-ORD-43` | admitted: `world--*`; refused: `--missing`, `--requester` |
@@ -108,7 +110,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `stuck-move-carries-out-its-decide-step` | `stuck_move`: its `carries_out` | a `stuck_decide`, `permitted`, with that request and decision | order, mover (its party isn't the decider's) | `REQ-AUZ-4` | admitted: `world--*`; refused: `--missing`, `--order`, `--mover` |
 | `stuck-decision-is-of-a-stuck-order` | `stuck_decide`: its `order` | an `input` of that order | observed (`stuck_declared` or `no_route`) | `REQ-ORD-28`, `REQ-AUZ-4` | admitted: `world--*`; refused: `--missing`, `--observed` |
 | `input-cites-its-decision-record` | `input` (`route_chosen`, `route_recalculated`, `destination_changed`, `no_route`): its `decision_record` | a `decision_record` with that id | order | `REQ-AUD-4` | admitted: `world--*`; refused: `--missing`, `--order` |
-| `chosen-route-rests-on-its-orders-acceptance` | `input` (`route_chosen`): its order | an `acceptance` of that order | — | `REQ-ORD-34` | admitted: `world--*`; refused: `--missing` |
+| `chosen-route-rests-on-its-orders-acceptance` | `input` (`route_chosen`): its order | an `acceptance` of that order | parts (a given acceptance names one yes per part of the plan, in its order; an automatic deposit's names none) | `REQ-ORD-34` | admitted: `world--*`; refused: `--missing`, `--parts`, `--parts-out-of-order` |
 | `changed-destination-rests-on-its-acceptance` | `input` (`destination_changed`): its `acceptance` | an `acceptance` with that id | order | `REQ-ORD-43`, `REQ-ORD-34` | admitted: `world--*`; refused: `--missing`, `--order` |
 | `hand-on-input-rests-on-the-linked-orders-acceptance` | `input` (`handed_on`): its `acceptance` | an `acceptance` with that id | order (the `linked_order`), requester (the order handed on's) | `REQ-ORD-43`, `REQ-ORD-13` | admitted: `world--*`; refused: `--missing`, `--order`, `--requester` |
 | `handed-on-route-points-back` | `input` (`route_chosen` with `handed_on_from`): its `handed_on_from` | an `input` (`handed_on`) of that order | linked_order (this order) | `REQ-ORD-43` | admitted: `world--*`; refused: `--missing`, `--linked_order` |
@@ -138,7 +140,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
 | `route-starts-on-the-withdrawal-proof` | `effect` of `move_value` on a segment after its part's first, by the `route_chosen` plan | an `input` (`segment_settled`) of the part's first segment, for the order | — | `REQ-ORD-40` | admitted: `world--*`; refused: `--missing` |
 | `fee-rests-on-a-settled-segment` | `fee`: its segment | an `input` (`segment_settled`) of that segment | order | `REQ-AUD-11` | admitted: `world--*`; refused: `--missing`, `--order` |
-| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): its `reserve_yes` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (the `origin_reserve`), order (its `about`), transaction (its `about` names the one the reserve signed) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order`, `--transaction` |
+| `acceptance-rests-on-the-reserves-yes` | `acceptance` (`given`): each part's `reserve_yes` in its `yeses` | a stated entry at that receipt | verified (as the log attributed it on append, from the kept bytes), maker (that part's `origin_reserve`), order (its `about`), transaction (its `about` names the one the reserve signed) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--verified`, `--maker`, `--order`, `--transaction`, `--another-parts-maker` |
 | `acceptance-is-asked-in-the-users-session` | `acceptance` (`given`): its `session` | an `open_session`, `permitted`, that opened that session | holder (the requester), expires_at (not before the acceptance) | `REQ-ORD-32` | admitted: `world--*`; refused: `--missing`, `--holder`, `--expires_at` |
 | `move-segment-is-in-its-orders-plan` | `effect` of `move_value`: its segment | an `input` (`route_chosen`, `route_recalculated` or `destination_changed`) whose plan lists that segment | order | `REQ-ORD-38`, `REQ-ORD-40` | admitted: `world--*`; refused: `--missing`, `--unplanned-segment`, `--order` |
 | `recalculation-starts-from-evidenced-value` | `input` (`route_recalculated`): its order and part | an `input` (`segment_settled`) of that order | part, node (the settled segment's `to` in its plan is the new route's first `from`) | `REQ-ORD-2`, `INV-4` | admitted: `world--*`; refused: `--missing`, `--part`, `--node` |
@@ -350,7 +352,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order or the trail; a customer's is never of the trail |
 | `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers and the verifiers its tuples need, which receive the subject |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
-| `What::Acceptance` | it names the reserve's yes and the session exactly when its basis is given |
+| `What::Acceptance` | it names each part's yes, each part once and each with a receipt of its own, and the session exactly when its basis is given |
 | `What::DecisionRecord` | it names its shortlisted providers, each once, exactly when its round is the shortlist; a shortlist that kept none names none, so a `no_route` input has its record to cite; it names the verifiers its tuples need, each once, only when it is a shortlist's |
 
 Each fixture under `fixtures/invalid/` breaks exactly one rule, named in its file name. `tests/core-internal.rs`
@@ -436,7 +438,22 @@ These are defaults taken where the row left a choice open. Each is reversible by
   (`asked_before`, `provider-asked-before-was-asked`, `asked-before-is-complete`, `REQ-CPL-5`). A read
   check is taken from every role; policy answers it, and a permitted one is held to who may read
   (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`, the read rules above).
-- **Refusal classes for orders** are the seven `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
+- **Refusal classes for orders** are the eight `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
+  A change of the destination's owner is `destination_owner_changed`: the order waits for the customer, told so by
+  its own class, and the refusal rests on the `destination_check` that found `owner_changed`
+  (`owner-change-rests-on-its-destination-check`, `REQ-ORD-24`).
+- **One yes per part** (`REQ-ORD-32`). An acceptance given names its `yeses`, one per part, each with the part, its
+  origin reserve and the receipt of that reserve's yes; `acceptance-rests-on-the-reserves-yes` holds each to its own
+  reserve and transaction, `chosen-route-rests-on-its-orders-acceptance` holds the yeses to one per part of the
+  plan, in its order, and `first-move-rests-on-its-parts-yes` holds each part's first move to its part's yes, so no
+  part of a split order moves on another's yes. Each part cites a receipt of its own, so two identical parts can't
+  share one yes.
+- **What intake changes** (`T-020-03`). Build `What::Acceptance` with `yeses: Vec<PartYes>` in place of `reserve_yes:
+  Option<Receipt>` (`components/core-orch/src/intake/mod.rs`, where it builds the acceptance), one `PartYes { part,
+  origin_reserve, reserve_yes }` per part of the chosen route, in the plan's order, each part's yes asked of that part's
+  origin reserve under its own transaction and appended as its own receipt; and record a destination whose owner changed
+  as a `destination_check` of `owner_changed` followed by an `order_refusal` of `destination_owner_changed`, rather than
+  leaving the order waiting on the check alone.
 - **The conformance suites** (`rutent-conformance`) may name this contract inside their own code, as `F-024` may
   write a suite against it, but no public item of theirs may name it, so a suite's public functions can't take or
   return its types. A suite that needs them in its interface lives in the scenario assembly, which may.
@@ -444,9 +461,9 @@ These are defaults taken where the row left a choice open. Each is reversible by
   is complete to come from a party other than the failed provider and its publisher. The table checks the provider
   half (`reversal-rests-on-its-evidence`, `whose`); no entry names a provider's publisher, so the publisher half is a
   residual for `CMP-EVIDENCE` to hold when it grades the evidence (`T-020-12`).
-- **The reserve's yes and the user's session** (`REQ-ORD-32`). An acceptance given names its origin reserve, the
-  receipt of that reserve's stated yes about the order, and the session it was asked in; an automatic deposit names
-  neither, as `REQ-ORD-32` exempts it.
+- **The reserve's yes and the user's session** (`REQ-ORD-32`). An acceptance given names its origin reserve, each
+  part's yes (the part, its origin reserve and the receipt of that reserve's stated yes about the order), and the
+  session it was asked in; an automatic deposit names neither, as `REQ-ORD-32` exempts it.
 - **Reads and sessions.** No row ties a read to a session: `SPEC.md` asks no session of a reader (`REQ-CAT-3`'s
   sessions bound a reserve's balance checks), and a customer authenticated outside rutent must still read its
   order's state (`REQ-AUZ-1`, `REQ-ORD-5`, `AC-12`). A rule tying reads to sessions needs a `SPEC.md` ruling first.
