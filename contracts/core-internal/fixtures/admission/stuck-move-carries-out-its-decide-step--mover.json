@@ -3394,7 +3394,7 @@
         "kind": "verified",
         "who": {
           "party": "operator-desk-b",
-          "acts": "op-login-2",
+          "acts": "op-login-4",
           "role": "operator",
           "kind": "person"
         },
@@ -3407,7 +3407,7 @@
             "part": "p3",
             "decider": {
               "party": "operator-desk-b",
-              "acts": "op-login-2",
+              "acts": "op-login-4",
               "role": "operator",
               "kind": "person"
             },

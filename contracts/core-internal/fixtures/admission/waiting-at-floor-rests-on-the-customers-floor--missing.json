@@ -3338,8 +3338,8 @@
       "entry": {
         "kind": "verified",
         "who": {
-          "party": "operator",
-          "acts": "op-login-2",
+          "party": "operator-desk-a",
+          "acts": "op-login-4",
           "role": "operator",
           "kind": "person"
         },
@@ -3351,8 +3351,8 @@
             "order": "ord-1",
             "part": "p3",
             "decider": {
-              "party": "operator",
-              "acts": "op-login-2",
+              "party": "operator-desk-a",
+              "acts": "op-login-4",
               "role": "operator",
               "kind": "person"
             },
@@ -3942,8 +3942,8 @@
       "entry": {
         "kind": "verified",
         "who": {
-          "party": "operator",
-          "acts": "op-login-2",
+          "party": "operator-desk-a",
+          "acts": "op-login-4",
           "role": "operator",
           "kind": "person"
         },
@@ -3955,8 +3955,8 @@
             "order": "ord-1",
             "part": "p3",
             "decider": {
-              "party": "operator",
-              "acts": "op-login-2",
+              "party": "operator-desk-a",
+              "acts": "op-login-4",
               "role": "operator",
               "kind": "person"
             },

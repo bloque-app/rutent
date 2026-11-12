@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 469 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 86 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 472 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 87 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -471,6 +471,14 @@
   role setting a new destination; the requester, and the operator, redirecting the payer's refund. Admitted: the
   payer moving it, and a restatement before and after. 469 admission cases, 86 relations. (DEC-4, DEC-20,
   REQ-AUZ-3, REQ-AUZ-4, REQ-ORD-17, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution's question, decider and mover (the reviews since
+  `T-020-01` landed). `one-question-per-resolution-transaction`, a stated-entry row, refuses a second question of
+  Core's under a stuck resolution's transaction, an identical retry aside, so one set of answers settles it.
+  `stuck-move-carries-out-its-decide-step` holds the mover to another login than the decider's too (field `login`),
+  not its party alone. The world's stuck decisions are a desk's, `operator-desk-a`, a sibling of the mover's
+  `operator-desk-b`, not the operator's own: under `T-021-06`'s rule, chains meeting below the operator are one
+  actor. Refused: a second question under `tx-d3`; a mover of another party under the decider's login. 472 admission
+  cases, 87 relations. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-021-06)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

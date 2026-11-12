@@ -1363,6 +1363,10 @@ pub static RELATIONS: [Relation; 81] = [
                 "mover",
                 "a stuck order's value is moved by another accountable party than the one that decided",
             ),
+            (
+                "login",
+                "a stuck order's value is moved by another login than the one that decided",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::StuckMove { .. } => by_fields(0),
@@ -1379,6 +1383,7 @@ pub static RELATIONS: [Relation; 81] = [
                     &[
                         request.order == mv.order,
                         request.decider.party != mv.mover.party,
+                        request.decider.acts != mv.mover.acts,
                     ],
                 ),
                 _ => Match::NotTarget,
@@ -3667,6 +3672,23 @@ fn decided_at(decided: (&Id, &Id), history: &History) -> Option<usize> {
     )
 }
 
+/// The transaction a question of Core's names, where `statement` is one: an `operation` its operator, `operator`,
+/// made.
+fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'a Id> {
+    (statement.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+        && maker_provider(statement) == operator)
+        .then(|| statement.about.as_ref()?.transaction.as_ref())
+        .flatten()
+}
+
+/// Whether `transaction` is a stuck resolution's in `history`: a `stuck_decide` names it.
+fn resolution_transaction_in(transaction: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(verified(e).map(|v| &v.what), Some(What::StuckDecide { request, .. })
+            if &request.transaction == transaction)
+    })
+}
+
 /// A stuck resolution's order, transaction and decision, where `entry` is one: a `stuck_decide`, or a
 /// `resolve_stuck` effect, by the decision it carries out.
 fn resolution_transaction(entry: &VerifiedEntry) -> Option<(&Id, &Id, (&Id, &Id))> {
@@ -4108,7 +4130,7 @@ pub struct StatedCiting {
 
 /// The rows a stated entry is held to, read as [`RELATIONS`] are. `contracts/core-internal/README.md` lists them in
 /// the same table.
-pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
+pub static STATED_RELATIONS: [Relation<StatedCiting>; 3] = [
     Relation {
         name: "answer-follows-its-question",
         spec: &["REQ-ORD-32", "REQ-AUD-2"],
@@ -4164,6 +4186,31 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
                 order_transaction(t).is_some_and(|(o, x)| {
                     x == transaction && (o != order || segment_of(t) != segment_of(e))
                 }),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "one-question-per-resolution-transaction",
+        spec: &["REQ-AUZ-4", "REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "Core asks one question under a stuck resolution's transaction: no other of its questions names it",
+        fields: &[],
+        // A stuck resolution's outcome rests on the answers to Core's question under its own transaction, so a
+        // second question would let a second set of answers settle it. The same question sent again is a retry.
+        cites: |e, h| match operator_question(&e.entry, &e.operator) {
+            Some(transaction) if resolution_transaction_in(transaction, h) => by_fields(0),
+            _ => none(),
+        },
+        answers: |citing, _, t, _| {
+            let (Some(transaction), Some(t)) = (
+                operator_question(&citing.entry, &citing.operator),
+                stated(t),
+            ) else {
+                return Match::NotTarget;
+            };
+            judge(
+                operator_question(t, &citing.operator) == Some(transaction) && t != &citing.entry,
                 &[],
             )
         },
