@@ -136,7 +136,8 @@
             "reliance",
             "command",
             "erasure",
-            "resolution_outcome"
+            "resolution_outcome",
+            "input_not_taken"
           ]
         }
       },
@@ -649,6 +650,21 @@
           },
           "then": {
             "$ref": "#/$defs/what_resolution_outcome"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "input_not_taken"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_input_not_taken"
           }
         }
       ]
@@ -1719,6 +1735,67 @@
         "confirmed_with": {
           "description": "The evidence the confirmation named, by an opaque reference.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_input_not_taken": {
+      "description": "An input recorded but not taken: the state machine answered it not applicable, or the host refused its record id, so it moves no order, and the log keeps its trace (REQ-AUD-1) beside the inputs it took.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "input",
+        "reason"
+      ],
+      "properties": {
+        "call": {
+          "const": "input_not_taken"
+        },
+        "input": {
+          "$ref": "urn:rutent:state-machine:recorded-input"
+        },
+        "reason": {
+          "description": "Why it wasn't taken.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "not_applicable"
+                },
+                "reason": {
+                  "description": "The state machine's reason (urn:rutent:state-machine:order, its outcome's not-applicable reasons).",
+                  "enum": [
+                    "other_order",
+                    "unknown_subject",
+                    "ended",
+                    "not_from_this_state",
+                    "changes_destination",
+                    "keeps_destination",
+                    "reuses_segment_id",
+                    "value_not_at_start"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "record_id_reused"
+                }
+              }
+            }
+          ]
         }
       }
     },

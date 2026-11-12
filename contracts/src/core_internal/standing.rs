@@ -110,6 +110,38 @@ fn order_after(order: &str, history: &History) -> Option<Order> {
     current
 }
 
+/// Why `input` isn't taken after `history`, or `None` where it is: the host's refusal of a reused record id, or the
+/// state machine's not-applicable reason.
+pub(crate) fn not_taken(
+    history: &History,
+    input: &RecordedInput,
+) -> Option<super::types::NotTaken> {
+    if state_machine_takes(history, input) {
+        return None;
+    }
+    let reused = history.iter().any(|(_, e)| {
+        matches!(verified(e).map(|v| &v.what), Some(What::Input { input: earlier })
+            if earlier.record_id == input.record_id && earlier != input)
+    });
+    if reused {
+        return Some(super::types::NotTaken::RecordIdReused {});
+    }
+    match order_after(input.subject.order.as_str(), history) {
+        Some(order) => match step(&order, input).last_input.outcome {
+            Outcome::NotApplicable { reason } => {
+                Some(super::types::NotTaken::NotApplicable { reason })
+            }
+            _ => Some(super::types::NotTaken::NotApplicable {
+                reason: crate::state_machine::NotApplicableReason::NotFromThisState,
+            }),
+        },
+        // A route that opens no valid order.
+        None => Some(super::types::NotTaken::NotApplicable {
+            reason: crate::state_machine::NotApplicableReason::NotFromThisState,
+        }),
+    }
+}
+
 /// Whether the state machine takes `input` after `history`: the log admits a state-machine input only where it
 /// does (`input-is-one-the-state-machine-takes`). An input before its order's route is recorded with no state, as
 /// the host contract records it, and taken; a `route_chosen` is taken where it opens a valid order.

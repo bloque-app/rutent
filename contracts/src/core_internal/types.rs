@@ -2115,6 +2115,14 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// An input recorded, but not taken: the state machine or the host refused it, so it moves no order, and the
+    /// log keeps its trace (`REQ-AUD-1`) beside the inputs it took, which `standing` reads alone.
+    InputNotTaken {
+        /// The input.
+        input: RecordedInput,
+        /// Why it wasn't taken.
+        reason: NotTaken,
+    },
     /// A stuck resolution's move whose outcome was unknown, its outcome now known on two actors' word
     /// (`REQ-AUZ-4`, ADR-0011): its mover reported it and an actor of another party and another login confirmed it,
     /// each naming its evidence. Its effect's final `result` follows it (`unknown-resolution-settles-on-two-actors`).
@@ -2132,6 +2140,19 @@ pub enum What {
         /// The evidence the confirmation named, by an opaque reference.
         confirmed_with: Id,
     },
+}
+
+/// Why a recorded input wasn't taken: the state machine's answer, or the host's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotTaken {
+    /// The state machine answered it not applicable, for this reason.
+    NotApplicable {
+        /// Why.
+        reason: crate::state_machine::NotApplicableReason,
+    },
+    /// Its record id names another input this log holds: the host's exactly-once refuses it (`RecordIdReused`).
+    RecordIdReused {},
 }
 
 /// What a move whose outcome was unknown came to.

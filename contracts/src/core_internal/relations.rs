@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 69] = [
+pub static RELATIONS: [Relation; 70] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2896,6 +2896,24 @@ pub static RELATIONS: [Relation; 69] = [
             },
             None => Match::NotTarget,
         },
+    },
+    Relation {
+        name: "input-not-taken-is-one-refused",
+        spec: &["REQ-AUD-1", "REQ-STM-3", "REQ-STM-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "an input recorded as not taken is one the state machine or the host refuses, for the reason it names",
+        fields: &[],
+        // The trace of a refused input, which no order reads; one the machine would take, or another reason than
+        // its own, would be a false trace.
+        cites: |e, h| match &e.what {
+            What::InputNotTaken { input, reason }
+                if super::standing::not_taken(h, input) != Some(*reason) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
         name: "input-is-one-the-state-machine-takes",

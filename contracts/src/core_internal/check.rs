@@ -332,7 +332,8 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Refiling { .. }
-            | What::ResolutionOutcome { .. } => matches!(outcome, Outcome::Observed {}),
+            | What::ResolutionOutcome { .. }
+            | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
 
@@ -438,7 +439,8 @@ impl What {
             | What::Reliance { .. }
             | What::Command { .. }
             | What::Erasure { .. }
-            | What::ResolutionOutcome { .. } => Ok(()),
+            | What::ResolutionOutcome { .. }
+            | What::InputNotTaken { .. } => Ok(()),
         }
     }
 }
