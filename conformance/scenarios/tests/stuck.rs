@@ -1758,3 +1758,244 @@ fn restart_keeps_a_stuck_part_from_moving() {
     );
     assert_eq!(policy.asked, 0);
 }
+
+/// Stuck over time and resolved in full, the part's hold is released; run again, the part records what its
+/// carried-out segment gave back but takes no hold back, so nothing it no longer holds counts against the ceilings.
+// verifies: REQ-ORD-8, REQ-AUZ-4
+#[test]
+fn resolved_part_takes_no_hold_back_when_run_again() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    world
+        .fleet
+        .world()
+        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+    let _ = core.run(&mut world);
+    let since = carried_since(&core, WITHDRAWAL);
+    let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
+    follow(&core, &mut stuck).expect("its ends are Core's");
+    core.clock.set(since + 2 * DECLARED + 1);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Stuck(_))
+    ));
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let decision = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &staff("desk-a", "alice"),
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &staff("desk-b", "bob")
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    let order = id(ORDER);
+    assert_eq!(
+        core.exposures.held().filter(|h| h.order == order).count(),
+        0
+    );
+    let _ = try_run(&mut core, &mut world);
+    assert_eq!(
+        core.exposures.held().filter(|h| h.order == order).count(),
+        0,
+        "no hold taken back"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The order's ends are followed when it is taken up. Its deposit is never handed over, the route is recalculated
+/// from the ledger and its deposit isn't handed over either, and the next routing offers nothing: the part is stuck
+/// on a recalculated route, and its ends, followed before, still decide where its value may go. Following again
+/// changes nothing, and another authorisation can't replace them.
+// verifies: REQ-AUZ-4, REQ-ORD-28
+#[test]
+fn ends_followed_at_take_up_survive_a_recalculation() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut stuck = Stuck::new();
+    follow(&core, &mut stuck).expect("followed at take-up");
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(1);
+    let _ = core.run_over(&world.catalogue, &mut watched);
+    drop(watched);
+    let mut rerouting = Rerouting::of(&core);
+    let Ok(Recalculation::Recalculated(done)) = rerouting.recalculate(&mut core, &mut world) else {
+        panic!("recalculated");
+    };
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(0);
+    let ran = Rerouting::run(&mut core, &world.catalogue, &mut watched, &done).expect("ran");
+    drop(watched);
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::NotHandedOver(_)),
+        "{ran:?}"
+    );
+    world
+        .fleet
+        .world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let outcome = rerouting
+        .recalculate(&mut core, &mut world)
+        .expect("routed");
+    assert!(
+        matches!(outcome, Recalculation::NoRoute { .. }),
+        "{outcome:?}"
+    );
+    let recorded = record_no_route(&mut core, &mut stuck, &outcome).expect("recorded");
+    assert_eq!(recorded.state, OrderState::Stuck);
+    follow(&core, &mut stuck).expect("following again keeps what was followed");
+    let mut other = authorisation_of(&core.named, None);
+    other.destination.account = id("acct-of-a-friend");
+    assert_eq!(
+        stuck.follow(&core.segments, &other, &id("acct-1")),
+        Err(StuckError::NotItsAuthorisation)
+    );
+    let mut policy = PermitsEveryStep::new(&core.log);
+    for resolution in [back_to_origin(AMOUNT), to_destination(&core, AMOUNT)] {
+        assert!(
+            decide(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                &staff("desk-a", "alice"),
+                &resolution,
+                &evidence()
+            )
+            .is_ok_and(|d| matches!(d.outcome, Answer::Permit {})),
+        );
+    }
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The log refuses the resolution's effect: nothing moved, the permit backs no effect, and the move leaves the part
+/// free. Its decision is spent; a new decision and move go through.
+// verifies: REQ-AUZ-4, INV-7
+#[test]
+fn effect_the_log_refuses_frees_the_part_and_spends_its_decision() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let refused = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::Effect, Fault::Refuse));
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &refused,
+            &bob
+        ),
+        Err(ResolveError::Append(
+            rutent_contracts::core_internal::calls::AppendFailure::Refused(_)
+        ))
+    ));
+    assert!(moves.0.is_empty());
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &refused,
+            &bob
+        ),
+        Err(ResolveError::NoDecision),
+        "its decision is spent"
+    );
+    let again = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .expect("the part is free to decide");
+    assert!(matches!(
+        moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &again, &bob),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    assert_eq!(moves.0.len(), 1);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The receipt rule Core holds a stuck entry's receipt to is the log's own: an entry `CMP-CORE-AUDIT`'s log takes
+/// is answered with a receipt that passes it, and one of another entry doesn't.
+// verifies: INV-8, REQ-AUD-2
+#[test]
+fn real_logs_receipt_passes_the_receipt_rule() {
+    use rutent_contracts::core_internal::calls::{GeneralEntry, Log};
+    use rutent_contracts::core_internal::{Entry, TimeSource, VerifiedEntry, VerifiedKind, When};
+    use rutent_core_audit::log::{AuditLog, KeptInMemory, MemoryStore, Settings};
+    use rutent_core_orch::snapshot::Clock as _;
+    let context = rutent_conformance::role::SuiteContext::default();
+    let settings = Settings::new(
+        id("log-1"),
+        context.deployment.clone(),
+        operator().acts,
+        operator().party,
+    );
+    let mut log =
+        AuditLog::open(settings, MemoryStore::new(), KeptInMemory::new()).expect("opened");
+    let at = rutent_core_orch::snapshot::SystemClock
+        .now()
+        .timestamp()
+        .unwrap();
+    let call = |held: u64| {
+        GeneralEntry::try_from(Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: segments_support::core(),
+            what: What::StuckCall {
+                order: id(ORDER),
+                part: id(PART),
+                provider: id(RESERVE),
+                basis: StuckBasis::TwiceAdvertised,
+                figure_seconds: rutent_contracts::provider_role::SafeInteger::try_from(60u64)
+                    .unwrap(),
+                held_seconds: rutent_contracts::provider_role::SafeInteger::try_from(held).unwrap(),
+            },
+            when: When {
+                at: at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome: Outcome::Observed {},
+        }))
+        .unwrap()
+    };
+    let (first, second) = (call(121), call(122));
+    let receipt = log.append(&first).expect("taken");
+    assert!(rutent_core_orch::stuck::is_receipt_of(&receipt, &first));
+    assert!(!rutent_core_orch::stuck::is_receipt_of(&receipt, &second));
+}

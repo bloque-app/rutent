@@ -787,7 +787,7 @@ impl Segments {
                 let operation = part.operations.get(place).ok_or(SegmentsError::Plan(
                     "the chosen route has no operation there",
                 ))?;
-                taken.push(self.advance(parts, live, &at, operation)?);
+                taken.push(self.advance(parts, live, &at, operation, false)?);
             }
             if taken.is_empty() {
                 return Err(SegmentsError::Stuck(live.part.clone()));
@@ -939,7 +939,7 @@ impl Segments {
             if flight.outcome.as_ref().is_some_and(is_final) {
                 return Err(SegmentsError::AlreadyHandedOver(segment.clone()));
             }
-            return self.advance(parts, live, &at, operation);
+            return self.advance(parts, live, &at, operation, true);
         }
         let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
@@ -1057,7 +1057,7 @@ impl Segments {
                 record: None,
             },
         );
-        self.advance(parts, live, &at, operation)
+        self.advance(parts, live, &at, operation, true)
     }
 
     /// Takes a segment on from where it stopped: its question and effect appended, its value held, the segment
@@ -1069,6 +1069,7 @@ impl Segments {
         live: &Live<'_>,
         at: &(String, String),
         operation: &rutent_contracts::router_api::Operation,
+        hold: bool,
     ) -> Result<Accounted, SegmentsError> {
         let flight = self.flight(at)?;
         let (segment, place) = (id_of(&at.1)?, flight.place);
@@ -1078,9 +1079,13 @@ impl Segments {
         let held = held_at(operation, &moved).ok_or(SegmentsError::Plan(
             "the amount moved is one the route's operation can carry",
         ))?;
-        match parts.exposures.hold(live.order, &segment, &held) {
-            Ok(()) | Err(HoldError::AlreadyHeld) => {}
-            Err(other) => return Err(SegmentsError::Hold(other)),
+        // A stuck part's segment takes no hold: it still holds its value, or the part's resolution released it, and
+        // a hold taken back would count what it no longer holds (`T-020-11`).
+        if hold {
+            match parts.exposures.hold(live.order, &segment, &held) {
+                Ok(()) | Err(HoldError::AlreadyHeld) => {}
+                Err(other) => return Err(SegmentsError::Hold(other)),
+            }
         }
         let release = |exposures: &mut Exposures| exposures.release(live.order, &segment);
 

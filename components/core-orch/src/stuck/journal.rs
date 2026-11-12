@@ -41,7 +41,7 @@ pub(super) fn built(
 }
 
 /// Whether `receipt` is the log's receipt of `entry`: its digest is the entry's own.
-pub(super) fn is_receipt_of(receipt: &Receipt, entry: &GeneralEntry) -> bool {
+pub fn is_receipt_of(receipt: &Receipt, entry: &GeneralEntry) -> bool {
     let Ok(canonical) = to_canonical(entry.entry()) else {
         return false;
     };

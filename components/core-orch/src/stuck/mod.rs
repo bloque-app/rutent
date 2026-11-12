@@ -82,7 +82,7 @@ use crate::rounds::Fresh;
 use crate::segments::{Segments, StatusError};
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
-pub use journal::APPEND_TRIES;
+pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
 pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
@@ -745,8 +745,9 @@ impl Stuck {
     /// held to the destination of every part of the order Core follows; the origin is the reserve and outer node
     /// the order's first withdrawal took the value from, held to the authorisation's origin reserve, and the
     /// account there the value came from, `origin_account`, the order's own record of its payer. The assembly
-    /// calls it with the order's authorisation as intake recorded it; once policy registers authorisations
-    /// (`T-021-04`), it is read from there.
+    /// calls it with the order's authorisation as intake recorded it, when it takes the order up, before any segment
+    /// runs; once policy registers authorisations (`T-021-04`), it is read from there. The ends first followed
+    /// stand: following again with others is refused ([`StuckError::NotItsAuthorisation`]).
     pub fn follow(
         &mut self,
         segments: &Segments,
@@ -773,18 +774,24 @@ impl Stuck {
         if !to_destination || first.provider.as_str() != authorisation.origin_reserve.as_str() {
             return Err(StuckError::NotItsAuthorisation);
         }
-        self.ends.insert(
-            authorisation.order.as_str().to_owned(),
-            (
-                destination.clone(),
-                Destination {
-                    reserve: authorisation.origin_reserve.clone(),
-                    node: origin_node,
-                    account: origin_account.clone(),
-                },
-            ),
+        let ends = (
+            destination.clone(),
+            Destination {
+                reserve: authorisation.origin_reserve.clone(),
+                node: origin_node,
+                account: origin_account.clone(),
+            },
         );
-        Ok(())
+        // The ends first followed stand: following again with the same is nothing, and with others is refused.
+        match self.ends.get(authorisation.order.as_str()) {
+            Some(held) if *held == ends => Ok(()),
+            Some(_) => Err(StuckError::NotItsAuthorisation),
+            None => {
+                self.ends
+                    .insert(authorisation.order.as_str().to_owned(), ends);
+                Ok(())
+            }
+        }
     }
 
     /// The decide step (see the module's docs): Core's own checks first, then policy's decision, recorded by
@@ -948,7 +955,23 @@ impl Stuck {
         at: &str,
     ) -> Result<Moved, ResolveError> {
         let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
-        let receipt = motion.effect.append(parts.log)?;
+        let receipt = match motion.effect.append(parts.log) {
+            Ok(receipt) => receipt,
+            Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable.into()),
+            // A refused effect backs nothing: nothing moved and the permit is unused. The move is dropped, the part
+            // freed, and its decision spent, so a new decision and move are asked (`INV-7`).
+            Err(refused) => {
+                let part = key(&motion.order, &motion.part);
+                if let Some(decided) = carried_out_of(&motion.action) {
+                    self.kept.remove(decided.request.as_str());
+                }
+                self.moving.remove(at);
+                if let Some(declared) = self.declared.get_mut(&part) {
+                    declared.in_motion = None;
+                }
+                return Err(refused.into());
+            }
+        };
         let part = key(&motion.order, &motion.part);
         let resolved = match motion.resolved {
             Some(resolved) => resolved,

@@ -1109,7 +1109,8 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   the part still holds in the asset named, through a provider of the part (`THR-77`'s "to a friend"). The two ends
   come from Core's records, never from the caller (`Stuck::follow`): the destination is the order's authorisation's,
   held to every part's destination in the order Core follows; the origin is the reserve and outer node the order's
-  withdrawal took the value from, held to the authorisation's origin reserve, with the payer's account. A permit
+  withdrawal took the value from, held to the authorisation's origin reserve, with the payer's account. The assembly
+  follows the order when it takes it up; the ends first followed stand, and others are refused. A permit
   answering Core's own request is kept for its move (`NotItsAnswer` otherwise). `Stuck::carry_out` moves only on a
   decision Core holds, of that order, by a mover of neither the decider's party nor its login, whatever policy
   answers, only while no other move of the part is in progress, and only for what the part still holds then; then
@@ -1117,7 +1118,7 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   once for its own receipt in the one register the segments keep too (`Segments::act_on`), carried out by
   `Resolutions`. A move that stopped after its effect was built goes on from there without asking policy again,
   only for its own mover and order; before it acts the part is read again. Each move spends its decision, whatever
-  came of it. `done` records its result and counts what moved; the part is resolved, its holds released and every
+  came of it; an effect the log refuses drops its move and frees the part, its decision spent too. `done` records its result and counts what moved; the part is resolved, its holds released and every
   other decision for it spent, only once all of it moved. `failed` records its result and leaves the part held for a
   new decision. `unknown` records no result yet, and holds the part: nothing more is decided or moved for it until
   its outcome is known. The order's stuck mark goes only once the order holds nothing more, so resolving one part of
@@ -1154,8 +1155,8 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   kept decisions, what moved, the resolved mark and the timings come only from the durable copy.
 - **Seams in `T-020-08`'s module** (`segments/mod.rs`, additive; the coordinator's word not asked, reversible):
   `observe` takes a part's `no_route` and `stuck_declared` as well as `route_recalculated`, never a segment's input;
-  `run_part` on a stuck part hands nothing over and carries nothing out, recording only what a carried-out segment
-  gave back, and refuses it (`SegmentsError::Stuck`) when there is nothing to record; `act_on` marks an effect acted
+  `run_part` on a stuck part hands nothing over, carries nothing out and takes no hold, recording only what a
+  carried-out segment gave back, and refuses it (`SegmentsError::Stuck`) when there is nothing to record; `act_on` marks an effect acted
   on in the one register; `follow_recorded` rebuilds an order's state from the log; `stuck`, `carried_since` and
   `settlements` (`Settlement`, with its declared time) read what the stuck clock runs on. In `T-020-05`'s
   `snapshot/exposure.rs`: `Exposures::hold_resting`. `T-020-12` and `T-020-13` share the wave and may touch the same file: each seam is its own
@@ -1163,11 +1164,12 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **The kit** (`conformance/scenarios/tests/segments_support/`, additive, for `T-024-02` to fold): `On::Stuck`,
   `On::Raise` and `Fault::Refuse`;
   the register answers `SegmentProvider` (every kit segment is the reserve's) and lists `provider_desk` and
-  `other_provider_desk`; `rerouting.rs` runs a recalculation of the kit's order (the rounds' ports `T-020-10`'s
-  `tests/recalc.rs` still keeps its own copy of, left for `T-024-02` so as not to touch that file in parallel);
+  `other_provider_desk`; `rerouting.rs` runs a recalculation of the kit's order and its recalculated route
+  (with the rounds' ports, of which `T-020-10`'s `tests/recalc.rs` still keeps its own copy, left for `T-024-02` so as
+  not to touch that file in parallel);
   `resolving.rs` holds `staff`, `destination`, `origin`, `Raises`, `Moves` (with scripted outcomes),
   `PermitsEveryStep` (which can answer another request), `on_parts`, `watch` and `follow`.
-- **Tests.** Nineteen on the running platform in `conformance/scenarios/tests/stuck.rs`, the timing ones moving the
+- **Tests.** Twenty-three in `conformance/scenarios/tests/stuck.rs`, twenty-two on the running platform in `conformance/scenarios/tests/stuck.rs`, the timing ones moving the
   kit's clock: the row's no-route, twice-the-p99, no-history, figures, material-change and move-step tests; and
   `no_route_at_a_failed_final_deposit_waits_for_the_customer`, `stuck_state_is_visible_to_the_customer_and_the_provider`,
   `resolution_is_moved_once_by_another_party_on_its_decision`, `resolution_elsewhere_or_beyond_the_stuck_value_is_refused`,
@@ -1175,7 +1177,9 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   `partial_resolution_leaves_the_rest_to_decide`, `replayed_receipt_moves_nothing_without_its_record`,
   `failed_or_unknown_move_spends_its_decision`, `resolution_ends_come_from_cores_records`,
   `stuck_part_records_what_its_carried_segment_gave_back`, `no_route_the_log_couldnt_take_is_appended_by_the_next_watch`
-  and `restart_keeps_a_stuck_part_from_moving`; each replays the log through `attribute` and `admit_entry`. Eight
+  and `restart_keeps_a_stuck_part_from_moving`; and after `d3eabf2`, `resolved_part_takes_no_hold_back_when_run_again`,
+  `ends_followed_at_take_up_survive_a_recalculation`, `effect_the_log_refuses_frees_the_part_and_spends_its_decision`
+  and `real_logs_receipt_passes_the_receipt_rule`; each, but the last, replays the log through `attribute` and `admit_entry`. Eight
   unit tests in the module: `one_large_stuck_order_is_seen_among_many_small`,
   `resolving_one_part_keeps_another_parts_live_hold`, and six over the clock's figures and history.
 - **Rule-off, each red.** The code came first, so each rule was switched off once by a scratch script, its tests
@@ -1218,9 +1222,16 @@ and touched (below).
 | 12 | Low: no restart test of the two-place check | `Segments::follow_recorded` rebuilds the order from the log | `restart_keeps_a_stuck_part_from_moving` |
 | gap | Resting value not in the ceilings | Contained, so done: `Exposures::hold_resting` | in the no-route test (`in_flight` counts it) |
 | gap | The warning, the contract's half, `Resolutions` | Hand-offs to `T-023-01`, `T-020-01f`, `T-020-13` and a new row, above | — |
+| 13 | Found after `d3eabf2`: a resolved part took its hold back when run again, since the stuck path went through the segments' hold | A stuck part's segment takes no hold (`advance`'s `hold`) | `resolved_part_takes_no_hold_back_when_run_again` |
+| 14 | Found after `d3eabf2`: the receipt rule was tested only against the kit's log | Pinned against `CMP-CORE-AUDIT`'s `AuditLog`: the same canonical JSON, SHA-256, lower-case hex (`stuck::is_receipt_of`, now public) | `real_logs_receipt_passes_the_receipt_rule` |
+| 15 | Found after `d3eabf2`: a later `follow` replaced the order's ends | The ends first followed stand; the same again is nothing, others are refused. The assembly follows the order at take-up. A recalculation keeps the settled withdrawal, so the origin is still read after one | `ends_followed_at_take_up_survive_a_recalculation` |
+| 16 | Found after `d3eabf2`: an effect the log refuses held the part for ever | A refused effect drops its move, frees the part and spends its decision; nothing moved and its permit backs nothing | `effect_the_log_refuses_frees_the_part_and_spends_its_decision` |
 
-- **Red first.** The review's tests use the reworked API (`follow`, scripted `Moves`), so they don't compile against
-  `3cff030`; each rule they hold was instead switched off alone and its test seen red (below).
+- **Red first.** The review's tests (1 to 12) use the reworked API (`follow`, scripted `Moves`), so they don't compile
+  against `3cff030`: each rule they hold was shown red by switching it off alone, not by writing the test first
+  (below). Rows 13 to 16 were written test-first against `d3eabf2` and seen red for the right reason before each
+  fix (one hold taken back; a refused effect's move taken on again; another authorisation's ends accepted), then
+  switched off once more after it.
 - **Rule-off, the review's rules, each red:** decide waiting while a move is in progress, and no other move then (the
   pays-twice test); a part resolving only once all of it moved, and the move held to what is left (the partial
   test); a receipt only of its own entry (the replay test); a carried-out move spending its decision, and an unknown
@@ -1231,5 +1242,7 @@ and touched (below).
   test); the order rebuilt from the log (the restart test); twenty settlements before a p99, the window, and the
   first p99 against the advertised time (the timing unit tests and the material-change test). The one register of
   effects acted on is defence in depth behind the receipt rule, which the replay test holds; a part read again before
-  a move acts is defence in depth behind the one-move rule. Neither is reached by a test alone.
+  a move acts is defence in depth behind the one-move rule. Neither is reached by a test alone. After `d3eabf2`, each
+  red too: a stuck part taking no hold (the resolved-part test), the ends first followed standing (the take-up
+  test), a refused effect freeing the part (the refused-effect test).
 

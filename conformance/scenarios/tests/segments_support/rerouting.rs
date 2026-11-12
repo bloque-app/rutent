@@ -165,3 +165,55 @@ impl Rerouting {
         done
     }
 }
+
+impl Rerouting {
+    /// Runs the part's recalculated route over `modules`, as the segments run any part.
+    pub fn run(
+        core: &mut Core,
+        catalogue: &rutent_prov::catalogue::Catalogue,
+        modules: &mut dyn rutent_core_orch::segments::Modules,
+        recalculated: &rutent_core_orch::recalc::Recalculated,
+    ) -> Result<rutent_core_orch::segments::Ran, rutent_core_orch::segments::SegmentsError> {
+        let session = rutent_conformance::role::SuiteContext::default().session;
+        let (order, part, auth, origin) = (
+            id(&core.named.order),
+            id(PART),
+            id(&core.named.authorisation()),
+            id(RESERVE),
+        );
+        let (caller, core_actor, operator) = (super::core(), super::core(), core.operator.clone());
+        let session = id(&session);
+        let live = rutent_core_orch::segments::Live {
+            order: &order,
+            part: &part,
+            segments: &recalculated.segments,
+            record: &recalculated.record,
+            at: 0,
+            authorisation: &auth,
+            origin_reserve: &origin,
+            route: &recalculated.route,
+            caller: &caller,
+            core: &core_actor,
+            operator: &operator,
+            session: Some(&session),
+            inputs: &core.inputs,
+            floor: core.floor.as_ref(),
+        };
+        let mut general = General(Rc::clone(&core.log));
+        let mut parts = rutent_core_orch::segments::Parts {
+            clock: &*core.clock,
+            catalogue,
+            log: &mut general,
+            evidence: &mut core.store,
+            decisions: &mut core.policy,
+            modules,
+            uses: &mut rutent_core_orch::segments::NoProxy,
+            grading: &mut rutent_core_orch::segments::ProvidersWord,
+            operator_key: &mut core.key,
+            fresh: &mut core.ids,
+            issued: &core.issued,
+            exposures: &mut core.exposures,
+        };
+        core.segments.run_part(&mut parts, &live)
+    }
+}
