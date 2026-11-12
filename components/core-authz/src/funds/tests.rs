@@ -57,6 +57,8 @@ enum Wiring {
     Frozen(Vec<Authorisation>),
     /// The read drops the first authorisation the log holds as permitted.
     DropsTheFirst,
+    /// The read holds every authorisation the log holds as permitted, in reverse order.
+    Reversed,
     /// The read is of another log than the one appended to.
     Other(Rc<RefCell<Vec<Entry>>>),
 }
@@ -106,6 +108,7 @@ impl Recorded for Shared {
             Wiring::Fails => Err(ReadFailure::Unavailable),
             Wiring::Frozen(snapshot) => Ok(snapshot),
             Wiring::DropsTheFirst => Ok(self.whole().into_iter().skip(1).collect()),
+            Wiring::Reversed => Ok(self.whole().into_iter().rev().collect()),
             Wiring::Other(other) => Ok(permitted_in(other.borrow().iter())),
         }
     }
@@ -1095,40 +1098,92 @@ fn append_permitted(log: &Shared, a: &Authorisation) {
 }
 
 /// Two engines raced: both read `auth-17` in force, one permitted the customer's new destination, `auth-18`, and the
-/// other the operator's restatement of `auth-17`, `auth-70`, appended after it. The operator's authorisation only
-/// joins the terms already in force and never sets them, so the old destination isn't back by its hand: `auth-70` is
-/// not in force, and `auth-18` is.
+/// other a restatement of `auth-17` appended after it, by the operator acting for the user (`auth-70`) or by the origin
+/// reserve (`auth-71`). Neither's authorisation sets the terms: each only joins those already in force, so the old
+/// destination isn't back by either's hand. The restatement is not in force, and `auth-18` is.
 // verifies: REQ-AUZ-3, INV-10
 #[test]
 fn operators_restatement_raced_past_a_new_destination_is_not_in_force() {
     let (first, anew, _) = the_reviewers_three();
     let order = first.order.clone();
-    let mut restated = first.clone();
-    restated.authorisation = id("auth-70");
-    restated.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
-    let log = Shared::default();
-    for a in [&first, &anew, &restated] {
-        append_permitted(&log, a);
-    }
-    let mut policy = engine_over(&log);
-    assert_eq!(
-        decided(
-            &mut policy,
-            &move_under(
-                0,
-                &order,
-                &restated.authorisation,
-                end_of(&first, "2500000")
-            )
+    let givers = [
+        (
+            "auth-70",
+            actor("operator", "op-login-2", Role::Operator, ActorKind::Person),
         ),
-        REFUSED_OUTSIDE
-    );
+        (
+            "auth-71",
+            actor("us-bank", "us-bank", Role::Provider, ActorKind::Component),
+        ),
+    ];
+    for (n, (restatement, by)) in givers.into_iter().enumerate() {
+        let mut restated = first.clone();
+        restated.authorisation = id(restatement);
+        restated.given_by = by;
+        let log = Shared::default();
+        for a in [&first, &anew, &restated] {
+            append_permitted(&log, a);
+        }
+        let mut policy = engine_over(&log);
+        assert_eq!(
+            decided(
+                &mut policy,
+                &move_under(
+                    10 * n,
+                    &order,
+                    &restated.authorisation,
+                    end_of(&first, "2500000")
+                )
+            ),
+            REFUSED_OUTSIDE,
+            "{restatement}"
+        );
+        assert_eq!(
+            decided(
+                &mut policy,
+                &move_under(
+                    10 * n + 1,
+                    &order,
+                    &anew.authorisation,
+                    end_of(&anew, "120000")
+                )
+            ),
+            Answer::Permit {},
+            "{restatement}"
+        );
+        assert_eq!(
+            policy.authorise(&restated).unwrap().outcome,
+            NOT_PERMITTED,
+            "{restatement}"
+        );
+    }
+}
+
+/// A read as long as the one before it, but holding its entries in another order, doesn't extend it: the engine
+/// refuses, though the read is no shorter and still holds the engine's own last permit. Read whole in that order, the
+/// customer's first authorisation, coming last, would be back in force.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn reordered_read_of_the_log_is_refused() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let mut policy = engine();
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
     assert_eq!(
         decided(
             &mut policy,
-            &move_under(1, &order, &anew.authorisation, end_of(&anew, "120000"))
+            &move_under(0, &order, &anew.authorisation, end_of(&anew, "120000"))
         ),
         Answer::Permit {}
     );
-    assert_eq!(policy.authorise(&restated).unwrap().outcome, NOT_PERMITTED);
+    policy.log.wire(Wiring::Reversed);
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(1, &order, &first.authorisation, end_of(&first, "2500000"))
+        ),
+        MISSING
+    );
+    assert_eq!(policy.authorise(&first).unwrap().outcome, MISSING);
 }

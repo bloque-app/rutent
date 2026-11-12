@@ -412,8 +412,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | the floor is one of the terms | `new floor from anyone but the customer is refused`; `route outside ...` |
   | a failed read gives an empty register | `register that cannot be read refuses every authorisation and move` |
   | a failed read keeps the last register | `register that cannot be read refuses every authorisation and move` |
-  | a read extends the one before it | `truncated read of the log is refused` |
+  | a read extends the one before it | `truncated read of the log is refused`; `reordered read of the log is refused` |
+  | M7: the extension check weakened to a read no shorter | `reordered read of the log is refused` |
   | a read holds the engine's own last permit | `snapshot read missing the engine's own permit is refused`; `read over another log is refused` |
   | another's new terms never set them (the race) | `operator's restatement raced past a new destination is not in force` |
+  | M6: that rule narrowed to the operator, the origin reserve let set terms | `operator's restatement raced past a new destination is not in force` |
   | a restatement joins the ids in force (M3) | the property; `restatement keeps the earlier id in force beside it` |
   | a same-id retry held to being in force (M5) | the property; `register is rebuilt ...`; `replaced authorisation given again ...`; `operator's restatement raced ...` |
