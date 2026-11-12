@@ -796,6 +796,31 @@ both admitted by the log; and the same through the session ending) and
   - filed orders in `OpenOrders`: only intake's orders are read as open, so an arrival after an automatic deposit's own
     order started meets no order.
 
+### T-020-04, on the contract head (`acde1cf`, integration)
+
+- **A deposit is known by its signed transaction.** A reserve's notice names the transaction the reserve gave the
+  credit, and Core appends it about that transaction alone, bound to no order; a notice naming none, or of the `result`
+  shape (which answers a question Core asked under its transaction, `answer-follows-its-question`), isn't taken. Core
+  keys a deposit by its reserve and that transaction, whatever bytes carry it, the key `one-order-per-deposit` reads
+  (`deposit_of`); the same deposit with other figures is refused. Every `arrival` names the deposit's notice by its
+  commitment (`arrival-names-its-notice`), and one held against a part of a split order names the part
+  (`OpenOrder.part`).
+- **One deposit, one order, superseding round 5.** Once a filing held the deposit against its order (the `arrival`
+  naming the order is in the log), the deposit is filed on no more, whatever comes of that order: the log refuses a
+  second arrival naming an order on the same deposit. Round 5 left the deposit free when the acceptance's first append
+  was refused; that history the contract now refuses, so the round-5 test is replaced by
+  `one_deposit_opens_one_order_whatever_comes_of_it`.
+- **An automatic deposit is routed as one part.** A split route of an order accepted on an automatic deposit rests on
+  an arrival naming each part (`split-deposit-arrival-names-its-part`), and one deposit has one arrival naming an order
+  (`one-order-per-deposit`), so one deposit can fund one part only: the filing routes under `max_parts` 1. A split
+  automatic deposit is one deposit per part, each its own notice. The rule-off stays green on the kit, whose bounds are
+  one part already.
+- **The refiling row, handed to `T-020-01f`.** `refiling-files-an-arrival-anew` compares a filer's party with the
+  operator `admit_entry` is handed, which the real log gives as `Settings.operator`, the operator's statement maker
+  (`conformance-operator` in the assembly), not its party (`operator`): a genuine operator login's refiling would be
+  refused by the log while Core takes it. The core-orch kit can't show it, its operator's maker and party being one.
+  Sent by the coordinator to the contract author; `contracts/` is untouched here.
+
 ### T-020-03, tracked from `T-021-05`: intake's status reads bypass an agent's read scope
 
 - **Open item for `T-020-03`'s owner, due before `M4`.** Intake answers an order's status (`Told`) from `open`,
