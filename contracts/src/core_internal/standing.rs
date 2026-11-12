@@ -136,6 +136,20 @@ pub(crate) fn not_taken(
     if reused {
         return Some(super::types::NotTaken::RecordIdReused {});
     }
+    // The same input as one refused before: the host hands back the refusal it recorded (the host contract's
+    // exactly-once), so only an identical trace follows it.
+    let refusal = history
+        .iter()
+        .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::InputNotTaken {
+                input: earlier,
+                reason,
+            }) if earlier == input => Some(*reason),
+            _ => None,
+        });
+    if refusal.is_some() {
+        return refusal;
+    }
     match order_after(input.subject.order.as_str(), history) {
         Some(order) => match step(&order, input).last_input.outcome {
             Outcome::NotApplicable { reason } => {
@@ -158,19 +172,14 @@ pub(crate) fn not_taken(
 pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
     // One record id names one content, in the whole log (the host contract's exactly-once, `RecordIdReused`), a
     // refused input's kept in `input_not_taken` too: an input under a record id an earlier taken input holds is that
-    // input sent again, or refused; under a refused input's, it is refused unless it is that same input, which the
-    // machine then judges again.
-    for (earlier, taken) in history
+    // input sent again, or refused; under a refused input's, it is never taken, the same input again included,
+    // since the host hands back the refusal it recorded (the host contract's README).
+    if let Some((earlier, taken)) = history
         .iter()
         .filter_map(|(_, e)| recorded(e))
-        .filter(|(earlier, _)| earlier.record_id == input.record_id)
+        .find(|(earlier, _)| earlier.record_id == input.record_id)
     {
-        if earlier != input {
-            return false;
-        }
-        if taken {
-            return true;
-        }
+        return taken && earlier == input;
     }
     match order_after(input.subject.order.as_str(), history) {
         None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),

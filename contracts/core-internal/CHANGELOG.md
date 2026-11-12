@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 433 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 437 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -368,6 +368,15 @@
   result, and any number of reports. A report is now admitted only while the move has neither (field `open`), and
   `one-report-per-effect` refuses a second permitted report of an effect, an identical retry aside, so the
   confirmer confirms the one report there is. 433 admission cases, 82 relations. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011,
+  T-020-01)
+- Folded into 1.0.0 before its release: a refused input's refusal is handed back (round 6 of `T-020-01`'s review).
+  The same input sent again under a refused input's record id was judged again by the state machine, so once its
+  order had moved on the log took it, where the host hands back the refusal it recorded. Under a refused input's
+  record id, `state_machine_takes` now takes nothing, the same input included, and the not-taken verdict for the same
+  input is the recorded refusal, so only an identical `input_not_taken` follows it. Refused: the reviewer's sequence,
+  a destination change refused, then the order waiting, then the same input under the same id; the same input's
+  trace naming another reason. Admitted: the same trace again, also after its order has moved on. `CMP-STM`'s
+  fixture oracle refuses a refused input taken again. 437 admission cases. (DEC-4, DEC-20, REQ-AUD-1, REQ-STM-3,
   T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
