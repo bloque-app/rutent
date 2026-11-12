@@ -60,5 +60,6 @@
       "maker": "rutent-operator",
       "party": "operator"
     }
-  ]
+  ],
+  "operator": "rutent-operator"
 }

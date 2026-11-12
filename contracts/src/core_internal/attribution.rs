@@ -17,7 +17,10 @@
 //!    through a transaction its maker signed, and one whose body names a transaction never about nothing
 //!    (`REQ-ORD-32`, `REQ-ORD-38`). A judgement names no transaction, so it is verified about nothing;
 //! 7. its signature verifies over its signing input;
-//! 8. its key signs the maker's statements at its `made_at` (`THR-3`).
+//! 8. its key signs the maker's statements at its `made_at` (`THR-3`): for a module the operator publishes, a
+//!    statement key that a release of it the log accepted names ([`release_statement_keys`]); for any other maker,
+//!    one [`StatementKeys::signs_for`] answers, whose first trust in a provider is the advertising keys of its latest
+//!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold.
 //!
 //! So a verified entry's `acts` and `party` are both bound to its key. Its `role` stays the writer's label: no
 //! relation may read a stated entry's role.
@@ -30,9 +33,155 @@ use alloc::vec::Vec;
 
 use super::Violation;
 use super::calls::{AppendFailure, KeptStatements, Signatures, StatementKeys};
+use super::relations::History;
 use super::types::*;
 use crate::provider_role::{Deployment, PublicKey, SignatureScheme};
+use crate::router_api::Id;
 use serde::Deserialize;
+
+/// The catalogue changes `history` carried out, in log order: each effect's change for which this log holds a
+/// `done` result. A change whose effect failed or went unanswered changes nothing.
+fn catalogue_changes(history: &History) -> impl Iterator<Item = &Action> {
+    history.iter().filter_map(|(receipt, e)| match e {
+        Entry::Verified(VerifiedEntry {
+            what: What::Effect { action, .. },
+            ..
+        }) if matches!(action, Action::ChangeCatalogue { .. }) && done(history, receipt) => {
+            Some(action)
+        }
+        _ => None,
+    })
+}
+
+/// Whether `history` holds a `done` result of the effect at `receipt`.
+fn done(history: &History, receipt: &Receipt) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(e, Entry::Verified(VerifiedEntry {
+            what: What::Result { effect },
+            outcome: Outcome::Done {},
+            ..
+        }) if effect == receipt)
+    })
+}
+
+/// Whether a segment of `module` under `transaction` began or ran on `version`, by the segment record the platform
+/// handed over (`began_on`, `runs_on`).
+fn ran_on(history: &History, module: &Id, transaction: &Id, version: &Id) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(e, Entry::Verified(VerifiedEntry {
+            what: What::HandOver {
+                item: HandedOver::SegmentRecord { transaction: t, provider, began_on, runs_on, .. },
+                ..
+            },
+            ..
+        }) if t == transaction && provider == module && (began_on == version || runs_on == version))
+    })
+}
+
+/// The advertising keys of `provider`'s latest grant in `history` that no later `revoke_grant` of its tuple took
+/// back: the log's first trust in the provider's advertisements. A new grant replaces the keys, which is how a
+/// provider recovers a lost one; with no grant in force there are none.
+pub fn granted_advertising_keys<'a>(history: &'a History, provider: &Id) -> &'a [PublicKey] {
+    let mut in_force: Vec<(&Id, &[PublicKey])> = Vec::new();
+    for action in catalogue_changes(history) {
+        let Action::ChangeCatalogue {
+            change,
+            provider: p,
+            tuple: Some(tuple),
+            advertising_keys,
+            ..
+        } = action
+        else {
+            continue;
+        };
+        if p != provider {
+            continue;
+        }
+        in_force.retain(|(t, _)| *t != tuple);
+        if *change == CatalogueChange::Grant {
+            in_force.push((tuple, advertising_keys));
+        }
+    }
+    in_force.last().map_or(&[], |(_, keys)| keys)
+}
+
+/// Where a release stands, by the changes the log carried out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    InForce,
+    Revoked,
+    Exploited,
+}
+
+/// The statement keys a module the operator publishes signs with, for a statement about `transaction` where it
+/// names one: the keys of the releases of `module` the log accepted and that stand in force, a `reinstate` putting
+/// a release back in force; and of a release since revoked, only for a statement about a transaction whose segment
+/// began or ran on that release, which a revocation lets finish on it (`REQ-MDL-20`). A release declared exploited
+/// signs nothing more, whatever segment is in flight on it.
+pub fn release_statement_keys<'a>(
+    history: &'a History,
+    module: &Id,
+    transaction: Option<&Id>,
+) -> Vec<&'a PublicKey> {
+    let mut releases: Vec<(&Id, &PublicKey, Standing)> = Vec::new();
+    for action in catalogue_changes(history) {
+        let Action::ChangeCatalogue {
+            change,
+            provider,
+            version: Some(version),
+            statement_key,
+            ..
+        } = action
+        else {
+            continue;
+        };
+        if provider != module {
+            continue;
+        }
+        if let (CatalogueChange::AcceptModule, Some(key)) = (change, statement_key) {
+            releases.retain(|(v, ..)| *v != version);
+            releases.push((version, key, Standing::InForce));
+            continue;
+        }
+        let standing = match change {
+            CatalogueChange::RevokeRelease => Standing::Revoked,
+            CatalogueChange::DeclareExploited => Standing::Exploited,
+            CatalogueChange::Reinstate => Standing::InForce,
+            _ => continue,
+        };
+        for release in releases.iter_mut().filter(|(v, ..)| *v == version) {
+            release.2 = standing;
+        }
+    }
+    releases
+        .into_iter()
+        .filter(|(version, _, standing)| match standing {
+            Standing::InForce => true,
+            Standing::Revoked => transaction.is_some_and(|t| ran_on(history, module, t, version)),
+            Standing::Exploited => false,
+        })
+        .map(|(_, key, _)| key)
+        .collect()
+}
+
+/// Whether `claim`'s key signs `maker`'s statements: a module the operator publishes (another maker than the operator
+/// that states for the operator's party) by a statement key its accepted release names in `history`; any other
+/// maker as `keys` answers.
+fn signed_by_its_maker(
+    claim: &StatedEntry,
+    maker: &Id,
+    history: &History,
+    keys: &mut dyn StatementKeys,
+) -> Result<bool, AppendFailure> {
+    let operator = keys.operator()?;
+    if maker != &operator && keys.publisher(maker)? == keys.publisher(&operator)? {
+        let transaction = claim.about.as_ref().and_then(|a| a.transaction.as_ref());
+        return Ok(
+            release_statement_keys(history, maker, transaction).contains(&&claim.signed_with.key)
+        );
+    }
+    keys.signs_for(maker, &claim.signed_with, &claim.when.at)
+}
 
 /// The refusal of a stated entry whose commitment names no statement the evidence store keeps.
 pub const STATED_WITHOUT_ITS_KEPT_BYTES: &str =
@@ -84,6 +233,7 @@ fn decode(text: &str) -> Option<Vec<u8>> {
 /// recorded.
 pub fn attribute(
     claim: &StatedEntry,
+    history: &History,
     store: &mut dyn KeptStatements,
     keys: &mut dyn StatementKeys,
     signatures: &dyn Signatures,
@@ -126,7 +276,7 @@ pub fn attribute(
                     None => body_transaction.is_none() && !bound,
                 }
                 && signatures.verifies(&bytes)
-                && keys.signs_for(&claimed_by.acts, &claim.signed_with, &claim.when.at)?
+                && signed_by_its_maker(claim, &claimed_by.acts, history, keys)?
                 && keys.publisher(&claimed_by.acts)?.as_ref() == Some(&claimed_by.party)
         }
     };

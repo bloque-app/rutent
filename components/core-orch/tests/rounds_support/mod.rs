@@ -534,7 +534,7 @@ impl Env {
                     let mut keys = Sources { ..sources };
                     let signatures = Sources { ..sources };
                     Entry::Stated(
-                        attribute(claim, &mut sources, &mut keys, &signatures)
+                        attribute(claim, &history, &mut sources, &mut keys, &signatures)
                             .map_err(|e| (i, format!("{e:?}")))?,
                     )
                 }

@@ -425,6 +425,19 @@ pub enum Action {
             skip_serializing_if = "Option::is_none"
         )]
         tuple: Option<Id>,
+        /// The provider's advertising keys, at least one, each once: named exactly by a grant. The latest grant in
+        /// the log replaces them, which is how a provider recovers a lost key, and they are the log's first trust
+        /// in the provider's advertisements, never a deployment setting the log doesn't hold.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        advertising_keys: Vec<PublicKey>,
+        /// The key the release's module signs its statements with: named exactly by `accept_module`, so the log
+        /// verifies a module the operator publishes by the release it accepted.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        statement_key: Option<PublicKey>,
     },
     /// Moving a stuck order's value as its decide step named, outside the order's authorisation, which a
     /// resolution back to the origin needn't keep to (`REQ-AUZ-4`, ADR-0011). It travels only as an effect on a
