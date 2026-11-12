@@ -1667,3 +1667,185 @@ fn customers_choice_rests_on_terms_the_log_holds() {
     );
     assert_eq!(count(&core, is_authorise), authorised, "policy not asked");
 }
+
+// Round 2 of the review ------------------------------------------------------------------------------------------
+
+/// Takes up another order, `ord-{n}`, over the kit's route: its withdrawal settles, its final deposit is refused, and
+/// with no route left from the ledger it waits for the customer there, as the kit's own order does.
+fn another_order_waiting(core: &mut Core, world: &mut World, n: u8) {
+    core.take_up(Named::another(n));
+    world
+        .fleet
+        .world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let ran = core.run(world);
+    assert!(
+        matches!(segments(&ran)[1].outcome, SegmentOutcome::Refused(_)),
+        "{ran:?}"
+    );
+    world
+        .fleet
+        .world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let outcome = Rerouting::of(core).recalculate(core, world).unwrap();
+    let mut stuck = Stuck::new();
+    let (order, part, last) = (
+        id(&core.named.order),
+        id(PART),
+        core.record.record_id().clone(),
+    );
+    let actor = segments_support::core();
+    let waiting = on_parts(core, |parts| {
+        stuck.no_route(
+            parts,
+            NoRouteLeft {
+                order: &order,
+                part: &part,
+                outcome: &outcome,
+                last_record: &last,
+                core: &actor,
+            },
+        )
+    })
+    .expect("no route recorded");
+    assert_eq!(waiting.state, OrderState::WaitingForCustomer);
+    core.named = Named::first();
+}
+
+/// Hands `from`'s part on to `linked`, on the customer's acceptance `acceptance`.
+fn hand_on_from(
+    core: &mut Core,
+    hand_on: &mut HandOn,
+    from: &str,
+    linked: &str,
+    plan: &[rutent_contracts::state_machine::PartPlan],
+    acceptance: &str,
+) -> Result<HandedOn, HandOnError> {
+    let recorded = recorded_with_receipts(core);
+    let (order, part, linked, record, acceptance) = (
+        id(from),
+        id(PART),
+        id(linked),
+        linked_record(linked),
+        id(acceptance),
+    );
+    let (customer, actor) = (customer(), segments_support::core());
+    hand_parts(core, &mut Stuck::new(), |parts| {
+        hand_on.hand_on(
+            parts,
+            Handing {
+                order: &order,
+                part: &part,
+                linked: &linked,
+                decision_record: &record,
+                plan,
+                acceptance: &acceptance,
+                basis: Basis::Customer,
+                recorded: &recorded,
+                by: &customer,
+                core: &actor,
+            },
+        )
+    })
+}
+
+fn is_handed_on(what: &What) -> bool {
+    matches!(what, What::Input { input } if matches!(input.observed, Observed::HandedOn { .. }))
+}
+
+/// The reviewer's sequence: one part's hand-on to the linked order can't be appended now and stays pending; another
+/// part is handed on to the same linked order meanwhile. The second is refused while the first names the linked
+/// order, so the first, retried, is the one handed on, and the log admits it: nothing is left handed on to an
+/// order the log won't open twice.
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn a_pending_hand_on_keeps_its_linked_order_from_another() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    another_order_waiting(&mut core, &mut world, 5);
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    let mut hand_on = HandOn::new();
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Handed, Fault::Unavailable));
+    }
+    assert_eq!(
+        hand_on_from(&mut core, &mut hand_on, ORDER, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Append(
+            rutent_contracts::core_internal::calls::AppendFailure::Unavailable
+        )),
+        "pending"
+    );
+    let before = entries(&core);
+    assert_eq!(
+        hand_on_from(
+            &mut core,
+            &mut hand_on,
+            "ord-5",
+            "ord-2",
+            &plan,
+            "acc-ord-2"
+        ),
+        Err(HandOnError::AlreadyOpened),
+        "the linked order is named by a hand-on pending"
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    hand_on_from(&mut core, &mut hand_on, ORDER, "ord-2", &plan, "acc-ord-2")
+        .expect("the pending hand-on, retried");
+    assert_eq!(count(&core, is_handed_on), 1);
+    assert_eq!(
+        part_of(&core, "ord-5").state,
+        OrderState::WaitingForCustomer
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// After a restart, Core's records needn't follow a linked order the log opened: another part's hand-on to it is
+/// refused before anything is recorded, on what the log holds (its `route_chosen`, a `handed_on` naming it).
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn hand_on_to_a_linked_order_the_log_opened_is_refused_after_a_restart() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    another_order_waiting(&mut core, &mut world, 5);
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    let restarted = core.segments.clone();
+    hand_on_from(
+        &mut core,
+        &mut HandOn::new(),
+        "ord-5",
+        "ord-2",
+        &plan,
+        "acc-ord-2",
+    )
+    .expect("handed on");
+    // A restart: Core's records follow neither the linked order nor the hand-on; the log holds both.
+    core.segments = restarted;
+    let before = entries(&core);
+    assert_eq!(
+        hand_on_from(
+            &mut core,
+            &mut HandOn::new(),
+            ORDER,
+            "ord-2",
+            &plan,
+            "acc-ord-2"
+        ),
+        Err(HandOnError::AlreadyOpened)
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
+}

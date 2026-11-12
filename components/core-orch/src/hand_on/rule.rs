@@ -189,6 +189,8 @@ pub struct Accepted<'a> {
     pub requester: &'a Id,
     /// The authorisation it accepts.
     pub authorisation: &'a Id,
+    /// The request the order was opened under (`REQ-ORD-19`).
+    pub request: &'a Id,
     /// Given by a person, or an automatic deposit's.
     pub basis: AcceptanceBasis,
     /// Who the log holds as having given it.
@@ -294,11 +296,13 @@ pub fn acceptance_of<'a>(recorded: &'a [Entry], acceptance: &Id) -> Option<Accep
                 authorisation,
                 basis,
                 yeses,
+                request,
                 ..
             } if a == acceptance => Some(Accepted {
                 order,
                 requester: &parties.requester,
                 authorisation,
+                request,
                 basis: *basis,
                 who: &v.who,
                 yeses,

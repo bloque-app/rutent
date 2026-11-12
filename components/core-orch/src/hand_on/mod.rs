@@ -132,7 +132,8 @@ pub enum HandOnError {
     /// The linked order's parts aren't those its acceptance has a yes for, in order, each from the reserve its first
     /// segment runs at (`chosen-route-rests-on-its-orders-acceptance`): nothing was recorded.
     PlanOutsideItsAcceptance,
-    /// Core follows the linked order already: it was opened, and is opened once (`order-is-opened-once`).
+    /// The linked order is taken already: Core follows it, the log holds its `route_chosen` or a `handed_on` naming
+    /// it, or another hand-on pending here names it. An order is opened once (`order-is-opened-once`).
     AlreadyOpened,
     /// The log refused the linked order's `route_chosen` outright after the first order's `handed_on` went in: the
     /// refusal is recorded as the linked order's, so the part isn't left handed on to an order that silently never
@@ -685,6 +686,18 @@ impl HandOn {
             let built = Self::build_hand_on(parts, &handing)?;
             self.hand_ons.insert(at.clone(), built);
         }
+        // Before the first record, and again before each retry of it: the linked order is free, in the log and
+        // among the hand-ons pending here, so the `route_chosen` that follows is the linked order's first
+        // (`order-is-opened-once`). A hand-on whose linked order was taken meanwhile is dropped, nothing recorded.
+        if self
+            .hand_ons
+            .get(&at)
+            .is_some_and(|p| p.handed_on.0.receipt.is_none())
+            && let Err(taken) = self.linked_is_free(parts.segments, &handing, &at)
+        {
+            self.hand_ons.remove(&at);
+            return Err(taken);
+        }
         let pending = self.hand_ons.get_mut(&at).ok_or(HandOnError::Unknown)?;
         // The first order's record first: the linked order's points back to it (`handed-on-route-points-back`).
         let handed_on_receipt = match pending.handed_on.0.append(parts.log) {
@@ -730,6 +743,40 @@ impl HandOn {
             route_chosen_receipt,
             at: pending.at,
         })
+    }
+
+    /// Whether `handing`'s linked order is free for the hand-on at `at`: Core doesn't follow it, the log holds no
+    /// `route_chosen` of it and no `handed_on` naming it but this hand-on's own, and no other hand-on pending here
+    /// names it. After a restart the log is what tells, since Core's records may follow none of it.
+    fn linked_is_free(
+        &self,
+        segments: &Segments,
+        handing: &Handing<'_>,
+        at: &(String, String),
+    ) -> Result<(), HandOnError> {
+        let linked = handing.linked.as_str();
+        let own = self.hand_ons.get(at).map(|p| &p.handed_on.1.record_id);
+        let pending_elsewhere = self
+            .hand_ons
+            .iter()
+            .any(|(k, p)| k != at && p.route_chosen.1.subject.order.as_str() == linked);
+        let in_the_log = handing.recorded.iter().any(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Input { input } => match &input.observed {
+                    Observed::RouteChosen { .. } => input.subject.order.as_str() == linked,
+                    Observed::HandedOn { linked_order, .. } => {
+                        linked_order.as_str() == linked && Some(&input.record_id) != own
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            Entry::Stated(_) => false,
+        });
+        if segments.order(handing.linked).is_some() || pending_elsewhere || in_the_log {
+            return Err(HandOnError::AlreadyOpened);
+        }
+        Ok(())
     }
 
     fn build_hand_on(
@@ -879,10 +926,12 @@ impl HandOn {
         let refusal = built_what(
             parts,
             handing.core,
+            // The linked order's own request, the one its acceptance was opened under; its route isn't one the log
+            // takes now, the closest class there is (no class says the log refused it).
             What::OrderRefusal {
-                request: handing.decision_record.clone(),
+                request: accepted.request.clone(),
                 order: Some(handing.linked.clone()),
-                class: rutent_contracts::core_internal::OrderRefusalClass::MalformedRequest,
+                class: rutent_contracts::core_internal::OrderRefusalClass::NoRouteRightNow,
             },
         )?;
         let first_segment = handing

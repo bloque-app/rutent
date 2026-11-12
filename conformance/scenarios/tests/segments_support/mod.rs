@@ -159,6 +159,8 @@ pub enum On {
     Fee,
     /// An order's `route_chosen` (`T-020-13`).
     Chosen,
+    /// A part's `handed_on` (`T-020-13`).
+    Handed,
 }
 
 impl On {
@@ -199,6 +201,8 @@ impl On {
                     Observed::StuckDeclared { .. } | Observed::NoRoute { .. })),
             (On::Evidence, Entry::Verified(v)) => matches!(v.what, What::Evidence { .. }),
             (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
+            (On::Handed, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
             (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })),
             _ => false,

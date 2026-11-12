@@ -2584,3 +2584,28 @@ rule was switched off once (the table below).
 - **Seams, after the review:** `segments/mod.rs`'s guard now refuses an inner-start route of an unfollowed order too
   (one condition). The kit gained `On::Chosen`, `append_entry`, `seed_linked` (a given acceptance) beside
   `seed_linked_on_a_deposit`, and `stated_results`, which `results_after_the_move` now calls.
+
+### T-020-13, round 2 of the review (of `74d1823`)
+
+- **High: a race in "already opened".** The pre-check asked only whether Core follows the linked order, so a hand-on
+  pending on the log (its `handed_on` unavailable) left the linked order looking free: another part could be
+  handed on to it meanwhile, and the first, retried, had its `route_chosen` refused as `order-is-opened-once`,
+  stranded. A restart reached the same state, the linked order in the log and not followed. Now, before the first
+  record of a hand-on and again before each retry of it, the linked order must be free: Core doesn't follow it,
+  the log holds no `route_chosen` of it and no `handed_on` naming it but this hand-on's own, and no other hand-on
+  pending here names it (`AlreadyOpened`; a pending one whose linked order was taken meanwhile is dropped, nothing
+  recorded). Tests, each written first and seen red (the second hand-on went in):
+  `a_pending_hand_on_keeps_its_linked_order_from_another` (two orders over the kit's route, the second taken up as
+  `ord-5`, standing for the reviewer's two parts: the race is the same, two hand-ons naming one linked order) and
+  `hand_on_to_a_linked_order_the_log_opened_is_refused_after_a_restart` (Core's segments as they were before the
+  first hand-on, the log holding it). Rule-off: the check narrowed to Core's own records, both red.
+- **One history the log refused, classified a test artefact.** The second order's recalculation chained its record to
+  the log's first decision record, the first order's, and the log refused it ("a decision record's previous is of
+  its order"). The kit's `Rerouting::of` took the log's first decision record as the order's, true only for the
+  kit's own order; it now takes the current order's own. No Core change.
+- **Nit: the linked order's refusal.** It names the linked order's own request, the one its acceptance was opened
+  under (`Accepted::request`), and class `no_route_right_now`, the closest true class: the log doesn't take its route
+  now, and no class says the log refused it. A reading, reversible.
+- **The contract's half** is with the contract's author (the coordinator's word): a log row refusing a `handed_on`
+  whose linked order is opened already, and a state-machine input taking back a hand-on whose linked order was
+  refused.
