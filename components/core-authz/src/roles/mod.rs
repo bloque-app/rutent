@@ -277,6 +277,8 @@ fn actors_named<'a>(asked: Asked<'a>) -> Vec<&'a Actor> {
         Asked::Authorise(a) => vec![&a.given_by],
         Asked::DecideStuck(r) => vec![&r.decider],
         Asked::MoveStuck(r) => vec![&r.mover],
+        Asked::ReportOutcome(r) => vec![&r.reporter],
+        Asked::ConfirmOutcome(c) => vec![&c.confirmer],
         Asked::OpenSession(r) => vec![&r.requester],
         Asked::CheckRead(c) => vec![&c.reader],
         Asked::GrantPermission(c) | Asked::RevokePermission(c) => vec![&c.by, &c.grantee],
