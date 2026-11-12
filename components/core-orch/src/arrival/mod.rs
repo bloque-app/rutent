@@ -689,10 +689,13 @@ impl Arrivals {
                 if let Some(outcome) = run.outcome() {
                     return Ok(outcome);
                 }
-                // Under way: carried on by any listed login of the permitted filer's party.
-                run.carried_on_by(&filing.filer);
-            } else if run.outcome().is_none() && !run.has_a_listed_login(desk) {
-                // No login of the filer's party is listed any more: the filing ends, recorded, and frees the deposit.
+                // Under way: carried on by any listed login of the permitted filer's party that policy permits.
+                if let Some(told) = run.carried_on_by(desk, &filing.filer)? {
+                    return Ok(told);
+                }
+            } else if run.should_end(desk)? {
+                // Its session over, its reserve past its time, or no login of its party left: the filing ends,
+                // recorded, and frees the deposit for this one.
                 let Some(mut run) = self.runs.remove(&arrival) else {
                     return Err(ArrivalError::NotNow);
                 };

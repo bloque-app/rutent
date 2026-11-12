@@ -2381,3 +2381,135 @@ fn a_reserves_advertisement_is_no_arrival_notice() {
         Err(ArrivalError::NotItsNotice)
     );
 }
+
+// Round 3 --------------------------------------------------------------------------------------------------------
+
+/// A login carrying a filing on gives its own authorisation: one policy refuses carries nothing on and names nothing,
+/// the acceptance naming the filer policy permitted and its authorisation; one policy permits is named by the
+/// acceptance, with the authorisation it gave (round 3, finding 1; `REQ-AUZ-9`).
+// verifies: REQ-AUZ-9, REQ-ORD-13
+#[test]
+fn a_login_carrying_a_filing_on_gives_its_own_authorisation() {
+    use rutent_contracts::core_internal::{Answer, RefusalClass};
+    let read_only = Actor {
+        acts: id("operator-read-only-login"),
+        ..operator()
+    };
+    for permitted in [false, true] {
+        let mut env = crate::env();
+        env.actors.borrow_mut().list(&read_only);
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        let one = filing(operator(), &deposited);
+        providers.silent = true;
+        assert!(matches!(
+            file(&mut env, &mut providers, &mut arrivals, &one),
+            Ok(Filed::Waiting { order: Some(_), .. })
+        ));
+        providers.silent = false;
+        let theirs = Filing {
+            filer: read_only.clone(),
+            ..one.clone()
+        };
+        if !permitted {
+            // The login holds no permission to act for users: policy refuses it, and nothing moves on its call.
+            env.policy.answer = refusal(RefusalClass::MissingInput);
+            let len = env.len();
+            let told = file(&mut env, &mut providers, &mut arrivals, &theirs);
+            assert!(
+                matches!(told, Err(ArrivalError::Refused { .. })),
+                "{told:?}"
+            );
+            assert_eq!(env.policy.asked.len(), 2, "asked about the login");
+            assert_eq!(env.len(), len + 1, "only policy's own entry");
+            env.policy.answer = Answer::Permit {};
+            // The filer policy permitted carries it on.
+            let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+            assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+        } else {
+            let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+            assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+        }
+        let (giver, who) = if permitted {
+            (read_only.clone(), read_only.clone())
+        } else {
+            (operator(), operator())
+        };
+        let acceptance = env.acceptances().pop().unwrap();
+        assert_eq!(
+            acceptance.who, who,
+            "the acceptance names the filer policy permitted"
+        );
+        let What::Acceptance { authorisation, .. } = &acceptance.what else {
+            unreachable!()
+        };
+        let given = env
+            .policy
+            .asked
+            .iter()
+            .find(|a| &a.authorisation == authorisation)
+            .expect("the acceptance names an authorisation policy was asked");
+        assert_eq!(
+            given.given_by, giver,
+            "and that authorisation is its giver's"
+        );
+        assert_admitted(&env);
+    }
+}
+
+/// A permitted filing that ended in all but name, its session over, is ended when another filer files on the deposit,
+/// rather than hold it on `Conflicting` (round 3, finding 2).
+// verifies: REQ-ORD-13, REQ-CAT-3
+#[test]
+fn a_quiet_filing_whose_session_ended_gives_way_to_another_filer() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut one = filing(operator(), &deposited);
+    one.session = short_session(&mut env, "session-short", START + 30);
+    providers.silent = true;
+    let Ok(Filed::Waiting {
+        order: Some(order), ..
+    }) = file(&mut env, &mut providers, &mut arrivals, &one)
+    else {
+        panic!("waits");
+    };
+    providers.silent = false;
+    env.clock.set(START + 40);
+    let mut theirs = filing(reserve_filer(), &deposited);
+    theirs.request = id("deposit-reserve");
+    theirs.session = short_session(&mut env, "session-fresh", START + 10_000);
+    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert!(
+        ended_in_the_log(&env, &order),
+        "the quiet filing's order ended, recorded"
+    );
+    assert_admitted(&env);
+
+    // Its reserve past its time to answer the question it left unanswered: it gives way too.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    providers.silent = true;
+    let Ok(Filed::Waiting {
+        order: Some(order), ..
+    }) = file(&mut env, &mut providers, &mut arrivals, &one)
+    else {
+        panic!("waits");
+    };
+    env.clock.set(START + 120);
+    let mut theirs = filing(reserve_filer(), &deposited);
+    theirs.request = id("deposit-reserve");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs);
+    assert!(
+        !matches!(filed, Err(ArrivalError::Conflicting { .. })),
+        "{filed:?}"
+    );
+    assert!(ended_in_the_log(&env, &order));
+    assert_admitted(&env);
+}

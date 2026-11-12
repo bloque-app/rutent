@@ -88,8 +88,9 @@ pub(super) struct Run {
     /// The arrival it files on.
     arrival: Recorded,
     pub(super) order: Id,
-    /// The authorisation policy permitted, which the acceptance names.
-    authorisation: Id,
+    /// The authorisation policy permitted, which the acceptance names: the filer's, or that of the login that carried it
+    /// on since, each given by its own login (`REQ-AUZ-9`).
+    authorisation: Authorisation,
     step: Step,
     /// Entries built and not yet appended, appended in order, each as built.
     pending: Vec<Entry>,
@@ -328,7 +329,7 @@ impl Arrivals {
             asked: filing,
             arrival,
             order,
-            authorisation: authorisation.authorisation,
+            authorisation,
             step: Step::Hold,
             pending,
             confirming: None,
@@ -349,13 +350,68 @@ impl Arrivals {
 impl Run {
     /// `filer`, a listed login of the permitted filer's party, carries it on: it is known as one of the party's logins,
     /// and, where the acceptance isn't built yet, the acceptance names it.
-    pub(super) fn carried_on_by(&mut self, filer: &Actor) {
+    pub(super) fn carried_on_by(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        filer: &Actor,
+    ) -> Result<Option<Filed>, ArrivalError> {
+        // The filer the acceptance names, or an acceptance already built: nothing to authorise again.
+        if filer == &self.filing.filer || self.accepting.is_some() {
+            return Ok(None);
+        }
+        // Another login gives its own authorisation: policy holds it to its own permission (`REQ-AUZ-9`).
+        let authorisation = Authorisation {
+            authorisation: desk.parts.fresh.id(),
+            given_by: filer.clone(),
+            at: journal::now(desk.parts.clock)?,
+            ..self.authorisation.clone()
+        };
+        let decision = desk.authorisations.authorise(&authorisation)?;
+        if decision.permit().is_none() {
+            // Refused or not known: nothing is carried on, and the filing stays with the logins it had.
+            return match decision.outcome {
+                Answer::Refuse { class } => Err(ArrivalError::Refused {
+                    class: refused(class),
+                }),
+                _ => Ok(Some(Filed::Waiting {
+                    order: Some(self.order.clone()),
+                    wait: FiledWait::PolicyNotKnown,
+                })),
+            };
+        }
         if !self.logins.contains(filer) {
             self.logins.push(filer.clone());
         }
-        if self.accepting.is_none() {
-            self.filing.filer = filer.clone();
+        self.filing.filer = filer.clone();
+        self.authorisation = authorisation;
+        Ok(None)
+    }
+
+    /// Whether it should end before another filer is told it holds the deposit: under way, its session over, its
+    /// reserve past its time to answer a question it left unanswered, or no login of its party left listed. The same
+    /// conditions end it when its own filer carries it on.
+    pub(super) fn should_end(&self, desk: &mut Desk<'_, '_>) -> Result<bool, ArrivalError> {
+        if self.outcome.is_some() {
+            return Ok(false);
         }
+        let now = journal::now(desk.parts.clock)?;
+        let session_over = !desk
+            .sessions
+            .held(&self.filing.session)
+            .is_some_and(|held| {
+                held.holder == self.filing.parties.requester
+                    && held.expires_at.unix_nanos() > now.unix_nanos()
+            });
+        let past_its_time = self.held.is_none()
+            && self.unanswered
+            && matches!(
+                desk.parts.catalogue.reserve_eligibility(
+                    self.arrival.reserve.as_str(),
+                    desk.parts.clock.now().floor()
+                ),
+                Eligibility::TemporarilyUnavailable { .. }
+            );
+        Ok(session_over || past_its_time || !self.has_a_listed_login(desk))
     }
 
     /// Whether a login of the filer's party that filed it or carried it on is still listed as acting for its party.
@@ -554,7 +610,7 @@ impl Run {
                     order: self.order.clone(),
                     request: self.filing.request.clone(),
                     quote: offered.digest.clone(),
-                    authorisation: self.authorisation.clone(),
+                    authorisation: self.authorisation.authorisation.clone(),
                     basis: AcceptanceBasis::AutomaticDeposit,
                     parties: self.filing.parties.clone(),
                     origin_reserve: self.arrival.reserve.clone(),

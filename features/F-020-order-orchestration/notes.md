@@ -623,8 +623,8 @@ existed, untested); its rule-off stands in.
    - once a question it asked went unanswered and the catalogue now holds the reserve unavailable
      (`reserve_eligibility`, past the operator's time to answer, `REQ-CAT-19`): it ends before asking again;
    - once no login of the filer's party that filed or carried it on is listed. Any listed login of that party carries
-     it on (no more `OtherFiler`), and the acceptance, where not yet built, names it; the authorisation stays the one
-     policy permitted. Core knows a party's logins only by those that filed it, so "none left" is read from them: a
+     it on (no more `OtherFiler`), and the acceptance, where not yet built, names it. *Round 3 answer 1: such a login
+     gives its own authorisation first.* Core knows a party's logins only by those that filed it, so "none left" is read from them: a
      reading, reversible. Another filer's filing ends it then, and goes on as its own.
 2. **`FiledOrders::withdrawn`.** Called wherever `opened` was and no order opens: a policy refusal of either kind,
    policy's not known, and an authorise the log couldn't record (`Err(Log)`). Tested with policy unreachable; the
@@ -669,6 +669,54 @@ existed, untested); its rule-off stands in.
 - **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs`,
   `components/core-orch/tests/intake_support/mod.rs` (one more opt-in knob) and these notes. No contract, manifest or
   `DEC-20` path.
+
+### T-020-04, round 3 answers (of `be17997`)
+
+Both probes were written first and run against `be17997`, and both were red:
+`a_login_carrying_a_filing_on_gives_its_own_authorisation` (the acceptance named a login policy never authorised) and
+`a_quiet_filing_whose_session_ended_gives_way_to_another_filer` (`Conflicting`). Its second case, the reserve past its
+time, came with the code; its rule-off stands in.
+
+1. **A login carrying a filing on gives its own authorisation** (`REQ-AUZ-9`). When a login other than the one the
+   acceptance would name carries a filing on, before its acceptance is built, policy is asked again: the same
+   authorisation's terms, under a fresh id, given by that login. On a permit the login joins the filing's logins, the
+   acceptance names it, and the acceptance names that authorisation, so its `who` and the authorisation's `given_by`
+   are one login. A refusal is told as `ArrivalError::Refused`, and not known as `Filed::Waiting` with
+   `PolicyNotKnown`; either way nothing moves on that call and the filing keeps the logins it had. Only logins policy
+   permitted count towards "a listed login left". Once the acceptance is built, a login of the party carries on the
+   appends as built, asking nothing.
+2. **A quiet filing gives way.** Before another filer is told `Conflicting`, the filing holding the deposit is held to
+   its end conditions, the same as when its own filer carries it on: its session over (policy's register no longer
+   holds it open for the holder), its reserve unavailable after a question it left unanswered, or no login of its
+   party that policy permitted still listed. If one holds, it ends, recorded (`order_refusal` naming its order), and
+   the new filing goes on as its own. Read from the register and the catalogue without asking anything, so a check
+   that could never go for its session (`SessionNotForAccount`, `NotACheck`) is found only when the filing asks again;
+   its session ending is the case a quiet filing meets.
+- **Readings recorded.**
+  - **A no is for the deposit, not the credit.** After the reserve's no, the deposit is filed on no more, even if its
+    credit was still pending at the reserve when it answered: once the credit clears, the reserve's new notice is a new
+    arrival, filed on as any other. Reversible; a re-ask on the same notice would need the reserve's word that its
+    no has lifted, which provider-role's balance answer doesn't carry.
+  - **`no_route_right_now` as a final end.** Every end of a permitted filing (its session over, the reserve past its
+    time, no login left, the reserve's no, a check that can't go, a refused acceptance or start) is recorded as an
+    `order_refusal` of `no_route_right_now`, because `order_refusal`'s classes are a closed list of eight and none
+    names these causes. **Item for the contract author** (`T-020-01f`): a core-internal class for an automatic deposit
+    that couldn't be held or carried on, so a reader tells "the same request may route later" from "this filing ended".
+- **Rule-off**, the new rules switched off once against the final tests, each red; the earlier rules rerun, each red
+  (the re-review's "with no listed login left, the filing ends" now runs through answer 2's check and is switched off
+  as its last row):
+
+  | Rule | Red |
+  |---|---|
+  | A carrier asks policy for its own authorisation | `a_login_carrying_a_filing_on_gives_its_own_authorisation` |
+  | A refused carrier carries nothing on | the same |
+  | The acceptance names the carrier's authorisation | the same |
+  | The end conditions checked before `Conflicting` | `a_quiet_filing_whose_session_ended_gives_way_to_another_filer`, the carried-on test |
+  | A session over ends a quiet filing | `a_quiet_filing_whose_session_ended_gives_way_to_another_filer` |
+  | A reserve past its time ends a quiet filing | the same |
+  | No listed login left ends a quiet filing | `a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left` |
+
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
 
 ## T-020-05
 
