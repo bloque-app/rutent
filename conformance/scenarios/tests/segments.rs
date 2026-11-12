@@ -738,33 +738,37 @@ fn order_waiting_between_segments() -> (World, Core) {
     (world, core)
 }
 
-/// The order waits between segments. Its customer reads its state and how long it has been in it, after a read
-/// check the policy engine allows and records; another customer's read is refused, and recorded too.
+/// The order waits between segments. Its customer and the operator read its state and how long it has been in it,
+/// each after a read check the policy engine allows and records: the customer as the order's party, the operator's
+/// login as one the register lists for reading an order's state, neither naming a permission. Another customer's
+/// read is refused, and recorded too.
 // verifies: REQ-ORD-5, REQ-AUZ-7
 #[test]
-fn orders_state_and_age_are_readable_by_its_customer() {
+fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
     let (_world, mut core) = order_waiting_between_segments();
     let mut reads = Policy::new(std::rc::Rc::clone(&core.log));
-    let status = core
-        .segments
-        .status(
-            &mut reads,
-            &*core.clock,
-            &mut core.ids,
-            &customer(),
-            None,
-            &id(ORDER),
-        )
-        .expect("the customer reads it");
-    assert_eq!(status.state, OrderState::FirstSegmentSettled);
-    assert_eq!(
-        status.parts,
-        vec![(id(PART), OrderState::FirstSegmentSettled)]
-    );
-    assert_eq!(
-        status.age_seconds, 120,
-        "the time it has waited in its state"
-    );
+    for reader in [customer(), operator()] {
+        let status = core
+            .segments
+            .status(
+                &mut reads,
+                &*core.clock,
+                &mut core.ids,
+                &reader,
+                None,
+                &id(ORDER),
+            )
+            .unwrap_or_else(|e| panic!("{reader:?} reads it: {e:?}"));
+        assert_eq!(status.state, OrderState::FirstSegmentSettled);
+        assert_eq!(
+            status.parts,
+            vec![(id(PART), OrderState::FirstSegmentSettled)]
+        );
+        assert_eq!(
+            status.age_seconds, 120,
+            "the time it has waited in its state"
+        );
+    }
     let stranger = rutent_contracts::core_internal::Actor {
         party: id("another-customer"),
         ..customer()
@@ -784,44 +788,8 @@ fn orders_state_and_age_are_readable_by_its_customer() {
         core.log
             .borrow()
             .count(|w| matches!(w, What::CheckRead { .. })),
-        2,
+        3,
         "each read is recorded, allowed or refused"
-    );
-}
-
-/// The operator's read of the same order is the same call, decided and recorded by the policy engine. Today it is
-/// refused: `T-021-02` lets the operator read an order only by a permission, which core-internal grants only to a
-/// regulator or a checker.
-// T-021-02b: once policy has a read kind for an order's state that the operator holds, this asserts the read is
-// allowed and folds back into `orders_state_and_age_are_readable_by_its_customer`, as the row's one test.
-// verifies: REQ-ORD-5, REQ-AUZ-7
-#[test]
-fn operators_read_of_state_and_age_waits_on_its_read_kind() {
-    let (_world, mut core) = order_waiting_between_segments();
-    let mut reads = Policy::new(std::rc::Rc::clone(&core.log));
-    let by_permission = id("perm-operations");
-    for permission in [None, Some(&by_permission)] {
-        assert!(
-            matches!(
-                core.segments.status(
-                    &mut reads,
-                    &*core.clock,
-                    &mut core.ids,
-                    &operator(),
-                    permission,
-                    &id(ORDER)
-                ),
-                Err(StatusError::Refused(_))
-            ),
-            "{permission:?}"
-        );
-    }
-    assert_eq!(
-        core.log
-            .borrow()
-            .count(|w| matches!(w, What::CheckRead { .. })),
-        2,
-        "each refusal is recorded"
     );
 }
 

@@ -29,12 +29,14 @@
 //! what the log admits of a permitted one (core-internal's read rules and its relation rows), so policy never answers
 //! a read the log would refuse:
 //!
-//! - a customer reads only an order, or a segment of an order, whose requester, beneficiary or payer it is, which the
-//!   order's record says (`Source::OrderParties`), and never the trail;
+//! - a customer reads only an order, its state and age, or a segment of it, whose requester, beneficiary or payer it
+//!   is, which the order's record says (`Source::OrderParties`), and never the trail;
+//! - the operator reads an order's state and age without a permission, through a login the deployment's register of
+//!   permissions lists for it (`Permission::ReadOrderState`, asked by the login's `acts`, `REQ-ORD-5`);
 //! - a segment is read only as one of the order the read names, which the segment's record says
 //!   (`Source::SegmentOrder`), so a permission over an order covers that order's segments and no other's;
 //! - a provider reads only a segment it names itself the provider of, which the segment's record says
-//!   (`Source::SegmentProvider`), and never an order or the trail;
+//!   (`Source::SegmentProvider`), and never an order, its state or the trail;
 //! - a regulator's or a checker's read names its permission;
 //! - a customer and a provider read who the deployment's checker is ([`CHECKER`], `REQ-AUD-10`), and any party a
 //!   kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`); any other
@@ -231,15 +233,19 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
 /// refused unless a line here lets it through:
 ///
 /// - a regulator or a checker reads only by a permission, whatever it reads;
-/// - a customer reads an order, or a segment of it, the order's record naming it a party, and never the trail;
-/// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order
-///   or the trail;
+/// - a customer reads an order, its state and age, or a segment of it, the order's record naming it a party, and
+///   never the trail;
+/// - the operator reads an order's state and age without a permission, the register listing its login for that
+///   (`REQ-ORD-5`);
+/// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order,
+///   its state or the trail;
 /// - a customer and a provider read who the deployment's checker is (`REQ-AUD-10`), and no other resource;
 /// - any party reads, without a permission, a kept statement the evidence store's record says is its own
 ///   (`REQ-AUD-5`);
 /// - any other read rests on a permission, which the register holds it to; a segment read as one of its order.
 ///
-/// So the operator, a verifier and Core's own parts read nothing but their own evidence without a permission.
+/// So the operator reads nothing but an order's state and age and its own evidence without a permission, and a
+/// verifier and Core's own parts nothing but their own evidence.
 fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
     let party = &c.reader.party;
     let party_of = |order: &Id| Need {
@@ -255,9 +261,19 @@ fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
     let needs = match (c.reader.role, &c.reads) {
         (Role::Regulator | Role::Checker, _) if !permitted => return None,
         (Role::Customer, Read::Trail {})
-        | (Role::Provider, Read::Trail {} | Read::Order { .. }) => {
+        | (Role::Provider, Read::Trail {} | Read::Order { .. } | Read::OrderState { .. }) => {
             return None;
         }
+        // The operator reads an order's state and age without a permission, through a login the register lists
+        // for it (`REQ-ORD-5`); anything else it reads rests on a permission.
+        (Role::Operator, Read::OrderState { .. }) if !permitted => vec![Need {
+            input: c.reader.acts.clone(),
+            from: Source::Permissions {
+                party: party.clone(),
+                permission: crate::roles::Permission::ReadOrderState,
+            },
+        }],
+        (Role::Customer, Read::OrderState { order }) => vec![party_of(order)],
         (Role::Provider, Read::Segment { provider, .. }) if provider != party => return None,
         (Role::Customer, Read::Order { order }) => vec![party_of(order)],
         (Role::Customer, Read::Segment { order, segment, .. }) => {
