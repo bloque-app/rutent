@@ -17,11 +17,14 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::OuterNode;
 use rutent_contracts::router_api::Id;
+use rutent_contracts::router_api::{
+    CatalogueSnapshot, DecisionRecord, PolicyBounds, Request, Router,
+};
 use rutent_core_orch::intake::{
     DESTINATION_INPUT, IntakeError, OrderRequest, Resolution, Status, Told, Wait,
 };
 use rutent_core_orch::rounds::Providers;
-use serde_json::Value;
+use serde_json::{Value, json};
 use snapshot_support::{RESERVE, id, sign, statements_key};
 
 /// The log replays as the log itself would admit it.
@@ -1027,4 +1030,203 @@ fn agent_repeating_its_persons_request_gets_the_same_answer() {
         Err(IntakeError::Conflicting { .. })
     ));
     assert_admitted(&env);
+}
+
+// Each part's yes, a change of owner's class, a start refused ---------------------------------------------------------
+
+/// A router that splits the route the router finds into two parts, of 600 and 400, each citing its own dry runs:
+/// unconfirmed until both parts' withdrawals and deposits were asked at their amounts, then chosen.
+struct Splitter;
+
+impl Router for Splitter {
+    fn route(
+        request: &Request,
+        snapshot: &CatalogueSnapshot,
+        bounds: &PolicyBounds,
+    ) -> DecisionRecord {
+        let record = rutent_router::RouteFinder::route(request, snapshot, bounds);
+        if matches!(
+            request.round,
+            rutent_contracts::router_api::Round::Shortlist {}
+        ) {
+            return record;
+        }
+        let mut value = serde_json::to_value(&record).unwrap();
+        let template = value["candidates"][0]["parts"][0]["operations"].clone();
+        let figures = serde_json::to_value(&snapshot.figures).unwrap();
+        let dry_run = |tuple: &Value, amount: &str| {
+            figures.as_array().unwrap().iter().find_map(|f| {
+                let v = &f["value"];
+                (v["kind"] == "dry_run"
+                    && &v["tuple"] == tuple
+                    && v["amount_in"] == amount
+                    && v["result"]["statement"]["outcome"]["status"] == "dry_run_accepted")
+                    .then(|| f["figure_id"].clone())
+            })
+        };
+        let mut unconfirmed = None;
+        let mut parts = Vec::new();
+        for (p, amount) in ["600", "400"].into_iter().enumerate() {
+            let mut operations = template.clone();
+            for (o, op) in operations.as_array_mut().unwrap().iter_mut().enumerate() {
+                op["amount_in"] = amount.into();
+                op["amount_out"] = amount.into();
+                let mut cited: Vec<Value> = op["figures"].as_array().unwrap()[..2].to_vec();
+                match dry_run(&cited[0], amount) {
+                    Some(figure) => cited.push(figure),
+                    None if unconfirmed.is_none() => unconfirmed = Some((p, o)),
+                    None => {}
+                }
+                op["figures"] = Value::Array(cited);
+            }
+            parts.push(json!({ "operations": operations }));
+        }
+        let mut split = json!({ "candidate_id": "c-split", "parts": parts });
+        match unconfirmed {
+            Some((part, operation)) => {
+                split["dropped"] =
+                    json!({ "reason": "unconfirmed", "part": part, "operation": operation });
+                value.as_object_mut().unwrap().remove("chosen");
+            }
+            None => value["chosen"] = "c-split".into(),
+        }
+        value["candidates"] = json!([split]);
+        serde_json::from_value(value).unwrap()
+    }
+}
+
+// verifies: REQ-ORD-32
+#[test]
+fn split_orders_acceptance_names_each_parts_yes() {
+    let mut env = Env::new();
+    let mut bounds = serde_json::to_value(&env.bounds).unwrap();
+    bounds["max_parts"] = 2.into();
+    env.bounds = serde_json::from_value(bounds).unwrap();
+    let mut sim = env.sim();
+    let order = order_of(
+        &env.open(&mut sim, &order_request("client-req-1", customer()))
+            .unwrap(),
+    );
+    let told = env
+        .with(&mut sim, |intake, desk| {
+            intake.quote::<Splitter>(desk, &customer(), &order)
+        })
+        .unwrap();
+    let Status::Quoted { digest, .. } = status_of(&told).clone() else {
+        panic!("no quote: {told:?}");
+    };
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert!(matches!(status_of(&told), Status::Accepted { .. }));
+
+    // The acceptance names a yes for each part of the start's plan, in its order: each its own statement, of the
+    // part's origin reserve, the provider of its first move.
+    let acceptance = env.acceptances().pop().expect("an acceptance");
+    let What::Acceptance { yeses, .. } = &acceptance.what else {
+        unreachable!()
+    };
+    let start = env.intake.start(&order).expect("a start").clone();
+    let rutent_contracts::state_machine::Observed::RouteChosen { parts, .. } = &start.observed
+    else {
+        unreachable!()
+    };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(yeses.len(), 2);
+    for (yes, part) in yeses.iter().zip(parts) {
+        assert_eq!(yes.part.as_str(), part.part_id.as_str());
+        assert_eq!(yes.origin_reserve, id(RESERVE));
+    }
+    assert_ne!(yeses[0].reserve_yes, yeses[1].reserve_yes);
+    // The real `admit_entry` admits the acceptance on each part's yes, and the start on it.
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-24
+#[test]
+fn change_of_owner_is_refused_with_its_class() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::Owner(id("owner-2")));
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert_eq!(
+        status_of(&told),
+        &Status::Waiting {
+            wait: Wait::OwnerChanged
+        }
+    );
+    // The check of the owner changed, then the order's refusal of its class, naming the order.
+    let book = env.book.borrow();
+    let whats = book.verified();
+    let check = whats
+        .iter()
+        .rposition(|w| {
+            matches!(
+                w,
+                What::DestinationCheck {
+                    outcome: rutent_contracts::core_internal::DestinationOutcome::OwnerChanged,
+                    ..
+                }
+            )
+        })
+        .expect("an owner_changed check");
+    assert_eq!(
+        whats[check + 1],
+        &What::OrderRefusal {
+            request: id("client-req-1"),
+            order: Some(order.clone()),
+            class: OrderRefusalClass::DestinationOwnerChanged,
+        }
+    );
+    drop(book);
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-34
+#[test]
+fn half_accepted_order_is_never_started() {
+    // The log takes the acceptance and refuses the start: the order ends, half-accepted, and has no start for the
+    // segments to follow, whatever the acceptance says.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.book.borrow_mut().refuse_next = Some("input");
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert_eq!(
+        status_of(&told),
+        &Status::CantProceed {
+            class: OrderRefusalClass::NoRouteRightNow
+        }
+    );
+    assert_eq!(env.acceptances().len(), 1);
+    assert!(env.started().is_empty());
+    assert_eq!(env.intake.start(&order), None);
+    // Nothing quotes or accepts it again.
+    assert_eq!(env.accept(&mut sim, &order, &customer(), &digest), Ok(told));
+    assert_eq!(env.quote(&mut sim, &order), Err(IntakeError::NotNow));
+    assert_eq!(env.intake.start(&order), None);
+    assert_admitted(&env);
+
+    // An order accepted whole has its start, the one the log took.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, _) = env.accepted(
+        &mut sim,
+        &order_request("client-req-1", customer()),
+        &customer(),
+    );
+    let start = env.intake.start(&order).expect("a start");
+    let logged = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .find_map(|w| match w {
+            What::Input { input } => Some(input.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(start, &logged);
 }

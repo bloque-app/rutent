@@ -26,17 +26,17 @@
 //!    recorded as a `shown` entry, labelled a quote, by its digest. A routing that offers nothing is recorded as an
 //!    `order_refusal` of its class (`REQ-ORD-18`).
 //! 3. **[`Intake::accept`]** takes the customer's or its agent's acceptance of the quote shown, by its digest. The
-//!    destination is resolved again: "not yet" waits, "no" ends the order, and a change of owner waits for the
-//!    customer, whose next acceptance names that owner to confirm it (`REQ-ORD-24`). The order's authorisation,
-//!    naming its destination with the account the requester gave (`REQ-ORD-35`, `REQ-AUZ-3`) and the actor that
-//!    accepted (`REQ-AUZ-9`), goes to policy. A refusal about the order itself ends it; one about the caller
-//!    leaves it as it stood. Only on policy's permit is the `acceptance` recorded, its `who` the actor that
-//!    accepted, an agent as an agent (`REQ-ORD-10`), naming its parties apart (`REQ-ORD-17`), the quote shown, the
-//!    origin reserve's yes and the user's session (`REQ-ORD-32`). Only then is the order started: the
-//!    `route_chosen` input, recorded once (`REQ-ORD-34`, `REQ-ORD-19`). Both entries are built once and appended as
-//!    built. Where the log couldn't be written now, the next acceptance by the actor policy permitted, and by no
-//!    other, carries them on, without asking policy or resolving the destination again; where the log refuses one,
-//!    the order ends, of a class. The order is told accepted only once it has started.
+//!    destination is resolved again: "not yet" waits, "no" ends the order, and a change of owner, refused of its class,
+//!    waits for the customer, whose next acceptance names that owner to confirm it (`REQ-ORD-24`). The order's
+//!    authorisation, naming its destination with the account the requester gave (`REQ-ORD-35`, `REQ-AUZ-3`) and the
+//!    actor that accepted (`REQ-AUZ-9`), goes to policy. A refusal about the order itself ends it; one about the caller
+//!    leaves it as it stood. Only on policy's permit is the `acceptance` recorded, its `who` the actor that accepted,
+//!    an agent as an agent (`REQ-ORD-10`), naming its parties apart (`REQ-ORD-17`), the quote shown, the origin
+//!    reserve's yes for each part of the route and the user's session (`REQ-ORD-32`). Only then is the order started:
+//!    the `route_chosen` input, recorded once (`REQ-ORD-34`, `REQ-ORD-19`). Both entries are built once and appended as
+//!    built. Where the log couldn't be written now, the next acceptance by the actor policy permitted, and by no other,
+//!    carries them on, without asking policy or resolving the destination again; where the log refuses one, the order
+//!    ends, of a class. The order is told accepted only once it has started.
 //!
 //! **What the caller is told holds no provider's text** (`REQ-ORD-18`). [`Told`] carries identifiers, a class from
 //! a closed list and the quote Core built from the router's record; a provider's words stay in its stated entry.
@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, Log};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, Answer, Authorisation, Destination, DestinationOutcome, Entry,
-    OrderRefusalClass, Parties, Receipt, RefusalClass, Role, ShownAs, What,
+    OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -317,7 +317,8 @@ struct Offered {
     quote: Quote,
     digest: Digest,
     candidate: Candidate,
-    reserve_yes: Receipt,
+    /// Each part's yes, in part order.
+    reserve_yes: Vec<Receipt>,
     session: Id,
 }
 
@@ -329,6 +330,8 @@ struct Accepting {
     by: Actor,
     /// The acceptance's id.
     acceptance: Id,
+    /// The `route_chosen` input the start records.
+    input: RecordedInput,
     /// The `acceptance` entry and then the `route_chosen` one, those not yet appended.
     pending: Vec<Entry>,
 }
@@ -354,6 +357,8 @@ struct Kept {
     accepting: Option<Accepting>,
     /// The order ended after policy permitted its authorisation: nothing is quoted or accepted again.
     ended: bool,
+    /// The `route_chosen` input the log took: the order's start, once it has one.
+    started: Option<RecordedInput>,
 }
 
 impl Kept {
@@ -412,6 +417,16 @@ impl Intake {
         })
     }
 
+    /// The `route_chosen` input that started `order`, as the log took it: what `T-020-08`'s segments follow
+    /// (`Segments::follow`), and the only start of an order they act on. An order whose acceptance the log took but
+    /// whose start it refused has none: it ended half-accepted, and nothing acts on it.
+    pub fn start(&self, order: &Id) -> Option<&RecordedInput> {
+        self.requests
+            .get(self.orders.get(order.as_str())?)?
+            .started
+            .as_ref()
+    }
+
     /// The record of `order`, if `caller` speaks for its requester; to anyone else it doesn't exist.
     fn kept_for(
         &mut self,
@@ -452,6 +467,10 @@ impl Intake {
         }
         let kept = opened(desk, request)?;
         if let Some(order) = &kept.order {
+            // A fresh identifier is never one an order already has.
+            if self.orders.contains_key(order.as_str()) {
+                return Err(IntakeError::Fresh);
+            }
             self.orders.insert(order.as_str().to_owned(), key.clone());
         }
         // Kept before anything is appended, so a retry carries on with the same order.
@@ -532,12 +551,18 @@ impl Intake {
                 return Ok(kept.told());
             }
         }
-        // T-020-01e: the acceptance names one reserve's yes, so it cites the first part's; each part withdraws at
-        // the origin reserve on its own yes. Once core-internal's acceptance names each part's, cite every one.
-        let reserve_yes = reserve_yes
-            .first()
-            .cloned()
-            .ok_or(IntakeError::Unofferable)?;
+        // The acceptance cites each part's yes, in part order, each its own receipt (`REQ-ORD-32`). Two parts the
+        // rounds answered with one yes, an even split at one reserve, would cite one statement twice: not offered.
+        let mut distinct = reserve_yes.clone();
+        distinct.sort_by_key(|r| r.index.get());
+        distinct.dedup_by_key(|r| r.index.get());
+        if reserve_yes.len() != candidate.parts.len() || distinct.len() != reserve_yes.len() {
+            let class = OrderRefusalClass::NoRouteRightNow;
+            refuse(desk, &kept.request.request, Some(order), class)?;
+            kept.status = Status::CantProceed { class };
+            return Ok(kept.told());
+        }
+        let reserve_yes = reserve_yes.clone();
         let session = session.clone().ok_or(IntakeError::Unofferable)?;
         let quote = Quote {
             order: order.clone(),
@@ -634,6 +659,9 @@ impl Intake {
                 return Ok(kept.told());
             }
             DestinationOutcome::OwnerChanged => {
+                // The order waits for the customer: refused, of its class, until the customer confirms the owner.
+                let class = OrderRefusalClass::DestinationOwnerChanged;
+                refuse(desk, &request.request, Some(order), class)?;
                 kept.changed_owner = resolved;
                 kept.status = Status::Waiting {
                     wait: Wait::OwnerChanged,
@@ -697,7 +725,25 @@ impl Intake {
         kept.owner = resolved;
         kept.changed_owner = None;
 
-        // The acceptance, then the order's start, each built once, here, and appended as built.
+        // The acceptance, then the order's start, each built once, here, and appended as built. The acceptance names
+        // each part of the start's plan with its yes and its origin reserve, the provider of its first move.
+        let input = route_chosen(desk, order, by, &offered)?;
+        let Observed::RouteChosen { parts, .. } = &input.observed else {
+            return Err(IntakeError::Unofferable);
+        };
+        let yeses = parts
+            .iter()
+            .zip(&offered.reserve_yes)
+            .map(|(part, yes)| {
+                let first = part.segments.first().ok_or(IntakeError::Unofferable)?;
+                Ok(PartYes {
+                    part: Id::new(part.part_id.as_str()).ok_or(IntakeError::Unofferable)?,
+                    origin_reserve: Id::new(first.provider.as_str())
+                        .ok_or(IntakeError::Unofferable)?,
+                    reserve_yes: yes.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, IntakeError>>()?;
         let acceptance = desk.parts.fresh.id();
         let accepted = record::build(
             desk.parts.clock,
@@ -711,15 +757,21 @@ impl Intake {
                 basis: AcceptanceBasis::Given,
                 parties: request.parties.clone(),
                 origin_reserve: request.origin_reserve.clone(),
-                reserve_yes: Some(offered.reserve_yes.clone()),
+                yeses,
                 session: Some(offered.session.clone()),
             },
         )?;
-        let input = route_chosen(desk, order, by, &offered)?;
-        let start = record::build(desk.parts.clock, desk.core, What::Input { input })?;
+        let start = record::build(
+            desk.parts.clock,
+            desk.core,
+            What::Input {
+                input: input.clone(),
+            },
+        )?;
         kept.accepting = Some(Accepting {
             by: by.clone(),
             acceptance,
+            input,
             pending: vec![accepted, start],
         });
         carry_on(desk, kept)
@@ -736,6 +788,7 @@ fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeErro
             kept.status = Status::Accepted {
                 acceptance: accepting.acceptance.clone(),
             };
+            kept.started = Some(accepting.input.clone());
             Ok(kept.told())
         }
         Err(AppendFailure::Refused(_)) => {
@@ -777,6 +830,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         offered: None,
         accepting: None,
         ended: false,
+        started: None,
     };
     let refused = |desk: &mut Desk<'_, '_>, kept: &mut Kept, class| {
         let what = refusal(&kept.asked.request, None, class);

@@ -120,10 +120,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   with that transaction in its `about`. The tests show it end to end: the replayed log admits the acceptance's rows
   (`acceptance-rests-on-the-reserves-yes`, `acceptance-is-asked-in-the-users-session`,
   `acceptance-is-of-the-quote-shown`) and `answer-follows-its-question` on every answer.
-- **One yes for a split order, a contract gap.** `Offer::Offered` names a yes for each part, and core-internal's
-  acceptance names one, `reserve_yes`. The acceptance cites the first part's; each part withdraws at the origin
-  reserve, and the rounds offer no route without each yes, but the log ties only the first to the acceptance. A gap
-  for a new `F-020` row with a core-internal bump: `reserve_yes` as a list, one per part.
+- **One yes for a split order** (a contract gap at first, closed by `T-020-01e`; see `T-020-03b` below).
 - **The session comes with the request.** The user's session is opened through policy (`Sessions::open_session`)
   by whoever takes the user's login before it reaches intake, and handed to the catalogue by the assembly, as
   `F-021`'s notes have the register's hand-off. Intake doesn't open it; the log holds the acceptance to a permitted
@@ -133,8 +130,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   register; Core records each answer as a `destination_check`. It is resolved when the order opens, and that owner is
   kept; at acceptance it is resolved again. Not yet waits (`destination_not_yet_resolved`, accept again later; once it
   resolves, to the owner first resolved, it is accepted), no ends the order (`destination_refused`), and another owner
-  makes the order wait for the customer (`destination_check` `owner_changed`, no refusal, since none of the seven
-  classes is a wait for the customer): the requester's next acceptance names that owner and goes through policy.
+  makes the order wait for the customer (`destination_check` `owner_changed`, then, since `T-020-01e`, an
+  `order_refusal` of `destination_owner_changed`): the requester's next acceptance names that owner and goes through
+  policy.
   Confirming it again before the last segment is `T-020-08`'s and `T-020-13`'s. Reading, reversible.
 - **The requester's address** (`REQ-ORD-35`). The destination's account is the one place the address lives: intake
   sets it as the deposit's input `beneficiary.address` (provider-role's name, `intake::DESTINATION_INPUT`), so the
@@ -215,8 +213,8 @@ once and its test seen red again.
 - **Should-fix 5, `open` appended before it kept the order.** The request's record, its order id and the entries its
   opening appends are kept first, and appended as built; the same request again carries them on under the same
   order. Test `open_whose_append_failed_keeps_its_order`; red as reviewed, a second order.
-- **Should-fix 6, a split order's yes.** A `// T-020-01e:` note where the acceptance takes the first part's yes;
-  each part's is cited once core-internal's acceptance names them.
+- **Should-fix 6, a split order's yes.** A `// T-020-01e:` note where the acceptance took the first part's yes,
+  until core-internal's acceptance named each part's; closed in `T-020-03b`, below.
 - **Nit.** The carry-on path doesn't resolve the destination again: policy permitted on the resolution made then.
 - **A repeat by another actor of the party** (the coordinator's ruling, `REQ-OPS-5`). A repeated request is compared
   leaving out who acts for the party (the caller's `acts` and `kind`; its party and role are the key's and the
@@ -228,6 +226,53 @@ once and its test seen red again.
   ending the order; a retry rebuilding its entries; a refused append waited on; any session taken; one register for
   every party; told to anyone stating the party; and `open` appending before it keeps the order. The earlier
   rule-offs were run again on the new code, each red.
+
+### T-020-03b, each part's yes (after `T-020-01e`)
+
+Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s contract change merged
+(`d6f131c`).
+
+- **The acceptance cites each part's yes.** core-internal's acceptance now names `yeses`, one `PartYes { part,
+  origin_reserve, reserve_yes }` per part of the chosen route, in the plan's order, with distinct receipts. Intake
+  builds the start's plan first, then the acceptance: each part of the plan, by its id, with the yes the rounds
+  answered for it (`Offer::Offered`'s `reserve_yes`, in part order) and its origin reserve, the provider of the part's
+  first move. The `// T-020-01e:` note is gone. A route the rounds offer with fewer yeses than parts, or with one yes
+  for two parts (an even split at one reserve, answered by one question at one amount), would cite one statement
+  twice, so it isn't shown: `no_route_right_now`. Asking each part its own question in that case is the rounds'
+  (`T-020-06`), a hand-off. Test `split_orders_acceptance_names_each_parts_yes`, over a test router that splits the
+  route `RouteFinder` finds into two parts of 600 and 400 (v0's router doesn't split, `DEC-8`), admitted by the real
+  `admit_entry`; switched off (only the first part's yes, or the first part's for each), red.
+- **A change of owner has its class.** A destination whose owner changed is recorded as a `destination_check` of
+  `owner_changed` and then an `order_refusal` of `destination_owner_changed`, naming the order, the eighth class. The
+  order still waits for the customer (`Wait::OwnerChanged`), whose acceptance naming the owner goes on as before.
+  Test `change_of_owner_is_refused_with_its_class`; the refusal left out, red.
+- **A half-accepted order is never started** (review nit). Where the log takes the acceptance and refuses the start,
+  the order ends, and nothing acts on it: `T-020-08`'s segments follow only an order's recorded `route_chosen`
+  (`Segments::follow`), and intake's new `Intake::start` answers the start the log took, none for such an order. The
+  assembly is to feed `Segments::follow` from `Intake::start`, never from an acceptance (`T-024-02`). Test
+  `half_accepted_order_is_never_started`, with a log that refuses the start once; the start counted before the log
+  took it, red.
+- **The ended order's class stays `no_route_right_now`** (review nit). Of the eight classes it is the least wrong for
+  an order whose acceptance or start the log refused: the route as quoted can't run now, and a new request, with a
+  fresh session and yes, may route. `malformed_request` would blame the request, `refused_by_policy` a decision
+  policy never made, and the destination classes a destination that resolved. A class of its own is a core-internal
+  bump, an item for `F-020`.
+- **The fresh-identifier check restored in `open`** (review nit): an order id drawn fresh that an order already has
+  is refused (`IntakeError::Fresh`) before anything is kept. No test draws a repeat: the tests' identifier source
+  never repeats, and `rounds_support`'s `SameId` would repeat the transaction ids the rounds refuse first.
+- **What the merge broke elsewhere, fixed.**
+  - `T-020-08`'s scenario kit (`conformance/scenarios/tests/segments_support/`) built an automatic deposit's
+    acceptance with no arrival, which `automatic-deposit-rests-on-its-arrival` now refuses. The seed appends the
+    deposit's arrival first: the operator's question under its own transaction, the origin reserve's signed report
+    answering it, and the `arrival` citing that report. The test whose operator states for the reserve's publisher
+    (`segment_on_a_release_revoked_mid_flight_settles_on_its_result`) needs the release's acceptance in the log before
+    that report, so the kit gains `Core::over_with`, which appends it first and signs as that operator; and the count
+    of results kept once counts segments' results only, apart from the arrival's report.
+  - `T-022-01`'s log tests (`components/core-audit/tests/log.rs`) replay the contract's world, which gained a second
+    part's yes from `eu-bank`: `eu-bank` joins the providers the run admits, and the tests name the world's
+    acceptance, its yes and its second effect by what they are, not by places the fixture moved.
+- **Touches**: `components/core-orch/src/intake/`, its tests, the scenario kit and one scenario test of `T-020-08`'s,
+  `T-022-01`'s log test, and these notes. No `DEC-20` path and no shared manifest.
 
 ## T-020-05
 
