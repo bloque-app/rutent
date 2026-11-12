@@ -967,7 +967,8 @@
               "role": "customer",
               "kind": "person"
             },
-            "at": "2026-11-10T09:00:00Z"
+            "at": "2026-11-10T09:00:00Z",
+            "origin_account": "acct-ref-0"
           }
         },
         "when": {
@@ -1377,7 +1378,8 @@
               "role": "customer",
               "kind": "person"
             },
-            "at": "2026-11-10T09:00:00Z"
+            "at": "2026-11-10T09:00:00Z",
+            "origin_account": "acct-ref-0"
           }
         },
         "when": {
@@ -1514,7 +1516,8 @@
               "role": "operator",
               "kind": "person"
             },
-            "at": "2026-11-10T09:00:00Z"
+            "at": "2026-11-10T09:00:00Z",
+            "origin_account": "acct-ref-0"
           }
         },
         "when": {

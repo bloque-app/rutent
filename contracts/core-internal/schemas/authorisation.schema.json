@@ -27,6 +27,10 @@
       "description": "The order's origin reserve: where the user authorised, or the holding account's provider on a route handed on (REQ-AUZ-9).",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
+    "origin_account": {
+      "description": "The account at the origin reserve the value comes from, by reference: where a stuck resolution returns it. Intake fills it (T-020-03); absent, no delivery back to the origin is admitted.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
     "destination": {
       "$ref": "urn:rutent:core-internal:common#/$defs/destination"
     },

@@ -731,6 +731,7 @@ impl Intake {
             authorisation: authorisation_id,
             order: order.clone(),
             origin_reserve: request.origin_reserve.clone(),
+            origin_account: None,
             destination: request.destination.clone(),
             to_asset: request.route.to.asset.clone(),
             floor: request

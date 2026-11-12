@@ -968,6 +968,7 @@
               "kind": "person"
             },
             "at": "2026-11-10T09:00:00Z",
+            "origin_account": "acct-ref-0",
             "parts": [
               "p2"
             ]

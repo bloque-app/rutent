@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 72] = [
+pub static RELATIONS: [Relation; 73] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -705,6 +705,43 @@ pub static RELATIONS: [Relation; 72] = [
                 }),
             ) => judge(arrived_for == order, &[reserve == origin_reserve]),
             _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "split-deposit-arrival-names-its-part",
+        spec: &["REQ-ORD-15", "REQ-ORD-42"],
+        quantifier: Quantifier::Exists,
+        refusal: "a split route of an order accepted on an automatic deposit rests on an arrival naming each part",
+        fields: &[],
+        // An automatic deposit's order of more than one part: each part's value arrived, and its arrival says which
+        // part it is for. One of one part needs none.
+        cites: |e, h| match input(e).map(|i| (i, &i.observed)) {
+            Some((i, Observed::RouteChosen { parts, .. }))
+                if parts.len() > 1 && deposited(i.subject.order.as_str(), h) =>
+            {
+                (0..parts.len()).flat_map(by_fields).collect()
+            }
+            _ => none(),
+        },
+        answers: |e, c, t, _| {
+            let (Some(i), Some(What::Arrival { order, part, .. })) =
+                (input(e), verified(t).map(|t| &t.what))
+            else {
+                return Match::NotTarget;
+            };
+            let Observed::RouteChosen { parts, .. } = &i.observed else {
+                return Match::NotTarget;
+            };
+            judge(
+                order
+                    .as_ref()
+                    .is_some_and(|o| o.as_str() == i.subject.order.as_str())
+                    && parts.get(c.index).is_some_and(|p| {
+                        part.as_ref()
+                            .is_some_and(|q| q.as_str() == p.part_id.as_str())
+                    }),
+                &[],
+            )
         },
     },
     Relation {
@@ -3147,8 +3184,20 @@ fn resolved_to(
             _ => None,
         });
     let from_origin = to.reserve == a.origin_reserve
+        && a.origin_account.as_ref() == Some(&to.account)
         && matches!(origin_node, Some(crate::provider_role::NodeRef::Outer(n)) if n == &to.node);
     from_origin.then_some(crate::state_machine::ResolvedTo::Origin)
+}
+
+/// Whether `order` was accepted on an automatic deposit in `history`.
+fn deposited(order: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(&verified(e).map(|v| &v.what), Some(What::Acceptance {
+            order: o,
+            basis: AcceptanceBasis::AutomaticDeposit,
+            ..
+        }) if o.as_str() == order)
+    })
 }
 
 /// Whether an acceptance of `order` in `history` has a yes for `part`.

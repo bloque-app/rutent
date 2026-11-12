@@ -631,6 +631,15 @@ pub struct Authorisation {
     /// acceptance; this names the order's first part's reserve, the one policy holds against the order's origin
     /// when it asks whether the operator may act for the user there.
     pub origin_reserve: Id,
+    /// The account at the origin reserve the value comes from, by reference: where a stuck resolution returns it
+    /// (`delivery-goes-to-the-parts-ends`). Intake fills it (`T-020-03`); absent, no delivery back to the origin
+    /// is admitted.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub origin_account: Option<Id>,
     /// The destination.
     pub destination: Destination,
     /// The asset delivered there.
@@ -1964,6 +1973,14 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         notice: Option<Digest>,
+        /// The part of the order it is for: required where the order's route has more than one part
+        /// (`split-deposit-arrival-names-its-part`). The arrival's matcher fills it (`T-020-04`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        part: Option<Id>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {

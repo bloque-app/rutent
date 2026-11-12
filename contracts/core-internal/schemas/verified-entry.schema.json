@@ -1308,6 +1308,10 @@
         "notice": {
           "description": "The deposit it is of, by the commitment of the reserve's notice of it, the statement the deposit was first reported in: required on an arrival naming an order, whether it files an earlier arrival held against no order or the deposit met the order at once. One deposit opens one order.",
           "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "part": {
+          "description": "The part of the order it is for: required where the order's route has more than one part. The arrival's matcher fills it (T-020-04).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       },
       "allOf": [

@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 123 valid fixtures and 119 invalid ones, each
-  breaking one rule, and 385 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 74 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 388 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 75 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -311,6 +311,13 @@
   motion, so AC-6's part, stuck on a silent move, is resolved once the move's outcome is confirmed; no later result
   of the move is admitted but through it. Policy's side is `T-021-06`'s; `T-020-11` calls it. 385 admission cases,
   74 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-1, AC-6, T-020-01, T-020-11, T-021-06)
+- Folded into 1.0.0 before its release: the origin account and an arrival's part (round 4). `Authorisation` names
+  `origin_account`, and `delivery-goes-to-the-parts-ends` sends a delivery back to the origin only to it (intake
+  fills it, `T-020-03`). An `arrival` names its `part`, and `split-deposit-arrival-names-its-part` holds a split route
+  on an automatic deposit to an arrival naming each part (the arrival's matcher fills it, `T-020-04`). The README
+  records that a bound's window reads the log's append clock or a per-engine forward-only `counted_at` (`T-021-05`,
+  `T-022-01`). 388 admission cases, 75 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-15, REQ-ORD-42, T-020-01,
+  T-020-03, T-020-04)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
