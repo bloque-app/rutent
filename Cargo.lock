@@ -1517,6 +1517,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
  "jsonschema",
+ "proptest",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",

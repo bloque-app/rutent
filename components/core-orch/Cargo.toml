@@ -20,3 +20,4 @@ serde_json = "1.0.154"
 [dev-dependencies]
 ed25519-dalek = "2.2.0"
 jsonschema = { version = "0.60.2", default-features = false }
+proptest = "1.12.0"
