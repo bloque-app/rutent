@@ -155,19 +155,26 @@ impl StuckOrders for PermitsEveryStep {
         self.permit(&request.request, &request.mover, what, &request.at)
     }
 
-    // Until the stuck module reports and confirms outcomes through policy, these answer nothing: they fail closed.
     fn report_outcome(
         &mut self,
-        _request: &rutent_contracts::core_internal::OutcomeReport,
+        request: &rutent_contracts::core_internal::OutcomeReport,
     ) -> Result<Decision, AppendFailure> {
-        Err(AppendFailure::Unavailable)
+        let what = What::ReportOutcome {
+            request: request.clone(),
+            decision: request.request.clone(),
+        };
+        self.permit(&request.request, &request.reporter, what, &request.at)
     }
 
     fn confirm_outcome(
         &mut self,
-        _request: &rutent_contracts::core_internal::OutcomeConfirmation,
+        request: &rutent_contracts::core_internal::OutcomeConfirmation,
     ) -> Result<Decision, AppendFailure> {
-        Err(AppendFailure::Unavailable)
+        let what = What::ConfirmOutcome {
+            request: request.clone(),
+            decision: request.request.clone(),
+        };
+        self.permit(&request.request, &request.confirmer, what, &request.at)
     }
 }
 
@@ -223,4 +230,58 @@ pub fn recorded(core: &Core) -> Vec<rutent_contracts::core_internal::Entry> {
 /// Follows the kit's current order for its resolution, from the log's own record of its authorisation.
 pub fn follow(core: &Core, stuck: &mut Stuck) -> Result<(), rutent_core_orch::stuck::StuckError> {
     stuck.follow(&core.segments, &recorded(core), &id(&core.named.order))
+}
+
+/// The receipts of the stated entries the kit's log holds about `segment` of the current order, each with the
+/// party its claimed maker states for: the operator's signed operations, and the provider's results. A move's outcome
+/// is reported and confirmed on two of these, by different makers (`outcome-confirmation-rests-on-its-report`).
+pub fn statements_about(
+    core: &Core,
+    segment: &str,
+) -> Vec<(rutent_contracts::core_internal::Receipt, Id)> {
+    let log = core.log.borrow();
+    log.entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (e, _))| match e {
+            rutent_contracts::core_internal::Entry::Stated(s)
+                if s.about.as_ref().is_some_and(|a| {
+                    a.order
+                        .as_ref()
+                        .is_some_and(|o| o.as_str() == core.named.order)
+                        && a.segment.as_ref().is_some_and(|g| g.as_str() == segment)
+                }) =>
+            {
+                let rutent_contracts::core_internal::Attribution::Unverified { claimed_by } =
+                    &s.attribution
+                else {
+                    return None;
+                };
+                Some((log.receipt_at(i), claimed_by.party.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Two statements about `segment` of the current order by makers of different parties: the operator's operation
+/// and the provider's result, the evidence a move's outcome is reported and confirmed on.
+pub fn two_makers(
+    core: &Core,
+    segment: &str,
+) -> (
+    rutent_contracts::core_internal::Receipt,
+    rutent_contracts::core_internal::Receipt,
+) {
+    let found = statements_about(core, segment);
+    let first = found
+        .first()
+        .expect("a statement about the segment")
+        .clone();
+    let second = found
+        .iter()
+        .find(|(_, party)| party != &first.1)
+        .expect("a statement by another maker")
+        .clone();
+    (first.0, second.0)
 }

@@ -202,7 +202,9 @@ pub trait StatementKeys {
 
     /// The maker this deployment's operator signs its own statements as, Core's questions among them, with the
     /// deployment's `operator_key`: a statement's `acts`, not the party a module the operator publishes states for.
-    /// The log hands it to [`admit_entry`](super::admit_entry).
+    /// The log hands it to [`admit_entry`](super::admit_entry), with the party it states for ([`Self::publisher`]),
+    /// as a [`DeploymentOperator`](super::DeploymentOperator): the two differ, and a row reads each where it means
+    /// it.
     fn operator(&mut self) -> Result<Id, AppendFailure>;
 
     /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's

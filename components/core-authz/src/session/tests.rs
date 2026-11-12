@@ -55,8 +55,12 @@ impl PolicyLog for Kept {
         if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == &entry) {
             return Ok(receipt.clone());
         }
-        // The operator party Core's questions are verified to, as the log's `StatementKeys::operator` answers.
-        let operator = id("operator");
+        // The deployment's operator: the maker Core's questions are verified to, as the log's
+        // `StatementKeys::operator` answers, and the party its logins act for.
+        let operator = rutent_contracts::core_internal::DeploymentOperator {
+            maker: id("operator"),
+            party: id("operator"),
+        };
         admit_entry(&self.0, &entry, Through::Policy, &operator).map_err(AppendFailure::Refused)?;
         let index = 1_000 + self.0.len();
         let receipt: Receipt = serde_json::from_value(json!({

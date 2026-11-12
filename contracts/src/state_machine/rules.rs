@@ -7,10 +7,8 @@
 //!   ended order or part (but for a complete part's starting segment proven undone, [`undoes_a_complete_part`]),
 //!   an unknown part. It names what the input is about.
 //! - The rules of each kind: [`after_segment_input`], [`after_restart`] (`route_recalculated`,
-//!   `destination_changed`), [`after_no_route`](super::after_no_route), [`after_waiting_at_floor`](
-//!   super::after_waiting_at_floor), [`after_stuck_declared`], [`after_stuck_resolved`](
-//!   super::after_stuck_resolved), [`after_withdrawal_cancelled`], [`after_handed_on`] and
-//!   [`after_end_requested`].
+//!   `destination_changed`), [`after_no_route`], [`after_waiting_at_floor`], [`after_stuck_declared`],
+//!   [`after_stuck_resolved`], [`after_withdrawal_cancelled`], [`after_handed_on`] and [`after_end_requested`].
 //! - [`finish`] makes the order a transition returns, with [`order_state_of`] and the order's check.
 
 use alloc::collections::BTreeSet;

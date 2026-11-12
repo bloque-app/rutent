@@ -463,14 +463,20 @@ fn failed_provider_pays_only_the_return_to_its_origin() {
         &history[..at],
         &history[at].1,
         rutent_contracts::core_internal::Through::General,
-        &operator().acts,
+        &rutent_contracts::core_internal::DeploymentOperator {
+            maker: operator().acts,
+            party: operator().party,
+        },
     )
     .expect("the move by the provider its recalculated plan names is admitted");
     let refused = rutent_contracts::core_internal::admit_entry(
         &elsewhere,
         &history[at].1,
         rutent_contracts::core_internal::Through::General,
-        &operator().acts,
+        &rutent_contracts::core_internal::DeploymentOperator {
+            maker: operator().acts,
+            party: operator().party,
+        },
     )
     .expect_err("a move by a provider the plan doesn't name is refused");
     assert_eq!(

@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 425 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 81 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 442 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -350,6 +350,55 @@
   `input_not_taken` inputs too: another input under a refused input's record id is refused, and a trace of one is
   admitted only naming `record_id_reused`; the same input as a refused one is judged again. `CMP-STM`'s fixture
   oracle records a trace's record id as the host does. 425 admission cases. (DEC-4, DEC-20, REQ-AUD-1, REQ-STM-3,
+  T-020-01)
+- Folded into 1.0.0 before its release: an arrival's notice is a verified statement (round 6 of `T-020-01`'s
+  review). `arrival-names-its-notice` and `one-order-per-deposit`'s key read the notice's stated entry whatever its
+  signature, so the reserve's notice appended again unverified, claiming another transaction, keyed a second order
+  apart. The notice must now be verified (field `verified`), and the key reads only a verified one. 426 admission
+  cases. (DEC-4, DEC-20, REQ-ORD-23, REQ-AUD-2, INV-8, T-020-01)
+- Folded into 1.0.0 before its release: an outcome's evidence is newer than its move (round 6 of `T-020-01`'s
+  review). `outcome-confirmation-cites-verified-evidence` admitted a statement made before the move, which can't say
+  what the move came to, and a `move_value`'s evidence about any segment of its part. Each evidence now follows the
+  move's effect in the log (field `after`), and a `move_value`'s is about the moved segment itself, through a
+  transaction first bound to it. Refused: the probe, a report of `p3`'s delivery citing the statement about `p3-s1`
+  at position 60, before the effect at 69; a `move_value`'s evidence about another segment of its part. 429 admission
+  cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: a move's outcome is reported once, while it is unsettled (round 6 of
+  `T-020-01`'s review). `outcome-report-rests-on-its-move` admitted a report after the move's confirmation or final
+  result, and any number of reports. A report is now admitted only while the move has neither (field `open`), and
+  `one-report-per-effect` refuses a second permitted report of an effect, an identical retry aside, so the
+  confirmer confirms the one report there is. 433 admission cases, 82 relations. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011,
+  T-020-01)
+- Folded into 1.0.0 before its release: a refused input's refusal is handed back (round 6 of `T-020-01`'s review).
+  The same input sent again under a refused input's record id was judged again by the state machine, so once its
+  order had moved on the log took it, where the host hands back the refusal it recorded. Under a refused input's
+  record id, `state_machine_takes` now takes nothing, the same input included, and the not-taken verdict for the same
+  input is the recorded refusal, so only an identical `input_not_taken` follows it. Refused: the reviewer's sequence,
+  a destination change refused, then the order waiting, then the same input under the same id; the same input's
+  trace naming another reason. Admitted: the same trace again, also after its order has moved on. `CMP-STM`'s
+  fixture oracle refuses a refused input taken again. 437 admission cases. (DEC-4, DEC-20, REQ-AUD-1, REQ-STM-3,
+  T-020-01)
+- Folded into 1.0.0 before its release: a planless stuck part's outcome evidence binds through how its order came
+  in (round 6 of `T-020-01`'s review, the follow-up row added while the contract is unreleased). A stuck part with no
+  plan has no segment for its evidence to name, so `outcome-confirmation-cites-verified-evidence` could admit none,
+  and its silent resolution would deadlock. Its evidence now names the order and no segment, through a transaction
+  first bound to the order that is the deposit of an arrival naming the order or the one the part's acceptance yes
+  names. Admitted: `ord-21`'s planless `p3`, through its acceptance yes's transaction and through its arrival's;
+  refused: through another transaction of the order. 440 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2,
+  T-020-01)
+- Folded into 1.0.0 before its release: the README records that for a silent `move_value` the two actors may be
+  Core, the decide actor's party, and one person, and hands `T-021-06` the check the log can't make: policy's answer
+  to `confirm_outcome` refuses where the confirmer's and the reporter's `ActsFor` chains reach a common accountable
+  party. (DEC-4, REQ-AUZ-4, ADR-0011, T-020-01, T-021-06)
+- Folded into 1.0.0 before its release: `admit_entry` reads the deployment's operator by its maker and by its party
+  (int-arrivals' report on `T-020-01`). It took one `operator` id, the maker the operator signs its statements as
+  (`StatementKeys::operator`), and `refiling-files-an-arrival-anew` compared a refiler's party with it, so where the
+  maker and the party differ (a deployment signing as `conformance-operator`, its people acting for `operator`) the
+  operator's own login was refused, and a party named as the maker passed. `admit_entry` now takes a
+  `DeploymentOperator {maker, party}`: the stated rows and the operator's own statements read the maker, the refiling's
+  filer the party, which the log knows as the one `StatementKeys::publisher` answers for the operator's maker. The
+  world's operator is maker and party `operator`; a case may name another pair. Admitted: the operator's login under
+  a maker of another name; refused: a party named as the maker. 442 admission cases. (DEC-4, DEC-20, REQ-ORD-23,
   T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
