@@ -1151,15 +1151,7 @@ impl Stuck {
         // And where it delivers, to the part's ends as they stand now: a decision made before the customer replaced
         // the part's terms ([`Stuck::follow`]) would deliver where the authorisation in force no longer names, and is
         // refused before policy is asked (`REQ-AUZ-3`, `THR-77`).
-        if let Resolution::Deliver { to, .. } = &kept.request.resolution {
-            let ends = self
-                .ends
-                .get(&key(moving.order, &kept.part))
-                .ok_or(ResolveError::NoEnds)?;
-            if !ends.takes(to) {
-                return Err(ResolveError::ElsewhereThanItsEnds);
-            }
-        }
+        self.to_its_ends(moving.order, &kept.part, &kept.request.resolution)?;
         let request = StuckMove {
             request: parts.fresh.id(),
             order: moving.order.clone(),
@@ -1513,6 +1505,18 @@ impl Stuck {
         core: &Actor,
         at: &str,
     ) -> Result<Moved, ResolveError> {
+        // A move taken on again before its effect was recorded reads its part's ends again first: the customer may
+        // have replaced the part's terms while it stalled, and its effect would then deliver where the authorisation
+        // in force no longer names. It is dropped as a refused effect is, nothing recorded and its decision spent.
+        let motion = self.moving.get(at).ok_or(ResolveError::NoDecision)?;
+        if motion.effect.receipt.is_none()
+            && motion.resolved.is_none()
+            && let Action::ResolveStuck { resolution, .. } = &motion.action
+            && let Err(why) = self.to_its_ends(&motion.order, &motion.part, resolution)
+        {
+            self.drop_unrecorded(at);
+            return Err(why);
+        }
         let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
         let receipt = match motion.effect.append(parts.log) {
             Ok(receipt) => receipt,
@@ -1520,14 +1524,7 @@ impl Stuck {
             // A refused effect backs nothing: nothing moved and the permit is unused. The move is dropped, the part
             // freed, and its decision spent, so a new decision and move are asked (`INV-7`).
             Err(refused) => {
-                let part = key(&motion.order, &motion.part);
-                if let Some(decided) = carried_out_of(&motion.action) {
-                    self.kept.remove(decided.request.as_str());
-                }
-                self.moving.remove(at);
-                if let Some(declared) = self.declared.get_mut(&part) {
-                    declared.in_motion = None;
-                }
+                self.drop_unrecorded(at);
                 return Err(refused.into());
             }
         };
@@ -1546,7 +1543,8 @@ impl Stuck {
                 };
                 let still = self
                     .unresolved(parts.segments, &order, &part_id)
-                    .and_then(|declared| within(parts.exposures, &order, declared, &resolution));
+                    .and_then(|declared| within(parts.exposures, &order, declared, &resolution))
+                    .and_then(|()| self.to_its_ends(&order, &part_id, &resolution));
                 if let Err(why) = still {
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                     if let Some(decided) = carried_out_of(&motion.action) {
@@ -1654,6 +1652,42 @@ impl Stuck {
             resolved,
             result: Some(result),
         })
+    }
+
+    /// Whether `resolution` delivers to `part`'s ends as Core holds them now ([`Stuck::follow`]): a hand-on, which
+    /// delivers to neither, is the hand-on's to hold.
+    fn to_its_ends(
+        &self,
+        order: &Id,
+        part: &Id,
+        resolution: &Resolution,
+    ) -> Result<(), ResolveError> {
+        let Resolution::Deliver { to, .. } = resolution else {
+            return Ok(());
+        };
+        let ends = self
+            .ends
+            .get(&key(order, part))
+            .ok_or(ResolveError::NoEnds)?;
+        if ends.takes(to) {
+            Ok(())
+        } else {
+            Err(ResolveError::ElsewhereThanItsEnds)
+        }
+    }
+
+    /// Drops the move at `at` whose effect was never recorded: nothing moved and its permit is unused, so the part is
+    /// freed and its decision spent, and a new decision and move are asked (`INV-7`).
+    fn drop_unrecorded(&mut self, at: &str) {
+        let Some(motion) = self.moving.remove(at) else {
+            return;
+        };
+        if let Some(decided) = carried_out_of(&motion.action) {
+            self.kept.remove(decided.request.as_str());
+        }
+        if let Some(declared) = self.declared.get_mut(&key(&motion.order, &motion.part)) {
+            declared.in_motion = None;
+        }
     }
 
     /// Records a part's `stuck_resolved`, once all its value moved on a `deliver` resolution done: where the decision

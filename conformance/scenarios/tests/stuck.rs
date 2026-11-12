@@ -3254,44 +3254,43 @@ fn a_parts_new_destination_replaces_its_ends_and_keeps_the_others() {
     );
     assert_eq!(stuck.ends_of(&order, &p1), Some(first.clone()));
 
-    // The customer's new destination for p1: p1 takes it, p2 keeps its own.
-    let mut changed = recorded(&core);
-    changed.push(authorised_anew(
+    // The customer's new destination for p1, appended to the log: p1 takes it, p2 keeps its own.
+    authorise_in_the_log(
         &core,
-        "auth-p1-new",
-        Some(vec![p1.clone()]),
-        rutent_scenarios::kit::customer(),
-        "acct-new",
-        "acct-1",
-    ));
-    stuck
-        .follow(&core.segments, &changed, &order)
-        .expect("a part's new destination replaces its ends");
+        authorised_anew(
+            &core,
+            "auth-p1-new",
+            Some(vec![p1.clone()]),
+            rutent_scenarios::kit::customer(),
+            "acct-new",
+            "acct-1",
+        ),
+    );
+    follow(&core, &mut stuck).expect("a part's new destination replaces its ends");
     assert_eq!(
         stuck.ends_of(&order, &p1),
         Some((at("acct-new"), Some(origin())))
     );
     assert_eq!(stuck.ends_of(&order, &p2), Some(first.clone()));
-    stuck
-        .follow(&core.segments, &changed, &order)
-        .expect("following again with the same is nothing");
+    follow(&core, &mut stuck).expect("following again with the same is nothing");
     assert_eq!(
         stuck.ends_of(&order, &p1),
         Some((at("acct-new"), Some(origin())))
     );
 
     // The customer's, differing only in its origin account: the log's rule takes it for p2's origin.
-    changed.push(authorised_anew(
+    authorise_in_the_log(
         &core,
-        "auth-p2-origin",
-        Some(vec![p2.clone()]),
-        rutent_scenarios::kit::customer(),
-        destination(&core).account.as_str(),
-        "acct-9",
-    ));
-    stuck
-        .follow(&core.segments, &changed, &order)
-        .expect("the customer's origin account rules");
+        authorised_anew(
+            &core,
+            "auth-p2-origin",
+            Some(vec![p2.clone()]),
+            rutent_scenarios::kit::customer(),
+            destination(&core).account.as_str(),
+            "acct-9",
+        ),
+    );
+    follow(&core, &mut stuck).expect("the customer's origin account rules");
     assert_eq!(
         stuck.ends_of(&order, &p2),
         Some((destination(&core), Some(origin_at("acct-9"))))
@@ -3300,6 +3299,8 @@ fn a_parts_new_destination_replaces_its_ends_and_keeps_the_others() {
         stuck.ends_of(&order, &p1),
         Some((at("acct-new"), Some(origin())))
     );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
 }
 
 /// A decision made before its part's terms were replaced is carried out no more: the part's destination changes after
@@ -3324,18 +3325,7 @@ fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
         &evidence(),
     )
     .expect("decided while the destination stood");
-    let mut changed = recorded(&core);
-    changed.push(authorised_anew(
-        &core,
-        "auth-p1-new",
-        Some(vec![id(PART)]),
-        rutent_scenarios::kit::customer(),
-        "acct-new",
-        "acct-1",
-    ));
-    stuck
-        .follow(&core.segments, &changed, &id(ORDER))
-        .expect("the part's new destination replaces its ends");
+    replace_the_parts_destination(&mut core, &mut stuck);
     let asked = policy.asked;
     assert_eq!(
         moves_once(
@@ -3360,6 +3350,126 @@ fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
         &evidence(),
     )
     .expect("its origin stands");
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &to_its_origin,
+            &bob
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// Appends `entry`, a permitted `authorise`, to the kit's log on policy's handle, as the engine records it.
+fn authorise_in_the_log(core: &Core, entry: rutent_contracts::core_internal::Entry) {
+    use rutent_contracts::core_internal::calls::{DecisionEntry, PolicyLog};
+    let rutent_contracts::core_internal::Entry::Verified(entry) = entry else {
+        panic!("an authorisation is a verified entry");
+    };
+    PolicyPath(Rc::clone(&core.log))
+        .append_decision(&DecisionEntry::try_from(entry).expect("a decision"))
+        .expect("the log takes the customer's authorisation");
+}
+
+/// The customer authorises the kit's part alone to another account, recorded in the log, and Core follows the order
+/// again, taking the part's new ends.
+fn replace_the_parts_destination(core: &mut Core, stuck: &mut Stuck) {
+    authorise_in_the_log(
+        core,
+        authorised_anew(
+            core,
+            "auth-p1-new",
+            Some(vec![id(PART)]),
+            rutent_scenarios::kit::customer(),
+            "acct-new",
+            "acct-1",
+        ),
+    );
+    follow(core, stuck).expect("the part's new destination replaces its ends");
+}
+
+/// The reviewer's sequence (`T-020-11b`, U1): a decision to deliver to the part's destination; its move stalls, the
+/// log unable to take its effect; the customer then gives the part another destination, which the log records and
+/// Core follows. Taken on again by its mover, the stalled move reads the part's ends again before its effect is
+/// appended: it would deliver where the authorisation in force no longer names, so it is dropped, with no effect
+/// recorded and nothing moved, and its decision spent. A decision to the part's origin still moves.
+// verifies: REQ-AUZ-4, REQ-AUZ-3, INV-4
+#[test]
+fn stalled_move_taken_on_after_its_parts_ends_were_replaced_moves_nothing() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves::default();
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let delivery = to_destination(&core, AMOUNT);
+    let decision = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &delivery,
+        &evidence(),
+    )
+    .expect("decided while the destination stood");
+    for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Effect, Fault::Unavailable));
+    }
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::Append(_))
+    ));
+    replace_the_parts_destination(&mut core, &mut stuck);
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::ElsewhereThanItsEnds)
+    );
+    assert!(moves.0.is_empty(), "nothing moves");
+    assert_eq!(count(&core, is_resolve_stuck), 0, "no effect is recorded");
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::NoDecision),
+        "its decision is spent"
+    );
+    let to_its_origin = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .expect("the part is free for a new decision");
     assert!(matches!(
         moves_once(
             &mut core,
