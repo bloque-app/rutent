@@ -364,6 +364,17 @@ impl PolicyLog for PolicyPath {
     }
 }
 
+/// Policy's read of the log, on its own handle: the authorisations the log holds as permitted, so the engine's register
+/// is the log's (`T-021-04`).
+impl rutent_core_authz::funds::Recorded for PolicyPath {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::funds::permitted_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
+}
+
 /// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
 pub struct Deployment_ {
     pub refuse: Rc<Cell<Option<RefusalClass>>>,
@@ -424,36 +435,16 @@ pub struct Policy {
     pub asked: Vec<DecisionRequest>,
 }
 
-/// Policy's read of the log: the authorisations it holds as permitted, so the engine's register is the log's
-/// (`T-021-04`).
-pub struct PolicyReading(Rc<RefCell<TestLog>>);
-
-impl std::fmt::Debug for PolicyReading {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PolicyReading")
-    }
-}
-
-impl rutent_core_authz::funds::Recorded for PolicyReading {
-    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
-        let log = self.0.borrow();
-        Ok(rutent_core_authz::funds::permitted_in(
-            log.entries.iter().map(|(entry, _)| entry),
-        ))
-    }
-}
-
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
         let refuse = Rc::new(Cell::new(None));
-        let mut engine = Engine::with_policy(
-            PolicyPath(Rc::clone(&log)),
+        let engine = Engine::with_policy(
+            PolicyPath(log),
             Deployment_ {
                 refuse: Rc::clone(&refuse),
             },
             Register,
         );
-        engine.set_record(Box::new(PolicyReading(log)));
         Self {
             engine,
             refuse,

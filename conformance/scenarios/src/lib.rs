@@ -15,10 +15,10 @@
 
 pub mod sim;
 
-use rutent_contracts::core_internal::Receipt;
 use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, GeneralEntry, Log, PolicyLog,
 };
+use rutent_contracts::core_internal::{Entry, Receipt};
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
@@ -71,5 +71,35 @@ pub struct PolicyHandle<L>(Rc<RefCell<L>>);
 impl<L: PolicyLog> PolicyLog for PolicyHandle<L> {
     fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
         self.0.borrow_mut().append_decision(entry)
+    }
+}
+
+/// A log's entries, in order, as policy reads them: `None` where the log can't be read.
+pub trait Entries {
+    /// Every entry the log holds, in order, owned.
+    fn entries(&self) -> Option<Vec<Entry>>;
+}
+
+impl Entries for rutent_core_audit::log::Unbuilt {
+    /// The log before its row builds it holds nothing and can't be read.
+    fn entries(&self) -> Option<Vec<Entry>> {
+        None
+    }
+}
+
+/// Policy's read of the log, on policy's handle itself, so the read and the append are one wire (`T-021-04`).
+impl<L: Entries> rutent_core_authz::funds::Recorded for PolicyHandle<L> {
+    fn permitted(
+        &mut self,
+    ) -> Result<
+        Vec<rutent_contracts::core_internal::Authorisation>,
+        rutent_core_authz::funds::ReadFailure,
+    > {
+        let entries = self
+            .0
+            .borrow()
+            .entries()
+            .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(rutent_core_authz::funds::permitted_in(&entries))
     }
 }

@@ -13,11 +13,12 @@
 //! # The register is the log's
 //!
 //! The register a move is held to, [`Authorised`], holds nothing of its own. Before every authorisation and every
-//! move the engine reads, through the [`Recorded`] the assembly hands it over the same log as its policy handle, every
-//! authorisation the log holds as permitted ([`permitted_in`]), in log order, and decides on that alone. So an engine
-//! opened again after a restart, or beside another over the same log, holds what the log holds, and its own permit
-//! reaches the register only through the log. An engine handed no read, or whose read fails, refuses every
-//! authorisation and every move: the register is an input it doesn't have (`REQ-AUZ-5`).
+//! move the engine reads, on its policy handle itself ([`Recorded`], one wire with the append), every authorisation
+//! the log holds as permitted ([`permitted_in`]), in log order, and decides on that alone. So an engine opened again
+//! after a restart, or beside another over the same log, holds what the log holds, and its own permit reaches the
+//! register only through the log. A read that fails, doesn't extend the one before it, or lacks the engine's own last
+//! permitted append is refused, and so is every authorisation and every move on it: the register is an input the
+//! engine doesn't have (`REQ-AUZ-5`).
 //!
 //! # A move acts only inside the authorisation in force
 //!
@@ -30,14 +31,15 @@
 //!
 //! # A new authorisation
 //!
-//! An order's authorisation in force is the last one permitted for it. Another permitted with the same order,
-//! destination, to asset and floor states it again, and the moves under either stay inside. One that names anything
-//! else, the floor included, is a new authorisation: it replaces the one in force, which then covers no move, and
+//! An order's terms in force are set by its first permitted authorisation. Another permitted with the same order,
+//! destination, to asset and floor states them again, and the moves under either stay inside. One that names anything
+//! else, the floor included, is a new authorisation: it replaces the terms in force, whose ids then cover no move, and
 //! terms given again after others replaced them are in force under their new id alone. Only the customer gives a
 //! new one, its person or its agent, whose party the roles hold to the order's requester: the customer's own choice
 //! after a failed final deposit is such a new authorisation (`REQ-ORD-43`), and nobody else's choice is
 //! (`INV-10`). The operator acting for the user and the origin reserve authorise the order at its origin, where the
-//! roles let them, and change nothing of it after. An authorisation's id names that authorisation only: the same
+//! roles let them, and change nothing of it after: their authorisation only ever joins the terms in force, even one
+//! of other terms that engines racing over one log left there. An authorisation's id names that authorisation only: the same
 //! again, while in force, is decided again; anything else under it, or it once replaced, is refused.
 //!
 //! # Where the register's rule stands
@@ -58,17 +60,33 @@ use rutent_contracts::router_api::Id;
 
 use crate::engine::{Asked, Engine, Policy, Sources};
 
-/// A read of the log policy appends to: the authorisations it holds as permitted. The assembly hands the engine one
-/// over the same log as its policy handle ([`Engine::set_record`]), so the register is the log's, across a restart
-/// and across engines.
-pub trait Recorded: std::fmt::Debug {
+/// Why the log couldn't be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadFailure {
+    /// The log couldn't be reached, or answered nothing.
+    Unavailable,
+}
+
+/// The read of the log policy appends to, on policy's handle itself: the authorisations the log holds as permitted.
+/// The engine asks its log handle to be both (`L: PolicyLog + Recorded`), so the read and the append are one wire, and
+/// the register is the log's across a restart and across engines.
+///
+/// What the engine can check of a read is narrow. It refuses a read that doesn't extend the one before it, which
+/// catches one that drops or reorders what it held, and one that lacks the engine's own last permitted append, which
+/// catches one frozen before it, or of another log, once the engine has appended. Nothing else of a partial, stale or
+/// misdirected read is caught: a first read, or one frozen after the engine's last append, that is of another log or
+/// misses what another engine appended, passes both checks. That the read is of the very log the handle appends to,
+/// whole and current, is the assembly's word.
+pub trait Recorded {
     /// Every authorisation the log holds as permitted, in log order: [`permitted_in`] over its entries. The read
     /// returns owned values and holds nothing of the log once it answers.
-    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure>;
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure>;
 }
 
 /// The authorisations `entries` hold as permitted, in their order: each verified `authorise` entry whose outcome is
-/// `permitted`. The one definition every [`Recorded`] reads by.
+/// `permitted`. The one definition every [`Recorded`] reads by. It is core-internal's own reading of a permitted
+/// entry, the private `permitted` its relations hold an effect to (`contracts/src/core_internal/relations.rs`): a
+/// verified entry whose outcome is `permitted`, here of an `authorise`.
 pub fn permitted_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Authorisation> {
     entries
         .into_iter()
@@ -87,7 +105,8 @@ pub fn permitted_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Aut
 #[derive(Debug, Default)]
 pub struct Authorised {
     permitted: Vec<Authorisation>,
-    record: Option<Box<dyn Recorded>>,
+    /// The engine's own last permitted authorisation, appended: every read after it must hold it.
+    appended: Option<Authorisation>,
 }
 
 /// Whether `a` and `b` name the same order, destination, to asset and floor: what a move is held to.
@@ -104,35 +123,66 @@ impl Authorised {
         &self.permitted
     }
 
-    /// The authorisation in force for `order`: the last one permitted for it.
+    /// The terms in force for `order`, and the ids in force under them, folding the order's permitted authorisations in
+    /// log order. The first sets the terms. After it, one with the terms in force joins them; one with other terms
+    /// replaces them, and the ids under them, only where the customer gave it. Another's authorisation of other terms,
+    /// which the engine refuses and only engines racing over one log can leave there, never sets the terms: it is in
+    /// force under none.
+    fn standing(&self, order: &Id) -> Option<(&Authorisation, Vec<&Id>)> {
+        let mut terms: Option<&Authorisation> = None;
+        let mut ids: Vec<&Id> = Vec::new();
+        for a in self.permitted.iter().filter(|a| &a.order == order) {
+            match terms {
+                Some(t) if same_terms(t, a) => {
+                    if !ids.contains(&&a.authorisation) {
+                        ids.push(&a.authorisation);
+                    }
+                }
+                Some(_) if a.given_by.role != Role::Customer => {}
+                _ => {
+                    terms = Some(a);
+                    ids = vec![&a.authorisation];
+                }
+            }
+        }
+        terms.map(|t| (t, ids))
+    }
+
+    /// The terms in force for `order`.
     pub fn in_force(&self, order: &Id) -> Option<&Authorisation> {
-        self.permitted.iter().rev().find(|a| &a.order == order)
+        self.standing(order).map(|(terms, _)| terms)
     }
 
-    /// The authorisation `authorisation` names, where it is in force for `order`: permitted for it with the terms of
-    /// the one in force, and none of other terms permitted for it since.
+    /// The terms `authorisation` acts under, where it is in force for `order`: permitted for it, and one of the ids in
+    /// force under the terms in force.
     fn in_force_as(&self, order: &Id, authorisation: &Id) -> Option<&Authorisation> {
-        let current = self.in_force(order)?;
-        self.permitted
-            .iter()
-            .rev()
-            .filter(|a| &a.order == order)
-            .take_while(|a| same_terms(a, current))
-            .find(|a| &a.authorisation == authorisation)
+        self.standing(order)
+            .filter(|(_, ids)| ids.contains(&authorisation))
+            .map(|(terms, _)| terms)
     }
 
-    /// Reads the register again from the log, in place of what it held: the log alone says what is permitted. Without
-    /// a read, or where the read fails, the register is an input the decision doesn't have, and it is refused.
-    fn read(&mut self) -> Result<(), RefusalClass> {
-        let record = self.record.as_mut().ok_or(RefusalClass::MissingInput)?;
-        self.permitted = record.permitted().map_err(|_| RefusalClass::MissingInput)?;
+    /// Reads the register again from `log`, in place of what it held: the log alone says what is permitted. Where the
+    /// read fails, doesn't extend the read before it, or lacks the engine's own last permitted append, the register is
+    /// an input the decision doesn't have, and it is refused; the register stays as it was read last.
+    fn read(&mut self, log: &mut impl Recorded) -> Result<(), RefusalClass> {
+        let read = log.permitted().map_err(|_| RefusalClass::MissingInput)?;
+        let extends = read.starts_with(&self.permitted);
+        let holds_own = self.appended.as_ref().is_none_or(|own| read.contains(own));
+        if !(extends && holds_own) {
+            return Err(RefusalClass::MissingInput);
+        }
+        self.permitted = read;
         Ok(())
     }
 
     /// Why `action` is refused, where it is a move that doesn't act inside the authorisation it names: one in force
     /// for its order, by the log as read now, its route ending at its destination, in its to asset, delivering at
     /// least its floor.
-    pub(crate) fn refuses_move(&mut self, action: &Action) -> Option<RefusalClass> {
+    pub(crate) fn refuses_move(
+        &mut self,
+        log: &mut impl Recorded,
+        action: &Action,
+    ) -> Option<RefusalClass> {
         let Action::MoveValue {
             order,
             authorisation,
@@ -142,7 +192,7 @@ impl Authorised {
         else {
             return None;
         };
-        if let Err(class) = self.read() {
+        if let Err(class) = self.read(log) {
             return Some(class);
         }
         let inside = self.in_force_as(order, authorisation).is_some_and(|a| {
@@ -158,8 +208,8 @@ impl Authorised {
     /// Why `a` is refused, where it is, by the log as read now: its id names another authorisation, or one no longer
     /// in force; or it is a new authorisation for an order with one in force, naming anything else, given by anyone
     /// but the customer.
-    fn refuses(&mut self, a: &Authorisation) -> Option<RefusalClass> {
-        if let Err(class) = self.read() {
+    fn refuses(&mut self, log: &mut impl Recorded, a: &Authorisation) -> Option<RefusalClass> {
+        if let Err(class) = self.read(log) {
             return Some(class);
         }
         if let Some(given) = self
@@ -173,18 +223,6 @@ impl Authorised {
         let current = self.in_force(&a.order)?;
         let anew = !same_terms(current, a);
         (anew && a.given_by.role != Role::Customer).then_some(RefusalClass::NotPermitted)
-    }
-}
-
-/// A read that holds `authorisations` as the log's, for another row's tests whose moves act inside them.
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct Holding(pub(crate) Vec<Authorisation>);
-
-#[cfg(test)]
-impl Recorded for Holding {
-    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
-        Ok(self.0.clone())
     }
 }
 
@@ -202,28 +240,24 @@ impl<L, P, S> Engine<L, P, S> {
     pub fn authorised(&self) -> &Authorised {
         &self.authorised
     }
-
-    /// Hands the engine its read of the log it appends to. Until it has one, it refuses every authorisation and
-    /// every move.
-    pub fn set_record(&mut self, record: Box<dyn Recorded>) {
-        self.authorised.record = Some(record);
-    }
 }
 
 /// An authorisation decided through the one consultation, held to the register as the log holds it, and recorded
 /// before it is answered. A permitted one reaches the register only through the log: the next read finds it there.
-impl<L: PolicyLog, P: Policy, S: Sources> Authorisations for Engine<L, P, S> {
+impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Authorisations for Engine<L, P, S> {
     fn authorise(&mut self, authorisation: &Authorisation) -> Result<Decision, AppendFailure> {
         let a = authorisation;
-        let answer = held(
-            self.consult(Asked::Authorise(a)),
-            self.authorised.refuses(a),
-        );
+        let consulted = self.consult(Asked::Authorise(a));
+        let answer = held(consulted, self.authorised.refuses(&mut self.log, a));
         let what = |decision| What::Authorise {
             authorisation: a.clone(),
             decision,
         };
-        self.answer(&a.authorisation, &a.given_by, what, &a.at, answer)
+        let decision = self.answer(&a.authorisation, &a.given_by, what, &a.at, answer)?;
+        if matches!(answer, Answer::Permit {}) {
+            self.authorised.appended = Some(a.clone());
+        }
+        Ok(decision)
     }
 }
 

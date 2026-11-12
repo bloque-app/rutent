@@ -585,14 +585,15 @@ pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
-impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
+impl<L: PolicyLog + crate::funds::Recorded, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
-        // A move acts only inside the authorisation in force for its order (`T-021-04`), held after the
-        // consultation so its fixed rules' refusals stand.
+        // A move acts only inside the authorisation in force for its order, as the log policy appends to holds it
+        // (`T-021-04`), held after the consultation so its fixed rules' refusals stand.
+        let consulted = self.consult(Asked::Decide(request));
         let answer = crate::funds::held(
-            self.consult(Asked::Decide(request)),
-            self.authorised.refuses_move(&request.action),
+            consulted,
+            self.authorised.refuses_move(&mut self.log, &request.action),
         );
         let what = |decision| What::Decide {
             request: request.clone(),
@@ -620,6 +621,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::funds::{ReadFailure, Recorded};
     use rutent_contracts::core_internal::calls::{
         Authorisations, Charges, GeneralEntry, Log, PersonQuestions, Reads, Sessions, StuckOrders,
     };
@@ -640,12 +642,24 @@ mod tests {
         }
     }
 
+    impl Recorded for Taking {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Ok(held_and(&self.0))
+        }
+    }
+
     /// A log that takes nothing.
     struct Refusing;
 
     impl PolicyLog for Refusing {
         fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl Recorded for Refusing {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
         }
     }
 
@@ -658,6 +672,12 @@ mod tests {
     impl PolicyLog for Guarded {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.admit(Entry::Verified(entry.entry().clone()), Through::Policy)
+        }
+    }
+
+    impl Recorded for Guarded {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Ok(held_and(self.0.iter().map(|(_, e)| e)))
         }
     }
 
@@ -734,13 +754,13 @@ mod tests {
         }
     }
 
-    /// `engine` with a read of a log that holds the fixtures' authorisation, `auth-17` for `ord-17`, as permitted, so
-    /// the fixtures' move, which acts inside it, is decided on the rules these tests drive (`T-021-04`).
-    fn authorised<L, P, S>(mut engine: Engine<L, P, S>) -> Engine<L, P, S> {
-        engine.set_record(Box::new(crate::funds::Holding(vec![fixture!(
-            "authorisation-of-one-order-with-a-floor"
-        )])));
-        engine
+    /// What a test's log reads as permitted (`T-021-04`): the fixtures' authorisation, `auth-17` for `ord-17`, which
+    /// the log held before the test began, so the fixtures' move, which acts inside it, is decided on the rules these
+    /// tests drive; then each authorisation the log took as permitted.
+    fn held_and<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Authorisation> {
+        let mut held = vec![fixture!("authorisation-of-one-order-with-a-floor")];
+        held.extend(crate::funds::permitted_in(entries));
+        held
     }
 
     /// A permit for `decision`, built by hand whatever it answered: what a path around policy would hold.
@@ -982,19 +1002,22 @@ mod tests {
         let mut policy = Unbuilt::new(Taking::default());
 
         // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
-        // which no source can give; and the engine was handed no read of the log, so it has no register of
-        // authorisations to hold the move to, an input missing (`T-021-04`), a refusal beating not known.
+        // which no source can give; the move is inside the authorisation the log holds (`T-021-04`).
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
-        // The authorisation is refused the same way, whatever the register of actors would say (`T-021-03`).
+        let unreachable = Outcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable,
+        };
+        assert_eq!(last(&mut policy), unreachable);
+        // The authorisation, the one the log holds given again, waits on the register's word that its giver acts for
+        // the party it states (`T-021-03`).
         let decision = policy
             .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
+        assert_eq!(last(&mut policy), unreachable);
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
@@ -1074,11 +1097,11 @@ mod tests {
         let actions = every_decided_action();
         assert_eq!(actions.len(), 13);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
-        let mut policy = authorised(Engine::with_policy(
+        let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies(),
             yes_to_the_fixed_rules(&requests),
-        ));
+        );
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             assert_eq!(
@@ -1104,11 +1127,11 @@ mod tests {
         assert_eq!(policy.policy.1.ruled.len(), actions.len());
 
         let permits = Service::ruling(Reply::Given(Ruling::Permit));
-        let mut policy = authorised(Engine::with_policy(
+        let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
             permits,
             yes_to_the_fixed_rules(&requests),
-        ));
+        );
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             let permit = decision.permit().expect("a permit");
@@ -1165,11 +1188,11 @@ mod tests {
         }
         // Every input the fixed rules name is given yes, so each caller they let through is the deployment's to decide.
         let denies = Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
-        let mut policy = authorised(Engine::with_policy(
+        let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies,
             yes_to_the_fixed_rules(&requests),
-        ));
+        );
         let mut callers = Vec::new();
         for asked in &requests {
             let caller = &asked.caller;
@@ -1225,11 +1248,11 @@ mod tests {
         other.request = id("req-103");
         other.caller.acts = id("op-login-9");
         // Both logins hold the permission the fixed rule asks for, so the refusal is the deployment's policy's.
-        let mut policy = authorised(Engine::with_policy(
+        let mut policy = Engine::with_policy(
             Guarded::default(),
             knows_one_operator,
             yes_to_the_fixed_rules([&stale, &other]),
-        ));
+        );
         assert!(policy.decide(&stale).unwrap().permit().is_some());
         stale = other;
         let decision = policy.decide(&stale).unwrap();
@@ -1294,7 +1317,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, asked, ruled)) in cases.into_iter().enumerate() {
-            let mut policy = authorised(Engine::with_policy(Guarded::default(), service, given));
+            let mut policy = Engine::with_policy(Guarded::default(), service, given);
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, missing, "case {n}");
@@ -1307,11 +1330,11 @@ mod tests {
             );
         }
 
-        let mut policy = authorised(Engine::with_policy(
+        let mut policy = Engine::with_policy(
             Guarded::default(),
             permits(Reply::Given(both())),
             sources(yes.clone(), yes),
-        ));
+        );
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
@@ -1359,7 +1382,7 @@ mod tests {
             ),
         ];
         for (n, (service, given, cause)) in cases.into_iter().enumerate() {
-            let mut policy = authorised(Engine::with_policy(Guarded::default(), service, given));
+            let mut policy = Engine::with_policy(Guarded::default(), service, given);
             let request: DecisionRequest = fixture!("decision-request-to-move-value");
             let decision = policy.decide(&request).unwrap();
             assert_eq!(decision.outcome, Answer::NotKnown { cause }, "case {n}");
@@ -1374,11 +1397,7 @@ mod tests {
             );
         }
 
-        let mut policy = authorised(Engine::with_policy(
-            Refusing,
-            permits(both()),
-            sources(yes.clone(), yes),
-        ));
+        let mut policy = Engine::with_policy(Refusing, permits(both()), sources(yes.clone(), yes));
         assert_eq!(
             policy.decide(&fixture!("decision-request-to-move-value")),
             Err(AppendFailure::Unavailable)
@@ -1413,7 +1432,7 @@ mod tests {
         };
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
 
-        let mut policy = authorised(Engine::with_policy(Guarded::default(), refuses(), yes()));
+        let mut policy = Engine::with_policy(Guarded::default(), refuses(), yes());
         let decision = policy.decide(&request).unwrap();
         assert_eq!(decision.outcome, refused);
         let [(_, inputs)] = &policy.policy.1.ruled[..] else {
@@ -1438,22 +1457,14 @@ mod tests {
         );
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = authorised(Engine::with_policy(
-            Guarded::default(),
-            (permits, refuses()),
-            yes(),
-        ));
+        let mut policy = Engine::with_policy(Guarded::default(), (permits, refuses()), yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = authorised(Engine::with_policy(
-            Guarded::default(),
-            (refuses(), permits),
-            yes(),
-        ));
+        let mut policy = Engine::with_policy(Guarded::default(), (refuses(), permits), yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, refused);
 
         let permits = Service::new(needs(), |_, _| Reply::Given(Ruling::Permit));
-        let mut policy = authorised(Engine::with_policy(Guarded::default(), permits, yes()));
+        let mut policy = Engine::with_policy(Guarded::default(), permits, yes());
         assert_eq!(policy.decide(&request).unwrap().outcome, Answer::Permit {});
     }
 
@@ -1546,7 +1557,7 @@ mod tests {
     // verifies: REQ-AUZ-1, REQ-AUZ-5
     #[test]
     fn fixed_rules_are_asked_first_and_their_refusal_beats_an_unreachable_service() {
-        let engine = authorised(Engine::with_policy(Taking::default(), Absent, Absent));
+        let engine = Engine::with_policy(Taking::default(), Absent, Absent);
         let names = |rules: &[Rule]| rules.iter().map(|r| r.name).collect::<Vec<_>>();
         assert_eq!(
             names(engine.policy.0.rules),
@@ -1557,12 +1568,8 @@ mod tests {
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
         let refused = |class| Answer::Refuse { class };
         let decide = |fixed: &'static [Rule], service: Service| {
-            let mut engine = authorised(Engine::with_fixed(
-                Guarded::default(),
-                fixed,
-                service,
-                Given::default(),
-            ));
+            let mut engine =
+                Engine::with_fixed(Guarded::default(), fixed, service, Given::default());
             let answer = engine.decide(&request).unwrap().outcome;
             (answer, engine.policy.1.asked)
         };
@@ -1607,11 +1614,7 @@ mod tests {
     fn a_pair_of_policies_permits_only_where_both_do_and_a_refusal_beats_not_known() {
         let request: DecisionRequest = fixture!("decision-request-to-move-value");
         let decide = |first: Service, second: Service, sources: Given| {
-            let mut engine = authorised(Engine::with_policy(
-                Guarded::default(),
-                (first, second),
-                sources,
-            ));
+            let mut engine = Engine::with_policy(Guarded::default(), (first, second), sources);
             let answer = engine.decide(&request).unwrap().outcome;
             (answer, engine.sources.asked)
         };
@@ -1720,6 +1723,12 @@ mod tests {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.called.push(call_of(&entry.entry().what));
             self.log.append_decision(entry)
+        }
+    }
+
+    impl Recorded for Seen {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            self.log.permitted()
         }
     }
 
@@ -1977,11 +1986,8 @@ mod tests {
                         (Ruling::Refuse(RefusalClass::NotPermitted), false),
                     ] {
                         let service = Service::ruling(Reply::Given(ruling));
-                        let mut engine = authorised(Engine::with_policy(
-                            Seen::default(),
-                            service,
-                            Given::default(),
-                        ));
+                        let mut engine =
+                            Engine::with_policy(Seen::default(), service, Given::default());
                         assert_eq!(
                             call(&mut engine),
                             permitted,
@@ -2015,6 +2021,17 @@ mod tests {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.0.push(entry.clone());
             Ok(fixture!("receipt-of-an-appended-entry"))
+        }
+    }
+
+    impl Recorded for PolicysHandleOnly {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            let entries: Vec<Entry> = self
+                .0
+                .iter()
+                .map(|d| Entry::Verified(d.entry().clone()))
+                .collect();
+            Ok(held_and(&entries))
         }
     }
 

@@ -45,27 +45,69 @@ fn actor(party: &str, acts: &str, role: Role, kind: ActorKind) -> Actor {
     }
 }
 
+/// How a log handle reads: the log it appends to, whole and current, as it must; or one of the ways an assembly could
+/// wire it wrong, which the test sets.
+#[derive(Debug, Clone, Default)]
+enum Wiring {
+    #[default]
+    Whole,
+    /// The read fails, as a log out of reach would.
+    Fails,
+    /// The read is a snapshot taken once, and never moves on.
+    Frozen(Vec<Authorisation>),
+    /// The read drops the first authorisation the log holds as permitted.
+    DropsTheFirst,
+    /// The read is of another log than the one appended to.
+    Other(Rc<RefCell<Vec<Entry>>>),
+}
+
 /// A log that takes every decision entry, shared by every engine over it, as one log is across a restart or between
-/// two engines.
+/// two engines; each handle on it reads as its wiring says.
 #[derive(Default, Clone)]
-struct Shared(Rc<RefCell<Vec<Entry>>>);
+struct Shared {
+    entries: Rc<RefCell<Vec<Entry>>>,
+    wiring: Rc<RefCell<Wiring>>,
+}
+
+impl Shared {
+    /// Another handle on the same log, read whole.
+    fn handle(&self) -> Shared {
+        Shared {
+            entries: Rc::clone(&self.entries),
+            wiring: Rc::default(),
+        }
+    }
+
+    /// From now on, this handle reads as `wiring` says.
+    fn wire(&self, wiring: Wiring) {
+        *self.wiring.borrow_mut() = wiring;
+    }
+
+    /// What the log holds as permitted, whole.
+    fn whole(&self) -> Vec<Authorisation> {
+        permitted_in(self.entries.borrow().iter())
+    }
+}
 
 impl PolicyLog for Shared {
     fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
-        self.0
+        self.entries
             .borrow_mut()
             .push(Entry::Verified(entry.entry().clone()));
         Ok(valid!("receipt-of-an-appended-entry"))
     }
 }
 
-/// The read of a [`Shared`] log the assembly hands an engine.
-#[derive(Debug)]
-struct Reading(Rc<RefCell<Vec<Entry>>>);
-
-impl Recorded for Reading {
-    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
-        Ok(permitted_in(self.0.borrow().iter()))
+impl Recorded for Shared {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+        let wiring = self.wiring.borrow().clone();
+        match wiring {
+            Wiring::Whole => Ok(self.whole()),
+            Wiring::Fails => Err(ReadFailure::Unavailable),
+            Wiring::Frozen(snapshot) => Ok(snapshot),
+            Wiring::DropsTheFirst => Ok(self.whole().into_iter().skip(1).collect()),
+            Wiring::Other(other) => Ok(permitted_in(other.borrow().iter())),
+        }
     }
 }
 
@@ -116,16 +158,14 @@ fn engine() -> Policed {
     engine_over(&Shared::default())
 }
 
-/// An engine opened over `log`, handed its read of it: after a restart, or beside another engine over one log.
+/// An engine opened over a handle of its own on `log`: after a restart, or beside another engine over one log.
 fn engine_over(log: &Shared) -> Policed {
-    let mut engine = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
-    engine.set_record(Box::new(Reading(Rc::clone(&log.0))));
-    engine
+    Engine::with_policy(log.handle(), Deployment::default(), Sayings::default())
 }
 
 /// The last entry the log took.
 fn last_entry(policy: &Policed) -> VerifiedEntry {
-    let Some(Entry::Verified(entry)) = policy.log.0.borrow().last().cloned() else {
+    let Some(Entry::Verified(entry)) = policy.log.entries.borrow().last().cloned() else {
         panic!("a verified entry");
     };
     entry
@@ -322,6 +362,8 @@ impl Model {
                     self.in_force.push(a.authorisation.clone());
                 }
             }
+            // Only engines racing over one log leave another's authorisation of other terms there: it sets nothing.
+            Some(_) if a.given_by.role != Role::Customer => {}
             _ => {
                 self.terms = Some(a.clone());
                 self.in_force = vec![a.authorisation.clone()];
@@ -742,8 +784,7 @@ fn the_reviewers_three() -> (Authorisation, Authorisation, Authorisation) {
 
 /// A restart opens a fresh engine over the same log, and the register it holds moves to is the log's: the operator's
 /// own destination is still refused, and so are moves under it; the customer's replaced authorisation given again is
-/// refused, and moves to its destination with it; the customer's new one still acts. An engine handed no read of the
-/// log refuses every authorisation and every move, its register an input it doesn't have.
+/// refused, and moves to its destination with it; the customer's new one still acts.
 // verifies: REQ-AUZ-3, INV-10
 #[test]
 fn register_is_rebuilt_from_the_log_after_a_restart() {
@@ -780,20 +821,6 @@ fn register_is_rebuilt_from_the_log_after_a_restart() {
             &move_under(2, &order, &anew.authorisation, end_of(&anew, "120000"))
         ),
         Answer::Permit {}
-    );
-
-    // An engine handed no read refuses, whatever the log holds.
-    let mut unread = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
-    let missing = Answer::Refuse {
-        class: RefusalClass::MissingInput,
-    };
-    assert_eq!(unread.authorise(&anew).unwrap().outcome, missing);
-    assert_eq!(
-        decided(
-            &mut unread,
-            &move_under(3, &order, &anew.authorisation, end_of(&anew, "120000"))
-        ),
-        missing
     );
 }
 
@@ -931,39 +958,177 @@ fn replaced_authorisation_given_again_is_refused() {
     );
 }
 
-/// A read of a [`Shared`] log that fails once its switch is thrown, as a log out of reach would.
-#[derive(Debug)]
-struct Failing(Rc<RefCell<Vec<Entry>>>, Rc<std::cell::Cell<bool>>);
-
-impl Recorded for Failing {
-    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
-        if self.1.get() {
-            return Err(AppendFailure::Unavailable);
-        }
-        Ok(permitted_in(self.0.borrow().iter()))
-    }
-}
-
 /// An engine whose read of the log fails holds no register, neither an empty one nor the one it read last: it
-/// refuses every authorisation and every move, the register an input it doesn't have.
+/// refuses every authorisation and every move, the register an input it doesn't have, on its first read as on any.
 // verifies: REQ-AUZ-3, INV-10
 #[test]
 fn register_that_cannot_be_read_refuses_every_authorisation_and_move() {
     let (first, _, operators) = the_reviewers_three();
     let order = first.order.clone();
-    let log = Shared::default();
-    let fails = Rc::new(std::cell::Cell::new(false));
-    let mut policy = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
-    policy.set_record(Box::new(Failing(Rc::clone(&log.0), Rc::clone(&fails))));
+    let mut policy = engine();
     assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
     let inside = move_under(0, &order, &first.authorisation, end_of(&first, "2500000"));
     assert_eq!(decided(&mut policy, &inside), Answer::Permit {});
 
-    fails.set(true);
+    policy.log.wire(Wiring::Fails);
     let missing = Answer::Refuse {
         class: RefusalClass::MissingInput,
     };
     assert_eq!(policy.authorise(&operators).unwrap().outcome, missing);
     let inside = move_under(1, &order, &first.authorisation, end_of(&first, "2500000"));
     assert_eq!(decided(&mut policy, &inside), missing);
+
+    // An engine opened again whose first read fails has nothing earlier to compare it with, and refuses as well.
+    let mut reopened = engine_over(&policy.log);
+    reopened.log.wire(Wiring::Fails);
+    assert_eq!(reopened.authorise(&operators).unwrap().outcome, missing);
+}
+
+// --- A read that isn't the log's, whole and current -------------------------------------------------------------
+
+const MISSING: Answer = Answer::Refuse {
+    class: RefusalClass::MissingInput,
+};
+
+/// A read frozen at a snapshot: the engine gives the customer's new destination, and the snapshot, which lacks it, is
+/// what it next reads. It refuses, a move under the authorisation replaced and that authorisation given again alike,
+/// since the read lacks its own last permit.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn snapshot_read_missing_the_engines_own_permit_is_refused() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let mut policy = engine();
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    policy.log.wire(Wiring::Frozen(policy.log.whole()));
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    let to_first = end_of(&first, "2500000");
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(0, &order, &first.authorisation, to_first)
+        ),
+        MISSING
+    );
+    assert_eq!(policy.authorise(&first).unwrap().outcome, MISSING);
+}
+
+/// A read that drops what an earlier read held doesn't extend it: the engine refuses, though the read still holds the
+/// engine's own last permit.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn truncated_read_of_the_log_is_refused() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let mut policy = engine();
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    let to_anew = end_of(&anew, "120000");
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(0, &order, &anew.authorisation, to_anew.clone())
+        ),
+        Answer::Permit {}
+    );
+    policy.log.wire(Wiring::DropsTheFirst);
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(1, &order, &anew.authorisation, to_anew)
+        ),
+        MISSING
+    );
+    assert_eq!(policy.authorise(&first).unwrap().outcome, MISSING);
+}
+
+/// A read of another log than the one the engine appends to lacks the engine's own permit once it gives one, and the
+/// engine refuses from then on: the other log's authorisation in force, which the customer's new one replaced on this
+/// log, never acts again.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn read_over_another_log_is_refused() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let other = Shared::default();
+    let mut elsewhere = engine_over(&other);
+    assert_eq!(
+        elsewhere.authorise(&first).unwrap().outcome,
+        Answer::Permit {}
+    );
+    let mut policy = engine();
+    policy.log.wire(Wiring::Other(Rc::clone(&other.entries)));
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(0, &order, &first.authorisation, end_of(&first, "2500000"))
+        ),
+        MISSING
+    );
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(1, &order, &anew.authorisation, end_of(&anew, "120000"))
+        ),
+        MISSING
+    );
+}
+
+/// The entry an engine appends when it permits `a`, appended here straight to `log`, as an engine racing another would
+/// leave it.
+fn append_permitted(log: &Shared, a: &Authorisation) {
+    let entry = VerifiedEntry {
+        kind: rutent_contracts::core_internal::VerifiedKind::Verified,
+        who: a.given_by.clone(),
+        what: What::Authorise {
+            authorisation: a.clone(),
+            decision: a.authorisation.clone(),
+        },
+        when: rutent_contracts::core_internal::When {
+            at: a.at.clone(),
+            source: rutent_contracts::core_internal::TimeSource::CoreClock,
+        },
+        outcome: Outcome::Permitted {},
+    };
+    log.entries.borrow_mut().push(Entry::Verified(entry));
+}
+
+/// Two engines raced: both read `auth-17` in force, one permitted the customer's new destination, `auth-18`, and the
+/// other the operator's restatement of `auth-17`, `auth-70`, appended after it. The operator's authorisation only
+/// joins the terms already in force and never sets them, so the old destination isn't back by its hand: `auth-70` is
+/// not in force, and `auth-18` is.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn operators_restatement_raced_past_a_new_destination_is_not_in_force() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let mut restated = first.clone();
+    restated.authorisation = id("auth-70");
+    restated.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+    let log = Shared::default();
+    for a in [&first, &anew, &restated] {
+        append_permitted(&log, a);
+    }
+    let mut policy = engine_over(&log);
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(
+                0,
+                &order,
+                &restated.authorisation,
+                end_of(&first, "2500000")
+            )
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(1, &order, &anew.authorisation, end_of(&anew, "120000"))
+        ),
+        Answer::Permit {}
+    );
+    assert_eq!(policy.authorise(&restated).unwrap().outcome, NOT_PERMITTED);
 }
