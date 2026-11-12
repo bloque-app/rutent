@@ -456,12 +456,13 @@ impl Arrivals {
             .find(|r| &r.receipt == arrival)
             .cloned()
             .ok_or(ArrivalError::NoSuchArrival)?;
-        let (Some(order), ArrivalMatch::Differs) = (&recorded.order, recorded.matched) else {
-            return Err(ArrivalError::NoSuchArrival);
-        };
+        // The filer first: to anyone else, nothing about the arrival is told, not even how it met its order.
         if !may_file(desk, filer, &recorded.reserve) {
             return Err(ArrivalError::NotTheFiler);
         }
+        let (Some(order), ArrivalMatch::Differs) = (&recorded.order, recorded.matched) else {
+            return Err(ArrivalError::NoSuchArrival);
+        };
         let refiled = match self.refilings.get_mut(&key(arrival)) {
             Some(refiled) => refiled,
             None => {
@@ -496,6 +497,16 @@ impl Arrivals {
         filing: Filing,
     ) -> Result<Filed, ArrivalError> {
         let arrival = key(&filing.arrival);
+        let recorded = self
+            .recorded
+            .iter()
+            .find(|r| r.receipt == filing.arrival)
+            .cloned()
+            .ok_or(ArrivalError::NoSuchArrival)?;
+        // The filer first: to anyone else, nothing about the arrival or an order filed on it is told.
+        if !may_file(desk, &filing.filer, &recorded.reserve) {
+            return Err(ArrivalError::NotTheFiler);
+        }
         if let Some(run) = self.runs.get(&arrival) {
             if run.asked != filing {
                 return Err(ArrivalError::Conflicting {
@@ -508,14 +519,9 @@ impl Arrivals {
                 self.flush_refused(desk)?;
                 return Ok(filed);
             }
-            let recorded = self
-                .recorded
-                .iter()
-                .find(|r| r.receipt == filing.arrival && r.matched == ArrivalMatch::NoOrder)
-                .cloned()
-                .ok_or(ArrivalError::NoSuchArrival)?;
-            if !may_file(desk, &filing.filer, &recorded.reserve) {
-                return Err(ArrivalError::NotTheFiler);
+            // Only value that met no order is filed on: one held against an open order is that order's.
+            if recorded.matched != ArrivalMatch::NoOrder {
+                return Err(ArrivalError::NoSuchArrival);
             }
             if !filing::declared(desk, &recorded.reserve) {
                 return Err(ArrivalError::NotDeclared);
