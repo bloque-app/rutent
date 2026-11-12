@@ -806,6 +806,12 @@ pub enum Reads {
         /// The order.
         order: Id,
     },
+    /// One order's recorded state and age, and nothing else: visible to its customer and the operator
+    /// (`REQ-ORD-5`). The operator reads it without a permission; a full read of the order needs one.
+    OrderState {
+        /// The order.
+        order: Id,
+    },
     /// One segment of an order, with its provider: that provider's to read (`REQ-AUZ-7`).
     Segment {
         /// The order.

@@ -135,9 +135,9 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `provider-asked-before-was-asked` | `ask_about_person`: each of `asked_before` | an `ask_about_person`, `permitted`, asking that provider | order | `REQ-CPL-5` | admitted: `world--*`; refused: `--missing`, `--order` |
 | `asked-before-is-complete` | `ask_about_person`: its order | none other: no `ask_about_person`, `permitted`, of that order asking a provider missing from `asked_before` | — | `REQ-CPL-5` | admitted: `world--*`; refused: `--conflict` |
 | `revocation-revokes-a-grant` | `revoke_permission`, `permitted`: its `permission` (a refused one cites nothing) | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`, `--refused`; refused: `--missing` |
-| `permitted-read-rests-on-its-grant` | `check_read`, `permitted`, naming a `permission` | a `grant_permission`, `permitted`, of that permission | grantee (the reader's party), scope (covers what it reads) | `REQ-AUZ-7`, `REQ-AUD-12` | admitted: `world--*`; refused: `--missing`, `--grantee`, `--scope` |
+| `permitted-read-rests-on-its-grant` | `check_read`, `permitted`, naming a `permission` | a `grant_permission`, `permitted`, of that permission | grantee (the reader's party), scope (covers what it reads) | `REQ-AUZ-7`, `REQ-AUD-12` | admitted: `world--*`; refused: `--missing`, `--grantee`, `--scope`, `--order-state-under-the-trail`, `--order-state-under-its-order`; refused also: `--order-state-under-another-order` |
 | `permitted-read-is-not-revoked` | `check_read`, `permitted`, naming a `permission` | none other: no `revoke_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`; refused: `--conflict` |
-| `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order or segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer), segment (a segment read's segment is one its order's plan lists) | `REQ-AUZ-7` | admitted: `world--*`, `--segment-of-its-order`; refused: `--missing`, `--party`, `--beneficiary`, `--segment` |
+| `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order, its state or a segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer), segment (a segment read's segment is one its order's plan lists) | `REQ-AUZ-7` | admitted: `world--*`, `--segment-of-its-order`; refused: `--missing`, `--party`, `--beneficiary`, `--segment`, `--order-state-of-its-order`; refused also: `--order-state-of-another-order`, `--order-state-of-an-order-not-its-own` |
 | `provider-read-is-of-its-own-segment` | `check_read`, `permitted`, by a provider, of a segment: its order and segment | an `effect` of `move_value` on that segment of that order | provider (the reader, as the effect and the read name it) | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--provider`, `--as` |
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
 | `route-starts-on-the-withdrawal-proof` | `effect` of `move_value` on a segment after its part's first, by the `route_chosen` plan | an `input` (`segment_settled`) of the part's first segment, for the order | — | `REQ-ORD-40` | admitted: `world--*`; refused: `--missing` |
@@ -351,7 +351,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `VerifiedEntry` of a `command` | its `who` is the operator |
 | `GeneralEntry` | it holds no decision kind (`calls::is_decision`), and no stated entry attributed `verified`, however it is built or read |
 | `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
-| `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order or the trail; a customer's is never of the trail |
+| `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order, its state or the trail; a customer's is never of the trail; the operator's without a permission is of an order's state or its own evidence |
 | `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers and the verifiers its tuples need, which receive the subject |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
 | `What::Acceptance` | it names each part's yes, each part once and each with a receipt of its own, and the session exactly when its basis is given |
@@ -440,6 +440,10 @@ These are defaults taken where the row left a choice open. Each is reversible by
   (`asked_before`, `provider-asked-before-was-asked`, `asked-before-is-complete`, `REQ-CPL-5`). A read
   check is taken from every role; policy answers it, and a permitted one is held to who may read
   (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`, the read rules above).
+- **An order's state and age** (`REQ-ORD-5`). `Reads::OrderState { order }` (`kind: order_state`) reads an order's
+  recorded state and age and nothing else: the operator reads it without a permission, its customer reads its own,
+  and no provider reads it. A permission over the trail or over the order covers it. `T-021-02`'s policy allows
+  the operator's and the customer's `order_state` reads; `T-020-08` serves them.
 - **Refusal classes for orders** are the eight `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
   A change of the destination's owner is `destination_owner_changed`: the order waits for the customer, told so by
   its own class, and the refusal rests on the `destination_check` that found `owner_changed`

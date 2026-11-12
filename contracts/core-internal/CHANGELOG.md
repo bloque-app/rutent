@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 114 valid fixtures and 112 invalid ones, each
-  breaking one rule, and 253 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-six schemas, 115 valid fixtures and 114 invalid ones, each
+  breaking one rule, and 259 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 53 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -136,6 +136,12 @@
   `chosen-route-rests-on-its-orders-acceptance` holds each part's yes to the reserve its first segment runs at.
   `Authorisation.origin_reserve` names the order's first part's reserve. 253 admission cases. (DEC-4, DEC-20,
   REQ-ORD-15, REQ-ORD-32, REQ-ORD-38, REQ-AUZ-9, T-020-01)
+- Folded into 1.0.0 before its release: a read of an order's state and age. `Reads::OrderState { order }`, schema
+  `kind: order_state`, reads an order's recorded state and age and nothing else (`REQ-ORD-5`). The trail and the
+  order cover it; an operator's permitted read without a permission is of an order's state or its own evidence; a
+  provider's permitted read is never of an order's state; `customer-read-is-of-its-own-order` cites a customer's
+  `order_state` reads. 115 valid fixtures, 114 invalid, 259 admission cases. (DEC-4, DEC-20, REQ-ORD-5, REQ-AUZ-7,
+  T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -2050,7 +2050,9 @@ fn read_of_order(entry: &VerifiedEntry) -> Option<&Id> {
     match &entry.what {
         What::CheckRead { check } if entry.outcome == (Outcome::Permitted {}) => match &check.reads
         {
-            Reads::Order { order } | Reads::Segment { order, .. } => Some(order),
+            Reads::Order { order } | Reads::OrderState { order } | Reads::Segment { order, .. } => {
+                Some(order)
+            }
             _ => None,
         },
         _ => None,
@@ -2128,12 +2130,19 @@ fn planned_end<'a>(
     })
 }
 
-/// Whether a permission's `scope` covers `reads`: the trail covers every order and segment, an order its segments,
-/// and anything else only itself.
+/// Whether a permission's `scope` covers `reads`: the trail covers every order, order state and segment, an order
+/// its state and its segments, and anything else only itself.
 pub fn covers(scope: &Reads, reads: &Reads) -> bool {
     match (scope, reads) {
-        (Reads::Trail {}, Reads::Trail {} | Reads::Order { .. } | Reads::Segment { .. }) => true,
+        (
+            Reads::Trail {},
+            Reads::Trail {}
+            | Reads::Order { .. }
+            | Reads::OrderState { .. }
+            | Reads::Segment { .. },
+        ) => true,
         (Reads::Order { order }, Reads::Order { order: o })
+        | (Reads::Order { order }, Reads::OrderState { order: o })
         | (Reads::Order { order }, Reads::Segment { order: o, .. }) => order == o,
         _ => scope == reads,
     }

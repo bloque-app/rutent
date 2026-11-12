@@ -73,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 35] = [
+const RUST_RULES: [(&str, &str); 37] = [
     (
         "permission-change-by-a-provider",
         "a read permission is granted or revoked by the operator",
@@ -112,7 +112,15 @@ const RUST_RULES: [(&str, &str); 35] = [
     ),
     (
         "verified-entry-of-a-providers-permitted-read-of-an-order",
-        "a provider's permitted read is of a segment, never an order or the trail",
+        "a provider's permitted read is of a segment, never an order, its state or the trail",
+    ),
+    (
+        "verified-entry-of-a-providers-permitted-read-of-an-orders-state",
+        "a provider's permitted read is of a segment, never an order, its state or the trail",
+    ),
+    (
+        "verified-entry-of-the-operators-permitted-read-of-an-order-without-a-permission",
+        "an operator's permitted read without a permission is of an order's state or its own evidence",
     ),
     (
         "verified-entry-of-a-regulators-read-without-its-permission",
