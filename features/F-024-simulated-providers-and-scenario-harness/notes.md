@@ -275,5 +275,8 @@ on its own toolchain. The four checks also ran on the twin's toolchain, nightly-
 guests, prov's executables and the scenarios build and pass on it. The VOS tests themselves weren't run locally:
 CI runs them.
 
-**Runs.** CI's run ids for the `ci` job and the `STM on VOS` workflow are pending the orchestrating session's push
-of this branch (`stm-vos.yml` lists it as a trigger); none is recorded until then.
+**Runs.** At `m3`'s merge of this row (`970828a`), every workflow passed: `CI` run 43184990293 (the `ci` job,
+with the seeded step), `STM on VOS` run 43184990196, `Contract guard` 43184990355, `licences` 43184990320 and
+`records` 43184990233. On the branch, `STM on VOS` passed at `28b6353` (run 43176806840, the first to reach the
+twin's scenarios on three VOS replicas) and at `304fa27` (run 43178711555). Run 43165714465 at `ebd6def` failed at
+the twin's lint step before any scenario ran; `28b6353` fixed it.
