@@ -167,7 +167,10 @@ jobs:
       # guest one.
       - name: The scenarios', their host server's and its wire's format and lint (T-024-02)
         run: |
-          SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources" . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          # Exported on its own line: an assignment before `.` lasts only while the file is sourced, and the
+          # functions it defines read SOURCES after.
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
           sources_git_config "$VOS_DIR"
           (cd "$PROGRAM/scenarios/serve" && cargo fmt --check &&
             CARGO_TARGET_DIR="$BUILD/client-target" cargo clippy --locked --all-targets --features vos -- -D warnings)
