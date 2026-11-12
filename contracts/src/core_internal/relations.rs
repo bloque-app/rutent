@@ -1169,10 +1169,22 @@ pub static RELATIONS: [Relation; 77] = [
                 "an outcome's report and its confirmation each cite a verified statement",
             ),
             (
+                "result",
+                "an outcome's evidence is a provider's result, not a question or another shape",
+            ),
+            (
+                "maker",
+                "an outcome's evidence is not the deployment operator's own statement",
+            ),
+            (
                 "about",
                 "an outcome's evidence is about its move's own order and part, a move_value's own segment, a planless part's arrival or acceptance, through the transaction it names",
             ),
             ("after", "an outcome's evidence follows its move in the log"),
+            (
+                "made",
+                "an outcome's evidence was made no earlier than its move",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::ReportOutcome { request, .. } => alloc::vec![by_receipt(&request.evidence, 0)],
@@ -1194,17 +1206,25 @@ pub static RELATIONS: [Relation; 77] = [
             let about = moved
                 .and_then(verified)
                 .is_some_and(|m| evidence_about(s, m, h));
-            // Evidence older than the move can't say what the move came to.
+            // Evidence older than the move can't say what the move came to: neither one appended before it, nor one its
+            // maker made before it, appended after.
             let after = match (moved.and_then(|m| position(m, h)), position(t, h)) {
                 (Some(m), Some(at)) => at > m,
                 _ => false,
             };
+            let made = moved
+                .and_then(verified)
+                .is_some_and(|m| s.when.at.unix_nanos() >= m.when.at.unix_nanos());
             judge(
                 true,
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
+                    // What a provider answered, never Core's own question re-appended, nor the operator's word.
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                    maker_provider(s) != &e.operator.maker,
                     about,
                     after,
+                    made,
                 ],
             )
         },

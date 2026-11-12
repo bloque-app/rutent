@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 442 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 445 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -400,6 +400,14 @@
   world's operator is maker and party `operator`; a case may name another pair. Admitted: the operator's login under
   a maker of another name; refused: a party named as the maker. 442 admission cases. (DEC-4, DEC-20, REQ-ORD-23,
   T-020-01)
+- Folded into 1.0.0 before its release: an outcome's evidence is a provider's result, made after the move (round 7
+  of `T-020-01`'s review). `outcome-confirmation-cites-verified-evidence` admitted Core's own `operation` question,
+  re-appended after the move, as a report's evidence, and read "after the move" by log position alone. Each evidence
+  is now a `result`-shaped statement (field `result`), not the deployment operator's own (field `maker`, against
+  `DeploymentOperator.maker`), and made no earlier than the effect's time (field `made`, its `made_at` against the
+  effect's `when.at`). Refused: Core's question re-appended, the operator's own result, a result made before the
+  effect and appended after it. The world's evidence statements are made after the moves they report. 445 admission
+  cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
