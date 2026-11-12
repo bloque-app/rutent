@@ -18,7 +18,8 @@ use serde_json::Value;
 const REFUSED_BY_THE_MACHINE_ON_PURPOSE: [(&str, &str); 0] = [];
 
 fn admission_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contracts/core-internal/fixtures/admission")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contracts/core-internal/fixtures/admission")
 }
 
 /// What the state machine does with a log's inputs, in order: `Applied`, `Late` or `Repeat` is a taking; anything
@@ -70,7 +71,10 @@ fn every_history_the_log_admits_holds_only_inputs_the_state_machine_takes() {
     for path in fs::read_dir(admission_dir()).expect("the admission fixtures") {
         let path = path.unwrap().path();
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        if REFUSED_BY_THE_MACHINE_ON_PURPOSE.iter().any(|(n, _)| *n == name) {
+        if REFUSED_BY_THE_MACHINE_ON_PURPOSE
+            .iter()
+            .any(|(n, _)| *n == name)
+        {
             continue;
         }
         let case: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

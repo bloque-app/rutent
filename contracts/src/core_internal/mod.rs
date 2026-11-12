@@ -90,6 +90,7 @@ pub use relations::{
     Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
     StatedCiting, Through, VerifiedCiting, admit_entry, covers,
 };
+pub use standing::state_machine_takes;
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/core-internal/CHANGELOG.md`.

@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 65] = [
+pub static RELATIONS: [Relation; 66] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2678,6 +2678,22 @@ pub static RELATIONS: [Relation; 65] = [
             },
             None => Match::NotTarget,
         },
+    },
+    Relation {
+        name: "input-is-one-the-state-machine-takes",
+        spec: &["REQ-STM-3", "INV-4", "REQ-AUD-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "a recorded input is one the state machine takes from where its order stands",
+        fields: &[],
+        // The log reads each order's inputs through the state machine's published rules (`standing`); one those
+        // rules don't take, which `CMP-STM` would answer not applicable, would put the log and the order apart. The
+        // differential oracle in `CMP-STM`'s tests holds the two to each other. Last in the table, so every other
+        // row's refusal comes first.
+        cites: |e, h| match input(e) {
+            Some(i) if !super::standing::state_machine_takes(h, i) => by_fields(0),
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
 ];
 

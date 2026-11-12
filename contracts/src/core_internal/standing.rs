@@ -1,27 +1,31 @@
-//! A part's standing as this log's inputs show it: the one fold the citation table's part rows share, so each row
+//! A part's standing as this log's inputs show it: the one reading the citation table's part rows share, so each row
 //! reads where a part stands the same way (`T-020-01`, `T-020-10`, `T-020-11`).
 //!
-//! The fold follows the state machine's published rules, not a copy of them: [`after_no_route`],
-//! [`after_waiting_at_floor`], [`after_stuck_resolved`] and [`deposit_failed_at_after`] place the part, over a
-//! [`Part`] the fold builds from the part's inputs. The rest is what every `StateMachine` does with a part's
-//! inputs and the contract states: a segment moves on its own input, a recalculation or change of destination keeps
-//! the settled prefix and retires the rest, an ended part takes nothing more. The log admits an input only once Core
-//! recorded it, so the fold takes each as applied; a stuck resolution's move counts once its result is `done`.
+//! The reading is the state machine's own: each of the order's inputs goes, in the log's order, through the
+//! transition rules the state-machine contract publishes ([`rules`](crate::state_machine::rules)), dispatched by
+//! kind as `CMP-STM` dispatches them. An input those rules don't take (one `CMP-STM` would answer not applicable)
+//! is one the log refuses ([`state_machine_takes`]), so an admitted log holds only inputs the state machine took,
+//! and what a row reads of a part is what the state machine holds. The differential oracle in `CMP-STM`'s tests
+//! holds the two to each other. A stuck resolution's move counts once its result is `done`, which the state machine
+//! doesn't see.
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use super::relations::History;
-use super::types::{Action, Entry, Outcome, VerifiedEntry, What};
+use super::types::{Action, Entry, Outcome as EntryOutcome, VerifiedEntry, What};
+use crate::state_machine::rules::{
+    Target, after_end_requested, after_handed_on, after_restart, after_segment_input,
+    after_stuck_declared, after_withdrawal_cancelled, finish, guard, not_from_this_state, open,
+};
 use crate::state_machine::{
-    Destination, Observed, OperationKind, OrderState, Part, RecordedInput, Segment, SegmentState,
-    after_no_route, after_stuck_resolved, after_waiting_at_floor, deposit_failed_at_after,
+    Observed, OperationKind, Order, OrderState, Outcome, Part, RecordedInput, SegmentState,
+    after_no_route, after_stuck_resolved, after_waiting_at_floor, waiting_since_after,
 };
 
 /// Where a part stands after a history.
 pub(crate) struct Standing {
-    /// The part, as the state machine would hold it.
+    /// The part, as the state machine holds it.
     pub part: Part,
     /// The index in the history of the entry that put the part where it stands: the input that moved it to its
     /// state, or the `done` result of its stuck resolution.
@@ -33,17 +37,9 @@ pub(crate) struct Standing {
 }
 
 impl Standing {
-    /// Whether the part has ended: complete, failed, handed on or ended without completing (`REQ-STM-6`), or
-    /// resolved while stuck, its value moved on its resolution.
+    /// Whether the part has ended (`REQ-STM-6`), or was resolved while stuck, its value moved on its resolution.
     pub fn ended(&self) -> bool {
-        self.resolved
-            || matches!(
-                self.part.state,
-                OrderState::Complete
-                    | OrderState::Failed
-                    | OrderState::HandedOn
-                    | OrderState::EndedWithoutCompleting
-            )
+        self.resolved || crate::state_machine::rules::is_ended(self.part.state)
     }
 
     /// Whether the part is held: waiting for the customer or stuck, where no provider starts on it.
@@ -79,6 +75,117 @@ fn input(entry: &VerifiedEntry) -> Option<&RecordedInput> {
     }
 }
 
+/// One transition: `input` on `order`, through the published rules, dispatched by its kind as `CMP-STM` does.
+pub(crate) fn step(order: &Order, input: &RecordedInput) -> Order {
+    let mut next = order.clone();
+    let outcome = apply(&mut next, input);
+    finish(order, next, input, outcome)
+}
+
+fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
+    let (index, used) = match guard(order, input) {
+        Err(outcome) => return outcome,
+        Ok(Target::Order) => {
+            return match &input.observed {
+                Observed::EndRequested {} => after_end_requested(order),
+                _ => not_from_this_state(),
+            };
+        }
+        Ok(Target::Part { index, used }) => (index, used),
+    };
+    let order_id = order.order_id.clone();
+    let before = order.parts[index].clone();
+    let part = &mut order.parts[index];
+    let placed = |part: &mut Part, state: Option<OrderState>| match state {
+        Some(state) => {
+            part.state = state;
+            Outcome::Applied {}
+        }
+        None => not_from_this_state(),
+    };
+    let outcome = match &input.observed {
+        Observed::ProviderBound {}
+        | Observed::SegmentSettled { .. }
+        | Observed::SegmentFailed {}
+        | Observed::SegmentOutcomeUnknown {}
+        | Observed::ReversalCompleted { .. } => after_segment_input(part, input),
+        Observed::RouteRecalculated { segments, .. } => {
+            after_restart(part, &used, input, segments, false)
+        }
+        Observed::DestinationChanged { segments, .. } => {
+            after_restart(part, &used, input, segments, true)
+        }
+        Observed::NoRoute { .. } => {
+            let state = after_no_route(part).filter(|s| *s != part.state);
+            placed(part, state)
+        }
+        Observed::WaitingAtFloor {} => {
+            let state = after_waiting_at_floor(part);
+            placed(part, state)
+        }
+        Observed::StuckResolved { to, .. } => {
+            let state = after_stuck_resolved(part, *to);
+            let outcome = placed(part, state);
+            if outcome == (Outcome::Applied {}) {
+                part.resolved_to = Some(*to);
+            }
+            outcome
+        }
+        Observed::StuckDeclared { .. } => after_stuck_declared(part),
+        Observed::WithdrawalCancelled {} => after_withdrawal_cancelled(part),
+        Observed::HandedOn { linked_order, .. } => after_handed_on(part, &order_id, linked_order),
+        Observed::RouteChosen { .. } | Observed::EndRequested {} => not_from_this_state(),
+    };
+    if outcome == (Outcome::Applied {}) {
+        part.waiting_since = waiting_since_after(&before, part.state, input);
+    }
+    outcome
+}
+
+/// Whether the state machine takes `outcome`: it applied the input, or recorded it late or as a repeat.
+fn taken(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Applied {} | Outcome::Late {} | Outcome::Repeat {}
+    )
+}
+
+/// The order `order` after the inputs of `history` the state machine took, with the index of each entry that
+/// changed it, or `None` before its route is chosen.
+fn order_after(order: &str, history: &History) -> Option<Order> {
+    let mut current: Option<Order> = None;
+    for (_, entry) in history {
+        let Some(input) = verified(entry).and_then(input) else {
+            continue;
+        };
+        if input.subject.order.as_str() != order {
+            continue;
+        }
+        current = match current {
+            None => open(input),
+            Some(state) => {
+                let next = step(&state, input);
+                Some(if taken(&next.last_input.outcome) {
+                    next
+                } else {
+                    state
+                })
+            }
+        };
+    }
+    current
+}
+
+/// Whether the state machine takes `input` after `history`: the log admits a state-machine input only where it
+/// does (`input-is-one-the-state-machine-takes`). An input before its order's route is recorded with no state, as
+/// the host contract records it, and taken; a `route_chosen` is taken where it opens a valid order.
+pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
+    match order_after(input.subject.order.as_str(), history) {
+        None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),
+        Some(order) => taken(&step(&order, input).last_input.outcome),
+    }
+}
+
 /// The part of `order` a stuck decision of `history` names, by the request and decision `carries` names.
 pub(crate) fn decided_part<'a>(
     order: &str,
@@ -99,7 +206,7 @@ pub(crate) fn decided_part<'a>(
 
 /// Whether `entry` is the `done` result of a stuck resolution's move for `part` of `order`.
 fn resolves(entry: &VerifiedEntry, order: &str, part: &str, history: &History) -> bool {
-    let (What::Result { effect }, Outcome::Done {}) = (&entry.what, &entry.outcome) else {
+    let (What::Result { effect }, EntryOutcome::Done {}) = (&entry.what, &entry.outcome) else {
         return false;
     };
     history.iter().any(|(r, e)| {
@@ -121,6 +228,7 @@ fn resolves(entry: &VerifiedEntry, order: &str, part: &str, history: &History) -
 
 /// Where `part` of `order` stands after `history`, or `None` if no `route_chosen` of the order planned it.
 pub(crate) fn standing(order: &str, part: &str, history: &History) -> Option<Standing> {
+    let mut current: Option<Order> = None;
     let mut standing: Option<Standing> = None;
     for (index, (_, entry)) in history.iter().enumerate() {
         let Some(entry) = verified(entry) else {
@@ -139,178 +247,38 @@ pub(crate) fn standing(order: &str, part: &str, history: &History) -> Option<Sta
         if input.subject.order.as_str() != order {
             continue;
         }
-        match (&input.observed, &mut standing) {
-            (Observed::RouteChosen { parts, .. }, None) => {
-                standing = parts
-                    .iter()
-                    .find(|p| p.part_id.as_str() == part)
-                    .and_then(|p| opened(p, index));
-            }
-            (Observed::EndRequested {}, Some(s)) => {
-                if s.part.state == OrderState::NotPastFirstSegment {
-                    s.part.state = OrderState::EndedWithoutCompleting;
-                    s.since = index;
+        let next = match &current {
+            None => open(input),
+            Some(state) => {
+                let next = step(state, input);
+                if !taken(&next.last_input.outcome) {
+                    continue;
                 }
+                Some(next)
             }
-            (_, Some(s)) if input.subject.part.as_ref().map(|p| p.as_str()) == Some(part) => {
-                s.apply(input, index)
+        };
+        let Some(next) = next else {
+            continue;
+        };
+        if let Some(now) = next.parts.iter().find(|p| p.part_id.as_str() == part) {
+            let s = standing.get_or_insert_with(|| Standing {
+                part: now.clone(),
+                since: index,
+                resolved: false,
+                segments: BTreeMap::new(),
+            });
+            if s.part.state != now.state {
+                s.since = index;
             }
-            _ => {}
+            s.part = now.clone();
+            for segment in &now.segments {
+                s.segments.insert(
+                    segment.segment_id.as_str().to_string(),
+                    (segment.kind, segment.state),
+                );
+            }
         }
+        current = Some(next);
     }
     standing
-}
-
-fn opened(plan: &crate::state_machine::PartPlan, index: usize) -> Option<Standing> {
-    let destination = Destination::of(&plan.segments)?;
-    let segments = plan
-        .segments
-        .iter()
-        .map(|s| {
-            (
-                s.segment_id.as_str().to_string(),
-                (s.kind, SegmentState::Pending),
-            )
-        })
-        .collect();
-    Some(Standing {
-        part: Part {
-            part_id: plan.part_id.clone(),
-            state: OrderState::NotPastFirstSegment,
-            linked_order: None,
-            segments: plan
-                .segments
-                .iter()
-                .cloned()
-                .map(|p| Segment::new(p, SegmentState::Pending))
-                .collect(),
-            retired_segments: Vec::new(),
-            destination,
-            deposit_failed_at: None,
-            waiting_since: None,
-            resolved_to: None,
-        },
-        since: index,
-        resolved: false,
-        segments,
-    })
-}
-
-impl Standing {
-    fn apply(&mut self, input: &RecordedInput, index: usize) {
-        if self.ended() {
-            return;
-        }
-        let before = self.part.state;
-        let part = &mut self.part;
-        match &input.observed {
-            Observed::ProviderBound {}
-            | Observed::SegmentSettled { .. }
-            | Observed::SegmentFailed {}
-            | Observed::SegmentOutcomeUnknown {}
-            | Observed::ReversalCompleted { .. } => {
-                let Some(id) = &input.subject.segment else {
-                    return;
-                };
-                let Some(at) = part.segments.iter().position(|s| &s.segment_id == id) else {
-                    // A report about a retired segment is late: it moves nothing.
-                    return;
-                };
-                let failed_at = deposit_failed_at_after(part, input);
-                let next = match &input.observed {
-                    Observed::ProviderBound {} => SegmentState::Started,
-                    Observed::SegmentSettled { .. } => SegmentState::Settled,
-                    Observed::SegmentFailed {} => {
-                        part.deposit_failed_at = failed_at;
-                        SegmentState::FailedReversalOwed
-                    }
-                    Observed::SegmentOutcomeUnknown {} => SegmentState::OutcomeUnknown,
-                    _ => SegmentState::ReversalComplete,
-                };
-                part.segments[at].state = next;
-                if let Some(entry) = self.segments.get_mut(id.as_str()) {
-                    entry.1 = next;
-                }
-                part.state = if part
-                    .segments
-                    .iter()
-                    .all(|s| s.state == SegmentState::Settled)
-                {
-                    OrderState::Complete
-                } else if matches!(
-                    part.state,
-                    OrderState::WaitingForCustomer | OrderState::Stuck
-                ) {
-                    part.state
-                } else {
-                    by_first_segment(part)
-                };
-            }
-            Observed::RouteRecalculated { segments, .. }
-            | Observed::DestinationChanged { segments, .. } => {
-                let failed_at = deposit_failed_at_after(part, input);
-                let keep = part
-                    .segments
-                    .iter()
-                    .position(|s| s.state != SegmentState::Settled)
-                    .unwrap_or(part.segments.len());
-                let retired: Vec<Segment> = part.segments.drain(keep..).collect();
-                part.retired_segments
-                    .extend(retired.into_iter().map(|s| s.segment_id));
-                for plan in segments {
-                    self.segments.insert(
-                        plan.segment_id.as_str().to_string(),
-                        (plan.kind, SegmentState::Pending),
-                    );
-                    part.segments
-                        .push(Segment::new(plan.clone(), SegmentState::Pending));
-                }
-                if matches!(input.observed, Observed::DestinationChanged { .. })
-                    && let Some(destination) = Destination::of(segments)
-                {
-                    part.destination = destination;
-                }
-                part.deposit_failed_at = failed_at;
-                part.state = by_first_segment(part);
-            }
-            Observed::NoRoute { .. } => {
-                if let Some(state) = after_no_route(part) {
-                    part.state = state;
-                }
-            }
-            Observed::WaitingAtFloor {} => {
-                if let Some(state) = after_waiting_at_floor(part) {
-                    part.state = state;
-                }
-            }
-            Observed::StuckDeclared { .. } => part.state = OrderState::Stuck,
-            Observed::StuckResolved { to, .. } => {
-                if let Some(state) = after_stuck_resolved(part, *to) {
-                    part.state = state;
-                    part.resolved_to = Some(*to);
-                }
-            }
-            Observed::WithdrawalCancelled {} => {
-                if part.state == OrderState::NotPastFirstSegment {
-                    part.state = OrderState::EndedWithoutCompleting;
-                }
-            }
-            Observed::HandedOn { linked_order, .. } => {
-                part.state = OrderState::HandedOn;
-                part.linked_order = Some(linked_order.clone());
-            }
-            Observed::RouteChosen { .. } | Observed::EndRequested {} => {}
-        }
-        if self.part.state != before {
-            self.since = index;
-        }
-    }
-}
-
-fn by_first_segment(part: &Part) -> OrderState {
-    if part.segments[0].state == SegmentState::Settled {
-        OrderState::FirstSegmentSettled
-    } else {
-        OrderState::NotPastFirstSegment
-    }
 }

@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 117 invalid ones, each
-  breaking one rule, and 338 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 67 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 341 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 68 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -235,6 +235,15 @@
   value sits, the failed delivery's result precedes the hand-on decision, and the hand-on's done result precedes
   `handed_on`. Cases rebuilt on legal histories; the probe recalculating a handed-on part goes, since the state
   machine refuses its hand-on. 338 admission cases. (DEC-4, DEC-20, INV-4, REQ-STM-3, T-020-01)
+- Folded into 1.0.0 before its release: a part's standing is the state machine's own. `standing` dispatches each of
+  the order's inputs to the transition rules the state-machine contract now publishes, as `CMP-STM` does, in place of
+  its own copy of the segment and route transitions, so `Failed`, the guards on `destination_changed`, the segment
+  edges and every other rule are the machine's. The row `input-is-one-the-state-machine-takes`, last in the table,
+  refuses an input those rules don't take (`state_machine_takes`, public). A property test in `CMP-STM`'s tests holds
+  the log's verdict to the reference state machine's over 600 seeded runs, both ways; switching off one rule in
+  `standing` turns it red. Tension, named: `REQ-AUD-1`'s "every input leaves a trace" let a not-applicable input be
+  recorded; the log now refuses it, and Core records only inputs the machine takes. 341 admission cases, 68 relations.
+  (DEC-4, DEC-18, DEC-20, INV-4, REQ-STM-3, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
