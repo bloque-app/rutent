@@ -2257,3 +2257,115 @@ rule was switched off once, its test seen red, the file restored and touched.
   outcome's `unanswered` result, then on confirmation the `resolution_outcome` entry with both actors and both
   pieces of evidence (`Stuck::outcome_of`'s, into the log), then the final `done` or `failed` result.
 
+
+## T-020-12
+
+- **One record, `reversal::Reversals`** (`components/core-orch/src/reversal/`). Core's record of the reversals
+  segments owe, the questions asked about them, who carries each, the orders ended on request and what came after an
+  order ended, which the production assembly keeps durably (`F-030`), as `Segments`. What it reaches comes in
+  `reversal::Parts` (Core's clock, the catalogue by `&mut`, the log, the evidence store, fresh ids, `Segments`,
+  `Exposures`, Core and the operator); a question also takes `Asking` (the order's bounds, the operator key, the
+  providers' modules). Every entry is built once and appended as built, its receipt taken only where it is the
+  entry's own (`stuck::is_receipt_of`). Reading, reversible.
+- **Owed, on the catalogue's list** (`Reversals::owe`, `REQ-CAT-7`, `F-012`'s hand-off). A segment the order Core
+  follows holds `failed_reversal_owed`, not a deposit (a failed deposit owes nothing back, the state machine's
+  rule), is owed by its provider, in the asset it took in, for what it took in, as Core signed it (`Segments::sent`),
+  under the id `{order}/{segment}`. Only a completed reversal discharges it (`Observation::Confirmed`). `PLAN.md`
+  §4.4's inherited "owed reversals" guard is read as feeding and discharging the list; refusing to route to a
+  provider that owes is asked by no row. Reading, reversible.
+- **Complete only on another party's statement** (`Reversals::confirm`, `REQ-ORD-3`, ADR-0008). Core asks the origin
+  reserve, the provider of the part's withdrawal, a `reversal_confirmation` question (the reversed segment's
+  transaction, the asset it took in, what it took in) under a fresh transaction drawn from the segments' register
+  (`Segments::claim_transaction`), signed with the operator key and appended about the order, segment and
+  transaction before it is sent; its answer is appended under that transaction, so `answer-follows-its-question`
+  holds and the log can verify it. The answer counts, in this order (`reversal/judge.rs`): attributable; not the
+  failed provider's own word unless the failed provider is the origin reserve; the origin reserve's; not of the failed
+  provider's publisher; a confirmation answering Core's question, its inner statement the reserve's own, naming the
+  segment's transaction, in its asset and in full. What counts is an `evidence` (whose: the reserve; grade 4 where
+  the reserve is the segment's own provider, an undone start, so `reversal-rests-on-its-evidence`'s `--unless` and
+  `evidence-rests-on-statements`' provider field both hold; grade 3 for its signed confirmation of another provider's
+  reversal, since grade 4 must rest on the segment's provider's statement), then `reversal_completed` citing it, the
+  order read again first. Once taken: `Segments::observe`, the hold released, the owed reversal discharged. The part's
+  value is evidenced at the segment's start again, so `T-020-10`'s recalculation goes on from there (its hand-off,
+  the 1449 note: asserted in the origin-reserve test with `recalc::evidenced`). An answer that doesn't count is kept,
+  and the next call asks again under a fresh transaction.
+- **Defaults taken** (reversible, each for the form):
+  - The **publisher half** (core-internal's README, "A reversal's evidence and the failed provider's publisher",
+    left to `T-020-12`) is held strictly: a reserve sharing the failed provider's publisher completes nothing, and
+    `Publisher::Operator` counts as one publisher. So while every provider is the operator's own (`DEC-11`), only a
+    reserve's word about its own segment completes a reversal, and any other reversal stays owed and held, failing
+    closed, for the stuck orders.
+  - **ADR-0008's origin reserve is the only confirming party**: any other party's statement is kept and completes
+    nothing (`NotTheOriginReserve`).
+  - **The grade** of the reserve's signed confirmation of another provider's reversal: 3 (signed by its maker).
+  - **An undone start** is proven only by one confirmation of the whole withdrawal; pieces are kept, never summed:
+    a confirmation names no credit, so two pieces can't be told from one credit reported twice.
+  - **Ending while in motion**: `end` refuses while any segment of a part that would end is handed over with no
+    final outcome (`InMotion`), though the state machine would end it; its value may still move.
+  - **Who answers a showing of fault**: an actor in the role the showing names (customer or operator); that it is
+    the order's own customer, or the deployment's operator, is policy's (`T-021-06`).
+- **Kept as it arrives** (`Reversals::report`, `REQ-ORD-30`). A statement that answers no question of Core's (the
+  failed provider's own `reversal` result, a piece of an undone start) is kept as its maker's stated entry about the
+  order and segment, once per bytes, and answered with why it completes nothing (`FailedProvidersOwn`,
+  `NotInFull`, or `Unasked` where it would count). The log verifies a statement whose body names a transaction only
+  under that transaction, which Core didn't ask, so it is unverified there and nothing rests on it.
+- **Who carries it** (`REQ-ORD-11`). `Reversals::carrier`: the failed provider by default; `show_fault` keeps the
+  provider's verified statement that the fault was the customer's or the operator's; `accept_fault` by that party's
+  role makes it the carrier; `dispute` by it declares the part stuck through `Stuck::dispute` (`stuck_declared`,
+  `dispute`), so the stuck orders hold the declaration and resolve it in their two steps; the provider carries it
+  meanwhile. An undone start's carrier is the origin reserve (`REQ-ORD-30`).
+- **Ending** (`Reversals::end`, `REQ-ORD-12`): `end_requested` once the state machine takes it (a part not past its
+  first segment) and nothing of such a part is in motion; then no segment of an ended part is handed over
+  (`SegmentsError::Ended`). After the first segment settles the state machine takes no end, and Core records none. A
+  complete part's start proven undone (`confirm` on its withdrawal) is the one later ending: `reversal_completed`
+  on the starting segment, and the part, so the order, fails (`REQ-STM-6`).
+- **After the end** (`returned`, `late_approval`, `seen`; `REQ-ORD-31`, `REQ-ORD-25`). The destination reserve's
+  report on a complete order, and the origin reserve's approval on an ended one, each verified by the catalogue as
+  its maker's, kept as its stated entry about the order and recorded as `afterwards` resting on it, once; nothing
+  moves and nothing starts. `seen` answers them on a `Reads::Order` check policy allows, recorded either way.
+  Notifying them is `F-023`'s (`T-023-01`, `REQ-ORD-20`): `Afterward` is what it is handed.
+- **Hand-offs named `T-020-12`**, each handled or named:
+  - `T-020-08` (1196, 1212, segments' header): the failed segment's hold is released by its completed reversal.
+  - `T-020-10` (1449, 1466): a failed middle segment is recalculated after `reversal_completed`; its return is in
+    full, checked against what it took in.
+  - `T-020-11` (1625): `dispute` is this row's, through `Stuck::dispute`.
+  - `T-020-11` (1695): a stuck resolution's real outcome evidence stays the production `Resolutions` row's (the
+    coordinator's); nothing here.
+  - `T-020-11` (1715, 1814; `conformance/scenarios/tests/stuck.rs`): a provider's genuinely late answer now has a path
+    into Core, `Reversals::later`: kept as its maker's statement about the segment and its own transaction (the
+    question it answers, so the log verifies it and a stuck part's resolution may cite it), moving nothing. Taking
+    it as the segment's result stays out: the segments are the one writer of a segment's results, and a stuck part's
+    value moves only on its resolution. Asking a provider for a late status (`Modules::status`) is a gap for a new
+    `F-020` row; `T-024-06` owns `AC-5`'s scenario.
+  - core-internal's README (570): the publisher half, held by Core as above, not by `CMP-EVIDENCE`.
+- **Gaps, each with its owner:**
+  - core-internal has no record of who carries a reversal, nor of a showing of fault or its acceptance: Core keeps
+    them. A contract item for core-internal's author (`T-020-01`, a bump), with a row for `T-020-12`'s follow-up.
+  - core-internal has no action for asking a failed provider to reverse (provider-role's `reversal` operation moves
+    value, so policy must decide it): Core can't ask, and takes the provider's own statement only as kept. Same
+    owner.
+  - state-machine 2.1.0 takes an undone start only of a complete part (`undoes_a_complete_part`), so `REQ-ORD-12`'s
+    undone start of a part still open can't be recorded: `confirm` refuses it (`NotOwed`) and pieces are kept. A
+    state-machine bump for `F-005`'s owner with core-internal's.
+  - `REQ-ORD-3`'s third sentence (inside a private node, the publisher's word, labelled as such) isn't taken: no
+    entry names a node's publisher. Item for core-internal's author.
+  - A multi-reserve node (ADR-0008's own open point) has no settlement path: the origin reserve asked is the
+    withdrawal's.
+- **Seams in other rows' modules** (the coordinator's word not asked; reversible; each its own function or guard):
+  - `segments/mod.rs` (`T-020-08`, last `T-020-11`'s): `observe` also takes `reversal_completed` and
+    `end_requested`; `Segments::sent` (the transaction and the operation Core signed for a segment); a private
+    `ended` read; one guard in `run_part`, before a segment is first handed over, refusing a part that has ended
+    (`SegmentsError::Ended`, a new variant); and the header paragraph naming them.
+  - `stuck/mod.rs` (`T-020-11`): `Stuck::dispute`, `no_route`'s twin for `stuck_declared { dispute }`, and a paragraph
+    in its docs.
+- **Tests.** Ten in `components/core-orch/tests/reversal.rs`, with fakes over the router-api fixture's route across
+  three providers (withdrawal at `reserve-bank-co`, exchange at `exchange-a` inside `ledger-in`, deposit at
+  `reserve-wallet`), run through `Segments::run_part`: the simulated providers' routes stay at one reserve, whose
+  failed withdrawal is cancelled and whose failed deposit owes nothing, so no kit segment can owe a reversal. Each
+  test replays everything this row appended through core-internal's `attribute` and `admit_entry` over the log
+  before it (`World::admitted_from`: stated entries attributed from the store's bytes; keys answered true, the
+  catalogue verifying the signatures, the operator's by its key). The final deposit settles on a fake grading of a
+  public record (`PublicDeposit`); that grading is `T-020-09`'s. The row's nine, and
+  `late_delivery_is_recorded_and_moves_nothing` for the late-answer hand-off.
+- **Touches**: `components/core-orch/src/reversal/`, the seams above, `components/core-orch/tests/reversal.rs`. No
+  manifest, no dependency, no lock or `licences/RECORD` line, no `DEC-20` path.

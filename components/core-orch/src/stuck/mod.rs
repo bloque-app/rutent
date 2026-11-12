@@ -66,6 +66,9 @@
 //! The order Core follows takes each part's `stuck_resolved` ([`Segments::observe`]), and a part its resolution
 //! ended is never handed over or timed again.
 //!
+//! **A dispute** (`T-020-12`'s seam): [`Stuck::dispute`] records a part declared stuck in a dispute over who carries
+//! a reversal (`REQ-ORD-11`), as [`Stuck::no_route`] records a part left no route, so it is resolved as any stuck part.
+//!
 //! **Gaps.** Policy's stuck rules, report and confirm included, are unbuilt (`T-021-06`): the engine answers not
 //! known, so nothing moves or settles until they are built, failing closed, and no fixed rule yet compares the
 //! actors or rules the roles a decider, mover or confirmer may hold. A move's outcome is reported once, and a report
@@ -633,6 +636,57 @@ impl Stuck {
             let input = Self::part_input(parts, ask.order, ask.part, ask.core, observed)?;
             let entry = journal::built(
                 ask.core,
+                What::Input {
+                    input: input.clone(),
+                },
+                &now(parts.clock)?,
+                Outcome::Observed {},
+            )?;
+            self.pending.insert(
+                at.clone(),
+                Pending {
+                    call: None,
+                    input: Step::new(entry),
+                    recorded: input,
+                },
+            );
+        }
+        let receipt = self.record_pending(parts, &at)?;
+        let state = self
+            .declared
+            .get(&at)
+            .map_or(OrderState::Stuck, |d| d.state);
+        Ok(NoRouteRecorded { state, receipt })
+    }
+
+    /// Records a part declared stuck in a dispute over who carries a reversal (`REQ-ORD-11`), `T-020-12`'s seam: the
+    /// `stuck_declared` input, `dispute`, built once and appended until the log takes it, as [`Stuck::no_route`]'s,
+    /// so the part is declared here and resolved in the two steps as any stuck part. Nothing is rolled back.
+    pub fn dispute(
+        &mut self,
+        parts: &mut Parts<'_>,
+        order: &Id,
+        part: &Id,
+        core: &Actor,
+    ) -> Result<NoRouteRecorded, StuckError> {
+        let at = key(order, part);
+        if let Some(kept) = self.pending.get(&at)
+            && !matches!(
+                kept.recorded.observed,
+                Observed::StuckDeclared {
+                    reason: StuckReason::Dispute
+                }
+            )
+        {
+            return Err(StuckError::AlreadyStuck);
+        }
+        if !self.pending.contains_key(&at) {
+            let observed = Observed::StuckDeclared {
+                reason: StuckReason::Dispute,
+            };
+            let input = Self::part_input(parts, order, part, core, observed)?;
+            let entry = journal::built(
+                core,
                 What::Input {
                     input: input.clone(),
                 },
