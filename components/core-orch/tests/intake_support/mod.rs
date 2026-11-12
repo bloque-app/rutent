@@ -102,8 +102,16 @@ impl Book {
             }
             verified => verified.clone(),
         };
-        admit_entry(&self.history, &recorded, through, &operator().acts)
-            .map_err(AppendFailure::Refused)?;
+        admit_entry(
+            &self.history,
+            &recorded,
+            through,
+            &rutent_contracts::core_internal::DeploymentOperator {
+                maker: operator().acts,
+                party: operator().party,
+            },
+        )
+        .map_err(AppendFailure::Refused)?;
         let receipt = log_receipt(self.entries.len());
         self.entries.push((through, entry));
         self.history.push((receipt.clone(), recorded));
@@ -755,8 +763,16 @@ impl Env {
                 *through == Through::Policy,
                 "entry {i} came by the wrong handle"
             );
-            admit_entry(&history, &entry, *through, &operator().acts)
-                .map_err(|v| (i, v.0.to_owned()))?;
+            admit_entry(
+                &history,
+                &entry,
+                *through,
+                &rutent_contracts::core_internal::DeploymentOperator {
+                    maker: operator().acts,
+                    party: operator().party,
+                },
+            )
+            .map_err(|v| (i, v.0.to_owned()))?;
             history.push((log_receipt(i), entry));
         }
         Ok(history.into_iter().map(|(_, e)| e).collect())
