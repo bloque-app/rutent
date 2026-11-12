@@ -3140,15 +3140,29 @@ pub static RELATIONS: [Relation; 83] = [
         name: "part-waits-for-value-in-motion",
         spec: &["REQ-ORD-2", "INV-4", "REQ-ORD-27", "REQ-AUZ-4"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a part's route restarts, it waits at its floor, is handed on or is resolved only while none of its value is in motion",
+        refusal: "a part's route restarts, it waits at its floor, is handed on, is resolved or its order ends on request only while none of its value is in motion",
         fields: &[],
         // One predicate (`in_motion`) for every input and decision that would move a part's value from where it
         // sits: a value-moving effect in motion may still deliver, and moving around it moves the same value twice.
-        cites: |e, h| match motion_subject(e, h) {
-            Some(_) => by_fields(0),
-            None => none(),
+        cites: |e, h| match (motion_subject(e, h), ended_on_request(e)) {
+            (Some(_), _) | (_, Some(_)) => by_fields(0),
+            _ => none(),
         },
         answers: |e, _, t, h| {
+            // An end requested ends every part of the order: none may have value in motion.
+            if let Some(order) = ended_on_request(e) {
+                if verified(t).is_some_and(|v| v.what == e.what) {
+                    return Match::NotTarget;
+                }
+                return if order_parts(order, h)
+                    .into_iter()
+                    .any(|part| in_motion(order, part, t, h) == Match::Holds)
+                {
+                    Match::Holds
+                } else {
+                    Match::NotTarget
+                };
+            }
             let Some((order, part)) = motion_subject(e, h) else {
                 return Match::NotTarget;
             };
@@ -3973,6 +3987,34 @@ fn standing_at(
 /// The part `entry` would move value from where it sits, where it is one that waits for value in motion: a
 /// `route_recalculated`, `destination_changed`, `waiting_at_floor` or `handed_on` of the part, a stuck decision
 /// for it, or its resolution's effect.
+/// The order an `end_requested` input ends, where `entry` is one.
+fn ended_on_request(entry: &VerifiedEntry) -> Option<&str> {
+    input(entry)
+        .filter(|i| matches!(i.observed, Observed::EndRequested {}))
+        .map(|i| i.subject.order.as_str())
+}
+
+/// Every part of `order` its plans in `history` name.
+fn order_parts<'a>(order: &str, history: &'a History) -> Vec<&'a str> {
+    let mut parts: Vec<&str> = Vec::new();
+    for i in history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+    {
+        if i.subject.order.as_str() != order {
+            continue;
+        }
+        if let Observed::RouteChosen { parts: plan, .. } = &i.observed {
+            for p in plan {
+                if !parts.contains(&p.part_id.as_str()) {
+                    parts.push(p.part_id.as_str());
+                }
+            }
+        }
+    }
+    parts
+}
+
 fn motion_subject<'a>(
     entry: &'a VerifiedEntry,
     history: &'a History,
@@ -4020,8 +4062,12 @@ fn in_motion(order: &str, part: &str, target: &Entry, history: &History) -> Matc
             let settled = position(target, history)
                 .is_some_and(|at| confirmation_of(&history[at].0, history).is_some());
             match standing(order, part, history) {
+                // A failed result releases the value only where the segment owes no reversal: a failed exchange's
+                // value sits with its provider, disputed, until the reversal completes.
                 Some(s) => judge(
-                    !s.released(segment.as_str()) && !result_failed(t, history) && !settled,
+                    !s.released(segment.as_str())
+                        && !(result_failed(t, history) && !s.reversal_owed(segment.as_str()))
+                        && !settled,
                     &[],
                 ),
                 None => Match::NotTarget,
