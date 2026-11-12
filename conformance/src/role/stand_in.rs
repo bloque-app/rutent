@@ -1040,6 +1040,7 @@ impl Exchange {
         if failing {
             return ConversionOutcome::Failed(Failure {
                 evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+                fault: None,
             });
         }
         if std::mem::take(&mut self.unknown_next) {
@@ -1413,6 +1414,7 @@ impl Ramp {
             );
             return TransferOutcome::Failed(Failure {
                 evidence: evidence(self.grade(), &t.destination, &t.transaction),
+                fault: None,
             });
         }
         if self.converts_internally {
