@@ -335,6 +335,7 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Refiling { .. }
+            | What::HoldingWithdrawal { .. }
             | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
@@ -478,6 +479,7 @@ impl What {
             | What::Erasure { .. }
             | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
+            | What::HoldingWithdrawal { .. }
             | What::InputNotTaken { .. } => Ok(()),
         }
     }

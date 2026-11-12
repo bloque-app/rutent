@@ -4405,6 +4405,136 @@
         }
       },
       "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-hold2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 189,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-hold2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 190,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "holding_withdrawal",
+          "order": "ord-2",
+          "handed_on_from": "ord-1",
+          "holder": "us-bank",
+          "record": {
+            "log": "log-main",
+            "index": 189,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 191,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+        }
+      },
+      "entry": {
         "kind": "verified",
         "who": {
           "party": "rutent",

@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 494 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 90 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 131 valid fixtures and 124 invalid ones, each
+  breaking one rule, and 506 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 94 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -514,6 +514,15 @@
   orders-refusal` holds it to an `order_refusal` of the linked order, which never opened (field `unopened`).
   Admitted: p3 taking back its hand-on to ord-2 on ord-2's refusal; refused: without the refusal, and once ord-2
   opened. 494 admission cases, 90 relations. (DEC-4, DEC-20, REQ-ORD-43, REQ-ORD-18, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a route handed on starts on its holding account's record (`REQ-ORD-40`, the
+  reviews since `T-020-01` landed). A new entry kind, `holding_withdrawal {order, handed_on_from, holder, record}`,
+  records the holding account's own record of the withdrawal, the start proof that settles a linked order's first
+  segment. `holding-withdrawal-rests-on-its-record` holds the record to its holder's verified statement about the
+  order whose value it held, `holding-withdrawal-starts-a-handed-on-route` to a route of the linked order handed on
+  from that order, and `one-start-per-holding-record` to one start per record; the linked order's first move rests
+  on it, by its holder (`handed-on-route-starts-on-its-holding-record`, ahead of the authorisation rows). The world
+  records us-bank's withdrawal record starting ord-2. One valid fixture, 506 admission cases, 94 relations. (DEC-4,
+  DEC-20, REQ-ORD-40, REQ-ORD-43, INV-5, T-020-01, T-020-13)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

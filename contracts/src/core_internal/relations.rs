@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 84] = [
+pub static RELATIONS: [Relation; 88] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -482,6 +482,53 @@ pub static RELATIONS: [Relation; 84] = [
                     && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
                 &[],
             )
+        },
+    },
+    Relation {
+        name: "handed-on-route-starts-on-its-holding-record",
+        spec: &["REQ-ORD-40", "REQ-ORD-43", "INV-5"],
+        quantifier: Quantifier::Exists,
+        refusal: "a route handed on starts on its holding account's record of the withdrawal in this log",
+        fields: &[(
+            "holder",
+            "a route handed on starts on the record of its starting reserve, the holding account's provider",
+        )],
+        // A route handed on has no withdrawal of its own: the holding account's record proves its start, so its
+        // first move rests on it, by the reserve it moves from.
+        cites: |e, h| match effect_action(e) {
+            Some((Action::MoveValue { order, segment, .. }, _))
+                if handed_on_from_of(order.as_str(), h).is_some()
+                    && first_segment_of(order.as_str(), segment.as_str(), h) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some((
+                Action::MoveValue {
+                    order,
+                    origin_reserve,
+                    ..
+                },
+                _,
+            )) = effect_action(e)
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::HoldingWithdrawal {
+                    order: o,
+                    handed_on_from,
+                    holder,
+                    ..
+                }) => judge(
+                    o == order
+                        && handed_on_from_of(order.as_str(), h) == Some(handed_on_from.as_str()),
+                    &[holder == origin_reserve],
+                ),
+                _ => Match::NotTarget,
+            }
         },
     },
     Relation {
@@ -3401,6 +3448,101 @@ pub static RELATIONS: [Relation; 84] = [
         },
     },
     Relation {
+        name: "holding-withdrawal-rests-on-its-record",
+        spec: &["REQ-ORD-40", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a holding account's withdrawal record is a stated entry of this log",
+        fields: &[
+            (
+                "verified",
+                "a holding account's withdrawal record is a verified statement",
+            ),
+            (
+                "maker",
+                "a holding account's withdrawal record is its holder's own statement",
+            ),
+            (
+                "order",
+                "a holding account's withdrawal record is about the order whose value it held",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::HoldingWithdrawal { record, .. } => alloc::vec![by_receipt(record, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, stated(t)) {
+            (
+                What::HoldingWithdrawal {
+                    handed_on_from,
+                    holder,
+                    ..
+                },
+                Some(s),
+            ) => judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    maker_provider(s) == holder,
+                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(handed_on_from),
+                ],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "holding-withdrawal-starts-a-handed-on-route",
+        spec: &["REQ-ORD-40", "REQ-ORD-43"],
+        quantifier: Quantifier::Exists,
+        refusal: "a holding account's withdrawal record starts a route handed on in this log, from the order it names",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::HoldingWithdrawal { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let What::HoldingWithdrawal {
+                order,
+                handed_on_from,
+                ..
+            } = &e.what
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).and_then(input) {
+                Some(i) => match &i.observed {
+                    Observed::RouteChosen {
+                        handed_on_from: Some(from),
+                        ..
+                    } => judge(
+                        i.subject.order.as_str() == order.as_str()
+                            && from.as_str() == handed_on_from.as_str(),
+                        &[],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "one-start-per-holding-record",
+        spec: &["REQ-ORD-40", "INV-5"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a holding account's record proves one start: no other withdrawal record cites it",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::HoldingWithdrawal { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::HoldingWithdrawal { record, .. },
+                Some(other @ What::HoldingWithdrawal { record: r, .. }),
+            ) => judge(r == record && other != &e.what, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
         name: "operator-command-is-the-deployment-operators",
         spec: &["REQ-AUD-10", "REQ-AUD-1"],
         quantifier: Quantifier::Exists,
@@ -3801,6 +3943,31 @@ fn resolution_transaction_in(transaction: &Id, history: &History) -> bool {
     history.iter().any(|(_, e)| {
         matches!(verified(e).map(|v| &v.what), Some(What::StuckDecide { request, .. })
             if &request.transaction == transaction)
+    })
+}
+
+/// The order `order`'s route was handed on from, where its opening `route_chosen` in `history` names one.
+fn handed_on_from_of<'a>(order: &str, history: &'a History) -> Option<&'a str> {
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        match &i.observed {
+            Observed::RouteChosen {
+                handed_on_from: Some(from),
+                ..
+            } if i.subject.order.as_str() == order => Some(from.as_str()),
+            _ => None,
+        }
+    })
+}
+
+/// Whether `segment` is the first segment of a part of `order`'s opening route in `history`.
+fn first_segment_of(order: &str, segment: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|i| {
+            i.subject.order.as_str() == order
+                && matches!(&i.observed, Observed::RouteChosen { parts, .. }
+                    if parts.iter().any(|p| p.segments.first().is_some_and(|s| s.segment_id.as_str() == segment)))
+        })
     })
 }
 

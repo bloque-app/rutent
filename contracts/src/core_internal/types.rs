@@ -2245,6 +2245,19 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
+    /// start proof, which settles the linked order's first segment. The linked order's first move rests on it
+    /// (`handed-on-route-starts-on-its-holding-record`).
+    HoldingWithdrawal {
+        /// The linked order whose route it starts.
+        order: Id,
+        /// The order whose value the holding account held, the one the route was handed on from.
+        handed_on_from: Id,
+        /// The holding account's provider: the route's starting reserve, which made the record.
+        holder: Id,
+        /// The receipt of the record: the holder's verified stated entry of the withdrawal.
+        record: Receipt,
+    },
     /// An input recorded, but not taken: the state machine or the host refused it, so it moves no order, and the
     /// log keeps its trace (`REQ-AUD-1`) beside the inputs it took, which `standing` reads alone.
     InputNotTaken {
