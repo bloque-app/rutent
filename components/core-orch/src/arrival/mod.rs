@@ -693,6 +693,16 @@ impl Arrivals {
                 if let Some(told) = run.carried_on_by(desk, &filing.filer)? {
                     return Ok(told);
                 }
+            } else if run.finishing() {
+                // Its acceptance and start are built and may be in the log: it is finished, never ended. This call
+                // appends what it has left, and the filer is told the deposit is held.
+                let order = run.order.clone();
+                let Some(mut run) = self.runs.remove(&arrival) else {
+                    return Err(ArrivalError::NotNow);
+                };
+                let _ = run.go_on::<R>(desk, self);
+                self.settle(arrival, run);
+                return Err(ArrivalError::Conflicting { order });
             } else if run.should_end(desk)? {
                 // Its session over, its reserve past its time, or no login of its party left: the filing ends,
                 // recorded, and frees the deposit for this one.
@@ -748,17 +758,21 @@ impl Arrivals {
             return Err(ArrivalError::NotNow);
         };
         let result = run.go_on::<R>(desk, self);
-        // A filing that ended holds the deposit no more; one that ended on the reserve's no, or after its acceptance was
-        // recorded, leaves it filed on no more.
+        self.settle(arrival, run);
+        result
+    }
+
+    /// Keeps `run` where it now stands: a filing that ended holds the deposit no more, and one that ended on the
+    /// reserve's no, or after its acceptance was built, leaves it filed on no more.
+    fn settle(&mut self, arrival: String, run: filing::Run) {
         if matches!(run.outcome(), Some(Filed::CantProceed { .. })) {
             if run.spends() {
-                self.spent.insert(arrival.clone());
+                self.spent.insert(arrival);
             }
             self.ended.push(run);
         } else {
             self.runs.insert(arrival, run);
         }
-        result
     }
 
     /// The run that opened `order`, under way, started or ended.

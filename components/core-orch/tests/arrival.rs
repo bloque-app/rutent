@@ -2513,3 +2513,115 @@ fn a_quiet_filing_whose_session_ended_gives_way_to_another_filer() {
     assert!(ended_in_the_log(&env, &order));
     assert_admitted(&env);
 }
+
+// Round 4 --------------------------------------------------------------------------------------------------------
+
+/// The distinct orders the log holds a `route_chosen` of.
+fn started_orders(env: &Env) -> std::collections::BTreeSet<String> {
+    env.started().into_iter().collect()
+}
+
+/// A filing whose acceptance and start are in the log is finished, never ended: another filer is told `Conflicting`,
+/// and its call finishes the filing's last entries, so the deposit carries one acceptance and one order (round 4).
+// verifies: REQ-ORD-15, REQ-ORD-34, INV-8
+#[test]
+fn a_filing_with_its_acceptance_written_is_finished_not_ended() {
+    for case in ["struck", "session"] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        let mut one = filing(operator(), &deposited);
+        if case == "session" {
+            one.session = short_session(&mut env, "session-short", START + 30);
+        }
+        // The acceptance and the start are written; the start's answer is lost.
+        env.book.borrow_mut().lose_next = Some("input");
+        assert_eq!(
+            file(&mut env, &mut providers, &mut arrivals, &one),
+            Err(ArrivalError::Log(
+                rutent_contracts::core_internal::calls::AppendFailure::Unavailable
+            ))
+        );
+        let order = env.started().pop().expect("the start is in the log");
+        match case {
+            "struck" => {
+                env.actors.borrow_mut().pairs.remove(&(
+                    operator().acts.as_str().to_owned(),
+                    operator().party.as_str().to_owned(),
+                ));
+            }
+            _ => env.clock.set(START + 40),
+        }
+        let mut theirs = filing(reserve_filer(), &deposited);
+        theirs.request = id("deposit-reserve");
+        theirs.session = short_session(&mut env, "session-fresh", START + 10_000);
+        for _ in 0..2 {
+            assert_eq!(
+                file(&mut env, &mut providers, &mut arrivals, &theirs),
+                Err(ArrivalError::Conflicting { order: id(&order) }),
+                "{case}"
+            );
+        }
+        assert_eq!(
+            env.acceptances().len(),
+            1,
+            "{case}: one acceptance on the deposit"
+        );
+        assert_eq!(started_orders(&env).len(), 1, "{case}: one order started");
+        assert!(
+            arrivals.start(&id(&order)).is_some(),
+            "{case}: finished by Core"
+        );
+        assert!(!ended_in_the_log(&env, &id(&order)), "{case}: never ended");
+        assert_admitted(&env);
+    }
+}
+
+/// Every login policy permitted on a filing carries it on without asking policy again (round 4's nit).
+// verifies: REQ-AUZ-9, REQ-OPS-5
+#[test]
+fn logins_policy_permitted_carry_a_filing_on_without_asking_again() {
+    let colleague = Actor {
+        acts: id("operator-login-2"),
+        ..operator()
+    };
+    let mut env = crate::env();
+    env.actors.borrow_mut().list(&colleague);
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    let theirs = Filing {
+        filer: colleague.clone(),
+        ..one.clone()
+    };
+    providers.silent = true;
+    for filing in [&one, &theirs, &one, &theirs] {
+        assert!(matches!(
+            file(&mut env, &mut providers, &mut arrivals, filing),
+            Ok(Filed::Waiting { .. })
+        ));
+    }
+    assert_eq!(env.policy.asked.len(), 2, "each login asked about once");
+    providers.silent = false;
+    let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    let acceptance = env.acceptances().pop().unwrap();
+    assert_eq!(acceptance.who, operator());
+    let What::Acceptance { authorisation, .. } = &acceptance.what else {
+        unreachable!()
+    };
+    let given = env
+        .policy
+        .asked
+        .iter()
+        .find(|a| &a.authorisation == authorisation)
+        .unwrap();
+    assert_eq!(
+        given.given_by,
+        operator(),
+        "the acceptance names its own login's authorisation"
+    );
+    assert_admitted(&env);
+}

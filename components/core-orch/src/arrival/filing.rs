@@ -103,8 +103,12 @@ pub(super) struct Run {
     accepting: Option<(Id, RecordedInput, Vec<Entry>)>,
     outcome: Option<Filed>,
     pub(super) started: Option<RecordedInput>,
-    /// Every login of the filer's party that filed it or carried it on: while one of them is listed, it holds.
-    logins: Vec<Actor>,
+    /// Every login of the filer's party policy permitted on it, with the authorisation each gave: while one of them is
+    /// listed, it holds, and each carries it on under its own authorisation without asking policy again.
+    logins: Vec<(Actor, Authorisation)>,
+    /// Whether its acceptance and start were built: from then on the acceptance may be in the log, so the filing is only
+    /// finished, never ended early, and if it ends at all the deposit is filed on no more.
+    accepted_built: bool,
     /// Whether a question about the deposit went unanswered: then, once the reserve is past its time to answer, the
     /// filing ends.
     unanswered: bool,
@@ -329,7 +333,7 @@ impl Arrivals {
             asked: filing,
             arrival,
             order,
-            authorisation,
+            authorisation: authorisation.clone(),
             step: Step::Hold,
             pending,
             confirming: None,
@@ -339,7 +343,8 @@ impl Arrivals {
             accepting: None,
             outcome: None,
             started: None,
-            logins: vec![well.filer.clone()],
+            logins: vec![(well.filer.clone(), authorisation.clone())],
+            accepted_built: false,
             unanswered: false,
             spent: false,
             filing: well,
@@ -355,8 +360,14 @@ impl Run {
         desk: &mut Desk<'_, '_>,
         filer: &Actor,
     ) -> Result<Option<Filed>, ArrivalError> {
-        // The filer the acceptance names, or an acceptance already built: nothing to authorise again.
-        if filer == &self.filing.filer || self.accepting.is_some() {
+        // An acceptance already built: its last entries are appended as built, asking nothing.
+        if self.accepting.is_some() {
+            return Ok(None);
+        }
+        // A login policy permitted on it before carries it on under the authorisation it gave.
+        if let Some((_, given)) = self.logins.iter().find(|(l, _)| l == filer) {
+            self.authorisation = given.clone();
+            self.filing.filer = filer.clone();
             return Ok(None);
         }
         // Another login gives its own authorisation: policy holds it to its own permission (`REQ-AUZ-9`).
@@ -379,9 +390,7 @@ impl Run {
                 })),
             };
         }
-        if !self.logins.contains(filer) {
-            self.logins.push(filer.clone());
-        }
+        self.logins.push((filer.clone(), authorisation.clone()));
         self.filing.filer = filer.clone();
         self.authorisation = authorisation;
         Ok(None)
@@ -391,7 +400,8 @@ impl Run {
     /// reserve past its time to answer a question it left unanswered, or no login of its party left listed. The same
     /// conditions end it when its own filer carries it on.
     pub(super) fn should_end(&self, desk: &mut Desk<'_, '_>) -> Result<bool, ArrivalError> {
-        if self.outcome.is_some() {
+        // Ended already, or finishing: an acceptance that may be in the log is finished, never ended.
+        if self.outcome.is_some() || self.accepting.is_some() {
             return Ok(false);
         }
         let now = journal::now(desk.parts.clock)?;
@@ -418,7 +428,7 @@ impl Run {
     pub(super) fn has_a_listed_login(&self, desk: &mut Desk<'_, '_>) -> bool {
         self.logins
             .iter()
-            .any(|l| desk.actors.acts_for(&l.acts, &l.party))
+            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party))
     }
 
     /// Ends it, recorded, with no login of its party left to carry it on.
@@ -426,6 +436,11 @@ impl Run {
         self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
         flush(desk, &mut self.pending)?;
         Ok(())
+    }
+
+    /// Whether it is only finishing: its acceptance and start built, their appends not all taken.
+    pub(super) fn finishing(&self) -> bool {
+        self.outcome.is_none() && self.accepting.is_some()
     }
 
     /// Whether the deposit is filed on no more once it ended.
@@ -474,12 +489,16 @@ impl Run {
         }
     }
 
-    /// Ends the order, of `class`.
+    /// Ends the order, of `class`. Where its acceptance was built, and so may be in the log, the deposit is filed on no
+    /// more, so no second acceptance rests on it.
     fn end(
         &mut self,
         desk: &mut Desk<'_, '_>,
         class: OrderRefusalClass,
     ) -> Result<(), ArrivalError> {
+        if self.accepted_built {
+            self.spent = true;
+        }
         let what = refusal(&self.filing.request, Some(&self.order), class);
         self.pending
             .push(journal::build(desk.parts.clock, desk.core, what)?);
@@ -626,6 +645,7 @@ impl Run {
                 },
             )?;
             self.accepting = Some((acceptance, input, vec![accepted, start]));
+            self.accepted_built = true;
         }
         let Some((acceptance, input, pending)) = &mut self.accepting else {
             return Err(ArrivalError::NotNow);
@@ -643,7 +663,6 @@ impl Run {
             // A refused acceptance or start can't be carried on: the order ends. Where the acceptance was recorded,
             // the deposit is filed on no more, so no second acceptance rests on it.
             Err(AppendFailure::Refused(_)) => {
-                self.spent = pending.len() < 2;
                 self.accepting = None;
                 self.end(desk, OrderRefusalClass::NoRouteRightNow)
             }

@@ -718,6 +718,42 @@ time, came with the code; its rule-off stands in.
 
 - **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
 
+### T-020-04, round 4 answers (of `4457fcf`)
+
+Both probes were written first and run red against `4457fcf`:
+`a_filing_with_its_acceptance_written_is_finished_not_ended` (the reviewer's sequence: the start's answer lost, the
+operator struck from the register, then the reserve's filing `Started`, two acceptances and two orders on one deposit,
+both admitted by the log; and the same through the session ending) and
+`logins_policy_permitted_carry_a_filing_on_without_asking_again` (policy asked four times for two logins).
+
+- **A filing whose acceptance is built is finished, never ended.** Once its acceptance and start are built they may be
+  in the log, so the filing is only finishing its last entries: its end conditions (session over, reserve past its
+  time, no login left) don't apply to it, before `Conflicting` or anywhere. Another permitted filer of the deposit
+  (the operator, or the reserve it arrived at) is told `Conflicting` naming its order, and its call first appends the
+  entries the filing has left, as built, so Core finishes it on the next call of anyone who may file there, as well as
+  on its own filer's.
+- **Backstop.** Wherever a filing ends after its acceptance was built (a refused acceptance or start among them), the
+  deposit is filed on no more (`NotFileable`), since that acceptance may be in the log. Stricter than the re-review's
+  "the acceptance was appended": a refused acceptance after an earlier try whose answer was lost may be in the log too.
+- **Every permitted login kept** (the nit). The filing keeps each login policy permitted with the authorisation it gave;
+  any of them carries it on under its own authorisation without asking policy again, the acceptance naming that
+  login and that authorisation. Only a login never permitted on it is asked about.
+- **Rule-off**, each switched off once against the final tests:
+
+  | Rule | Red |
+  |---|---|
+  | A finishing filing is finished on another filer's call, never ended | `a_filing_with_its_acceptance_written_is_finished_not_ended` |
+  | Never ended once its acceptance is built, both guards off together | the same |
+  | An acceptance built spends the deposit if the filing ends | `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | A permitted login carries it on without asking again | `logins_policy_permitted_carry_a_filing_on_without_asking_again`, the retry test |
+  | A permitted login carries it on under its own authorisation | `logins_policy_permitted_carry_a_filing_on_without_asking_again` |
+
+  The guard inside `should_end` alone stays green: `file()` takes a finishing filing before it asks `should_end`, so
+  that guard is defence in depth, red only with the first switched off too (the second row). Every earlier rule was
+  rerun and is red, but for the re-review's "any listed login carries it on" and "an acceptance recorded spends the
+  deposit", which round 3's carrier rules and this round's backstop replaced.
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
+
 ## T-020-05
 
 - **Core's clock.** `snapshot::Clock` is Core's clock, read as a `Reading` to the nanosecond; `SystemClock` reads
