@@ -85,6 +85,17 @@ impl crate::funds::Recorded for Kept {
             self.read_instead.as_ref().unwrap_or(&self.entries),
         ))
     }
+
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        if self.unreadable {
+            return Err(crate::funds::ReadFailure::Unavailable);
+        }
+        Ok(crate::funds::part_in(&self.entries, order, segment))
+    }
 }
 
 impl PolicyLog for Kept {

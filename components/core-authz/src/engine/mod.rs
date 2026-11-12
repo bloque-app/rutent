@@ -695,6 +695,10 @@ mod tests {
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(&self.0))
         }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            Ok(crate::funds::part_in(&self.0, order, segment))
+        }
     }
 
     /// A log that takes nothing.
@@ -712,6 +716,10 @@ mod tests {
         }
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
+        }
+
+        fn part_of(&mut self, _: &Id, _: &Id) -> Result<Option<Id>, ReadFailure> {
             Err(ReadFailure::Unavailable)
         }
     }
@@ -735,6 +743,14 @@ mod tests {
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+        }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            Ok(crate::funds::part_in(
+                self.0.iter().map(|(_, e)| e),
+                order,
+                segment,
+            ))
         }
     }
 
@@ -1813,6 +1829,10 @@ mod tests {
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             self.log.charged()
         }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            self.log.part_of(order, segment)
+        }
     }
 
     /// The request of the fixture's outcome report, as its entry holds it.
@@ -2156,6 +2176,15 @@ mod tests {
                 .map(|d| Entry::Verified(d.entry().clone()))
                 .collect();
             Ok(crate::parties::charged_in(&entries))
+        }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            let entries: Vec<Entry> = self
+                .0
+                .iter()
+                .map(|d| Entry::Verified(d.entry().clone()))
+                .collect();
+            Ok(crate::funds::part_in(&entries, order, segment))
         }
     }
 

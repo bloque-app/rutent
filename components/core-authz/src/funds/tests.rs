@@ -61,6 +61,8 @@ enum Wiring {
     Reversed,
     /// The read is of another log than the one appended to.
     Other(Rc<RefCell<Vec<Entry>>>),
+    /// The authorisations are read whole, but no segment's part can be.
+    PlanUnreadable,
 }
 
 /// A log that takes every decision entry, shared by every engine over it, as one log is across a restart or between
@@ -69,6 +71,8 @@ enum Wiring {
 struct Shared {
     entries: Rc<RefCell<Vec<Entry>>>,
     wiring: Rc<RefCell<Wiring>>,
+    /// The order's plan as the log holds it: each segment, by id, and the part it belongs to.
+    plan: Rc<RefCell<Vec<(Id, Id)>>>,
 }
 
 impl Shared {
@@ -77,6 +81,7 @@ impl Shared {
         Shared {
             entries: Rc::clone(&self.entries),
             wiring: Rc::default(),
+            plan: Rc::clone(&self.plan),
         }
     }
 
@@ -110,11 +115,27 @@ impl Recorded for Shared {
             Wiring::DropsTheFirst => Ok(self.whole().into_iter().skip(1).collect()),
             Wiring::Reversed => Ok(self.whole().into_iter().rev().collect()),
             Wiring::Other(other) => Ok(permitted_in(other.borrow().iter())),
+            Wiring::PlanUnreadable => Ok(self.whole()),
         }
     }
 
     fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
         Ok(crate::parties::charged_in(self.entries.borrow().iter()))
+    }
+
+    fn part_of(&mut self, _: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+        if matches!(
+            *self.wiring.borrow(),
+            Wiring::Fails | Wiring::PlanUnreadable
+        ) {
+            return Err(ReadFailure::Unavailable);
+        }
+        Ok(self
+            .plan
+            .borrow()
+            .iter()
+            .find(|(s, _)| s == segment)
+            .map(|(_, part)| part.clone()))
     }
 }
 
@@ -196,10 +217,22 @@ fn end_of(a: &Authorisation, delivers: &str) -> RouteEnd {
 /// Core's move of a segment of `order`, under `authorisation`, on a route ending at `route`, as orchestration asks
 /// it once the route was recalculated. Each request has its own id.
 fn move_under(n: usize, order: &Id, authorisation: &Id, route: RouteEnd) -> DecisionRequest {
+    move_on(n, order, &id("seg-2"), authorisation, route)
+}
+
+/// [`move_under`], of `segment`.
+fn move_on(
+    n: usize,
+    order: &Id,
+    segment: &Id,
+    authorisation: &Id,
+    route: RouteEnd,
+) -> DecisionRequest {
     let mut request: DecisionRequest = valid!("decision-request-to-move-value");
     request.request = id(&format!("req-move-{n}"));
     let Action::MoveValue {
         order: o,
+        segment: g,
         authorisation: a,
         route: r,
         ..
@@ -208,6 +241,7 @@ fn move_under(n: usize, order: &Id, authorisation: &Id, route: RouteEnd) -> Deci
         panic!("a move");
     };
     *o = order.clone();
+    *g = segment.clone();
     *a = authorisation.clone();
     *r = route;
     request
@@ -292,18 +326,21 @@ fn a_recalculation() -> impl Strategy<Value = (Recalculated, i64)> {
     )
 }
 
-/// One step of a run on one order: an authorisation given, under one of three terms, by one of four givers, under
-/// one of five ids; a move under one of those ids, on a route recalculated against the terms that id names; or a
-/// restart, a fresh engine opened over the same log.
+/// One step of a run on one order split in two parts: an authorisation given, under one of three terms, for the
+/// whole order or for one of its parts, by one of four givers, under one of five ids; a move of a segment of either
+/// part, or of one no plan lists, under one of those ids, on a route recalculated against the terms that id names; or
+/// a restart, a fresh engine opened over the same log.
 #[derive(Debug, Clone)]
 enum Step {
     Give {
         terms: usize,
+        parts: usize,
         by: usize,
         id: usize,
     },
     Move {
         id: usize,
+        segment: usize,
         recalculated: Recalculated,
         around: i64,
     },
@@ -312,14 +349,36 @@ enum Step {
 
 fn a_step() -> impl Strategy<Value = Step> {
     prop_oneof![
-        3 => (0..3usize, 0..4usize, 0..5usize).prop_map(|(terms, by, id)| Step::Give { terms, by, id }),
-        5 => (0..5usize, a_recalculation()).prop_map(|(id, (recalculated, around))| Step::Move {
-            id,
-            recalculated,
-            around,
+        3 => (0..3usize, 0..3usize, 0..4usize, 0..5usize)
+            .prop_map(|(terms, parts, by, id)| Step::Give { terms, parts, by, id }),
+        5 => (0..5usize, 0..3usize, a_recalculation()).prop_map(|(id, segment, (recalculated, around))| {
+            Step::Move {
+                id,
+                segment,
+                recalculated,
+                around,
+            }
         }),
         1 => Just(Step::Restart),
     ]
+}
+
+/// The parts a step's authorisation names: none, so the whole order; `p1`; or `p2`.
+fn parts_named(parts: usize) -> Option<Vec<Id>> {
+    match parts {
+        0 => None,
+        1 => Some(vec![id("p1")]),
+        _ => Some(vec![id("p2")]),
+    }
+}
+
+/// The segment a step's move is of: `s1` of `p1`, `s2` of `p2`, or `s0`, which no plan lists.
+fn segment_moved(segment: usize) -> (Id, Option<Id>) {
+    match segment {
+        0 => (id("s1"), Some(id("p1"))),
+        1 => (id("s2"), Some(id("p2"))),
+        _ => (id("s0"), None),
+    }
 }
 
 /// The givers a step draws: the customer, its agent, the operator acting for the user, the origin reserve. The
@@ -333,59 +392,94 @@ fn giver(by: usize) -> Actor {
     }
 }
 
-/// What the order's register should be, kept apart from the engine's: the terms in force and the ids given under
-/// them since they came into force, and every authorisation given, by id.
+/// What the order's register should be, kept apart from the engine's: every authorisation permitted, in order, from
+/// which each part's terms in force and the ids in force under them are worked out.
 #[derive(Default)]
 struct Model {
-    terms: Option<Authorisation>,
-    in_force: Vec<Id>,
     given: Vec<Authorisation>,
 }
 
 impl Model {
-    /// Whether `a` should be permitted: its id names it alone, and only while it is in force; a new id under other
-    /// terms than those in force only from the customer.
+    /// Whether `a` speaks for `part`: a part it names, or any part where it names none; for no part, the order as a
+    /// whole, which only one naming no part speaks for.
+    fn speaks_for(a: &Authorisation, part: Option<&Id>) -> bool {
+        match (part, &a.parts) {
+            (_, None) => true,
+            (Some(p), Some(parts)) => parts.contains(p),
+            (None, Some(_)) => false,
+        }
+    }
+
+    /// The parts `a` is held to: those it names, or, naming none, the order as a whole and every part named so far.
+    fn held(&self, a: &Authorisation) -> Vec<Option<Id>> {
+        if let Some(parts) = &a.parts {
+            return parts.iter().cloned().map(Some).collect();
+        }
+        let mut held = vec![None];
+        for p in self.given.iter().filter_map(|g| g.parts.as_ref()).flatten() {
+            if !held.contains(&Some(p.clone())) {
+                held.push(Some(p.clone()));
+            }
+        }
+        held
+    }
+
+    /// `part`'s terms in force, and the ids in force under them: the first authorisation speaking for it sets them,
+    /// one of the same terms joins them, and the customer's of other terms sets them anew.
+    fn standing(&self, part: Option<&Id>) -> Option<(Authorisation, Vec<Id>)> {
+        let mut now: Option<(Authorisation, Vec<Id>)> = None;
+        for a in self.given.iter().filter(|a| Self::speaks_for(a, part)) {
+            now = match now {
+                None => Some((a.clone(), vec![a.authorisation.clone()])),
+                Some((terms, mut ids)) if same_terms(&terms, a) => {
+                    if !ids.contains(&a.authorisation) {
+                        ids.push(a.authorisation.clone());
+                    }
+                    Some((terms, ids))
+                }
+                Some(_) if a.given_by.role == Role::Customer => {
+                    Some((a.clone(), vec![a.authorisation.clone()]))
+                }
+                kept => kept,
+            };
+        }
+        now
+    }
+
+    /// Whether `a` should be permitted: its id names it alone, and only while it is in force for every part it is
+    /// held to; a new id under other terms than those in force for any of them only from the customer.
     fn permits(&self, a: &Authorisation) -> bool {
+        let held = self.held(a);
         if let Some(given) = self
             .given
             .iter()
             .find(|g| g.authorisation == a.authorisation)
         {
-            return given == a && self.in_force.contains(&a.authorisation);
+            return given == a
+                && held.iter().all(|p| {
+                    self.standing(p.as_ref())
+                        .is_some_and(|(_, ids)| ids.contains(&a.authorisation))
+                });
         }
-        match &self.terms {
-            None => true,
-            Some(terms) => same_terms(terms, a) || a.given_by.role == Role::Customer,
-        }
+        let anew = held.iter().any(|p| {
+            self.standing(p.as_ref())
+                .is_some_and(|(terms, _)| !same_terms(&terms, a))
+        });
+        !anew || a.given_by.role == Role::Customer
     }
 
     fn permit(&mut self, a: &Authorisation) {
-        if !self.given.contains(a) {
-            self.given.push(a.clone());
-        }
-        match &self.terms {
-            Some(terms) if same_terms(terms, a) => {
-                if !self.in_force.contains(&a.authorisation) {
-                    self.in_force.push(a.authorisation.clone());
-                }
-            }
-            // Only engines racing over one log leave another's authorisation of other terms there: it sets nothing.
-            Some(_) if a.given_by.role != Role::Customer => {}
-            _ => {
-                self.terms = Some(a.clone());
-                self.in_force = vec![a.authorisation.clone()];
-            }
-        }
+        self.given.push(a.clone());
     }
 
-    /// Whether a move of `order` under `id`, on `route`, should be permitted: `id` in force for the order, the route
-    /// inside the terms in force.
-    fn permits_move(&self, order: &Id, id: &Id, route: &RouteEnd) -> bool {
-        let Some(terms) = &self.terms else {
+    /// Whether a move of `order`'s `part` under `id`, on `route`, should be permitted: `id` in force for the part,
+    /// the route inside the part's terms in force.
+    fn permits_move(&self, order: &Id, part: Option<&Id>, id: &Id, route: &RouteEnd) -> bool {
+        let Some((terms, ids)) = self.standing(part) else {
             return false;
         };
         &terms.order == order
-            && self.in_force.contains(id)
+            && ids.contains(id)
             && route.destination == terms.destination
             && route.to_asset == terms.to_asset
             && terms
@@ -398,13 +492,13 @@ impl Model {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
-    /// Over runs of one order's authorisations (a first, a restatement, a replacement, a return to earlier terms,
-    /// an id given again, each by the customer, its agent, the operator or the origin reserve), of moves on routes
-    /// recalculated around the terms they name, and of restarts, every move permitted goes to the destination, and
-    /// delivers the to asset, of the authorisation it acts under, for its order, at least its floor; and each answer,
-    /// to an authorisation and to a move, is the one the order's register should give, read from the log alone
-    /// across every restart.
-    // verifies: REQ-AUZ-3, INV-10
+    /// Over runs of one split order's authorisations (a first, a restatement, a replacement, a return to earlier
+    /// terms, an id given again, for the whole order or for one part, each by the customer, its agent, the operator
+    /// or the origin reserve), of moves of either part's segments on routes recalculated around the terms they name,
+    /// and of restarts, every move permitted goes to the destination, and delivers the to asset, of the authorisation
+    /// it acts under, for its order, at least its floor; and each answer, to an authorisation and to a move, is the
+    /// one the register of the move's own part should give, read from the log alone across every restart.
+    // verifies: REQ-AUZ-3, INV-10, REQ-ORD-43
     #[test]
     fn no_recalculation_changes_destination_or_to_asset_under_one_authorisation(
         base in an_authorisation(),
@@ -415,14 +509,16 @@ proptest! {
         unfloored.floor = None;
         let terms = [base.clone(), other, unfloored];
         let log = Shared::default();
+        log.plan.borrow_mut().extend([(id("s1"), id("p1")), (id("s2"), id("p2"))]);
         let mut policy = engine_over(&log);
         let mut model = Model::default();
         for (n, step) in steps.into_iter().enumerate() {
             match step {
                 Step::Restart => policy = engine_over(&log),
-                Step::Give { terms: t, by, id: k } => {
+                Step::Give { terms: t, parts, by, id: k } => {
                     let mut given = terms[t].clone();
                     given.authorisation = id(&format!("auth-p{k}"));
+                    given.parts = parts_named(parts);
                     given.given_by = giver(by);
                     let should = model.permits(&given);
                     let answer = policy.authorise(&given).unwrap().outcome;
@@ -435,8 +531,9 @@ proptest! {
                         model.permit(&given);
                     }
                 }
-                Step::Move { id: k, recalculated, around } => {
+                Step::Move { id: k, segment, recalculated, around } => {
                     let named = id(&format!("auth-p{k}"));
+                    let (segment, part) = segment_moved(segment);
                     let around_terms = model
                         .given
                         .iter()
@@ -458,8 +555,9 @@ proptest! {
                         Recalculated::Asset(s) => route.to_asset = asset(*s),
                         Recalculated::Order => order = id("ord-18"),
                     }
-                    let should = model.permits_move(&order, &named, &route);
-                    let answer = decided(&mut policy, &move_under(n, &order, &named, route.clone()));
+                    let should = model.permits_move(&order, part.as_ref(), &named, &route);
+                    let request = move_on(n, &order, &segment, &named, route.clone());
+                    let answer = decided(&mut policy, &request);
                     if answer == (Answer::Permit {}) {
                         let acted_under = model.given.iter().find(|g| g.authorisation == named);
                         prop_assert!(acted_under.is_some(), "step {}: a move under no authorisation", n);
@@ -467,11 +565,12 @@ proptest! {
                         prop_assert_eq!(&route.destination, &acted_under.destination);
                         prop_assert_eq!(&route.to_asset, &acted_under.to_asset);
                         prop_assert_eq!(&order, &acted_under.order);
+                        prop_assert!(Model::speaks_for(acted_under, part.as_ref()), "step {}: the part", n);
                     }
                     prop_assert_eq!(
                         answer,
                         if should { Answer::Permit {} } else { REFUSED_OUTSIDE },
-                        "step {}: {:?} under {} delivering {}", n, recalculated, named, delivers
+                        "step {}: {:?} of {} under {} delivering {}", n, recalculated, segment, named, delivers
                     );
                 }
             }
@@ -1191,4 +1290,212 @@ fn reordered_read_of_the_log_is_refused() {
         MISSING
     );
     assert_eq!(policy.authorise(&first).unwrap().outcome, MISSING);
+}
+
+// --- A split order, authorised per part ------------------------------------------------------------------------
+
+/// The split order's plan, as the log holds it: `s1` of `p1`, `s2` of `p2`.
+fn split(log: &Shared) {
+    log.plan
+        .borrow_mut()
+        .extend([(id("s1"), id("p1")), (id("s2"), id("p2"))]);
+}
+
+/// A split order's other part goes on after one part's new destination: the order is authorised whole under
+/// `auth-17`; `p1`'s final deposit fails, and the customer's `auth-18`, naming `p1` alone, gives it a new
+/// destination. `p2` still moves under `auth-17` to the first destination, `p1` under `auth-18` to the new one, and
+/// `p1` under `auth-17` no more. A new destination for `p2` from the operator acting for the user is refused, as for
+/// any part.
+// verifies: REQ-ORD-43, REQ-AUZ-3, INV-10
+#[test]
+fn split_orders_other_part_moves_on_under_its_authorisation_after_one_parts_new_destination() {
+    let (first, mut anew, _) = the_reviewers_three();
+    anew.parts = Some(vec![id("p1")]);
+    let order = first.order.clone();
+    let log = Shared::default();
+    split(&log);
+    let mut policy = engine_over(&log);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    let to_first = end_of(&first, "2500000");
+    let to_anew = end_of(&anew, "120000");
+    for (n, segment) in ["s1", "s2"].into_iter().enumerate() {
+        let request = move_on(
+            n,
+            &order,
+            &id(segment),
+            &first.authorisation,
+            to_first.clone(),
+        );
+        assert_eq!(
+            decided(&mut policy, &request),
+            Answer::Permit {},
+            "{segment}"
+        );
+    }
+
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    let on = |n, segment: &str, under: &Authorisation, route: &RouteEnd| {
+        move_on(n, &order, &id(segment), &under.authorisation, route.clone())
+    };
+    assert_eq!(
+        decided(&mut policy, &on(10, "s2", &first, &to_first)),
+        Answer::Permit {},
+        "p2 goes on under the order's authorisation"
+    );
+    assert_eq!(
+        decided(&mut policy, &on(11, "s1", &anew, &to_anew)),
+        Answer::Permit {},
+        "p1 goes to its new destination"
+    );
+    assert_eq!(
+        decided(&mut policy, &on(12, "s1", &first, &to_first)),
+        REFUSED_OUTSIDE,
+        "p1 no more under the authorisation replaced for it"
+    );
+
+    let mut operators = anew.clone();
+    operators.authorisation = id("auth-19");
+    operators.parts = Some(vec![id("p2")]);
+    operators.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+    assert_eq!(policy.authorise(&operators).unwrap().outcome, NOT_PERMITTED);
+
+    // After a restart, the same: the register is the log's, part by part.
+    let mut reopened = engine_over(&log);
+    assert_eq!(
+        decided(&mut reopened, &on(20, "s2", &first, &to_first)),
+        Answer::Permit {}
+    );
+    assert_eq!(
+        decided(&mut reopened, &on(21, "s1", &first, &to_first)),
+        REFUSED_OUTSIDE
+    );
+}
+
+/// A replacement for one part covers that part alone: a move of `p2` under `auth-18`, which names `p1`, is refused,
+/// whether to `auth-18`'s destination or to the order's, and so is a move of a segment no plan lists, which is held
+/// to the order as a whole.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn move_on_another_part_under_a_parts_replacement_is_refused() {
+    let (first, mut anew, _) = the_reviewers_three();
+    anew.parts = Some(vec![id("p1")]);
+    let order = first.order.clone();
+    let log = Shared::default();
+    split(&log);
+    let mut policy = engine_over(&log);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    for (n, (segment, route)) in [
+        ("s2", end_of(&anew, "120000")),
+        ("s2", end_of(&first, "2500000")),
+        ("s0", end_of(&anew, "120000")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = move_on(n, &order, &id(segment), &anew.authorisation, route);
+        assert_eq!(decided(&mut policy, &request), REFUSED_OUTSIDE, "{segment}");
+    }
+}
+
+/// A segment's part is read from the plans the log holds, as the log reads it: the part a `route_chosen` lists it
+/// under, or the part a `destination_changed` gave it to; none for a segment no plan lists, of another order, or named
+/// only by an input that plans nothing.
+// verifies: REQ-AUZ-3
+#[test]
+fn segments_part_is_read_from_the_plans_the_log_holds() {
+    let entries: Vec<Entry> = [
+        "verified-entry-of-a-recorded-input-route-chosen-three-parts",
+        "verified-entry-of-a-recorded-input-destination-changed-with-acceptance",
+        "verified-entry-of-a-recorded-input",
+    ]
+    .into_iter()
+    .map(|name| valid!(name))
+    .collect();
+    let part = |order: &str, segment: &str| part_in(&entries, &id(order), &id(segment));
+    assert_eq!(part("ord-1", "p2-s2"), Some(id("p2")));
+    assert_eq!(part("ord-1", "p3-s3"), Some(id("p3")));
+    assert_eq!(
+        part("ord-1", "p1-s4"),
+        Some(id("p1")),
+        "a destination changed"
+    );
+    assert_eq!(part("ord-1", "p9-s1"), None);
+    assert_eq!(part("ord-2", "p2-s2"), None, "another order");
+}
+
+/// The origin reserve is one of the terms, as the log reads them: the same destination from another origin reserve,
+/// given by the operator acting for the user, is a new authorisation, and refused; given by the customer, it replaces
+/// the one in force.
+// verifies: REQ-AUZ-3
+#[test]
+fn authorisation_from_another_origin_reserve_is_a_new_one() {
+    let first = authorisation();
+    let order = first.order.clone();
+    let mut policy = engine();
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    let mut elsewhere = first.clone();
+    elsewhere.authorisation = id("auth-17-elsewhere");
+    elsewhere.origin_reserve = id("bank-mx");
+    elsewhere.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+    assert_eq!(policy.authorise(&elsewhere).unwrap().outcome, NOT_PERMITTED);
+    elsewhere.given_by = first.given_by.clone();
+    assert_eq!(
+        policy.authorise(&elsewhere).unwrap().outcome,
+        Answer::Permit {}
+    );
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(0, &order, &first.authorisation, end_of(&first, "2500000"))
+        ),
+        REFUSED_OUTSIDE
+    );
+}
+
+/// The order's authorisation, replaced for `p1` alone, still speaks for `p2`, but given again exactly as it was it is
+/// refused: it is no longer in force for every part it speaks for, and permitted again, it would set `p1`'s old
+/// destination anew.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn authorisation_replaced_for_one_part_given_again_is_refused() {
+    let (first, mut anew, _) = the_reviewers_three();
+    anew.parts = Some(vec![id("p1")]);
+    let order = first.order.clone();
+    let log = Shared::default();
+    split(&log);
+    let mut policy = engine_over(&log);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&first).unwrap().outcome, NOT_PERMITTED);
+    let to_first = end_of(&first, "2500000");
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_on(0, &order, &id("s1"), &first.authorisation, to_first)
+        ),
+        REFUSED_OUTSIDE
+    );
+}
+
+/// A move whose segment's part can't be read is refused, the part an input the decision doesn't have, though the
+/// authorisations are read whole.
+// verifies: REQ-AUZ-3
+#[test]
+fn move_whose_part_cannot_be_read_is_refused() {
+    let first = authorisation();
+    let order = first.order.clone();
+    let log = Shared::default();
+    split(&log);
+    let mut policy = engine_over(&log);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    policy.log.wire(Wiring::PlanUnreadable);
+    let request = move_on(
+        0,
+        &order,
+        &id("s1"),
+        &first.authorisation,
+        end_of(&first, "2500000"),
+    );
+    assert_eq!(decided(&mut policy, &request), MISSING);
 }

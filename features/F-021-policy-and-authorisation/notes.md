@@ -423,6 +423,69 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | a restatement joins the ids in force (M3) | the property; `restatement keeps the earlier id in force beside it` |
   | a same-id retry held to being in force (M5) | the property; `register is rebuilt ...`; `replaced authorisation given again ...`; `operator's restatement raced ...` |
 
+### T-021-04, per part (finding 2 of the review of `d3de45a`)
+
+Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's `Authorisation.parts`
+(`41257db`) in it.
+
+- **The register is keyed by part.** An authorisation speaks for the parts it names, or every part where it names
+  none; the order as a whole, for a move whose segment no plan lists, only one naming no part speaks for, as the log
+  reads it. Each part's terms in force fold the authorisations that speak for it, by the same rules as before: the
+  first sets them, the same terms join, the customer's other terms replace, and anyone else's other terms set nothing
+  (the race rule, kept). A replacement naming `p1` replaces nothing for `p2`, which goes on under `auth-17`.
+- **A move is held to its own part.** The move doesn't name its part, so the engine reads it, on the same read, from
+  the plans the log holds: `Recorded::part_of`, one definition, `funds::part_in`, core-internal's own reading
+  (`part_of_segment`, private in `relations.rs`): a `route_chosen` part listing the segment, or the part a
+  `route_recalculated` or `destination_changed` gave it to. A part that can't be read is `missing_input`. Every
+  read implements it: the core-authz test logs, the segments kit's `PolicyPath`, and the scenarios' `PolicyHandle`
+  through `Entries`. That the part is the plan's is the assembly's word, as the rest of the read is; the trait's docs
+  say so.
+- **An authorisation is held to every part it speaks for.** One naming no part is held to the order as a whole and
+  to every part an authorisation of the order names. A new id is a new authorisation where it names other terms than
+  those in force for any of those, and only the customer gives one. An id given again is decided again only while it
+  is in force for every one of them: the order's `auth-17`, replaced for `p1`, still speaks for `p2`, but given
+  again it is refused, since permitted again it would set `p1`'s old destination anew.
+- **The terms are the log's.** `same_terms` now compares the origin reserve too, as core-internal's `terms` does
+  (destination, to asset, floor, origin reserve): an authorisation from another origin reserve is a new one.
+- **Where the register is stricter than the log** (a reading, unchanged): the log's `in_force` takes a part's
+  latest customer authorisation and admits a move under any authorisation of the same terms; the engine also holds a
+  move to an id in force, so an id replaced covers nothing more even once its terms are given again under another.
+- **The assembly's start of an order** reads the acceptance's authorisation for the order as a whole
+  (`in_force_as(order, None, ..)`): an order starts before any part has an authorisation of its own.
+- **`Stuck::follow` (core-orch, `T-020-11`'s; not edited here).** It already takes the in-force authorisation per
+  part, by the log's own rule (the first covering the part, then each later one its customer gave), so it agrees
+  with the register on each part's terms: items (1), (2) and (4) of `T-020-11`'s list are met. Item (3) isn't: the
+  ends first followed for a part stand, and following again with others is refused for the whole order
+  (`found.iter().any(..)` returns `NotItsAuthorisation`), so once `p1`'s new destination is in force, following the
+  order again refuses `p2` too, and `p1`'s new ends are never taken. The change, for `T-020-11`'s owner: record per
+  part whether its authorisation in force is a later one its customer gave (`replaced`, set where `current` was
+  already some when a customer's covering one is taken); refuse only a part whose held ends differ and which wasn't
+  so replaced; and where it was, replace its held ends (`insert`, not `or_insert`). One more difference, for the same
+  owner: `follow` names the customer by the acceptance's requester, the engine by the giver's role (the roles rule
+  holds a customer's party to the requester); and `origin_account` isn't one of the terms, so two authorisations of
+  the same terms with different origin accounts are one for the engine and the log, and two ends for `follow`.
+- **Tests, each red before the change:** `split order's other part moves on under its authorisation after one part's
+  new destination` (the reviewer's sequence, a restart included), `move on another part under a part's replacement
+  is refused`, and the property test's sequences, now over two parts, for the whole order or one part, with moves of
+  either part's segments and of one no plan lists. Written for rules the change brought and seen red under their
+  rule-off: `segment's part is read from the plans the log holds`, `authorisation from another origin reserve is a new
+  one`, `authorisation replaced for one part given again is refused`, `move whose part cannot be read is refused`.
+- **Rule-offs**, each red:
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a part named is the part spoken for | the property; the split order's test; `move on another part ...` |
+  | the order as a whole only by one naming no part | the property; `move on another part ...` |
+  | a move held to its own part | the property; the split order's test |
+  | one naming no part held to every part named | the property |
+  | a segment whose part can't be read refuses | `move whose part cannot be read is refused` |
+  | the origin reserve is a term | `authorisation from another origin reserve is a new one` |
+  | `part_in` reads a `route_chosen` | `segment's part is read from the plans the log holds` |
+  | `part_in` reads a `destination_changed` | `segment's part is read from the plans the log holds` |
+  | `part_in` of the order alone | `segment's part is read from the plans the log holds` |
+  | an id given again held to being in force for every part | `authorisation replaced for one part given again is refused`; the property |
+  | the order held (rechecked on the new path) | the property; `route outside the authorisation needs a new one` |
+
 ## T-021-05
 
 - **What it builds.** `Charges::charge` on `Engine<L, P, S>` in `components/core-authz/src/parties/`, decided through
