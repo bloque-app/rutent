@@ -100,12 +100,7 @@ fn newest_of(dir: &Path) -> std::time::SystemTime {
 fn built_standins() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let exe = std::env::current_exe().expect("the test's own path");
-    // target/<profile>/deps/<test> -> target
-    let target = exe
-        .ancestors()
-        .nth(3)
-        .expect("a build directory")
-        .to_path_buf();
+    let target = build_directory(&exe);
     let out = target.join("rutent-wasm-standins");
     let built = out.join("built");
     let sources = [
@@ -916,4 +911,21 @@ pub fn alive(pid: u64) -> bool {
     }
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { kill(pid as i32, 0) == 0 }
+}
+
+/// The build directory `exe`, a test's executable, was built in: the grandparent of the nearest `deps` or `build`
+/// directory above it. Cargo places a test's executable at `<target>/<profile>/deps/<test>` in its old layout, and
+/// at `<target>/<profile>/build/<package>/<hash>/out/<test>` in its new build-directory layout, the default from Rust
+/// 1.100 (`-Zbuild-dir-new-layout` before it).
+fn build_directory(exe: &Path) -> PathBuf {
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("a build directory above the test's executable")
+        .to_path_buf()
 }
