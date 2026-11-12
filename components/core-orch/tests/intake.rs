@@ -886,6 +886,43 @@ fn acceptance_is_carried_on_only_by_the_actor_policy_permitted() {
     assert_admitted(&env);
 }
 
+// verifies: REQ-AUZ-8, REQ-OPS-5
+#[test]
+fn actor_stating_another_kind_is_not_the_requester() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let order = order_of(
+        &env.open(&mut sim, &order_request("client-req-1", customer()))
+            .unwrap(),
+    );
+    // The register lists `agent-7` as the customer's agent; stating itself a person, or the customer's own login
+    // stating itself an agent, it is told nothing, quotes nothing and opens nothing (policy's `ActsFor` binds the kind,
+    // `T-021-05`).
+    let as_person = Actor {
+        kind: ActorKind::Person,
+        ..agent()
+    };
+    let as_agent = Actor {
+        kind: ActorKind::Agent,
+        ..customer()
+    };
+    for caller in [as_person, as_agent] {
+        assert_eq!(env.told(&caller, "client-req-1"), None, "{caller:?}");
+        assert_eq!(
+            env.quote_by(&mut sim, &caller, &order),
+            Err(IntakeError::NoSuchOrder),
+            "{caller:?}"
+        );
+        assert_eq!(
+            env.open(&mut sim, &order_request("client-req-2", caller.clone())),
+            Err(IntakeError::NotTheRequester),
+            "{caller:?}"
+        );
+    }
+    // As the kind it is listed as, the agent is told.
+    assert!(env.told(&agent(), "client-req-1").is_some());
+}
+
 // verifies: REQ-ORD-19
 #[test]
 fn request_identifier_is_the_requesters_own() {

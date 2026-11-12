@@ -69,6 +69,10 @@ impl crate::funds::Recorded for Kept {
         held.extend(crate::funds::permitted_in(self.0.iter().map(|(_, e)| e)));
         Ok(held)
     }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
+        Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+    }
 }
 
 impl Log for Kept {
@@ -205,7 +209,8 @@ impl Policy for Permits {
 /// order's requester and origin reserve. It keeps what it was asked.
 ///
 /// Who each actor acts for is listed where a test sets it (`acts_for`); an actor no test lists acts for the party its
-/// request states, and that word is kept out of `asked`, which counts what the rules ask beyond it.
+/// request states, and that word is kept out of `asked`, which counts what the rules ask beyond it. Every agent acts
+/// within the scope its party set (`Source::AgentScope`, `T-021-05`), a word kept out of `asked` too.
 #[derive(Default)]
 struct Register {
     holds: Vec<(Id, Id, Permission)>,
@@ -296,7 +301,8 @@ fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
 
 impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
-        if let Source::ActsFor { acts, party } = &need.from {
+        // The kind each actor states is the one its login is listed as: no test here turns on it (`T-021-05`'s do).
+        if let Source::ActsFor { acts, party, .. } = &need.from {
             let listed = self.acts_for.iter().any(|(a, _)| a == acts);
             let acts_for = self.acts_for.iter().any(|(a, p)| a == acts && p == party);
             return Reply::Given(if acts_for || !listed {
@@ -304,6 +310,9 @@ impl Sources for Register {
             } else {
                 Said::No
             });
+        }
+        if matches!(need.from, Source::AgentScope { .. }) {
+            return Reply::Given(Said::Yes);
         }
         self.asked.push(need.clone());
         if let Some((_, said)) = self.others.iter().find(|(n, _)| n == need) {
@@ -422,7 +431,13 @@ fn provider_posting_a_route_is_refused() {
     for role in roles {
         for kind in kinds {
             let mut post: DecisionRequest = valid!("decision-request-to-post-a-suggested-route");
-            post.caller = actor("bridge-pay", "bridge-pay", role, kind);
+            // An agent is never its own party (`T-021-05`), so bridge-pay's agent is one of its own.
+            let acts = if kind == ActorKind::Agent {
+                "bridge-pay-agent"
+            } else {
+                "bridge-pay"
+            };
+            post.caller = actor("bridge-pay", acts, role, kind);
             let decision = policy.decide(&post).unwrap();
             assert_eq!(decision.outcome, NOT_PERMITTED, "{role:?} {kind:?}");
             assert!(decision.permit().is_none());

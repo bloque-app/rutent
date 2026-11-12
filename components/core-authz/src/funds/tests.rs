@@ -112,6 +112,10 @@ impl Recorded for Shared {
             Wiring::Other(other) => Ok(permitted_in(other.borrow().iter())),
         }
     }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+        Ok(crate::parties::charged_in(self.entries.borrow().iter()))
+    }
 }
 
 /// Sources that say yes to every input but those the test sets, so what is decided is this row's rule, the
@@ -571,6 +575,7 @@ fn route_outside_the_authorisation_needs_a_new_one() {
         from: Source::ActsFor {
             acts: id("evil-orch"),
             party: id("rutent"),
+            kind: ActorKind::Component,
         },
     };
     policy.sources.0.push((acts_for, Reply::Given(Said::No)));

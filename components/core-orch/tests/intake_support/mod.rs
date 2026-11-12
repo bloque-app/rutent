@@ -191,7 +191,11 @@ impl Authorisations for Policy {
         self.asked.push(authorisation.clone());
         // `ActsFor`, the first fixed rule: the giver acts for the party it states, or the answer is a refusal.
         let giver = &authorisation.given_by;
-        let answer = if self.actors.borrow().acts_for(&giver.acts, &giver.party) {
+        let answer = if self
+            .actors
+            .borrow()
+            .acts_for(&giver.acts, &giver.party, giver.kind)
+        {
             self.answer
         } else {
             refusal(RefusalClass::NoAccountableParty)
@@ -238,22 +242,26 @@ impl Destinations for Register {
     }
 }
 
-/// The register of actors: who each actor, as authenticated, acts for.
+/// The register of actors: who each actor, as authenticated, acts for, and as what kind of actor.
 #[derive(Debug, Default)]
 pub struct ActorRegister {
-    pub pairs: BTreeSet<(String, String)>,
+    pub pairs: BTreeSet<(String, String, String)>,
 }
 
 impl ActorRegister {
-    pub fn acts_for(&self, acts: &Id, party: &Id) -> bool {
-        self.pairs
-            .contains(&(acts.as_str().to_owned(), party.as_str().to_owned()))
+    pub fn acts_for(&self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+        self.pairs.contains(&(
+            acts.as_str().to_owned(),
+            party.as_str().to_owned(),
+            format!("{kind:?}"),
+        ))
     }
 
     pub fn list(&mut self, actor: &Actor) {
         self.pairs.insert((
             actor.acts.as_str().to_owned(),
             actor.party.as_str().to_owned(),
+            format!("{:?}", actor.kind),
         ));
     }
 }
@@ -262,8 +270,8 @@ impl ActorRegister {
 pub struct Acting(pub Rc<RefCell<ActorRegister>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id) -> bool {
-        self.0.borrow().acts_for(acts, party)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+        self.0.borrow().acts_for(acts, party, kind)
     }
 }
 

@@ -549,6 +549,44 @@ fn questions_fanned_out_count_against_the_callers_bound() {
     ));
 }
 
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn person_questions_are_charged_against_the_callers_people_limit() {
+    use rutent_contracts::core_internal::Work;
+    let mut inputs = on_polygon(&[RESERVE, SIBLING], RESERVE);
+    inputs.order.needs = vec![need(RESERVE, "id-check", "kyc.natural_person")];
+    let reserves = [(RESERVE, "acme"), (SIBLING, "acme")];
+    let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
+    env.add_verifier("id-check");
+    let mut sim = env.sim();
+    let _ = run(&mut env, &mut sim, &inputs);
+
+    // The questions about the person are charged as such, apart from the providers' questions, both to the caller's
+    // party and for its order, before any is asked: policy holds the first to the party's limit on asking about
+    // people, the second to its limit on work.
+    let counted = |work| -> u64 {
+        env.bound
+            .charges
+            .iter()
+            .filter(|c| c.work == work)
+            .map(|c| c.count.get())
+            .sum()
+    };
+    assert!(!env.people.questions.is_empty());
+    assert_eq!(
+        counted(Work::PersonQuestion),
+        env.people.questions.len() as u64
+    );
+    assert!(counted(Work::FanOut) > 0);
+    assert_eq!(counted(Work::Request), 0);
+    assert!(
+        env.bound
+            .charges
+            .iter()
+            .all(|c| c.party == customer().party && c.order == Some(id(ORDER)))
+    );
+}
+
 // verifies: REQ-AUD-4
 #[test]
 fn every_routing_calls_decision_record_is_chained_to_the_orders_history() {

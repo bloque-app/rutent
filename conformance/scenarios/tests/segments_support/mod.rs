@@ -374,6 +374,16 @@ impl rutent_core_authz::funds::Recorded for PolicyPath {
             log.entries.iter().map(|(entry, _)| entry),
         ))
     }
+
+    fn charged(
+        &mut self,
+    ) -> Result<Vec<rutent_core_authz::parties::Counted>, rutent_core_authz::funds::ReadFailure>
+    {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::parties::charged_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
 }
 
 /// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
@@ -405,7 +415,7 @@ impl authz::Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
-            authz::Source::ActsFor { acts, party } => {
+            authz::Source::ActsFor { acts, party, kind } => {
                 let listed = [
                     core(),
                     customer(),
@@ -414,7 +424,7 @@ impl authz::Sources for Register {
                     other_provider_desk(),
                 ];
                 match listed.iter().find(|a| &a.acts == acts) {
-                    Some(actor) => yes(&actor.party == party),
+                    Some(actor) => yes(&actor.party == party && &actor.kind == kind),
                     None => Reply::Missing,
                 }
             }
