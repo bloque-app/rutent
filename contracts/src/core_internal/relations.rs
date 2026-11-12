@@ -49,14 +49,33 @@ pub type History = [(Receipt, Entry)];
 
 /// The citations an entry makes under a row, given the history: a verified entry's, or, for a row of
 /// [`STATED_RELATIONS`], a stated entry's.
-pub type Cites<C = VerifiedEntry> = fn(&C, &History) -> Vec<Cite>;
+pub type Cites<C = VerifiedCiting> = fn(&C, &History) -> Vec<Cite>;
 
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
-pub type Answers<C = VerifiedEntry> = fn(&C, &Cite, &Entry, &History) -> Match;
+pub type Answers<C = VerifiedCiting> = fn(&C, &Cite, &Entry, &History) -> Match;
+
+/// A verified entry as the rows of [`RELATIONS`] read it: with the maker this deployment's operator signs its own
+/// statements as, so a row can tell the operator's own statements from a module's it publishes. It reads as the
+/// entry itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedCiting {
+    /// The verified entry.
+    pub entry: VerifiedEntry,
+    /// The maker the deployment's operator signs as.
+    pub operator: Id,
+}
+
+impl core::ops::Deref for VerifiedCiting {
+    type Target = VerifiedEntry;
+
+    fn deref(&self) -> &VerifiedEntry {
+        &self.entry
+    }
+}
 
 /// One row of the citation table, over the citing entries of kind `C`: verified entries ([`RELATIONS`]) or stated
 /// ones ([`STATED_RELATIONS`]).
-pub struct Relation<C: 'static = VerifiedEntry> {
+pub struct Relation<C: 'static = VerifiedCiting> {
     /// The row's name, which its fixtures are named after.
     pub name: &'static str,
     /// The `SPEC.md` ids that demand the relation.
@@ -364,7 +383,8 @@ pub static RELATIONS: [Relation; 52] = [
                 return Match::NotTarget;
             };
             judge(
-                t != e && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
+                t != &e.entry
+                    && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
                 &[],
             )
         },
@@ -731,7 +751,8 @@ pub static RELATIONS: [Relation; 52] = [
                 return Match::NotTarget;
             };
             judge(
-                t != e && matches!(&t.what, What::Result { effect: other } if other == effect),
+                t != &e.entry
+                    && matches!(&t.what, What::Result { effect: other } if other == effect),
                 &[],
             )
         },
@@ -1526,7 +1547,7 @@ pub static RELATIONS: [Relation; 52] = [
             };
             match &t.what {
                 What::AskAboutPerson { question: earlier } => judge(
-                    t != e
+                    t != &e.entry
                         && earlier.order == question.order
                         && earlier
                             .ask
@@ -1619,7 +1640,7 @@ pub static RELATIONS: [Relation; 52] = [
         refusal: "a permitted evidence read without a permission is of a statement this log holds",
         fields: &[(
             "maker",
-            "a permitted evidence read without a permission is of a statement its reader made",
+            "a permitted evidence read without a permission is of a statement its reader made, or the operator's own for an operator of its party",
         )],
         // A party reads its own evidence without a permission (`REQ-AUD-5`); any other's rests on a permission,
         // whose scope `covers` the read.
@@ -1649,9 +1670,14 @@ pub static RELATIONS: [Relation; 52] = [
             else {
                 return Match::NotTarget;
             };
+            // The operator's own statements are made as the operator; a person logged in as the operator reads
+            // them as its party, which policy's `ActsFor` binds the login to before any read is permitted.
+            let operators_own = reader.role == Role::Operator
+                && maker_provider(s) == &e.operator
+                && s.attribution.maker().party == reader.party;
             judge(
                 &s.commitment == commitment,
-                &[maker_provider(s) == &reader.acts],
+                &[maker_provider(s) == &reader.acts || operators_own],
             )
         },
     },
@@ -2048,7 +2074,7 @@ pub static RELATIONS: [Relation; 52] = [
         answers: |e, _, t, _| match verified(t) {
             Some(earlier) => match input(earlier) {
                 Some(i) => judge(
-                    earlier != e
+                    earlier != &e.entry
                         && matches!(i.observed, Observed::RouteChosen { .. })
                         && i.subject.order.as_str() == input_order(e),
                     &[],
@@ -2360,7 +2386,13 @@ pub fn admit_entry(
         _ => {}
     }
     match entry {
-        Entry::Verified(entry) => admit_under(&RELATIONS, entry, history),
+        Entry::Verified(entry) => {
+            let citing = VerifiedCiting {
+                entry: entry.clone(),
+                operator: operator.clone(),
+            };
+            admit_under(&RELATIONS, &citing, history)
+        }
         Entry::Stated(entry) => {
             let citing = StatedCiting {
                 entry: entry.clone(),

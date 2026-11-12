@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 115 valid fixtures and 114 invalid ones, each
-  breaking one rule, and 263 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 265 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 54 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -145,7 +145,9 @@
 - Folded into 1.0.0 before its release: a permission-free evidence read is of the reader's own statement. The new
   row `own-evidence-read-is-of-the-readers-statement` holds a permitted evidence read that names no permission, by
   any reader, to a stated entry of this log holding that commitment and made (`acts`) by the reader, so no party
-  reads another's kept bytes without a permission whose scope covers them (`REQ-AUD-5`). 263 admission cases.
+  reads another's kept bytes without a permission whose scope covers them (`REQ-AUD-5`). A person logged in as the
+  operator reads the operator's own statements, made as the operator, as the operator's party; the rows over
+  verified entries read a `VerifiedCiting`, which carries the maker the operator signs as. 265 admission cases.
   (DEC-4, DEC-20, REQ-AUD-5, REQ-AUZ-7, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
