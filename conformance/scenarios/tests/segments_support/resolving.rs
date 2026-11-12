@@ -154,6 +154,21 @@ impl StuckOrders for PermitsEveryStep {
         };
         self.permit(&request.request, &request.mover, what, &request.at)
     }
+
+    // Until the stuck module reports and confirms outcomes through policy, these answer nothing: they fail closed.
+    fn report_outcome(
+        &mut self,
+        _request: &rutent_contracts::core_internal::OutcomeReport,
+    ) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+
+    fn confirm_outcome(
+        &mut self,
+        _request: &rutent_contracts::core_internal::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
 }
 
 /// Runs `with` over Core's stuck parts: the kit's clock, log, identifiers, segments and exposures.
