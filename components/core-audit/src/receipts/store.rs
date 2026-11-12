@@ -440,7 +440,9 @@ impl EvidenceStore {
     /// Binding reconciles the store with the log, so a crash anywhere in an erasure leaves nothing half done:
     ///
     /// - every erasure the log records as done, by the operator, of a statement still kept, is carried out, where
-    ///   [`BoundStore::erasable`] allows it (an erasure cut short after its entry and before its mark);
+    ///   [`BoundStore::erasable`] allows it (an erasure cut short after its entry and before its mark); one the
+    ///   store refuses, by anyone, is reported ([`BoundStore::refused_erasures`]), a finding for the outside checker
+    ///   (`T-022-04`);
     /// - a statement marked erased with no such erasure in the log refuses the binding
     ///   ([`MARK_WITHOUT_ITS_ERASURE`]): bytes went with no record of it;
     /// - every stated entry whose bytes the store neither keeps nor marks erased is reported
@@ -453,6 +455,7 @@ impl EvidenceStore {
             inner: self.inner,
             log,
             missing: Vec::new(),
+            refused: Vec::new(),
         };
         bound.reconcile()?;
         Ok(bound)
@@ -464,6 +467,7 @@ pub struct BoundStore<S: Store, K: KeptStatements> {
     inner: Rc<RefCell<Inner>>,
     log: Rc<RefCell<AuditLog<S, K>>>,
     missing: Vec<Receipt>,
+    refused: Vec<(Receipt, Violation)>,
 }
 
 /// The commitment the entry recorded at `at` erases, where it is a verified `erasure` entry, done, by an actor in
@@ -548,9 +552,17 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
                 return Err(AppendFailure::Refused(Violation(MARK_WITHOUT_ITS_ERASURE)));
             }
         }
-        for (at, _) in &recorded {
+        // Every done erasure the log records is carried out, or, where the store refuses it, reported.
+        self.refused = Vec::new();
+        for (at, e) in &entries {
+            let done_erasure = matches!(e, Entry::Verified(v)
+                if matches!(v.what, What::Erasure { .. }) && matches!(v.outcome, Outcome::Done {}));
+            if !done_erasure {
+                continue;
+            }
             match self.erase(at) {
-                Ok(()) | Err(AppendFailure::Refused(_)) => {}
+                Ok(()) => {}
+                Err(AppendFailure::Refused(why)) => self.refused.push((at.clone(), why)),
                 Err(e) => return Err(e),
             }
         }
@@ -574,6 +586,13 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// evidence gone with no erasure, a finding for the outside checker (`T-022-04`).
     pub fn missing(&self) -> &[Receipt] {
         &self.missing
+    }
+
+    /// The erasures the log records as done that the store refused when it was bound, by receipt, with why: an
+    /// erasure recorded but not carried out, by anyone but the operator, of an advertisement, of a statement an
+    /// entry rests on. A finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`].
+    pub fn refused_erasures(&self) -> &[(Receipt, Violation)] {
+        &self.refused
     }
 
     /// Whether the statement kept under `commitment` may be erased, over the log's history: it is kept, or was and

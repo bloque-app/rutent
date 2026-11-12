@@ -15,7 +15,7 @@
 //! **Only on a read policy allows.** The issuer asks policy ([`calls::Reads`]) first, then issues only for an entry
 //! the read covers: a kept statement's stated entry for a read of that statement (`reads: evidence`, the party's
 //! own, `REQ-AUD-5`), an entry naming the read's order (and segment) for a read of an order (or a segment), and any
-//! entry for a read of the trail.
+//! entry for a read of the trail. A read of an order's state alone covers no entry.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -155,6 +155,9 @@ fn covers(reads: &Read, entry: &Entry) -> bool {
             matches!(entry, Entry::Stated(s) if s.commitment == *commitment)
         }
         Read::Order { order } => names(entry, order, None),
+        // An order's recorded state and age is the state machine's reading of the order, which no single entry of
+        // the log is: the inputs that make it say more (a route chosen, its decision record), so none is covered.
+        Read::OrderState { .. } => false,
         Read::Segment { order, segment, .. } => names(entry, order, Some(segment)),
         Read::Trail {} => true,
         Read::Resource { .. } => false,

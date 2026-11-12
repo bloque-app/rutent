@@ -223,6 +223,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   removal); a mark no done erasure of the operator's in the log records refuses the binding
   (`MARK_WITHOUT_ITS_ERASURE`: bytes went with no record); and every stated entry whose bytes are neither kept nor
   marked erased is reported, by receipt, in `BoundStore::missing`, a finding for the outside checker (`T-022-04`).
+  Every done erasure the log records that the store refuses on binding, by anyone but the operator, of an
+  advertisement, or of what an entry rests on, is reported beside it, by receipt and why, in
+  `BoundStore::refused_erasures` (the review of `c74610d`: it was skipped silently).
 - **No erasure reaches what an entry rests on** (the review of `746e398`, S3, the coordinator's cautious default
   until the owner rules). `erasable` refuses a statement any verified entry of the log cites: by the receipt of a
   stated entry naming its commitment (a report pair, an arrival, graded evidence, a reliance, an acceptance, a
@@ -260,6 +263,11 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   entry naming it, a stated one by its `about` and a verified one by its `what`'s own `order` and `segment`; for the
   trail, any entry; for a resource, none (`NOT_COVERED`). A verified entry whose order sits elsewhere in its `what` is
   not covered by an order read: a reading, reversible by a later row naming each kind's order.
+- **A read of an order's state covers no entry** (core-internal's fold `01e`, `Reads::OrderState`). It reads the
+  order's recorded state and age alone, which is the state machine's reading of the order, not any one entry of
+  the log; the inputs that make it say more (a route chosen, its decision record, a segment's evidence). So a
+  receipt is issued under such a read for no entry (`NOT_COVERED`): the reading taken, reversible were an entry to
+  record an order's state as such.
 - **No contract shape for receipts** (a hand-off to `F-020`). The receipt is `core-audit`'s own JSON, a library
   type; a party reading it outside rutent's crates would want it under `contracts/`, which this row doesn't edit.
 - **The router record's bytes** (core-internal's hand-off to `T-022-03`). The store keeps them through `keep` like
@@ -306,7 +314,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   the operator's role and only for its party, refusing a statement an entry rests on, by a stated entry's receipt and
   by its commitment alone, a read resting on nothing,
   binding carrying out a recorded erasure, refusing a mark with no erasure and reporting bytes gone with none, a
-  failed write keeping its place, and a receipt checked against the log it names.
+  failed write keeping its place, and a receipt checked against the log it names. After fold `01e`: a read of an
+  order's state covering no entry, and a refused recorded erasure being reported, whoever recorded it.
 - Some checks are implied by others, so switching one off alone fails no test: a receipt's key being the log's (the
   signature is verified under the log's key), its shape (only the issuer signs, and it signs that shape), its entry
   digest and its inclusion proof (each implies the other for a receipt the log signed; off together, they fail), and

@@ -1007,6 +1007,14 @@ fn no_erasure_reaches_an_advertisement() {
     drop(run);
 
     let mut run = Run::open(&dir).unwrap();
+    // The erasures recorded but refused are reported when the store is bound again.
+    let refused: Vec<_> = run.store.refused_erasures().to_vec();
+    assert_eq!(refused.len(), 2);
+    assert!(
+        refused
+            .iter()
+            .all(|(_, why)| *why == Violation(ADVERTISEMENT_NEVER_ERASED))
+    );
     assert!(matches!(
         run.fetch("us-bank", &by_bytes).unwrap(),
         Fetched::Kept(_)
@@ -1205,6 +1213,16 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
 
     run.erase(&commitment).unwrap();
     assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
+    drop(run);
+    // Bound again, the two erasures recorded by others are reported as refused, and nothing else.
+    let run = Run::open(&dir).unwrap();
+    assert_eq!(
+        run.store.refused_erasures(),
+        [
+            (by_provider, Violation(ERASURE_BY_THE_OPERATOR)),
+            (by_another, Violation(ERASURE_BY_THE_OPERATOR)),
+        ]
+    );
 }
 
 /// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
@@ -1269,12 +1287,16 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
     run.erase(&free).unwrap();
     assert_eq!(run.fetch("bank-co", &free).unwrap(), Fetched::Erased);
     drop(run);
-    // Reopened, the refused erasure stays not carried out.
+    // Reopened, the refused erasure stays not carried out, and is reported.
     let mut run = Run::open(&dir).unwrap();
     assert!(matches!(
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
     ));
+    assert_eq!(
+        run.store.refused_erasures(),
+        [(recorded, Violation(EVIDENCE_RESTED_ON))]
+    );
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------
@@ -1370,6 +1392,17 @@ fn a_receipt_is_issued_only_for_an_entry_the_allowed_read_covers() {
         ),
         not_covered
     );
+    // An order's state alone is no entry of the log: not the order's own record, nor a statement about it.
+    for index in 0..3 {
+        assert_eq!(
+            run.receipt(
+                "us-bank",
+                json!({"kind": "order_state", "order": "ord-17"}),
+                index
+            ),
+            not_covered
+        );
+    }
     issued(run.receipt("us-bank", json!({"kind": "trail"}), 1));
     assert_eq!(
         run.receipt(
