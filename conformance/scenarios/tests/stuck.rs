@@ -27,7 +27,7 @@ use rutent_core_orch::stuck::{
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
-    Moves, PermitsEveryStep, Raises, destination, follow, on_parts, origin, staff, watch,
+    Moves, PermitsEveryStep, Raises, destination, follow, on_parts, origin, recorded, staff, watch,
 };
 use segments_support::*;
 
@@ -1585,8 +1585,10 @@ fn failed_or_unknown_move_spends_its_decision() {
 }
 
 /// The order's destination and origin come from Core's records, never from the decision's caller: with none
-/// followed, nothing is decided; an authorisation that isn't the order's as Core follows it is refused. The origin
-/// is the reserve and outer node the order's withdrawal took the value from.
+/// followed, nothing is decided. The destination, its account included, is the log's own record of the order's
+/// permitted authorisation, never one policy refused; an order the log holds no such record of has none. The origin is the reserve and outer
+/// node the order's withdrawal took the value from, and an account the withdrawal Core signed named: a friend's
+/// account at the destination or at the origin is refused.
 // verifies: REQ-AUZ-4, REQ-AUZ-3
 #[test]
 fn resolution_ends_come_from_cores_records() {
@@ -1607,20 +1609,51 @@ fn resolution_ends_come_from_cores_records() {
         .map(|_| ()),
         Err(ResolveError::NoEnds)
     );
-    let mut elsewhere = authorisation_of(&core.named, None);
-    elsewhere.destination.reserve = id("sim-reserve-b");
     assert_eq!(
-        stuck.follow(&core.segments, &elsewhere, &id("acct-1")),
-        Err(StuckError::NotItsAuthorisation)
+        stuck.follow(
+            &core.segments,
+            &recorded(&core),
+            &id("ord-without-a-record")
+        ),
+        Err(StuckError::Unknown)
     );
-    let mut other_origin = authorisation_of(&core.named, None);
-    other_origin.origin_reserve = id("sim-reserve-b");
+    let unauthorised: Vec<_> = recorded(&core)
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
+            if matches!(v.what, What::Authorise { .. }))
+        })
+        .collect();
     assert_eq!(
-        stuck.follow(&core.segments, &other_origin, &id("acct-1")),
-        Err(StuckError::NotItsAuthorisation)
+        stuck.follow(&core.segments, &unauthorised, &id(ORDER)),
+        Err(StuckError::NotItsAuthorisation),
+        "no authorisation recorded, no ends"
     );
     assert_eq!(policy.asked, 0);
-    follow(&core, &mut stuck).expect("its ends are Core's");
+    // A later authorisation policy refused, naming a friend's account, is no record of the order's destination.
+    let mut with_refused = recorded(&core);
+    let refused = with_refused
+        .iter()
+        .find_map(|e| match e {
+            rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(v.what, What::Authorise { .. }) =>
+            {
+                let mut v = v.clone();
+                if let What::Authorise { authorisation, .. } = &mut v.what {
+                    authorisation.destination.account = id("acct-of-a-friend");
+                }
+                v.outcome = Outcome::Refused {
+                    class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+                };
+                Some(rutent_contracts::core_internal::Entry::Verified(v))
+            }
+            _ => None,
+        })
+        .unwrap();
+    with_refused.push(refused);
+    stuck
+        .follow(&core.segments, &with_refused, &id(ORDER))
+        .expect("its ends are the log's permitted authorisation");
     for resolution in [back_to_origin(AMOUNT), to_destination(&core, AMOUNT)] {
         assert!(
             decide(
@@ -1632,6 +1665,35 @@ fn resolution_ends_come_from_cores_records() {
                 &evidence()
             )
             .is_ok()
+        );
+    }
+    for to in [
+        Destination {
+            account: id("acct-of-a-friend"),
+            ..destination(&core)
+        },
+        Destination {
+            account: id("acct-of-a-friend"),
+            ..origin()
+        },
+    ] {
+        let to_a_friend = Resolution::Deliver {
+            by: id(RESERVE),
+            to,
+            asset: cop_unit(),
+            amount: PositiveAmount::new(AMOUNT).unwrap(),
+        };
+        assert_eq!(
+            decide(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                &alice,
+                &to_a_friend,
+                &evidence()
+            )
+            .map(|_| ()),
+            Err(ResolveError::ElsewhereThanItsEnds)
         );
     }
 }
@@ -1856,14 +1918,21 @@ fn ends_followed_at_take_up_survive_a_recalculation() {
         matches!(outcome, Recalculation::NoRoute { .. }),
         "{outcome:?}"
     );
-    let recorded = record_no_route(&mut core, &mut stuck, &outcome).expect("recorded");
-    assert_eq!(recorded.state, OrderState::Stuck);
+    let no_route = record_no_route(&mut core, &mut stuck, &outcome).expect("recorded");
+    assert_eq!(no_route.state, OrderState::Stuck);
     follow(&core, &mut stuck).expect("following again keeps what was followed");
-    let mut other = authorisation_of(&core.named, None);
-    other.destination.account = id("acct-of-a-friend");
+    let mut other = recorded(&core);
+    for entry in &mut other {
+        if let rutent_contracts::core_internal::Entry::Verified(v) = entry
+            && let What::Authorise { authorisation, .. } = &mut v.what
+        {
+            authorisation.destination.account = id("acct-of-a-friend");
+        }
+    }
     assert_eq!(
-        stuck.follow(&core.segments, &other, &id("acct-1")),
-        Err(StuckError::NotItsAuthorisation)
+        stuck.follow(&core.segments, &other, &id(ORDER)),
+        Err(StuckError::NotItsAuthorisation),
+        "the ends first followed stand"
     );
     let mut policy = PermitsEveryStep::new(&core.log);
     for resolution in [back_to_origin(AMOUNT), to_destination(&core, AMOUNT)] {
@@ -1998,4 +2067,332 @@ fn real_logs_receipt_passes_the_receipt_rule() {
     let receipt = log.append(&first).expect("taken");
     assert!(rutent_core_orch::stuck::is_receipt_of(&receipt, &first));
     assert!(!rutent_core_orch::stuck::is_receipt_of(&receipt, &second));
+}
+
+/// The re-review's sequence: the deposit is carried out and its provider answers it settled, but the log can't take
+/// its result; the part is declared stuck. A resolution to the destination is decided, and its move stalls before
+/// the log takes its effect. Run again, the part records the deposit's result and completes. The stalled move,
+/// taken on again, finds the part no longer stuck: it is dropped, its decision spent, and nothing is paid twice.
+// verifies: REQ-AUZ-4, INV-4, INV-8
+#[test]
+fn stalled_move_pays_nothing_once_its_part_completed() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut stuck = Stuck::new();
+    follow(&core, &mut stuck).expect("followed at take-up");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedResultOf(DEPOSIT), Fault::Unavailable));
+    }
+    assert!(try_run(&mut core, &mut world).is_err());
+    let since = carried_since(&core, DEPOSIT);
+    let mut raises = Raises::default();
+    core.clock.set(since + 2 * DECLARED + 1);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Stuck(_))
+    ));
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let to = to_destination(&core, AMOUNT);
+    let decision = decide(&mut core, &mut stuck, &mut policy, &alice, &to, &evidence()).unwrap();
+    for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Effect, Fault::Unavailable));
+    }
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::Append(_))
+    ));
+    let ran = try_run(&mut core, &mut world).expect("the deposit's result recorded");
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert_eq!(
+        core.segments.order(&id(ORDER)).unwrap().parts[0].state,
+        OrderState::Complete
+    );
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::NotStuck),
+        "the stalled move finds the part complete"
+    );
+    assert!(moves.0.is_empty(), "nothing is paid twice");
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Err(ResolveError::NoDecision),
+        "its decision is spent"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The re-review's sequence: the withdrawal settles at its provider but the log can't take its result, and the part
+/// is declared stuck holding 1 000 000 in flight. Run again, the withdrawal's settlement is recorded and its hold
+/// released; the part is still stuck, its value now resting at the ledger, held there, on the operator's view in
+/// full, and decidable in full.
+// verifies: REQ-ORD-8, REQ-OPS-2, REQ-AUZ-4
+#[test]
+fn settlement_recorded_late_keeps_a_stuck_parts_value_held() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut stuck = Stuck::new();
+    follow(&core, &mut stuck).expect("followed at take-up");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedResultOf(WITHDRAWAL), Fault::Unavailable));
+    }
+    assert!(try_run(&mut core, &mut world).is_err());
+    let since = carried_since(&core, WITHDRAWAL);
+    let mut raises = Raises::default();
+    core.clock.set(since + 2 * DECLARED + 1);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Stuck(_))
+    ));
+    let ran = try_run(&mut core, &mut world).expect("the withdrawal's result recorded");
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert!(core.segments.stuck(&id(ORDER), &id(PART)));
+    assert_eq!(
+        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        Amount::new(AMOUNT).unwrap(),
+        "the value resting at the ledger is held"
+    );
+    assert_eq!(
+        stuck.stuck_values(&core.exposures, &*core.clock)[0].amount,
+        Amount::new(AMOUNT).unwrap()
+    );
+    let mut policy = PermitsEveryStep::new(&core.log);
+    assert!(
+        decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &staff("desk-a", "alice"),
+            &back_to_origin(AMOUNT),
+            &evidence()
+        )
+        .is_ok_and(|d| matches!(d.outcome, Answer::Permit {}))
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// Records the known outcome of `decision`'s move, which ended unknown, as `mover` reports it.
+fn known_outcome(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    order: &str,
+    decision: &rutent_contracts::core_internal::Decision,
+    mover: &rutent_contracts::core_internal::Actor,
+    outcome: Resolved,
+) -> Result<Moved, ResolveError> {
+    let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
+    on_parts(core, |parts| {
+        stuck.known_outcome(
+            parts,
+            Moving {
+                order: &order,
+                carries_out: &carries_out,
+                mover,
+                core: &actor,
+            },
+            outcome,
+        )
+    })
+}
+
+/// A move whose outcome was unknown gets its known outcome later, from its own mover for its own order, recorded
+/// once as its result. Failed, the part is free for a new decision; done, what moved counts and the part resolves
+/// once all of it moved. Nothing is carried out again either way.
+// verifies: REQ-AUZ-4, REQ-ORD-1, INV-8
+#[test]
+fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown, Resolved::Unknown].into());
+    let (alice, bob, carol) = (
+        staff("desk-a", "alice"),
+        staff("desk-b", "bob"),
+        staff("desk-c", "carol"),
+    );
+
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    assert!(matches!(
+        moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Unknown,
+            result: None,
+            ..
+        })
+    ));
+    assert_eq!(
+        known_outcome(&mut core, &mut stuck, ORDER, &first, &carol, Resolved::Done),
+        Err(ResolveError::NotTheMover)
+    );
+    assert_eq!(
+        known_outcome(&mut core, &mut stuck, "ord-9", &first, &bob, Resolved::Done),
+        Err(ResolveError::NoDecision)
+    );
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Unknown
+        ),
+        Err(ResolveError::OutcomeUnknown)
+    );
+    assert!(matches!(
+        known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Failed),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            result: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Done),
+        Err(ResolveError::NoDecision),
+        "recorded once"
+    );
+
+    let second = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .expect("failed, the part is free for a new decision");
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &second,
+            &bob
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Unknown,
+            ..
+        })
+    ));
+    assert!(matches!(
+        known_outcome(&mut core, &mut stuck, ORDER, &second, &bob, Resolved::Done),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            result: Some(_),
+            ..
+        })
+    ));
+    assert!(
+        !stuck.is_stuck(&id(ORDER), &id(PART)),
+        "resolved once all of it moved"
+    );
+    assert!(stuck.stuck_values(&core.exposures, &*core.clock).is_empty());
+    assert_eq!(moves.0.len(), 2, "nothing carried out again");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The grading that refuses every settled segment's evidence, as `CMP-EVIDENCE` refusing it would.
+struct RefusesEvidence;
+
+impl rutent_core_orch::segments::Grading for RefusesEvidence {
+    fn grade(
+        &mut self,
+        _log: &mut dyn rutent_contracts::core_internal::calls::Log,
+        _settled: &rutent_core_orch::segments::ToGrade<'_>,
+    ) -> Result<Id, rutent_contracts::core_internal::calls::AppendFailure> {
+        Err(
+            rutent_contracts::core_internal::calls::AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("the evidence checker refuses it"),
+            ),
+        )
+    }
+}
+
+/// The withdrawal's provider answers it settled, and the evidence is refused: the segment waits for evidence that
+/// counts, carried out with no final outcome and its value held. Its stuck clock runs: past twice its advertised
+/// time the part is declared stuck, at what it holds. Until `T-020-09`'s closing reaches this base, a refusal is the
+/// grading seam's own; its `AwaitsEvidence(Refused)` is to be held to the same at the merge.
+// verifies: REQ-ORD-29, REQ-ORD-28
+#[test]
+fn segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let session = world.context().session;
+    assert!(
+        core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut RefusesEvidence,
+            &session,
+        )
+        .is_err(),
+        "the evidence is refused"
+    );
+    let since = carried_since(&core, WITHDRAWAL);
+    let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
+    core.clock.set(since + 2 * DECLARED);
+    assert_eq!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Running)
+    );
+    core.clock.set(since + 2 * DECLARED + 1);
+    let Ok(Watch::Stuck(called)) = watch(&mut core, &mut stuck, &mut raises) else {
+        panic!("stuck past its limit");
+    };
+    assert_eq!(called.segment.as_str(), WITHDRAWAL);
+    assert_eq!(
+        stuck.stuck_values(&core.exposures, &*core.clock)[0].amount,
+        Amount::new(AMOUNT).unwrap()
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
 }

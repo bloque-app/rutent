@@ -61,12 +61,14 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, Delivery, Operator, Reads, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, Answer, Authorisation, Decided, Decision, Destination, Difference, Effect,
-    Outcome, Permit, Raise, ReadCheck, ReadOutcome, Receipt, Resolution, StuckBasis, StuckDecide,
-    StuckMove, What,
+    Action, Actor, Answer, Decided, Decision, Destination, Difference, Effect, Entry, Outcome,
+    Permit, Raise, ReadCheck, ReadOutcome, Receipt, Resolution, StuckBasis, StuckDecide, StuckMove,
+    What,
 };
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{Denomination, NodeRef, SafeInteger};
+use rutent_contracts::provider_role::{
+    Denomination, NodeRef, Operation as ProviderOperation, OuterNode, SafeInteger,
+};
 use rutent_contracts::router_api::{
     Amount, DecisionRecord, Endpoint, Id, OperationKind, Timestamp,
 };
@@ -397,6 +399,43 @@ struct Kept {
     decision: Id,
 }
 
+/// An order's two ends, from Core's records: the destination its authorisation names, and the origin its
+/// withdrawal took the value from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ends {
+    destination: Destination,
+    origin_reserve: Id,
+    origin_node: OuterNode,
+    /// The order's withdrawal, whose signed operation names the origin's accounts.
+    withdrawal: Id,
+}
+
+impl Ends {
+    /// Whether a resolution may deliver to `to`: the destination exactly, or the origin's reserve and node at an
+    /// account the withdrawal Core signed named. A withdrawal Core never signed names none.
+    fn takes(&self, segments: &Segments, order: &Id, to: &Destination) -> bool {
+        if *to == self.destination {
+            return true;
+        }
+        to.reserve == self.origin_reserve
+            && to.node == self.origin_node
+            && segments
+                .sent(order, &self.withdrawal)
+                .and_then(withdrawal_inputs)
+                .is_some_and(|inputs| inputs.values().any(|a| a == to.account.as_str()))
+    }
+}
+
+/// The inputs a withdrawal Core signed carries; any other operation names no origin account.
+fn withdrawal_inputs(
+    operation: &ProviderOperation,
+) -> Option<&std::collections::BTreeMap<String, String>> {
+    match operation {
+        ProviderOperation::Withdrawal(o) => Some(&o.inputs),
+        _ => None,
+    }
+}
+
 /// A move from its permit until its result is recorded.
 #[derive(Debug, Clone)]
 struct InMotion {
@@ -433,7 +472,7 @@ pub struct Stuck {
     kept: BTreeMap<String, Kept>,
     moving: BTreeMap<String, InMotion>,
     /// Each order's destination and origin, from Core's records ([`Stuck::follow`]).
-    ends: BTreeMap<String, (Destination, Destination)>,
+    ends: BTreeMap<String, Ends>,
 }
 
 impl Stuck {
@@ -740,29 +779,40 @@ impl Stuck {
         rank(values.into_values().collect())
     }
 
-    /// Follows `authorisation`'s order for its resolution: the two places a resolution may deliver its value to,
-    /// read from Core's own records, never from the decision's caller. The destination is the authorisation's,
-    /// held to the destination of every part of the order Core follows; the origin is the reserve and outer node
-    /// the order's first withdrawal took the value from, held to the authorisation's origin reserve, and the
-    /// account there the value came from, `origin_account`, the order's own record of its payer. The assembly
-    /// calls it with the order's authorisation as intake recorded it, when it takes the order up, before any segment
-    /// runs; once policy registers authorisations (`T-021-04`), it is read from there. The ends first followed
+    /// Follows `order` for its resolution: the two places a resolution may deliver its value to, read from Core's
+    /// own records, never from a caller (`THR-77`). The destination, its account included, is the order's latest
+    /// permitted authorisation in `recorded`, the log's entries as the log holds them (the `authorise` entries
+    /// `T-021-04`'s engine reads), held to the destination of every part of the order Core follows. The origin is the
+    /// reserve and outer node the order's withdrawal took the value from, held to that authorisation's origin
+    /// reserve; its account is checked at each decision against the accounts the withdrawal Core signed named
+    /// (`Segments::sent`), since the log holds the operation only by its commitment. The ends first followed
     /// stand: following again with others is refused ([`StuckError::NotItsAuthorisation`]).
     pub fn follow(
         &mut self,
         segments: &Segments,
-        authorisation: &Authorisation,
-        origin_account: &Id,
+        recorded: &[Entry],
+        order: &Id,
     ) -> Result<(), StuckError> {
-        let order = segments
-            .order(&authorisation.order)
-            .ok_or(StuckError::Unknown)?;
+        let followed = segments.order(order).ok_or(StuckError::Unknown)?;
+        let authorisation = recorded
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Verified(v) if matches!(v.outcome, Outcome::Permitted {}) => match &v.what {
+                    What::Authorise { authorisation, .. } if authorisation.order == *order => {
+                        Some(authorisation)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .ok_or(StuckError::NotItsAuthorisation)?;
         let destination = &authorisation.destination;
-        let to_destination = order.parts.iter().all(|p| {
+        let to_destination = followed.parts.iter().all(|p| {
             p.destination.provider.as_str() == destination.reserve.as_str()
                 && p.destination.to.node == NodeRef::Outer(destination.node.clone())
         });
-        let first = order
+        let first = followed
             .parts
             .first()
             .and_then(|p| p.segments.first())
@@ -774,21 +824,18 @@ impl Stuck {
         if !to_destination || first.provider.as_str() != authorisation.origin_reserve.as_str() {
             return Err(StuckError::NotItsAuthorisation);
         }
-        let ends = (
-            destination.clone(),
-            Destination {
-                reserve: authorisation.origin_reserve.clone(),
-                node: origin_node,
-                account: origin_account.clone(),
-            },
-        );
+        let ends = Ends {
+            destination: destination.clone(),
+            origin_reserve: authorisation.origin_reserve.clone(),
+            origin_node,
+            withdrawal: Id::new(first.segment_id.as_str()).ok_or(StuckError::Id("a segment id"))?,
+        };
         // The ends first followed stand: following again with the same is nothing, and with others is refused.
-        match self.ends.get(authorisation.order.as_str()) {
+        match self.ends.get(order.as_str()) {
             Some(held) if *held == ends => Ok(()),
             Some(_) => Err(StuckError::NotItsAuthorisation),
             None => {
-                self.ends
-                    .insert(authorisation.order.as_str().to_owned(), ends);
+                self.ends.insert(order.as_str().to_owned(), ends);
                 Ok(())
             }
         }
@@ -806,7 +853,7 @@ impl Stuck {
         let declared = self.unresolved(parts.segments, deciding.order, deciding.part)?;
         // While a move of the part is in progress, or its outcome unknown, nothing more is decided for it.
         self.idle(declared)?;
-        let (destination, origin) = self
+        let ends = self
             .ends
             .get(deciding.order.as_str())
             .ok_or(ResolveError::NoEnds)?;
@@ -822,8 +869,7 @@ impl Stuck {
             return Err(ResolveError::NoEvidence);
         }
         if let Resolution::Deliver { to, .. } = deciding.resolution
-            && to != destination
-            && to != origin
+            && !ends.takes(parts.segments, deciding.order, to)
         {
             return Err(ResolveError::ElsewhereThanItsEnds);
         }
@@ -945,6 +991,38 @@ impl Stuck {
         self.advance(parts, resolutions, moving.core, &at)
     }
 
+    /// Records the outcome, now known, of a move whose outcome was unknown: done or failed, as its own mover reports
+    /// it for its own order, once, as the effect's result. Done counts what moved, and the part resolves once all of
+    /// it moved; failed frees the part for a new decision. Nothing is carried out again. Who learns the outcome, from
+    /// the provider's later word, is the production [`Resolutions`]'s.
+    pub fn known_outcome(
+        &mut self,
+        parts: &mut Parts<'_>,
+        moving: Moving<'_>,
+        outcome: Resolved,
+    ) -> Result<Moved, ResolveError> {
+        let at = moving.carries_out.request.as_str().to_owned();
+        let motion = self
+            .moving
+            .get_mut(&at)
+            .filter(|m| m.order == *moving.order && m.resolved == Some(Resolved::Unknown))
+            .ok_or(ResolveError::NoDecision)?;
+        if motion.mover != *moving.mover {
+            return Err(ResolveError::NotTheMover);
+        }
+        if outcome == Resolved::Unknown {
+            return Err(ResolveError::OutcomeUnknown);
+        }
+        motion.resolved = Some(outcome);
+        if outcome == Resolved::Done
+            && let Some((asset, amount)) = moved_by(&motion.action)
+            && let Some(declared) = self.declared.get_mut(&key(&motion.order, &motion.part))
+        {
+            add_moved(&mut declared.moved, &asset, &amount);
+        }
+        self.advance(parts, &mut Unbuilt, moving.core, &at)
+    }
+
     /// Takes a move on from where it stopped: its effect appended, acted on once, its result recorded, and the
     /// part's value released once all of it moved.
     fn advance(
@@ -976,10 +1054,29 @@ impl Stuck {
         let resolved = match motion.resolved {
             Some(resolved) => resolved,
             None => {
-                // The part is read again before anything moves: a part resolved since is moved no more.
-                if self.declared.get(&part).is_none_or(|d| d.resolved) {
-                    self.moving.remove(at);
-                    return Err(ResolveError::Resolved);
+                // The part is read again before anything moves: one that left `stuck` while the move stalled
+                // (resolved, or completed by a result recorded since), or holds less than the move names now, is
+                // moved no more. The move is dropped and its decision spent (`INV-4`).
+                let (order, part_id) = (motion.order.clone(), motion.part.clone());
+                let resolution = match &motion.action {
+                    Action::ResolveStuck { resolution, .. } => resolution.clone(),
+                    _ => return Err(ResolveError::NoDecision),
+                };
+                let still = self
+                    .unresolved(parts.segments, &order, &part_id)
+                    .and_then(|declared| within(parts.exposures, &order, declared, &resolution));
+                if let Err(why) = still {
+                    if let Some(decided) = self
+                        .moving
+                        .remove(at)
+                        .and_then(|m| carried_out_of(&m.action))
+                    {
+                        self.kept.remove(decided.request.as_str());
+                    }
+                    if let Some(declared) = self.declared.get_mut(&part) {
+                        declared.in_motion = None;
+                    }
+                    return Err(why);
                 }
                 // One register of effects acted on, the segments' and the resolutions' (`INV-8`).
                 if !parts.segments.act_on(&receipt) {

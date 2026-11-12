@@ -43,7 +43,8 @@
 //! **A part stuck** (`T-020-11`'s seams, additive): [`Segments::observe`] takes a part's `no_route` and
 //! `stuck_declared` too, so a stuck or waiting part reads so; [`Segments::run_part`] refuses a stuck part whole
 //! ([`SegmentsError::Stuck`]), so nothing of it is handed over or carried out again while its resolution may move
-//! its value, though what a segment carried out already gave back is still recorded; [`Segments::act_on`] holds a
+//! its value, though what a segment carried out already gave back is still recorded, and a value it settled at an
+//! inner node while the part is stuck is held there at rest; [`Segments::act_on`] holds a
 //! resolution's effect to the one register of effects acted on; [`Segments::follow_recorded`] rebuilds an order's
 //! state from the log; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what
 //! the stuck clock runs on.
@@ -642,6 +643,14 @@ impl Segments {
         })
     }
 
+    /// The operation Core signed and handed over for `segment` of `order`, as it was appended to the log: what it
+    /// named, the user's accounts among its inputs (`T-020-11`, a resolution's origin).
+    pub fn sent(&self, order: &Id, segment: &Id) -> Option<&ProviderOperation> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|f| &f.statement.statement)
+    }
+
     /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
     /// its provider, with no result that counts, an outcome unknown, or the person to act (`T-020-11`, the stuck
     /// clock).
@@ -787,7 +796,30 @@ impl Segments {
                 let operation = part.operations.get(place).ok_or(SegmentsError::Plan(
                     "the chosen route has no operation there",
                 ))?;
-                taken.push(self.advance(parts, live, &at, operation, false)?);
+                let done = self.advance(parts, live, &at, operation, false)?;
+                // A segment that settles here released its hold, its value arrived at the node it reached. While
+                // the part is still stuck there, that value rests at the node and is held there, so the ceilings
+                // and the part's resolution still count it (`REQ-ORD-8`, `T-020-11`).
+                if let SegmentOutcome::Settled { amount_out, .. } = &done.outcome
+                    && self.stuck(live.order, live.part)
+                    && matches!(
+                        operation.to.node,
+                        rutent_contracts::provider_role::NodeRef::Inner(_)
+                    )
+                    && !amount_out.is_zero()
+                {
+                    match parts.exposures.hold_resting(
+                        live.order,
+                        segment,
+                        &operation.provider,
+                        &operation.to.asset,
+                        amount_out,
+                    ) {
+                        Ok(()) | Err(HoldError::AlreadyHeld) => {}
+                        Err(other) => return Err(SegmentsError::Hold(other)),
+                    }
+                }
+                taken.push(done);
             }
             if taken.is_empty() {
                 return Err(SegmentsError::Stuck(live.part.clone()));

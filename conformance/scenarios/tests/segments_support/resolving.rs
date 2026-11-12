@@ -195,11 +195,17 @@ pub fn watch(
     })
 }
 
-/// Follows the kit's current order for its resolution, from its authorisation and its payer's account (`acct-1`).
+/// The kit's log, its entries as the log holds them.
+pub fn recorded(core: &Core) -> Vec<rutent_contracts::core_internal::Entry> {
+    core.log
+        .borrow()
+        .entries
+        .iter()
+        .map(|(e, _)| e.clone())
+        .collect()
+}
+
+/// Follows the kit's current order for its resolution, from the log's own record of its authorisation.
 pub fn follow(core: &Core, stuck: &mut Stuck) -> Result<(), rutent_core_orch::stuck::StuckError> {
-    stuck.follow(
-        &core.segments,
-        &authorisation_of(&core.named, None),
-        &id("acct-1"),
-    )
+    stuck.follow(&core.segments, &recorded(core), &id(&core.named.order))
 }

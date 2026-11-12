@@ -166,6 +166,8 @@ pub enum On {
     Record,
     /// A provider's result, as its stated entry.
     StatedResult,
+    /// The result of the segment named, as its stated entry (`T-020-11`).
+    StatedResultOf(&'static str),
     /// The input that binds a segment's provider.
     Bound,
     /// A result, once the log holds one already.
@@ -197,6 +199,13 @@ impl On {
             ),
             (On::StatedResult, Entry::Stated(s)) => {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+            }
+            (On::StatedResultOf(segment), Entry::Stated(s)) => {
+                s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about
+                        .as_ref()
+                        .and_then(|a| a.segment.as_ref())
+                        .is_some_and(|g| g.as_str() == segment)
             }
             (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
             (On::Recalculated, Entry::Verified(v)) => matches!(&v.what,
