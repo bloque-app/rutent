@@ -1009,6 +1009,11 @@ fn seed_arrival(
         &order,
         &transaction,
     );
+    // The deposit's notice is this report: it met the order at once.
+    let notice = match &report {
+        Entry::Stated(stated) => stated.commitment.clone(),
+        Entry::Verified(_) => unreachable!("a stated report"),
+    };
     let report = log.take(&report, Through::General).unwrap();
     let chosen = record.chosen().unwrap();
     let first = chosen.parts.first().operations.first();
@@ -1025,6 +1030,7 @@ fn seed_arrival(
                 order: Some(order),
                 matched: rutent_contracts::core_internal::ArrivalMatch::Matches,
                 report,
+                notice: Some(notice),
             },
             Outcome::Observed {},
         ),

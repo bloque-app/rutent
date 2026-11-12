@@ -2185,6 +2185,10 @@
               "algorithm": "sha-256",
               "value": "1010101010101010101010101010101010101010101010101010101010101010"
             }
+          },
+          "notice": {
+            "algorithm": "sha-256",
+            "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
           }
         },
         "when": {

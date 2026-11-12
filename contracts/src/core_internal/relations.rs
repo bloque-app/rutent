@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 67] = [
+pub static RELATIONS: [Relation; 69] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1660,6 +1660,63 @@ pub static RELATIONS: [Relation; 67] = [
         },
     },
     Relation {
+        name: "arrival-names-its-notice",
+        spec: &["REQ-ORD-23", "REQ-ORD-14"],
+        quantifier: Quantifier::Exists,
+        refusal: "an arrival's notice is a stated entry of this log",
+        fields: &[("maker", "an arrival's notice is its reserve's statement")],
+        cites: |e, _| match &e.what {
+            What::Arrival {
+                notice: Some(_), ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, stated(t)) {
+            (
+                What::Arrival {
+                    notice: Some(notice),
+                    reserve,
+                    ..
+                },
+                Some(s),
+            ) => judge(&s.commitment == notice, &[maker_provider(s) == reserve]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "one-order-per-deposit",
+        spec: &["REQ-ORD-23", "REQ-ORD-14", "INV-8"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "one deposit opens one order: no other arrival of its notice names an order",
+        fields: &[],
+        // Keyed by the deposit's notice: a second order on it, or a second filing with other figures, is refused;
+        // the same arrival sent again is a retry.
+        cites: |e, _| match &e.what {
+            What::Arrival {
+                order: Some(_),
+                notice: Some(_),
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::Arrival {
+                    notice: Some(notice),
+                    ..
+                },
+                Some(
+                    other @ What::Arrival {
+                        order: Some(_),
+                        notice: Some(n),
+                        ..
+                    },
+                ),
+            ) => judge(n == notice && other != &e.what, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
         name: "refiling-files-an-arrival-anew",
         spec: &["REQ-ORD-23"],
         quantifier: Quantifier::Exists,
@@ -1671,7 +1728,7 @@ pub static RELATIONS: [Relation; 67] = [
             ),
             (
                 "filer",
-                "an arrival is filed anew by the operator or by the reserve it arrived at",
+                "an arrival is filed anew by the deployment's operator or by the reserve it arrived at",
             ),
         ],
         cites: |e, _| match &e.what {
@@ -1689,7 +1746,9 @@ pub static RELATIONS: [Relation; 67] = [
                     true,
                     &[
                         o.as_ref() == Some(order),
-                        e.who.role == Role::Operator
+                        // The deployment's operator, by the party the log knows it as, not any actor stating the
+                        // operator's role; or the arrival's own reserve acting for itself.
+                        (e.who.role == Role::Operator && e.who.party == e.operator)
                             || (e.who.role == Role::Provider && &e.who.party == reserve),
                     ],
                 ),

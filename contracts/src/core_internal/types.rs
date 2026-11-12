@@ -1954,6 +1954,16 @@ pub enum What {
         matched: ArrivalMatch,
         /// The receipt of the stated entry holding the reserve's report.
         report: Receipt,
+        /// The deposit it is of, by the commitment of the reserve's notice of it, the statement the deposit was
+        /// first reported in: on an arrival naming an order, required, whether it files an earlier arrival held
+        /// against no order (its notice) or the deposit met the order at once (its own report's). One deposit
+        /// opens one order (`one-order-per-deposit`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        notice: Option<Digest>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {

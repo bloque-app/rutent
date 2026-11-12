@@ -415,6 +415,13 @@ impl What {
                 rests_on,
                 "graded evidence rests on stated entries, at least one, each once",
             ),
+            What::Arrival {
+                order: Some(_),
+                notice: None,
+                ..
+            } => Err(Violation(
+                "an arrival naming an order names the notice of the deposit it is of",
+            )),
             What::Authorise { authorisation, .. } => authorisation.check(),
             What::Result { .. }
             | What::StuckMove { .. }
