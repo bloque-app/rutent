@@ -21,3 +21,9 @@ rutent-stm = { path = "../../components/stm" }
 # role suite, so the conformance crate's signing feature is on.
 rutent-conformance = { path = "..", features = ["signing"] }
 serde_json = "1.0.154"
+
+# Core's orchestration and the router run against the simulated providers in the scenario tests (`T-020-08`).
+[dev-dependencies]
+rutent-core-orch = { path = "../../components/core-orch" }
+rutent-router = { path = "../../components/router" }
+ed25519-dalek = "2.2.0"
