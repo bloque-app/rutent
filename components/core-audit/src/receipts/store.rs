@@ -70,6 +70,10 @@ pub const NO_DECIDED_ERASURE: &str = "an erasure is carried out only on the done
 pub const ERASURE_NOT_RECORDED: &str =
     "every erasure the store carried out has its erasure entry in the log";
 
+/// A carried-out erasure the log records as failed, though its bytes went: a finding, not a refusal.
+pub const ERASURE_RECORDED_AS_FAILED: &str =
+    "an erasure the store carried out is recorded done, never failed";
+
 /// A carried-out erasure whose statement an entry of the log cites: a finding, not a refusal.
 pub const ERASED_YET_CITED: &str = "no entry of the log cites a statement the store erased";
 
@@ -600,10 +604,16 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
             if !self.is_erased(commitment) {
                 continue;
             }
-            let recorded = entries.iter().any(|(_, e)| {
-                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Erasure { evidence } if evidence == commitment))
-            });
-            if !recorded {
+            let recorded = |outcome: Outcome| {
+                entries.iter().any(|(_, e)| {
+                    matches!(e, Entry::Verified(v) if v.outcome == outcome
+                        && matches!(&v.what, What::Erasure { evidence } if evidence == commitment))
+                })
+            };
+            if recorded(Outcome::Failed {}) {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASURE_RECORDED_AS_FAILED)));
+            } else if !recorded(Outcome::Done {}) {
                 self.unsettled
                     .push((at.clone(), Violation(ERASURE_NOT_RECORDED)));
             }
@@ -642,8 +652,9 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     }
 
     /// The erasures carried out that the log hadn't settled when the store was bound, by the receipt of their `done`
-    /// result, with why: one with no `erasure` entry recording it ([`ERASURE_NOT_RECORDED`]: a crash between the
-    /// store's erasure and the entry, which orchestration appends on its retry), or one whose statement an entry of
+    /// result, with why: one with no `erasure` entry recording it done ([`ERASURE_NOT_RECORDED`]: a crash between the
+    /// store's erasure and the entry, which orchestration appends on its retry), one recorded as failed though its
+    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]), or one whose statement an entry of
     /// the log cites ([`ERASED_YET_CITED`]: a citation that landed between the done result and the entry). A
     /// finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`] and
     /// [`BoundStore::refused_erasures`].

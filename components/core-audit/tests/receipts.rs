@@ -35,8 +35,8 @@ use rutent_core_audit::log::{
 use rutent_core_audit::receipts::receipt::{KEY_ACROSS_PURPOSES, NOT_A_RECEIPT, NOT_COVERED};
 use rutent_core_audit::receipts::store::{
     ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, ERASED_YET_CITED, ERASURE_NOT_RECORDED,
-    EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE, NAMED_BY_NO_ENTRY,
-    NO_DECIDED_ERASURE, NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
+    ERASURE_RECORDED_AS_FAILED, EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE,
+    NAMED_BY_NO_ENTRY, NO_DECIDED_ERASURE, NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
 };
 use rutent_core_audit::receipts::{
     BoundStore, EvidenceStore, Issued, Issuer, Keeper, LogsRead, MemoryShelf, PartyReceipt, Shelf,
@@ -1294,6 +1294,26 @@ fn a_carried_out_erasure_without_its_record_is_reported() {
             .unsettled_erasures()
             .iter()
             .any(|(at, _)| *at == cited_done)
+    );
+}
+
+/// An erasure the store carried out whose `erasure` entry then says `failed` is reported as recorded failed, not
+/// taken as settled.
+// verifies: REQ-AUD-13, REQ-AUD-9
+#[test]
+fn an_erasure_recorded_as_failed_after_its_bytes_went_is_reported() {
+    let dir = TempDir::new("recorded-failed");
+    let mut run = Run::open(&dir).unwrap();
+    let (commitment, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let done = run.decide_erasure(&commitment, "done").unwrap();
+    run.store.erase(&done).unwrap();
+    run.append(&erasure(&commitment, "failed")).unwrap();
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert_eq!(
+        run.store.unsettled_erasures(),
+        [(done, Violation(ERASURE_RECORDED_AS_FAILED))]
     );
 }
 
