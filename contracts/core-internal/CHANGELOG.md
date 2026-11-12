@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 117 invalid ones, each
-  breaking one rule, and 322 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 66 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 328 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 67 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -217,6 +217,14 @@
   deserialisation checked, is refused as one read from the wire is. Two invalid fixtures, 117; a test builds the
   world's `authorise` entry with each in Rust and sees the log refuse it. (DEC-4, DEC-20, REQ-AUZ-3, T-020-01,
   T-021-04)
+- Folded into 1.0.0 before its release: only the customer sets new terms (`T-021-04`'s review). Two engines may
+  each read one authorisation in force and permit one each, the customer's new destination and an operator's
+  restatement of the old, and "last permitted wins" brought the old destination back. The row
+  `only-the-customer-sets-new-terms` refuses a permitted `authorise` whose terms differ from those in force for a part
+  it covers unless the order's customer gave it (its requester, or one acting for it as its party); and the terms in
+  force for a part are the first authorisation's covering it, then each later one the customer gave, so anyone
+  else's restatement sets nothing (`move-rests-on-its-authorisation`'s `in_force`). 328 admission cases, 67
+  relations. (DEC-4, DEC-20, REQ-AUZ-3, REQ-AUZ-9, INV-10, T-020-01, T-021-04)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

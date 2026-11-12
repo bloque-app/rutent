@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 64] = [
+pub static RELATIONS: [Relation; 65] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -495,7 +495,7 @@ pub static RELATIONS: [Relation; 64] = [
             ),
             (
                 "in_force",
-                "a value-moving effect's authorisation is in force for its part: no later authorisation of the order covering the part replaced it",
+                "a value-moving effect's authorisation is in force for its part: its terms are those its part's latest setting authorisation set",
             ),
         ],
         cites: |e, _| match effect_action(e) {
@@ -526,13 +526,11 @@ pub static RELATIONS: [Relation; 64] = [
                     authorisation: a, ..
                 } => {
                     let part = part_of_segment(order.as_str(), segment.as_str(), h);
-                    let replaced = position(t, h).is_some_and(|at| {
-                        h[at + 1..].iter().any(|(_, later)| {
-                            matches!(&permitted(later).map(|l| &l.what), Some(What::Authorise {
-                                authorisation: r, ..
-                            }) if &r.order == order && r.authorisation != a.authorisation
-                                && part.is_some_and(|p| covers_part(r, p)))
-                        })
+                    // In force: the terms of the part's latest authorisation that set them; a restatement by
+                    // anyone but the customer sets nothing (`only-the-customer-sets-new-terms`).
+                    let replaced = part.is_some_and(|p| {
+                        in_force(order.as_str(), Some(p), h)
+                            .is_some_and(|current| terms(current) != terms(a))
                     });
                     judge(
                         &a.authorisation == authorisation,
@@ -551,6 +549,44 @@ pub static RELATIONS: [Relation; 64] = [
                 }
                 _ => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "only-the-customer-sets-new-terms",
+        spec: &["REQ-AUZ-3", "REQ-ORD-34", "INV-10"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an authorisation with terms other than those in force is the customer's: anyone else's restates them",
+        fields: &[],
+        // Two engines may each read the same terms in force and permit one authorisation each; whichever comes
+        // last, an operator's restatement can't bring the old destination back (`T-021-04`'s review). The first
+        // authorisation of a part sets its terms, whoever gives it (`REQ-AUZ-9`).
+        cites: |e, _| match (&e.what, &e.outcome) {
+            (What::Authorise { .. }, Outcome::Permitted {}) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (
+                What::Authorise {
+                    authorisation: a, ..
+                },
+                Some(What::Authorise {
+                    authorisation: t_a, ..
+                }),
+            ) = (&e.what, permitted(t).map(|v| &v.what))
+            else {
+                return Match::NotTarget;
+            };
+            if by_the_customer(a, h) {
+                return Match::NotTarget;
+            }
+            judge(
+                covered_parts(a, h).into_iter().any(|p| {
+                    in_force(a.order.as_str(), p, h).is_some_and(|current| {
+                        core::ptr::eq(current, t_a) && terms(current) != terms(a)
+                    })
+                }),
+                &[],
+            )
         },
     },
     Relation {
@@ -2782,6 +2818,80 @@ fn resolved_to(
         }
         _ => None,
     })
+}
+
+/// The terms an authorisation sets: where the value goes, in what, at least what, and from which origin reserve.
+fn terms(
+    a: &Authorisation,
+) -> (
+    &Destination,
+    &crate::provider_role::Denomination,
+    Option<&crate::router_api::PositiveAmount>,
+    &Id,
+) {
+    (
+        &a.destination,
+        &a.to_asset,
+        a.floor.as_ref(),
+        &a.origin_reserve,
+    )
+}
+
+/// Whether the order's customer gave `a`: its requester, or one acting for it as its party.
+fn by_the_customer(a: &Authorisation, history: &History) -> bool {
+    requester_of(a.order.as_str(), history).is_some_and(|r| &a.given_by.party == r)
+}
+
+/// The authorisation whose terms are in force for `part` of `order` after `history` (`None`: one naming no part,
+/// for the order as a whole): the first permitted one covering it, then each later one the customer gave. Anyone
+/// else's restates the terms in force and sets nothing.
+fn in_force<'a>(
+    order: &str,
+    part: Option<&str>,
+    history: &'a History,
+) -> Option<&'a Authorisation> {
+    let mut current: Option<&Authorisation> = None;
+    for (_, e) in history {
+        let Some(What::Authorise {
+            authorisation: a, ..
+        }) = permitted(e).map(|v| &v.what)
+        else {
+            continue;
+        };
+        let covers = match part {
+            Some(p) => covers_part(a, p),
+            None => a.parts.is_none(),
+        };
+        if a.order.as_str() == order && covers && (current.is_none() || by_the_customer(a, history))
+        {
+            current = Some(a);
+        }
+    }
+    current
+}
+
+/// The parts `a` covers, as far as `history` can name them: those it names, or else every part the order's plans
+/// list, or else the order as a whole.
+fn covered_parts<'a>(a: &'a Authorisation, history: &'a History) -> Vec<Option<&'a str>> {
+    if let Some(parts) = &a.parts {
+        return parts.iter().map(|p| Some(p.as_str())).collect();
+    }
+    let planned: Vec<Option<&str>> = history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+        .filter(|i| i.subject.order.as_str() == a.order.as_str())
+        .find_map(|i| match &i.observed {
+            Observed::RouteChosen { parts, .. } => {
+                Some(parts.iter().map(|p| Some(p.part_id.as_str())).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    if planned.is_empty() {
+        alloc::vec![None]
+    } else {
+        planned
+    }
 }
 
 /// Whether `authorisation` covers `part`: every part where it names none.
