@@ -769,6 +769,30 @@ both admitted by the log; and the same through the session ending) and
   taken spends it (`a_deposit_with_an_acceptance_recorded_is_filed_on_no_more`); an acceptance whose answer was lost
   spends it (the second test); the spend itself on ending (round 4's row, rerun on the new flag).
 
+### T-020-04, merged with `m3` at `8f1067e` and wired into the assembly
+
+- **Merge** (`eca97db`): no conflicts; `T-024-02`, `T-021-04`, `T-020-09` and `T-020-11` came in, and every test of
+  both sides is kept and green.
+- **Wired** (`conformance/scenarios/src/assembly/arrivals.rs`, and the assembly's `Core`): `Arrivals` held beside
+  intake and run on intake's desk (taken out for the call, since `with_desk` hands its closure intake alone);
+  `Core::arrive` and `Core::file`; `FiledOrders` on policy's order records, `opened` putting the record in and
+  `withdrawn` taking it out; `OpenOrders` from intake's started orders whose first segment hasn't settled, each with its
+  requester as the holder and the conformance account; `Segments::follow` fed from `Arrivals::start`, the filed
+  order's origin, session and inputs from its filing and what it delivers from its chosen candidate; and
+  `Permission::ActForUser` listed for the operator's login. `follow` was split so intake's orders and filed ones share
+  `follow_on`. A smoke test, `assembly_arrivals.rs`, runs on the real log: a notice signed by the simulated reserve's
+  key is verified and recorded as an arrival with no order, and the operator's filing on it is refused
+  `NotDeclared`, by Core's gate over the simulated reserve's real declaration. It came with the wiring.
+- **Left for `T-024-04`** (`AC-10`, `AC-11`, `AC-26`):
+  - a simulated reserve that declares it starts routes on automatic deposits: every simulated reserve (the stand-in's
+    declaration) says no, so no automatic deposit can start in the assembly yet (`T-024-01`'s kit);
+  - a simulated reserve that reports value arriving, with a notice, and answers a balance verification at an amount;
+    today a scenario builds the `Report` and signs its notice with the reserve's key, as the smoke test does;
+  - a reserve filer listed in the register (`Registers::list` of an actor whose party is the reserve's id), and the
+    real engine's answer on `ActForUser` and on the reserve's own authorisation (`AC-11`);
+  - filed orders in `OpenOrders`: only intake's orders are read as open, so an arrival after an automatic deposit's own
+    order started meets no order.
+
 ## T-020-05
 
 - **Core's clock.** `snapshot::Clock` is Core's clock, read as a `Reading` to the nanosecond; `SystemClock` reads
