@@ -356,8 +356,8 @@ impl Modules for Running<'_> {
 struct Acting(Rc<RefCell<Registers>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id) -> bool {
-        self.0.borrow().acts_for(acts, party) == Some(true)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+        self.0.borrow().acts_as(acts, party, kind) == Some(true)
     }
 }
 

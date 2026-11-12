@@ -625,3 +625,52 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | a charge's entry at Core's clock, not its own `at` | `clock moving back ...`; `bound is held ...` |
   | only a permitted charge entry counted | `bound is held ...`; `clock moving back ...`; `agent without ...`; `counter is the log's ...`; `requests fanned out ...`; `thousand agents ...` |
   | the agent scope on the engine's `authorise` (the rule out of `FIXED`) | `agent outside its party's scope is refused`; `agent stating another kind ...`; `agent without ...` |
+
+### T-021-05, the re-review
+
+- **A stale read starts no bound again** (item 1). The read of charges is held to the same two checks as `T-021-04`'s
+  (`funds::Authorised::read`): it must extend the read the counter was last rebuilt from, and hold the engine's own
+  last charge counted within its bound, as its entry holds it (`Charged::stands`). Otherwise the counter is an input
+  the decision doesn't have, `missing_input`, over a bound of 0, and the counter stays as it was read last. As with
+  `T-021-04`'s, a first read of another log, or one frozen after the engine's last charge, passes: that the read is of
+  the very log the handle appends to is the assembly's word. Besides, no rebuild counts a window below the engine's own
+  charges in it (`Charged::counted`, `own`), a floor behind the two checks.
+- **A jump of the clock freezes no window** (item 2). A charge counted more than one window ahead of Core's now
+  neither chooses the window nor counts in it, and is set apart: `Charged::ahead()` lists them after each read, the
+  flag the operator reads, since core-internal has no raise for it and this row makes no contract change. The entry
+  stays in the log, so a fresh engine over it is not frozen either, and it counts again once Core's clock reaches its
+  window. One window ahead still chooses the window, so a clock stepping back less than a window keeps the latest
+  window. Surfacing `ahead()` to the operator's channel is the assembly's (`T-024-02`'s) or `F-023`'s to wire.
+- **A time no entry can hold is refused** (item 3). Where Core's clock gives a moment RFC 3339 can't hold, the charge is
+  refused as `Err(AppendFailure::Refused)`, nothing recorded and nothing counted, never recorded at the time the charge
+  states.
+- **Intake binds the kind; reads of its status are a hand-off** (item 4). `intake::Actors::acts_for` takes the stated
+  kind, and the assembly answers it from the register policy reads (`Registers::acts_as`), so an agent's login stating
+  itself a person, or a person's stating itself an agent, is told nothing, quotes nothing and opens nothing. Routing
+  `told` and `kept_for` through `check_read`, so an agent outside its party's `check_read` scope reads none of its
+  party's orders, is not contained: intake answers an order's status from `open`, `quote` and `accept` before the log
+  holds the order's acceptance, and a customer's read of an order asks the log's record of its parties
+  (`Source::OrderParties`), so through `check_read` every customer would be refused its own new order. It needs either
+  a read of an order's status that policy decides on intake's own record, or intake answering status only once the
+  acceptance is in the log. Owner: `T-020-03`'s, raised with the coordinator. Until then, an agent its party didn't
+  scope for `check_read` learns its party's orders' status through intake, though it can't move, authorise or charge
+  outside its scope, each of which policy decides.
+- **The cost of reading the whole log** (the nit). Every charge reads every permitted `charge` entry and rebuilds the
+  counter, and the read check compares it with the last read: O(n) in the log's charge entries per charge, so O(n^2)
+  over a run (`thousand_agents_under_one_party_hit_one_limit`, two thousand charges, runs in about three seconds in
+  debug). Accepted for v0, as `T-021-04`'s read is; an index kept by the log, or a read of the entries after a given
+  receipt, is `F-022`'s or `F-030`'s to add.
+- **Rule-offs** (core-authz's lib tests, core-orch's `intake` for its edit):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a read extends the one before | `stale read of the log starts no bound again` (the truncated read) |
+  | a read holds the engine's own last charge | `stale read of the log starts no bound again` (the empty read) |
+  | no window counted below the engine's own | `rebuild counts no window below the engine's own` |
+  | the engine's own of a window gone left out | `rebuild counts no window ...`; `bound is held ...`; `clock jumping far ahead freezes no window` |
+  | a charge far ahead neither chooses the window nor counts | `clock jumping far ahead freezes no window` |
+  | a charge far ahead set apart for the operator | `clock jumping far ahead freezes no window` |
+  | a time no entry holds is refused | `charge at a time no entry can hold is refused` |
+  | intake's `told` holds the kind | `actor stating another kind is not the requester` |
+  | intake's `open` holds the kind | `actor stating another kind is not the requester` |
+  | intake's own order's record (`speaks_for`) holds the kind | `actor stating another kind is not the requester` |
