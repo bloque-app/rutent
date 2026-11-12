@@ -290,3 +290,20 @@ the twin's lint step before any scenario ran; `28b6353` fixed it.
 `fleet::networks_of`), so a final deposit there stays pending, and its order waits for its public record, until a
 scenario advances the network. No scenario routes a final deposit to either network yet; one that does needs a step
 that adds blocks (for `T-024-04`'s and `T-024-05`'s scenarios).
+
+## The toolchain is pinned (`T-020-11d`)
+
+The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.99.1 with clippy, rustfmt and the
+`riscv32imac-unknown-none-elf` and `wasm32-unknown-unknown` targets, and CI's `ci` job installs that same version
+(`.github/workflows/ci.yml`, both `dtolnay/rust-toolchain` steps); the workflows that run cargo with no toolchain step
+of their own (`licences`, `records`, `Contract guard`) take it from the file. CI used to install the floating
+`stable`, and its move to 1.100.0 turned `m3` red twice with no change of ours: cargo's new build layout moved the
+tests' executables (CI run 43287638222, fixed for both layouts by `T-020-11c`), and rustfmt 1.100 wraps long
+`.all(...)` chains that 1.99 leaves alone (run 43305310485, `contracts/src/core_internal/types.rs` and
+`contracts/src/module_interface/types.rs`). Reformatting for one version breaks `cargo fmt --check` on the others.
+
+**Moving the toolchain is a deliberate change of its own**: one commit that changes `rust-toolchain.toml` and the
+two `toolchain:` inputs in `ci.yml` together (a `DEC-20` path), reformats with the new rustfmt, and runs the full
+chain on the new version, so a toolchain release never turns a branch red by itself. The sub-workspaces under
+`components/stm/vos-program/` and `experiments/` pin their own toolchains and move separately.
+
