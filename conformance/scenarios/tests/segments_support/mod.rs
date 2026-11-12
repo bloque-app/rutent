@@ -1231,6 +1231,90 @@ fn seed_chosen(
     .unwrap();
 }
 
+/// Appends what the log holds of `named`, an order the kit's order's value is handed on to (`T-020-13`), before its
+/// route is chosen: the customer's authorisation through `policy`, the arrival its acceptance rests on, the
+/// acceptance, by `requester`, and its decision record, under `decision_record`. Its `route_chosen`, naming
+/// `handed_on_from`, is the hand-on's to record. The acceptance is the kit's automatic deposit, which needs no
+/// yes: a customer's given acceptance names the origin reserve's signed yes, which the kit doesn't make.
+pub fn seed_linked(
+    core: &mut Core,
+    named: &Named,
+    requester: &Id,
+    decision_record: &Id,
+) {
+    let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
+    let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
+    let entry = |what: What, outcome: Outcome| {
+        Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: self::core(),
+            what,
+            when: When {
+                at: at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome,
+        })
+    };
+    let authorised = core
+        .policy
+        .authorise(&authorisation_of(named, None))
+        .unwrap();
+    assert!(authorised.permit().is_some(), "the linked order is authorised");
+    let operator = core.operator.clone();
+    let chosen = route_chosen_of(&core.record, named);
+    let mut log = core.log.borrow_mut();
+    seed_arrival(
+        &mut log,
+        &mut core.store,
+        &core.record,
+        named,
+        &operator,
+        &chosen,
+        &entry,
+    );
+    log.take(
+        &entry(
+            What::Acceptance {
+                acceptance: id(&format!("acc-{}", named.order)),
+                order: order.clone(),
+                request: id(&format!("req-{}", named.order)),
+                quote: digest(&"ab".repeat(32)),
+                authorisation,
+                basis: AcceptanceBasis::AutomaticDeposit,
+                parties: Parties {
+                    requester: requester.clone(),
+                    beneficiary: requester.clone(),
+                    settlement_account_at: None,
+                    payer: requester.clone(),
+                },
+                origin_reserve: id(RESERVE),
+                yeses: Vec::new(),
+                session: None,
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+    log.take(
+        &entry(
+            What::DecisionRecord {
+                decision_record: decision_record.clone(),
+                order,
+                round: RoutingRound::Choice,
+                record: digest(&"ce".repeat(32)),
+                previous: None,
+                shortlisted: None,
+                verifiers: Vec::new(),
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+}
+
 // Core around the platform ------------------------------------------------------------------------------------------
 
 /// Uses of the proxy, as a world with one would report them: what a test hands it, drained once.
@@ -2026,5 +2110,6 @@ pub fn release_change(
 
 // Stuck orders and recalculation, for `T-020-11` --------------------------------------------------------------------
 
+pub mod handing;
 pub mod rerouting;
 pub mod resolving;
