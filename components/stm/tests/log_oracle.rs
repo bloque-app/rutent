@@ -3,7 +3,8 @@
 //! refuses would put the log and the order's state apart.
 //!
 //! This file replays core-internal's admission fixtures: every case's history, and the appended entry of every case
-//! the log admits, through [`Stm`]. The property half, over generated runs, is in `log_oracle_property.rs`.
+//! the log admits, through [`Stm`]. The property half, over generated runs, is the scenarios' `tests/log_oracle_property.rs`, since an outer library
+//! never names core-internal (`DEC-2`).
 
 use std::collections::BTreeMap;
 use std::fs;

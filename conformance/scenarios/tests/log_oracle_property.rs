@@ -5,7 +5,13 @@
 //!
 //! Each run's inputs go to the log's history only where the machine took them, as Core records them, with noise
 //! between them: another order's inputs and entries that aren't inputs.
+//!
+//! It lives here, not in `CMP-STM`'s tests, since an outer library never names core-internal (`DEC-2`, the boundary
+//! check); it drives `CMP-STM`'s own seeded generator, by path. The fixture replay, which reads the log's fixtures as
+//! JSON, is `CMP-STM`'s `tests/log_oracle.rs`.
 
+#[allow(dead_code)]
+#[path = "../../../components/stm/tests/common/mod.rs"]
 mod common;
 
 use common::generator::{Answer, traces};
