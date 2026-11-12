@@ -253,6 +253,36 @@ fn policys_sources_answer_from_the_records() {
     let publisher = format!("{RESERVE}-publisher");
     assert_eq!(sources.supply(&need(&publisher, statement.clone())), yes());
     assert_eq!(sources.supply(&need(party, statement)), no());
+    // The evidence store's statements, by the commitment the log names each by, about their order (`T-021-06`).
+    let kept = Source::Kept(commitment_at(&core, result));
+    assert_eq!(sources.supply(&need(order.as_str(), kept.clone())), yes());
+    assert_eq!(sources.supply(&need("another-order", kept)), no());
+    let unkept: Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::Kept(unkept))),
+        no()
+    );
+    // The register's `ActsFor` chains (`T-021-06`): a desk acting for the operator, its person, and the operator's.
+    let listed = |acts: &str, party: &str| rutent_contracts::core_internal::Actor {
+        acts: id(acts),
+        party: id(party),
+        ..customer.clone()
+    };
+    for (acts, party) in [
+        ("desk-b", "operator"),
+        ("bob", "desk-b"),
+        ("alice", "operator"),
+    ] {
+        core.registers().list(&listed(acts, party));
+    }
+    let common = |with: &str| Source::CommonParty { with: id(with) };
+    assert_eq!(sources.supply(&need("bob", common("alice"))), yes());
+    assert_eq!(sources.supply(&need("bob", common("operator"))), yes());
+    assert_eq!(sources.supply(&need("bob", common("bob"))), yes());
+    assert_eq!(sources.supply(&need("bob", common("user-1"))), no());
     // The reserve's declarations, from its advertisement as listed in the log.
     let declaration = core.installed[0]
         .advertisement

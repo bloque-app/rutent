@@ -731,3 +731,173 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | rounds: a charge not known says not known | `a charge policy refuses or cannot decide sends nothing and says why` |
   | the assembly's charge is the engine's | all five of `assembly_policy` |
   | the assembly's outcome report is the engine's | `a move's outcome reported or confirmed reaches the engine and its log` |
+
+## T-021-06
+
+- **What it builds.** `StuckOrders` on `Engine<L, P, S>` in `components/core-authz/src/stuck/`, for
+  `L: PolicyLog + Receipted`, `P: Policy`, `S: Sources`: `decide_stuck`, `move_stuck`, `report_outcome` and
+  `confirm_outcome`, each decided through `consult` and recorded through `PolicyLog` before it answers. All four left
+  the unbuilt table of `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`, which is now
+  `["T-021-07"]`; each is driven there on the contract's own coherent world (`fixtures/admission/world--sd`, `--sm`,
+  `--report_es`, `--settled_es`), through the guarded log, consulted once and ruled once. Two layers: a fixed rule, the fifth in `FIXED`, over what the request alone says; and rules read from the log on
+  policy's handle, held to the consultation's verdict after it, as `T-021-04`'s register is, since a move names the
+  decision it carries out and not its decider, and a confirmation names its report and its move by receipt.
+- **Reading of "the ownership row".** Taken as the rows that name `core-authz` `stuck` (`T-021-06`) as their
+  implementer or owner: core-internal's call table (`decide_stuck`, `move_stuck`), the `StuckOrders` trait as a whole
+  (`report_outcome`, `confirm_outcome` too), and the README's hand-off rows naming `T-021-06` (the evidence relied on,
+  the decide step's transaction, the outcome reported and confirmed, the `ActsFor` chains), with `DEC-14`'s "separate
+  decide and move permissions". Every permission they name is built: deciding, moving and confirming, one each.
+  The transaction row needs nothing of policy's beyond recording the decide request whole: the log holds the
+  transaction fresh (`stuck-resolution-transaction-is-its-own`) and the effect under it. A hand-on
+  (`resolution: hand_on`) and a delivery are decided and moved on the same two permissions. Reversible.
+- **The fixed rule** (`stuck::needs`, `stuck::rule`), asked after every earlier row's, so each actor is bound to its
+  party and kind (`T-021-03`) and an agent to its scope (`T-021-05`) first:
+  - deciding needs `Permission::DecideStuck`, moving `Permission::MoveStuck`, confirming
+    `Permission::ConfirmOutcome`, each asked of the register by login (`Source::Permissions`), so one alone allows
+    only its own step (`REQ-AUZ-4`, `DEC-14`, the `REQ-AUZ-6` pattern);
+  - deciding and moving are the operator's (`REQ-ORD-28`: the operator resolves and bears a stuck order): any other
+    role is refused `not_permitted` before an input is asked. Default, reversible: a confirmer may act in any role
+    the register gives the permission to, since the README's silent `move_value` has Core report and "one person"
+    confirm, and a checker might; reporting needs no permission, since only the move's own mover reports, which the
+    log holds (`outcome-report-rests-on-its-move`), so `report_outcome` has no rule of this row's beyond the fixed
+    rules every call is held to;
+  - neither the decider nor the confirmer acts for a party of the order, its requester, beneficiary or payer
+    (`Source::OrderParties` must say no; `THR-70`'s colluding customer). Asked by party, not by role: `ActsFor` binds
+    a login's party and kind but not its role, so a customer's login stating `operator` is still the customer.
+    Default: "the order's customer" is any of its three parties;
+  - each evidence commitment the decision names is one the store keeps, about the order or about no order in
+    particular (`Source::Kept`, new), or the decision is refused `missing_input`: a digest the store keeps nothing
+    under names no evidence (`REQ-AUZ-4`, `F-020`'s hand-off "the evidence digests checked against the store"). A
+    decision naming none at all still fails its contract check and is refused unrecorded, as the callee rule says.
+- **Rules read from the log** (`stuck::Receipted`, a trait of this module, on policy's handle: every entry with its
+  receipt, in log order; steps are found by receipt equality, as the contract's rows find them):
+  - a move carries out a decision the log holds as permitted, with the request and decision ids it names, of its own
+    order, or it is refused `not_permitted`; every such decision must pass;
+  - its mover and that decider are one actor where `parties::same_accountable_actor` says so (one party, or one
+    login), refused `same_actor` (`REQ-AUZ-4`, `REQ-AUZ-8`: two agents of one party, or its person and its agent);
+  - a confirmation cites a report the log holds as permitted, of its own move (effect), order and outcome, or it is
+    refused `not_permitted`; its confirmer and the reporter are one actor by `same_accountable_actor`, or where their
+    `ActsFor` chains reach a common accountable party (`Source::CommonParty`, new), refused `same_actor`
+    (core-internal's README hand-off);
+  - neither the mover nor the confirmer is the desk of the provider holding the funds (`THR-70`): the resolution's
+    `by` for a `resolve_stuck`, the move's `provider` for a segment's `move_value`. An actor is that desk where its
+    party or its login is the provider, or its chain reaches it; refused `not_permitted`;
+  - a log that can't be read refuses `missing_input`; a register of chains out of reach leaves the answer not known
+    (`verifier_unreachable`, as an unreachable source gives in `consult`); a register that says nothing refuses
+    `missing_input`. These rules run only where the consultation didn't refuse, and never permit
+    (`stuck::held`): a refusal stands, a refusal of theirs beats not known, and their not known replaces a permit.
+- **Chains, and why decide and move don't compare them.** `Source::CommonParty { with }` asks the register whether
+  the login the input names and `with`, a login or a party, reach an accountable party in common, each through
+  itself, the parties it acts for, and theirs in turn. A pairwise yes/no is what a `Sources` can answer, since it
+  can't list parties; asking `ActsFor` crosswise, each login against the other's party, would catch one link only, and
+  every test source here answers `ActsFor` yes outright. Decide and move are compared with `same_accountable_actor`
+  alone, as `PLAN.md`'s row says ("their actors compared at the accountable party"): ADR-0011 accepts separate staff of one party as the control where operator and provider are one legal party,
+  and a chain comparison would refuse every pair of the operator's desks registered under it. The chains are the
+  README's, for a confirmer against its reporter, and for an actor against the holder.
+- **Stale reads.** Every rule here looks a step up and refuses where it isn't found, so a stale or truncated read
+  fails closed. `T-021-04`'s two read checks (the read extends the last; it holds the engine's own last append) are
+  not applied: nothing here counts or replaces, so a read missing entries can only refuse. What a read of another log
+  could do, name another decider or reporter, is the assembly's word that the read is of the very log the handle
+  appends to, as `T-021-04`'s and `T-021-05`'s notes say. Reversible.
+- **Refusal classes.** `same_actor` (core-internal's own class for `REQ-AUZ-4`) for one actor at both steps or at
+  both words; `not_permitted` for a role, a permission, a customer, the holder's desk, or no step behind the call;
+  `missing_input` for evidence the store doesn't keep and a log that can't be read. No contract change was needed.
+- **Edits outside this row's module**, each the smallest that lets the rules be asked, as `T-021-05`'s were:
+  - `engine/` (`T-021-01`'s): two `Source` variants appended (`Kept`, `CommonParty`); the fifth `FIXED` entry;
+    `Engine::not_known` removed, since no stub uses it now; in its tests, `Receipted` on `Taking`, `Guarded`, `Seen`
+    and `PolicysHandleOnly`, the four calls built in the table with the world's histories (`world_before`), and the
+    unbuilt engine's test expecting a stuck decision and a report not known (an actor's register out of reach) and a
+    move and a confirmation refused (nothing permitted behind them; a refusal beats not known).
+  - `roles/` (`T-021-03`'s): three `Permission` variants appended (`DecideStuck`, `MoveStuck`, `ConfirmOutcome`).
+  - `parties/tests.rs` (`T-021-05`'s): `Calls::by` takes the stuck steps in the operator's role, and its register
+    answers `OrderParties` yes only for the read fixture's order, so no caller is a party of the stuck fixtures'.
+  - `conformance/scenarios/` (`F-024`'s): `Entries::receipted` (provided, `None` by default, the audit log's
+    entries as it holds them), `Receipted` on `PolicyHandle` and on the kit's `PolicyPath` (`receipt_at`), the
+    assembly's `Records` answering `Kept` from the log's stated entries and `CommonParty` from its register
+    (`Registers::chain`, `Registers::common_party`), two stale doc lines in `assembly/policy.rs`, and
+    `policys_sources_answer_from_the_records` checking both sources.
+- **Hand-offs naming `T-021-06`, checked off.**
+  - `F-020`'s "Gap for `T-021-06`: policy's stuck rules are unbuilt" (`T-020-11`): built. Its questions answered: a
+    customer never decides; the desk of the provider holding the funds never moves; neither confirms; the evidence
+    digests are checked against the store (`Source::Kept`).
+  - `F-020`'s `T-020-11` review answers, finding 5 (the roles a decider and a mover may hold) and round 4's S1 (the
+    confirmer's roles): built as above.
+  - This file's `T-021-05` hand-off (`same_accountable_actor` for the decider and the mover): used, and for the
+    reporter and the confirmer too.
+  - This file's `T-021-05` integration note (`report_outcome`, `confirm_outcome`, `T-021-06`'s to build; a real unknown
+    outcome to drive): built; a real unknown outcome, the world's silent `resolve_stuck` and its silent withdrawal,
+    is driven through the engine in this module's tests. Through the assembly it is `T-024-06`'s scenario.
+  - core-internal's README: the call table's two rows, the hand-off rows on the evidence, the transaction, the
+    outcome reported and confirmed, and the `ActsFor` chains (and the CHANGELOG's two entries naming `T-021-06`):
+    built. No contract change.
+  - `PLAN.md`'s `T-024-06` depends on this row: its `AC-6` scenario (`failed segment with no route left is resolved
+    under policy by two actors`) can now run on the engine. Owner: `T-024-06`. No test yet drives the assembly's
+    `PolicySide` through a permitted decide, move and confirm; for one to pass, the scenario must list each login
+    (`Registers::list`) and give it its permission (`Registers::permit` with `DecideStuck`, `MoveStuck` or
+    `ConfirmOutcome`); name decision evidence whose commitment the log holds as a stated entry about the order or
+    about no order (the kit's `"ab"`×32 digest is refused `missing_input`); use a mover whose party, login and chain
+    don't reach the resolution's `by`; and a decider and a confirmer that are none of the order's parties.
+- **Hand-offs left, each to its owner** (doc lines this row made stale, in files it doesn't own):
+  - `T-020-11`'s `components/core-orch/src/stuck/mod.rs`: the module's **Gaps** paragraph and the doc comments of
+    `known_outcome` and `confirm_outcome` still say policy's stuck rules are unbuilt and the roles `T-021-06`'s to rule.
+  - `F-024`'s `conformance/scenarios/tests/segments_support/resolving.rs` (`staff`, `PermitsEveryStep`),
+    `tests/assembly_policy.rs` (`a_moves_outcome_reported_or_confirmed_reaches_the_engine_and_its_log`) and
+    `tests/stuck.rs` (`outcome_report_under_policys_unbuilt_rules_settles_nothing`, whose name and doc read
+    "unbuilt"): the engine there is `Unbuilt`, the one with no policy service and no sources, and still answers not
+    known, so each test holds; only their words are stale.
+- **Gaps, each with its owner.**
+  - The deployment's registers of permissions, of chains and of what each login acts for are the deployment's to keep
+    and record (`F-030`). The assembly's register lists one party per login, so its chains are a login's party and
+    that party's own; a login listed for several parties is `F-030`'s.
+  - The evidence store's word (`Source::Kept`): the assembly answers it from the log's stated entries, which name each
+    kept statement by its commitment; production answers it from the store itself (`KeptStatements`, `T-022-03`),
+    wired by `F-030`. Only that the store keeps the evidence, about the order, is checked; whether it bears the
+    decision out is the decider's judgement, recorded with the decision, and the reviewer's to read.
+  - Two engines over one log in separate processes race between the read and the append, as `T-021-04`'s and
+    `T-021-05`'s reads do; `F-022`'s or the contract author's to close with an admission row. Here the log's own rows
+    (`stuck-move-carries-out-its-decide-step`, `outcome-confirmation-rests-on-its-report`) hold the party and the
+    login after, so a race can't put one actor at both steps through the log.
+  - The read is O(n) in the log's entries per move or confirmation, as `T-021-04`'s is; an index is `F-022`'s or
+    `F-030`'s.
+- **Rule-offs.** Each rule switched off once by a scratch script, the file restored and touched; core-authz's lib
+  tests, or `rutent-scenarios`' `assembly_wiring` for the assembly's. Every test of this module was written first and
+  seen red against the stub (all nine failed). Four rule-offs first turned nothing red: the holder's desk by party or
+  login and the reporter and confirmer as one actor, each masked by the chain rule behind it, and only a permitted
+  report and a report of the confirmation's own move, which no case drove; a case was added for each (a register
+  whose chains are all apart, a refused report, a report cited for another move), and each then went red.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | decider in the operator's role | `deciding moving and confirming are separate permissions` |
+  | mover in the operator's role | `deciding moving and confirming are separate permissions` |
+  | deciding its own permission (asks the move's) | `every policy call reaches the one consultation or is marked unbuilt`; `deciding moving and confirming are separate permissions` |
+  | moving its own permission (asks the decide's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | confirming its own permission (asks the move's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | the decider no party of the order | `neither the customer nor the holders desk resolves its order` |
+  | the confirmer no party of the order | `neither the customer nor the holders desk resolves its order` |
+  | each evidence one the store keeps | `resolution naming no evidence is refused`; `step with nothing permitted behind it is refused` |
+  | the rule in FIXED | `deciding moving and confirming are separate permissions`; `resolution naming no evidence is refused`; `step with nothing permitted behind it is refused`; `neither the customer nor the holders desk resolves its order` |
+  | a move carries out a decision the log holds | `the unbuilt engine permits nothing on any call and records first`; `step with nothing permitted behind it is refused` |
+  | only a permitted decision | `step with nothing permitted behind it is refused` |
+  | a decision of the move's own order | `step with nothing permitted behind it is refused` |
+  | decider and mover not one accountable actor | `one actor attempting both decide and move is refused`; `two agents of one party count as one actor` |
+  | the holder's desk by party or login | `neither the customer nor the holders desk resolves its order` |
+  | the holder's desk by chain | `neither the customer nor the holders desk resolves its order` |
+  | the mover not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | only a permitted report | `step with nothing permitted behind it is refused` |
+  | a report of the confirmation's own move | `step with nothing permitted behind it is refused` |
+  | a report of the same outcome | `step with nothing permitted behind it is refused` |
+  | reporter and confirmer not one accountable actor | `two agents of one party count as one actor` |
+  | reporter's and confirmer's chains apart | `confirmer whose chain meets the reporters is refused` |
+  | the confirmer not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | a move_value's holder its provider | `neither the customer nor the holders desk resolves its order` |
+  | a resolve_stuck's holder its resolution's | `neither the customer nor the holders desk resolves its order`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | an unread log refuses the move | `unread log or unreached register moves nothing` |
+  | an unread log refuses the confirmation | `unread log or unreached register moves nothing` |
+  | a register of chains out of reach is not known | `unread log or unreached register moves nothing` |
+  | a read rule's refusal held to the verdict | `the unbuilt engine permits nothing on any call and records first`; `neither the customer nor the holders desk resolves its order`; `step with nothing permitted behind it is refused`; `one actor attempting both decide and move is refused`; `two agents of one party count as one actor`; `unread log or unreached register moves nothing`; `confirmer whose chain meets the reporters is refused` |
+  | a read rule's not known held to a permit | `unread log or unreached register moves nothing` |
+  | the assembly: chains answered from the register | `policys sources answer from the records` |
+  | the assembly: a chain followed past its first link | `policys sources answer from the records` |
+  | the assembly: kept evidence about its order | `policys sources answer from the records` |
+  | the assembly: unkept evidence says no | `policys sources answer from the records` |

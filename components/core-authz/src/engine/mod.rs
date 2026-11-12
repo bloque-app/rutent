@@ -195,6 +195,20 @@ pub enum Source {
         /// The call asked about.
         scope: crate::parties::Scope,
     },
+    /// The evidence store: whether it keeps a statement under this commitment, about the order the input names or
+    /// about no order in particular (`REQ-AUZ-4`, `REQ-AUD-5`). A stuck order's decision names its evidence by the
+    /// commitment the store answered when it kept it, so a digest the store keeps nothing under names no evidence
+    /// (`T-021-06`). It answers no, not nothing, for a commitment it keeps nothing under.
+    Kept(rutent_contracts::module_interface::Digest),
+    /// The deployment's register of actors, followed link by link (core-internal's README, `T-021-06`): whether the
+    /// actor or party the input names and `with`, an actor's login or a party, reach an accountable party in common.
+    /// Each reaches itself, every party the register lists it as acting for, and every party those act for in turn:
+    /// its `ActsFor` chain. Yes where the two chains meet, so two actors of different parties that both act, through
+    /// their chains, for one accountable party count as one there, which the log, reading no register, can't see.
+    CommonParty {
+        /// The other actor's login, or a party.
+        with: Id,
+    },
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -343,6 +357,12 @@ pub(crate) const FIXED: &[Rule] = &[
         needs: crate::roles::needs,
         rule: crate::roles::rule,
     },
+    Rule {
+        name: "T-021-06: deciding, moving and confirming a stuck order's steps are separate permissions; neither \
+               the decider nor the confirmer is the order's customer; a decision names evidence the store keeps",
+        needs: crate::stuck::needs,
+        rule: crate::stuck::rule,
+    },
 ];
 
 /// The rules `SPEC.md` sets, which every engine asks first: [`Engine::with_policy`] puts them there, so no assembly can leave
@@ -415,7 +435,9 @@ pub struct Engine<L, P, S> {
 /// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
 /// hasn't built it yet is a stub on this type, in that row's module, that permits nothing: every call is appended to
 /// the log first, and answered not known where its answer can say so, refused or over its bound where it can't
-/// (`REQ-AUZ-5`). Where the log takes no entry it answers nothing at all.
+/// (`REQ-AUZ-5`). A built call answers on it as it rules: a stuck order's move or a move's confirmation with nothing
+/// permitted behind it in the log is refused, since a refusal beats not known (`T-021-06`). Where the log takes no
+/// entry it answers nothing at all.
 pub type Unbuilt<L> = Engine<L, Absent, Absent>;
 
 impl<L> Unbuilt<L> {
@@ -505,23 +527,6 @@ impl<L: PolicyLog, P, S> Engine<L, P, S> {
             outcome: answer,
             receipt,
         })
-    }
-
-    /// Answers not known to a decision-shaped call, as the unbuilt stubs do.
-    pub(crate) fn not_known(
-        &mut self,
-        request: &Id,
-        who: &Actor,
-        what: impl FnOnce(Id) -> What,
-        at: &Timestamp,
-    ) -> Result<Decision, AppendFailure> {
-        self.answer(
-            request,
-            who,
-            what,
-            at,
-            Answer::NotKnown { cause: UNREACHABLE },
-        )
     }
 }
 
@@ -667,6 +672,7 @@ mod tests {
 
     use super::*;
     use crate::funds::{ReadFailure, Recorded};
+    use crate::roles::Permission;
     use rutent_contracts::core_internal::calls::{
         Authorisations, Charges, GeneralEntry, Log, PersonQuestions, Reads, Sessions, StuckOrders,
     };
@@ -694,6 +700,17 @@ mod tests {
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(&self.0))
+        }
+    }
+
+    impl crate::stuck::Receipted for Taking {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            let receipt: Receipt = fixture!("receipt-of-an-appended-entry");
+            Ok(self
+                .0
+                .iter()
+                .map(|e| (receipt.clone(), e.clone()))
+                .collect())
         }
     }
 
@@ -735,6 +752,12 @@ mod tests {
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+        }
+    }
+
+    impl crate::stuck::Receipted for Guarded {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1084,23 +1107,25 @@ mod tests {
             .unwrap();
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), unreachable);
+        // A stuck order's decision, and a move's outcome reported, wait on the register's word that each actor acts for
+        // the party it states; a move and a confirmation carry out nothing this log holds as permitted, a decision or a
+        // report, and are refused (`T-021-06`), since a refusal beats not known.
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(last(&mut policy), unreachable);
         let decision = policy
             .move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
-        // A move's outcome, reported and confirmed, waits on `T-021-06` too.
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let decision = policy.report_outcome(&outcome_report()).unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(last(&mut policy), unreachable);
         let decision = policy.confirm_outcome(&outcome_confirmation()).unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
 
         // The delegate's session waits on its holder's word, which no source can give.
         policy.set_clock(crate::session::Stopped::at(
@@ -1815,6 +1840,63 @@ mod tests {
         }
     }
 
+    impl crate::stuck::Receipted for Seen {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            self.log.receipted()
+        }
+    }
+
+    /// The contract's world as its log held it before `case`'s entry, set as `e`'s log, each entry with its receipt;
+    /// and the request that entry records (`T-021-06`).
+    fn world_before(e: &mut Engine<Seen, Service, Given>, case: &str) -> Value {
+        let path = format!(
+            "{}/../../contracts/core-internal/fixtures/admission/world--{case}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let case: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        e.log.log = Guarded(
+            case["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| {
+                    (
+                        serde_json::from_value(item["receipt"].clone()).unwrap(),
+                        serde_json::from_value(item["entry"].clone()).unwrap(),
+                    )
+                })
+                .collect(),
+        );
+        case["entry"]["what"]["request"].clone()
+    }
+
+    /// The register's word that `actor`, by its login within its party, holds `permission`.
+    fn holds(actor: &Actor, permission: Permission) -> Need {
+        Need {
+            input: actor.acts.clone(),
+            from: Source::Permissions {
+                party: actor.party.clone(),
+                permission,
+            },
+        }
+    }
+
+    /// The order's record's word that `actor`'s party is one of `order`'s.
+    fn party_of(order: &Id, actor: &Actor) -> Need {
+        Need {
+            input: actor.party.clone(),
+            from: Source::OrderParties(order.clone()),
+        }
+    }
+
+    /// The register's word that `actor`'s chain and `with`'s meet.
+    fn apart(actor: &Actor, with: &str) -> Need {
+        Need {
+            input: actor.acts.clone(),
+            from: Source::CommonParty { with: id(with) },
+        }
+    }
+
     /// The request of the fixture's outcome report, as its entry holds it.
     fn outcome_report() -> rutent_contracts::core_internal::OutcomeReport {
         let entry: serde_json::Value = fixture!("verified-entry-of-an-outcome-reported");
@@ -1885,44 +1967,74 @@ mod tests {
                 }),
             ),
             (
+                // The contract's world's decision, by the operator's login holding the permission to decide, of no
+                // party of the order, naming evidence the store keeps (`T-021-06`).
                 "decide_stuck",
-                Call::Unbuilt {
-                    row: "T-021-06",
-                    call: |e| {
-                        e.decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let decide: StuckDecide =
+                        serde_json::from_value(world_before(e, "sd")).unwrap();
+                    let actor = &decide.decider;
+                    e.sources.says.extend([
+                        (
+                            holds(actor, Permission::DecideStuck),
+                            Reply::Given(Said::Yes),
+                        ),
+                        (party_of(&decide.order, actor), Reply::Given(Said::No)),
+                    ]);
+                    for evidence in &decide.evidence {
+                        let kept = Need {
+                            input: decide.order.clone(),
+                            from: Source::Kept(evidence.clone()),
+                        };
+                        e.sources.says.push((kept, Reply::Given(Said::Yes)));
+                    }
+                    e.decide_stuck(&decide).is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
+                // The world's move of that decision, by another party's login holding the permission to move, which
+                // reaches no party in common with the provider holding the funds.
                 "move_stuck",
-                Call::Unbuilt {
-                    row: "T-021-06",
-                    call: |e| {
-                        e.move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let request: StuckMove = serde_json::from_value(world_before(e, "sm")).unwrap();
+                    let actor = &request.mover;
+                    e.sources.says.extend([
+                        (holds(actor, Permission::MoveStuck), Reply::Given(Said::Yes)),
+                        (apart(actor, "bank-co"), Reply::Given(Said::No)),
+                    ]);
+                    e.move_stuck(&request).is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
+                // The world's report of its resolution's unknown outcome, by the move's own mover.
                 "report_outcome",
-                Call::Unbuilt {
-                    row: "T-021-06",
-                    call: |e| {
-                        e.report_outcome(&outcome_report())
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let report: rutent_contracts::core_internal::OutcomeReport =
+                        serde_json::from_value(world_before(e, "report_es")).unwrap();
+                    e.report_outcome(&report)
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
+                // The world's confirmation of that report, by the decider, whose chain meets neither the reporter's
+                // nor the provider's holding the funds.
                 "confirm_outcome",
-                Call::Unbuilt {
-                    row: "T-021-06",
-                    call: |e| {
-                        e.confirm_outcome(&outcome_confirmation())
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let confirmation: rutent_contracts::core_internal::OutcomeConfirmation =
+                        serde_json::from_value(world_before(e, "settled_es")).unwrap();
+                    let actor = &confirmation.confirmer;
+                    e.sources.says.extend([
+                        (
+                            holds(actor, Permission::ConfirmOutcome),
+                            Reply::Given(Said::Yes),
+                        ),
+                        (party_of(&confirmation.order, actor), Reply::Given(Said::No)),
+                        (apart(actor, "op-login-5"), Reply::Given(Said::No)),
+                        (apart(actor, "bank-co"), Reply::Given(Said::No)),
+                    ]);
+                    e.confirm_outcome(&confirmation)
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
                 // The holder's own session, which needs only the account's record to say it holds the account.
@@ -2125,7 +2237,7 @@ mod tests {
             }
         }
         unbuilt.dedup();
-        assert_eq!(unbuilt, ["T-021-06", "T-021-07"]);
+        assert_eq!(unbuilt, ["T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.
@@ -2136,6 +2248,17 @@ mod tests {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.0.push(entry.clone());
             Ok(fixture!("receipt-of-an-appended-entry"))
+        }
+    }
+
+    impl crate::stuck::Receipted for PolicysHandleOnly {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            let receipt: Receipt = fixture!("receipt-of-an-appended-entry");
+            Ok(self
+                .0
+                .iter()
+                .map(|d| (receipt.clone(), Entry::Verified(d.entry().clone())))
+                .collect())
         }
     }
 

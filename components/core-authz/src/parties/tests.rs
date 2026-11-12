@@ -209,6 +209,9 @@ impl Sources for Registers {
                     None => Reply::Missing,
                 }
             }
+            // The read fixture's order, `ord-19`, is its reader's; no caller here is a party of the stuck fixtures'
+            // orders, whose decider and confirmer never are (`T-021-06`).
+            Source::OrderParties(order) => yes(order.as_str() == "ord-19"),
             _ => Reply::Given(Said::Yes),
         }
     }
@@ -283,8 +286,14 @@ impl Calls {
         };
         calls.decide.caller = caller.clone();
         calls.authorise.given_by = caller.clone();
-        calls.decide_stuck.decider = caller.clone();
-        calls.move_stuck.mover = caller.clone();
+        // A stuck order's steps are the operator's (`T-021-06`): the caller takes them in that role, as the party and
+        // the kind it is.
+        let operator = Actor {
+            role: Role::Operator,
+            ..caller.clone()
+        };
+        calls.decide_stuck.decider = operator.clone();
+        calls.move_stuck.mover = operator;
         calls.open_session.requester = caller.clone();
         calls.check_read.reader = caller.clone();
         calls.grant.by = caller.clone();
