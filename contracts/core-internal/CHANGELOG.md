@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 437 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 440 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -377,6 +377,14 @@
   a destination change refused, then the order waiting, then the same input under the same id; the same input's
   trace naming another reason. Admitted: the same trace again, also after its order has moved on. `CMP-STM`'s
   fixture oracle refuses a refused input taken again. 437 admission cases. (DEC-4, DEC-20, REQ-AUD-1, REQ-STM-3,
+  T-020-01)
+- Folded into 1.0.0 before its release: a planless stuck part's outcome evidence binds through how its order came
+  in (round 6 of `T-020-01`'s review, the follow-up row added while the contract is unreleased). A stuck part with no
+  plan has no segment for its evidence to name, so `outcome-confirmation-cites-verified-evidence` could admit none,
+  and its silent resolution would deadlock. Its evidence now names the order and no segment, through a transaction
+  first bound to the order that is the deposit of an arrival naming the order or the one the part's acceptance yes
+  names. Admitted: `ord-21`'s planless `p3`, through its acceptance yes's transaction and through its arrival's;
+  refused: through another transaction of the order. 440 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2,
   T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the

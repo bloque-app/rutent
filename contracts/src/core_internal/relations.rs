@@ -1156,7 +1156,7 @@ pub static RELATIONS: [Relation; 77] = [
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part, a move_value's own segment, through the transaction it names",
+                "an outcome's evidence is about its move's own order and part, a move_value's own segment, a planless part's arrival or acceptance, through the transaction it names",
             ),
             ("after", "an outcome's evidence follows its move in the log"),
         ],
@@ -1177,18 +1177,9 @@ pub static RELATIONS: [Relation; 77] = [
                 return Match::NotTarget;
             };
             let moved = entry_at(effect, h);
-            let about =
-                moved
-                    .and_then(verified)
-                    .is_some_and(|m| match effect_action(m).map(|(a, _)| a) {
-                        // A move_value's evidence is about the segment it moved, through that segment's transaction.
-                        Some(Action::MoveValue { order, segment, .. }) => {
-                            about_the_segment(s, order, segment, h)
-                        }
-                        _ => moved_part(m, h).is_some_and(|(order, part)| {
-                            part.is_some_and(|part| about_the_part(s, order, part, h))
-                        }),
-                    });
+            let about = moved
+                .and_then(verified)
+                .is_some_and(|m| evidence_about(s, m, h));
             // Evidence older than the move can't say what the move came to.
             let after = match (moved.and_then(|m| position(m, h)), position(t, h)) {
                 (Some(m), Some(at)) => at > m,
@@ -3542,6 +3533,86 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
         }),
         _ => false,
     }
+}
+
+/// Whether `statement` is about the move `effect` moved: a `move_value`'s segment itself, through that segment's
+/// transaction; a stuck resolution's part, through a segment of its plan, or, for a planless part, which has no segment
+/// to name, through the transaction of the order's arrival or of the part's acceptance yes, so its silent resolution
+/// can't deadlock.
+fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &History) -> bool {
+    if let Some(Action::MoveValue { order, segment, .. }) = effect_action(effect).map(|(a, _)| a) {
+        return about_the_segment(statement, order, segment, history);
+    }
+    moved_part(effect, history).is_some_and(|(order, part)| {
+        part.is_some_and(|part| {
+            if planned(order.as_str(), part, history) {
+                about_the_part(statement, order, part, history)
+            } else {
+                about_the_order_entry(statement, order, part, history)
+            }
+        })
+    })
+}
+
+/// Whether `part` of `order` has a plan in `history`: a route chosen naming it, or a recalculation or a change of
+/// destination of it.
+fn planned(order: &str, part: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|i| {
+            i.subject.order.as_str() == order
+                && match &i.observed {
+                    Observed::RouteChosen { parts, .. } => {
+                        parts.iter().any(|p| p.part_id.as_str() == part)
+                    }
+                    Observed::RouteRecalculated { .. } | Observed::DestinationChanged { .. } => {
+                        i.subject.part.as_ref().is_some_and(|p| p.as_str() == part)
+                    }
+                    _ => false,
+                }
+        })
+    })
+}
+
+/// Whether `statement` is about a planless `part` of `order` through how the order came in: it names the order and
+/// no segment, and the transaction it names is first bound to this order (`binding_of`) and is the deposit of an
+/// arrival naming the order (`deposit_of`) or the one the part's acceptance yes names.
+fn about_the_order_entry(
+    statement: &StatedEntry,
+    order: &Id,
+    part: &str,
+    history: &History,
+) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    let Some(t) = about.transaction.as_ref() else {
+        return false;
+    };
+    let arrived = history.iter().any(|(_, e)| {
+        verified(e).is_some_and(|v| {
+            matches!(&v.what, What::Arrival { order: Some(o), .. } if o == order)
+                && deposit_of(&v.what, history) == Some(t)
+        })
+    });
+    let accepted = history
+        .iter()
+        .any(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::Acceptance {
+                order: o, yeses, ..
+            }) if o == order => yeses.iter().any(|y| {
+                y.part.as_str() == part
+                    && entry_at(&y.reserve_yes, history)
+                        .and_then(stated)
+                        .and_then(|s| s.about.as_ref())
+                        .and_then(|a| a.transaction.as_ref())
+                        == Some(t)
+            }),
+            _ => false,
+        });
+    about.order.as_ref() == Some(order)
+        && about.segment.is_none()
+        && binding_of(t, history).is_some_and(|(o, _)| o == order)
+        && (arrived || accepted)
 }
 
 /// Whether `statement` is about `segment` of `order` itself: it names the order and a transaction first bound to that
