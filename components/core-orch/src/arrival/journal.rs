@@ -15,6 +15,7 @@ use rutent_contracts::core_internal::{
     StatedKind, StatedOutcome, StatedStatus, StatedTimeSource, StatedWhat, StatedWhen, TimeSource,
     VerifiedEntry, VerifiedKind, Violation, What, When,
 };
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Signature;
 use rutent_contracts::router_api::Timestamp;
 use serde::Deserialize;
@@ -57,14 +58,15 @@ struct Claimed {
 }
 
 /// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
-/// unverified, received at Core's clock, about `about`.
+/// unverified, received at Core's clock, about `about`; with the commitment of a statement kept before whose signed
+/// content it restates, where the evidence store finds one.
 pub(super) fn stated(
     evidence: &mut dyn Evidence,
     clock: &dyn Clock,
     bytes: &[u8],
     maker: Actor,
     about: Option<About>,
-) -> Result<Entry, ArrivalError> {
+) -> Result<(Entry, Option<Digest>), ArrivalError> {
     let claimed: Claimed = serde_json::from_slice(bytes).map_err(|_| ArrivalError::Unrecordable)?;
     let shape = ShapeId::new(claimed.shape).ok_or(ArrivalError::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(ArrivalError::Unrecordable)?;
@@ -86,12 +88,12 @@ pub(super) fn stated(
             scheme: claimed.signature.scheme,
             key: claimed.signature.key,
         },
-        commitment: kept.commitment,
+        commitment: kept.commitment.clone(),
         about,
         relayed_by: None,
     });
     entry.check().map_err(AppendFailure::Refused)?;
-    Ok(entry)
+    Ok((entry, kept.restates))
 }
 
 /// Appends `entry` as built, through orchestration's handle.

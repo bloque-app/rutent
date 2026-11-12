@@ -6,20 +6,24 @@
 //! One [`Arrivals`] takes value arriving at a reserve, in three calls, reaching what intake reaches (its [`Desk`]):
 //!
 //! 1. **[`Arrivals::arrive`]** takes a reserve's [`Report`]: what arrived, where, to whose account, and the reserve's
-//!    notice, its signed statement, kept and appended about nothing, since no order is bound to it. The orders open
-//!    there ([`OpenOrders`]) decide what it is:
-//!    - **none open** for its reserve, outer node, asset and account: an `arrival` with no order, citing the notice.
-//!      It opens no order and holds nothing, so nothing counts against the operator (`REQ-ORD-14`);
-//!    - **one open**: Core asks the reserve, under a fresh transaction for that order, whether the account holds what
-//!      arrived (`confirm.rs`), appending the question about the order and transaction before it is sent and the
-//!      answer with that transaction in its `about`, so the log binds the answer to the order before it exists
+//!    notice, its signed statement, kept and appended about nothing, since no order is bound to it. One notice is one
+//!    arrival: the same notice again, by its bytes or as the evidence store finds it restated, is the same arrival, and
+//!    with other figures it is refused. The orders open there ([`OpenOrders`]), read again on every call, decide what
+//!    it is:
+//!    - **none open** for its holder at its reserve, outer node, asset and account, other than orders that already
+//!      have their arrival: an `arrival` with no order, citing the notice. It opens no order and holds nothing, so
+//!      nothing counts against the operator (`REQ-ORD-14`);
+//!    - **one open**: Core asks the reserve, under a fresh transaction for that order, whether the account's funds
+//!      cover what arrived (`confirm.rs`), appending the question about the order and transaction before it is sent
+//!      and the answer with that transaction in its `about`, so the log binds the answer to the order before it exists
 //!      (`REQ-ORD-32`, `REQ-ORD-38`). On the reserve's yes, an `arrival` naming the order, `matches` where the order
 //!      states the amount that arrived and `differs` otherwise, citing that answer. Either way it settles nothing by
 //!      itself: the order's first segment settles only on its own result (`T-020-08`), and a short, an excess or a
-//!      piece of a split arrival is recorded and nothing more (`REQ-ORD-23`). Without the yes, only the notice, the
-//!      question and any answer are recorded.
-//! 2. **[`Arrivals::refile`]** files a differing arrival anew against its order, by the operator or the reserve it
-//!    arrived at, and by no one else: a `refiling`, its `who` the filer, which moves nothing (`REQ-ORD-23`).
+//!      piece of a split arrival is recorded and nothing more (`REQ-ORD-23`). Without the yes (a no, silence, or a
+//!      check the catalogue can't let out yet) it waits: the same report again asks again, of the orders open then.
+//! 2. **[`Arrivals::refile`]** files a differing arrival anew against its order, by the deployment's operator or the
+//!    reserve it arrived at, and by no one else: a `refiling`, its `who` the filer, which moves nothing
+//!    (`REQ-ORD-23`).
 //! 3. **[`Arrivals::file`]** files an order on an automatic deposit, by the reserve that declared it starts routes on
 //!    them or the operator filing for it (`REQ-ORD-13`), and records the deposit as the order's acceptance, apart from
 //!    a given one (`REQ-ORD-15`). Its steps are `filing.rs`'s.
@@ -38,11 +42,13 @@ use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
     Actor, ArrivalMatch, Destination, Entry, OrderRefusalClass, Parties, Receipt, Role, What,
 };
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Denomination, OuterNode};
 use rutent_contracts::router_api::{Id, PositiveAmount, Request, Router};
 use rutent_contracts::state_machine::RecordedInput;
+use serde::Deserialize;
 
-use crate::intake::{Desk, OrderRecord, Wait};
+use crate::intake::{Desk, OrderRecord};
 use crate::rounds::{Need, RoutingError};
 
 use confirm::{Confirmation, Confirming};
@@ -52,6 +58,14 @@ use confirm::{Confirmation, Confirming};
 pub trait OpenOrders {
     /// The orders open at `reserve` for its account `account`.
     fn open_at(&mut self, reserve: &Id, account: &Id) -> Vec<OpenOrder>;
+}
+
+/// Where the assembly learns of an order a filing opens, before policy is asked about it: policy's sources
+/// (`Requester`, `OrderOrigin`, `OrderParties`) answer from the order's record, as they do from intake's for an order
+/// a customer requested (`Intake::record`).
+pub trait FiledOrders {
+    /// The order `record` names was opened on an automatic deposit; its authorisation is asked next.
+    fn opened(&mut self, record: &OrderRecord);
 }
 
 /// An order open at a reserve, waiting on value there.
@@ -67,6 +81,8 @@ pub struct OpenOrder {
     pub asset: Denomination,
     /// The holder's account at the reserve.
     pub account: Id,
+    /// The party that holds the account: the order's payer.
+    pub holder: Id,
     /// The amount it states, in the asset's unit.
     pub amount: PositiveAmount,
     /// The session the reserve is asked in about the account (`REQ-CAT-3`).
@@ -110,8 +126,9 @@ pub enum Arrived {
         /// The receipt of its `arrival` entry.
         arrival: Receipt,
     },
-    /// The reserve didn't confirm it when Core asked about the order: only its notice is recorded.
-    Unconfirmed {
+    /// The reserve didn't confirm it yet when Core asked about the order: only its notice is recorded as an arrival's,
+    /// and the same report again asks again.
+    Waiting {
         /// The order it was asked about.
         order: Id,
         /// The receipt of the notice's stated entry.
@@ -129,11 +146,11 @@ pub struct Filing {
     pub filer: Actor,
     /// The receipt of the arrival, held against no order, the order is filed on.
     pub arrival: Receipt,
-    /// The order's three parties, its requester the account's holder.
+    /// The order's three parties: its requester and beneficiary the account's holder.
     pub parties: Parties,
     /// The session opened through policy for the deposit's account (`REQ-CAT-3`).
     pub session: Id,
-    /// Where the value arrives.
+    /// Where the value arrives: an account the beneficiary owns.
     pub destination: Destination,
     /// The route: from where the deposit arrived, in its asset, at its amount.
     pub route: Request,
@@ -141,6 +158,17 @@ pub struct Filing {
     pub inputs: BTreeMap<String, String>,
     /// The judgements the route's tuples need.
     pub needs: Vec<Need>,
+}
+
+/// Why a filing waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FiledWait {
+    /// Its destination isn't resolved yet: file again later.
+    DestinationNotYetResolved,
+    /// Policy couldn't decide its authorisation: file again later (`REQ-AUZ-5`).
+    PolicyNotKnown,
+    /// The reserve hasn't confirmed the deposit yet: silent, or its check couldn't go yet (`REQ-CAT-19`).
+    ReserveNotYetConfirmed,
 }
 
 /// Where a filed order stands.
@@ -155,12 +183,12 @@ pub enum Filed {
     },
     /// It waits: file it again later.
     Waiting {
-        /// The order.
-        order: Id,
+        /// The order, once one exists.
+        order: Option<Id>,
         /// Why.
-        wait: Wait,
+        wait: FiledWait,
     },
-    /// It can't proceed, of this class.
+    /// It can't proceed, of this class. The deposit is free to be filed on again.
     CantProceed {
         /// The order, where one exists.
         order: Option<Id>,
@@ -177,22 +205,30 @@ pub enum ArrivalError {
     Log(AppendFailure),
     /// The reserve's notice names no shape, time or key a stated entry can hold.
     Unrecordable,
+    /// The notice isn't the reserve's own, about nothing: another maker, or a transaction named in its body.
+    NotItsNotice,
+    /// The notice was reported before with other figures: one notice is one arrival.
+    OtherFigures,
     /// The operator key didn't sign.
     Unsigned,
     /// A fresh identifier was one Core used before, or names the order.
     Fresh,
-    /// The caller isn't the operator, nor the reserve the value arrived at, acting for the party it states.
+    /// The caller isn't the deployment's operator, nor a reserve, that the register says acts for
+    /// the party it states.
     NotTheFiler,
-    /// No arrival Core recorded at that receipt, or none of the kind the call needs.
+    /// No arrival the filer may file on at that receipt: none recorded, one at another reserve, or none of the kind the
+    /// call needs.
     NoSuchArrival,
     /// The reserve never declared that it starts routes on automatic deposits: nothing starts (`REQ-ORD-13`).
     NotDeclared,
     /// The arrival was filed on before, otherwise.
     Conflicting {
-        /// The order that filing opened, if any.
-        order: Option<Id>,
+        /// The order that filing opened.
+        order: Id,
     },
-    /// Policy refused the filer, of this class; the order stands as it was.
+    /// A filing under way is carried on only by the filer whose authorisation policy permitted.
+    OtherFiler,
+    /// Policy refused the filer, of this class: nothing was opened, and the deposit stays free.
     Refused {
         /// The class.
         class: OrderRefusalClass,
@@ -230,25 +266,25 @@ pub(super) struct Recorded {
     matched: ArrivalMatch,
 }
 
-/// The open order an arrival is held against: the first that states the amount that arrived, else the first open,
-/// else none.
+/// The open order an arrival is held against, and how it met it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
     order: OpenOrder,
     matched: ArrivalMatch,
 }
 
-/// One notice taken, kept from its first call until its arrival is recorded, so the same notice again carries it on
-/// and records nothing twice.
+/// One notice taken, kept from its first call until its arrival is recorded.
 #[derive(Debug, Clone)]
 struct Noted {
     report: Report,
-    /// The open order it is held against, read once, when it was first taken.
-    target: Option<Target>,
+    /// The commitment the evidence store keeps its bytes under.
+    commitment: Digest,
     notice: Entry,
     notice_receipt: Option<Receipt>,
-    confirming: Option<Confirming>,
+    /// A question under way, for the order it asks about: carried on until it has an answer, or none.
+    confirming: Option<(Target, Confirming)>,
     arrival: Option<(Entry, Option<Receipt>)>,
+    /// The arrival's outcome, once it is recorded: no order, or held.
     outcome: Option<Arrived>,
 }
 
@@ -264,12 +300,47 @@ fn key(receipt: &Receipt) -> String {
     serde_json::to_string(receipt).unwrap_or_default()
 }
 
-/// Whether `filer` may file an arrival at `reserve`: the operator, or that reserve acting for itself, and in either
-/// case an actor the register of actors says acts for the party it states (`REQ-ORD-13`, `REQ-ORD-23`).
-fn may_file(desk: &mut Desk<'_, '_>, filer: &Actor, reserve: &Id) -> bool {
-    let role =
-        filer.role == Role::Operator || (filer.role == Role::Provider && &filer.party == reserve);
+/// Whether `filer` may file at all: the deployment's operator (its party the operator's), or a reserve, and in either
+/// case an actor the register of actors says acts for the party it states (`REQ-ORD-13`,
+/// `REQ-ORD-23`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
+fn listed_filer(desk: &mut Desk<'_, '_>, filer: &Actor) -> bool {
+    let role = (filer.role == Role::Operator && filer.party == desk.operator.party)
+        || filer.role == Role::Provider;
     role && desk.actors.acts_for(&filer.acts, &filer.party)
+}
+
+/// Whether a listed filer may file at `reserve`: the operator anywhere, a reserve only where it is the reserve.
+fn files_at(filer: &Actor, reserve: &Id) -> bool {
+    filer.role == Role::Operator || &filer.party == reserve
+}
+
+/// The parts of a notice's envelope Core reads: its maker, and whether its body names a transaction.
+#[derive(Deserialize)]
+struct NoticeEnvelope {
+    maker: String,
+    statement: serde_json::Value,
+}
+
+/// Whether `report`'s notice is its reserve's own, about nothing: made by the reserve, its body naming no
+/// transaction. provider-role has no shape for a notice of value arriving, so nothing else of its body is read.
+fn its_own_notice(report: &Report) -> bool {
+    serde_json::from_slice::<NoticeEnvelope>(&report.notice).is_ok_and(|n| {
+        n.maker == report.reserve.as_str() && n.statement.get("transaction").is_none()
+    })
+}
+
+/// Whether two filings are the same but for which login of the filer's party made them (`REQ-OPS-5`).
+fn same_filing(first: &Filing, again: &Filing) -> bool {
+    let filer = Actor {
+        acts: first.filer.acts.clone(),
+        kind: first.filer.kind,
+        ..again.filer.clone()
+    };
+    first
+        == &Filing {
+            filer,
+            ..again.clone()
+        }
 }
 
 /// Core's record of arrivals and the orders filed on automatic deposits: every notice taken, every arrival recorded,
@@ -280,12 +351,13 @@ pub struct Arrivals {
     notices: Vec<Noted>,
     recorded: Vec<Recorded>,
     refilings: BTreeMap<String, Refiled>,
-    /// Each filing that opened an order, by the arrival it files on.
+    /// Each permitted filing under way or started, by the arrival it files on: it holds the arrival.
     runs: BTreeMap<String, filing::Run>,
-    /// Each filing refused before an order existed, with what it was told and its refusal not yet appended.
-    refused: Vec<(Filing, Filed, Option<Entry>)>,
-    /// Each order a filing opened, and the arrival it was filed on.
-    orders: BTreeMap<String, String>,
+    /// Each permitted filing that ended: it holds nothing, and the same filing again is told how it ended.
+    ended: Vec<filing::Run>,
+    /// Each filing refused before an order opened, by its filer's party and identifier: what it was told, and its
+    /// refusal not yet appended. It holds nothing.
+    refused: BTreeMap<(String, String), (Filing, Filed, Option<Entry>)>,
     used: BTreeSet<String>,
 }
 
@@ -302,31 +374,73 @@ impl Arrivals {
         }
     }
 
-    /// Records value arriving at a reserve (see the module's docs). The same report again carries it on from where
-    /// it stopped and records nothing twice.
+    /// The orders that already have their arrival, or a question under way about one that would match them.
+    fn taken(&self) -> BTreeSet<String> {
+        let recorded = self
+            .recorded
+            .iter()
+            .filter(|r| r.matched == ArrivalMatch::Matches)
+            .filter_map(|r| r.order.as_ref());
+        let asking = self
+            .notices
+            .iter()
+            .filter_map(|n| n.confirming.as_ref())
+            .filter(|(t, _)| t.matched == ArrivalMatch::Matches)
+            .map(|(t, _)| &t.order.order);
+        recorded
+            .chain(asking)
+            .map(|o| o.as_str().to_owned())
+            .collect()
+    }
+
+    /// Records value arriving at a reserve (see the module's docs).
     pub fn arrive(
         &mut self,
         desk: &mut Desk<'_, '_>,
         open: &mut dyn OpenOrders,
         report: &Report,
     ) -> Result<Arrived, ArrivalError> {
-        let at = match self.notices.iter().position(|n| &n.report == report) {
+        let at = match self
+            .notices
+            .iter()
+            .position(|n| n.report.notice == report.notice)
+        {
+            Some(at) if &self.notices[at].report != report => {
+                return Err(ArrivalError::OtherFigures);
+            }
             Some(at) => at,
             None => {
+                if !its_own_notice(report) {
+                    return Err(ArrivalError::NotItsNotice);
+                }
                 let maker =
                     confirm::reserve_maker(desk.parts.catalogue, desk.operator, &report.reserve);
                 // The notice is about nothing: no order is bound to it, and its body names no transaction.
-                let notice = journal::stated(
+                let (notice, restates) = journal::stated(
                     &mut *desk.parts.evidence,
                     desk.parts.clock,
                     &report.notice,
                     maker,
                     None,
                 )?;
-                let target = target(report, open.open_at(&report.reserve, &report.account));
+                // The same signed content, restated in other bytes, is the same notice.
+                if let Some(restated) = restates
+                    && let Some(at) = self.notices.iter().position(|n| n.commitment == restated)
+                {
+                    if !same_figures(&self.notices[at].report, report) {
+                        return Err(ArrivalError::OtherFigures);
+                    }
+                    let mut noted = self.notices[at].clone();
+                    let result = self.carry_on(desk, open, &mut noted);
+                    self.notices[at] = noted;
+                    return result;
+                }
+                let Entry::Stated(stated) = &notice else {
+                    return Err(ArrivalError::Unrecordable);
+                };
                 self.notices.push(Noted {
                     report: report.clone(),
-                    target,
+                    commitment: stated.commitment.clone(),
                     notice,
                     notice_receipt: None,
                     confirming: None,
@@ -337,7 +451,7 @@ impl Arrivals {
             }
         };
         let mut noted = self.notices[at].clone();
-        let result = self.carry_on(desk, &mut noted);
+        let result = self.carry_on(desk, open, &mut noted);
         self.notices[at] = noted;
         result
     }
@@ -345,6 +459,7 @@ impl Arrivals {
     fn carry_on(
         &mut self,
         desk: &mut Desk<'_, '_>,
+        open: &mut dyn OpenOrders,
         noted: &mut Noted,
     ) -> Result<Arrived, ArrivalError> {
         if let Some(outcome) = &noted.outcome {
@@ -356,57 +471,65 @@ impl Arrivals {
             &mut noted.notice_receipt,
         )?;
         let report = noted.report.clone();
-        let (order, matched, cites) = match noted.target.clone() {
-            // No order open for it: it opens none, and rests on the reserve's notice.
-            None => (None, ArrivalMatch::NoOrder, notice.clone()),
-            // Held against the open order, on the reserve's answer to Core's question about that order.
-            Some(Target {
-                order: open,
-                matched,
-            }) => {
-                if noted.confirming.is_none() {
-                    let asking = confirm::Asking {
-                        order: &open.order,
-                        reserve: &report.reserve,
-                        account: &report.account,
-                        session: &open.session,
-                        asset: &report.asset,
-                        amount: &report.amount,
-                    };
-                    match Confirming::ask(desk, &mut self.used, asking)? {
-                        Ok(confirming) => noted.confirming = Some(confirming),
-                        Err(_) => {
-                            let outcome = Arrived::Unconfirmed {
-                                order: open.order,
-                                notice,
-                            };
-                            noted.outcome = Some(outcome.clone());
-                            return Ok(outcome);
+        if noted.arrival.is_none() {
+            // A question under way is carried on for its own order; otherwise the orders open now decide.
+            let target = match &noted.confirming {
+                Some((target, _)) => Some(target.clone()),
+                None => {
+                    let taken = self.taken();
+                    target(
+                        &report,
+                        open.open_at(&report.reserve, &report.account),
+                        &taken,
+                    )
+                }
+            };
+            let (order, matched, cites) = match target {
+                // No order open for it: it opens none, and rests on the reserve's notice.
+                None => (None, ArrivalMatch::NoOrder, notice.clone()),
+                // Held against the open order, on the reserve's answer to Core's question about that order.
+                Some(target) => {
+                    if noted.confirming.is_none() {
+                        let asking = confirm::Asking {
+                            order: &target.order.order,
+                            reserve: &report.reserve,
+                            account: &report.account,
+                            session: &target.order.session,
+                            asset: &report.asset,
+                            amount: &report.amount,
+                        };
+                        match Confirming::ask(desk, &mut self.used, asking)? {
+                            Ok(confirming) => noted.confirming = Some((target.clone(), confirming)),
+                            // The check can't go yet: it waits, and the same report again asks again.
+                            Err(_) => {
+                                return Ok(Arrived::Waiting {
+                                    order: target.order.order,
+                                    notice,
+                                });
+                            }
                         }
                     }
-                }
-                let answered = match &mut noted.confirming {
-                    Some(confirming) => confirming.go_on(desk)?,
-                    None => Confirmation::NotConfirmed,
-                };
-                let Confirmation::Confirmed(answer) = answered else {
-                    let outcome = Arrived::Unconfirmed {
-                        order: open.order,
-                        notice,
+                    let answered = match &mut noted.confirming {
+                        Some((_, confirming)) => confirming.go_on(desk)?,
+                        None => Confirmation::Unanswered,
                     };
-                    noted.outcome = Some(outcome.clone());
-                    return Ok(outcome);
-                };
-                (Some(open.order), matched, answer)
-            }
-        };
-        if noted.arrival.is_none() {
+                    let Confirmation::Confirmed(answer) = answered else {
+                        // Answered no, or not at all: it waits, and nothing of it is kept but the notice.
+                        noted.confirming = None;
+                        return Ok(Arrived::Waiting {
+                            order: target.order.order,
+                            notice,
+                        });
+                    };
+                    (Some(target.order.order.clone()), target.matched, answer)
+                }
+            };
             let what = What::Arrival {
                 reserve: report.reserve.clone(),
                 node: report.node.clone(),
                 asset: report.asset.clone(),
                 amount: report.amount.amount().clone(),
-                order: order.clone(),
+                order,
                 matched,
                 report: cites,
             };
@@ -416,6 +539,14 @@ impl Arrivals {
             return Err(ArrivalError::NotNow);
         };
         let arrival = journal::once(&mut *desk.parts.log, entry, receipt)?;
+        let Entry::Verified(verified) = &*entry else {
+            return Err(ArrivalError::NotNow);
+        };
+        let What::Arrival { order, matched, .. } = &verified.what else {
+            return Err(ArrivalError::NotNow);
+        };
+        let (order, matched) = (order.clone(), *matched);
+        noted.confirming = None;
         self.note(Recorded {
             receipt: arrival.clone(),
             reserve: report.reserve.clone(),
@@ -439,27 +570,31 @@ impl Arrivals {
         Ok(outcome)
     }
 
+    /// The arrival at `receipt` a listed `filer` may file on: one Core recorded, at a reserve the filer files at. To
+    /// a filer that may not, there is none, whether one is recorded there or not.
+    fn arrival_for(&self, filer: &Actor, receipt: &Receipt) -> Result<Recorded, ArrivalError> {
+        self.recorded
+            .iter()
+            .find(|r| &r.receipt == receipt && files_at(filer, &r.reserve))
+            .cloned()
+            .ok_or(ArrivalError::NoSuchArrival)
+    }
+
     /// `filer` files the arrival at `arrival` anew, against the order it differed from (`REQ-ORD-23`): only the
-    /// operator, or the reserve it arrived at, acting for the party it states. Only an arrival held against an order
-    /// it differed from is filed anew; one that met no order is `REQ-ORD-14`'s. The refiling is recorded, its `who`
-    /// the filer, and moves nothing: the order's first segment still settles only on its own result. Filed anew
-    /// again, it is the same refiling.
+    /// deployment's operator, or the reserve it arrived at, acting for the party it states. Only an arrival held
+    /// against an order it differed from is filed anew; one that met no order is `REQ-ORD-14`'s. The refiling is
+    /// recorded, its `who` the filer, and moves nothing: the order's first segment still settles only on its own
+    /// result. Filed anew again, it is the same refiling.
     pub fn refile(
         &mut self,
         desk: &mut Desk<'_, '_>,
         filer: &Actor,
         arrival: &Receipt,
     ) -> Result<Receipt, ArrivalError> {
-        let recorded = self
-            .recorded
-            .iter()
-            .find(|r| &r.receipt == arrival)
-            .cloned()
-            .ok_or(ArrivalError::NoSuchArrival)?;
-        // The filer first: to anyone else, nothing about the arrival is told, not even how it met its order.
-        if !may_file(desk, filer, &recorded.reserve) {
+        if !listed_filer(desk, filer) {
             return Err(ArrivalError::NotTheFiler);
         }
+        let recorded = self.arrival_for(filer, arrival)?;
         let (Some(order), ArrivalMatch::Differs) = (&recorded.order, recorded.matched) else {
             return Err(ArrivalError::NoSuchArrival);
         };
@@ -484,37 +619,54 @@ impl Arrivals {
         )?)
     }
 
-    /// Files an order on an automatic deposit, routed with router `R` (`filing.rs`'s steps). The arrival must be one
-    /// Core recorded held against no order (`REQ-ORD-14`), its filer the reserve it arrived at or the operator, acting
-    /// for the party it states, and that reserve's latest declaration must say it starts routes on automatic
-    /// deposits: otherwise nothing starts, and nothing is asked or recorded (`REQ-ORD-13`). A filing for another
-    /// amount, place or asset than what arrived, or for another than the account's holder, is refused before an order
-    /// exists. One order per arrival: the same filing again carries it on, and another filing on the same arrival
-    /// opens nothing.
+    /// Files an order on an automatic deposit, routed with router `R` (`filing.rs`'s steps), telling `orders` of the
+    /// order before policy is asked about it. The filer is held first; then the arrival must be one Core recorded with
+    /// no order at a reserve the filer files at, and that reserve's latest declaration must say it starts routes on
+    /// automatic deposits: otherwise nothing starts, and nothing is asked or recorded (`REQ-ORD-13`). A filing for
+    /// another amount, place, asset, holder or destination than the deposit's, or in a session not the holder's, is
+    /// refused before an order exists, as is one policy refuses; none of those holds the deposit. One permitted filing
+    /// holds the deposit while it is under way or started: the same filing again, by any login of the filer's party,
+    /// is told how it stands, and another opens nothing. A permitted filing that ends frees the deposit again.
     pub fn file<R: Router>(
         &mut self,
         desk: &mut Desk<'_, '_>,
+        orders: &mut dyn FiledOrders,
         filing: Filing,
     ) -> Result<Filed, ArrivalError> {
-        let arrival = key(&filing.arrival);
-        let recorded = self
-            .recorded
-            .iter()
-            .find(|r| r.receipt == filing.arrival)
-            .cloned()
-            .ok_or(ArrivalError::NoSuchArrival)?;
-        // The filer first: to anyone else, nothing about the arrival or an order filed on it is told.
-        if !may_file(desk, &filing.filer, &recorded.reserve) {
+        if !listed_filer(desk, &filing.filer) {
             return Err(ArrivalError::NotTheFiler);
         }
+        let recorded = self.arrival_for(&filing.filer, &filing.arrival)?;
+        let arrival = key(&filing.arrival);
         if let Some(run) = self.runs.get(&arrival) {
-            if run.asked != filing {
+            if !same_filing(&run.asked, &filing) {
                 return Err(ArrivalError::Conflicting {
-                    order: Some(run.order.clone()),
+                    order: run.order.clone(),
                 });
             }
+            if let Some(outcome) = run.outcome() {
+                return Ok(outcome);
+            }
+            // Under way: carried on by the filer policy permitted alone, whose acceptance it records.
+            if run.asked.filer != filing.filer {
+                return Err(ArrivalError::OtherFiler);
+            }
         } else {
-            if let Some((_, filed, _)) = self.refused.iter().find(|(f, _, _)| f == &filing) {
+            if let Some(ended) = self
+                .ended
+                .iter()
+                .rev()
+                .find(|r| same_filing(&r.asked, &filing))
+            {
+                return ended.outcome().ok_or(ArrivalError::NotNow);
+            }
+            let refused = (
+                filing.filer.party.as_str().to_owned(),
+                filing.request.as_str().to_owned(),
+            );
+            if let Some((asked, filed, _)) = self.refused.get(&refused)
+                && same_filing(asked, &filing)
+            {
                 let filed = filed.clone();
                 self.flush_refused(desk)?;
                 return Ok(filed);
@@ -526,48 +678,61 @@ impl Arrivals {
             if !filing::declared(desk, &recorded.reserve) {
                 return Err(ArrivalError::NotDeclared);
             }
-            let Some(run) = self.open_run(desk, filing, recorded)? else {
-                let (_, filed, _) = self.refused.last().ok_or(ArrivalError::NotNow)?;
-                return Ok(filed.clone());
-            };
-            self.orders
-                .insert(run.order.as_str().to_owned(), arrival.clone());
-            self.runs.insert(arrival.clone(), run);
+            match self.open_run(desk, orders, filing, recorded)? {
+                Ok(run) => {
+                    self.runs.insert(arrival.clone(), run);
+                }
+                Err(filed) => return Ok(filed),
+            }
         }
         let Some(mut run) = self.runs.remove(&arrival) else {
             return Err(ArrivalError::NotNow);
         };
         let result = run.go_on::<R>(desk, self);
-        self.runs.insert(arrival, run);
+        // A filing that ended holds the deposit no more.
+        if matches!(run.outcome(), Some(Filed::CantProceed { .. })) {
+            self.ended.push(run);
+        } else {
+            self.runs.insert(arrival, run);
+        }
         result
+    }
+
+    /// The run that opened `order`, under way, started or ended.
+    fn run_of(&self, order: &Id) -> Option<&filing::Run> {
+        self.runs
+            .values()
+            .chain(self.ended.iter())
+            .find(|r| &r.order == order)
     }
 
     /// The `route_chosen` input that started `order`, as the log took it: what the segments follow
     /// (`Segments::follow`), beside intake's `Intake::start`. An order whose start the log hasn't taken has none.
     pub fn start(&self, order: &Id) -> Option<&RecordedInput> {
-        self.runs
-            .get(self.orders.get(order.as_str())?)?
-            .started
-            .as_ref()
+        self.run_of(order)?.started.as_ref()
     }
 
     /// The record of an order filed on an automatic deposit, for the assembly to answer policy's sources from
-    /// (`Requester`, `OrderOrigin`, `OrderParties`), as `Intake::record` does for an order a customer requested.
+    /// (`Requester`, `OrderOrigin`, `OrderParties`), as `Intake::record` does for an order a customer requested; the
+    /// same [`FiledOrders::opened`] was handed.
     pub fn record(&self, order: &Id) -> Option<OrderRecord> {
-        let run = self.runs.get(self.orders.get(order.as_str())?)?;
-        Some(OrderRecord {
-            order: order.clone(),
-            request: run.asked.request.clone(),
-            parties: run.asked.parties.clone(),
-            origin_reserve: run.arrival_reserve().clone(),
-        })
+        self.run_of(order).map(filing::Run::record)
     }
 }
 
-/// The open order `report` is held against, among `open`: only one at its reserve, outer node and asset, for its
-/// account; the first stating the amount that arrived matches, and otherwise the first differs. None open there, it
-/// meets no order.
-fn target(report: &Report, open: Vec<OpenOrder>) -> Option<Target> {
+/// Whether two reports state the same figures.
+fn same_figures(first: &Report, again: &Report) -> bool {
+    first
+        == &Report {
+            notice: first.notice.clone(),
+            ..again.clone()
+        }
+}
+
+/// The open order `report` is held against, among `open`, leaving out the orders in `taken`: only one of its holder's,
+/// at its reserve, outer node and asset, for its account; the first stating the amount that arrived matches, and
+/// otherwise the first differs. None open there, it meets no order.
+fn target(report: &Report, open: Vec<OpenOrder>, taken: &BTreeSet<String>) -> Option<Target> {
     let here: Vec<OpenOrder> = open
         .into_iter()
         .filter(|o| {
@@ -575,6 +740,8 @@ fn target(report: &Report, open: Vec<OpenOrder>) -> Option<Target> {
                 && o.node == report.node
                 && o.asset == report.asset
                 && o.account == report.account
+                && o.holder == report.holder
+                && !taken.contains(o.order.as_str())
         })
         .collect();
     if let Some(order) = here.iter().find(|o| o.amount == report.amount) {

@@ -1,17 +1,21 @@
-//! Core's question about an arrival, for the order it is held against: whether the account holds what arrived,
+//! Core's question about an arrival, for the order it is held against: whether the account's funds cover what arrived,
 //! asked of the reserve under a fresh transaction for that order, signed with the operator's key and appended about
 //! the order and the transaction before it is sent, its answer appended with that transaction in its `about`, so the
 //! log binds the answer to the order before the answer exists (`REQ-ORD-32`, `REQ-ORD-38`). The answer is the
 //! reserve's report an `arrival` naming the order rests on (`arrival-rests-on-the-reserves-report`).
 //!
 //! provider-role has no question asking a reserve what arrived for an order, nor a result naming the node, asset and
-//! amount of a credit; the nearest is a balance verification at the amount that arrived (`INV-9`: yes or no). It is
-//! a balance check (`REQ-CAT-4`), so it goes only once the catalogue's `begin_check` lets it, in the session the
-//! order's reserve is asked in, for the order's own account, and the catalogue reads its answer (`answer_check`).
+//! amount of a credit; the nearest is a balance verification at the amount that arrived (`INV-9`: yes or no). Its yes
+//! says only that the funds suffice, not that anything arrived: it binds the reserve's word to the order, and the
+//! figures stay the report's. It is a balance check (`REQ-CAT-4`), so it goes only once the catalogue's `begin_check`
+//! lets it, in the session the order's reserve is asked in, for the order's own account, and the catalogue reads its
+//! answer (`answer_check`). The check is opened only once the question is signed and its bytes kept, so a question
+//! that couldn't be built leaves no check open.
 
 use std::collections::BTreeSet;
 
 use rutent_contracts::core_internal::{About, Actor, ActorKind, Entry, Receipt, Role};
+use rutent_contracts::provider_role::BalanceRefusal;
 use rutent_contracts::provider_role::{
     BalanceVerification, Denomination, OPERATION_SHAPE, Operation, ResultBody, Signature,
     SignatureScheme, Statement, signing_input,
@@ -54,11 +58,14 @@ pub(super) struct Confirming {
 /// How a question came out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Confirmation {
-    /// The reserve answered Core's question, under its transaction, that the account holds what arrived: the receipt
-    /// of its answer's stated entry.
+    /// The reserve answered Core's question, under its transaction, that the account's funds cover what arrived: the
+    /// receipt of its answer's stated entry.
     Confirmed(Receipt),
-    /// It answered no, refused, answered something else, or nothing.
-    NotConfirmed,
+    /// It answered that they don't, or refused finally.
+    No,
+    /// It answered nothing Core can read as yes or no: silence, an answer to another question, or a refusal that
+    /// waits on the person (`REQ-CAT-19`).
+    Unanswered,
 }
 
 /// The actor a reserve's statement claims made it: the reserve, stating for its publisher.
@@ -110,7 +117,21 @@ impl Confirming {
             asset: asking.asset.id.clone(),
             amount: asking.amount.amount().as_str().to_owned(),
         });
-        // The holder's own order: not counted against the account's bound (`REQ-CAT-3`).
+        let bytes = sign(desk, operation.clone())?;
+        let about = About {
+            order: Some(asking.order.clone()),
+            segment: None,
+            transaction: Some(transaction.clone()),
+        };
+        let (question, _) = journal::stated(
+            &mut *desk.parts.evidence,
+            desk.parts.clock,
+            &bytes,
+            desk.operator.clone(),
+            Some(about),
+        )?;
+        // Only now, the question signed and kept, is the check opened: the holder's own order, not counted against
+        // the account's bound (`REQ-CAT-3`).
         let ticket = match desk.parts.catalogue.begin_check(
             &operation,
             Some(asking.order.as_str()),
@@ -119,19 +140,6 @@ impl Confirming {
             Ok(ticket) => ticket,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = sign(desk, operation)?;
-        let about = About {
-            order: Some(asking.order.clone()),
-            segment: None,
-            transaction: Some(transaction.clone()),
-        };
-        let question = journal::stated(
-            &mut *desk.parts.evidence,
-            desk.parts.clock,
-            &bytes,
-            desk.operator.clone(),
-            Some(about),
-        )?;
         Ok(Ok(Confirming {
             order: asking.order.clone(),
             reserve: asking.reserve.clone(),
@@ -161,7 +169,7 @@ impl Confirming {
             self.sent = true;
         }
         let Some(answer) = &self.answer else {
-            return Ok(Confirmation::NotConfirmed);
+            return Ok(Confirmation::Unanswered);
         };
         if self.answer_entry.is_none() {
             let maker = reserve_maker(desk.parts.catalogue, desk.operator, &self.reserve);
@@ -170,16 +178,19 @@ impl Confirming {
                 segment: None,
                 transaction: Some(self.transaction.clone()),
             };
-            self.answer_entry = Some(journal::stated(
-                &mut *desk.parts.evidence,
-                desk.parts.clock,
-                answer,
-                maker,
-                Some(about),
-            )?);
+            self.answer_entry = Some(
+                journal::stated(
+                    &mut *desk.parts.evidence,
+                    desk.parts.clock,
+                    answer,
+                    maker,
+                    Some(about),
+                )?
+                .0,
+            );
         }
         let Some(entry) = &self.answer_entry else {
-            return Ok(Confirmation::NotConfirmed);
+            return Ok(Confirmation::Unanswered);
         };
         let receipt = journal::once(&mut *desk.parts.log, entry, &mut self.answer_receipt)?;
         let verdict = match &self.verdict {
@@ -199,10 +210,10 @@ impl Confirming {
                 verdict
             }
         };
-        Ok(if verdict == Verdict::Yes {
-            Confirmation::Confirmed(receipt)
-        } else {
-            Confirmation::NotConfirmed
+        Ok(match verdict {
+            Verdict::Yes => Confirmation::Confirmed(receipt),
+            Verdict::No | Verdict::Refused(BalanceRefusal::Final(_)) => Confirmation::No,
+            Verdict::Refused(_) | Verdict::NotKnown => Confirmation::Unanswered,
         })
     }
 }

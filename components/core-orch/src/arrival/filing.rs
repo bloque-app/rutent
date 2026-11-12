@@ -1,19 +1,36 @@
 //! An order filed on an automatic deposit (`REQ-ORD-13`, `REQ-ORD-15`), from the arrival held against no order to the
-//! order's start, each step kept so a filing that stopped is carried on by filing it again:
+//! order's start.
 //!
-//! 1. **Opened.** The order, under a fresh identifier, and its destination resolved (`REQ-ORD-24`): a
-//!    `destination_check`, and, where it doesn't resolve, an `order_refusal` of its class.
+//! **Before an order exists**, nothing is opened, held, asked or routed, and a filing that stops here holds nothing:
+//! 1. the filing is for what arrived (from its outer node, in its asset, at its amount, with no `follows`), for the
+//!    account's holder as requester and beneficiary, naming no other account for the deposit; and its session is one
+//!    policy opened for that holder, still open. Otherwise an `order_refusal` naming no order;
+//! 2. the destination is resolved (`REQ-ORD-24`) to an owner, and that owner is the beneficiary: until the holder's
+//!    own standing instruction exists, an automatic deposit goes to its holder alone. Another owner, or a refusal, is
+//!    `destination_refused`; not yet resolved waits, with nothing recorded;
+//! 3. the order is drawn under a fresh identifier, its record handed to the assembly ([`super::FiledOrders`]) so
+//!    policy's sources can answer for it, and the authorisation, given by the filer, goes to policy, which holds a
+//!    reserve to its declaration and the operator to its permission (`F-021`). A refusal about the filer is answered
+//!    as [`ArrivalError::Refused`]; one about the order (`outside_authorisation`) is an `order_refusal` naming no
+//!    order; policy's not known waits.
+//!
+//! **Once policy permits**, the filing holds the deposit, and each step is kept, so a filing that stopped is carried
+//! on by filing it again:
+//! 1. **Opened.** The `destination_check` that resolved.
 //! 2. **The deposit held against it.** Core asks the reserve, under a fresh transaction for the order, whether the
-//!    account holds what arrived (`confirm.rs`), and records the deposit's `arrival` naming the order, `matches`, on
-//!    the reserve's answer: the arrival the acceptance rests on (`automatic-deposit-rests-on-its-arrival`).
+//!    account's funds cover what arrived (`confirm.rs`), and records the deposit's `arrival` naming the order,
+//!    `matches`, on the reserve's yes: the arrival the acceptance rests on (`automatic-deposit-rests-on-its-arrival`).
+//!    A silent reserve, or a check that can't go yet, waits; a no ends the order.
 //! 3. **Routed.** One routing through `rounds::route`, with no user present (`Presence::AutomaticDeposit`), in the
 //!    session opened for the deposit's account: every question the rounds' own, asked under a fresh transaction for
 //!    the order, and no reserve's yes asked (`REQ-ORD-32`). The quote is recorded as `shown`, labelled a quote, and
 //!    its digest is what the acceptance names.
-//! 4. **Accepted and started.** The authorisation, given by the filer, goes to policy, which holds a reserve to its
-//!    declaration and the operator to its permission (`F-021`). Only on its permit is the `acceptance` recorded,
-//!    `basis: automatic_deposit`, its `who` the filer, with no yes and no session, then the `route_chosen` input, the
-//!    filer's statement. Both are built once and appended as built.
+//! 4. **Accepted and started.** The `acceptance`, `basis: automatic_deposit`, its `who` the filer, with no yes and no
+//!    session, naming the authorisation policy permitted, then the `route_chosen` input, the filer's statement. Both
+//!    are built once and appended as built.
+//!
+//! An order that ends after policy permitted it is refused of its class, naming it, and the deposit is free to be
+//! filed on again. Arrivals takes no exposures, so ending holds nothing more to release.
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
@@ -31,27 +48,25 @@ use rutent_contracts::state_machine::{
 };
 
 use super::confirm::{Asking, Confirmation, Confirming};
-use super::{ArrivalError, Arrivals, Filed, Filing, Recorded, journal};
-use crate::intake::{DESTINATION_INPUT, Desk, Quote, Resolution, Wait};
+use super::{ArrivalError, Arrivals, Filed, FiledOrders, FiledWait, Filing, Recorded, journal};
+use crate::intake::{DESTINATION_INPUT, Desk, OrderRecord, Quote, Resolution};
 use crate::rounds::{self, History, NotOffered, Offer, Order, Presence, Routed, Routing};
 use crate::snapshot::check_part;
 
-/// Where a filing stands.
+/// Where a permitted filing stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Step {
-    /// Its destination is to be resolved.
-    Open,
     /// The deposit is to be held against it.
     Hold,
     /// It is to be routed.
     Route,
-    /// Its authorisation is to be asked, its acceptance and start recorded.
+    /// Its acceptance and start are to be recorded.
     Accept,
     /// It started, or ended.
     Done,
 }
 
-/// The route offered, kept until its authorisation is permitted.
+/// The route offered, kept until its acceptance is recorded.
 #[derive(Debug, Clone)]
 struct Offered {
     quote: Quote,
@@ -59,17 +74,20 @@ struct Offered {
     candidate: Candidate,
 }
 
-/// One filing, kept from its first call: what it asked, the order it opened, the step it reached, and the entries
-/// built and not yet appended.
+/// One permitted filing, kept from policy's permit: what it asked, the order it opened, the authorisation policy
+/// permitted, the step it reached, and the entries built and not yet appended.
 #[derive(Debug, Clone)]
 pub(super) struct Run {
-    /// The filing as asked: a repeat is the same filing only if it equals this.
+    /// The filing as asked: a repeat is the same filing only if it equals this, but for which login of the filer's
+    /// party made it.
     pub(super) asked: Filing,
     /// The filing as Core runs it, the destination's account set as the deposit's input.
     filing: Filing,
     /// The arrival it files on.
     arrival: Recorded,
     pub(super) order: Id,
+    /// The authorisation policy permitted, which the acceptance names.
+    authorisation: Id,
     step: Step,
     /// Entries built and not yet appended, appended in order, each as built.
     pending: Vec<Entry>,
@@ -96,8 +114,8 @@ pub(super) fn declared(desk: &Desk<'_, '_>, reserve: &Id) -> bool {
 }
 
 /// The filing with the destination's account set as the deposit's input, or `None` where it isn't one for what
-/// arrived: from the outer node and in the asset it arrived in, at the amount that arrived, for the account's
-/// holder, ending at the destination's node, and naming no other account for the deposit.
+/// arrived: from the outer node and in the asset it arrived in, at the amount that arrived, for the account's holder
+/// as requester and beneficiary, ending at the destination's node, and naming no other account for the deposit.
 fn well_formed(mut filing: Filing, arrival: &Recorded) -> Option<Filing> {
     let route = &filing.route;
     let from = Endpoint {
@@ -109,6 +127,7 @@ fn well_formed(mut filing: Filing, arrival: &Recorded) -> Option<Filing> {
         || route.follows.is_some()
         || route.to.node != NodeRef::Outer(filing.destination.node.clone())
         || filing.parties.requester != arrival.holder
+        || filing.parties.beneficiary != arrival.holder
     {
         return None;
     }
@@ -145,9 +164,9 @@ fn flush(desk: &mut Desk<'_, '_>, pending: &mut Vec<Entry>) -> Result<(), Append
 }
 
 impl Arrivals {
-    /// A filing refused before any order exists: an `order_refusal` naming no order, appended and kept, so the same
-    /// filing again is told the same and records nothing. It holds nothing against the arrival.
-    pub(super) fn refuse_filing(
+    /// A filing refused before an order opened: an `order_refusal` naming no order, appended and kept by the filer's
+    /// party and identifier, so the same filing again is told the same and records nothing. It holds nothing.
+    fn refuse_filing(
         &mut self,
         desk: &mut Desk<'_, '_>,
         filing: Filing,
@@ -159,14 +178,19 @@ impl Arrivals {
             refusal(&filing.request, None, class),
         )?;
         let filed = Filed::CantProceed { order: None, class };
-        self.refused.push((filing, filed.clone(), Some(entry)));
+        let key = (
+            filing.filer.party.as_str().to_owned(),
+            filing.request.as_str().to_owned(),
+        );
+        self.refused
+            .insert(key, (filing, filed.clone(), Some(entry)));
         self.flush_refused(desk)?;
         Ok(filed)
     }
 
     /// Appends every refused filing's refusal not yet appended.
     pub(super) fn flush_refused(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), AppendFailure> {
-        for (_, _, entry) in &mut self.refused {
+        for (_, _, entry) in self.refused.values_mut() {
             if let Some(e) = entry {
                 journal::append(&mut *desk.parts.log, e)?;
                 *entry = None;
@@ -175,37 +199,122 @@ impl Arrivals {
         Ok(())
     }
 
-    /// Opens a run of `filing` on `arrival`, or refuses it before an order exists.
+    /// Whether `order` is an identifier no filing, question or the rounds used.
+    fn fresh_order(&self, desk: &Desk<'_, '_>, order: &Id) -> bool {
+        !desk.parts.issued.contains(order.as_str())
+            && !self.used.contains(order.as_str())
+            && !self
+                .runs
+                .values()
+                .chain(self.ended.iter())
+                .any(|r| &r.order == order)
+    }
+
+    /// Takes `filing` on `arrival` up to policy's permit (the module's docs, before an order exists): the run it
+    /// opens, or what it is told where it stops before one, holding nothing.
     pub(super) fn open_run(
         &mut self,
         desk: &mut Desk<'_, '_>,
+        orders: &mut dyn FiledOrders,
         filing: Filing,
         arrival: Recorded,
-    ) -> Result<Option<Run>, ArrivalError> {
+    ) -> Result<Result<Run, Filed>, ArrivalError> {
         let Some(well) = well_formed(filing.clone(), &arrival) else {
-            self.refuse_filing(desk, filing, OrderRefusalClass::MalformedRequest)?;
-            return Ok(None);
+            return Ok(Err(self.refuse_filing(
+                desk,
+                filing,
+                OrderRefusalClass::MalformedRequest,
+            )?));
         };
-        // The reserve is asked about the holder's funds in this session: it must be the requester's, and open.
+        // The reserve is asked about the holder's funds in this session: it must be the holder's, and open.
         let now = journal::now(desk.parts.clock)?;
         let held = desk.sessions.held(&well.session).is_some_and(|held| {
             held.holder == well.parties.requester && held.expires_at.unix_nanos() > now.unix_nanos()
         });
         if !held {
-            self.refuse_filing(desk, filing, OrderRefusalClass::RefusedByPolicy)?;
-            return Ok(None);
+            return Ok(Err(self.refuse_filing(
+                desk,
+                filing,
+                OrderRefusalClass::RefusedByPolicy,
+            )?));
+        }
+        // The deposit goes to its holder: the destination's owner is the beneficiary, who is the holder.
+        match desk.destinations.resolve(&well.destination) {
+            Resolution::Owner(owner) if owner == well.parties.beneficiary => {}
+            Resolution::NotYet => {
+                return Ok(Err(Filed::Waiting {
+                    order: None,
+                    wait: FiledWait::DestinationNotYetResolved,
+                }));
+            }
+            Resolution::Owner(_) | Resolution::Refused => {
+                return Ok(Err(self.refuse_filing(
+                    desk,
+                    filing,
+                    OrderRefusalClass::DestinationRefused,
+                )?));
+            }
         }
         let order = desk.parts.fresh.id();
-        if self.orders.contains_key(order.as_str()) {
+        if !self.fresh_order(desk, &order) {
             return Err(ArrivalError::Fresh);
         }
-        Ok(Some(Run {
+        let record = OrderRecord {
+            order: order.clone(),
+            request: well.request.clone(),
+            parties: well.parties.clone(),
+            origin_reserve: arrival.reserve.clone(),
+        };
+        orders.opened(&record);
+        let authorisation = Authorisation {
+            authorisation: desk.parts.fresh.id(),
+            order: order.clone(),
+            origin_reserve: arrival.reserve.clone(),
+            destination: well.destination.clone(),
+            to_asset: well.route.to.asset.clone(),
+            floor: well
+                .route
+                .floor
+                .as_ref()
+                .and_then(|f| PositiveAmount::new(f.as_str())),
+            given_by: well.filer.clone(),
+            at: now,
+        };
+        let decision = desk.authorisations.authorise(&authorisation)?;
+        if decision.permit().is_none() {
+            return match decision.outcome {
+                // A refusal about the order itself is the filing's answer, recorded.
+                Answer::Refuse {
+                    class: RefusalClass::OutsideAuthorisation,
+                } => Ok(Err(self.refuse_filing(
+                    desk,
+                    filing,
+                    OrderRefusalClass::RefusedByPolicy,
+                )?)),
+                // A refusal about the filer: another filer may file.
+                Answer::Refuse { class } => Err(ArrivalError::Refused {
+                    class: refused(class),
+                }),
+                _ => Ok(Err(Filed::Waiting {
+                    order: None,
+                    wait: FiledWait::PolicyNotKnown,
+                })),
+            };
+        }
+        let check = What::DestinationCheck {
+            order: order.clone(),
+            destination: well.destination.clone(),
+            outcome: DestinationOutcome::Resolved,
+        };
+        let pending = vec![journal::build(desk.parts.clock, desk.core, check)?];
+        Ok(Ok(Run {
             asked: filing,
             filing: well,
             arrival,
             order,
-            step: Step::Open,
-            pending: Vec::new(),
+            authorisation: authorisation.authorisation,
+            step: Step::Hold,
+            pending,
             confirming: None,
             held: None,
             history: History::new(),
@@ -218,6 +327,21 @@ impl Arrivals {
 }
 
 impl Run {
+    /// How it stands, once it started or ended.
+    pub(super) fn outcome(&self) -> Option<Filed> {
+        self.outcome.clone()
+    }
+
+    /// The order's record, as [`super::FiledOrders::opened`] was handed it.
+    pub(super) fn record(&self) -> OrderRecord {
+        OrderRecord {
+            order: self.order.clone(),
+            request: self.filing.request.clone(),
+            parties: self.filing.parties.clone(),
+            origin_reserve: self.arrival.reserve.clone(),
+        }
+    }
+
     /// Carries the filing on from the step it reached, with router `R`.
     pub(super) fn go_on<R: Router>(
         &mut self,
@@ -226,23 +350,20 @@ impl Run {
     ) -> Result<Filed, ArrivalError> {
         loop {
             flush(desk, &mut self.pending)?;
-            match self.step {
-                Step::Open => {
-                    if let Some(filed) = self.open(desk)? {
-                        flush(desk, &mut self.pending)?;
-                        return Ok(filed);
-                    }
-                }
+            let waits = match self.step {
                 Step::Hold => self.hold(desk, arrivals)?,
-                Step::Route => self.route::<R>(desk)?,
+                Step::Route => {
+                    self.route::<R>(desk)?;
+                    None
+                }
                 Step::Accept => {
-                    if let Some(filed) = self.take_acceptance(desk)? {
-                        return Ok(filed);
-                    }
+                    self.take_acceptance(desk)?;
+                    None
                 }
-                Step::Done => {
-                    return self.outcome.clone().ok_or(ArrivalError::NotNow);
-                }
+                Step::Done => return self.outcome.clone().ok_or(ArrivalError::NotNow),
+            };
+            if let Some(waits) = waits {
+                return Ok(waits);
             }
         }
     }
@@ -264,44 +385,17 @@ impl Run {
         Ok(())
     }
 
-    /// Resolves the destination: on to the deposit where it resolves; waiting where it isn't resolved yet; ended
-    /// where it is refused.
-    fn open(&mut self, desk: &mut Desk<'_, '_>) -> Result<Option<Filed>, ArrivalError> {
-        let outcome = match desk.destinations.resolve(&self.filing.destination) {
-            Resolution::Owner(_) => DestinationOutcome::Resolved,
-            Resolution::NotYet => DestinationOutcome::NotYet,
-            Resolution::Refused => DestinationOutcome::Refused,
-        };
-        let check = What::DestinationCheck {
-            order: self.order.clone(),
-            destination: self.filing.destination.clone(),
-            outcome,
-        };
-        self.pending
-            .push(journal::build(desk.parts.clock, desk.core, check)?);
-        match outcome {
-            DestinationOutcome::NotYet => {
-                let class = OrderRefusalClass::DestinationNotYetResolved;
-                let what = refusal(&self.filing.request, Some(&self.order), class);
-                self.pending
-                    .push(journal::build(desk.parts.clock, desk.core, what)?);
-                return Ok(Some(Filed::Waiting {
-                    order: self.order.clone(),
-                    wait: Wait::DestinationNotYetResolved,
-                }));
-            }
-            DestinationOutcome::Refused => self.end(desk, OrderRefusalClass::DestinationRefused)?,
-            _ => self.step = Step::Hold,
-        }
-        Ok(None)
-    }
-
-    /// Holds the deposit against the order, on the reserve's answer to Core's question about it.
+    /// Holds the deposit against the order, on the reserve's yes to Core's question about it; waits where the reserve
+    /// is silent or the check can't go yet, and ends the order on its no.
     fn hold(
         &mut self,
         desk: &mut Desk<'_, '_>,
         arrivals: &mut Arrivals,
-    ) -> Result<(), ArrivalError> {
+    ) -> Result<Option<Filed>, ArrivalError> {
+        let waiting = Filed::Waiting {
+            order: Some(self.order.clone()),
+            wait: FiledWait::ReserveNotYetConfirmed,
+        };
         if self.held.is_none() {
             if self.confirming.is_none() {
                 let asking = Asking {
@@ -314,14 +408,23 @@ impl Run {
                 };
                 match Confirming::ask(desk, &mut arrivals.used, asking)? {
                     Ok(confirming) => self.confirming = Some(confirming),
-                    Err(_) => return self.end(desk, OrderRefusalClass::NoRouteRightNow),
+                    Err(_) => return Ok(Some(waiting)),
                 }
             }
             let Some(confirming) = &mut self.confirming else {
                 return Err(ArrivalError::NotNow);
             };
-            let Confirmation::Confirmed(report) = confirming.go_on(desk)? else {
-                return self.end(desk, OrderRefusalClass::NoRouteRightNow);
+            let report = match confirming.go_on(desk)? {
+                Confirmation::Confirmed(report) => report,
+                Confirmation::No => {
+                    self.confirming = None;
+                    self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+                    return Ok(None);
+                }
+                Confirmation::Unanswered => {
+                    self.confirming = None;
+                    return Ok(Some(waiting));
+                }
             };
             let what = What::Arrival {
                 reserve: self.arrival.reserve.clone(),
@@ -345,7 +448,61 @@ impl Run {
             ..self.arrival.clone()
         });
         self.step = Step::Route;
-        Ok(())
+        Ok(None)
+    }
+
+    /// Records the acceptance on the automatic deposit, naming the authorisation policy permitted, and the order's
+    /// start.
+    fn take_acceptance(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
+        if self.accepting.is_none() {
+            let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
+            let input = self.route_chosen(desk, &offered)?;
+            let acceptance = desk.parts.fresh.id();
+            let accepted = journal::build(
+                desk.parts.clock,
+                &self.filing.filer,
+                What::Acceptance {
+                    acceptance: acceptance.clone(),
+                    order: self.order.clone(),
+                    request: self.filing.request.clone(),
+                    quote: offered.digest.clone(),
+                    authorisation: self.authorisation.clone(),
+                    basis: AcceptanceBasis::AutomaticDeposit,
+                    parties: self.filing.parties.clone(),
+                    origin_reserve: self.arrival.reserve.clone(),
+                    yeses: Vec::new(),
+                    session: None,
+                },
+            )?;
+            let start = journal::build(
+                desk.parts.clock,
+                desk.core,
+                What::Input {
+                    input: input.clone(),
+                },
+            )?;
+            self.accepting = Some((acceptance, input, vec![accepted, start]));
+        }
+        let Some((acceptance, input, pending)) = &mut self.accepting else {
+            return Err(ArrivalError::NotNow);
+        };
+        match flush(desk, pending) {
+            Ok(()) => {
+                self.started = Some(input.clone());
+                self.outcome = Some(Filed::Started {
+                    order: self.order.clone(),
+                    acceptance: acceptance.clone(),
+                });
+                self.step = Step::Done;
+                Ok(())
+            }
+            // A refused acceptance or start can't be carried on: the order ends.
+            Err(AppendFailure::Refused(_)) => {
+                self.accepting = None;
+                self.end(desk, OrderRefusalClass::NoRouteRightNow)
+            }
+            Err(failure) => Err(ArrivalError::Log(failure)),
+        }
     }
 
     /// Routes the order with no user present, and records the quote shown, or why it can't proceed.
@@ -419,98 +576,6 @@ impl Run {
         });
         self.step = Step::Accept;
         Ok(())
-    }
-
-    /// Asks policy for the filer's authorisation, and on its permit records the acceptance on the automatic deposit
-    /// and the order's start.
-    fn take_acceptance(&mut self, desk: &mut Desk<'_, '_>) -> Result<Option<Filed>, ArrivalError> {
-        if self.accepting.is_none() {
-            let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
-            // Built and checked before policy is asked, so an acceptance that fails its own shape costs no permit.
-            let authorisation_id = desk.parts.fresh.id();
-            let input = self.route_chosen(desk, &offered)?;
-            let acceptance = desk.parts.fresh.id();
-            let filer = &self.filing.filer;
-            let accepted = journal::build(
-                desk.parts.clock,
-                filer,
-                What::Acceptance {
-                    acceptance: acceptance.clone(),
-                    order: self.order.clone(),
-                    request: self.filing.request.clone(),
-                    quote: offered.digest.clone(),
-                    authorisation: authorisation_id.clone(),
-                    basis: AcceptanceBasis::AutomaticDeposit,
-                    parties: self.filing.parties.clone(),
-                    origin_reserve: self.arrival.reserve.clone(),
-                    yeses: Vec::new(),
-                    session: None,
-                },
-            )?;
-            let start = journal::build(
-                desk.parts.clock,
-                desk.core,
-                What::Input {
-                    input: input.clone(),
-                },
-            )?;
-            let authorisation = Authorisation {
-                authorisation: authorisation_id,
-                order: self.order.clone(),
-                origin_reserve: self.arrival.reserve.clone(),
-                destination: self.filing.destination.clone(),
-                to_asset: self.filing.route.to.asset.clone(),
-                floor: self
-                    .filing
-                    .route
-                    .floor
-                    .as_ref()
-                    .and_then(|f| PositiveAmount::new(f.as_str())),
-                given_by: filer.clone(),
-                at: journal::now(desk.parts.clock)?,
-            };
-            let decision = desk.authorisations.authorise(&authorisation)?;
-            if decision.permit().is_none() {
-                return match decision.outcome {
-                    // Only a refusal about the order itself ends it.
-                    Answer::Refuse {
-                        class: RefusalClass::OutsideAuthorisation,
-                    } => {
-                        self.end(desk, OrderRefusalClass::RefusedByPolicy)?;
-                        Ok(None)
-                    }
-                    Answer::Refuse { class } => Err(ArrivalError::Refused {
-                        class: refused(class),
-                    }),
-                    _ => Ok(Some(Filed::Waiting {
-                        order: self.order.clone(),
-                        wait: Wait::PolicyNotKnown,
-                    })),
-                };
-            }
-            self.accepting = Some((acceptance, input, vec![accepted, start]));
-        }
-        let Some((acceptance, input, pending)) = &mut self.accepting else {
-            return Err(ArrivalError::NotNow);
-        };
-        match flush(desk, pending) {
-            Ok(()) => {
-                self.started = Some(input.clone());
-                self.outcome = Some(Filed::Started {
-                    order: self.order.clone(),
-                    acceptance: acceptance.clone(),
-                });
-                self.step = Step::Done;
-                Ok(None)
-            }
-            // A refused acceptance or start can't be carried on: the order ends.
-            Err(AppendFailure::Refused(_)) => {
-                self.accepting = None;
-                self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
-                Ok(None)
-            }
-            Err(failure) => Err(ArrivalError::Log(failure)),
-        }
     }
 
     /// The `route_chosen` input that opens the order: the chosen candidate's parts as the state machine plans them,
@@ -632,12 +697,5 @@ fn refused(class: RefusalClass) -> OrderRefusalClass {
     match class {
         RefusalClass::OverBound => OrderRefusalClass::OverBound,
         _ => OrderRefusalClass::RefusedByPolicy,
-    }
-}
-
-impl Run {
-    /// The reserve the deposit arrived at: the order's origin reserve.
-    pub(super) fn arrival_reserve(&self) -> &Id {
-        &self.arrival.reserve
     }
 }

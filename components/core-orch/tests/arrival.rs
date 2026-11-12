@@ -23,7 +23,8 @@ use rutent_contracts::provider_role::{Denomination, OuterNode, RESULT_SHAPE};
 use rutent_contracts::router_api::{Id, PositiveAmount};
 use rutent_contracts::state_machine::{Observed, SourceKind};
 use rutent_core_orch::arrival::{
-    ArrivalError, Arrivals, Arrived, Filed, Filing, OpenOrder, OpenOrders, Report,
+    ArrivalError, Arrivals, Arrived, Filed, FiledOrders, FiledWait, Filing, OpenOrder, OpenOrders,
+    Report,
 };
 use rutent_core_orch::intake::Told;
 use rutent_core_orch::rounds::Providers;
@@ -69,6 +70,8 @@ fn reserve_filer() -> Actor {
 struct Reserve {
     sim: Sim,
     insufficient: bool,
+    /// Whether the reserve answers Core's balance verifications with nothing.
+    silent: bool,
     /// The balance verifications the reserve was asked, as received.
     verifications: Vec<Value>,
 }
@@ -78,6 +81,7 @@ impl Reserve {
         Self {
             sim: env.sim(),
             insufficient: false,
+            silent: false,
             verifications: Vec::new(),
         }
     }
@@ -96,6 +100,9 @@ impl Providers for Reserve {
             return self.sim.ask(provider, question);
         }
         self.verifications.push(operation.clone());
+        if self.silent {
+            return None;
+        }
         let now = self.sim.clock.now().seconds;
         let body = json!({
             "kind": "balance_verification",
@@ -152,6 +159,7 @@ fn open_order(order: &Id) -> OpenOrder {
         node: polygon(),
         asset: usdc(),
         account: id(ACCOUNT),
+        holder: customer().party,
         amount: amount(1000),
         session: id(SESSION),
     }
@@ -159,10 +167,39 @@ fn open_order(order: &Id) -> OpenOrder {
 
 /// An environment whose register lists the operator and the reserve as acting for themselves.
 fn env() -> Env {
-    let env = Env::new();
+    let mut env = Env::new();
     env.actors.borrow_mut().list(&operator());
     env.actors.borrow_mut().list(&reserve_filer());
+    // The customer's address is the customer's own: an automatic deposit goes to its holder.
+    env.register.answers.insert(
+        ADDRESS.into(),
+        rutent_core_orch::intake::Resolution::Owner(customer().party),
+    );
     env
+}
+
+/// The assembly, told of each order a filing opens: it holds that policy hasn't been asked about the order yet, so
+/// policy's sources can answer for it when it is.
+struct TellsAssembly(std::rc::Rc<std::cell::RefCell<Book>>);
+
+thread_local! {
+    /// Every order record the assembly was told of, in this test's thread.
+    static OPENED: std::cell::RefCell<Vec<Id>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl FiledOrders for TellsAssembly {
+    fn opened(&mut self, record: &rutent_core_orch::intake::OrderRecord) {
+        OPENED.with(|o| o.borrow_mut().push(record.order.clone()));
+        let asked = self.0.borrow().verified().into_iter().any(|w| {
+            matches!(w, What::Authorise { authorisation, .. } if authorisation.order == record.order)
+        });
+        assert!(
+            !asked,
+            "the order's record comes before policy is asked about it"
+        );
+        assert_eq!(record.origin_reserve, id(RESERVE));
+        assert_eq!(record.parties.requester, customer().party);
+    }
 }
 
 fn arrive(
@@ -191,8 +228,9 @@ fn file(
     arrivals: &mut Arrivals,
     filing: &Filing,
 ) -> Result<Filed, ArrivalError> {
+    let mut told = TellsAssembly(env.book.clone());
     env.with_providers(providers, |_, desk| {
-        arrivals.file::<RouteFinder>(desk, filing.clone())
+        arrivals.file::<RouteFinder>(desk, &mut told, filing.clone())
     })
 }
 
@@ -365,7 +403,7 @@ proptest! {
         units in prop::collection::vec(1u64..5_000_000, 1..4),
         elsewhere in prop::sample::select(vec!["none", "reserve", "asset", "account", "node"]),
     ) {
-        let mut env = env();
+        let mut env = crate::env();
         let mut providers = Reserve::new(&env);
         let mut arrivals = Arrivals::new();
         // An order open for the same amount, but not where the value arrived.
@@ -421,7 +459,7 @@ fn other_amount(open: &mut Open, units: u64) {
 // verifies: REQ-ORD-14, INV-8
 #[test]
 fn same_notice_again_is_recorded_once() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
     let mut open = Open::default();
@@ -441,7 +479,7 @@ fn same_notice_again_is_recorded_once() {
 // verifies: REQ-ORD-23
 #[test]
 fn short_excess_and_split_arrivals_settle_no_first_segment_by_themselves() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let order = explicit_order(&mut env, &mut providers);
     let inputs_before = env.started();
@@ -526,7 +564,7 @@ fn short_excess_and_split_arrivals_settle_no_first_segment_by_themselves() {
 // verifies: REQ-ORD-23, REQ-ORD-32, REQ-ORD-38
 #[test]
 fn arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let order = explicit_order(&mut env, &mut providers);
     let mut arrivals = Arrivals::new();
@@ -576,7 +614,7 @@ fn arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question(
     )
     .unwrap();
     assert!(
-        matches!(unconfirmed, Arrived::Unconfirmed { .. }),
+        matches!(unconfirmed, Arrived::Waiting { .. }),
         "{unconfirmed:?}"
     );
     assert_eq!(arrivals_recorded(&env).len(), len);
@@ -589,7 +627,7 @@ fn arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question(
 // verifies: REQ-ORD-23
 #[test]
 fn differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let order = explicit_order(&mut env, &mut providers);
     let mut arrivals = Arrivals::new();
@@ -624,13 +662,24 @@ fn differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve() {
     };
     env.actors.borrow_mut().list(&other_reserve);
     let len = env.len();
-    for stranger in [customer(), impostor_operator, other_reserve] {
+    for stranger in [customer(), impostor_operator] {
         assert_eq!(
             refile(&mut env, &mut providers, &mut arrivals, &stranger, &first),
             Err(ArrivalError::NotTheFiler),
             "{stranger:?}"
         );
     }
+    // Another reserve, acting for itself, is told only that there is no arrival of its own there.
+    assert_eq!(
+        refile(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &other_reserve,
+            &first
+        ),
+        Err(ArrivalError::NoSuchArrival)
+    );
     assert_eq!(env.len(), len);
 
     // The operator files the first anew, the reserve the second, each against the order it arrived for.
@@ -730,7 +779,7 @@ fn differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve() {
 #[test]
 fn automatic_deposit_is_recorded_as_acceptance_apart_from_an_explicit_one() {
     for filer in [reserve_filer(), operator()] {
-        let mut env = env();
+        let mut env = crate::env();
         let mut providers = Reserve::new(&env);
         let mut arrivals = Arrivals::new();
         let deposited = match arrive(
@@ -826,6 +875,10 @@ fn automatic_deposit_is_recorded_as_acceptance_apart_from_an_explicit_one() {
         assert_eq!(start.source.kind, kind);
         assert_eq!(start.source.id.as_str(), filer.acts.as_str());
         assert!(env.started().contains(&automatic.as_str().to_owned()));
+        assert!(
+            OPENED.with(|o| o.borrow().contains(&automatic)),
+            "the assembly was told of the order before policy was asked"
+        );
         let record = arrivals.record(&automatic).expect("the order's record");
         assert_eq!(record.parties.requester, customer().party);
         assert_eq!(record.origin_reserve, id(RESERVE));
@@ -838,7 +891,7 @@ fn automatic_deposit_is_recorded_as_acceptance_apart_from_an_explicit_one() {
 // verifies: REQ-ORD-13
 #[test]
 fn automatic_deposit_at_a_reserve_that_never_declared_it_starts_nothing() {
-    let mut env = env();
+    let mut env = crate::env();
     // Its latest declaration, in a version after the one it joined with, says no.
     let mut ad = serde_json::to_value(snapshot_support::reserve(RESERVE, "acme")).unwrap();
     ad["offers"]["reserve"]["declaration"]["starts_routes_on_automatic_deposits"] = false.into();
@@ -886,7 +939,7 @@ fn automatic_deposit_at_a_reserve_that_never_declared_it_starts_nothing() {
 // verifies: REQ-ORD-13, INV-8
 #[test]
 fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
     let deposited = match arrive(
@@ -910,9 +963,18 @@ fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arriv
         ..reserve_filer()
     };
     env.actors.borrow_mut().list(&other_reserve);
+    assert_eq!(
+        file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(other_reserve.clone(), &deposited)
+        ),
+        Err(ArrivalError::NoSuchArrival),
+        "another reserve has no arrival of its own there"
+    );
     for stranger in [
         customer(),
-        other_reserve,
         Actor {
             acts: id("someone-else"),
             ..operator()
@@ -1000,7 +1062,7 @@ fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arriv
     assert_eq!(
         file(&mut env, &mut providers, &mut arrivals, &another),
         Err(ArrivalError::Conflicting {
-            order: Some(order.clone())
+            order: order.clone()
         })
     );
     assert_eq!(env.len(), len);
@@ -1018,11 +1080,17 @@ fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arriv
             ..operator()
         },
     ] {
+        // A stranger isn't a filer; another reserve has no arrival of its own there. Neither is told the order.
+        let expected = if stranger.role == Role::Provider {
+            ArrivalError::NoSuchArrival
+        } else {
+            ArrivalError::NotTheFiler
+        };
         let mut theirs = filing(stranger, &deposited);
         theirs.request = id("deposit-6");
         assert_eq!(
             file(&mut env, &mut providers, &mut arrivals, &theirs),
-            Err(ArrivalError::NotTheFiler)
+            Err(expected)
         );
     }
     assert_eq!(env.len(), len);
@@ -1061,7 +1129,7 @@ fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arriv
 // verifies: REQ-ORD-15, INV-8
 #[test]
 fn automatic_deposit_filing_is_carried_on_where_it_stopped_asking_no_one_twice() {
-    let mut env = env();
+    let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
     let deposited = match arrive(
@@ -1133,18 +1201,19 @@ fn automatic_deposit_filing_is_carried_on_where_it_stopped_asking_no_one_twice()
     assert_admitted(&env);
 }
 
-/// A filed order whose destination is refused, whose reserve doesn't confirm the deposit, or whose authorisation
-/// policy refuses as outside it ends, of its class; one whose destination isn't resolved yet, or whose filer policy
-/// refuses, or that policy can't decide, waits, and filed again goes on.
+/// A filing whose destination is refused, or whose authorisation policy refuses as outside it, is refused before an
+/// order opens; a filed order whose reserve says the deposit isn't there ends, of its class. One whose destination
+/// isn't resolved yet, or whose filer policy refuses, or that policy can't decide, opens nothing, and filed again
+/// goes on.
 // verifies: REQ-ORD-13, REQ-ORD-18, REQ-ORD-24
 #[test]
 fn automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_answer() {
     use rutent_contracts::core_internal::{Answer, NotKnownCause, RefusalClass};
-    use rutent_core_orch::intake::{Resolution, Wait};
+    use rutent_core_orch::intake::Resolution;
 
     /// A fresh environment with the deposit arrived, and its filing by the reserve.
     fn deposited() -> (Env, Reserve, Arrivals, Filing) {
-        let mut env = env();
+        let mut env = crate::env();
         let mut providers = Reserve::new(&env);
         let mut arrivals = Arrivals::new();
         let arrival = match arrive(
@@ -1162,41 +1231,46 @@ fn automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_
         (env, providers, arrivals, filing(reserve_filer(), &arrival))
     }
     let ended = |filed: &Filed, class| matches!(filed, Filed::CantProceed { order: Some(_), class: c } if *c == class);
+    let refused = |filed: &Filed, class| matches!(filed, Filed::CantProceed { order: None, class: c } if *c == class);
 
-    // The destination refused: ended, and never routed.
+    // The destination refused: refused before an order opens, and never routed nor put to policy.
     let (mut env, mut providers, mut arrivals, one) = deposited();
     env.register
         .answers
         .insert(ADDRESS.into(), Resolution::Refused);
     let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
     assert!(
-        ended(&filed, OrderRefusalClass::DestinationRefused),
+        refused(&filed, OrderRefusalClass::DestinationRefused),
         "{filed:?}"
     );
     assert_eq!(providers.asked(), 0);
+    assert!(env.policy.asked.is_empty());
     assert!(env.acceptances().is_empty());
     assert_admitted(&env);
 
-    // Not resolved yet: it waits; once it resolves, filed again, it starts, under the same order.
+    // Not resolved yet: it waits, opening nothing; once it resolves, filed again, it starts.
     let (mut env, mut providers, mut arrivals, one) = deposited();
     env.register
         .answers
         .insert(ADDRESS.into(), Resolution::NotYet);
     let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
-    let Filed::Waiting { order, wait } = &filed else {
-        panic!("{filed:?}");
-    };
-    assert_eq!(*wait, Wait::DestinationNotYetResolved);
-    assert_eq!(providers.asked(), 0);
-    env.register.answers.clear();
-    let again = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
-    assert!(
-        matches!(&again, Filed::Started { order: o, .. } if o == order),
-        "{again:?}"
+    assert_eq!(
+        filed,
+        Filed::Waiting {
+            order: None,
+            wait: FiledWait::DestinationNotYetResolved
+        }
     );
+    assert_eq!(providers.asked(), 0);
+    assert!(env.policy.asked.is_empty());
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::Owner(customer().party));
+    let again = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(matches!(&again, Filed::Started { .. }), "{again:?}");
     assert_admitted(&env);
 
-    // The reserve doesn't confirm the deposit: ended, never routed.
+    // The reserve says the funds aren't there: ended, never routed.
     let (mut env, mut providers, mut arrivals, one) = deposited();
     providers.insufficient = true;
     let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
@@ -1205,26 +1279,27 @@ fn automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_
         "{filed:?}"
     );
     assert_eq!(providers.sim.received.len(), 0, "never routed");
-    assert!(env.policy.asked.is_empty());
     assert_admitted(&env);
 
-    // Policy refuses the authorisation as outside it: ended; filed again, told the same, policy not asked again.
+    // Policy refuses the authorisation as outside it: refused, no order opened; filed again, told the same, policy not
+    // asked again.
     let (mut env, mut providers, mut arrivals, one) = deposited();
     env.policy.answer = refusal(RefusalClass::OutsideAuthorisation);
     let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
     assert!(
-        ended(&filed, OrderRefusalClass::RefusedByPolicy),
+        refused(&filed, OrderRefusalClass::RefusedByPolicy),
         "{filed:?}"
     );
     assert_eq!(
         file(&mut env, &mut providers, &mut arrivals, &one),
         Ok(filed)
     );
+    assert_eq!(providers.asked(), 0);
     assert_eq!(env.policy.asked.len(), 1);
     assert!(env.acceptances().is_empty());
     assert_admitted(&env);
 
-    // Policy refuses the filer, or can't decide: the order stands; once policy permits, filed again, it starts.
+    // Policy refuses the filer, or can't decide: nothing opens; once policy permits, filed again, it starts.
     for answer in [
         refusal(RefusalClass::NotPermitted),
         Answer::NotKnown {
@@ -1238,14 +1313,627 @@ fn automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_
             Err(ArrivalError::Refused { class }) => {
                 assert_eq!(*class, OrderRefusalClass::RefusedByPolicy)
             }
-            Ok(Filed::Waiting { wait, .. }) => assert_eq!(*wait, Wait::PolicyNotKnown),
+            Ok(Filed::Waiting { order, wait }) => {
+                assert_eq!((order, *wait), (&None, FiledWait::PolicyNotKnown))
+            }
             other => panic!("{other:?}"),
         }
         assert!(env.acceptances().is_empty());
+        assert_eq!(providers.asked(), 0);
         env.policy.answer = Answer::Permit {};
         let again = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
         assert!(matches!(again, Filed::Started { .. }), "{again:?}");
         assert_eq!(env.policy.asked.len(), 2);
         assert_admitted(&env);
     }
+}
+
+// The review of b5142fa ---------------------------------------------------------------------------------------------
+
+/// An arrival with no order, at [`RESERVE`], of `units`.
+fn deposit(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+    units: u64,
+    n: u32,
+) -> Receipt {
+    match arrive(
+        env,
+        providers,
+        arrivals,
+        &mut Open::default(),
+        &report(units, n),
+    )
+    .unwrap()
+    {
+        Arrived::NoOrder { arrival } => arrival,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The balance verifications the catalogue logged for [`ACCOUNT`].
+fn verifications_logged(env: &Env) -> usize {
+    env.catalogue
+        .check_log(ACCOUNT)
+        .iter()
+        .filter(|r| r.kind == rutent_prov::catalogue::CheckKind::BalanceVerification)
+        .count()
+}
+
+/// An actor stating the operator's role is not the operator: only the deployment's operator party is (finding 1).
+// verifies: REQ-ORD-23, REQ-ORD-13
+#[test]
+fn an_actor_stating_the_operators_role_is_not_the_operator() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let short = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&order)]),
+        &report(600, 0),
+    )
+    .unwrap()
+    {
+        Arrived::Held { arrival, .. } => arrival,
+        other => panic!("{other:?}"),
+    };
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
+    // The customer, listed as acting for its own party, stating the operator's role.
+    let impostor = Actor {
+        role: Role::Operator,
+        ..customer()
+    };
+    let (len, asked) = (env.len(), env.policy.asked.len());
+    assert_eq!(
+        refile(&mut env, &mut providers, &mut arrivals, &impostor, &short),
+        Err(ArrivalError::NotTheFiler)
+    );
+    assert_eq!(
+        file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(impostor, &deposited)
+        ),
+        Err(ArrivalError::NotTheFiler)
+    );
+    assert_eq!(env.len(), len);
+    assert_eq!(env.policy.asked.len(), asked);
+}
+
+/// A filing policy refuses, or one that ends, leaves the deposit free for its reserve to file (finding 2): nothing is
+/// opened, held, asked or routed before policy permits.
+// verifies: REQ-ORD-13, REQ-ORD-15
+#[test]
+fn a_filing_refused_or_ended_leaves_the_deposit_to_its_reserve() {
+    use rutent_contracts::core_internal::{Answer, RefusalClass};
+    // Refused about the filer: a stated operator refused, and an operator without the permission to act for users.
+    for class in [RefusalClass::NotPermitted, RefusalClass::MissingInput] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        env.policy.answer = refusal(class);
+        let refused = file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(operator(), &deposited),
+        );
+        assert!(
+            matches!(refused, Err(ArrivalError::Refused { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(providers.asked(), 0, "nothing asked before policy permits");
+        assert!(
+            !env.book.borrow().verified().into_iter().any(|w| matches!(
+                w,
+                What::DestinationCheck { .. }
+                    | What::Arrival { order: Some(_), .. }
+                    | What::DecisionRecord { .. }
+            )),
+            "nothing opened, held or routed"
+        );
+        env.policy.answer = Answer::Permit {};
+        let mut theirs = filing(reserve_filer(), &deposited);
+        theirs.request = id("deposit-reserve");
+        let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+        assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+        assert_admitted(&env);
+    }
+    // Refused as outside the authorisation, or ended because the reserve says the funds aren't there.
+    for case in ["outside", "no"] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        match case {
+            "outside" => env.policy.answer = refusal(RefusalClass::OutsideAuthorisation),
+            _ => providers.insufficient = true,
+        }
+        let filed = file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(operator(), &deposited),
+        )
+        .unwrap();
+        assert!(matches!(filed, Filed::CantProceed { .. }), "{filed:?}");
+        env.policy.answer = Answer::Permit {};
+        providers.insufficient = false;
+        let mut theirs = filing(reserve_filer(), &deposited);
+        theirs.request = id("deposit-reserve");
+        let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+        assert!(matches!(filed, Filed::Started { .. }), "{case}: {filed:?}");
+        assert_admitted(&env);
+    }
+}
+
+/// A reserve silent on Core's question, or a check the catalogue can't let out, makes the arrival wait, never a final
+/// no: the same notice again asks again, and once no order is open it meets none (finding 3).
+// verifies: REQ-ORD-23, REQ-ORD-14, REQ-CAT-19
+#[test]
+fn a_silent_reserve_or_a_refused_check_makes_an_arrival_wait() {
+    // P4: silent, then answering.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&order)]);
+    providers.silent = true;
+    let short = report(600, 0);
+    let first = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &short).unwrap();
+    assert!(
+        !matches!(first, Arrived::Held { .. } | Arrived::NoOrder { .. }),
+        "{first:?}"
+    );
+    providers.silent = false;
+    let again = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &short).unwrap();
+    assert!(
+        matches!(
+            again,
+            Arrived::Held {
+                matched: ArrivalMatch::Differs,
+                ..
+            }
+        ),
+        "{again:?}"
+    );
+    assert_admitted(&env);
+
+    // P4b: the order's session isn't one the catalogue holds, so the check can't go; once no order is open, it meets
+    // none.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut ended_session = open_order(&order);
+    ended_session.session = id("session-ended");
+    let short = report(600, 0);
+    let first = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![ended_session]),
+        &short,
+    )
+    .unwrap();
+    assert!(
+        !matches!(first, Arrived::Held { .. } | Arrived::NoOrder { .. }),
+        "{first:?}"
+    );
+    let again = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &short,
+    )
+    .unwrap();
+    assert!(matches!(again, Arrived::NoOrder { .. }), "{again:?}");
+    assert_admitted(&env);
+
+    // At a filing: a silent reserve makes it wait, and filed again once it answers, it starts.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    providers.silent = true;
+    let one = filing(reserve_filer(), &deposited);
+    let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        !matches!(filed, Filed::CantProceed { .. } | Filed::Started { .. }),
+        "{filed:?}"
+    );
+    providers.silent = false;
+    let again = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(matches!(again, Filed::Started { .. }), "{again:?}");
+    assert_admitted(&env);
+}
+
+/// One notice is one arrival: the same bytes reported again with other figures are refused, and a notice its reserve
+/// didn't make, or one naming a transaction, is refused before anything is kept (finding 4).
+// verifies: REQ-ORD-14, REQ-ORD-13, INV-8
+#[test]
+fn one_notice_is_one_arrival_whatever_figures_it_comes_with() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let reported = report(1000, 0);
+    deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut other = reported.clone();
+    other.amount = amount(900);
+    let len = env.len();
+    let again = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &other,
+    );
+    assert!(
+        matches!(again, Err(ref e) if !matches!(e, ArrivalError::Log(_))),
+        "{again:?}"
+    );
+    assert_eq!(env.len(), len);
+    assert_eq!(arrivals_recorded(&env).len(), 1);
+    // Another reserve's notice, or one naming a transaction, reported as this reserve's.
+    let elsewhere = sign(
+        envelope(
+            &deployment(),
+            RESULT_SHAPE,
+            "another-reserve",
+            START,
+            json!({ "kind": "arrival", "amount": "5" }),
+        ),
+        &statements_key(RESERVE, 1),
+    );
+    let bound = sign(
+        envelope(
+            &deployment(),
+            RESULT_SHAPE,
+            RESERVE,
+            START,
+            json!({ "kind": "arrival", "transaction": "tx-1" }),
+        ),
+        &statements_key(RESERVE, 1),
+    );
+    for notice in [elsewhere, bound] {
+        let kept = env.store.borrow().kept.len();
+        let reported = Report {
+            notice,
+            ..report(5, 9)
+        };
+        let refused = arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &reported,
+        );
+        assert!(
+            matches!(refused, Err(ref e) if !matches!(e, ArrivalError::Log(_))),
+            "{refused:?}"
+        );
+        assert_eq!(env.store.borrow().kept.len(), kept, "nothing kept");
+        assert_eq!(env.len(), len);
+    }
+}
+
+/// An arrival is held only against an open order of its account's holder, and never against an order that already
+/// has its arrival: two equal orders at one account each get one, and a stranger's deposit meets none (finding 5).
+// verifies: REQ-ORD-23, REQ-ORD-14
+#[test]
+fn an_arrival_is_held_against_its_holders_order_not_yet_arrived() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let a = explicit_order(&mut env, &mut providers);
+    let (b, _) = env.accepted(
+        &mut providers.sim,
+        &order_request("client-req-2", customer()),
+        &customer(),
+    );
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&a), open_order(&b)]);
+    let held = |arrived: Arrived| match arrived {
+        Arrived::Held { order, matched, .. } => (order, matched),
+        other => panic!("{other:?}"),
+    };
+    let first = held(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &report(1000, 0),
+        )
+        .unwrap(),
+    );
+    // A stranger's deposit at the same account, while the second order is still open, meets no order.
+    let stranger = Report {
+        holder: id("a-stranger"),
+        ..report(1000, 2)
+    };
+    let theirs = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &stranger,
+    )
+    .unwrap();
+    assert!(matches!(theirs, Arrived::NoOrder { .. }), "{theirs:?}");
+    let second = held(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &report(1000, 1),
+        )
+        .unwrap(),
+    );
+    assert_eq!(first, (a.clone(), ArrivalMatch::Matches));
+    assert_eq!(second, (b.clone(), ArrivalMatch::Matches));
+    assert_admitted(&env);
+
+    // An arrival left waiting holds no order: the next takes the first, and the one that waited, answered, the second.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let a = explicit_order(&mut env, &mut providers);
+    let (b, _) = env.accepted(
+        &mut providers.sim,
+        &order_request("client-req-2", customer()),
+        &customer(),
+    );
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&a), open_order(&b)]);
+    providers.silent = true;
+    let waited = report(1000, 0);
+    let first = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &waited).unwrap();
+    assert!(matches!(first, Arrived::Waiting { .. }), "{first:?}");
+    providers.silent = false;
+    let next = held(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &report(1000, 1),
+        )
+        .unwrap(),
+    );
+    let again = held(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &waited).unwrap());
+    assert_eq!(next, (a, ArrivalMatch::Matches));
+    assert_eq!(again, (b, ArrivalMatch::Matches));
+    assert_eq!(arrivals_recorded(&env).len(), 2, "one arrival each");
+    assert_admitted(&env);
+
+    // A question under way about the first order, stopped where the log couldn't take it, takes that order: the next
+    // arrival is held against the second, and the first carried on is held against the first.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let a = explicit_order(&mut env, &mut providers);
+    let (b, _) = env.accepted(
+        &mut providers.sim,
+        &order_request("client-req-2", customer()),
+        &customer(),
+    );
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&a), open_order(&b)]);
+    let stopped = report(1000, 0);
+    env.store.borrow_mut().fail_after = Some(1);
+    assert!(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &stopped).is_err());
+    env.book.borrow_mut().fail_stated_next = true;
+    assert!(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &stopped).is_err());
+    let next = held(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &report(1000, 1),
+        )
+        .unwrap(),
+    );
+    let resumed =
+        held(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &stopped).unwrap());
+    assert_eq!(next, (b, ArrivalMatch::Matches));
+    assert_eq!(resumed, (a, ArrivalMatch::Matches));
+    assert_admitted(&env);
+}
+
+/// An automatic deposit goes to its holder: a filing whose destination resolves to anyone but the beneficiary, or
+/// whose beneficiary isn't the holder, is refused, and nothing starts (finding 6).
+// verifies: REQ-ORD-13, REQ-ORD-24
+#[test]
+fn an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused() {
+    use rutent_core_orch::intake::Resolution;
+    let mut env = crate::env();
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::Owner(id("someone-else")));
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(matches!(filed, Filed::CantProceed { .. }), "{filed:?}");
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::Owner(customer().party));
+    let mut elsewhere = filing(reserve_filer(), &deposited);
+    elsewhere.request = id("deposit-2");
+    elsewhere.parties.beneficiary = id("someone-else");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &elsewhere).unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                class: OrderRefusalClass::MalformedRequest,
+                ..
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.started().is_empty());
+    assert!(env.policy.asked.is_empty());
+}
+
+/// A question that couldn't be kept opens no check: retried, it opens one, and one only (finding 7).
+// verifies: REQ-CAT-4, INV-8
+#[test]
+fn a_question_retried_opens_one_check() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&order)]);
+    let before = verifications_logged(&env);
+    let short = report(600, 0);
+    // The notice is kept; the question isn't.
+    env.store.borrow_mut().fail_after = Some(1);
+    assert!(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &short).is_err());
+    // The question is kept and its check opened, but its stated entry can't be appended now.
+    env.book.borrow_mut().fail_stated_next = true;
+    assert!(arrive(&mut env, &mut providers, &mut arrivals, &mut open, &short).is_err());
+    let held = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &short).unwrap();
+    assert!(matches!(held, Arrived::Held { .. }), "{held:?}");
+    assert_eq!(verifications_logged(&env) - before, 1, "one check");
+    assert_eq!(providers.verifications.len(), 1, "asked once");
+    assert_admitted(&env);
+}
+
+/// A reserve with no declaration on record never declared it starts routes on automatic deposits (finding 8).
+// verifies: REQ-ORD-13
+#[test]
+fn a_reserve_with_no_declaration_on_record_starts_nothing() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    // A catalogue that holds no declaration of the reserve's.
+    env.catalogue = rutent_prov::catalogue::Catalogue::new();
+    let len = env.len();
+    assert_eq!(
+        file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(reserve_filer(), &deposited)
+        ),
+        Err(ArrivalError::NotDeclared)
+    );
+    assert_eq!(env.len(), len);
+    assert!(env.policy.asked.is_empty());
+}
+
+/// A stranger is told nothing of a receipt, whether an arrival is at it or not; a reserve is told only that it can't
+/// file on one that isn't its own (finding 9).
+// verifies: REQ-ORD-23, REQ-ORD-13
+#[test]
+fn a_stranger_is_told_nothing_of_a_receipt() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut missing = deposited.clone();
+    missing.index = 999u64.try_into().unwrap();
+    let unlisted = Actor {
+        acts: id("someone-unlisted"),
+        ..operator()
+    };
+    let other_reserve = Actor {
+        party: id("another-reserve"),
+        acts: id("another-reserve"),
+        ..reserve_filer()
+    };
+    env.actors.borrow_mut().list(&other_reserve);
+    for receipt in [&deposited, &missing] {
+        assert_eq!(
+            file(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &filing(unlisted.clone(), receipt)
+            ),
+            Err(ArrivalError::NotTheFiler)
+        );
+        assert_eq!(
+            refile(&mut env, &mut providers, &mut arrivals, &unlisted, receipt),
+            Err(ArrivalError::NotTheFiler)
+        );
+        assert_eq!(
+            file(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &filing(other_reserve.clone(), receipt)
+            ),
+            Err(ArrivalError::NoSuchArrival)
+        );
+    }
+}
+
+/// Another login of the filer's party is told the filing as it stands (the review's nit).
+// verifies: REQ-OPS-5, INV-8
+#[test]
+fn another_login_of_the_filers_party_is_told_the_filing_as_it_stands() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    let first = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(matches!(first, Filed::Started { .. }), "{first:?}");
+    let colleague = Actor {
+        acts: id("operator-login-2"),
+        ..operator()
+    };
+    env.actors.borrow_mut().list(&colleague);
+    let len = env.len();
+    let theirs = Filing {
+        filer: colleague,
+        ..one
+    };
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &theirs),
+        Ok(first)
+    );
+    assert_eq!(env.len(), len);
+
+    // A filing still under way is carried on by the filer policy permitted alone, whose acceptance it will record.
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
+    providers.silent = true;
+    let mut one = filing(operator(), &deposited);
+    one.request = id("deposit-2");
+    let waiting = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        matches!(waiting, Filed::Waiting { order: Some(_), .. }),
+        "{waiting:?}"
+    );
+    providers.silent = false;
+    let theirs = Filing {
+        filer: Actor {
+            acts: id("operator-login-2"),
+            ..operator()
+        },
+        ..one.clone()
+    };
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &theirs),
+        Err(ArrivalError::OtherFiler)
+    );
+    let started = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    assert_admitted(&env);
 }
