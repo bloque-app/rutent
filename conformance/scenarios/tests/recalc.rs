@@ -1338,3 +1338,276 @@ fn recalculated_floor_wait_whose_append_failed_is_recorded_once() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// Records `input`, one of Core's, in the kit's log and the order Core follows: a stand-in for a row not built yet.
+fn record_input(core: &mut Core, input: &rutent_contracts::state_machine::RecordedInput) {
+    use rutent_contracts::core_internal::calls::{GeneralEntry, Log};
+    let at = rutent_contracts::router_api::Timestamp::new(input.recorded_at.as_str()).unwrap();
+    let entry = rutent_contracts::core_internal::Entry::Verified(
+        rutent_contracts::core_internal::VerifiedEntry {
+            kind: rutent_contracts::core_internal::VerifiedKind::Verified,
+            who: segments_support::core(),
+            what: What::Input {
+                input: input.clone(),
+            },
+            when: rutent_contracts::core_internal::When {
+                at,
+                source: rutent_contracts::core_internal::TimeSource::CoreClock,
+            },
+            outcome: rutent_contracts::core_internal::Outcome::Observed {},
+        },
+    );
+    General(Rc::clone(&core.log))
+        .append(&GeneralEntry::try_from(entry).unwrap())
+        .expect("the log takes it");
+    assert!(core.segments.observe(&*core.clock, input));
+}
+
+/// An input of Core's about the order's part, recorded now.
+fn part_input(
+    core: &Core,
+    record: &str,
+    observed: Observed,
+) -> rutent_contracts::state_machine::RecordedInput {
+    rutent_contracts::state_machine::RecordedInput {
+        record_id: stm::RecordId::new(record).unwrap(),
+        recorded_at: stm::Timestamp::new(
+            rutent_core_orch::snapshot::Clock::now(&*core.clock)
+                .timestamp()
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap(),
+        time_source: stm::Id::new("core_clock").unwrap(),
+        source: stm::Source {
+            kind: stm::SourceKind::Orchestrator,
+            id: stm::Id::new(segments_support::core().acts.as_str()).unwrap(),
+        },
+        standing: stm::Standing::Verified,
+        subject: stm::Subject {
+            order: stm::Id::new(ORDER).unwrap(),
+            part: Some(stm::Id::new(PART).unwrap()),
+            segment: None,
+        },
+        observed,
+    }
+}
+
+/// The part waits at the ledger, below its floor; the customer's choice (`T-020-13`, not built: recorded here)
+/// gives it a new route from the ledger, and every route from there is still below the floor. The second wait, at
+/// the same settled segment, is recorded as a wait of its own, and the part waits again since then.
+// verifies: REQ-ORD-27, AC-12
+#[test]
+fn second_wait_at_the_same_settled_segment_is_recorded_as_its_own() {
+    let floor = PositiveAmount::new("995000").unwrap();
+    let (mut world, mut core, mut recalc) = deposit_failed(Some(floor));
+    recalc.fee = Some(flat_fee("10000"));
+    assert!(matches!(
+        recalc.recalculate(&mut core, &mut world),
+        Recalculation::WaitsForCustomer { .. }
+    ));
+    let first = recorded_wait(&core);
+    // The customer's new route from the ledger.
+    core.clock.advance(60);
+    let chosen = route_chosen(&core.record);
+    let Observed::RouteChosen { parts, .. } = &chosen.observed else {
+        unreachable!();
+    };
+    let mut again = parts[0].segments[1].clone();
+    again.segment_id = stm::Id::new("p1-s2-chosen").unwrap();
+    let resolved = part_input(
+        &core,
+        "rec-resolved",
+        Observed::RouteRecalculated {
+            decision_record: stm::Id::new(core.record.record_id().as_str()).unwrap(),
+            segments: vec![again],
+        },
+    );
+    record_input(&mut core, &resolved);
+    assert_eq!(part(&core).state, OrderState::FirstSegmentSettled);
+    // Still below the floor from there.
+    core.clock.advance(60);
+    let done = recalc.recalculate(&mut core, &mut world);
+    assert!(
+        matches!(done, Recalculation::WaitsForCustomer { .. }),
+        "{done:?}"
+    );
+    let waits = floor_waits(&core);
+    assert_eq!(waits.len(), 2, "two waits recorded: {waits:?}");
+    assert_ne!(waits[1], first);
+    let part = part(&core);
+    assert_eq!(part.state, OrderState::WaitingForCustomer);
+    assert_eq!(part.waiting_since.as_ref(), Some(&waits[1].recorded_at));
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A wait the log refuses is dropped, not tried for ever: the next run judges the floor afresh and records a wait of
+/// its own, the deposit still not handed over.
+// verifies: REQ-ORD-27, INV-8
+#[test]
+fn floor_wait_the_log_refuses_is_dropped() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(PositiveAmount::new("995000").unwrap()));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::FloorWait, Fault::Refuse));
+    let session = world.context().session;
+    let refused = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut Recorded,
+        &session,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(rutent_core_orch::segments::SegmentsError::Append(
+                AppendFailure::Refused(_)
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert!(floor_waits(&core).is_empty());
+    assert!(
+        !core.segments.floor_wait_pending(&id(ORDER), &id(PART)),
+        "the refused wait is dropped"
+    );
+    core.clock.advance(60);
+    let later = stm::Timestamp::new(
+        rutent_core_orch::snapshot::Clock::now(&*core.clock)
+            .timestamp()
+            .unwrap()
+            .as_str(),
+    )
+    .unwrap();
+    let ran = core.run(&mut world);
+    assert_eq!(segments(&ran).len(), 1, "the deposit is not handed over");
+    let wait = recorded_wait(&core);
+    assert_eq!(
+        wait.recorded_at, later,
+        "a wait of its own, judged now, not the refused one tried again"
+    );
+    assert_eq!(moves(&core), vec![WITHDRAWAL.to_owned()]);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A wait the log couldn't take is read again before it is tried: the part was declared stuck meanwhile (`T-020-11`,
+/// recorded here), the state machine no longer takes the wait, and it is dropped, never appended.
+// verifies: REQ-ORD-27, INV-4
+#[test]
+fn floor_wait_retried_after_its_part_was_declared_stuck_is_dropped() {
+    let floor = PositiveAmount::new("995000").unwrap();
+    let (mut world, mut core, mut recalc) = deposit_failed(Some(floor));
+    recalc.fee = Some(flat_fee("10000"));
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::FloorWait, Fault::Unavailable));
+    }
+    assert!(recalc.try_recalculate(&mut core, &mut world).is_err());
+    assert!(core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+    // Declared stuck in Core's followed order meanwhile, as `T-020-11`'s dispute would (not built).
+    let stuck = part_input(
+        &core,
+        "rec-stuck",
+        Observed::StuckDeclared {
+            reason: stm::StuckReason::Dispute,
+        },
+    );
+    assert!(core.segments.observe(&*core.clock, &stuck));
+    let entries = core.log.borrow().entries.len();
+    let retried = recalc.recalculate(&mut core, &mut world);
+    assert_eq!(
+        retried,
+        Recalculation::NotNow(NotRecalculable::Held(OrderState::Stuck))
+    );
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing appended");
+    assert!(floor_waits(&core).is_empty());
+    assert!(!core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+}
+
+/// A wait the log couldn't take is remembered: run again with the floor lowered, the part still hands nothing over,
+/// and the wait built is recorded.
+// verifies: REQ-ORD-27, INV-8
+#[test]
+fn floor_wait_built_and_not_recorded_holds_the_part_whatever_floor_a_rerun_names() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(PositiveAmount::new("995000").unwrap()));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::FloorWait, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    assert!(
+        core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut Recorded,
+            &session,
+        )
+        .is_err()
+    );
+    assert!(floor_waits(&core).is_empty());
+    let before = handled(&world);
+    core.floor = Some(PositiveAmount::new("985000").unwrap());
+    let ran = core.run(&mut world);
+    assert_eq!(segments(&ran).len(), 1, "the deposit is not handed over");
+    assert_eq!(handled(&world), before);
+    assert_eq!(moves(&core), vec![WITHDRAWAL.to_owned()]);
+    recorded_wait(&core);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A recalculation's wait the log refuses is dropped with what kept it: the next try routes the part afresh and
+/// records a wait of its own, rather than trying the refused one for ever.
+// verifies: REQ-ORD-27, REQ-ORD-4
+#[test]
+fn recalculated_floor_wait_the_log_refuses_is_routed_afresh() {
+    let floor = PositiveAmount::new("995000").unwrap();
+    let (mut world, mut core, mut recalc) = deposit_failed(Some(floor));
+    recalc.fee = Some(flat_fee("10000"));
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::FloorWait, Fault::Refuse));
+    let records = |core: &Core| {
+        core.log
+            .borrow()
+            .count(|w| matches!(w, What::DecisionRecord { .. }))
+    };
+    let refused = recalc.try_recalculate(&mut core, &mut world);
+    assert!(
+        matches!(refused, Err(RecalcError::Append(AppendFailure::Refused(_)))),
+        "{refused:?}"
+    );
+    assert!(!core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+    let routed = records(&core);
+    let done = recalc.recalculate(&mut core, &mut world);
+    assert!(
+        matches!(done, Recalculation::WaitsForCustomer { .. }),
+        "{done:?}"
+    );
+    assert!(records(&core) > routed, "routed afresh");
+    recorded_wait(&core);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}

@@ -1637,6 +1637,36 @@ both admitted by the log; and the same through the session ending) and
   the recalc tests, the kit's `On`, and the assembly's floor test (`F-024`'s file). No contract, manifest or
   `DEC-20` path.
 
+### T-020-10b, review answers (of `ddae960`)
+
+Each test was written first and seen red on `ddae960`, then fixed; each rule was then switched off once and its test
+seen red again.
+
+- **Medium, a second wait at one settled segment was swallowed.** The wait was the settled segment's step
+  `"floor"`, so a part that waited at a node, was given a new route from it, and fell below its floor there again
+  got the first wait's receipt back: `WaitsForCustomer`, nothing recorded, the part not waiting. Waits are now their
+  own record (`Segments`' `floor_waits`, per part, in order): a wait recorded while the part still waits is the
+  answer; once the part no longer waits, a new wait is built, a second input with its own record id and time. The
+  customer's new route (`T-020-13`, not built) is recorded directly in the test. Test
+  `second_wait_at_the_same_settled_segment_is_recorded_as_its_own`.
+- **Low, a refused wait was tried for ever.** A wait the log refuses is dropped, as a refused `route_recalculated`
+  is, and a recalculation drops what kept it (`Followed::waiting`), so the next try routes the part afresh. Before
+  a retry, the part is read again: where the order Core follows no longer takes `waiting_at_floor` (the part is
+  stuck, or moved on), the wait is dropped and never appended (`SegmentsError::WaitNotTaken`), and a recalculation
+  answers why (`NotNow(Held(Stuck))`). Tests `floor_wait_the_log_refuses_is_dropped` (the next run's wait is judged
+  then, its `recorded_at` the later time, not the refused one again),
+  `recalculated_floor_wait_the_log_refuses_is_routed_afresh` (written after the fix; seen red by rule-off), and
+  `floor_wait_retried_after_its_part_was_declared_stuck_is_dropped` (the dispute declaration, `T-020-12`'s, observed
+  in Core's followed order only, so the test doesn't replay the log).
+- **Low, a wait built and not recorded wasn't remembered.** `Segments::run_part` hands nothing over while the part
+  has a wait built and not yet recorded (`Segments::floor_wait_pending`), whatever `Live::floor` says now: it records
+  that wait, or drops it where it no longer applies, first. Test
+  `floor_wait_built_and_not_recorded_holds_the_part_whatever_floor_a_rerun_names`, the rerun's floor lowered to
+  985 000.
+- **Rule-off, each red:** each wait its own (the second-wait test); the refused wait dropped (both refusal tests);
+  the part read again (the stuck test); a pending wait holding the part (the rerun test); a recalculation's refusal
+  clearing what kept it (the routed-afresh test).
+
 ## T-020-11
 
 - **One record, `stuck::Stuck`** (`components/core-orch/src/stuck/`). Core's record of the parts it declared stuck,
