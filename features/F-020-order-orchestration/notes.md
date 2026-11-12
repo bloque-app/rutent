@@ -332,7 +332,8 @@ Branch `f-020/t-020-04-arrivals`, from `m3` at `28038de`. The review of `b5142fa
   states, so an impostor of either files nothing. The `refiling` is recorded once, its `who` the filer, and moves
   nothing. **Gap**: no state-machine input takes a refiling, so what an order does with an arrival filed anew is no
   row's yet; a later `F-020` row with a state-machine bump, if it should move the order.
-- **The automatic deposit** (`REQ-ORD-13`, `REQ-ORD-15`). A filing names the arrival it files on, one recorded with no
+- **The automatic deposit** (`REQ-ORD-13`, `REQ-ORD-15`). *Superseded in its order of steps by review answer 2: policy
+  is now asked before any order is opened, held, asked or routed.* A filing names the arrival it files on, one recorded with no
   order, and fills out the details: the parties, the session opened for the deposit's account, the destination, the
   route, the inputs and needs. In order, and nothing asked or recorded before each passes:
   1. The filer is the reserve it arrived at, or the operator, acting for the party it states; anyone else files
@@ -357,11 +358,12 @@ Branch `f-020/t-020-04-arrivals`, from `m3` at `28038de`. The review of `b5142fa
   appended as built; a refused one ends the order, `no_route_right_now`, as at intake. The log admits it on
   `automatic-deposit-rests-on-its-arrival`, `order-holds-one-acceptance-basis` and
   `chosen-route-rests-on-its-orders-acceptance`.
-- **One deposit, two `arrival` entries.** The deposit is first recorded as it came, with no order; the filing records
-  a second `arrival`, naming the order it opened, on the reserve's answer to the filing's own question. Nothing in the
-  log links the two: `arrival` has no field naming an earlier arrival. Reading, reversible. **Gap**, owner a new `F-020`
-  row with a core-internal bump: an `arrival` naming the earlier arrival it holds against an order, so a checker sees
-  one deposit, not two.
+- **One deposit, more than one `arrival` entry.** The deposit is first recorded as it came, with no order; each
+  permitted filing that holds it records another `arrival`, naming the order it opened, on the reserve's answer to that
+  filing's own question. A filing that ends frees the deposit (review answer 2), so the next filing records one more.
+  Nothing in the log links them: `arrival` has no field naming an earlier arrival. Reading, reversible. **Gap**, owner
+  a new `F-020` row with a core-internal bump: an `arrival` naming the earlier arrival it holds against an order, so a
+  checker sees one deposit, not several.
 - **A held arrival whose order's session has ended**: see review answer 3.
 - **Who is told what**: see review answer 9.
 - **Readings, each reversible**: the routing's classes are intake's (`no_route_for_amount` where every candidate was
@@ -396,7 +398,8 @@ Branch `f-020/t-020-04-arrivals`, from `m3` at `28038de`. The review of `b5142fa
   review, so their rule-offs stand in for seeing them fail first. Every log is replayed through `attribute` and `admit_entry` on
   the path each entry came by. The real policy engine and the platform are `T-024-04`'s scenarios (`AC-10`, `AC-11`,
   `AC-26`).
-- **Rule-off**, each rule switched off once, the file restored and touched:
+- **Rule-off**, each rule switched off once, the file restored and touched. *Superseded by the review answers' table,
+  which reruns every rule against the final code; this one is kept as it was run on `b5142fa`.*
 
   | Rule | Red |
   |---|---|
@@ -521,12 +524,19 @@ the code, and their rule-offs stand in.
   they are bounded by the filings made. Another login of the filer's party repeating a filing is told how it stands,
   once it started or ended; one under way is carried on only by the filer policy permitted (`OtherFiler`), whose
   acceptance it records, as intake's `OtherActor`.
+- **A permitted filing that waits holds the deposit** (a silent reserve, a check that can't go): until its own filer
+  files again, and nothing times it out. Reading, reversible. Owner of a time-out: `T-020-11`'s stuck orders, or a
+  later `F-020` row, since such an order has no `route_chosen` yet for the state machine to hold stuck.
+- **F2's "operator without `ActForUser`"** is policy's fake answering `missing_input`; core-orch can't reach
+  core-authz (the boundary check), so the real engine's answer is `T-024-04`'s (`AC-11`).
 - **Changed meanings, deliberately.** Another reserve now gets `NoSuchArrival`, not `NotTheFiler` (answer 9); a
   filing refused as `outside_authorisation`, or with its destination refused, names no order; not yet resolved, or
   policy not known, waits with no order; a reserve no longer needs to act for itself (its party is held to the
   arrival's reserve, and the register to its party), which no test could tell apart.
 - **Wiring for the assembly**, added to the list above: `Arrivals::file` takes a `FiledOrders`, which must put the
-  record into policy's order records before the authorisation it precedes; the operator's login needs `ActForUser`
+  record into policy's order records before the authorisation it precedes, and drop it again where no order opened
+  (`Err(Refused)`, `Err(Log)`, `Filed::Waiting` or `Filed::CantProceed` with no order), since each new filing draws a
+  new id and such records would pile up; the operator's login needs `ActForUser`
   listed, or AC-11 fails in `T-024-04` (the assembly lists only `Change` and `ReadOrderState` for it today);
   `OpenOrder` now carries the holder.
 - **Rule-off**, every rule of the module switched off once against the final tests, the file restored and touched
