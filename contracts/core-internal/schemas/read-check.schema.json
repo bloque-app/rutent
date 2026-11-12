@@ -43,6 +43,7 @@
         "kind": {
           "enum": [
             "order",
+            "order_state",
             "segment",
             "trail",
             "resource",
@@ -64,6 +65,21 @@
           },
           "then": {
             "$ref": "#/$defs/reads_order"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "order_state"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_order_state"
           }
         },
         {
@@ -157,6 +173,23 @@
       "properties": {
         "kind": {
           "const": "order"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reads_order_state": {
+      "description": "One order's recorded state and age, and nothing else: visible to its customer and the operator, who reads it without a permission (REQ-ORD-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order"
+      ],
+      "properties": {
+        "kind": {
+          "const": "order_state"
         },
         "order": {
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"

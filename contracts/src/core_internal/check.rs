@@ -350,14 +350,25 @@ impl What {
             }
             What::Acceptance {
                 basis,
-                reserve_yes,
+                yeses,
                 session,
                 ..
             } => {
                 let given = *basis == AcceptanceBasis::Given;
-                if given != reserve_yes.is_some() || given != session.is_some() {
+                if given != !yeses.is_empty() || given != session.is_some() {
                     return Err(Violation(
                         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
+                    ));
+                }
+                let parts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.part).collect();
+                if !distinct(&parts) {
+                    return Err(Violation("an acceptance names each part's yes once"));
+                }
+                // Each part rests on a yes of its own: two parts never cite one receipt.
+                let receipts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.reserve_yes).collect();
+                if !distinct(&receipts) {
+                    return Err(Violation(
+                        "an acceptance cites a yes of its own for each part",
                     ));
                 }
                 Ok(())
@@ -432,10 +443,26 @@ impl VerifiedEntry {
         if let What::CheckRead { check } = &self.what
             && self.outcome == (Outcome::Permitted {})
         {
-            let broad = matches!(check.reads, Reads::Trail {} | Reads::Order { .. });
+            let broad = matches!(
+                check.reads,
+                Reads::Trail {} | Reads::Order { .. } | Reads::OrderState { .. }
+            );
             if check.reader.role == Role::Provider && broad {
                 return Err(Violation(
-                    "a provider's permitted read is of a segment, never an order or the trail",
+                    "a provider's permitted read is of a segment, never an order, its state or the trail",
+                ));
+            }
+            // The operator reads an order's state and age without a permission (`REQ-ORD-5`), and its own
+            // evidence; anything else it reads rests on a permission.
+            if check.reader.role == Role::Operator
+                && check.permission.is_none()
+                && !matches!(
+                    check.reads,
+                    Reads::OrderState { .. } | Reads::Evidence { .. }
+                )
+            {
+                return Err(Violation(
+                    "an operator's permitted read without a permission is of an order's state or its own evidence",
                 ));
             }
             if check.reader.role == Role::Customer && matches!(check.reads, Reads::Trail {}) {

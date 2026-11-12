@@ -87,7 +87,7 @@ pub use attribution::{
 };
 pub use relations::{
     Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
-    StatedCiting, Through, admit_entry, covers,
+    StatedCiting, Through, VerifiedCiting, admit_entry, covers,
 };
 pub use types::*;
 
