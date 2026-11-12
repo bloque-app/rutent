@@ -331,7 +331,8 @@ impl What {
             | What::StuckCall { .. }
             | What::Afterwards { .. }
             | What::Reliance { .. }
-            | What::Refiling { .. } => matches!(outcome, Outcome::Observed {}),
+            | What::Refiling { .. }
+            | What::ResolutionOutcome { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
 
@@ -429,7 +430,8 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Command { .. }
-            | What::Erasure { .. } => Ok(()),
+            | What::Erasure { .. }
+            | What::ResolutionOutcome { .. } => Ok(()),
         }
     }
 }

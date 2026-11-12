@@ -3629,7 +3629,7 @@
       "source": "core_clock"
     },
     "outcome": {
-      "status": "failed"
+      "status": "unanswered"
     }
   }
 }

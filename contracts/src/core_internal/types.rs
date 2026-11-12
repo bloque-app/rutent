@@ -2105,6 +2105,33 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// A stuck resolution's move whose outcome was unknown, its outcome now known on two actors' word
+    /// (`REQ-AUZ-4`, ADR-0011): its mover reported it and an actor of another party and another login confirmed it,
+    /// each naming its evidence. Its effect's final `result` follows it (`unknown-resolution-settles-on-two-actors`).
+    ResolutionOutcome {
+        /// The receipt of the `resolve_stuck` effect.
+        effect: Receipt,
+        /// What the move came to.
+        outcome: MoveOutcome,
+        /// Who reported it: the move's mover.
+        reported_by: Actor,
+        /// The evidence the report named, by an opaque reference.
+        reported_with: Id,
+        /// Who confirmed it.
+        confirmed_by: Actor,
+        /// The evidence the confirmation named, by an opaque reference.
+        confirmed_with: Id,
+    },
+}
+
+/// What a move whose outcome was unknown came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveOutcome {
+    /// It moved the value.
+    Done,
+    /// It didn't.
+    Failed,
 }
 
 /// How what a verified entry records came out. Schema: `urn:rutent:core-internal:verified-entry#/$defs/outcome`.

@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 66] = [
+pub static RELATIONS: [Relation; 67] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -904,15 +904,82 @@ pub static RELATIONS: [Relation; 66] = [
             What::Result { .. } => by_fields(0),
             _ => none(),
         },
+        // One exception: a stuck resolution's move whose outcome was unknown, `unanswered`, takes one final
+        // result once its outcome is known on two actors' word (`unknown-resolution-settles-on-two-actors`).
+        answers: |e, _, t, h| {
+            let (What::Result { effect }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            let settles = t.outcome == (Outcome::Unanswered {})
+                && matches!(e.outcome, Outcome::Done {} | Outcome::Failed {})
+                && resolves_stuck(effect, h);
+            judge(
+                t != &e.entry
+                    && !settles
+                    && matches!(&t.what, What::Result { effect: other } if other == effect),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "unknown-resolution-settles-on-two-actors",
+        spec: &["REQ-AUZ-4", "REQ-ORD-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck resolution's move whose outcome was unknown settles on its outcome recorded in this log",
+        fields: &[
+            (
+                "outcome",
+                "a stuck resolution's move settles on the outcome reported and confirmed",
+            ),
+            (
+                "party",
+                "a stuck resolution's outcome is confirmed by another accountable party than its reporter's",
+            ),
+            (
+                "login",
+                "a stuck resolution's outcome is confirmed by another login than its reporter's",
+            ),
+        ],
+        // Its first result `unanswered`, its final one follows the mover's report and another party's and login's
+        // confirmation, each naming its evidence (ADR-0011).
+        cites: |e, h| match (&e.what, &e.outcome) {
+            (What::Result { effect }, Outcome::Done {} | Outcome::Failed {})
+                if resolves_stuck(effect, h)
+                    && h.iter().any(|(_, x)| {
+                        verified(x).is_some_and(|r| {
+                            matches!(&r.what, What::Result { effect: other } if other == effect)
+                                && r.outcome == (Outcome::Unanswered {})
+                        })
+                    }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
         answers: |e, _, t, _| {
             let (What::Result { effect }, Some(t)) = (&e.what, verified(t)) else {
                 return Match::NotTarget;
             };
-            judge(
-                t != &e.entry
-                    && matches!(&t.what, What::Result { effect: other } if other == effect),
-                &[],
-            )
+            match &t.what {
+                What::ResolutionOutcome {
+                    effect: settled,
+                    outcome,
+                    reported_by,
+                    confirmed_by,
+                    ..
+                } => judge(
+                    settled == effect,
+                    &[
+                        match outcome {
+                            MoveOutcome::Done => e.outcome == (Outcome::Done {}),
+                            MoveOutcome::Failed => e.outcome == (Outcome::Failed {}),
+                        },
+                        confirmed_by.party != reported_by.party,
+                        confirmed_by.acts != reported_by.acts,
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
         },
     },
     Relation {
@@ -3024,6 +3091,22 @@ fn covers_part(authorisation: &Authorisation, part: &str) -> bool {
         .parts
         .as_ref()
         .is_none_or(|parts| parts.iter().any(|p| p.as_str() == part))
+}
+
+/// Whether the effect at `effect` in `history` is a `resolve_stuck`.
+fn resolves_stuck(effect: &Receipt, history: &History) -> bool {
+    history.iter().any(|(r, e)| {
+        r == effect
+            && verified(e).is_some_and(|v| {
+                matches!(
+                    &v.what,
+                    What::Effect {
+                        action: Action::ResolveStuck { .. },
+                        ..
+                    }
+                )
+            })
+    })
 }
 
 /// The index of `entry` in `history`: the candidates a row answers are `history`'s own entries.

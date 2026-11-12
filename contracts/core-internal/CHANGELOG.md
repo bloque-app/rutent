@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 121 valid fixtures and 119 invalid ones, each
-  breaking one rule, and 355 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 68 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 122 valid fixtures and 119 invalid ones, each
+  breaking one rule, and 362 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 69 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -275,6 +275,14 @@
   repeat by record id alone; the log now takes one only where the earlier input under that id is this same input,
   so another input under a used record id, which the host contract refuses, is refused here too. 355 admission
   cases. (DEC-4, DEC-20, REQ-STM-4, INV-8, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution's move whose outcome was unknown settles on two actors'
+  word (`T-020-11`'s review). A new entry, `resolution_outcome {effect, outcome, reported_by, reported_with,
+  confirmed_by, confirmed_with}`, records who reported the outcome and who confirmed it, each with its evidence.
+  The row `unknown-resolution-settles-on-two-actors` admits a `resolve_stuck` effect's final `done` or `failed`
+  result after an `unanswered` one only on such an entry with that outcome, its confirmer of another party and
+  another login than its reporter; `effect-has-one-result` lets that one final result follow the `unanswered`
+  one. The world's delivery is unknown, then failed on two actors' word. One valid fixture; 362 admission cases,
+  69 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-1, T-020-01, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

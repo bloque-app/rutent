@@ -586,11 +586,12 @@ fn kind(entry: &Entry) -> &'static str {
         What::Reliance { .. } => "reliance",
         What::Command { .. } => "command",
         What::Erasure { .. } => "erasure",
+        What::ResolutionOutcome { .. } => "resolution_outcome",
     }
 }
 
 /// Every kind [`kind`] names.
-const KINDS: [&str; 34] = [
+const KINDS: [&str; 35] = [
     "decide",
     "authorise",
     "effect",
@@ -624,6 +625,7 @@ const KINDS: [&str; 34] = [
     "reliance",
     "command",
     "erasure",
+    "resolution_outcome",
     "stated",
 ];
 
