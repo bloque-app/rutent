@@ -156,7 +156,7 @@ pub fn settings(clock: &SharedClock) -> Settings {
 
 /// The log and the evidence store as they come back from `disk`: the store opened on its shelf, the log opened
 /// with its read, and nothing else made of the store yet.
-pub fn read_back(
+pub(crate) fn read_back(
     disk: &Disk,
     clock: &SharedClock,
 ) -> Result<(EvidenceStore, Rc<RefCell<CoreLog>>), AppendFailure> {
@@ -380,7 +380,7 @@ pub struct Core {
     /// Core's one clock.
     pub clock: SharedClock,
     /// What survives a crash: the log's store and the evidence store's shelf.
-    pub disk: Disk,
+    pub(crate) disk: Disk,
     log: Rc<RefCell<CoreLog>>,
     general: GeneralHandle<CoreLog>,
     bound: BoundStore<LogDisk, LogsRead>,
@@ -468,7 +468,7 @@ impl Core {
     }
 
     /// [`Core::assemble`], over `disk`.
-    pub fn assemble_on(
+    pub(crate) fn assemble_on(
         config: &Config,
         environment: &mut dyn Environment,
         disk: Disk,
@@ -539,7 +539,11 @@ impl Core {
             records.clone(),
         );
         engine.set_clock(Box::new(clock.clone()));
-        let policy = PolicySide::new(Rc::new(RefCell::new(engine)), records.clone());
+        let policy = PolicySide::new(
+            Rc::new(RefCell::new(engine)),
+            records.clone(),
+            deployment.clone(),
+        );
 
         // Orchestration's handle on the evidence store, its reads checked by policy, and then the store bound to the
         // one log it serves.
@@ -554,9 +558,6 @@ impl Core {
             window_secs: 86_400,
         });
         catalogue.set_answer_within(CHECK_ANSWERED_WITHIN);
-        for one in &installed {
-            kit::list(&mut catalogue, one);
-        }
         let prices = config
             .providers
             .iter()
@@ -636,6 +637,11 @@ impl Core {
         &self.issued
     }
 
+    /// Policy, as the other parts reach it: the engine's calls, and the ones answered beside it.
+    pub fn policy(&self) -> PolicySide {
+        self.policy.clone()
+    }
+
     /// What policy's sources read.
     pub fn sources(&self) -> Records {
         self.records.clone()
@@ -646,52 +652,92 @@ impl Core {
         self.records.registers.borrow_mut()
     }
 
-    /// Grants `installed` in the log: a grant of its one tuple naming its advertising key, decided by the
-    /// operator's login and carried out.
+    /// Grants `installed`: each tuple it advertises decided by the operator's login as a catalogue change naming its
+    /// advertising key, and the effect recorded; then the grant carried out in Core's catalogue on exactly the terms
+    /// recorded (the tuples, the decider, the effect's time and the key); then each effect's `done` result.
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit the grant, or the log takes no step of it.
+    /// If policy doesn't permit a tuple's grant, or the log takes no step of it.
     pub fn grant(&mut self, installed: &Installed) -> Result<(), AssemblyError> {
         let listing =
             |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
         let statement = installed.advertisement.statement();
         let provider = kit::id(&statement.statement.provider);
-        let action = Action::ChangeCatalogue {
-            change: CatalogueChange::Grant,
-            provider: provider.clone(),
-            version: None,
-            tuple: Some(kit::id(&format!("tuple-{}", provider.as_str()))),
-            advertising_keys: vec![statement.signature.key.clone()],
-            statement_key: None,
-        };
-        let request = DecisionRequest {
-            request: self.fresh.id(),
-            caller: kit::operator_login(),
-            action: action.clone(),
-            at: self.clock.timestamp(),
-        };
-        let decision =
-            rutent_contracts::core_internal::calls::Decisions::decide(&mut self.policy, &request)
-                .map_err(|e| listing("the grant's decision", e))?;
-        let permit = decision.permit().ok_or_else(|| {
-            AssemblyError::Listing(format!(
-                "the grant wasn't permitted: {:?}",
-                decision.outcome
-            ))
-        })?;
-        let effect = self
-            .verified(
-                What::Effect {
-                    action,
-                    decision: permit,
-                },
-                Outcome::ToTakeEffect {},
+        let key = statement.signature.key.clone();
+        let decider = kit::operator_login();
+        let mut effects = Vec::new();
+        let mut granted_at = None;
+        for tuple in rutent_prov::catalogue::tuples_of(&statement.statement) {
+            let action = Action::ChangeCatalogue {
+                change: CatalogueChange::Grant,
+                provider: provider.clone(),
+                version: None,
+                tuple: Some(kit::tuple_id(provider.as_str(), &tuple)),
+                advertising_keys: vec![key.clone()],
+                statement_key: None,
+            };
+            let request = DecisionRequest {
+                request: self.fresh.id(),
+                caller: decider.clone(),
+                action: action.clone(),
+                at: self.clock.timestamp(),
+            };
+            let decision = rutent_contracts::core_internal::calls::Decisions::decide(
+                &mut self.policy,
+                &request,
             )
-            .map_err(|e| listing("the grant's effect", e))?;
-        self.verified(What::Result { effect }, Outcome::Done {})
-            .map_err(|e| listing("the grant's result", e))?;
+            .map_err(|e| listing("the grant's decision", e))?;
+            let permit = decision.permit().ok_or_else(|| {
+                AssemblyError::Listing(format!(
+                    "the grant wasn't permitted: {:?}",
+                    decision.outcome
+                ))
+            })?;
+            let effect = self
+                .verified(
+                    What::Effect {
+                        action,
+                        decision: permit,
+                    },
+                    Outcome::ToTakeEffect {},
+                )
+                .map_err(|e| listing("the grant's effect", e))?;
+            let at = self.time_of(&effect);
+            granted_at =
+                Some(granted_at.map_or(at, |t: rutent_prov::catalogue::Instant| t.min(at)));
+            effects.push(effect);
+        }
+        let granted_at = granted_at
+            .ok_or_else(|| AssemblyError::Listing("a provider advertises no tuple".to_owned()))?;
+        // Carried out on the terms the log holds, and on no other, under an id of its own: the place of its first
+        // effect in the log, so a provider granted again is granted anew.
+        let mut terms = kit::grant_terms(installed, decider.acts.as_str(), granted_at);
+        terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(effects[0].index));
+        kit::grant(&mut self.catalogue, installed, terms);
+        for effect in effects {
+            self.verified(What::Result { effect }, Outcome::Done {})
+                .map_err(|e| listing("the grant's result", e))?;
+        }
         Ok(())
+    }
+
+    /// When the log received the stated entry at `receipt`, on the catalogue's clock.
+    fn time_of_stated(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
+        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
+        match self.log.borrow().entries().get(index) {
+            Some((_, Entry::Stated(s))) => rutent_core_authz::session::instant(&s.received_at),
+            _ => self.clock.instant(),
+        }
+    }
+
+    /// The time of the verified entry at `receipt`, on the catalogue's clock.
+    fn time_of(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
+        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
+        match self.log.borrow().entries().get(index) {
+            Some((_, Entry::Verified(v))) => rutent_core_authz::session::instant(&v.when.at),
+            _ => self.clock.instant(),
+        }
     }
 
     /// Records `installed`'s advertisement in the log, received now: its bytes kept, and its stated entry
@@ -723,9 +769,13 @@ impl Core {
             "commitment": kept.commitment,
         }))
         .map_err(|e| AssemblyError::Listing(format!("the advertisement's entry: {e}")))?;
-        self.general
+        let receipt = self
+            .general
             .append(&entry)
             .map_err(|e| listing("the advertisement", e))?;
+        // Into Core's catalogue once the log holds it, at the time the log received it.
+        let at = self.time_of_stated(&receipt);
+        kit::join(&mut self.catalogue, installed, at);
         if let Some(reserve) = &statement.statement.offers.reserve {
             self.records.declarations.borrow_mut().insert(
                 provider.as_str().to_owned(),

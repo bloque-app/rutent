@@ -67,12 +67,12 @@ impl Disk {
     }
 
     /// The log's store on this disk.
-    pub fn log(&self) -> LogDisk {
+    pub(crate) fn log(&self) -> LogDisk {
         LogDisk(self.clone())
     }
 
     /// The evidence store's shelf on this disk.
-    pub fn shelf(&self) -> ShelfDisk {
+    pub(crate) fn shelf(&self) -> ShelfDisk {
         ShelfDisk(self.clone())
     }
 

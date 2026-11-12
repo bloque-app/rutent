@@ -336,18 +336,10 @@ pub fn reserve_prices(reserve: &str) -> Vec<Price> {
 
 // The catalogue -----------------------------------------------------------------------------------------------------
 
-/// Lists `installed`'s advertisement in Core's catalogue, as the operator does: a grant for what it offers, its
-/// advertising key trusted, the advertisement joined, its module's version, a statement's evidence floor on each
-/// tuple, and each private node it declares registered as its publisher's holding.
-///
-/// # Panics
-///
-/// If the catalogue refuses any step.
-pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
-    let statement = installed.advertisement.statement();
-    let ad = &statement.statement;
-    let grant_id = format!("grant-{}", ad.provider);
-    let categories: Vec<Category> = [
+/// The categories `installed`'s advertisement offers.
+fn categories_of(installed: &Installed) -> Vec<Category> {
+    let ad = &installed.advertisement.statement().statement;
+    [
         (ad.offers.reserve.is_some(), Category::Reserve),
         (ad.offers.exchange.is_some(), Category::Exchange),
         (ad.offers.ramp.is_some(), Category::Ramp),
@@ -355,7 +347,17 @@ pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
     ]
     .into_iter()
     .filter_map(|(offered, category)| offered.then_some(category))
-    .collect();
+    .collect()
+}
+
+/// The terms of `installed`'s grant: every tuple it advertises, for every category it offers, granted by
+/// `granted_by` at `granted_at`, as `grant-<provider>`, with a reversal capacity of 500 against a bond of 1 000.
+///
+/// # Panics
+///
+/// If the reversal capacity doesn't check.
+pub fn grant_terms(installed: &Installed, granted_by: &str, granted_at: Instant) -> GrantTerms {
+    let ad = &installed.advertisement.statement().statement;
     let capacity = ReversalCapacity::check(
         Bond {
             asset: "USDC".into(),
@@ -367,24 +369,47 @@ pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
         Instant(1_000),
     )
     .expect("a capacity");
-    let grant = Grant::new(GrantTerms {
-        id: grant_id.clone(),
+    GrantTerms {
+        id: format!("grant-{}", ad.provider),
         provider: ad.provider.clone(),
         party: format!("{} Ltd", ad.publisher),
-        granted_by: "operator-admin".into(),
-        granted_at: Instant(1_000),
+        granted_by: granted_by.to_owned(),
+        granted_at,
         expires_at: Instant(5_000_000_000),
-        categories,
+        categories: categories_of(installed),
         tuples: tuples_of(ad),
         reversal_capacity: capacity,
-    })
-    .expect("a grant");
-    catalogue.grant(grant).expect("granted");
+    }
+}
+
+/// Grants `terms` in Core's catalogue and trusts `installed`'s advertising key under it.
+///
+/// # Panics
+///
+/// If the catalogue refuses either.
+pub fn grant(catalogue: &mut Catalogue, installed: &Installed, terms: GrantTerms) {
+    let id = terms.id.clone();
     catalogue
-        .trust_advertising_key(&grant_id, statement.signature.key.clone())
+        .grant(Grant::new(terms).expect("a grant"))
+        .expect("granted");
+    catalogue
+        .trust_advertising_key(
+            &id,
+            installed.advertisement.statement().signature.key.clone(),
+        )
         .expect("trusted");
+}
+
+/// Joins `installed`'s advertisement to Core's catalogue at `at`, once it is granted: its module's version, a
+/// statement's evidence floor on each tuple, and each private node it declares registered as its publisher's holding.
+///
+/// # Panics
+///
+/// If the catalogue refuses the advertisement.
+pub fn join(catalogue: &mut Catalogue, installed: &Installed, at: Instant) {
+    let ad = &installed.advertisement.statement().statement;
     catalogue
-        .join(installed.advertisement.bytes(), WORLD_AT)
+        .join(installed.advertisement.bytes(), at)
         .expect("joined");
     catalogue.set_module_version(
         &ad.provider,
@@ -399,4 +424,28 @@ pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
     for node in &ad.private_nodes {
         let _ = catalogue.register_private_holding(node, &ad.publisher, "holding");
     }
+}
+
+/// Lists `installed`'s advertisement in Core's catalogue as a test kit does, with no log: granted by
+/// `operator-admin` at the epoch's 1 000th second, and joined at the simulated world's clock. The assembly grants
+/// through a decided catalogue change instead ([`crate::assembly::Core::grant`]).
+pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
+    grant(
+        catalogue,
+        installed,
+        grant_terms(installed, "operator-admin", Instant(1_000)),
+    );
+    join(catalogue, installed, WORLD_AT);
+}
+
+/// The identifier the log names `provider`'s catalogue tuple `tuple` by in a grant (`change_catalogue`'s `tuple`):
+/// `tuple-` and the first 16 hex digits of SHA-256 over the tuple's fields, so the log's grant and the catalogue's
+/// name one tuple alike.
+pub fn tuple_id(provider: &str, tuple: &rutent_prov::catalogue::TupleKey) -> Id {
+    let fields = format!(
+        "{provider}|{:?}|{:?}|{:?}|{}|{:?}",
+        tuple.category, tuple.origin, tuple.destination, tuple.asset, tuple.to_asset
+    );
+    let digest = rutent_prov::module::wire::sha256(fields.as_bytes());
+    id(&format!("tuple-{}", &digest[..16]))
 }

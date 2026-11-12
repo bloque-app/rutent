@@ -84,13 +84,13 @@ impl Registers {
 #[derive(Clone)]
 pub struct Records {
     /// The log.
-    pub log: Rc<RefCell<CoreLog>>,
+    pub(crate) log: Rc<RefCell<CoreLog>>,
     /// Intake's record of each order, copied once the order opens.
-    pub orders: Rc<RefCell<BTreeMap<String, OrderRecord>>>,
+    pub(crate) orders: Rc<RefCell<BTreeMap<String, OrderRecord>>>,
     /// Each reserve's declaration, from its advertisement as the assembly listed it in the log.
-    pub declarations: Rc<RefCell<BTreeMap<String, ReserveDeclaration>>>,
+    pub(crate) declarations: Rc<RefCell<BTreeMap<String, ReserveDeclaration>>>,
     /// The deployment's registers.
-    pub registers: Rc<RefCell<Registers>>,
+    pub(crate) registers: Rc<RefCell<Registers>>,
 }
 
 fn said(yes: bool) -> Reply<Said> {
@@ -270,33 +270,96 @@ impl authz::Policy for Deployment {
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
 /// Policy, as the other parts reach it: the engine for the calls it builds (decisions, sessions and reads), and,
-/// beside it, on policy's handle, the calls whose rows haven't built them yet.
+/// beside it, on policy's handle, the calls whose rows haven't built them on the engine yet. Each of those is decided
+/// as the engine decides a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
+/// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
 ///
-/// - **Authorisations (`T-021-04`).** An authorisation is permitted where its giver acts for the party it states
-///   (`ActsFor`) and that party requested the order (`Requester`), the rule `T-021-03` holds a customer's
-///   authorisation to, and refused otherwise; it is recorded on policy's handle as the `authorise` entry the log
-///   holds a move to (`move-rests-on-its-authorisation`).
-/// - **Charges (`T-021-05`).** Within a bound no scenario reaches, recorded.
-/// - **Questions about people (`T-021-07`).** Not known, as the engine's stub answers them, recorded.
+/// - **Authorisations (`T-021-04`).** The consultation's answer, recorded as the `authorise` entry the log holds a
+///   move to (`move-rests-on-its-authorisation`).
+/// - **Charges (`T-021-05`).** Within a bound no scenario reaches where the consultation permits, over a bound of 0
+///   where it doesn't.
+/// - **Questions about people (`T-021-07`).** Refused where the consultation refuses; otherwise not known, since no
+///   verifier is a source yet.
 ///
-/// Each is replaced, through the same trait, when its row builds it on the engine.
+/// Each is replaced, through the same trait, when its row builds it on the engine: drop its `impl` here and forward
+/// to the engine, as [`Decisions`] does.
 #[derive(Clone)]
 pub struct PolicySide {
     engine: Rc<RefCell<PolicyEngine>>,
     records: Records,
+    deployment: Deployment,
+}
+
+/// One policy's verdict on a call, as the engine reaches its own (`core-authz`'s `verdict`): its needs, each asked of
+/// its source in order, the first that fails deciding, then its ruling.
+fn verdict(
+    policy: &mut impl authz::Policy,
+    sources: &mut Records,
+    asked: authz::Asked<'_>,
+) -> Answer {
+    let refused = |class| Answer::Refuse { class };
+    let not_known = |cause| Answer::NotKnown { cause };
+    let needs = match policy.needs(asked) {
+        Reply::Given(needs) => needs,
+        Reply::Missing => return refused(RefusalClass::MissingInput),
+        Reply::Unreachable => return not_known(NotKnownCause::PolicyUnreachable),
+    };
+    let mut inputs = Vec::with_capacity(needs.len());
+    for need in needs {
+        match authz::Sources::supply(sources, &need) {
+            Reply::Given(said) => inputs.push(Input { need, said }),
+            Reply::Missing => return refused(RefusalClass::MissingInput),
+            Reply::Unreachable => return not_known(NotKnownCause::VerifierUnreachable),
+        }
+    }
+    match policy.rule(asked, &inputs) {
+        Reply::Given(Ruling::Permit) => Answer::Permit {},
+        Reply::Given(Ruling::Refuse(class)) => refused(class),
+        Reply::Missing => refused(RefusalClass::MissingInput),
+        Reply::Unreachable => not_known(NotKnownCause::PolicyUnreachable),
+    }
 }
 
 /// A bound on a party's work that no scenario reaches.
 pub const CHARGE_BOUND: u64 = 1_000_000;
 
 impl PolicySide {
-    /// Policy over `engine`, answering beside it from `records`.
-    pub fn new(engine: Rc<RefCell<PolicyEngine>>, records: Records) -> Self {
-        Self { engine, records }
+    /// Policy over `engine`, answering beside it from `records` under `deployment`, the engine's own deployment
+    /// policy.
+    pub fn new(
+        engine: Rc<RefCell<PolicyEngine>>,
+        records: Records,
+        deployment: Deployment,
+    ) -> Self {
+        Self {
+            engine,
+            records,
+            deployment,
+        }
+    }
+
+    /// The consultation of a call answered beside the engine, as the engine's own runs it: its fixed rules first
+    /// (`Fixed`, every rule `FIXED` lists, the register of actors and the roles' rules among them), each input
+    /// asked of the same records, then the deployment's policy, unless a fixed rule refused. A refusal beats not
+    /// known.
+    fn consult(&self, asked: authz::Asked<'_>) -> Answer {
+        let mut sources = self.records.clone();
+        let fixed = verdict(&mut authz::Fixed::default(), &mut sources, asked);
+        if matches!(fixed, Answer::Refuse { .. }) {
+            return fixed;
+        }
+        match verdict(&mut self.deployment.clone(), &mut sources, asked) {
+            Answer::Permit {} => fixed,
+            refused @ Answer::Refuse { .. } => refused,
+            not_known @ Answer::NotKnown { .. } => match fixed {
+                Answer::NotKnown { .. } => fixed,
+                _ => not_known,
+            },
+        }
     }
 
     /// The engine.
-    pub fn engine(&self) -> &Rc<RefCell<PolicyEngine>> {
+    pub(crate) fn engine(&self) -> &Rc<RefCell<PolicyEngine>> {
         &self.engine
     }
 
@@ -354,26 +417,7 @@ impl Reads for PolicySide {
 impl Authorisations for PolicySide {
     fn authorise(&mut self, a: &Authorisation) -> Result<Decision, AppendFailure> {
         let giver = &a.given_by;
-        let registers = self.records.registers.borrow().clone();
-        let acts = registers.acts_for(&giver.acts, &giver.party);
-        let requester = self
-            .records
-            .orders
-            .borrow()
-            .get(a.order.as_str())
-            .map(|r| r.parties.requester.clone());
-        let answer = match (acts, requester) {
-            (Some(true), Some(requester)) if requester == giver.party => Answer::Permit {},
-            (Some(false), _) => Answer::Refuse {
-                class: RefusalClass::NoAccountableParty,
-            },
-            (None, _) | (_, None) => Answer::Refuse {
-                class: RefusalClass::MissingInput,
-            },
-            _ => Answer::Refuse {
-                class: RefusalClass::NotPermitted,
-            },
-        };
+        let answer = self.consult(authz::Asked::Authorise(a));
         let what = What::Authorise {
             authorisation: a.clone(),
             decision: a.authorisation.clone(),
@@ -391,8 +435,14 @@ impl Authorisations for PolicySide {
 impl Charges for PolicySide {
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
         charge.check().map_err(AppendFailure::Refused)?;
-        let outcome = ChargeOutcome::Within {
-            remaining: SafeInteger::try_from(CHARGE_BOUND).expect("a safe integer"),
+        // Over a bound of 0, as the engine's stub answers, where the consultation doesn't permit: no work is done.
+        let outcome = match self.consult(authz::Asked::Charge(charge)) {
+            Answer::Permit {} => ChargeOutcome::Within {
+                remaining: SafeInteger::try_from(CHARGE_BOUND).expect("a safe integer"),
+            },
+            _ => ChargeOutcome::Over {
+                bound: SafeInteger::try_from(0).expect("a safe integer"),
+            },
         };
         let what = What::Charge {
             charge: charge.clone(),
@@ -412,8 +462,12 @@ impl PersonQuestions for PolicySide {
         question: &PersonQuestion,
     ) -> Result<PersonAnswer, AppendFailure> {
         question.check().map_err(AppendFailure::Refused)?;
-        let outcome = PersonOutcome::NotKnown {
-            cause: NotKnownCause::PolicyUnreachable,
+        // No verifier is a source yet, so a question the consultation lets through is not known.
+        let outcome = match self.consult(authz::Asked::AskAboutPerson(question)) {
+            Answer::Refuse { class } => PersonOutcome::Refused { class },
+            _ => PersonOutcome::NotKnown {
+                cause: NotKnownCause::PolicyUnreachable,
+            },
         };
         let what = What::AskAboutPerson {
             question: question.clone(),

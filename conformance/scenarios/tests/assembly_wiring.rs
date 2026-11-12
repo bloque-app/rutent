@@ -357,3 +357,68 @@ fn rounds_transactions_are_kept_across_routings_and_no_segment_runs_under_one() 
         );
     }
 }
+
+// verifies: DEC-18
+#[test]
+fn catalogues_grant_is_the_one_the_log_records() {
+    use rutent_contracts::core_internal::{Action, CatalogueChange};
+    let (core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let log = core.log();
+    let entries: Vec<_> = log.entries().iter().map(|(_, e)| e.clone()).collect();
+    drop(log);
+    // Each grant the log records: its tuple, its keys, who decided it and when it took effect.
+    let mut tuples = Vec::new();
+    let mut keys = Vec::new();
+    let mut deciders = Vec::new();
+    let mut times = Vec::new();
+    for entry in &entries {
+        let Entry::Verified(v) = entry else { continue };
+        if let What::Effect {
+            action:
+                Action::ChangeCatalogue {
+                    change: CatalogueChange::Grant,
+                    provider,
+                    tuple,
+                    advertising_keys,
+                    ..
+                },
+            decision,
+        } = &v.what
+        {
+            assert_eq!(provider.as_str(), RESERVE);
+            tuples.push(tuple.clone().expect("a grant names its tuple"));
+            keys = advertising_keys.clone();
+            times.push(rutent_core_authz::session::instant(&v.when.at));
+            let decider = entries.iter().find_map(|e| match e {
+                Entry::Verified(d) => match &d.what {
+                    What::Decide {
+                        request,
+                        decision: id,
+                    } if id == decision.decision() => Some(request.caller.acts.clone()),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            });
+            deciders.push(decider.expect("the effect's decision is in the log"));
+        }
+    }
+    let grants = core.catalogue.grants_of_provider(RESERVE);
+    assert_eq!(grants.len(), 1, "one grant in the catalogue");
+    let terms = grants[0].terms();
+    let mut granted: Vec<String> = terms
+        .tuples
+        .iter()
+        .map(|t| kit::tuple_id(RESERVE, t).as_str().to_owned())
+        .collect();
+    let mut tuples: Vec<String> = tuples.iter().map(|t| t.as_str().to_owned()).collect();
+    granted.sort();
+    tuples.sort();
+    assert_eq!(
+        granted, tuples,
+        "the catalogue grants the tuples the log records"
+    );
+    assert!(deciders.iter().all(|d| d.as_str() == terms.granted_by));
+    assert_eq!(Some(&terms.granted_at), times.iter().min());
+    assert_eq!(grants[0].advertising_keys(), keys.as_slice());
+}

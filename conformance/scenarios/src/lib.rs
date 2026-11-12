@@ -17,6 +17,28 @@
 //! people) are answered beside it on policy's handle, the engine's own ([`assembly::policy::PolicySide`]): the handle
 //! the engine holds is still the only policy handle.
 //!
+//! **Nothing outside this crate reaches the log but to read it.** The assembled Core hands out the log behind a
+//! shared borrow ([`assembly::Core::log`]), policy's sources with their records private
+//! ([`assembly::policy::Records`]), and policy's calls ([`assembly::policy::PolicySide`]), whose engine is the crate's.
+//! The disk under the log, the reading of it back into a log, and the engine holding policy's handle are the crate's
+//! alone, so a scenario test can append to the log only through policy's calls and Core's own steps:
+//!
+//! ```compile_fail
+//! fn raw(core: &rutent_scenarios::assembly::Core) { let _ = &core.disk; }
+//! ```
+//!
+//! ```compile_fail
+//! fn raw(core: &rutent_scenarios::assembly::Core) { let _ = &core.sources().log; }
+//! ```
+//!
+//! ```compile_fail
+//! use rutent_scenarios::assembly::read_back;
+//! ```
+//!
+//! ```compile_fail
+//! fn raw(core: &rutent_scenarios::assembly::Core) { let _ = core.policy().engine(); }
+//! ```
+//!
 //! **Who holds which handle on the log.** The assembly alone holds the log. It hands policy's handle,
 //! [`PolicyLog`], to the policy engine and to no other part, and orchestration's, [`Log`], to orchestration. A
 //! [`PolicyHandle`] can't be built outside this crate and isn't `Clone`, so the one the engine holds is the only one;
