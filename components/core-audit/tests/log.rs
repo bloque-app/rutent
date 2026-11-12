@@ -1594,21 +1594,29 @@ fn an_effect_on_a_permit_this_log_holds_no_decision_for_is_refused() {
     assert_eq!(run.log.len(), 2);
 }
 
-/// An entry built in memory is held to the contract's rules as one read from the wire: a command whose `who` isn't
-/// the operator, which the general handle's type lets through, is refused.
+/// An entry built in memory is held to the contract's rules as one read from the wire: a command recorded with an
+/// outcome no command can have breaks its shape's rules, and a command whose `who` isn't the deployment's operator,
+/// which both the general handle's type and the shape let through, breaks the admission row
+/// `operator-command-is-the-deployment-operators`. The log refuses both, and records nothing.
 // verifies: REQ-AUD-1, REQ-AUD-6
 #[test]
 fn an_entry_breaking_the_contracts_rules_is_refused_however_it_was_built() {
     let mut run = Run::new(MemoryStore::new());
     let command = valid("verified-entry-of-an-operator-command");
-    let mut entry: VerifiedEntry = serde_json::from_value(command).unwrap();
-    entry.who = serde_json::from_value(actor("rutent", "core-orch", "core", "component")).unwrap();
-    assert!(entry.check().is_err());
-    let general = GeneralEntry::try_from(Entry::Verified(entry)).unwrap();
-    assert!(matches!(
-        run.log.append(&general),
-        Err(AppendFailure::Refused(_))
-    ));
+    let mut shapeless: VerifiedEntry = serde_json::from_value(command.clone()).unwrap();
+    shapeless.outcome = rutent_contracts::core_internal::Outcome::Permitted {};
+    assert!(shapeless.check().is_err());
+    let mut by_core: VerifiedEntry = serde_json::from_value(command).unwrap();
+    by_core.who =
+        serde_json::from_value(actor("rutent", "core-orch", "core", "component")).unwrap();
+    assert!(by_core.check().is_ok(), "the shape lets it through");
+    for entry in [shapeless, by_core] {
+        let general = GeneralEntry::try_from(Entry::Verified(entry)).unwrap();
+        assert!(matches!(
+            run.log.append(&general),
+            Err(AppendFailure::Refused(_))
+        ));
+    }
     assert!(run.log.is_empty());
 }
 
