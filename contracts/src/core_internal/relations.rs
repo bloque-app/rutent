@@ -1949,6 +1949,14 @@ pub static RELATIONS: [Relation; 83] = [
                 "whose",
                 "a completed reversal's evidence is another party's than the failed provider's, or the origin reserve's labelled its word",
             ),
+            (
+                "maker",
+                "a completed reversal's evidence is the word of the maker of a verified statement it rests on",
+            ),
+            (
+                "reserve",
+                "a completed reversal's evidence is the word of the reserve at the segment's from-node",
+            ),
         ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::ReversalCompleted { .. }) => by_fields(0),
@@ -4182,11 +4190,31 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
     if found == Match::NotTarget {
         return found;
     }
-    let (Some(i), Some(What::Evidence { whose, grade, .. })) =
-        (input(entry), verified(target).map(|t| &t.what))
+    let (
+        Some(i),
+        Some(What::Evidence {
+            whose,
+            grade,
+            rests_on,
+            ..
+        }),
+    ) = (input(entry), verified(target).map(|t| &t.what))
     else {
         return Match::NotTarget;
     };
+    // Whose word it is: the maker of a verified statement it rests on, never a name it gives itself.
+    let made = rests_on.iter().any(|r| {
+        entry_at(r, history).and_then(stated).is_some_and(|s| {
+            matches!(s.attribution, Attribution::Verified { .. }) && maker_provider(s) == whose
+        })
+    });
+    // The value is shown back where the segment took it from: the reserve at its from-node says so.
+    let reserve = i
+        .subject
+        .segment
+        .as_ref()
+        .and_then(|segment| reserve_at_from(i.subject.order.as_str(), segment.as_str(), history))
+        .is_some_and(|r| r.as_str() == whose.as_str());
     let moved = history
         .iter()
         .find_map(|(_, e)| match verified(e).and_then(effect_action) {
@@ -4211,9 +4239,42 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
     });
     match found {
         Match::Mismatch(i) => Match::Mismatch(i),
-        _ if another => Match::Holds,
-        _ => Match::Mismatch(2),
+        _ if !another => Match::Mismatch(2),
+        _ if !made => Match::Mismatch(3),
+        _ if !reserve => Match::Mismatch(4),
+        _ => Match::Holds,
     }
+}
+
+/// The reserve at the from-node of `segment` of `order`: the provider of the segment of its plans that delivered
+/// value to that node in that asset, or, for a segment no other delivered to (the first withdrawal, from an outer
+/// node), its own provider, the origin reserve.
+fn reserve_at_from<'a>(
+    order: &str,
+    segment: &str,
+    history: &'a History,
+) -> Option<&'a crate::state_machine::Id> {
+    let plans: Vec<&crate::state_machine::SegmentPlan> = history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+        .filter(|i| i.subject.order.as_str() == order)
+        .flat_map(|i| match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts
+                .iter()
+                .flat_map(|p| p.segments.iter())
+                .collect::<Vec<_>>(),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    let this = plans.iter().find(|s| s.segment_id.as_str() == segment)?;
+    Some(
+        plans
+            .iter()
+            .find(|s| s.segment_id.as_str() != segment && s.to == this.from)
+            .map_or(&this.provider, |s| &s.provider),
+    )
 }
 
 /// Which of the log's handles an entry came through.

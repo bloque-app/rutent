@@ -13,10 +13,10 @@
       "order": "ord-1",
       "effect": {
         "log": "log-main",
-        "index": 169,
+        "index": 170,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4646464646464646464646464646464646464646464646464646464646464646"
+          "value": "4747474747474747474747474747474747474747474747474747474747474747"
         }
       },
       "outcome": "failed",
@@ -28,10 +28,10 @@
       },
       "evidence": {
         "log": "log-main",
-        "index": 174,
+        "index": 175,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b"
+          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
         }
       },
       "at": "2026-11-10T09:00:00Z"
