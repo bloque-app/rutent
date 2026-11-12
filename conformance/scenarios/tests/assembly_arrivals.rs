@@ -114,3 +114,120 @@ fn value_arriving_with_no_order_opens_none_and_an_undeclared_reserve_starts_noth
     ));
     assert_eq!(core.verified_whats().len(), entries, "nothing recorded");
 }
+
+/// The deployment's operator files a differing arrival anew through the real log, whose operator states as one maker
+/// (`conformance-operator`) for another party (`operator`): the operator's login, of the operator's party, is
+/// admitted; an actor stating the operator's role for a party named as the maker is refused, by Core and by the log's
+/// own row (`refiling-files-an-arrival-anew`).
+// verifies: REQ-ORD-23
+#[test]
+fn the_operators_login_files_a_differing_arrival_anew_on_the_real_log() {
+    use rutent_contracts::core_internal::{
+        Actor, ActorKind, DeploymentOperator, Entry, Outcome, Role, Through, TimeSource,
+        VerifiedEntry, VerifiedKind, When, admit_entry,
+    };
+    use rutent_core_orch::intake::{Status as IntakeStatus, Told};
+
+    let (mut core, _) = Scenario::new("Arrivals", "AC-10", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let customer = kit::customer();
+    let session = core.open_session(&customer).expect("a session");
+    let told = core
+        .request(base_request("req-open", AMOUNT, &session))
+        .expect("the request is taken");
+    let order = Core::order_of(&told).expect("the order opens");
+    let Told::Exists {
+        status: IntakeStatus::Quoted { digest, .. },
+        ..
+    } = core.quote(&customer, &order).expect("quoted")
+    else {
+        panic!("the order is quoted");
+    };
+    core.accept(&customer, &order, &digest).expect("accepted");
+
+    // Less than the order states arrives at the payer's account: held against the order, differing.
+    let less = (AMOUNT.parse::<u64>().expect("an amount") / 2).to_string();
+    let arrived = core
+        .arrive(&report(&core, &less))
+        .expect("the arrival is taken");
+    let Arrived::Held {
+        order: held,
+        matched: ArrivalMatch::Differs,
+        arrival,
+    } = arrived
+    else {
+        panic!("{arrived:?}");
+    };
+    assert_eq!(held, order);
+
+    // The operator's maker and party differ in the assembly's log.
+    let operator = kit::operator();
+    assert_ne!(operator.acts, operator.party);
+    let maker_as_party = Actor {
+        party: operator.acts.clone(),
+        acts: id("someone-stating-the-operator"),
+        role: Role::Operator,
+        kind: ActorKind::Person,
+    };
+
+    // The log's own row refuses a refiling by an actor whose party is the maker's name.
+    let history: Vec<_> = core.log().entries().to_vec();
+    let deployment_operator = DeploymentOperator {
+        maker: operator.acts.clone(),
+        party: operator.party.clone(),
+    };
+    let refiling_by = |who: &Actor| {
+        Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: who.clone(),
+            what: What::Refiling {
+                arrival: arrival.clone(),
+                order: order.clone(),
+            },
+            when: When {
+                at: core.clock.timestamp(),
+                source: TimeSource::CoreClock,
+            },
+            outcome: Outcome::Observed {},
+        })
+    };
+    assert!(
+        admit_entry(
+            &history,
+            &refiling_by(&maker_as_party),
+            Through::General,
+            &deployment_operator
+        )
+        .is_err(),
+        "the log refuses an actor whose party is the operator's maker"
+    );
+    assert!(
+        admit_entry(
+            &history,
+            &refiling_by(&kit::operator_login()),
+            Through::General,
+            &deployment_operator
+        )
+        .is_ok(),
+        "the log admits the operator's login"
+    );
+    // Core refuses the stranger before the log, and the operator's login's refiling is appended to the real log.
+    assert!(matches!(
+        core.refile(&maker_as_party, &arrival),
+        Err(StepError::Arrival(ArrivalError::NotTheFiler))
+    ));
+    let refiled = core
+        .refile(&kit::operator_login(), &arrival)
+        .expect("the operator's login files it anew");
+    let recorded = core
+        .log()
+        .entries()
+        .iter()
+        .find(|(r, _)| r == &refiled)
+        .map(|(_, e)| e.clone())
+        .expect("in the log");
+    assert!(matches!(
+        recorded,
+        Entry::Verified(VerifiedEntry { what: What::Refiling { .. }, ref who, .. }) if who == &kit::operator_login()
+    ));
+}

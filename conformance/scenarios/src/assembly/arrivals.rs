@@ -123,6 +123,17 @@ impl Core {
         Ok(arrived)
     }
 
+    /// `filer` files the arrival at `arrival` anew against the order it differed from.
+    pub fn refile(
+        &mut self,
+        filer: &rutent_contracts::core_internal::Actor,
+        arrival: &rutent_contracts::core_internal::Receipt,
+    ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
+        let refiled = self.with_arrivals(|arrivals, desk| arrivals.refile(desk, filer, arrival))?;
+        self.feed()?;
+        Ok(refiled)
+    }
+
     /// Files an order on an automatic deposit; once it starts, its segments follow it.
     pub fn file(&mut self, filing: Filing) -> Result<Filed, StepError> {
         let mut filed_on = FiledOn(Rc::clone(&self.records.orders));
