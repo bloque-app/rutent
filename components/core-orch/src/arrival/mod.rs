@@ -66,6 +66,10 @@ pub trait OpenOrders {
 pub trait FiledOrders {
     /// The order `record` names was opened on an automatic deposit; its authorisation is asked next.
     fn opened(&mut self, record: &OrderRecord);
+
+    /// The order handed over by [`FiledOrders::opened`] never opened: policy refused it, couldn't decide, or its
+    /// answer couldn't be recorded. Its record is dropped.
+    fn withdrawn(&mut self, order: &Id);
 }
 
 /// An order open at a reserve, waiting on value there.
@@ -221,13 +225,14 @@ pub enum ArrivalError {
     NoSuchArrival,
     /// The reserve never declared that it starts routes on automatic deposits: nothing starts (`REQ-ORD-13`).
     NotDeclared,
+    /// The deposit is filed on no more: its reserve said its funds aren't there, or an order was accepted on it. A new
+    /// notice is a new arrival, and may be filed on.
+    NotFileable,
     /// The arrival was filed on before, otherwise.
     Conflicting {
         /// The order that filing opened.
         order: Id,
     },
-    /// A filing under way is carried on only by the filer whose authorisation policy permitted.
-    OtherFiler,
     /// Policy refused the filer, of this class: nothing was opened, and the deposit stays free.
     Refused {
         /// The class.
@@ -317,15 +322,51 @@ fn files_at(filer: &Actor, reserve: &Id) -> bool {
 /// The parts of a notice's envelope Core reads: its maker, and whether its body names a transaction.
 #[derive(Deserialize)]
 struct NoticeEnvelope {
+    shape: String,
     maker: String,
     statement: serde_json::Value,
 }
 
+/// The shapes a notice of value arriving is not: every statement shape a contract names for something else, a
+/// reserve's catalogue statements (its advertisement, its declarations, its reserve declaration) among them.
+const NOT_A_NOTICE: &[&str] = &[
+    "urn:rutent:provider-role:statement-envelope",
+    rutent_contracts::provider_role::ADVERTISEMENT_SHAPE,
+    "urn:rutent:provider-role:declarations",
+    "urn:rutent:provider-role:reserve-declaration",
+    rutent_contracts::provider_role::OPERATION_SHAPE,
+    rutent_contracts::provider_role::JUDGEMENT_SHAPE,
+    rutent_contracts::provider_role::REVERSAL_CONFIRMATION_SHAPE,
+    "urn:rutent:provider-role:common",
+    rutent_contracts::module_interface::RELEASE_ASSERTION_SHAPE,
+    rutent_contracts::router_api::DECISION_RECORD_SHAPE,
+];
+
+/// The kinds of provider-role result: each answers an operation, so none is a notice of value arriving.
+const RESULT_KINDS: &[&str] = &[
+    "withdrawal",
+    "deposit",
+    "transfer",
+    "conversion",
+    "balance_verification",
+    "judgement",
+    "reversal",
+    "reversal_confirmation",
+    "holding_balance",
+];
+
 /// Whether `report`'s notice is its reserve's own, about nothing: made by the reserve, its body naming no
-/// transaction. provider-role has no shape for a notice of value arriving, so nothing else of its body is read.
+/// transaction, and of no shape a contract names for something else (an advertisement, a declaration, an operation, a
+/// result of a known kind, a judgement, a confirmation, a release assertion or a decision record). provider-role has
+/// no shape for a notice of value arriving, so nothing else of its body is read.
 fn its_own_notice(report: &Report) -> bool {
     serde_json::from_slice::<NoticeEnvelope>(&report.notice).is_ok_and(|n| {
-        n.maker == report.reserve.as_str() && n.statement.get("transaction").is_none()
+        let kind = n.statement.get("kind").and_then(|k| k.as_str());
+        n.maker == report.reserve.as_str()
+            && n.statement.get("transaction").is_none()
+            && !NOT_A_NOTICE.contains(&n.shape.as_str())
+            && !(n.shape == rutent_contracts::provider_role::RESULT_SHAPE
+                && kind.is_some_and(|k| RESULT_KINDS.contains(&k)))
     })
 }
 
@@ -358,6 +399,8 @@ pub struct Arrivals {
     /// Each filing refused before an order opened, by its filer's party and identifier: what it was told, and its
     /// refusal not yet appended. It holds nothing.
     refused: BTreeMap<(String, String), (Filing, Filed, Option<Entry>)>,
+    /// The deposits filed on no more: their reserve said the funds aren't there, or an acceptance was recorded on them.
+    spent: BTreeSet<String>,
     used: BTreeSet<String>,
 }
 
@@ -625,8 +668,11 @@ impl Arrivals {
     /// automatic deposits: otherwise nothing starts, and nothing is asked or recorded (`REQ-ORD-13`). A filing for
     /// another amount, place, asset, holder or destination than the deposit's, or in a session not the holder's, is
     /// refused before an order exists, as is one policy refuses; none of those holds the deposit. One permitted filing
-    /// holds the deposit while it is under way or started: the same filing again, by any login of the filer's party,
-    /// is told how it stands, and another opens nothing. A permitted filing that ends frees the deposit again.
+    /// holds the deposit while it is under way or started: the same filing again, by any listed login of the filer's
+    /// party, is told how it stands or carries it on, and another opens nothing, unless no login of that party that
+    /// filed or carried it on is listed any more, which ends it. A permitted filing that ends frees the deposit again,
+    /// except where the reserve said its funds aren't there or an acceptance was recorded on it: then the deposit is
+    /// filed on no more (`NotFileable`), and only a new notice is.
     pub fn file<R: Router>(
         &mut self,
         desk: &mut Desk<'_, '_>,
@@ -638,20 +684,27 @@ impl Arrivals {
         }
         let recorded = self.arrival_for(&filing.filer, &filing.arrival)?;
         let arrival = key(&filing.arrival);
-        if let Some(run) = self.runs.get(&arrival) {
-            if !same_filing(&run.asked, &filing) {
+        if let Some(run) = self.runs.get_mut(&arrival) {
+            if same_filing(&run.asked, &filing) {
+                if let Some(outcome) = run.outcome() {
+                    return Ok(outcome);
+                }
+                // Under way: carried on by any listed login of the permitted filer's party.
+                run.carried_on_by(&filing.filer);
+            } else if run.outcome().is_none() && !run.has_a_listed_login(desk) {
+                // No login of the filer's party is listed any more: the filing ends, recorded, and frees the deposit.
+                let Some(mut run) = self.runs.remove(&arrival) else {
+                    return Err(ArrivalError::NotNow);
+                };
+                run.abandon(desk)?;
+                self.ended.push(run);
+            } else {
                 return Err(ArrivalError::Conflicting {
                     order: run.order.clone(),
                 });
             }
-            if let Some(outcome) = run.outcome() {
-                return Ok(outcome);
-            }
-            // Under way: carried on by the filer policy permitted alone, whose acceptance it records.
-            if run.asked.filer != filing.filer {
-                return Err(ArrivalError::OtherFiler);
-            }
-        } else {
+        }
+        if !self.runs.contains_key(&arrival) {
             if let Some(ended) = self
                 .ended
                 .iter()
@@ -675,6 +728,9 @@ impl Arrivals {
             if recorded.matched != ArrivalMatch::NoOrder {
                 return Err(ArrivalError::NoSuchArrival);
             }
+            if self.spent.contains(&arrival) {
+                return Err(ArrivalError::NotFileable);
+            }
             if !filing::declared(desk, &recorded.reserve) {
                 return Err(ArrivalError::NotDeclared);
             }
@@ -689,8 +745,12 @@ impl Arrivals {
             return Err(ArrivalError::NotNow);
         };
         let result = run.go_on::<R>(desk, self);
-        // A filing that ended holds the deposit no more.
+        // A filing that ended holds the deposit no more; one that ended on the reserve's no, or after its acceptance was
+        // recorded, leaves it filed on no more.
         if matches!(run.outcome(), Some(Filed::CantProceed { .. })) {
+            if run.spends() {
+                self.spent.insert(arrival.clone());
+            }
             self.ended.push(run);
         } else {
             self.runs.insert(arrival, run);

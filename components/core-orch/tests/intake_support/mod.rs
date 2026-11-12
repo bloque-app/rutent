@@ -306,6 +306,9 @@ pub struct Store {
     /// How many more statements it keeps before it fails to keep one, once, keeping nothing (`T-020-04`). Off unless
     /// a test sets it.
     pub fail_after: Option<usize>,
+    /// The place of a statement kept before that the next statement kept restates, once (`T-020-04`). Off unless a
+    /// test sets it.
+    pub restates_next: Option<usize>,
 }
 
 fn commitment(place: usize) -> Digest {
@@ -326,7 +329,7 @@ impl Evidence for Store {
         self.kept.push(received.to_vec());
         Ok(Kept {
             commitment: commitment(self.kept.len() - 1),
-            restates: None,
+            restates: self.restates_next.take().map(commitment),
         })
     }
 

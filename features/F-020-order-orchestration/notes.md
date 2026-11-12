@@ -459,8 +459,8 @@ the code, and their rule-offs stand in.
 
 1. **The operator is the deployment's operator.** A filer in the operator's role is the operator only where its party
    is the deployment's operator party (`Desk::operator`), and the register says it acts for it; a customer stating the
-   operator's role files nothing. The log's `refiling-files-an-arrival-anew` reads the role alone; that half is the
-   contract author's (sent by the coordinator), and `contracts/` is untouched.
+   operator's role files nothing. The log's `refiling-files-an-arrival-anew` reads the role alone; that half's owner is
+   `T-020-01f` (the contract branch), row `refiling-files-an-arrival-anew`, and `contracts/` is untouched here.
 2. **Nothing opened before policy permits; nothing stopped holds the deposit.** A filing is now taken, before any
    order exists, through every check that can refuse it: the filing for what arrived, the holder's session, the
    destination (answer 6), then policy. The order is drawn, its record handed to the assembly through a new port,
@@ -490,7 +490,11 @@ the code, and their rule-offs stand in.
 4. **One notice, one arrival.** Notices are kept by their bytes: the same bytes with other figures are refused
    (`OtherFigures`), and so is a notice the evidence store finds restates one taken before (`Kept::restates`) with
    other figures. Before anything is kept, the notice must be its reserve's (its envelope's maker the report's reserve)
-   and name no transaction in its body (`NotItsNotice`). Nothing else of the body can be read. **Gap, exactly**: a
+   and name no transaction in its body (`NotItsNotice`). Since the re-review, it must also be of no shape a contract
+   names for something else: a reserve's catalogue statements (its advertisement, its declarations, its reserve
+   declaration) would otherwise pass, being its own and naming no transaction, and so would an operation, a judgement,
+   a confirmation, a release assertion, a decision record or a result of a known kind. Nothing else of the body can be
+   read. **Gap, exactly**: a
    provider-role shape for a notice of value arriving, naming its outer node, asset, amount, account and a per-credit
    reference the reserve assigns, so Core reads the figures from the signed bytes rather than the port, and two notices
    of one credit, signed at different times, are known as one. Owner: a new `F-020` row with a provider-role bump. A
@@ -522,11 +526,12 @@ the code, and their rule-offs stand in.
 
 - **Nits.** `open_run` returns the refusal it recorded. Refused filings are kept by the filer's party and identifier, so
   they are bounded by the filings made. Another login of the filer's party repeating a filing is told how it stands,
-  once it started or ended; one under way is carried on only by the filer policy permitted (`OtherFiler`), whose
-  acceptance it records, as intake's `OtherActor`.
-- **A permitted filing that waits holds the deposit** (a silent reserve, a check that can't go): until its own filer
-  files again, and nothing times it out. Reading, reversible. Owner of a time-out: `T-020-11`'s stuck orders, or a
-  later `F-020` row, since such an order has no `route_chosen` yet for the state machine to hold stuck.
+  once it started or ended. (One under way was carried on only by the filer policy permitted, `OtherFiler`; the
+  re-review's answer 1 lets any listed login of its party carry it on.)
+- **A permitted filing that waits holds the deposit** (a silent reserve, a check that can't go), but not for ever, since
+  the re-review's answer 1: it ends, recorded, and frees the deposit once its session ends (the check refused
+  `NoSession`), once its reserve is past its time to answer a question it left unanswered, or once no login of its
+  filer's party that filed or carried it on is listed; and a permit it rests on holds no longer than its session.
 - **F2's "operator without `ActForUser`"** is policy's fake answering `missing_input`; core-orch can't reach
   core-authz (the boundary check), so the real engine's answer is `T-024-04`'s (`AC-11`).
 - **Changed meanings, deliberately.** Another reserve now gets `NoSuchArrival`, not `NotTheFiler` (answer 9); a
@@ -599,6 +604,71 @@ the code, and their rule-offs stand in.
 - **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs`,
   `components/core-orch/tests/intake_support/mod.rs` (the two opt-in failures, answer 7) and these notes. No contract,
   manifest or `DEC-20` path.
+
+### T-020-04, re-review answers (of `f307b2d`)
+
+Each probe was written first and run against `738cbfe` (with the one new error variant, `NotFileable`, added so they
+compile): eight red, `a_waiting_filing_whose_session_ends_ends_and_frees_the_deposit`,
+`a_waiting_filing_whose_reserve_stays_silent_past_its_time_ends`,
+`a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left`,
+`an_order_that_never_opened_is_withdrawn_from_the_assembly`, `a_deposit_its_reserve_said_no_to_is_filed_on_no_more`,
+`a_deposit_with_an_acceptance_recorded_is_filed_on_no_more`, `a_filing_carried_on_after_its_session_ended_isnt_accepted`
+and `a_reserves_advertisement_is_no_arrival_notice`. `a_restated_notice_is_the_same_arrival` was green there (the path
+existed, untested); its rule-off stands in.
+
+1. **A waiting filing ends** (the coordinator's defaults), each time recorded as an `order_refusal` naming its order,
+   `no_route_right_now`, so the log holds no permitted order in limbo, and the deposit is free again:
+   - on a check refusal that can't lift for that filing: `NoSession` (its session ended), `SessionNotForAccount` or
+     `NotACheck`. Other refusals (the account's bound, the reserve unusable, the operator's settings) wait;
+   - once a question it asked went unanswered and the catalogue now holds the reserve unavailable
+     (`reserve_eligibility`, past the operator's time to answer, `REQ-CAT-19`): it ends before asking again;
+   - once no login of the filer's party that filed or carried it on is listed. Any listed login of that party carries
+     it on (no more `OtherFiler`), and the acceptance, where not yet built, names it; the authorisation stays the one
+     policy permitted. Core knows a party's logins only by those that filed it, so "none left" is read from them: a
+     reading, reversible. Another filer's filing ends it then, and goes on as its own.
+2. **`FiledOrders::withdrawn`.** Called wherever `opened` was and no order opens: a policy refusal of either kind,
+   policy's not known, and an authorise the log couldn't record (`Err(Log)`). Tested with policy unreachable; the
+   `Err(Log)` path isn't switched off alone (the kit's policy can't fail its own append on demand).
+3. **No re-asking without limit.** Once the reserve said a deposit's funds aren't there, the deposit is filed on no
+   more (`ArrivalError::NotFileable`), asking no one and recording nothing; a new notice is a new arrival, and is filed
+   on. Five filings after the no ask nothing more. This changes the meaning of the release test's "no" case,
+   deliberately: the reserve's next filing on that deposit is refused, and one on a new notice starts.
+- **Nits.**
+  - The kit's store can now answer `restates` once on demand (`Store::restates_next`, off by default), and
+    `a_restated_notice_is_the_same_arrival` takes the restatement path: the same figures are the same arrival, other
+    figures are refused.
+  - **One acceptance per deposit.** Where the log took the acceptance and refused the start, the order ends and the
+    deposit is filed on no more (`NotFileable`), so no second `automatic_deposit` acceptance rests on it. Reusing the
+    first acceptance for another order would need the arrival link core-internal lacks (the gap above).
+  - **A permit doesn't expire**: `Decision` and `Permit` carry no time bound. Default, reversible: a permit holds no
+    longer than the filing's session. Before the acceptance is built, the session must still be open for the holder;
+    otherwise the order ends rather than be accepted, and a new filing, in a new session, asks policy again.
+- **Records.** The waiting passage above is rewritten; the statements that would have passed as notices are named,
+  and `its_own_notice` refuses them; the log half of finding 1 has its owner.
+- **Rule-off**, every rule switched off once against the final tests (the 47 of the review answers, one retired with
+  `OtherFiler`, and 15 new), each red. The review answers' table stands for the 47; the new:
+
+  | Rule | Red |
+  |---|---|
+  | A check that can't go for the session ends the filing | `a_waiting_filing_whose_session_ends_ends_and_frees_the_deposit` |
+  | Past the reserve's time to answer, the filing ends | `a_waiting_filing_whose_reserve_stays_silent_past_its_time_ends` |
+  | An unanswered question is remembered | the same |
+  | Any listed login of the party carries it on | `a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left`, the login test |
+  | The acceptance names the login that carried it on | `another_login_of_the_filers_party_is_told_the_filing_as_it_stands` |
+  | With no listed login left, the filing ends | the carried-on test |
+  | The logins held to the register | the carried-on test |
+  | An order never opened is withdrawn | `an_order_that_never_opened_is_withdrawn_from_the_assembly` |
+  | The reserve's no spends the deposit | `a_deposit_its_reserve_said_no_to_is_filed_on_no_more`, the release test |
+  | A spent deposit is filed on no more | the same, `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | An acceptance recorded spends the deposit | `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | The session holds the permit to the acceptance | `a_filing_carried_on_after_its_session_ended_isnt_accepted` |
+  | No catalogue statement is a notice | `a_reserves_advertisement_is_no_arrival_notice` |
+  | No result of a known kind is a notice | the same |
+  | A restated notice is the same notice | `a_restated_notice_is_the_same_arrival` |
+
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs`,
+  `components/core-orch/tests/intake_support/mod.rs` (one more opt-in knob) and these notes. No contract, manifest or
+  `DEC-20` path.
 
 ## T-020-05
 

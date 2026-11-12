@@ -167,6 +167,9 @@ fn open_order(order: &Id) -> OpenOrder {
 
 /// An environment whose register lists the operator and the reserve as acting for themselves.
 fn env() -> Env {
+    // What the assembly was told is this environment's alone.
+    OPENED.with(|o| o.borrow_mut().clear());
+    WITHDRAWN.with(|w| w.borrow_mut().clear());
     let mut env = Env::new();
     env.actors.borrow_mut().list(&operator());
     env.actors.borrow_mut().list(&reserve_filer());
@@ -185,11 +188,27 @@ struct TellsAssembly(std::rc::Rc<std::cell::RefCell<Book>>);
 thread_local! {
     /// Every order record the assembly was told of, in this test's thread.
     static OPENED: std::cell::RefCell<Vec<Id>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Every order the assembly was told never opened, in this test's thread.
+    static WITHDRAWN: std::cell::RefCell<Vec<Id>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl FiledOrders for TellsAssembly {
+    fn withdrawn(&mut self, order: &Id) {
+        assert!(
+            OPENED.with(|o| o.borrow().contains(order)),
+            "only an order handed over is withdrawn"
+        );
+        WITHDRAWN.with(|w| w.borrow_mut().push(order.clone()));
+    }
+
     fn opened(&mut self, record: &rutent_core_orch::intake::OrderRecord) {
         OPENED.with(|o| o.borrow_mut().push(record.order.clone()));
+        WITHDRAWN.with(|w| {
+            assert!(
+                !w.borrow().contains(&record.order),
+                "an order is opened once"
+            )
+        });
         let asked = self.0.borrow().verified().into_iter().any(|w| {
             matches!(w, What::Authorise { authorisation, .. } if authorisation.order == record.order)
         });
@@ -1467,8 +1486,20 @@ fn a_filing_refused_or_ended_leaves_the_deposit_to_its_reserve() {
         providers.insufficient = false;
         let mut theirs = filing(reserve_filer(), &deposited);
         theirs.request = id("deposit-reserve");
-        let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
-        assert!(matches!(filed, Filed::Started { .. }), "{case}: {filed:?}");
+        let filed = file(&mut env, &mut providers, &mut arrivals, &theirs);
+        if case == "no" {
+            // The reserve said the funds aren't there: that deposit is filed on no more, and a new notice is.
+            assert_eq!(filed, Err(ArrivalError::NotFileable));
+            let fresh = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
+            theirs.arrival = fresh;
+            let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+            assert!(matches!(filed, Filed::Started { .. }), "{case}: {filed:?}");
+        } else {
+            assert!(
+                matches!(filed, Ok(Filed::Started { .. })),
+                "{case}: {filed:?}"
+            );
+        }
         assert_admitted(&env);
     }
 }
@@ -1911,7 +1942,7 @@ fn another_login_of_the_filers_party_is_told_the_filing_as_it_stands() {
     );
     assert_eq!(env.len(), len);
 
-    // A filing still under way is carried on by the filer policy permitted alone, whose acceptance it will record.
+    // A filing still under way is carried on by any listed login of the filer's party, the acceptance naming it.
     let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
     providers.silent = true;
     let mut one = filing(operator(), &deposited);
@@ -1929,11 +1960,424 @@ fn another_login_of_the_filers_party_is_told_the_filing_as_it_stands() {
         },
         ..one.clone()
     };
-    assert_eq!(
-        file(&mut env, &mut providers, &mut arrivals, &theirs),
-        Err(ArrivalError::OtherFiler)
-    );
-    let started = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    let started = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
     assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &one),
+        Ok(started)
+    );
+    let named = env
+        .acceptances()
+        .into_iter()
+        .any(|v| v.who.acts == id("operator-login-2"));
+    assert!(named, "the acceptance names the login that carried it on");
     assert_admitted(&env);
+}
+
+// The re-review ---------------------------------------------------------------------------------------------------
+
+/// A session for [`ACCOUNT`], held by the customer, open until `ends`, in the catalogue and in policy's register.
+fn short_session(env: &mut Env, name: &str, ends: u64) -> Id {
+    env.catalogue.open_session(name, ACCOUNT, Instant(ends));
+    env.sessions.held.insert(
+        name.into(),
+        rutent_core_orch::intake::HeldSession {
+            holder: customer().party,
+            expires_at: rutent_contracts::router_api::Timestamp::new(
+                Instant(ends).rfc3339().unwrap(),
+            )
+            .unwrap(),
+        },
+    );
+    id(name)
+}
+
+/// Whether the log holds an `order_refusal` naming `order`.
+fn ended_in_the_log(env: &Env, order: &Id) -> bool {
+    env.book
+        .borrow()
+        .verified()
+        .into_iter()
+        .any(|w| matches!(w, What::OrderRefusal { order: Some(o), .. } if o == order))
+}
+
+/// A waiting filing whose session ends while its reserve is silent ends, recorded, and frees the deposit (re-review
+/// finding 1, probe a).
+// verifies: REQ-ORD-13, REQ-CAT-3
+#[test]
+fn a_waiting_filing_whose_session_ends_ends_and_frees_the_deposit() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut one = filing(reserve_filer(), &deposited);
+    one.session = short_session(&mut env, "session-short", START + 30);
+    providers.silent = true;
+    let waiting = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order), ..
+    } = waiting
+    else {
+        panic!("{waiting:?}");
+    };
+    // The session ends before the reserve's answer is due.
+    env.clock.set(START + 40);
+    let ended = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        matches!(ended, Filed::CantProceed { order: Some(ref o), .. } if o == &order),
+        "{ended:?}"
+    );
+    assert!(ended_in_the_log(&env, &order));
+    providers.silent = false;
+    let mut again = filing(reserve_filer(), &deposited);
+    again.request = id("deposit-2");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &again).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_admitted(&env);
+}
+
+/// A waiting filing whose reserve stays silent past its time to answer ends, recorded, and frees the deposit
+/// (re-review finding 1, REQ-CAT-19).
+// verifies: REQ-ORD-13, REQ-CAT-19
+#[test]
+fn a_waiting_filing_whose_reserve_stays_silent_past_its_time_ends() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(reserve_filer(), &deposited);
+    providers.silent = true;
+    let waiting = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order), ..
+    } = waiting
+    else {
+        panic!("{waiting:?}");
+    };
+    let asked = providers.verifications.len();
+    env.clock.set(START + 120);
+    let ended = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        matches!(ended, Filed::CantProceed { order: Some(ref o), .. } if o == &order),
+        "{ended:?}"
+    );
+    assert_eq!(
+        providers.verifications.len(),
+        asked,
+        "not asked again once past its time"
+    );
+    assert!(ended_in_the_log(&env, &order));
+    // The deposit is free: another filing opens its own order.
+    let mut again = filing(operator(), &deposited);
+    again.request = id("deposit-2");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &again);
+    assert!(
+        !matches!(filed, Err(ArrivalError::Conflicting { .. })),
+        "{filed:?}"
+    );
+    assert_admitted(&env);
+}
+
+/// A waiting filing is carried on by any listed login of its filer's party; once none is listed, it ends, recorded,
+/// and frees the deposit (re-review finding 1, probe b).
+// verifies: REQ-ORD-13, REQ-OPS-5
+#[test]
+fn a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left() {
+    let colleague = Actor {
+        acts: id("operator-login-2"),
+        ..operator()
+    };
+    // Carried on by another listed login of the party.
+    let mut env = crate::env();
+    env.actors.borrow_mut().list(&colleague);
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    providers.silent = true;
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut arrivals, &one),
+        Ok(Filed::Waiting { .. })
+    ));
+    providers.silent = false;
+    let theirs = Filing {
+        filer: colleague.clone(),
+        ..one.clone()
+    };
+    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_admitted(&env);
+
+    // Its filer struck from the register, with no other login of its party known: the reserve's filing ends it.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    providers.silent = true;
+    let Ok(Filed::Waiting {
+        order: Some(order), ..
+    }) = file(&mut env, &mut providers, &mut arrivals, &one)
+    else {
+        panic!("waits");
+    };
+    env.actors.borrow_mut().pairs.remove(&(
+        operator().acts.as_str().to_owned(),
+        operator().party.as_str().to_owned(),
+    ));
+    providers.silent = false;
+    let mut theirs = filing(reserve_filer(), &deposited);
+    theirs.request = id("deposit-reserve");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert!(ended_in_the_log(&env, &order));
+    assert_admitted(&env);
+}
+
+/// An order whose record the assembly was given, and which never opened, is withdrawn from it (re-review finding 2).
+// verifies: REQ-ORD-13, REQ-AUZ-5
+#[test]
+fn an_order_that_never_opened_is_withdrawn_from_the_assembly() {
+    use rutent_contracts::core_internal::{Answer, NotKnownCause};
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    env.policy.answer = Answer::NotKnown {
+        cause: NotKnownCause::PolicyUnreachable,
+    };
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(filed, Filed::Waiting { order: None, .. }),
+        "{filed:?}"
+    );
+    let opened = OPENED.with(|o| o.borrow().clone());
+    let withdrawn = WITHDRAWN.with(|w| w.borrow().clone());
+    assert_eq!(opened.len(), 1);
+    assert_eq!(withdrawn, opened, "withdrawn as it was opened");
+}
+
+/// Once the reserve said a deposit's funds aren't there, no filing on that deposit asks it again: five filings, one
+/// question; a new notice is filed on (re-review finding 3).
+// verifies: REQ-ORD-13, REQ-CAT-4
+#[test]
+fn a_deposit_its_reserve_said_no_to_is_filed_on_no_more() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    providers.insufficient = true;
+    let first = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(first, Filed::CantProceed { order: Some(_), .. }),
+        "{first:?}"
+    );
+    for n in 0..5 {
+        let mut again = filing(
+            if n % 2 == 0 {
+                operator()
+            } else {
+                reserve_filer()
+            },
+            &deposited,
+        );
+        again.request = id(&format!("deposit-again-{n}"));
+        assert_eq!(
+            file(&mut env, &mut providers, &mut arrivals, &again),
+            Err(ArrivalError::NotFileable)
+        );
+    }
+    assert_eq!(providers.verifications.len(), 1, "asked once");
+    providers.insufficient = false;
+    let fresh = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
+    let mut on_it = filing(reserve_filer(), &fresh);
+    on_it.request = id("deposit-new-notice");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &on_it).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_admitted(&env);
+}
+
+/// An acceptance on a deposit is the only one: where the log refuses the start after it, the order ends and the
+/// deposit is filed on no more (the re-review's nit).
+// verifies: REQ-ORD-15, REQ-ORD-34
+#[test]
+fn a_deposit_with_an_acceptance_recorded_is_filed_on_no_more() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    env.book.borrow_mut().refuse_next = Some("input");
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(filed, Filed::CantProceed { order: Some(_), .. }),
+        "{filed:?}"
+    );
+    assert_eq!(env.acceptances().len(), 1);
+    let mut again = filing(operator(), &deposited);
+    again.request = id("deposit-2");
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &again),
+        Err(ArrivalError::NotFileable)
+    );
+    assert_eq!(
+        env.acceptances().len(),
+        1,
+        "no second acceptance on the deposit"
+    );
+    assert_admitted(&env);
+}
+
+/// A permit holds no longer than the filing's session: a filing carried on after its session ended ends rather than
+/// accept on it (the re-review's nit).
+// verifies: REQ-AUZ-3, REQ-CAT-3
+#[test]
+fn a_filing_carried_on_after_its_session_ended_isnt_accepted() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut one = filing(reserve_filer(), &deposited);
+    one.session = short_session(&mut env, "session-short", START + 30);
+    env.book.borrow_mut().fail_next = Some("shown");
+    assert!(file(&mut env, &mut providers, &mut arrivals, &one).is_err());
+    env.clock.set(START + 40);
+    let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        matches!(filed, Filed::CantProceed { order: Some(_), .. }),
+        "{filed:?}"
+    );
+    assert!(env.acceptances().is_empty());
+    assert_admitted(&env);
+}
+
+/// A notice the evidence store finds restates one taken before is the same arrival; with other figures it is refused
+/// (the re-review's nit).
+// verifies: REQ-ORD-14, INV-8
+#[test]
+fn a_restated_notice_is_the_same_arrival() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let place = env.store.borrow().kept.len();
+    let first = report(1000, 0);
+    let arrived = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &first,
+    )
+    .unwrap();
+    // The same statement, in other bytes.
+    let value: Value = serde_json::from_slice(&first.notice).unwrap();
+    let restated = Report {
+        notice: serde_json::to_vec_pretty(&value).unwrap(),
+        ..first.clone()
+    };
+    assert_ne!(restated.notice, first.notice);
+    let len = env.len();
+    env.store.borrow_mut().restates_next = Some(place);
+    let again = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &restated,
+    )
+    .unwrap();
+    assert_eq!(again, arrived);
+    assert_eq!(env.len(), len);
+    let other = Report {
+        notice: serde_json::to_vec_pretty(&value)
+            .unwrap()
+            .into_iter()
+            .chain(*b" ")
+            .collect(),
+        amount: amount(900),
+        ..first
+    };
+    env.store.borrow_mut().restates_next = Some(place);
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &other
+        ),
+        Err(ArrivalError::OtherFigures)
+    );
+    assert_eq!(arrivals_recorded(&env).len(), 1);
+}
+
+/// A reserve's catalogue statements, its advertisement among them, aren't notices of value arriving (the re-review's
+/// records).
+// verifies: REQ-ORD-14
+#[test]
+fn a_reserves_advertisement_is_no_arrival_notice() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let ad = snapshot_support::reserve(RESERVE, "acme");
+    let keys = snapshot_support::keys_of(RESERVE, &[&statements_key(RESERVE, 1)]);
+    let advertisement = snapshot_support::advertisement_bytes(&ad, keys, START);
+    let reported = Report {
+        notice: advertisement,
+        ..report(1000, 0)
+    };
+    let len = env.len();
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &reported
+        ),
+        Err(ArrivalError::NotItsNotice)
+    );
+    assert_eq!(env.len(), len);
+    // Nor a result of a kind that answers an operation, though it names no transaction.
+    let judged = sign(
+        envelope(
+            &deployment(),
+            RESULT_SHAPE,
+            RESERVE,
+            START,
+            json!({ "kind": "judgement", "outcome": {} }),
+        ),
+        &statements_key(RESERVE, 1),
+    );
+    let reported = Report {
+        notice: judged,
+        ..report(1000, 1)
+    };
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &reported
+        ),
+        Err(ArrivalError::NotItsNotice)
+    );
 }

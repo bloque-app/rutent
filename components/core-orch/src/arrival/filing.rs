@@ -52,6 +52,8 @@ use super::{ArrivalError, Arrivals, Filed, FiledOrders, FiledWait, Filing, Recor
 use crate::intake::{DESTINATION_INPUT, Desk, OrderRecord, Quote, Resolution};
 use crate::rounds::{self, History, NotOffered, Offer, Order, Presence, Routed, Routing};
 use crate::snapshot::check_part;
+use rutent_contracts::core_internal::Actor;
+use rutent_prov::catalogue::{CheckRefusal, Eligibility};
 
 /// Where a permitted filing stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +102,13 @@ pub(super) struct Run {
     accepting: Option<(Id, RecordedInput, Vec<Entry>)>,
     outcome: Option<Filed>,
     pub(super) started: Option<RecordedInput>,
+    /// Every login of the filer's party that filed it or carried it on: while one of them is listed, it holds.
+    logins: Vec<Actor>,
+    /// Whether a question about the deposit went unanswered: then, once the reserve is past its time to answer, the
+    /// filing ends.
+    unanswered: bool,
+    /// Whether it ended on the reserve's no, or after its acceptance was recorded: the deposit is filed on no more.
+    spent: bool,
 }
 
 /// Whether the reserve's latest declaration says it starts routes on automatic deposits (`REQ-CAT-6`): one with no
@@ -280,8 +289,16 @@ impl Arrivals {
             given_by: well.filer.clone(),
             at: now,
         };
-        let decision = desk.authorisations.authorise(&authorisation)?;
+        let decision = match desk.authorisations.authorise(&authorisation) {
+            Ok(decision) => decision,
+            Err(failure) => {
+                orders.withdrawn(&order);
+                return Err(ArrivalError::Log(failure));
+            }
+        };
         if decision.permit().is_none() {
+            // No order opens: the assembly drops the record it was handed.
+            orders.withdrawn(&order);
             return match decision.outcome {
                 // A refusal about the order itself is the filing's answer, recorded.
                 Answer::Refuse {
@@ -309,7 +326,6 @@ impl Arrivals {
         let pending = vec![journal::build(desk.parts.clock, desk.core, check)?];
         Ok(Ok(Run {
             asked: filing,
-            filing: well,
             arrival,
             order,
             authorisation: authorisation.authorisation,
@@ -322,11 +338,45 @@ impl Arrivals {
             accepting: None,
             outcome: None,
             started: None,
+            logins: vec![well.filer.clone()],
+            unanswered: false,
+            spent: false,
+            filing: well,
         }))
     }
 }
 
 impl Run {
+    /// `filer`, a listed login of the permitted filer's party, carries it on: it is known as one of the party's logins,
+    /// and, where the acceptance isn't built yet, the acceptance names it.
+    pub(super) fn carried_on_by(&mut self, filer: &Actor) {
+        if !self.logins.contains(filer) {
+            self.logins.push(filer.clone());
+        }
+        if self.accepting.is_none() {
+            self.filing.filer = filer.clone();
+        }
+    }
+
+    /// Whether a login of the filer's party that filed it or carried it on is still listed as acting for its party.
+    pub(super) fn has_a_listed_login(&self, desk: &mut Desk<'_, '_>) -> bool {
+        self.logins
+            .iter()
+            .any(|l| desk.actors.acts_for(&l.acts, &l.party))
+    }
+
+    /// Ends it, recorded, with no login of its party left to carry it on.
+    pub(super) fn abandon(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
+        self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+        flush(desk, &mut self.pending)?;
+        Ok(())
+    }
+
+    /// Whether the deposit is filed on no more once it ended.
+    pub(super) fn spends(&self) -> bool {
+        self.spent
+    }
+
     /// How it stands, once it started or ended.
     pub(super) fn outcome(&self) -> Option<Filed> {
         self.outcome.clone()
@@ -398,6 +448,20 @@ impl Run {
         };
         if self.held.is_none() {
             if self.confirming.is_none() {
+                // A question that went unanswered, the reserve now past its time to answer: it waits no more
+                // (`REQ-CAT-3` waits up to `REQ-CAT-19`).
+                let now = desk.parts.clock.now().floor();
+                if self.unanswered
+                    && matches!(
+                        desk.parts
+                            .catalogue
+                            .reserve_eligibility(self.arrival.reserve.as_str(), now),
+                        Eligibility::TemporarilyUnavailable { .. }
+                    )
+                {
+                    self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+                    return Ok(None);
+                }
                 let asking = Asking {
                     order: &self.order,
                     reserve: &self.arrival.reserve,
@@ -408,6 +472,15 @@ impl Run {
                 };
                 match Confirming::ask(desk, &mut arrivals.used, asking)? {
                     Ok(confirming) => self.confirming = Some(confirming),
+                    // A check that can't go for this filing's session ever: it ends.
+                    Err(
+                        CheckRefusal::NoSession
+                        | CheckRefusal::SessionNotForAccount
+                        | CheckRefusal::NotACheck,
+                    ) => {
+                        self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+                        return Ok(None);
+                    }
                     Err(_) => return Ok(Some(waiting)),
                 }
             }
@@ -418,11 +491,13 @@ impl Run {
                 Confirmation::Confirmed(report) => report,
                 Confirmation::No => {
                     self.confirming = None;
+                    self.spent = true;
                     self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
                     return Ok(None);
                 }
                 Confirmation::Unanswered => {
                     self.confirming = None;
+                    self.unanswered = true;
                     return Ok(Some(waiting));
                 }
             };
@@ -455,6 +530,19 @@ impl Run {
     /// start.
     fn take_acceptance(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
         if self.accepting.is_none() {
+            // A permit doesn't expire, so it holds no longer than the session the filing was made in: past it, the
+            // order ends rather than be accepted.
+            let now = journal::now(desk.parts.clock)?;
+            let open = desk
+                .sessions
+                .held(&self.filing.session)
+                .is_some_and(|held| {
+                    held.holder == self.filing.parties.requester
+                        && held.expires_at.unix_nanos() > now.unix_nanos()
+                });
+            if !open {
+                return self.end(desk, OrderRefusalClass::NoRouteRightNow);
+            }
             let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
             let input = self.route_chosen(desk, &offered)?;
             let acceptance = desk.parts.fresh.id();
@@ -496,8 +584,10 @@ impl Run {
                 self.step = Step::Done;
                 Ok(())
             }
-            // A refused acceptance or start can't be carried on: the order ends.
+            // A refused acceptance or start can't be carried on: the order ends. Where the acceptance was recorded,
+            // the deposit is filed on no more, so no second acceptance rests on it.
             Err(AppendFailure::Refused(_)) => {
+                self.spent = pending.len() < 2;
                 self.accepting = None;
                 self.end(desk, OrderRefusalClass::NoRouteRightNow)
             }
