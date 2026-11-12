@@ -342,7 +342,7 @@ impl What {
             What::Effect { action, .. } => action.check(),
             What::StuckDecide { request, .. } => request.check(),
             What::OpenSession { request, .. } => request.check(),
-            What::Charge { charge } => charge.check(),
+            What::Charge { charge, .. } => charge.check(),
             What::AskAboutPerson { question } => question.check(),
             What::HandOver { item, .. } => item.check(),
             What::ReportPair { pair } => pair.check(),
@@ -440,6 +440,13 @@ impl VerifiedEntry {
         self.what.check()?;
         if !self.what.allows(&self.outcome) {
             return Err(Violation("an entry's outcome is one its call can have"));
+        }
+        if let What::Charge { counted_at, .. } = &self.what
+            && counted_at.is_some() != (self.outcome == (Outcome::Permitted {}))
+        {
+            return Err(Violation(
+                "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
+            ));
         }
         if matches!(self.what, What::Command { .. }) && self.who.role != Role::Operator {
             return Err(Violation("an operator command is the operator's"));

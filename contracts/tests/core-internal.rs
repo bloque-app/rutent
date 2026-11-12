@@ -233,7 +233,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 80] = [
+const SCHEMA_RULES: [SchemaRule; 82] = [
     (
         "permission-change-without-its-grantee",
         &[("", "required")],
@@ -248,6 +248,16 @@ const SCHEMA_RULES: [SchemaRule; 80] = [
         "authorisation-with-a-floor-of-zero",
         &[("/floor", "pattern")],
         "a positive amount is up to 78 decimal digits with no leading zeros, above zero",
+    ),
+    (
+        "verified-entry-of-a-charge-counted-without-when",
+        &[("/what", "required")],
+        "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
+    ),
+    (
+        "verified-entry-of-a-charge-over-its-bound-said-counted",
+        &[("/what", "not")],
+        "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
     ),
     (
         "authorisation-naming-no-parts",

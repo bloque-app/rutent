@@ -211,7 +211,7 @@ the two together.
 | `Decision`: `permit`, `refuse {class}`, `not_known {cause}` | `permitted`, `refused {class}`, `not_known {cause}` |
 | `SessionAnswer`: `opened`, `refused`, `not_known` | `permitted` (the entry names the session), `refused`, `not_known` |
 | `ReadAnswer`: `allowed`, `refused` | `permitted`, `refused` |
-| `ChargeAnswer`: `within`, `over` | `permitted`, `refused {class: over_bound}` |
+| `ChargeAnswer`: `within`, `over`, `refused {class}`, `not_known {cause}` | `permitted`, with `counted_at`, the engine's clock when it counted the charge; `refused {class: over_bound}`; `refused {class}`; `not_known {cause}`, never a refusal (`REQ-AUZ-5`) |
 | `PersonAnswer`: `allowed`, `refused`, `past_bound`, `not_known` | `permitted`, `refused`, `refused {class: over_bound}`, `not_known` |
 | `Delivery`: `Delivered`, `Undelivered` | the raise's `done`, `failed` |
 

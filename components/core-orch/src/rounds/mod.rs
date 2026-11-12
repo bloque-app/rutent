@@ -714,6 +714,10 @@ impl Run<'_, '_> {
         Ok(match self.parts.charges.charge(&charge)?.outcome {
             ChargeOutcome::Within { .. } => None,
             ChargeOutcome::Over { bound } => Some(bound),
+            // Refused or not known: no work is done, as over a bound of nothing; the log keeps the real answer.
+            ChargeOutcome::Refused { .. } | ChargeOutcome::NotKnown { .. } => {
+                Some(SafeInteger::try_from(0u64).expect("0 is a safe integer"))
+            }
         })
     }
 

@@ -29,7 +29,7 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 117 invalid ones, each
+  is held to the rules a value read from the wire is. Twenty-six schemas, 121 valid fixtures and 119 invalid ones, each
   breaking one rule, and 353 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 68 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
@@ -264,6 +264,13 @@
   origin isn't held to one. And without a plan, a declaration of stuck counts only for a part the order's acceptance
   names (low 7; an arrival names no part, a second shape gap). 353 admission cases, 68 relations. (DEC-4, DEC-20,
   REQ-AUZ-3, REQ-AUZ-4, INV-10, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a charge's answer says why it wasn't done (`T-021-05`'s review). A refused
+  charge, or one policy couldn't decide, was logged as `over {bound: 0}`, so a scope refusal read as a rate limit and
+  a charge whose scope register was out of reach as refused, against `REQ-AUZ-5`'s rule that not known is never a
+  refusal. `ChargeOutcome` gains `refused {class}` and `not_known {cause}`, mapped as `PersonOutcome`'s are. A
+  charge counted within its bound carries `counted_at`, its engine's own clock, beside `when.at`, so an engine
+  started again rebuilds each party's count by window from the log; it is present exactly on a permitted charge.
+  Four valid fixtures, two invalid. (DEC-4, DEC-20, REQ-AUZ-5, REQ-AUZ-8, T-020-01, T-021-05)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

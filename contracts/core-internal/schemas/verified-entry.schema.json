@@ -32,6 +32,67 @@
       "$ref": "#/$defs/outcome"
     }
   },
+  "allOf": [
+    {
+      "description": "A charge counted, permitted within its bound, says when its engine counted it; no other charge does.",
+      "if": {
+        "required": [
+          "what"
+        ],
+        "properties": {
+          "what": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "charge"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "if": {
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "const": "permitted"
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "what": {
+              "required": [
+                "counted_at"
+              ]
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "what": {
+              "not": {
+                "required": [
+                  "counted_at"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "what": {
       "description": "What it records: one of the calls between Core's parts, orchestration's own records, or what the platform handed over.",
@@ -763,6 +824,10 @@
         },
         "charge": {
           "$ref": "urn:rutent:core-internal:charge"
+        },
+        "counted_at": {
+          "description": "The engine's own clock when it counted the charge, beside the entry's when.at: present exactly where the charge was counted, permitted within the bound, so an engine started again rebuilds each party's count by window from the log (T-021-05).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
         }
       }
     },

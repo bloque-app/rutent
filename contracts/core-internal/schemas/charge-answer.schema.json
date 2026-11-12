@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:charge-answer",
   "title": "Charge answer",
-  "description": "Policy's answer to a charge, appended to the log before it is given. Over the bound, the work is not done.",
+  "description": "Policy's answer to a charge, appended to the log before it is given. Over the bound, refused or not known, the work is not done.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -34,7 +34,9 @@
         "answer": {
           "enum": [
             "within",
-            "over"
+            "over",
+            "refused",
+            "not_known"
           ]
         }
       },
@@ -67,6 +69,36 @@
           },
           "then": {
             "$ref": "#/$defs/outcome_over"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_not_known"
           }
         }
       ]
@@ -104,6 +136,40 @@
         "bound": {
           "description": "The bound.",
           "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "outcome_refused": {
+      "description": "Policy refused the work, for the class given: not a bound passed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "class"
+      ],
+      "properties": {
+        "answer": {
+          "const": "refused"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    },
+    "outcome_not_known": {
+      "description": "Policy couldn't decide, so the work isn't done; never a refusal (REQ-AUZ-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "cause"
+      ],
+      "properties": {
+        "answer": {
+          "const": "not_known"
+        },
+        "cause": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/not_known_cause"
         }
       }
     }

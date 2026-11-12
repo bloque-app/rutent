@@ -989,17 +989,31 @@ pub enum ChargeOutcome {
         /// The bound.
         bound: SafeInteger,
     },
+    /// Policy refused the work, for the class given: a scope it isn't in, say. Not a bound passed.
+    Refused {
+        /// Why.
+        class: RefusalClass,
+    },
+    /// Policy couldn't decide, its counter or the party's scope register out of reach, so the work isn't done and
+    /// the charge isn't refused (`REQ-AUZ-5`: not known is never a refusal).
+    NotKnown {
+        /// Why.
+        cause: NotKnownCause,
+    },
 }
 
 impl ChargeOutcome {
     /// The outcome of the entry that records this answer: within the bound is permitted, over it refused as
-    /// `over_bound`.
+    /// `over_bound`, a refusal refused for its class, and not known not known, as [`PersonOutcome::outcome`] maps
+    /// them.
     pub fn outcome(self) -> Outcome {
         match self {
             ChargeOutcome::Within { .. } => Outcome::Permitted {},
             ChargeOutcome::Over { .. } => Outcome::Refused {
                 class: RefusalClass::OverBound,
             },
+            ChargeOutcome::Refused { class } => Outcome::Refused { class },
+            ChargeOutcome::NotKnown { cause } => Outcome::NotKnown { cause },
         }
     }
 }
@@ -1775,6 +1789,15 @@ pub enum What {
     Charge {
         /// The charge.
         charge: Charge,
+        /// The engine's own clock when it counted the charge, beside the entry's `when.at`: present exactly where
+        /// the charge was counted, `permitted` within the bound, so an engine started again rebuilds each party's
+        /// count by window from the log (`T-021-05`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        counted_at: Option<Timestamp>,
     },
     /// A question about a person.
     AskAboutPerson {

@@ -16,6 +16,7 @@ impl<L: PolicyLog> Charges for Unbuilt<L> {
         let outcome = ChargeOutcome::Over { bound };
         let what = What::Charge {
             charge: charge.clone(),
+            counted_at: None,
         };
         let receipt = self.record(&charge.caller, what, &charge.at, outcome.outcome())?;
         Ok(ChargeAnswer {
