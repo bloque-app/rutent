@@ -1862,6 +1862,7 @@ pub static RELATIONS: [Relation; 76] = [
         quantifier: Quantifier::Exists,
         refusal: "an arrival's notice is a stated entry of this log",
         fields: &[
+            ("verified", "an arrival's notice is a verified statement"),
             ("maker", "an arrival's notice is its reserve's statement"),
             (
                 "transaction",
@@ -1885,6 +1886,8 @@ pub static RELATIONS: [Relation; 76] = [
             ) => judge(
                 &s.commitment == notice,
                 &[
+                    // An unverified statement is attributed to no one, so the transaction it claims keys nothing.
+                    matches!(s.attribution, Attribution::Verified { .. }),
                     maker_provider(s) == reserve,
                     s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
                 ],
@@ -3395,8 +3398,8 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
     })
 }
 
-/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's stated entry
-/// of `history` under that commitment (`arrival-names-its-notice`).
+/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
+/// stated entry of `history` under that commitment (`arrival-names-its-notice`).
 fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
     let What::Arrival {
         notice: Some(notice),
@@ -3407,7 +3410,11 @@ fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
         return None;
     };
     history.iter().find_map(|(_, e)| {
-        let s = stated(e).filter(|s| &s.commitment == notice && maker_provider(s) == reserve)?;
+        let s = stated(e).filter(|s| {
+            matches!(s.attribution, Attribution::Verified { .. })
+                && &s.commitment == notice
+                && maker_provider(s) == reserve
+        })?;
         s.about.as_ref()?.transaction.as_ref()
     })
 }
