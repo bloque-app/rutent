@@ -4,6 +4,7 @@
 //! log, leaving the reference and a history that still checks.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -12,11 +13,12 @@ use rutent_conformance::signing::{
     Ed25519Key, advertisement, another_key, public_key, sign_value, signing_key, statements_key,
 };
 use rutent_contracts::core_internal::calls::{
-    self, AppendFailure, Evidence, Fetched, GeneralEntry, KeptStatements, Log,
+    self, AppendFailure, DecisionEntry, Evidence, Fetched, GeneralEntry, KeptStatements, Log,
+    PolicyLog,
 };
 use rutent_contracts::core_internal::{
     Decision, Entry, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Receipt, RefusalClass,
-    StatedEntry, Violation,
+    StatedEntry, VerifiedEntry, Violation,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -24,19 +26,21 @@ use rutent_contracts::provider_role::{
     signing_input,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
-use rutent_core_audit::log::kept::base64url;
+use rutent_core_audit::log::kept::{base64url, from_base64url};
 use rutent_core_audit::log::merkle::sha256;
 use rutent_core_audit::log::{
-    ADVERTISEMENT_NOT_KEPT, AuditLog, Clock, FileStore, MemoryStore, Settings, digest, record,
+    ADVERTISEMENT_NOT_KEPT, AuditLog, Clock, FileStore, KeptInMemory, MemoryStore, Settings,
+    digest, record,
 };
 use rutent_core_audit::receipts::receipt::{KEY_ACROSS_PURPOSES, NOT_A_RECEIPT, NOT_COVERED};
 use rutent_core_audit::receipts::store::{
-    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, FETCH_READS_EVIDENCE, NO_RECORDED_ERASURE,
+    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, ERASURE_BY_THE_OPERATOR,
+    EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE, NO_RECORDED_ERASURE,
     NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
 };
 use rutent_core_audit::receipts::{
-    EvidenceStore, Issued, Issuer, Keeper, LogsRead, MemoryShelf, Shelf, ShelfContents, ShelfError,
-    Shelved, bearing_out, check_kept, check_receipt, holds_against,
+    BoundStore, EvidenceStore, Issued, Issuer, Keeper, LogsRead, MemoryShelf, PartyReceipt, Shelf,
+    ShelfContents, ShelfError, Shelved, bearing_out, check_kept, check_receipt, holds_against,
 };
 use serde_json::{Value, json};
 
@@ -54,11 +58,6 @@ fn id(text: &str) -> Id {
 
 fn operator_key() -> Ed25519Key {
     signing_key("the operator of rutent-test", 0)
-}
-
-/// The log's own key, which signs parties' receipts.
-fn log_secret() -> [u8; 32] {
-    signing_key("the log of rutent-test", 0).to_bytes()
 }
 
 fn deployment() -> Deployment {
@@ -154,9 +153,18 @@ fn stated(bytes: &[u8], commitment: &Digest, about: Option<Value>) -> GeneralEnt
 
 /// The operator's erasure of what `commitment` names, with its outcome `status`.
 fn erasure(commitment: &Digest, status: &str) -> GeneralEntry {
+    erasure_by(
+        actor(OPERATOR, "op-login-2", "operator", "person"),
+        commitment,
+        status,
+    )
+}
+
+/// `who`'s erasure of what `commitment` names, with its outcome `status`.
+fn erasure_by(who: Value, commitment: &Digest, status: &str) -> GeneralEntry {
     serde_json::from_value(json!({
         "kind": "verified",
-        "who": actor(OPERATOR, "op-login-2", "operator", "person"),
+        "who": who,
         "what": {"call": "erasure", "evidence": commitment},
         "when": {"at": NOW, "source": "core_clock"},
         "outcome": {"status": status},
@@ -164,13 +172,18 @@ fn erasure(commitment: &Digest, status: &str) -> GeneralEntry {
     .unwrap()
 }
 
-/// A record Core writes about order `ord-17`.
-fn about_the_order() -> GeneralEntry {
+/// A valid fixture of the contract.
+fn valid(name: &str) -> Value {
     let path = format!(
-        "{}/../../contracts/core-internal/fixtures/valid/verified-entry-of-a-destination-whose-owner-changed.json",
+        "{}/../../contracts/core-internal/fixtures/valid/{name}.json",
         env!("CARGO_MANIFEST_DIR")
     );
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A record Core writes about order `ord-17`.
+fn about_the_order() -> GeneralEntry {
+    serde_json::from_value(valid("verified-entry-of-a-destination-whose-owner-changed")).unwrap()
 }
 
 /// `reader`'s read check of `reads`.
@@ -290,17 +303,23 @@ fn holds(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// A log in its file and an evidence store in its directory, apart, with orchestration's handle on the store and
-/// policy's read check behind it.
+type Shared = Rc<RefCell<AuditLog<FileStore, LogsRead>>>;
+
+/// A log in its file and an evidence store in its directory, apart, bound to each other, with orchestration's
+/// handle on the store, the log's issuer of receipts, and policy's read check behind both.
 struct Run {
-    log: Rc<RefCell<AuditLog<FileStore, LogsRead>>>,
-    store: EvidenceStore,
+    log: Shared,
+    store: BoundStore<FileStore, LogsRead>,
+    /// The log's read of the store, for the test to look at.
+    kept: LogsRead,
     keeper: Keeper,
+    issuer: Issuer<FileStore, LogsRead>,
     policy: Policy,
 }
 
 impl Run {
-    /// Opens the log and the evidence store kept under `dir`, the log with the store's read.
+    /// Opens the log and the evidence store kept under `dir`, the log with the store's read, and binds the store
+    /// to the log.
     fn open(dir: &TempDir) -> Result<Self, AppendFailure> {
         let store = EvidenceStore::open(dir.evidence())?;
         let log = AuditLog::open(
@@ -308,11 +327,17 @@ impl Run {
             FileStore::open(dir.log()).unwrap(),
             store.for_the_log(),
         )?;
+        let log = Rc::new(RefCell::new(log));
         let policy = Policy::default();
+        let keeper = store.keeper(Box::new(policy.clone()));
+        let kept = store.for_the_log();
+        let issuer = Issuer::new(Rc::clone(&log), Box::new(policy.clone()), log_key()).unwrap();
         Ok(Run {
-            log: Rc::new(RefCell::new(log)),
-            keeper: store.keeper(Box::new(policy.clone())),
-            store,
+            store: store.bind(Rc::clone(&log))?,
+            log,
+            kept,
+            keeper,
+            issuer,
             policy,
         })
     }
@@ -344,14 +369,9 @@ impl Run {
     }
 
     /// `reader`'s receipt of the entry at `index`, on a read of `reads`.
-    fn receipt(&self, reader: &str, reads: Value, index: u64) -> Result<Issued, AppendFailure> {
-        let issuer = Issuer::new(&settings(), log_secret()).unwrap();
-        issuer.issue(
-            &mut self.policy.clone(),
-            &read("req-receipt", reader, reads),
-            &self.log,
-            index as usize,
-        )
+    fn receipt(&mut self, reader: &str, reads: Value, index: u64) -> Result<Issued, AppendFailure> {
+        self.issuer
+            .issue(&read("req-receipt", reader, reads), index as usize)
     }
 
     /// Fetches what `commitment` names, as `reader`.
@@ -361,9 +381,9 @@ impl Run {
 
     /// Erases what `commitment` names: the check, the erasure's entry, then the erasure.
     fn erase(&self, commitment: &Digest) -> Result<Receipt, AppendFailure> {
-        self.store.erasable(&self.log.borrow(), commitment)?;
+        self.store.erasable(commitment)?;
         let at = self.append(&erasure(commitment, "done"))?;
-        self.store.erase(&self.log.borrow(), &at)?;
+        self.store.erase(&at)?;
         Ok(at)
     }
 }
@@ -376,11 +396,22 @@ fn issued(answer: Result<Issued, AppendFailure>) -> Vec<u8> {
     }
 }
 
+/// The log's own key, which signs parties' receipts.
+fn log_key() -> Ed25519Key {
+    signing_key("the log of rutent-test", 0)
+}
+
 fn the_logs_key() -> rutent_contracts::provider_role::PublicKey {
-    Issuer::new(&settings(), log_secret())
-        .unwrap()
-        .key()
-        .clone()
+    public_key(&log_key())
+}
+
+/// Checks `bytes` as a receipt of the test log's.
+fn check(
+    bytes: &[u8],
+    key: &rutent_contracts::provider_role::PublicKey,
+    entry: &Entry,
+) -> Result<PartyReceipt, Violation> {
+    check_receipt(bytes, key, &id(LOG), entry)
 }
 
 /// Rewrites the record at `index` of the log's file with `change` made to its entry, in its canonical form, as
@@ -433,7 +464,7 @@ fn partys_receipt_shows_a_changed_record() {
         at.index.get(),
     ));
     let entry = run.entries()[0].1.clone();
-    let receipt = check_receipt(&mine, &the_logs_key(), &entry).unwrap();
+    let receipt = check(&mine, &the_logs_key(), &entry).unwrap();
     assert!(holds_against(&receipt, &run.entries()));
     // The log grows; the receipt still holds against it.
     run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
@@ -444,7 +475,7 @@ fn partys_receipt_shows_a_changed_record() {
     rewrite(&dir.log(), 0, |v| v["about"]["order"] = "ord-18".into());
     let run = Run::open(&dir).unwrap();
     assert_ne!(run.entries()[0].1, entry);
-    assert!(check_receipt(&mine, &the_logs_key(), &entry).is_ok());
+    assert!(check(&mine, &the_logs_key(), &entry).is_ok());
     assert!(!holds_against(&receipt, &run.entries()));
     drop(run);
 
@@ -561,7 +592,7 @@ fn erasure_leaves_the_reference_and_history_still_checks() {
         json!({"kind": "evidence", "commitment": commitment}),
         at.index.get(),
     ));
-    let receipt = check_receipt(&mine, &the_logs_key(), &run.entries()[1].1).unwrap();
+    let receipt = check(&mine, &the_logs_key(), &run.entries()[1].1).unwrap();
     let Fetched::Kept(kept) = run.fetch("us-bank", &commitment).unwrap() else {
         panic!("kept before its erasure");
     };
@@ -574,7 +605,7 @@ fn erasure_leaves_the_reference_and_history_still_checks() {
 
     // What the reference named is gone, outside the log.
     assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
-    assert_eq!(run.store.for_the_log().kept(&commitment).unwrap(), None);
+    assert_eq!(run.kept.kept(&commitment).unwrap(), None);
     assert!(run.store.is_erased(&commitment));
     for (path, b) in files(&dir.evidence()) {
         for trace in [
@@ -598,7 +629,7 @@ fn erasure_leaves_the_reference_and_history_still_checks() {
     for (n, root) in roots.iter().enumerate() {
         assert_eq!(run.log.borrow().root_at(n).as_ref(), Some(root));
     }
-    assert!(check_receipt(&mine, &the_logs_key(), &before[1].1).is_ok());
+    assert!(check(&mine, &the_logs_key(), &before[1].1).is_ok());
     assert!(holds_against(&receipt, &after));
     // The rest stays kept.
     assert!(matches!(
@@ -606,7 +637,7 @@ fn erasure_leaves_the_reference_and_history_still_checks() {
         Fetched::Kept(_)
     ));
     // Erasing it again is erasing nothing more.
-    run.store.erase(&run.log.borrow(), &erased).unwrap();
+    run.store.erase(&erased).unwrap();
     // The restatement index forgot it: the same statement kept again restates nothing.
     assert_eq!(run.keeper.keep(&bytes).unwrap().restates, None);
     drop(run);
@@ -633,9 +664,9 @@ fn the_log_reopens_with_the_durable_evidence_store_it_ran_with() {
     let entries = run.entries();
     drop(run);
 
-    let run = Run::open(&dir).unwrap();
+    let mut run = Run::open(&dir).unwrap();
     assert_eq!(run.entries(), entries);
-    let kept = run.store.for_the_log().kept(&commitment).unwrap().unwrap();
+    let kept = run.kept.kept(&commitment).unwrap().unwrap();
     assert_eq!(bearing_out(&kept).unwrap(), ad);
     drop(run);
 
@@ -767,6 +798,8 @@ fn a_read_policy_refuses_hands_over_nothing() {
 struct Faulty {
     inner: Rc<RefCell<MemoryShelf>>,
     fail: Rc<Cell<bool>>,
+    /// While set, a write reaches the shelf and then fails.
+    after: Rc<Cell<bool>>,
 }
 
 impl Shelf for Faulty {
@@ -774,7 +807,11 @@ impl Shelf for Faulty {
         if self.fail.get() {
             return Err(ShelfError::Unavailable("injected".into()));
         }
-        self.inner.borrow_mut().put(shelved)
+        self.inner.borrow_mut().put(shelved)?;
+        if self.after.get() {
+            return Err(ShelfError::Unavailable("injected after".into()));
+        }
+        Ok(())
     }
 
     fn erase(&mut self, commitment: &Digest) -> Result<(), ShelfError> {
@@ -797,7 +834,11 @@ fn a_shelf_that_cant_write_keeps_and_erases_nothing() {
     let shelf = Faulty::default();
     let store = EvidenceStore::on(Box::new(shelf.clone())).unwrap();
     let mut keeper = store.keeper(Box::new(Policy::default()));
-    let mut log = AuditLog::open(settings(), MemoryStore::new(), store.for_the_log()).unwrap();
+    let mut kept_now = store.for_the_log();
+    let log = Rc::new(RefCell::new(
+        AuditLog::open(settings(), MemoryStore::new(), store.for_the_log()).unwrap(),
+    ));
+    let store = store.bind(Rc::clone(&log)).unwrap();
     let bytes = judgement("us-bank", json!({"kind": "judgement"}));
 
     shelf.fail.set(true);
@@ -808,25 +849,54 @@ fn a_shelf_that_cant_write_keeps_and_erases_nothing() {
     // The failed keep left nothing in the index either.
     assert_eq!(kept.restates, None);
 
-    log.append(&stated(&bytes, &kept.commitment, None)).unwrap();
-    store.erasable(&log, &kept.commitment).unwrap();
-    let at = log.append(&erasure(&kept.commitment, "done")).unwrap();
+    log.borrow_mut()
+        .append(&stated(&bytes, &kept.commitment, None))
+        .unwrap();
+    store.erasable(&kept.commitment).unwrap();
+    let at = log
+        .borrow_mut()
+        .append(&erasure(&kept.commitment, "done"))
+        .unwrap();
     shelf.fail.set(true);
-    assert_eq!(store.erase(&log, &at), Err(AppendFailure::Unavailable));
-    assert!(
-        store
-            .for_the_log()
-            .kept(&kept.commitment)
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(store.erase(&at), Err(AppendFailure::Unavailable));
+    assert!(kept_now.kept(&kept.commitment).unwrap().is_some());
     assert!(!store.is_erased(&kept.commitment));
     shelf.fail.set(false);
-    store.erase(&log, &at).unwrap();
+    store.erase(&at).unwrap();
     assert!(store.is_erased(&kept.commitment));
-    // Reopened on the shelf, the store holds what it held.
-    let again = EvidenceStore::on(Box::new(shelf.clone())).unwrap();
+    // Reopened on the shelf and bound to the log, the store holds what it held.
+    let again = EvidenceStore::on(Box::new(shelf.clone()))
+        .unwrap()
+        .bind(Rc::clone(&log))
+        .unwrap();
     assert!(again.is_erased(&kept.commitment));
+}
+
+/// A write that reached the shelf before it failed still takes its place, so no later statement shares it, and
+/// the order statements were kept in, which restatements are found by, survives a reopen.
+// verifies: REQ-AUD-2, INV-7
+#[test]
+fn a_write_that_fails_after_reaching_the_shelf_keeps_its_place_to_itself() {
+    let shelf = Faulty::default();
+    let store = EvidenceStore::on(Box::new(shelf.clone())).unwrap();
+    let mut keeper = store.keeper(Box::new(Policy::default()));
+    shelf.after.set(true);
+    let first = judgement("us-bank", json!({"kind": "judgement", "n": 1}));
+    assert_eq!(keeper.keep(&first), Err(AppendFailure::Unavailable));
+    shelf.after.set(false);
+    keeper
+        .keep(&judgement("us-bank", json!({"kind": "judgement", "n": 2})))
+        .unwrap();
+    let places: BTreeSet<u64> = shelf
+        .inner
+        .borrow_mut()
+        .load()
+        .unwrap()
+        .kept
+        .iter()
+        .map(|s| s.place)
+        .collect();
+    assert_eq!(places.len(), 2);
 }
 
 /// A statement on the store's shelf whose bytes don't bear out its commitment, or filed under another's, refuses the
@@ -907,7 +977,7 @@ fn no_erasure_reaches_an_advertisement() {
     assert_eq!(run.erase(&by_bytes).map(|_| ()), refused);
     // Recorded anyway, the erasure is still not carried out.
     let at = run.append(&erasure(&by_bytes, "done")).unwrap();
-    assert_eq!(run.store.erase(&run.log.borrow(), &at), refused);
+    assert_eq!(run.store.erase(&at), refused);
 
     // An advertisement's bytes, labelled as another statement by the only entry naming them.
     let mislabelled = run.keeper.keep(&ad).unwrap();
@@ -933,7 +1003,7 @@ fn no_erasure_reaches_an_advertisement() {
     .unwrap();
     assert_eq!(run.erase(&kept.commitment).map(|_| ()), refused);
     let at = run.append(&erasure(&kept.commitment, "done")).unwrap();
-    assert_eq!(run.store.erase(&run.log.borrow(), &at), refused);
+    assert_eq!(run.store.erase(&at), refused);
     drop(run);
 
     let mut run = Run::open(&dir).unwrap();
@@ -959,16 +1029,16 @@ fn an_erasure_the_log_holds_no_record_of_erases_nothing() {
     let (commitment, stated_at) = run.state(&bytes, None);
     let refused = Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE)));
 
-    assert_eq!(run.store.erase(&run.log.borrow(), &stated_at), refused);
+    assert_eq!(run.store.erase(&stated_at), refused);
     let failed = run.append(&erasure(&commitment, "failed")).unwrap();
-    assert_eq!(run.store.erase(&run.log.borrow(), &failed), refused);
+    assert_eq!(run.store.erase(&failed), refused);
     let done = run.append(&erasure(&commitment, "done")).unwrap();
     let mut forged = done.clone();
     forged.index = SafeInteger::try_from(done.index.get() + 1).unwrap();
-    assert_eq!(run.store.erase(&run.log.borrow(), &forged), refused);
+    assert_eq!(run.store.erase(&forged), refused);
     let mut forged = done.clone();
     forged.entry = digest(&[9; 32]);
-    assert_eq!(run.store.erase(&run.log.borrow(), &forged), refused);
+    assert_eq!(run.store.erase(&forged), refused);
     assert!(matches!(
         run.fetch("us-bank", &commitment).unwrap(),
         Fetched::Kept(_)
@@ -989,45 +1059,222 @@ fn an_erasure_the_log_holds_no_record_of_erases_nothing() {
     ));
 
     // On its record, it is carried out.
-    run.store.erase(&run.log.borrow(), &done).unwrap();
+    run.store.erase(&done).unwrap();
     assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
 }
 
-/// An erasure cut short between its mark and the removal of the bytes, as a crash cuts it, is finished when the
-/// store is opened again.
+/// Bytes a crash left behind their mark, between the shelf's mark and its removal of them, are removed when the
+/// store is opened again, and the bound store reads them erased.
 // verifies: REQ-AUD-13
 #[test]
-fn an_erasure_cut_short_is_finished_on_opening() {
-    let dir = TempDir::new("cut-short");
-    let store = EvidenceStore::open(dir.evidence()).unwrap();
-    let mut keeper = store.keeper(Box::new(Policy::default()));
+fn bytes_left_behind_their_erasure_mark_are_removed_on_opening() {
+    let dir = TempDir::new("left-behind");
+    let mut run = Run::open(&dir).unwrap();
     let bytes = judgement("us-bank", json!({"kind": "judgement"}));
-    let kept = keeper.keep(&bytes).unwrap();
-    drop((keeper, store));
-    let value = kept.commitment.value.as_str();
+    let (commitment, _) = run.state(&bytes, None);
+    let kept = run.kept.kept(&commitment).unwrap().unwrap();
+    run.append(&erasure(&commitment, "done")).unwrap();
+    drop(run);
+    // The crash: the mark is written, the bytes are not yet removed.
+    let value = commitment.value.as_str();
     std::fs::write(dir.evidence().join("erased").join(value), b"").unwrap();
-    assert!(
+    let file = dir.evidence().join("kept").join(format!("{value}.json"));
+    assert!(file.exists());
+
+    let mut run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&commitment));
+    assert_eq!(run.kept.kept(&commitment).unwrap(), None);
+    assert!(!file.exists());
+    for (_, b) in files(&dir.evidence()) {
+        assert!(!holds(&b, kept.bytes.as_str().as_bytes()));
+    }
+}
+
+/// An erasure the log recorded done, cut short by a crash before the store marked it, is carried out when the
+/// store is bound to the log again.
+// verifies: REQ-AUD-13, AC-36
+#[test]
+fn binding_carries_out_an_erasure_the_log_recorded_before_a_crash() {
+    let dir = TempDir::new("pending");
+    let mut run = Run::open(&dir).unwrap();
+    let bytes = judgement("us-bank", json!({"kind": "judgement"}));
+    let (commitment, _) = run.state(&bytes, None);
+    let kept = run.kept.kept(&commitment).unwrap().unwrap();
+    run.store.erasable(&commitment).unwrap();
+    run.append(&erasure(&commitment, "done")).unwrap();
+    drop(run);
+
+    let mut run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&commitment));
+    assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
+    for (_, b) in files(&dir.evidence()) {
+        assert!(!holds(&b, kept.bytes.as_str().as_bytes()));
+    }
+    assert!(run.store.missing().is_empty());
+}
+
+/// A statement marked erased that no erasure of the operator's in the log records refuses the binding: its bytes
+/// went with no record.
+// verifies: REQ-AUD-13, INV-7
+#[test]
+fn binding_refuses_a_statement_marked_erased_with_no_erasure_in_the_log() {
+    let dir = TempDir::new("unrecorded-mark");
+    let mut run = Run::open(&dir).unwrap();
+    let (commitment, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    drop(run);
+    let value = commitment.value.as_str();
+    std::fs::write(dir.evidence().join("erased").join(value), b"").unwrap();
+    assert_eq!(
+        Run::open(&dir).err(),
+        Some(AppendFailure::Refused(Violation(MARK_WITHOUT_ITS_ERASURE)))
+    );
+}
+
+/// A stated entry whose bytes the store neither keeps nor marks erased, gone with no erasure, is reported when the
+/// store is bound, for the outside checker, and the rest is bound as before.
+// verifies: REQ-AUD-13, REQ-AUD-9
+#[test]
+fn binding_reports_a_statement_whose_bytes_are_gone_with_no_erasure() {
+    let dir = TempDir::new("gone");
+    let mut run = Run::open(&dir).unwrap();
+    let (gone, at) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let (stays, _) = run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
+    let (erased, _) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.erase(&erased).unwrap();
+    assert!(run.store.missing().is_empty());
+    drop(run);
+    std::fs::remove_file(
         dir.evidence()
             .join("kept")
-            .join(format!("{value}.json"))
-            .exists()
-    );
+            .join(format!("{}.json", gone.value.as_str())),
+    )
+    .unwrap();
 
-    let store = EvidenceStore::open(dir.evidence()).unwrap();
-    assert!(store.is_erased(&kept.commitment));
-    assert_eq!(store.for_the_log().kept(&kept.commitment).unwrap(), None);
-    assert!(
-        !dir.evidence()
-            .join("kept")
-            .join(format!("{value}.json"))
-            .exists()
+    let mut run = Run::open(&dir).unwrap();
+    assert_eq!(run.store.missing(), [at]);
+    assert!(matches!(
+        run.fetch("bank-co", &stays).unwrap(),
+        Fetched::Kept(_)
+    ));
+}
+
+/// An erasure is the operator's: one recorded by a provider, or in the operator's role for another party, is not
+/// carried out, and the store, bound to its one log, carries out none another log records, however that log holds
+/// the same commitment.
+// verifies: REQ-AUD-13, REQ-AUZ-1
+#[test]
+fn an_erasure_by_anyone_but_the_operator_is_refused() {
+    let dir = TempDir::new("whose-erasure");
+    let mut run = Run::open(&dir).unwrap();
+    let bytes = judgement("us-bank", json!({"kind": "judgement"}));
+    let (commitment, _) = run.state(&bytes, None);
+    let refused = Err(AppendFailure::Refused(Violation(ERASURE_BY_THE_OPERATOR)));
+
+    let by_provider = run
+        .append(&erasure_by(provider("us-bank"), &commitment, "done"))
+        .unwrap();
+    assert_eq!(run.store.erase(&by_provider), refused);
+    let by_another = run
+        .append(&erasure_by(
+            actor("us-bank", "op-login-9", "operator", "person"),
+            &commitment,
+            "done",
+        ))
+        .unwrap();
+    assert_eq!(run.store.erase(&by_another), refused);
+
+    // Another log holding the same statement, under the same commitment, and the operator's erasure of it.
+    let kept = run.kept.kept(&commitment).unwrap().unwrap();
+    let scratch_kept = KeptInMemory::new();
+    let salt: [u8; 32] = from_base64url(kept.salt.as_str())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(scratch_kept.keep(&bytes, salt), commitment);
+    let mut scratch = AuditLog::open(settings(), MemoryStore::new(), scratch_kept).unwrap();
+    scratch.append(&stated(&bytes, &commitment, None)).unwrap();
+    let elsewhere = scratch.append(&erasure(&commitment, "done")).unwrap();
+    assert_eq!(
+        run.store.erase(&elsewhere),
+        Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE)))
     );
-    let encoded = base64url(&bytes);
-    assert!(
-        !files(&dir.evidence())
-            .iter()
-            .any(|(_, b)| holds(b, encoded.as_bytes()))
+    assert!(matches!(
+        run.fetch("us-bank", &commitment).unwrap(),
+        Fetched::Kept(_)
+    ));
+
+    run.erase(&commitment).unwrap();
+    assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
+}
+
+/// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
+/// on is erased; a read of a statement rests on nothing.
+// verifies: REQ-AUD-13, REQ-AUD-2
+#[test]
+fn no_erasure_reaches_a_statement_an_entry_rests_on() {
+    let dir = TempDir::new("rested-on");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    let (free, _) = run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
+    let mut measure = valid("verified-entry-of-a-measure");
+    measure["what"]["record"]["cites"] = json!([at]);
+    run.append(&serde_json::from_value(measure).unwrap())
+        .unwrap();
+    let refused = Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
+
+    assert_eq!(run.store.erasable(&cited), refused);
+    let recorded = run.append(&erasure(&cited, "done")).unwrap();
+    assert_eq!(run.store.erase(&recorded), refused);
+    assert!(matches!(
+        run.fetch("fx-desk", &cited).unwrap(),
+        Fetched::Kept(_)
+    ));
+    // A stuck order's decision names its evidence by commitment: what it relies on is not erased either.
+    let (relied, _) = run.state(
+        &judgement("bank-co", json!({"kind": "judgement", "n": 3})),
+        None,
     );
+    run.append(
+        &serde_json::from_value(json!({
+            "kind": "verified",
+            "who": actor("rutent", "core-orch", "core", "component"),
+            "what": {"call": "input", "input": {
+                "record_id": "rec-0003", "recorded_at": "2026-11-06T10:00:00Z", "time_source": "core-orch clock",
+                "source": {"kind": "orchestrator", "id": "core-orch"}, "standing": "stated",
+                "subject": {"order": "ord-21", "part": "p3"},
+                "observed": {"kind": "stuck_declared", "reason": "over_time"},
+            }},
+            "when": {"at": NOW, "source": "core_clock"},
+            "outcome": {"status": "observed"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut decided = valid("verified-entry-of-a-stuck-decision");
+    decided["what"]["request"]["evidence"] = json!([relied]);
+    let decided: VerifiedEntry = serde_json::from_value(decided).unwrap();
+    run.log
+        .borrow_mut()
+        .append_decision(&DecisionEntry::try_from(decided).unwrap())
+        .unwrap();
+    assert_eq!(run.store.erasable(&relied), refused);
+    // A read of the other, recorded by policy, rests on nothing.
+    let mut read = valid("verified-entry-of-a-refused-read");
+    read["what"]["check"]["reads"] = json!({"kind": "evidence", "commitment": free});
+    let read: VerifiedEntry = serde_json::from_value(read).unwrap();
+    run.log
+        .borrow_mut()
+        .append_decision(&DecisionEntry::try_from(read).unwrap())
+        .unwrap();
+    run.erase(&free).unwrap();
+    assert_eq!(run.fetch("bank-co", &free).unwrap(), Fetched::Erased);
+    drop(run);
+    // Reopened, the refused erasure stays not carried out.
+    let mut run = Run::open(&dir).unwrap();
+    assert!(matches!(
+        run.fetch("fx-desk", &cited).unwrap(),
+        Fetched::Kept(_)
+    ));
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------
@@ -1047,13 +1294,14 @@ fn a_receipt_altered_or_signed_by_another_key_is_refused() {
     let entries = run.entries();
     let (entry, another) = (&entries[1].1, &entries[0].1);
     let refused = Err(Violation(NOT_A_RECEIPT));
-    assert!(check_receipt(&bytes, &the_logs_key(), entry).is_ok());
+    assert!(check(&bytes, &the_logs_key(), entry).is_ok());
     assert_eq!(
-        check_receipt(&bytes, &the_logs_key(), another).map(|_| ()),
-        refused
+        check_receipt(&bytes, &the_logs_key(), &id("log-other"), entry).map(|_| ()),
+        Err(Violation(NOT_A_RECEIPT))
     );
+    assert_eq!(check(&bytes, &the_logs_key(), another).map(|_| ()), refused);
     assert_eq!(
-        check_receipt(&bytes, &public_key(&operator_key()), entry).map(|_| ()),
+        check(&bytes, &public_key(&operator_key()), entry).map(|_| ()),
         refused
     );
 
@@ -1071,7 +1319,7 @@ fn a_receipt_altered_or_signed_by_another_key_is_refused() {
         value[field] = altered;
         let altered = serde_json::to_vec(&value).unwrap();
         assert_eq!(
-            check_receipt(&altered, &the_logs_key(), entry).map(|_| ()),
+            check(&altered, &the_logs_key(), entry).map(|_| ()),
             refused,
             "{field}"
         );
@@ -1083,7 +1331,7 @@ fn a_receipt_altered_or_signed_by_another_key_is_refused() {
     sign_value(&mut resigned, &another_key());
     let resigned = serde_json::to_vec(&resigned).unwrap();
     assert_eq!(
-        check_receipt(&resigned, &the_logs_key(), entry).map(|_| ()),
+        check(&resigned, &the_logs_key(), entry).map(|_| ()),
         refused
     );
 }
@@ -1150,8 +1398,16 @@ fn a_receipt_is_issued_only_for_an_entry_the_allowed_read_covers() {
 // verifies: REQ-AUD-5, REQ-AUD-2
 #[test]
 fn the_receipts_key_is_never_the_operators() {
+    let log = Rc::new(RefCell::new(
+        AuditLog::open(
+            settings(),
+            MemoryStore::new(),
+            EvidenceStore::in_memory().for_the_log(),
+        )
+        .unwrap(),
+    ));
     assert_eq!(
-        Issuer::new(&settings(), operator_key().to_bytes()).err(),
+        Issuer::new(log, Box::new(Policy::default()), operator_key()).err(),
         Some(Violation(KEY_ACROSS_PURPOSES))
     );
     assert_ne!(the_logs_key(), public_key(&operator_key()));
@@ -1181,6 +1437,8 @@ fn the_logs_read_and_orchestrations_handle_each_answer_one_call() {
     <LogsRead as NotEvidence<_>>::holds();
     <EvidenceStore as NotKeptStatements<_>>::holds();
     <EvidenceStore as NotEvidence<_>>::holds();
+    <BoundStore<MemoryStore, LogsRead> as NotKeptStatements<_>>::holds();
+    <BoundStore<MemoryStore, LogsRead> as NotEvidence<_>>::holds();
     let _: &dyn Evidence = &EvidenceStore::in_memory().keeper(Box::new(Policy::default()));
     let _: &dyn KeptStatements = &EvidenceStore::in_memory().for_the_log();
 }

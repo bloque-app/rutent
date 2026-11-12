@@ -20,8 +20,9 @@ serde_json = "1.0.154"
 sha2 = "0.10"
 # The evidence store's salts: 32 fresh bytes from the operating system for each statement kept (`T-022-03`).
 getrandom = "0.3.4"
-# A party's receipt is signed with the log's own key, apart from the operator's (`T-022-03`, ADR-0005).
-ed25519-dalek = { version = "2.2.0", default-features = false }
+# A party's receipt is signed with the log's own key, apart from the operator's, zeroised when dropped (`T-022-03`,
+# ADR-0005).
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["zeroize"] }
 # A party's receipt is read and written as JSON (`T-022-03`).
 serde = { version = "1.0.229", features = ["derive"] }
 

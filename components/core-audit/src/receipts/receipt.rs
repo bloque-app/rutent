@@ -18,6 +18,7 @@
 //! entry for a read of the trail.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use rutent_contracts::core_internal::calls::{self, AppendFailure, KeptStatements, Signatures};
@@ -34,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use super::store::bearing_out;
 use crate::log::kept::base64url;
 use crate::log::merkle::{self, Hash, leaf_hash, sha256, verify_inclusion};
-use crate::log::{AuditLog, Ed25519Strict, Settings, Store, digest, record};
+use crate::log::{AuditLog, Ed25519Strict, Store, digest, record};
 
 /// A party's receipt's `shape`.
 pub const RECEIPT_SHAPE: &str = "urn:rutent:core-audit:party-receipt";
@@ -160,23 +161,37 @@ fn covers(reads: &Read, entry: &Entry) -> bool {
     }
 }
 
-/// The issuer of parties' receipts: the log's own signing key.
-pub struct Issuer {
+/// The issuer of parties' receipts: the log's own signing key, bound once to the log it signs for and to policy's
+/// read check, as [`Keeper`](super::Keeper) is. Only the assembly makes one (`T-024-02`).
+///
+/// The secret is held as an [`ed25519_dalek::SigningKey`], which zeroises itself when dropped (the crate's `zeroize`
+/// feature); the caller hands it over by value, so no copy of it stays with the issuer's maker beyond its own.
+pub struct Issuer<S: Store, K: KeptStatements> {
     key: SigningKey,
     public: PublicKey,
+    log: Rc<RefCell<AuditLog<S, K>>>,
+    reads: Box<dyn calls::Reads>,
 }
 
-impl Issuer {
-    /// The issuer signing with the Ed25519 key whose secret is `secret`, for the log of `settings`. It refuses the
-    /// deployment's `operator_key`, which signs the operator's statements.
-    pub fn new(settings: &Settings, secret: [u8; 32]) -> Result<Self, Violation> {
-        let key = SigningKey::from_bytes(&secret);
+impl<S: Store, K: KeptStatements> Issuer<S, K> {
+    /// The issuer signing with `key` for `log`, issuing on what `reads`, policy's read check, allows. It refuses
+    /// the deployment's `operator_key`, which signs the operator's statements.
+    pub fn new(
+        log: Rc<RefCell<AuditLog<S, K>>>,
+        reads: Box<dyn calls::Reads>,
+        key: SigningKey,
+    ) -> Result<Self, Violation> {
         let public = PublicKey::new(base64url(key.verifying_key().as_bytes()))
             .expect("an Ed25519 key's 32 bytes in base64url are a public key");
-        if public == settings.deployment.operator_key {
+        if public == log.borrow().settings().deployment.operator_key {
             return Err(Violation(KEY_ACROSS_PURPOSES));
         }
-        Ok(Issuer { key, public })
+        Ok(Issuer {
+            key,
+            public,
+            log,
+            reads,
+        })
     }
 
     /// The log's key, which every receipt it issues is checked against.
@@ -184,17 +199,11 @@ impl Issuer {
         &self.public
     }
 
-    /// Issues `check.reader` a receipt of the entry at `index` of `log`, on policy's allowing `check`, and only
-    /// where the read covers that entry. Policy is asked first, with no borrow of `log` held, since it records the
-    /// read there.
-    pub fn issue<S: Store, K: KeptStatements>(
-        &self,
-        reads: &mut dyn calls::Reads,
-        check: &ReadCheck,
-        log: &RefCell<AuditLog<S, K>>,
-        index: usize,
-    ) -> Result<Issued, AppendFailure> {
-        let answer = reads.check_read(check)?;
+    /// Issues `check.reader` a receipt of the entry at `index` of the log, on policy's allowing `check`, and only
+    /// where the read covers that entry. Policy is asked first, with no borrow of the log held, since it records
+    /// the read there.
+    pub fn issue(&mut self, check: &ReadCheck, index: usize) -> Result<Issued, AppendFailure> {
+        let answer = self.reads.check_read(check)?;
         if answer.request != check.request {
             return Err(AppendFailure::Refused(Violation(
                 super::store::ANSWER_OF_ANOTHER_READ,
@@ -203,7 +212,7 @@ impl Issuer {
         if let ReadOutcome::Refused { .. } = answer.outcome {
             return Ok(Issued::Refused(answer));
         }
-        let log = log.borrow();
+        let log = self.log.borrow();
         let refused = || AppendFailure::Refused(Violation(NOT_COVERED));
         let (receipt, entry) = log.entries().get(index).ok_or_else(refused)?;
         if !covers(&check.reads, entry) {
@@ -239,12 +248,14 @@ impl Issuer {
     }
 }
 
-/// Reads `bytes` as a party's receipt of `entry`, signed with `key`, the log's: it must be one, its signature
-/// strictly `key`'s over its signing input, its entry digest that of `entry`'s record, and its inclusion proof must
-/// lead from that record to its root.
+/// Reads `bytes` as a party's receipt of `entry` from the log named `log`, signed with `key`, that log's: it must
+/// be one, of that log, its signature strictly `key`'s over its signing input, its entry digest that of `entry`'s
+/// record, and its inclusion proof must lead from that record to its root. Run it, and keep only the receipt it
+/// answers, before [`holds_against`], which trusts the receipt it is given.
 pub fn check_receipt(
     bytes: &[u8],
     key: &PublicKey,
+    log: &Id,
     entry: &Entry,
 ) -> Result<PartyReceipt, Violation> {
     let refused = || Violation(NOT_A_RECEIPT);
@@ -256,6 +267,7 @@ pub fn check_receipt(
     );
     let proof: Option<Vec<Hash>> = receipt.inclusion.iter().map(hash_of).collect();
     let holds = receipt.shape == RECEIPT_SHAPE
+        && receipt.log == *log
         && receipt.signature.scheme == "ed25519"
         && receipt.signature.key == *key
         && verify_envelope(key, &receipt.signature.value, bytes).is_ok()
@@ -272,6 +284,9 @@ pub fn check_receipt(
 /// Whether `history`, as the operator now shows it, still holds what `receipt` was issued for: the entry it names,
 /// at its index, in a tree of its size whose root is the one it names. A record changed, or removed, before that
 /// size answers `false`.
+///
+/// It trusts `receipt`: a [`PartyReceipt`] can be built or read by anyone, so hand it only one
+/// [`check_receipt`] answered, which holds the log's signature over it.
 pub fn holds_against(receipt: &PartyReceipt, history: &[(Receipt, Entry)]) -> bool {
     let (index, size) = (
         receipt.index.get() as usize,

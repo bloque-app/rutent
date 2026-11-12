@@ -7,8 +7,9 @@
 //!   ([`KeptStatements`](rutent_contracts::core_internal::calls::KeptStatements)) and orchestration and the parties
 //!   through [`Keeper`] ([`Evidence`]), whose reads policy allows first. It replaces `T-022-01`'s stand-in,
 //!   `log::KeptInMemory`, with no change to the log.
-//! - [`EvidenceStore::erase`] erases, outside the log, only what the log's `erasure` entry names; the reference stays
-//!   and history still checks (`REQ-AUD-13`).
+//! - [`EvidenceStore::bind`] binds the store, once, to the log it serves, reconciling the two; [`BoundStore::erase`]
+//!   then erases, outside the log, only what that log's own `erasure` entry, the operator's, names, and nothing an
+//!   entry rests on; the reference stays and history still checks (`REQ-AUD-13`).
 //! - [`Issuer`] signs a party's receipt of an entry about its own part, in the style of RFC 9943, which
 //!   [`holds_against`] checks against the history the operator shows (`REQ-AUD-5`).
 
@@ -25,8 +26,8 @@ pub use receipt::{
     holds_against,
 };
 pub use store::{
-    DirectoryShelf, EvidenceStore, Keeper, LogsRead, MemoryShelf, Shelf, ShelfContents, ShelfError,
-    Shelved, bearing_out,
+    BoundStore, DirectoryShelf, EvidenceStore, Keeper, LogsRead, MemoryShelf, Shelf, ShelfContents,
+    ShelfError, Shelved, bearing_out,
 };
 
 /// The unbuilt stub, which the assembly's `Assembly::unbuilt` still builds on: no evidence is kept, so no stated

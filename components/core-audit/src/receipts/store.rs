@@ -10,10 +10,12 @@
 //! - [`Keeper`], orchestration's and the parties': [`Evidence`], which keeps a statement and answers a party's or
 //!   a checker's read only once policy allows it ([`calls::Reads`]).
 //!
-//! Erasure ([`EvidenceStore::erase`]) is the store's own, and reaches only what the log's `erasure` entry names
-//! (`REQ-AUD-13`): the record comes first, so the bytes go only once the log holds the reference that stays. No
-//! erasure reaches an advertisement, a provider's public statement, whose bytes the log reads back on opening.
-//! Nothing is erased but by an erasure: how long anything is kept is the operator's (`REQ-AUD-13`).
+//! Erasure is the bound store's ([`BoundStore::erase`]): the store is bound once to the one log it serves
+//! ([`EvidenceStore::bind`]), and erases only what that log's own `erasure` entry names, made by the operator
+//! (`REQ-AUD-13`). The record comes first, so the bytes go only once the log holds the reference that stays. No
+//! erasure reaches an advertisement, a provider's public statement whose bytes the log reads back on opening, nor
+//! a statement any entry of the log rests on. Nothing is erased but by an erasure: how long anything is kept is the
+//! operator's (`REQ-AUD-13`).
 //!
 //! **Restatements are found here, not in the log.** The store indexes each statement by SHA-256 of its signed
 //! content (provider-role's `signing_input`; the bytes themselves where they have none) and answers each
@@ -36,11 +38,12 @@ use rutent_contracts::core_internal::calls::{
     self, AppendFailure, Evidence, Fetched, Kept, KeptStatements,
 };
 use rutent_contracts::core_internal::{
-    Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt, Salt,
-    Violation, What,
+    Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt, Role,
+    Salt, Violation, What,
 };
 use rutent_contracts::module_interface::{Digest, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, signing_input};
+use rutent_contracts::router_api::Id;
 use serde::{Deserialize, Serialize};
 
 use crate::log::kept::{base64url, from_base64url};
@@ -62,6 +65,17 @@ pub const NOT_KEPT: &str = "a statement is kept under that commitment, or was an
 /// The refusal of an erasure the log holds no `done` erasure entry for, at the receipt given.
 pub const NO_RECORDED_ERASURE: &str =
     "an erasure is carried out only on the log's done erasure entry naming the commitment";
+
+/// The refusal of an erasure by anyone but the operator: an actor in the operator's role, for the operator's
+/// party. Until core-internal makes erasure a decided action, the operator's own record is what authorises one.
+pub const ERASURE_BY_THE_OPERATOR: &str = "an erasure is the operator's: its entry's actor is in the operator's role, for the operator's party";
+
+/// The refusal to erase a statement an entry of the log rests on: a report, an arrival, graded evidence, a
+/// reliance, a stuck order's decision, a measure, a raise, or any other entry citing it.
+pub const EVIDENCE_RESTED_ON: &str = "no erasure reaches a statement an entry of the log rests on";
+
+/// The refusal to bind a store holding a statement marked erased that no erasure in the log records.
+pub const MARK_WITHOUT_ITS_ERASURE: &str = "every statement the evidence store marks erased has its done erasure, the operator's, in the log";
 
 /// The refusal to erase an advertisement: a provider's public statement, which the log reads back on opening and
 /// no erasure reaches (`REQ-AUD-13`, the coordinator's ruling).
@@ -104,10 +118,11 @@ pub trait Shelf {
     fn put(&mut self, shelved: &Shelved) -> Result<(), ShelfError>;
 
     /// Erases the statement kept under `commitment`: first marks it erased, durably, then removes its bytes and
-    /// salt, so an erasure cut short is finished by the next [`Shelf::load`]. Erasing one already erased is `Ok`.
+    /// salt, so bytes a crash left behind a mark are removed by the next [`Shelf::load`]. Erasing one already
+    /// erased is `Ok`.
     fn erase(&mut self, commitment: &Digest) -> Result<(), ShelfError>;
 
-    /// Everything the shelf holds, an erasure cut short finished first.
+    /// Everything the shelf holds, the bytes of every statement marked erased removed first.
     fn load(&mut self) -> Result<ShelfContents, ShelfError>;
 }
 
@@ -252,7 +267,7 @@ impl Shelf for DirectoryShelf {
         for name in names(&self.erased)? {
             let value = DigestValue::new(name.clone())
                 .ok_or_else(|| ShelfError::Corrupt(format!("erased/{name} names no commitment")))?;
-            // An erasure cut short between its mark and the removal is finished here.
+            // Bytes a crash left behind their mark, between the mark and the removal, are removed here.
             remove(&self.kept_file(&value))?;
             erased.push(value);
         }
@@ -345,9 +360,15 @@ impl Inner {
     }
 }
 
-/// The evidence store: the statements kept, on their [`Shelf`], with the restatement index read from them. It
-/// implements none of `core-internal`'s calls itself: it hands out [`LogsRead`] to the log and [`Keeper`] to
-/// orchestration, and carries out erasures.
+/// The evidence store before it is bound to its log: the statements kept, on their [`Shelf`], with the restatement
+/// index read from them. It implements none of `core-internal`'s calls itself: it hands out [`LogsRead`] to the log
+/// and [`Keeper`] to orchestration, and is then bound, once, to the log it serves ([`EvidenceStore::bind`]), which
+/// alone carries out erasures.
+///
+/// **Only the assembly holds it** (`rutent-scenarios`, `T-024-02`; `F-030`'s in production). It calls
+/// [`for_the_log`](EvidenceStore::for_the_log) once, to open the log with, and [`keeper`](EvidenceStore::keeper)
+/// once, for orchestration, and then binds the store, which consumes it, so no other read without a read check can
+/// be made, and no other log can ever authorise an erasure.
 pub struct EvidenceStore {
     inner: Rc<RefCell<Inner>>,
 }
@@ -398,13 +419,14 @@ impl EvidenceStore {
         })
     }
 
-    /// The log's read of this store, which the log is opened, and reopened, with.
+    /// The log's read of this store, which the log is opened, and reopened, with. Only the assembly calls it, once,
+    /// before binding: a [`LogsRead`] answers with no read check.
     pub fn for_the_log(&self) -> LogsRead {
         LogsRead(Rc::clone(&self.inner))
     }
 
     /// Orchestration's and the parties' handle on this store: it keeps statements, and answers a read of one only
-    /// once `reads`, policy's read check, allows it.
+    /// once `reads`, policy's read check, allows it. Only the assembly calls it, once, before binding.
     pub fn keeper(&self, reads: Box<dyn calls::Reads>) -> Keeper {
         Keeper {
             inner: Rc::clone(&self.inner),
@@ -412,14 +434,153 @@ impl EvidenceStore {
         }
     }
 
-    /// Whether the statement kept under `commitment` may be erased, over `log`'s history: it is kept, or was and
-    /// is erased already, and it is no advertisement, by its bytes or by any stated entry naming it. Run it before
-    /// appending the erasure's entry, so the log records no erasure the store would refuse.
-    pub fn erasable<S: Store, K: KeptStatements>(
-        &self,
-        log: &AuditLog<S, K>,
-        commitment: &Digest,
-    ) -> Result<(), AppendFailure> {
+    /// Binds this store to `log`, the one log it serves, opened with this store's [`LogsRead`]: from now on only
+    /// that log's own records authorise an erasure. It consumes the store, so it is bound once.
+    ///
+    /// Binding reconciles the store with the log, so a crash anywhere in an erasure leaves nothing half done:
+    ///
+    /// - every erasure the log records as done, by the operator, of a statement still kept, is carried out, where
+    ///   [`BoundStore::erasable`] allows it (an erasure cut short after its entry and before its mark);
+    /// - a statement marked erased with no such erasure in the log refuses the binding
+    ///   ([`MARK_WITHOUT_ITS_ERASURE`]): bytes went with no record of it;
+    /// - every stated entry whose bytes the store neither keeps nor marks erased is reported
+    ///   ([`BoundStore::missing`]), a finding for the outside checker (`T-022-04`): bytes gone with no erasure.
+    pub fn bind<S: Store, K: KeptStatements>(
+        self,
+        log: Rc<RefCell<AuditLog<S, K>>>,
+    ) -> Result<BoundStore<S, K>, AppendFailure> {
+        let mut bound = BoundStore {
+            inner: self.inner,
+            log,
+            missing: Vec::new(),
+        };
+        bound.reconcile()?;
+        Ok(bound)
+    }
+}
+
+/// The evidence store bound to the one log it serves: it carries out that log's erasures (`REQ-AUD-13`).
+pub struct BoundStore<S: Store, K: KeptStatements> {
+    inner: Rc<RefCell<Inner>>,
+    log: Rc<RefCell<AuditLog<S, K>>>,
+    missing: Vec<Receipt>,
+}
+
+/// The commitment the entry recorded at `at` erases, where it is a verified `erasure` entry, done, by an actor in
+/// the operator's role for the operator's party.
+fn erasure_at<'a>(
+    entries: &'a [(Receipt, Entry)],
+    operator_party: &Id,
+    at: &Receipt,
+) -> Result<&'a Digest, AppendFailure> {
+    let recorded = usize::try_from(at.index.get())
+        .ok()
+        .and_then(|i| entries.get(i))
+        .filter(|(r, _)| r == at);
+    match recorded {
+        Some((_, Entry::Verified(v))) if matches!(v.outcome, Outcome::Done {}) => match &v.what {
+            What::Erasure { evidence } => {
+                if v.who.role != Role::Operator || v.who.party != *operator_party {
+                    return Err(AppendFailure::Refused(Violation(ERASURE_BY_THE_OPERATOR)));
+                }
+                Ok(evidence)
+            }
+            _ => Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
+        },
+        _ => Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
+    }
+}
+
+/// Whether `value` holds `needle` anywhere.
+fn holds_value(value: &serde_json::Value, needle: &serde_json::Value) -> bool {
+    value == needle
+        || match value {
+            serde_json::Value::Array(items) => items.iter().any(|v| holds_value(v, needle)),
+            serde_json::Value::Object(map) => map.values().any(|v| holds_value(v, needle)),
+            _ => false,
+        }
+}
+
+/// Whether an entry of `entries` rests on the statement kept under `commitment`: cites the receipt of a stated
+/// entry naming it, or names the commitment itself, as a stuck order's decision names its evidence. Stated entries,
+/// erasures and reads (a read of a statement, and a permission over one) rest on nothing they name.
+fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
+    let mut needles: Vec<serde_json::Value> = entries
+        .iter()
+        .filter(|(_, e)| matches!(e, Entry::Stated(s) if s.commitment == *commitment))
+        .filter_map(|(r, _)| serde_json::to_value(r).ok())
+        .collect();
+    needles.extend(serde_json::to_value(commitment).ok());
+    entries.iter().any(|(_, e)| match e {
+        Entry::Stated(_) => false,
+        Entry::Verified(v) => {
+            !matches!(
+                v.what,
+                What::Erasure { .. }
+                    | What::CheckRead { .. }
+                    | What::GrantPermission { .. }
+                    | What::RevokePermission { .. }
+            ) && serde_json::to_value(&v.what)
+                .is_ok_and(|what| needles.iter().any(|n| holds_value(&what, n)))
+        }
+    })
+}
+
+impl<S: Store, K: KeptStatements> BoundStore<S, K> {
+    fn operator_party(&self) -> Id {
+        self.log.borrow().settings().operator_party.clone()
+    }
+
+    fn reconcile(&mut self) -> Result<(), AppendFailure> {
+        let party = self.operator_party();
+        let entries = self.log.borrow().entries().to_vec();
+        let recorded: Vec<(Receipt, Digest)> = entries
+            .iter()
+            .filter_map(|(r, _)| {
+                erasure_at(&entries, &party, r)
+                    .ok()
+                    .map(|c| (r.clone(), c.clone()))
+            })
+            .collect();
+        let marks: Vec<String> = self.inner.borrow().erased.iter().cloned().collect();
+        for mark in marks {
+            if !recorded.iter().any(|(_, c)| c.value.as_str() == mark) {
+                return Err(AppendFailure::Refused(Violation(MARK_WITHOUT_ITS_ERASURE)));
+            }
+        }
+        for (at, _) in &recorded {
+            match self.erase(at) {
+                Ok(()) | Err(AppendFailure::Refused(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let inner = self.inner.borrow();
+        self.missing = entries
+            .iter()
+            .filter_map(|(r, e)| match e {
+                Entry::Stated(s)
+                    if inner.kept(&s.commitment).is_none()
+                        && !inner.erased.contains(s.commitment.value.as_str()) =>
+                {
+                    Some(r.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// The stated entries of the log, by receipt, whose bytes the store neither kept nor erased when it was bound:
+    /// evidence gone with no erasure, a finding for the outside checker (`T-022-04`).
+    pub fn missing(&self) -> &[Receipt] {
+        &self.missing
+    }
+
+    /// Whether the statement kept under `commitment` may be erased, over the log's history: it is kept, or was and
+    /// is erased already; it is no advertisement, by its bytes or by any stated entry naming it; and no entry of
+    /// the log rests on it. Run it before appending the erasure's entry, so the log records no erasure the store
+    /// would refuse.
+    pub fn erasable(&self, commitment: &Digest) -> Result<(), AppendFailure> {
         let inner = self.inner.borrow();
         if inner.erased.contains(commitment.value.as_str()) {
             return Ok(());
@@ -427,6 +588,7 @@ impl EvidenceStore {
         let kept = inner
             .kept(commitment)
             .ok_or(AppendFailure::Refused(Violation(NOT_KEPT)))?;
+        let log = self.log.borrow();
         let labelled = log.entries().iter().any(|(_, e)| {
             matches!(e, Entry::Stated(s) if s.commitment == *commitment
                 && s.what.statement.as_str() == ADVERTISEMENT_SHAPE)
@@ -436,6 +598,9 @@ impl EvidenceStore {
                 ADVERTISEMENT_NEVER_ERASED,
             )));
         }
+        if cited(log.entries(), commitment) {
+            return Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
+        }
         Ok(())
     }
 
@@ -443,28 +608,18 @@ impl EvidenceStore {
     /// salt go, and its place in the restatement index; its commitment stays, in the log's stated entry and in the
     /// store's mark, so a read of it answers [`Fetched::Erased`] and history still checks.
     ///
-    /// It is carried out only on the log's own record: `log` must hold, at `at`, a verified `erasure` entry whose
-    /// outcome is `done`. So the reference is recorded before anything is erased, and an erasure cut short by a
-    /// failure, or a crash, is carried out by calling this again. It refuses what [`EvidenceStore::erasable`]
-    /// refuses. A statement erased already answers `Ok`.
-    pub fn erase<S: Store, K: KeptStatements>(
-        &self,
-        log: &AuditLog<S, K>,
-        at: &Receipt,
-    ) -> Result<(), AppendFailure> {
-        let recorded = usize::try_from(at.index.get())
-            .ok()
-            .and_then(|i| log.entries().get(i))
-            .filter(|(r, _)| r == at);
-        let commitment = match recorded {
-            Some((_, Entry::Verified(v))) if matches!(v.outcome, Outcome::Done {}) => match &v.what
-            {
-                What::Erasure { evidence } => evidence.clone(),
-                _ => return Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
-            },
-            _ => return Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
+    /// It is carried out only on the bound log's own record: the log must hold, at `at`, a verified `erasure` entry
+    /// whose outcome is `done`, by an actor in the operator's role for the operator's party
+    /// ([`ERASURE_BY_THE_OPERATOR`]). So the reference is recorded before anything is erased. Should the erasure be
+    /// cut short after its entry, by a failure answered `Unavailable`, calling this again carries it out, and so
+    /// does binding the store again after a crash. It refuses what [`BoundStore::erasable`] refuses. A statement
+    /// erased already answers `Ok`.
+    pub fn erase(&self, at: &Receipt) -> Result<(), AppendFailure> {
+        let commitment = {
+            let log = self.log.borrow();
+            erasure_at(log.entries(), &log.settings().operator_party, at)?.clone()
         };
-        self.erasable(log, &commitment)?;
+        self.erasable(&commitment)?;
         let mut inner = self.inner.borrow_mut();
         let key = commitment.value.as_str().to_owned();
         if inner.erased.contains(&key) {
@@ -538,7 +693,10 @@ impl Evidence for Keeper {
             .get(&content_of(received))
             .and_then(|places| places.values().next())
             .cloned();
+        // The place is taken whatever the write answers: a write that reached the shelf before failing must not
+        // leave its place to the next statement.
         let place = inner.next;
+        inner.next += 1;
         inner
             .shelf
             .put(&Shelved {
