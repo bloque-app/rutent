@@ -250,17 +250,29 @@ pub enum Graded {
 pub trait Grading {
     /// Grades the evidence of `settled`.
     fn grade(&mut self, settled: &ToGrade<'_>) -> Graded;
+
+    /// Whether a part ending in `deposit` could close at all: whether its destination has a public record this
+    /// grading reads, or is a rail declared private, which closes on the movement into it (`REQ-ORD-33`). A part
+    /// that couldn't isn't routed. Every grading can, unless it says otherwise.
+    fn can_close(&self, deposit: &RouterOperation) -> bool {
+        let _ = deposit;
+        true
+    }
 }
 
-/// A stand-in that settles every segment on the provider's result alone, graded as its statement (grade 4), resting
-/// on the result's stated entry. A statement alone closes no order (`REQ-ORD-33`), so it is no grading for an order
-/// that closes: `closing::Evidenced` is. It stays for the tests that are about something else, and for the assembly
-/// until it holds `closing::Evidenced` (`T-024-02`).
+/// A stand-in that settles a segment on the provider's result alone, graded as its statement (grade 4), resting on
+/// the result's stated entry, and never a part's final deposit, which waits: a statement alone closes no order
+/// (`REQ-ORD-33`), and the log refuses one that does (`final-deposit-closes-on-a-public-record`). An order closes
+/// only under `closing::Evidenced`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProvidersWord;
 
 impl Grading for ProvidersWord {
     fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        // A part's final deposit closes only on a public record and its reserve's statement: never on a word.
+        if crate::closing::is_final_deposit(settled) {
+            return Graded::Waits(Short::NoPublicRecord(None));
+        }
         let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,
             who: settled.core.clone(),
@@ -271,6 +283,7 @@ impl Grading for ProvidersWord {
                 grade: EvidenceGrade::Statement,
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
+                movement: None,
             },
             when: When {
                 at: settled.at.clone(),

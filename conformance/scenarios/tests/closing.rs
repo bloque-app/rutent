@@ -567,6 +567,97 @@ fn provider_below_the_tuples_floor_is_not_routed_through() {
     }
 }
 
+/// The floor on the deposit's tuple is raised once the withdrawal settled: the deposit isn't routed through, and the
+/// refusal is recorded once, however often the part runs. The value is evidenced at the ledger, where the withdrawal
+/// left it and nothing more is in flight, so the order is one a recalculation takes up (`T-020-10`).
+// verifies: REQ-ORD-39, INV-8
+#[test]
+fn refusal_mid_route_is_recorded_once_and_leaves_the_order_to_be_recalculated() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut closing = Closing::new();
+    let mut catalogue = world.catalogue.clone();
+    let ad = world.installed[0]
+        .advertisement
+        .statement()
+        .statement
+        .clone();
+    let deposit = tuples_of(&ad)
+        .into_iter()
+        .find(|k| matches!(k.origin, rutent_prov::catalogue::Endpoint::Inner(_)))
+        .expect("the deposit's tuple");
+    catalogue.set_evidence_floor(deposit, EvidenceGrade::PublicRecord);
+    for _ in 0..3 {
+        // Time passes between the runs, so a refusal built again would be another entry.
+        core.clock.advance(60);
+        let ran = run(&mut core, &mut world, &catalogue, &mut closing);
+        assert!(
+            matches!(&ran, Ran::Refused { refused, .. } if refused.reason == RouteRefusal::BelowEvidenceFloor(1)),
+            "{ran:?}"
+        );
+    }
+    assert_eq!(
+        core.log
+            .borrow()
+            .count(|w| matches!(w, What::OrderRefusal { .. })),
+        1,
+        "recorded once"
+    );
+    let order = core
+        .segments
+        .order(&id(&core.named.order))
+        .expect("followed");
+    let (at, settled) =
+        rutent_core_orch::recalc::evidenced(&order.parts[0]).expect("evidenced at the ledger");
+    assert_eq!(settled.segment_id.as_str(), WITHDRAWAL);
+    assert_eq!(
+        at.node,
+        rutent_contracts::provider_role::NodeRef::Inner(format!("{RESERVE}-ledger"))
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A route ending in a deposit to a destination Core reads no public record of, which no publisher declares a private
+/// rail, could never close: it isn't routed, and nothing is handed over.
+// verifies: REQ-ORD-33
+#[test]
+fn reserve_that_cant_give_a_public_record_is_not_routed_to() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut closing = Closing::new();
+    let catalogue = world.catalogue.clone();
+    let session = world.context().session;
+    // Core reads no network at all.
+    let unread = World_::default();
+    let mut modules = Recording {
+        platform: &mut world.fleet.platform,
+        seen: World_::default(),
+    };
+    let mut grading = Evidenced {
+        catalogue: &catalogue,
+        records: &unread,
+        books: &unread,
+        closing: &mut closing,
+    };
+    let ran = core.run_with(
+        &catalogue,
+        &mut modules,
+        &mut NoProxy,
+        &mut grading,
+        &session,
+    );
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(refused.reason, RouteRefusal::NoPublicRecord(1));
+    assert_eq!(core.log.borrow().count(is_effect), 0, "nothing handed over");
+    assert!(
+        world.fleet.platform.world.journal(RESERVE).is_empty(),
+        "nothing moved"
+    );
+}
+
 /// The operator's catalogue lists the reserve's ledger, but no holding account at it: a withdrawal into it would
 /// leave the value between segments outside a holding account, so it isn't handed over. With the ledger's holding
 /// account registered, the same route runs.
@@ -649,7 +740,10 @@ fn every_settled_segment_has_its_fee_record_and_no_balance_is_kept() {
                     billed_separately,
                     ..
                 } if order.as_str() == named.order => {
-                    assert!(!billed_separately);
+                    assert_eq!(
+                        *billed_separately, None,
+                        "the reserve says nothing of billing, so neither does its record"
+                    );
                     Some((
                         segment.as_str().to_owned(),
                         *to,

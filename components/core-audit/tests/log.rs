@@ -534,7 +534,7 @@ fn advertised(provider: &str, key: &Ed25519Key, publisher: &str) -> Vec<u8> {
 }
 
 /// The stand-alone records Core writes that cite nothing earlier, beside the world's.
-const STANDALONE: [&str; 10] = [
+const STANDALONE: [&str; 9] = [
     "verified-entry-of-a-charge-over-its-bound",
     "verified-entry-of-a-hand-over",
     "verified-entry-of-a-holding-check",
@@ -544,8 +544,30 @@ const STANDALONE: [&str; 10] = [
     "verified-entry-of-the-figures-behind-a-stuck-call",
     "verified-entry-of-an-operator-command",
     "verified-entry-of-a-registered-authorisation",
-    "verified-entry-of-a-replay-consistent-with-its-exit",
 ];
+
+/// The contract's replay fixture, resting on a stated result of `run` about a segment: a replay cites its exit's
+/// result (`replay-rests-on-its-exit`), so it follows the world rather than standing alone.
+fn replay_on<S: Store>(run: &Run<S>) -> Value {
+    let (receipt, about) = run
+        .log
+        .entries()
+        .iter()
+        .find_map(|(r, e)| match e {
+            Entry::Stated(s) => s
+                .about
+                .as_ref()
+                .filter(|a| a.order.is_some() && a.segment.is_some())
+                .map(|a| (r.clone(), a.clone())),
+            Entry::Verified(_) => None,
+        })
+        .expect("a stated result about a segment");
+    let mut entry = valid("verified-entry-of-a-replay-consistent-with-its-exit");
+    entry["what"]["order"] = serde_json::to_value(&about.order).unwrap();
+    entry["what"]["segment"] = serde_json::to_value(&about.segment).unwrap();
+    entry["what"]["rests_on"] = serde_json::to_value(&receipt).unwrap();
+    entry
+}
 
 /// Every kind of verified entry `core-internal` defines, by its `call`, and the stated kind: an exhaustive match, so
 /// a kind the contract adds fails this build until a test names it.
@@ -753,6 +775,9 @@ fn every_record_kind_core_writes_is_in_the_log() {
         run.append(valid(name))
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
+    let replay = replay_on(&run);
+    run.append(replay)
+        .expect("the replay, on its exit's result");
     let found: BTreeSet<&str> = run.log.entries().iter().map(|(_, e)| kind(e)).collect();
     let all: BTreeSet<&str> = KINDS.into_iter().collect();
     assert_eq!(found, all);
@@ -842,6 +867,8 @@ fn log_holds_no_secret_plaintext_and_no_balance_after_a_full_run() {
     for name in STANDALONE {
         run.append(valid(name)).unwrap();
     }
+    let replay = replay_on(&run);
+    run.append(replay).unwrap();
     // The proxy's lookups and uses of the run's secrets, handed over without their values.
     for (position, name) in [
         "handover-secret-lookup-resolved",

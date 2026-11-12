@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Violation;
 use super::types::*;
+use crate::provider_role::EvidenceGrade;
 
 /// True when no item of `items` repeats.
 fn distinct<T: PartialEq>(items: &[T]) -> bool {
@@ -398,10 +399,22 @@ impl What {
                     "a decision record names shortlisted providers exactly when it is a shortlist's",
                 )),
             },
-            What::Evidence { rests_on, .. } => listed(
+            What::Evidence {
                 rests_on,
-                "graded evidence rests on stated entries, at least one, each once",
-            ),
+                grade,
+                movement,
+                ..
+            } => {
+                if movement.is_some() && *grade != EvidenceGrade::PublicRecord {
+                    return Err(Violation(
+                        "graded evidence names a public movement only as a public record",
+                    ));
+                }
+                listed(
+                    rests_on,
+                    "graded evidence rests on stated entries, at least one, each once",
+                )
+            }
             What::Replay { nodes, found, .. } => {
                 listed(
                     nodes,
@@ -421,10 +434,20 @@ impl What {
                             ))
                         }
                     }
-                    ReplayFound::NothingRecorded { node } if !nodes.contains(node) => Err(
-                        Violation("a replay's node that recorded nothing is one it replayed"),
-                    ),
-                    _ => Ok(()),
+                    ReplayFound::NothingRecorded { nodes: silent } => {
+                        listed(
+                            silent,
+                            "a replay names the nodes that recorded nothing, at least one, each once",
+                        )?;
+                        if silent.iter().all(|n| nodes.contains(n)) {
+                            Ok(())
+                        } else {
+                            Err(Violation(
+                                "a replay's node that recorded nothing is one it replayed",
+                            ))
+                        }
+                    }
+                    ReplayFound::ConsistentWithTheExit {} => Ok(()),
                 }
             }
             What::Authorise { .. }

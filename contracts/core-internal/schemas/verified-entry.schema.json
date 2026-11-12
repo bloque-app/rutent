@@ -1389,6 +1389,10 @@
           "items": {
             "$ref": "urn:rutent:core-internal:receipt"
           }
+        },
+        "movement": {
+          "description": "The public movement it relied on, where Core checked one (grade 1): one movement evidences one segment of one order (REQ-ORD-38).",
+          "$ref": "#/$defs/public_movement"
         }
       }
     },
@@ -1403,8 +1407,7 @@
         "to",
         "party",
         "amount",
-        "asset",
-        "billed_separately"
+        "asset"
       ],
       "properties": {
         "call": {
@@ -1435,7 +1438,7 @@
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
         },
         "billed_separately": {
-          "description": "Whether it was billed separately, outside the amounts reported.",
+          "description": "Whether it was billed separately, outside the amounts reported, as its provider stated it; absent where the provider didn't say.",
           "type": "boolean"
         }
       }
@@ -1449,7 +1452,8 @@
         "order",
         "segment",
         "nodes",
-        "found"
+        "found",
+        "rests_on"
       ],
       "properties": {
         "call": {
@@ -1473,6 +1477,14 @@
         },
         "found": {
           "$ref": "#/$defs/replay_found"
+        },
+        "rests_on": {
+          "description": "The receipt of the exit segment's result, its stated entry: what the replay was compared with.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "movement": {
+          "description": "The public movement out it was compared with, where the network ties one to the exit.",
+          "$ref": "#/$defs/public_movement"
         }
       }
     },
@@ -1518,15 +1530,20 @@
           "additionalProperties": false,
           "required": [
             "status",
-            "node"
+            "nodes"
           ],
           "properties": {
             "status": {
               "const": "nothing_recorded"
             },
-            "node": {
-              "description": "The node whose publisher recorded nothing: one replayed.",
-              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            "nodes": {
+              "description": "Each node whose publisher recorded nothing, in route order, at least one, each once: each one replayed.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
             }
           }
         }
@@ -1553,6 +1570,29 @@
             "public_exit",
             "stated_outcome"
           ]
+        }
+      }
+    },
+    "public_movement": {
+      "description": "A movement on a public network, as Core checked it (REQ-ORD-33, REQ-ORD-38, DEC-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "id"
+      ],
+      "properties": {
+        "network": {
+          "description": "The public network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "id": {
+          "description": "The movement's identifier on it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node it moved the value into or out of, where it evidences that node's segments rather than one segment alone: a part's final deposit to a rail declared private, or a segment inside a private node (REQ-ORD-33).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },

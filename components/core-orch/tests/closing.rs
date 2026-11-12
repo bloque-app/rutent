@@ -5,11 +5,12 @@
 
 mod snapshot_support;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Destination, Entry, FeeTo, MismatchKind, Receipt, ReplayFound, Role,
-    RouteEnd, What,
+    Actor, ActorKind, Destination, Entry, FeeTo, MismatchKind, PublicMovement, Receipt,
+    ReplayFound, Role, RouteEnd, Through, What, admit_entry,
 };
 use rutent_contracts::provider_role::{
     Advertisement, Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE, Statement,
@@ -18,7 +19,7 @@ use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, Timestamp}
 use rutent_core_orch::closing::{
     Books, Closing, Evidenced, Moved, PublicRecords, Unadmitted, admits,
 };
-use rutent_core_orch::segments::{Graded, Grading, Short, ToGrade};
+use rutent_core_orch::segments::{Graded, Grading, ProvidersWord, Short, ToGrade};
 use rutent_evidence::replay::RecordedSegment;
 use rutent_evidence::{
     Finality, Movement, MovementId, NetworkRules, PublicNetwork, ReorgRule, SimulatedNetwork,
@@ -187,6 +188,12 @@ impl Networks {
             .entry(network.to_owned())
             .or_insert_with(|| SimulatedNetwork::new(network, instant()));
     }
+
+    /// Serves `network` under `rules`.
+    fn served_under(&mut self, network: &str, rules: NetworkRules) {
+        self.nets
+            .insert(network.to_owned(), SimulatedNetwork::new(network, rules));
+    }
 }
 
 impl PublicRecords for Networks {
@@ -297,15 +304,138 @@ fn end(network: &str, account: &str, asset: (&str, u8), delivers: &str) -> Route
     }
 }
 
-/// One order's part, graded segment by segment as the segments would grade it.
+/// The log the gradings are recorded in, as the log itself admits them: the order's plan and its moves first, then
+/// each segment's result as its stated entry, and each entry a grading answers held to the real `admit_entry` over
+/// what came before it, the segment's `segment_settled` after.
+#[derive(Default)]
+struct Log(RefCell<Vec<(Receipt, Entry)>>);
+
+impl Log {
+    fn push(&self, entry: Entry) -> Receipt {
+        let mut log = self.0.borrow_mut();
+        let receipt = receipt(log.len() as u64);
+        log.push((receipt.clone(), entry));
+        receipt
+    }
+
+    /// Admits `entry` over the history, as the log would, and appends it.
+    fn admit(&self, entry: Entry) -> Result<Receipt, String> {
+        let history = self.0.borrow().clone();
+        admit_entry(&history, &entry, Through::General, &id("operator"))
+            .map_err(|v| v.0.to_owned())?;
+        Ok(self.push(entry))
+    }
+
+    fn verified(what: Value) -> Entry {
+        serde_json::from_value(json!({
+            "kind": "verified",
+            "who": { "party": "operator", "acts": "rutent-core", "role": "core", "kind": "component" },
+            "what": what,
+            "when": { "at": "2026-11-10T09:00:00Z", "source": "core_clock" },
+            "outcome": { "status": if what["call"] == "effect" { "to_take_effect" } else { "observed" } },
+        }))
+        .expect("a verified entry")
+    }
+
+    fn input(
+        order: &str,
+        part: Option<&str>,
+        segment: Option<&str>,
+        observed: Value,
+        n: usize,
+    ) -> Entry {
+        let mut subject = json!({ "order": order });
+        if let Some(part) = part {
+            subject["part"] = part.into();
+        }
+        if let Some(segment) = segment {
+            subject["segment"] = segment.into();
+        }
+        Self::verified(json!({ "call": "input", "input": {
+            "record_id": format!("rec-{order}-{n}"), "recorded_at": "2026-11-10T09:00:00Z",
+            "time_source": "core_clock", "source": { "kind": "orchestrator", "id": "rutent-core" },
+            "standing": "stated", "subject": subject, "observed": observed,
+        }}))
+    }
+
+    fn stated(
+        maker: &str,
+        role: &str,
+        shape: &str,
+        order: &str,
+        segment: &str,
+        transaction: &str,
+    ) -> Entry {
+        serde_json::from_value(json!({
+            "kind": "stated",
+            "attribution": { "signature": "verified", "who": { "party": maker, "acts": maker, "role": role, "kind": "component" } },
+            "what": { "statement": shape },
+            "when": { "at": "2026-11-06T15:04:05Z", "source": "party_stated" },
+            "received_at": "2026-11-06T15:04:06Z",
+            "outcome": { "status": "stated" },
+            "signed_with": { "scheme": "ed25519", "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w" },
+            "commitment": { "algorithm": "sha-256", "value": format!("{:064x}", transaction.len() * 7919 + segment.len()) },
+            "about": { "order": order, "transaction": transaction, "segment": segment },
+        }))
+        .expect("a stated entry")
+    }
+
+    fn entries(&self) -> Vec<(Receipt, Entry)> {
+        self.0.borrow().clone()
+    }
+}
+
+/// One order's part, graded segment by segment as the segments would grade it, over `log`.
 struct Part<'a> {
     order: Id,
     segments: Vec<Id>,
     operations: &'a [Operation],
     end: RouteEnd,
+    log: &'a Log,
 }
 
-impl Part<'_> {
+impl<'a> Part<'a> {
+    /// The part, its plan and each segment's move recorded in `log` first.
+    fn new(order: &str, operations: &'a [Operation], end: RouteEnd, log: &'a Log) -> Self {
+        let segments: Vec<Id> = (1..=operations.len())
+            .map(|n| id(&format!("p1-s{n}")))
+            .collect();
+        let plan: Vec<Value> = operations
+            .iter()
+            .zip(&segments)
+            .map(|(op, segment)| {
+                let op = serde_json::to_value(op).unwrap();
+                json!({ "segment_id": segment, "provider": op["provider"], "kind": op["kind"], "from": op["from"], "to": op["to"] })
+            })
+            .collect();
+        log.push(Log::input(
+            order,
+            None,
+            None,
+            json!({ "kind": "route_chosen", "decision_record": "dr-1", "parts": [{ "part_id": "p1", "segments": plan }] }),
+            0,
+        ));
+        for (op, segment) in operations.iter().zip(&segments) {
+            log.push(Log::verified(json!({
+                "call": "effect",
+                "action": {
+                    "kind": "move_value", "order": order, "segment": segment, "provider": op.provider,
+                    "origin_reserve": operations[0].provider, "authorisation": "auth-1", "route": end,
+                },
+                "decision": { "request": "req-1", "decision": "dec-1", "answer": "permit", "receipt": receipt(0) },
+            })));
+        }
+        Part {
+            order: id(order),
+            segments,
+            operations,
+            end,
+            log,
+        }
+    }
+
+    /// Grades the segment at `place`, its result recorded first; what it settles on is admitted and appended, and its
+    /// `segment_settled` after it. Every entry the grading answers is admitted, or the test fails.
     fn grade(
         &self,
         grading: &mut dyn Grading,
@@ -315,19 +445,67 @@ impl Part<'_> {
         bytes: &[u8],
         amount_out: &str,
     ) -> Graded {
+        let (graded, admitted) =
+            self.try_grade(grading, place, provider, transaction, bytes, amount_out);
+        admitted.unwrap_or_else(|why| panic!("the log refuses what the grading answered: {why}"));
+        graded
+    }
+
+    /// [`Part::grade`], with what the log refused, if it refused anything.
+    fn try_grade(
+        &self,
+        grading: &mut dyn Grading,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amount_out: &str,
+    ) -> (Graded, Result<(), String>) {
         let fee = no_fee();
-        self.with(
+        let result = self.log.push(Log::stated(
+            provider,
+            "provider",
+            RESULT_SHAPE,
+            self.order.as_str(),
+            self.segments[place].as_str(),
+            transaction,
+        ));
+        let graded = self.with(
             place,
             provider,
             transaction,
             bytes,
             amount_out,
             &fee,
+            &result,
             |settled| grading.grade(settled),
-        )
+        );
+        let mut admitted = Ok(());
+        if let Graded::Settles { cites, entries } = &graded {
+            for entry in entries {
+                if let Err(why) = self.log.admit(entry.clone()) {
+                    admitted = Err(why);
+                    break;
+                }
+            }
+            if admitted.is_ok() {
+                admitted = self
+                    .log
+                    .admit(Log::input(
+                        self.order.as_str(),
+                        Some("p1"),
+                        Some(self.segments[place].as_str()),
+                        json!({ "kind": "segment_settled", "evidence": cites }),
+                        place + 1,
+                    ))
+                    .map(|_| ());
+            }
+        }
+        (graded, admitted)
     }
 
     /// The fee records `closing::fees` writes for the segment at `place`, under the operator's `fee`.
+    #[allow(clippy::too_many_arguments)]
     fn fees(
         &self,
         place: usize,
@@ -337,6 +515,7 @@ impl Part<'_> {
         amount_out: &str,
         fee: &FeeFormula,
     ) -> Vec<What> {
+        let result = receipt(0);
         self.with(
             place,
             provider,
@@ -344,6 +523,7 @@ impl Part<'_> {
             bytes,
             amount_out,
             fee,
+            &result,
             |settled| {
                 rutent_core_orch::closing::fees(settled)
                     .into_iter()
@@ -365,15 +545,15 @@ impl Part<'_> {
         bytes: &[u8],
         amount_out: &str,
         fee: &FeeFormula,
+        result: &Receipt,
         then: impl FnOnce(&ToGrade<'_>) -> R,
     ) -> R {
         let (core, operator) = (
             actor("rutent-core", Role::Core),
-            actor("ops-lead", Role::Operator),
+            actor("operator", Role::Operator),
         );
         let evidence = id(&format!("ev-{}-{place}", self.order.as_str()));
         let at = Timestamp::new("2026-11-10T09:00:00Z").unwrap();
-        let result = receipt(10 + place as u64);
         let (provider, transaction) = (id(provider), id(transaction));
         then(&ToGrade {
             evidence: &evidence,
@@ -382,7 +562,7 @@ impl Part<'_> {
             segment: &self.segments[place],
             provider: &provider,
             transaction: &transaction,
-            result: &result,
+            result,
             bytes,
             operations: self.operations,
             operator_fee: fee,
@@ -411,28 +591,6 @@ fn settles(graded: Graded) -> (Id, Vec<What>) {
         ),
         Graded::Waits(short) => panic!("it waits: {short:?}"),
     }
-}
-
-/// The evidence entries among `whats`: (id, segment, grade, whose).
-fn evidence(whats: &[What]) -> Vec<(String, String, EvidenceGrade, String)> {
-    whats
-        .iter()
-        .filter_map(|w| match w {
-            What::Evidence {
-                evidence,
-                segment,
-                grade,
-                whose,
-                ..
-            } => Some((
-                evidence.as_str().to_owned(),
-                segment.as_str().to_owned(),
-                *grade,
-                whose.as_str().to_owned(),
-            )),
-            _ => None,
-        })
-        .collect()
 }
 
 fn replays(whats: &[What]) -> Vec<(Vec<String>, ReplayFound)> {
@@ -466,30 +624,102 @@ fn fixture_world() -> (Catalogue, Networks, Kept) {
     (catalogue, nets, books)
 }
 
+/// Grades with `CMP-EVIDENCE` over `catalogue`, `nets` and `books`, Core's record across orders in `closing`.
+fn grading<'a>(
+    catalogue: &'a Catalogue,
+    nets: &'a Networks,
+    books: &'a Kept,
+    closing: &'a mut Closing,
+) -> Evidenced<'a> {
+    Evidenced {
+        catalogue,
+        records: nets,
+        books,
+        closing,
+    }
+}
+
+/// The evidence entries among `whats`, with the movement each names: (id, segment, grade, whose, movement).
+fn named(
+    whats: &[What],
+) -> Vec<(
+    String,
+    String,
+    EvidenceGrade,
+    String,
+    Option<PublicMovement>,
+)> {
+    whats
+        .iter()
+        .filter_map(|w| match w {
+            What::Evidence {
+                evidence,
+                segment,
+                grade,
+                whose,
+                movement,
+                ..
+            } => Some((
+                evidence.as_str().to_owned(),
+                segment.as_str().to_owned(),
+                *grade,
+                whose.as_str().to_owned(),
+                movement.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn moved(network: &str, movement: &str, node: Option<&str>) -> Option<PublicMovement> {
+    Some(PublicMovement {
+        network: id(network),
+        id: id(movement),
+        node: node.map(id),
+    })
+}
+
+fn withdrawal(tx: &str, pieces: Value) -> Vec<u8> {
+    result(
+        "withdrawal",
+        "reserve-bank-co",
+        tx,
+        W,
+        ("COP", "100000"),
+        pieces,
+    )
+}
+
+fn deposit(tx: &str, pieces: Value) -> Vec<u8> {
+    result(
+        "deposit",
+        "reserve-wallet",
+        tx,
+        D,
+        ("USDC", "1000000"),
+        pieces,
+    )
+}
+
 /// The exchange inside `ledger-in` settles on its provider's signed word, and once the value leaves the node on a
 /// final public record, it closes on the public movements into the node (the withdrawal's, on `co-ach`) and out of it
-/// (the deposit's, on `polygon`), each recorded as that network's. Without the movement out, the deposit doesn't
-/// settle and nothing closes.
+/// (the deposit's, on `polygon`), each recorded as that network's and naming the movement and the node. The deposit
+/// closes on its own public record, naming its movement, and the reserve's statement; the ledger's replay rests on the
+/// deposit's result and names the movement out. Without the movement out, the deposit doesn't settle. Every entry is
+/// admitted by the log. The deposit's fee records carry what the reserve stated of billing.
 // verifies: REQ-ORD-33
 #[test]
 fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
     let route = route(None);
     let (catalogue, mut nets, books) = fixture_world();
-    let part = Part {
-        order: id("ord-1"),
-        segments: vec![id("p1-s1"), id("p1-s2"), id("p1-s3")],
-        operations: &route,
-        end: end("polygon", "acct-9", ("USDC", 6), D.1),
-    };
-    let mut closing = Closing::new();
-    let withdrawal = result(
-        "withdrawal",
-        "reserve-bank-co",
-        "tx-w",
-        W,
-        ("COP", "100000"),
-        json!([piece(3, "book-w", "reserve-bank-co")]),
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
     );
+    let mut closing = Closing::new();
     let exchange = result(
         "conversion",
         "exchange-a",
@@ -498,46 +728,42 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
         ("COP", "199800"),
         json!([piece(3, "book-x", "exchange-a")]),
     );
-    let deposit = result(
-        "deposit",
-        "reserve-wallet",
-        "tx-d",
-        D,
-        ("USDC", "1000000"),
-        json!([
-            piece(1, "poly-55", "polygon"),
-            piece(3, "book-d", "reserve-wallet")
-        ]),
-    );
-    let graded =
-        |nets: &Networks, closing: &mut Closing, place, provider, tx, bytes: &[u8], out| {
-            let mut grading = Evidenced {
-                catalogue: &catalogue,
-                records: nets,
-                books: &books,
-                closing,
-            };
-            part.grade(&mut grading, place, provider, tx, bytes, out)
-        };
-    let (_, w) = settles(graded(
+    let pieces = json!([
+        piece(1, "poly-55", "polygon"),
+        piece(3, "book-d", "reserve-wallet")
+    ]);
+    let deposit = deposit("tx-d", pieces);
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let g = |nets: &Networks, closing: &mut Closing, place, provider, tx, bytes: &[u8], out| {
+        part.grade(
+            &mut grading(&catalogue, nets, &books, closing),
+            place,
+            provider,
+            tx,
+            bytes,
+            out,
+        )
+    };
+    let (_, w) = settles(g(
         &nets,
         &mut closing,
         0,
         "reserve-bank-co",
         "tx-w",
-        &withdrawal,
+        &w,
         W.1,
     ));
     assert_eq!(
-        evidence(&w),
+        named(&w),
         [(
             "ev-ord-1-0".into(),
             "p1-s1".into(),
             EvidenceGrade::SignedByProvider,
-            "reserve-bank-co".into()
+            "reserve-bank-co".into(),
+            None
         )]
     );
-    let (_, x) = settles(graded(
+    let (_, x) = settles(g(
         &nets,
         &mut closing,
         1,
@@ -547,30 +773,24 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
         X.1,
     ));
     assert_eq!(
-        evidence(&x),
+        named(&x),
         [(
             "ev-ord-1-1".into(),
             "p1-s2".into(),
             EvidenceGrade::SignedByProvider,
-            "exchange-a".into()
+            "exchange-a".into(),
+            None
         )],
         "inside the node, its provider's signed word"
     );
     // No public movement out yet: the deposit's statement alone closes nothing.
+    let mut waiting = grading(&catalogue, &nets, &books, &mut closing);
     assert!(matches!(
-        graded(
-            &nets,
-            &mut closing,
-            2,
-            "reserve-wallet",
-            "tx-d",
-            &deposit,
-            D.1
-        ),
+        part.grade(&mut waiting, 2, "reserve-wallet", "tx-d", &deposit, D.1),
         Graded::Waits(Short::NoPublicRecord(_))
     ));
     nets.moved("polygon", "tx-d", "poly-55", "acct-9", "USDC", D.1);
-    let (cites, d) = settles(graded(
+    let (cites, d) = settles(g(
         &nets,
         &mut closing,
         2,
@@ -581,75 +801,131 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
     ));
     assert_eq!(cites.as_str(), "ev-ord-1-2");
     assert_eq!(
-        evidence(&d),
+        named(&d),
         [
             (
                 "ev-ord-1-2".into(),
                 "p1-s3".into(),
                 EvidenceGrade::PublicRecord,
-                "polygon".into()
+                "polygon".into(),
+                moved("polygon", "poly-55", None)
             ),
             (
                 "ev-ord-1-2.reserve".into(),
                 "p1-s3".into(),
                 EvidenceGrade::SignedByProvider,
-                "reserve-wallet".into()
+                "reserve-wallet".into(),
+                None
             ),
             (
                 "ev-ord-1-2.in.1".into(),
                 "p1-s2".into(),
                 EvidenceGrade::PublicRecord,
-                "co-ach".into()
+                "co-ach".into(),
+                moved("co-ach", "ach-77", Some("ledger-in"))
             ),
             (
                 "ev-ord-1-2.out.1".into(),
                 "p1-s2".into(),
                 EvidenceGrade::PublicRecord,
-                "polygon".into()
+                "polygon".into(),
+                moved("polygon", "poly-55", Some("ledger-in"))
             ),
         ],
-        "the deposit on the public record and the reserve's statement; the exchange on the movements in and out"
+        "the deposit on its public record and the reserve's statement; the exchange on the movements in and out"
     );
+    let replay = d
+        .iter()
+        .find_map(|w| match w {
+            What::Replay {
+                nodes,
+                found,
+                rests_on,
+                movement,
+                ..
+            } => Some((
+                nodes.clone(),
+                found.clone(),
+                rests_on.clone(),
+                movement.clone(),
+            )),
+            _ => None,
+        })
+        .expect("the ledger replayed");
+    assert_eq!(replay.0, [id("ledger-in")]);
+    assert_eq!(replay.1, ReplayFound::ConsistentWithTheExit {});
     assert_eq!(
-        replays(&d),
-        [(
-            vec!["ledger-in".to_owned()],
-            ReplayFound::ConsistentWithTheExit {}
-        )]
+        replay.3,
+        moved("polygon", "poly-55", None),
+        "the movement out it was compared with"
     );
-    // Its fee records: the reserve's, and the operator's, which it keeps back, by the operator's formula over what
-    // arrived, attributed to the operator.
+    let deposit_result = log
+        .entries()
+        .into_iter()
+        .rev()
+        .find(|(_, e)| matches!(e, Entry::Stated(s) if s.about.as_ref().and_then(|a| a.transaction.as_ref()).is_some_and(|t| t.as_str() == "tx-d")))
+        .unwrap()
+        .0;
+    assert_eq!(replay.2, deposit_result, "resting on the deposit's result");
+    // Its fee records: the reserve's, as it stated billing, and the operator's, which it keeps back, by the operator's
+    // formula over what arrived, attributed to the operator.
     let operators: FeeFormula = serde_json::from_value(
         json!({ "flat": "10000", "proportional": { "numerator": "0", "denominator": "1" } }),
     )
     .unwrap();
-    let fees: Vec<(FeeTo, String, String)> = part
-        .fees(2, "reserve-wallet", "tx-d", &deposit, D.1, &operators)
-        .into_iter()
-        .filter_map(|w| match w {
-            What::Fee {
-                to, party, amount, ..
-            } => Some((to, party.as_str().to_owned(), amount.as_str().to_owned())),
-            _ => None,
-        })
-        .collect();
+    let fees = |bytes: &[u8]| -> Vec<(FeeTo, String, String, Option<bool>)> {
+        part.fees(2, "reserve-wallet", "tx-d", bytes, D.1, &operators)
+            .into_iter()
+            .filter_map(|w| match w {
+                What::Fee {
+                    to,
+                    party,
+                    amount,
+                    billed_separately,
+                    ..
+                } => Some((
+                    to,
+                    party.as_str().to_owned(),
+                    amount.as_str().to_owned(),
+                    billed_separately,
+                )),
+                _ => None,
+            })
+            .collect()
+    };
     assert_eq!(
-        fees,
+        fees(&deposit),
         [
             (
                 FeeTo::Provider,
                 "reserve-wallet".to_owned(),
-                "1000000".to_owned()
+                "1000000".to_owned(),
+                None
             ),
-            (FeeTo::Operator, "ops-lead".to_owned(), "10000".to_owned()),
-        ]
+            (
+                FeeTo::Operator,
+                "operator".to_owned(),
+                "10000".to_owned(),
+                None
+            ),
+        ],
+        "a reserve that says nothing of billing: the record says nothing either"
+    );
+    let mut billed: Value = serde_json::from_slice(&deposit).unwrap();
+    billed["statement"]["outcome"]["fee"]["billed_separately"] = true.into();
+    let billed = serde_json::to_vec(&billed).unwrap();
+    assert_eq!(
+        fees(&billed)[0].3,
+        Some(true),
+        "billed apart, as the reserve stated"
     );
 }
 
 /// Five segments: into `ledger-in`, out of it onto the public `polygon`, from there into `ledger-b`, an exchange
-/// inside it, and out of it to the destination. Each node is replayed as the value leaves it, against its own public movement out: two replays,
-/// one node each. A record at the second node that doesn't match its movement out is a mismatch recorded against
-/// that node, and the first node's replay stands.
+/// inside it, and out of it to the destination. Each node is replayed as the value leaves it, against its own public
+/// movement out: two replays, one node each. A record at the second node that doesn't match its movement out is a
+/// mismatch recorded against that node, the first node's replay stands, and the exchange inside the node caught
+/// misreporting gets no public-record entries for the movements in and out.
 // verifies: REQ-ORD-41, DEC-24
 #[test]
 fn route_across_two_private_nodes_replays_each_on_its_way_out() {
@@ -662,12 +938,11 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
               provider: &str,
               (from, a): (Value, &Value),
               (to, b): (Value, &Value),
-              (amount_in, amount_out): (&str, &str),
-              figures: &[&str]| {
+              (amount_in, amount_out): (&str, &str)| {
         json!({
             "kind": kind, "provider": provider, "from": at(from, a), "to": at(to, b),
             "amount_in": amount_in, "fee": { "asset": a["id"], "amount": "0" }, "amount_out": amount_out,
-            "figures": figures,
+            "figures": ["f-1"],
         })
     };
     let outer = |network: &str| json!({ "network": network });
@@ -677,40 +952,35 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
             "reserve-bank-co",
             (outer("co-ach"), &cop),
             (json!("ledger-in"), &cop),
-            ("100000000", "100000000"),
-            &["f-w", "f-w-price", "f-confirm-w-100000000"]
+            ("100000000", "100000000")
         ),
         op(
             "route",
             "ramp-x",
             (json!("ledger-in"), &cop),
             (json!("polygon"), &cop),
-            ("100000000", "100000000"),
-            &["f-ramp-out", "f-ramp-out-price"]
+            ("100000000", "100000000")
         ),
         op(
             "route",
             "ramp-x",
             (json!("polygon"), &cop),
             (json!("ledger-b"), &cop),
-            ("100000000", "100000000"),
-            &["f-ramp-in", "f-ramp-in-price"]
+            ("100000000", "100000000")
         ),
         op(
             "exchange",
             "exchange-b",
             (json!("ledger-b"), &cop),
             (json!("ledger-b"), &usdc),
-            ("100000000", "250000000"),
-            &["f-ex-b", "f-ex-b-price", "f-ex-b-eligibility"]
+            ("100000000", "250000000")
         ),
         op(
             "deposit",
             "reserve-wallet",
             (json!("ledger-b"), &usdc),
             (outer("polygon"), &usdc),
-            ("250000000", "250000000"),
-            &["f-dep-b", "f-dep-b-price"]
+            ("250000000", "250000000")
         ),
     ])));
     let catalogue = catalogue(&[
@@ -782,14 +1052,16 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
             ("USDC", deposit_out),
             "0",
         );
-        let part = Part {
-            order: id("ord-1"),
-            segments: (1..=5).map(|n| id(&format!("p1-s{n}"))).collect(),
-            operations: &route,
-            end: end("polygon", "acct-9", ("USDC", 6), "250000000"),
-        };
+        let log = Log::default();
+        let part = Part::new(
+            "ord-1",
+            &route,
+            end("polygon", "acct-9", ("USDC", 6), "250000000"),
+            &log,
+        );
         let mut closing = Closing::new();
         let mut found = Vec::new();
+        let mut inner = Vec::new();
         let ran = [
             (
                 "withdrawal",
@@ -822,19 +1094,25 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
                 (asset, "0"),
                 json!([piece(3, &format!("book-{place}"), provider)]),
             );
-            let mut grading = Evidenced {
-                catalogue: &catalogue,
-                records: &nets,
-                books: &books,
-                closing: &mut closing,
-            };
-            let (_, whats) =
-                settles(part.grade(&mut grading, place, provider, &tx, &bytes, amounts.1));
+            let (_, whats) = settles(part.grade(
+                &mut grading(&catalogue, &nets, &books, &mut closing),
+                place,
+                provider,
+                &tx,
+                &bytes,
+                amounts.1,
+            ));
             found.push(replays(&whats));
+            inner.extend(
+                named(&whats)
+                    .into_iter()
+                    .filter(|e| e.1 == "p1-s4")
+                    .map(|e| e.0),
+            );
         }
-        found
+        (found, inner)
     };
-    let matching = run("250000000");
+    let (matching, inner) = run("250000000");
     assert_eq!(
         matching[0],
         [],
@@ -858,7 +1136,12 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
         )],
         "the second, in turn, as the value leaves it to the destination"
     );
-    let mismatching = run("249999999");
+    assert_eq!(
+        inner,
+        ["ev-ord-1-3", "ev-ord-1-4.in.3", "ev-ord-1-4.out.3"],
+        "the exchange closes on the movements in and out"
+    );
+    let (mismatching, inner) = run("249999999");
     assert_eq!(
         mismatching[1], matching[1],
         "the first node's replay stands"
@@ -874,12 +1157,17 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
             .iter()
             .any(|m| m.kind == MismatchKind::PublicExit)
     );
+    assert_eq!(
+        inner,
+        ["ev-ord-1-3"],
+        "a node caught misreporting: its exchange gets no public record of in and out"
+    );
 }
 
 /// Two orders' withdrawals, each its own segment, that their reserve answered with one movement on `co-ach`: the
-/// first order's segment is graded on its public record; the second's can't be, since one movement evidences one
-/// segment, so its record is the reserve's word. A deposit on a movement another order's deposit closed on doesn't
-/// close.
+/// first order's segment is graded on its public record, naming the movement; the second's can't be, since one
+/// movement evidences one segment, so its record is the reserve's word. A deposit on a movement another order's
+/// deposit closed on doesn't close. The log admits each entry.
 // verifies: REQ-ORD-38
 #[test]
 fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
@@ -897,34 +1185,25 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
         nets.moved("polygon", tx, "poly-shared", "acct-9", "USDC", D.1);
     }
     let books = Kept::default();
+    let log = Log::default();
     let mut closing = Closing::new();
     let parts: Vec<Part> = ["ord-1", "ord-2"]
         .into_iter()
-        .map(|order| Part {
-            order: id(order),
-            segments: vec![id("p1-s1"), id("p1-s2"), id("p1-s3")],
-            operations: &route,
-            end: end("polygon", "acct-9", ("USDC", 6), D.1),
+        .map(|order| {
+            Part::new(
+                order,
+                &route,
+                end("polygon", "acct-9", ("USDC", 6), D.1),
+                &log,
+            )
         })
         .collect();
     let mut graded = Vec::new();
     for (part, tx) in parts.iter().zip(["tx-w1", "tx-w2"]) {
-        let bytes = result(
-            "withdrawal",
-            "reserve-bank-co",
-            tx,
-            W,
-            ("COP", "100000"),
-            json!([piece(1, "ach-shared", "co-ach")]),
-        );
-        let mut grading = Evidenced {
-            catalogue: &catalogue,
-            records: &nets,
-            books: &books,
-            closing: &mut closing,
-        };
-        graded.push(evidence(
-            &settles(part.grade(&mut grading, 0, "reserve-bank-co", tx, &bytes, W.1)).1,
+        let bytes = withdrawal(tx, json!([piece(1, "ach-shared", "co-ach")]));
+        let mut g = grading(&catalogue, &nets, &books, &mut closing);
+        graded.push(named(
+            &settles(part.grade(&mut g, 0, "reserve-bank-co", tx, &bytes, W.1)).1,
         ));
     }
     assert_eq!(
@@ -934,13 +1213,15 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
                 "ev-ord-1-0".to_owned(),
                 "p1-s1".to_owned(),
                 EvidenceGrade::PublicRecord,
-                "co-ach".to_owned()
+                "co-ach".to_owned(),
+                moved("co-ach", "ach-shared", None)
             )],
             vec![(
                 "ev-ord-2-0".to_owned(),
                 "p1-s1".to_owned(),
                 EvidenceGrade::Statement,
-                "reserve-bank-co".to_owned()
+                "reserve-bank-co".to_owned(),
+                None
             )],
         ],
         "each order its own segment; the second on the reserve's word"
@@ -953,25 +1234,397 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
         .iter()
         .zip(["tx-d1", "tx-d2"])
         .map(|(part, tx)| {
-            let bytes = result(
-                "deposit",
+            let bytes = deposit(tx, json!([piece(1, "poly-shared", "polygon")]));
+            part.grade(
+                &mut grading(&catalogue, &nets, &books, &mut closing),
+                2,
                 "reserve-wallet",
                 tx,
-                D,
-                ("USDC", "1000000"),
-                json!([piece(1, "poly-shared", "polygon")]),
-            );
-            let mut grading = Evidenced {
-                catalogue: &catalogue,
-                records: &nets,
-                books: &books,
-                closing: &mut closing,
-            };
-            part.grade(&mut grading, 2, "reserve-wallet", tx, &bytes, D.1)
+                &bytes,
+                D.1,
+            )
         })
         .collect();
     assert!(matches!(deposits[0], Graded::Settles { .. }));
     assert_eq!(deposits[1], Graded::Waits(Short::MovementShared));
+}
+
+/// Two orders to the same account for the same amount; the reserve pays once, one movement on `polygon`, and answers
+/// both deposits with it. Core closes the first. It restarts: rebuilt from the log, it knows the movement closed the
+/// first, and the second waits. A Core that forgot it can't close the second either: the log refuses a second segment
+/// relying on the movement.
+// verifies: REQ-ORD-38, REQ-ORD-33
+#[test]
+fn one_payment_closes_one_order_across_a_restart() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    for tx in ["tx-d1", "tx-d2"] {
+        nets.moved("polygon", tx, "poly-once", "acct-9", "USDC", D.1);
+    }
+    let log = Log::default();
+    let parts: Vec<Part> = ["ord-1", "ord-2"]
+        .into_iter()
+        .map(|order| {
+            Part::new(
+                order,
+                &route,
+                end("polygon", "acct-9", ("USDC", 6), D.1),
+                &log,
+            )
+        })
+        .collect();
+    let bytes = |tx: &str| deposit(tx, json!([piece(3, "book", "reserve-wallet")]));
+    let mut before = Closing::new();
+    let first = parts[0].grade(
+        &mut grading(&catalogue, &nets, &books, &mut before),
+        2,
+        "reserve-wallet",
+        "tx-d1",
+        &bytes("tx-d1"),
+        D.1,
+    );
+    assert!(matches!(first, Graded::Settles { .. }));
+    // Core restarts, its record across orders rebuilt from the log.
+    let mut rebuilt = Closing::recorded(&log.entries());
+    assert_eq!(
+        rebuilt.evidences("polygon", "poly-once"),
+        Some(("ord-1", "p1-s3"))
+    );
+    let second = parts[1].grade(
+        &mut grading(&catalogue, &nets, &books, &mut rebuilt),
+        2,
+        "reserve-wallet",
+        "tx-d2",
+        &bytes("tx-d2"),
+        D.1,
+    );
+    assert_eq!(second, Graded::Waits(Short::MovementShared));
+    // A Core that forgot it: the log refuses the second close.
+    let mut forgot = Closing::new();
+    let (graded, admitted) = parts[1].try_grade(
+        &mut grading(&catalogue, &nets, &books, &mut forgot),
+        2,
+        "reserve-wallet",
+        "tx-d2",
+        &bytes("tx-d2"),
+        D.1,
+    );
+    assert!(matches!(graded, Graded::Settles { .. }));
+    assert_eq!(
+        admitted,
+        Err(
+            "one public movement evidences one segment of one order: another relied on it already"
+                .to_owned()
+        )
+    );
+}
+
+/// A route to a rail declared private, from a public node: the deposit's movement on `polygon` is the movement into
+/// the private rail, and the part closes on it and the reserve's statement, the record naming the rail it went
+/// into. A route ending inside the node has no replay.
+// verifies: REQ-ORD-33
+#[test]
+fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
+    let usdc = json!({ "id": "USDC", "decimals": 6 });
+    let route = route(Some(json!([
+        { "kind": "withdrawal", "provider": "reserve-x", "from": { "node": { "network": "co-ach" }, "asset": usdc },
+          "to": { "node": "polygon", "asset": usdc }, "amount_in": "1000", "fee": { "asset": "USDC", "amount": "0" },
+          "amount_out": "1000", "figures": ["f-1"] },
+        { "kind": "deposit", "provider": "reserve-wallet", "from": { "node": "polygon", "asset": usdc },
+          "to": { "node": { "network": "bank-rail" }, "asset": usdc }, "amount_in": "1000",
+          "fee": { "asset": "USDC", "amount": "0" }, "amount_out": "1000", "figures": ["f-2"] },
+    ])));
+    let catalogue = catalogue(&[
+        ("reserve-x", "x-co", 3, &[]),
+        ("reserve-wallet", "wallet-co", 3, &["bank-rail"]),
+    ]);
+    let mut nets = Networks::default();
+    nets.moved("co-ach", "tx-w", "ach-9", "polygon-holding", "USDC", "1000");
+    nets.moved("polygon", "tx-d", "poly-9", "bank-rail-in", "USDC", "1000");
+    let books = Kept::default();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("bank-rail", "acct-9", ("USDC", 6), "1000"),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let bytes = |kind, provider, tx| {
+        result(
+            kind,
+            provider,
+            tx,
+            ("1000", "1000"),
+            ("USDC", "0"),
+            json!([piece(3, "book", provider)]),
+        )
+    };
+    settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-x",
+        "tx-w",
+        &bytes("withdrawal", "reserve-x", "tx-w"),
+        "1000",
+    ));
+    let (_, d) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        1,
+        "reserve-wallet",
+        "tx-d",
+        &bytes("deposit", "reserve-wallet", "tx-d"),
+        "1000",
+    ));
+    assert_eq!(
+        named(&d),
+        [
+            (
+                "ev-ord-1-1".into(),
+                "p1-s2".into(),
+                EvidenceGrade::PublicRecord,
+                "polygon".into(),
+                moved("polygon", "poly-9", Some("bank-rail"))
+            ),
+            (
+                "ev-ord-1-1.reserve".into(),
+                "p1-s2".into(),
+                EvidenceGrade::SignedByProvider,
+                "reserve-wallet".into(),
+                None
+            ),
+        ]
+    );
+    assert_eq!(replays(&d), [], "ending inside the node: no replay");
+}
+
+/// A movement that isn't the deposit's to its destination doesn't close the order: to another account, of another
+/// asset, or not yet final on its network. Each waits, saying why.
+// verifies: REQ-ORD-33
+#[test]
+fn evidence_for_another_segment_does_not_close_an_order() {
+    use rutent_evidence::Unmatched;
+    let route = route(None);
+    let (catalogue, _, books) = fixture_world();
+    let cases: [(&str, &str, &str, Option<NetworkRules>, Unmatched); 3] = [
+        ("acct-other", "USDC", D.1, None, Unmatched::WrongDestination),
+        ("acct-9", "USDT", D.1, None, Unmatched::WrongAsset),
+        (
+            "acct-9",
+            "USDC",
+            D.1,
+            Some(NetworkRules {
+                finality: Finality::Confirmations(2),
+                reorg: ReorgRule::DepthBound(2),
+            }),
+            Unmatched::NotFinal,
+        ),
+    ];
+    for (to, asset, amount, rules, why) in cases {
+        let mut nets = Networks::default();
+        if let Some(rules) = rules {
+            nets.served_under("polygon", rules);
+        }
+        nets.moved("polygon", "tx-d", "poly-1", to, asset, amount);
+        let log = Log::default();
+        let part = Part::new(
+            "ord-1",
+            &route,
+            end("polygon", "acct-9", ("USDC", 6), D.1),
+            &log,
+        );
+        let mut closing = Closing::new();
+        let graded = part.grade(
+            &mut grading(&catalogue, &nets, &books, &mut closing),
+            2,
+            "reserve-wallet",
+            "tx-d",
+            &deposit("tx-d", json!([piece(1, "poly-1", "polygon")])),
+            D.1,
+        );
+        assert_eq!(
+            graded,
+            Graded::Waits(Short::NoPublicRecord(Some(why))),
+            "{to} {asset}"
+        );
+    }
+}
+
+/// A public record a provider's piece names, however it names who gave it, is the network's that Core checked: the
+/// withdrawal's piece says an auditor of the reserve's choosing gave it, and the record says `co-ach`.
+// verifies: REQ-ORD-39
+#[test]
+fn public_record_is_the_networks_whatever_the_piece_names() {
+    let route = route(None);
+    let catalogue = catalogue(&[("reserve-bank-co", "bank-co", 1, &["ledger-in"])]);
+    let (_, nets, books) = fixture_world();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let (_, w) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &withdrawal("tx-w", json!([piece(1, "ach-77", "auditor-x")])),
+        W.1,
+    ));
+    assert_eq!(
+        named(&w),
+        [(
+            "ev-ord-1-0".into(),
+            "p1-s1".into(),
+            EvidenceGrade::PublicRecord,
+            "co-ach".into(),
+            moved("co-ach", "ach-77", None)
+        )]
+    );
+}
+
+/// The stand-in grading settles a segment on its provider's word, but never a part's final deposit: a statement
+/// alone closes no order.
+// verifies: REQ-ORD-33
+#[test]
+fn providers_word_never_closes_a_part() {
+    let route = route(None);
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    assert!(matches!(
+        part.grade(&mut ProvidersWord, 0, "reserve-bank-co", "tx-w", &w, W.1),
+        Graded::Settles { .. }
+    ));
+    let d = deposit("tx-d", json!([piece(3, "book-d", "reserve-wallet")]));
+    assert_eq!(
+        part.grade(&mut ProvidersWord, 2, "reserve-wallet", "tx-d", &d, D.1),
+        Graded::Waits(Short::NoPublicRecord(None))
+    );
+    // A grading that settled it on the reserve's word anyway: the log refuses the close.
+    struct Word;
+    impl Grading for Word {
+        fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+            let mut stand_in = ProvidersWord;
+            let mut middle = *settled;
+            middle.place = 0;
+            match stand_in.grade(&middle) {
+                Graded::Settles { cites, mut entries } => {
+                    if let Some(Entry::Verified(v)) = entries.first_mut()
+                        && let What::Evidence { segment, .. } = &mut v.what
+                    {
+                        *segment = settled.segment.clone();
+                    }
+                    Graded::Settles { cites, entries }
+                }
+                waits => waits,
+            }
+        }
+    }
+    let (graded, admitted) = part.try_grade(&mut Word, 2, "reserve-wallet", "tx-d", &d, D.1);
+    assert!(matches!(graded, Graded::Settles { .. }));
+    assert!(
+        admitted
+            .as_ref()
+            .is_err_and(|why| why.contains("never a statement alone")),
+        "{admitted:?}"
+    );
+}
+
+/// Two adjacent private nodes whose publishers recorded nothing: the replay names both.
+// verifies: REQ-ORD-41
+#[test]
+fn every_node_that_recorded_nothing_is_named() {
+    let usdc = json!({ "id": "USDC", "decimals": 6 });
+    let at = |node: Value| json!({ "node": node, "asset": usdc });
+    let op = |kind: &str, provider: &str, from: Value, to: Value| {
+        json!({ "kind": kind, "provider": provider, "from": at(from), "to": at(to), "amount_in": "1000",
+                "fee": { "asset": "USDC", "amount": "0" }, "amount_out": "1000", "figures": ["f-1"] })
+    };
+    let route = route(Some(json!([
+        op(
+            "withdrawal",
+            "reserve-bank-co",
+            json!({ "network": "co-ach" }),
+            json!("ledger-in")
+        ),
+        op("route", "ramp-x", json!("ledger-in"), json!("ledger-b")),
+        op(
+            "deposit",
+            "reserve-wallet",
+            json!("ledger-b"),
+            json!({ "network": "polygon" })
+        ),
+    ])));
+    let catalogue = catalogue(&[
+        ("reserve-bank-co", "bank-co", 3, &["ledger-in"]),
+        ("ramp-x", "ramp-co", 3, &[]),
+        ("reserve-wallet", "wallet-co", 3, &["ledger-b"]),
+    ]);
+    let mut nets = Networks::default();
+    nets.moved(
+        "co-ach",
+        "tx-0",
+        "ach-1",
+        "ledger-in-holding",
+        "USDC",
+        "1000",
+    );
+    nets.moved("polygon", "tx-2", "poly-1", "acct-9", "USDC", "1000");
+    let books = Kept::default();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), "1000"),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut last = Vec::new();
+    for (place, (kind, provider)) in [
+        ("withdrawal", "reserve-bank-co"),
+        ("transfer", "ramp-x"),
+        ("deposit", "reserve-wallet"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tx = format!("tx-{place}");
+        let bytes = result(
+            kind,
+            provider,
+            &tx,
+            ("1000", "1000"),
+            ("USDC", "0"),
+            json!([piece(3, "book", provider)]),
+        );
+        last = settles(part.grade(
+            &mut grading(&catalogue, &nets, &books, &mut closing),
+            place,
+            provider,
+            &tx,
+            &bytes,
+            "1000",
+        ))
+        .1;
+    }
+    assert_eq!(
+        replays(&last),
+        [(
+            vec!["ledger-in".to_owned(), "ledger-b".to_owned()],
+            ReplayFound::NothingRecorded {
+                nodes: vec![id("ledger-in"), id("ledger-b")]
+            }
+        )]
+    );
 }
 
 /// Joins the provider-role fixture advertisement `fixture` to `catalogue`, granted for every tuple it offers in
@@ -1100,4 +1753,10 @@ fn exchange_and_ramp_operations_are_held_to_their_own_tuples_floors() {
         Err(Unadmitted::BelowEvidenceFloor)
     );
     assert_eq!(admits(&catalogue, &exchange, false), Ok(()));
+    // A provider the catalogue doesn't list is that, not one below a floor.
+    let nobody = op("exchange", "nobody", ("polygon", &usdc), ("polygon", &usdt));
+    assert_eq!(
+        admits(&catalogue, &nobody, false),
+        Err(Unadmitted::NotListed)
+    );
 }

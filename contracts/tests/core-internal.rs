@@ -14,9 +14,9 @@ use rutent_contracts::core_internal::calls::{
     is_decision,
 };
 use rutent_contracts::core_internal::{
-    Action, ActorKind, CatalogueChange, KeptStatement, PermissionChange, RELATIONS, Role,
-    STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry, attribute,
-    granted_advertising_keys, release_statement_keys,
+    Action, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
+    RELATIONS, Role, STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry,
+    attribute, granted_advertising_keys, release_statement_keys,
 };
 use rutent_contracts::core_internal::{
     Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest, Effect, Entry, HandedOver,
@@ -73,7 +73,15 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 38] = [
+const RUST_RULES: [(&str, &str); 40] = [
+    (
+        "verified-entry-of-a-replay-of-a-silent-node-not-replayed",
+        "a replay's node that recorded nothing is one it replayed",
+    ),
+    (
+        "verified-entry-of-signed-evidence-naming-a-public-movement",
+        "graded evidence names a public movement only as a public record",
+    ),
     (
         "verified-entry-of-a-replay-mismatch-against-a-node-not-replayed",
         "a replay's mismatch is against a node it replayed",
@@ -237,7 +245,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 81] = [
+const SCHEMA_RULES: [SchemaRule; 82] = [
+    (
+        "verified-entry-of-a-replay-resting-on-nothing",
+        &[("/what", "required")],
+        "missing field `rests_on`",
+    ),
     (
         "verified-entry-of-a-replay-of-no-nodes",
         &[("/what/nodes", "minItems")],
@@ -1093,6 +1106,7 @@ type Row = (
 fn rows() -> Vec<Row> {
     let verified = RELATIONS
         .iter()
+        .chain(CLOSING_RELATIONS.iter())
         .map(|r| (r.name, r.spec, r.quantifier, r.refusal, r.fields));
     let stated = STATED_RELATIONS
         .iter()

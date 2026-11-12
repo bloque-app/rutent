@@ -15,7 +15,17 @@
     ],
     "found": {
       "status": "nothing_recorded",
-      "node": "ledger-a"
+      "nodes": [
+        "ledger-a"
+      ]
+    },
+    "rests_on": {
+      "log": "log-main",
+      "index": 111,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+      }
     }
   },
   "when": {

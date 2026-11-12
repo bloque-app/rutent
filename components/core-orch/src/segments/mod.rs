@@ -54,7 +54,8 @@
 //! the next run ([`SegmentOutcome::AwaitsEvidence`], `REQ-ORD-33`); its fee records follow its `segment_settled`
 //! (`crate::closing::fees`, `REQ-AUD-11`); and before a segment is first handed over, its tuple's evidence floor and
 //! the holding account at the node it leaves the value at are held to the catalogue as it stands
-//! (`crate::closing::admits`, `REQ-ORD-39`, `INV-5`).
+//! (`crate::closing::admits`, `REQ-ORD-39`, `INV-5`), and a part whose final deposit could never close isn't routed
+//! (`Grading::can_close`, `REQ-ORD-33`); a refusal there is recorded once per part while its reason stands.
 
 mod drain;
 mod journal;
@@ -434,6 +435,9 @@ pub struct Segments {
     orders: BTreeMap<String, Tracked>,
     /// The parts that wait for the customer past their floor, by order and part.
     waiting: BTreeMap<(String, String), Waits>,
+    /// The refusal each part's guard recorded before a segment's first hand-over, by order and part: recorded once,
+    /// and answered as recorded while the guard refuses for the same reason (`T-020-09`).
+    refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -701,15 +705,43 @@ impl Segments {
                         live.order.as_str().to_owned(),
                         live.segments[place].as_str().to_owned(),
                     );
-                    if !self.flights.contains_key(&key)
-                        && let Err(reason) = crate::closing::admits(
+                    let ending = part.operations.len() - 1;
+                    let closable = || {
+                        let deposit = &part.operations[ending];
+                        if deposit.kind != rutent_contracts::router_api::OperationKind::Deposit
+                            || parts.grading.can_close(deposit)
+                        {
+                            Ok(())
+                        } else {
+                            Err(crate::closing::Unadmitted::NoPublicRecord.at(ending))
+                        }
+                    };
+                    let guarded = if self.flights.contains_key(&key) {
+                        Ok(())
+                    } else {
+                        crate::closing::admits(
                             parts.catalogue,
                             &part.operations[place],
-                            place + 1 == part.operations.len(),
+                            place == ending,
                         )
-                    {
+                        .map_err(|why| why.at(place))
+                        .and_then(|()| closable())
+                    };
+                    if let Err(reason) = guarded {
+                        let held = (
+                            live.order.as_str().to_owned(),
+                            live.part.as_str().to_owned(),
+                        );
+                        if let Some((refused, receipt)) = self.refused.get(&held)
+                            && refused.reason == reason
+                        {
+                            return Ok(Ran::Refused {
+                                refused: refused.clone(),
+                                receipt: receipt.clone(),
+                            });
+                        }
                         let refused = RouteRefused {
-                            reason: reason.at(place),
+                            reason,
                             class: OrderRefusalClass::NoRouteRightNow,
                         };
                         let receipt = record_route_refusal(
@@ -720,6 +752,8 @@ impl Segments {
                             Some(live.order),
                             &refused,
                         )?;
+                        self.refused
+                            .insert(held, (refused.clone(), receipt.clone()));
                         return Ok(Ran::Refused { refused, receipt });
                     }
                     self.hand_over(parts, live, place, &amount)?

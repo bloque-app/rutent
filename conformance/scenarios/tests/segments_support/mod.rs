@@ -21,15 +21,15 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Authorisation, Decision, DecisionRequest, Destination,
-    Entry, KeptStatement, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, Receipt,
-    RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through, TimeSource, VerifiedEntry,
-    VerifiedKind, What, When, admit_entry, attribute,
+    Entry, KeptStatement, Outcome, Parties, PermissionChange, PublicMovement, ReadAnswer,
+    ReadCheck, Receipt, RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through,
+    TimeSource, VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::module_interface::{Identifier, Name, PlatformRefusal};
 use rutent_contracts::provider_role::{
-    Denomination, Deployment, NodeRef, OuterNode, PublicKey, SafeInteger, canonicalize,
-    signing_input,
+    Denomination, Deployment, EvidenceGrade, NodeRef, OuterNode, PublicKey, SafeInteger,
+    canonicalize, signing_input,
 };
 use rutent_contracts::provider_role::{Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{
@@ -44,8 +44,8 @@ use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Rulin
 use rutent_core_authz::roles::Permission;
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
 use rutent_core_orch::segments::{
-    Answered, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments, SegmentsError,
-    Uses,
+    Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments,
+    SegmentsError, ToGrade, Uses,
 };
 use rutent_core_orch::snapshot::{
     Ask, Asked, Clock, Exposures, Price, Reading, Received, Releases, Snapshots,
@@ -1368,7 +1368,7 @@ impl Core {
             world_catalogue,
             modules,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1380,7 +1380,7 @@ impl Core {
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1693,6 +1693,64 @@ impl Modules for Watched<'_> {
         at: Instant,
     ) -> Result<String, LifecycleRefusal> {
         Modules::promote(&mut *self.platform, effect, provider, by, at)
+    }
+}
+
+/// The grading the platform tests that aren't about closing run under (`T-020-09`): a segment on its provider's
+/// word, as [`ProvidersWord`] grades it, and a part's final deposit on the movement the simulated reserve records on
+/// its destination's network, which it names by the segment's transaction (`rutent_conformance::sim::movements_of`),
+/// taken as found rather than read, plus the reserve's statement. The tests of closing grade through
+/// `closing::Evidenced`, which reads the networks (`tests/closing.rs`).
+pub struct Recorded;
+
+impl Grading for Recorded {
+    fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        if !rutent_core_orch::closing::is_final_deposit(settled) {
+            return ProvidersWord.grade(settled);
+        }
+        let network = settled.end.destination.node.network.clone();
+        let evidence = |evidence: Id, grade, whose: Id, movement| {
+            Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: settled.core.clone(),
+                what: What::Evidence {
+                    evidence,
+                    order: settled.order.clone(),
+                    segment: settled.segment.clone(),
+                    grade,
+                    whose,
+                    rests_on: vec![settled.result.clone()],
+                    movement,
+                },
+                when: When {
+                    at: settled.at.clone(),
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Observed {},
+            })
+        };
+        let movement = PublicMovement {
+            network: id(&network),
+            id: settled.transaction.clone(),
+            node: None,
+        };
+        Graded::Settles {
+            cites: settled.evidence.clone(),
+            entries: vec![
+                evidence(
+                    settled.evidence.clone(),
+                    EvidenceGrade::PublicRecord,
+                    id(&network),
+                    Some(movement),
+                ),
+                evidence(
+                    id(&format!("{}.reserve", settled.evidence.as_str())),
+                    EvidenceGrade::Statement,
+                    settled.provider.clone(),
+                    None,
+                ),
+            ],
+        }
     }
 }
 

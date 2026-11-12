@@ -16,6 +16,18 @@
     ],
     "found": {
       "status": "consistent_with_the_exit"
+    },
+    "rests_on": {
+      "log": "log-main",
+      "index": 111,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+      }
+    },
+    "movement": {
+      "network": "polygon",
+      "id": "0x9f3c2a"
     }
   },
   "when": {
