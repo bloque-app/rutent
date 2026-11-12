@@ -10,7 +10,9 @@
   input that made it wait, kept by the published rule `waiting_since_after`, so the order shows its age to a reader
   with a clock. An order waiting without `waiting_since` was valid at 2.1.0 and is refused now, and a new
   `Observed` variant breaks exhaustive matches, so this is a major bump. Fixtures: the waiting order gains
-  `waiting_since`; new ones for the input, an order waiting at its floor, and three refusals. (DEC-4, DEC-20,
+  `waiting_since`, and so do the three invalid ones that wait, each still breaking its own rule; new ones for
+  the input, an order waiting at its floor, and four refusals (a waiting order without `waiting_since`, one that
+  has it while not waiting, the input naming a segment, the input carrying an amount). (DEC-4, DEC-20,
   T-020-01, T-020-10)
 
 ## 2.1.0
