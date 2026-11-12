@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 447 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 450 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -417,6 +417,12 @@
   delivery goes under `tx-d3` and its hand-on under `tx-h3`, and its report and confirmation rest on results about
   `tx-d3`. Refused: the delivery reported on a result about `p3-s1`. Admitted: a planless part through its
   resolution's transaction. 447 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a planless part's evidence comes through its own arrival (round 7 of
+  `T-020-01`'s review). Any arrival of the order bound a planless part's evidence, another part's included. An
+  arrival naming a part now counts for that part alone, and one naming none only where the log names no other part
+  of the order (in an input, an acceptance's yes, an arrival or an authorisation's parts). Refused: an arrival naming
+  `p9`, and an arrival naming no part of an order whose acceptance names `p4` beside `p3`. Admitted: an arrival
+  naming `p3`. 450 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-42, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

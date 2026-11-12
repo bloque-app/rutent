@@ -3596,6 +3596,41 @@ fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &His
     }
 }
 
+/// Whether `history` names a part of `order` other than `part`: in an input about it, an acceptance's yes, an
+/// arrival, or an authorisation's parts.
+fn another_part_named(order: &str, part: &str, history: &History) -> bool {
+    let other = |p: &str| p != part;
+    history.iter().any(|(_, e)| {
+        let Some(v) = verified(e) else {
+            return false;
+        };
+        match &v.what {
+            What::Input { input: i } => {
+                i.subject.order.as_str() == order
+                    && (i.subject.part.as_ref().is_some_and(|p| other(p.as_str()))
+                        || matches!(&i.observed, Observed::RouteChosen { parts, .. }
+                            if parts.iter().any(|p| other(p.part_id.as_str()))))
+            }
+            What::Acceptance {
+                order: o, yeses, ..
+            } => o.as_str() == order && yeses.iter().any(|y| other(y.part.as_str())),
+            What::Arrival {
+                order: Some(o),
+                part: Some(p),
+                ..
+            } => o.as_str() == order && other(p.as_str()),
+            What::Authorise { authorisation, .. } => {
+                authorisation.order.as_str() == order
+                    && authorisation
+                        .parts
+                        .as_ref()
+                        .is_some_and(|parts| parts.iter().any(|p| other(p.as_str())))
+            }
+            _ => false,
+        }
+    })
+}
+
 /// Whether `statement` is about a stuck resolution of `order` through its own `transaction`: it names the order and
 /// that transaction, no segment, and the transaction is first bound to this order and to no segment
 /// (`binding_of`).
@@ -3648,10 +3683,21 @@ fn about_the_order_entry(
     let Some(t) = about.transaction.as_ref() else {
         return false;
     };
+    // An arrival naming a part counts for that part alone; one naming none only where the order has no other part.
     let arrived = history.iter().any(|(_, e)| {
-        verified(e).is_some_and(|v| {
-            matches!(&v.what, What::Arrival { order: Some(o), .. } if o == order)
-                && deposit_of(&v.what, history) == Some(t)
+        verified(e).is_some_and(|v| match &v.what {
+            What::Arrival {
+                order: Some(o),
+                part: named,
+                ..
+            } if o == order => {
+                deposit_of(&v.what, history) == Some(t)
+                    && match named {
+                        Some(named) => named.as_str() == part,
+                        None => !another_part_named(order.as_str(), part, history),
+                    }
+            }
+            _ => false,
         })
     });
     let accepted = history
