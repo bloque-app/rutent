@@ -618,7 +618,9 @@ pub struct Authorisation {
     /// The one order it is for.
     pub order: Id,
     /// The order's origin reserve: where the user authorised, or the holding account's provider on a route handed
-    /// on (`REQ-AUZ-9`).
+    /// on (`REQ-AUZ-9`). A split order's parts can start at different reserves, each named by its part's yes on the
+    /// acceptance; this names the order's first part's reserve, the one policy holds against the order's origin
+    /// when it asks whether the operator may act for the user there.
     pub origin_reserve: Id,
     /// The destination.
     pub destination: Destination,

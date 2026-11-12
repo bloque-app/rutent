@@ -73,7 +73,7 @@ impl PolicyLog for Kept {
 impl Kept {
     /// A log holding one coherent world before any read permission was granted: order `ord-1`, accepted by
     /// `cust-1` as its requester, beneficiary and payer, and value moved on its segments `p1-s1` through
-    /// `bridge-pay` and `p1-s2` through `fx-desk`.
+    /// `us-bank`, its origin reserve, and `p1-s2` through `fx-desk`.
     fn world() -> Self {
         let world = read_fixture("admission/world--grant");
         let history = world["history"].as_array().unwrap();
@@ -604,7 +604,7 @@ fn provider_cannot_read_another_providers_segment() {
         Rules::permitting(),
         Says::of(vec![
             (
-                provider_of("bridge-pay", "ord-1", "p1-s1"),
+                provider_of("us-bank", "ord-1", "p1-s1"),
                 Reply::Given(Said::Yes),
             ),
             (
@@ -623,7 +623,7 @@ fn provider_cannot_read_another_providers_segment() {
     let naming_another = read(
         "req-420",
         provider("fx-desk"),
-        segment("p1-s1", "bridge-pay"),
+        segment("p1-s1", "us-bank"),
         None,
     );
     assert_eq!(read_recorded(&mut engine, &naming_another), refused());
@@ -637,14 +637,14 @@ fn provider_cannot_read_another_providers_segment() {
     assert_eq!(read_recorded(&mut engine, &naming_itself), refused());
     let order = read(
         "req-422",
-        provider("bridge-pay"),
+        provider("us-bank"),
         json!({"kind": "order", "order": "ord-1"}),
         None,
     );
     assert_eq!(read_recorded(&mut engine, &order), refused());
     let trail = read(
         "req-423",
-        provider("bridge-pay"),
+        provider("us-bank"),
         json!({"kind": "trail"}),
         None,
     );
@@ -652,8 +652,8 @@ fn provider_cannot_read_another_providers_segment() {
 
     let own = read(
         "req-424",
-        provider("bridge-pay"),
-        segment("p1-s1", "bridge-pay"),
+        provider("us-bank"),
+        segment("p1-s1", "us-bank"),
         None,
     );
     assert_eq!(read_recorded(&mut engine, &own), ReadOutcome::Allowed {});

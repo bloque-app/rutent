@@ -1121,7 +1121,7 @@
               "kind": "move_value",
               "order": "ord-1",
               "segment": "p1-s1",
-              "provider": "bridge-pay",
+              "provider": "us-bank",
               "origin_reserve": "us-bank",
               "authorisation": "auth-1",
               "route": {
@@ -1166,7 +1166,7 @@
         "kind": "move_value",
         "order": "ord-1",
         "segment": "p1-s1",
-        "provider": "bridge-pay",
+        "provider": "us-bank",
         "origin_reserve": "us-bank",
         "authorisation": "auth-1",
         "route": {
