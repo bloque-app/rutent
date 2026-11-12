@@ -11,9 +11,10 @@
 //!    dry-run answer, which no real operation is answered by.
 //! 4. **Its amounts hold** against the operation and the tuple's terms (`check_amounts`).
 //! 5. **It gives out no more than it could**: a segment that keeps its asset gives out at most what it took in, and a
-//!    conversion at most what the quote its operation cites gives for what it took in, moved by no more than that
-//!    quote's slippage (`REQ-ORD-21`, `INV-1`). A conversion with no such quote, or a floating rate, has no bound
-//!    and doesn't count. `check_amounts` holds what is taken in, never what is given out, so without this a result
+//!    conversion at most what the quote its operation cites gives for what it took in, moved by no more than the
+//!    tighter of that quote's slippage and the operator's limit for the tuple (`REQ-ORD-21`, `INV-1`, `REQ-QTE-9`).
+//!    A conversion with no such quote, or with neither a bounded rate nor an operator's limit, has no bound and
+//!    doesn't count. `check_amounts` holds what is taken in, never what is given out, so without this a result
 //!    could hand the next segment more than arrived.
 //!
 //! A result that doesn't count is no result: the segment waits for one that does, and no outcome is recorded on it.
@@ -53,8 +54,31 @@ pub struct Quoted {
     pub amount_in: String,
     /// What it gives out for that.
     pub amount_out: String,
-    /// How far the rate may move against it, in basis points: 0 for a firm rate, `None` for a floating one.
+    /// How far the rate may move, in basis points: the tighter of the quote's own (0 for a firm rate) and the
+    /// operator's limit for the tuple; `None` where neither bounds it.
     pub slippage_bps: Option<u16>,
+}
+
+/// Whether a conversion that took in `taken_in` may give out `claimed_out`: at most [`conversion_bound`], and never
+/// without a bounded quote.
+pub fn converts_within(taken_in: &str, claimed_out: &str, quoted: Option<&Quoted>) -> bool {
+    match (
+        quoted.and_then(|q| conversion_bound(taken_in, q)),
+        whole(claimed_out),
+    ) {
+        (Some(bound), Some(out)) => out <= bound,
+        _ => false,
+    }
+}
+
+/// The most a conversion may give out for `taken_in`, by `quoted`: what the quote gives for what was taken in, moved
+/// by its slippage at most, rounded down. `None` where nothing bounds it, or the arithmetic can't be carried.
+pub fn conversion_bound(taken_in: &str, quoted: &Quoted) -> Option<u128> {
+    let bps = u128::from(quoted.slippage_bps?);
+    whole(&quoted.amount_out)?
+        .checked_mul(whole(taken_in)?)?
+        .checked_mul(10_000 + bps)?
+        .checked_div(whole(&quoted.amount_in)?.checked_mul(10_000)?)
 }
 
 /// What a result that counts says of its segment.
@@ -123,16 +147,10 @@ pub fn judge(
     };
     // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most.
     let converted = |amount_in: &str, amount_out: &str| {
-        let bound = quoted.and_then(|q| {
-            let bps = u128::from(q.slippage_bps?);
-            whole(&q.amount_out)?
-                .checked_mul(whole(amount_in)?)?
-                .checked_mul(10_000 + bps)?
-                .checked_div(whole(&q.amount_in)?.checked_mul(10_000)?)
-        });
-        match (bound, whole(amount_out)) {
-            (Some(bound), Some(o)) if o <= bound => Ok(settled(amount_in, amount_out)),
-            _ => Err(NotCounted::GivesOutMore),
+        if converts_within(amount_in, amount_out, quoted) {
+            Ok(settled(amount_in, amount_out))
+        } else {
+            Err(NotCounted::GivesOutMore)
         }
     };
     match &result.statement {
@@ -186,5 +204,55 @@ fn transaction_named(result: &ResultBody) -> Option<&str> {
         ResultBody::Transfer(r) => Some(&r.transaction),
         ResultBody::Conversion(r) => Some(&r.transaction),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Quoted, conversion_bound, converts_within};
+
+    fn quoted(slippage_bps: Option<u16>) -> Quoted {
+        Quoted {
+            amount_in: "1000000".into(),
+            amount_out: "250000".into(),
+            slippage_bps,
+        }
+    }
+
+    /// A conversion gives out at most what its quote gives for what it took in, moved by its slippage: a firm rate not
+    /// at all, a bounded one by its basis points, the operator's limit where tighter (folded into `slippage_bps` by
+    /// the caller), and nothing bounds a floating rate with no limit.
+    // verifies: REQ-ORD-21, INV-1
+    #[test]
+    fn a_conversion_gives_out_no_more_than_its_quote_and_slippage_allow() {
+        // Firm: exactly the quote's rate, scaled to what was taken in.
+        assert_eq!(conversion_bound("1000000", &quoted(Some(0))), Some(250_000));
+        assert_eq!(conversion_bound("500000", &quoted(Some(0))), Some(125_000));
+        // Bounded, 50 basis points: 250 000 × 1.005.
+        assert_eq!(
+            conversion_bound("1000000", &quoted(Some(50))),
+            Some(251_250)
+        );
+        // A tighter operator's limit is the slippage the caller passes.
+        assert_eq!(
+            conversion_bound("1000000", &quoted(Some(10))),
+            Some(250_250)
+        );
+        // Floating, with no operator's limit: no bound.
+        assert_eq!(conversion_bound("1000000", &quoted(None)), None);
+        // What can't be read bounds nothing.
+        assert_eq!(conversion_bound("ten", &quoted(Some(0))), None);
+        // At the bound counts; one unit over doesn't; no quote, or a floating one, never does.
+        let bounded = quoted(Some(50));
+        assert!(converts_within("1000000", "251250", Some(&bounded)));
+        assert!(!converts_within("1000000", "251251", Some(&bounded)));
+        assert!(!converts_within("1000000", "1", None));
+        assert!(!converts_within("1000000", "1", Some(&quoted(None))));
+        // The operator's tighter limit, as the caller folds it in, binds where the quote's own wouldn't.
+        assert!(!converts_within(
+            "1000000",
+            "251250",
+            Some(&quoted(Some(10)))
+        ));
     }
 }

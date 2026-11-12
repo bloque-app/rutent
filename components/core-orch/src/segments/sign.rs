@@ -9,8 +9,8 @@ use rutent_contracts::provider_role::{
     Withdrawal, signing_input,
 };
 use rutent_contracts::router_api::{
-    self, CatalogueSnapshot, Endpoint, FigureValue, Id, OperationKind, PolicyBounds,
-    PositiveAmount, Timestamp,
+    self, DecisionRecord, Endpoint, FigureValue, Id, OperationKind, PolicyBounds, PositiveAmount,
+    Timestamp,
 };
 
 use crate::rounds::OperatorKey;
@@ -134,11 +134,31 @@ pub(super) struct Cited<'a> {
     pub quoted: Option<super::judge::Quoted>,
 }
 
-/// The tuple figure and price an operation cites, in `snapshot`.
+/// The tighter of two slippage bounds, either of which may be absent.
+fn tighter(a: Option<u16>, b: Option<u16>) -> Option<u16> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The tuple figure, price and quote an operation cites, in its record's snapshot, with the operator's slippage
+/// limit for its tuple from the record's bounds, matched on its provider and ends as the router's `commitments` does.
 pub(super) fn cited<'a>(
-    snapshot: &'a CatalogueSnapshot,
+    record: &'a DecisionRecord,
     operation: &router_api::Operation,
 ) -> Option<Cited<'a>> {
+    let snapshot = &record.snapshot;
+    let operator_limit = record
+        .bounds
+        .slippage_limits
+        .iter()
+        .find(|l| {
+            l.tuple.provider == operation.provider
+                && l.tuple.from == operation.from
+                && l.tuple.to == operation.to
+        })
+        .map(|l| l.max_bps.get());
     let figure = |id: &Id| snapshot.figures.iter().find(|f| &f.figure_id == id);
     let mut terms = None;
     let mut declared_seconds = None;
@@ -161,14 +181,15 @@ pub(super) fn cited<'a>(
                     ..
                 }) = &quote.statement
                 {
+                    let own = match q.slippage {
+                        Slippage::Firm(_) => Some(0),
+                        Slippage::Bounded(b) => Some(b.max_bps.get()),
+                        Slippage::Floating(_) => None,
+                    };
                     quoted = quoted.or(Some(super::judge::Quoted {
                         amount_in: q.amount_in.clone(),
                         amount_out: q.amount_out.clone(),
-                        slippage_bps: match q.slippage {
-                            Slippage::Firm(_) => Some(0),
-                            Slippage::Bounded(b) => Some(b.max_bps.get()),
-                            Slippage::Floating(_) => None,
-                        },
+                        slippage_bps: tighter(own, operator_limit),
                     }));
                 }
             }
@@ -196,4 +217,30 @@ fn base64url(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tighter;
+
+    /// The operator's limit for a tuple binds where it is tighter than the quote's own slippage, and stands alone
+    /// where the quote's rate floats.
+    // verifies: REQ-ORD-21, REQ-QTE-9
+    #[test]
+    fn the_tighter_of_the_quotes_slippage_and_the_operators_limit_binds() {
+        assert_eq!(tighter(Some(50), Some(10)), Some(10));
+        assert_eq!(tighter(Some(5), Some(10)), Some(5));
+        assert_eq!(
+            tighter(Some(0), Some(10)),
+            Some(0),
+            "a firm rate stays firm"
+        );
+        assert_eq!(
+            tighter(None, Some(10)),
+            Some(10),
+            "a floating rate under the operator's limit"
+        );
+        assert_eq!(tighter(Some(50), None), Some(50));
+        assert_eq!(tighter(None, None), None);
+    }
 }

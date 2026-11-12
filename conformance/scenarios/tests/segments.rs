@@ -1333,3 +1333,79 @@ fn segment_on_a_release_revoked_mid_flight_settles_on_its_result() {
                 && matches!(s.attribution, rutent_contracts::core_internal::Attribution::Verified { .. })));
     assert!(verified, "the withdrawal's result is the module's");
 }
+
+/// One order's withdrawal leaves a drain the contract can't carry. Another order runs after it: its segments settle,
+/// each with its record before its result, while the bad drain stays kept and is answered each time it is tried.
+// verifies: REQ-MDL-8, REQ-MDL-20
+#[test]
+fn drain_the_log_cant_take_holds_up_no_other_segment() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let session = SuiteContext::default().session;
+    {
+        let mut watched = Watched::new(&mut world.fleet.platform);
+        watched.spoil = true;
+        let stopped = core.try_run_with(
+            &catalogue,
+            &mut watched,
+            &mut NoProxy,
+            &mut ProvidersWord,
+            &session,
+        );
+        assert!(
+            matches!(stopped, Err(SegmentsError::Uncarried(_))),
+            "{stopped:?}"
+        );
+    }
+    assert_eq!(core.segments.undelivered(), 1);
+    core.take_up(Named::another(2));
+    let ran = core.run_over(&catalogue, &mut world.fleet.platform);
+    world.catalogue = catalogue;
+    let done = segments(&ran);
+    assert!(
+        done.iter()
+            .all(|d| matches!(d.outcome, SegmentOutcome::Settled { .. })),
+        "{done:?}"
+    );
+    assert_eq!(
+        core.segments.undelivered(),
+        1,
+        "the bad drain is still kept"
+    );
+    let mut general = General(std::rc::Rc::clone(&core.log));
+    assert!(matches!(
+        core.segments.flush(&mut general),
+        Err(SegmentsError::Uncarried(_))
+    ));
+    let log = core.log.borrow();
+    let records = log
+        .records()
+        .into_iter()
+        .filter(|(_, w)| {
+            matches!(
+                w,
+                What::HandOver {
+                    item: HandedOver::SegmentRecord { .. },
+                    ..
+                }
+            )
+        })
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    let results = log
+        .records()
+        .into_iter()
+        .filter(|(_, w)| is_result(w))
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 2, "the second order's two records");
+    assert_eq!(results.len(), 2);
+    assert!(
+        records[0] < results[0] && records[1] < results[1],
+        "each record before its result"
+    );
+}

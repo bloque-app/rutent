@@ -350,6 +350,10 @@ struct InFlight {
     evidence: Option<(Id, Timestamp)>,
     ended: bool,
     outcome: Option<SegmentOutcome>,
+    /// The drains taken for it, by id: their errors are its own.
+    drains: Vec<Id>,
+    /// The drain of its record, which reaches the log before its result.
+    record: Option<Id>,
 }
 
 /// One drain, kept whole until each of its items is appended.
@@ -426,20 +430,39 @@ impl Segments {
             .map_or(&[], |f| f.unknown.as_slice())
     }
 
-    /// Appends again, in order, every drain an append failed for, from the first item not yet appended, stopping
-    /// at the first that fails: it and the rest wait for the next try, kept whole. None is dropped and none is
-    /// drained again (`REQ-MDL-8`). An item the contract can't carry, or one the log refuses, is answered as the
-    /// error it is, every time, and holds back the drains after it.
+    /// Appends again, in order, every drain an append failed for, each from its first item not yet appended. A drain
+    /// that fails stays where it is, kept whole, and the others are still tried, so one drain the log can't take
+    /// holds up no other: none is dropped and none is drained again (`REQ-MDL-8`). The first failure is answered as
+    /// the error it is, every time it is tried: an item the contract can't carry, or one the log refuses.
     pub fn flush(&mut self, log: &mut dyn Log) -> Result<(), SegmentsError> {
-        while let Some(drain) = self.undelivered.first_mut() {
-            let items = drain.raw.items()?;
-            let whats = drain::entries(items, &drain.id)?;
-            for what in whats.into_iter().skip(drain.appended) {
-                let entry = journal::verified(&drain.who, what, &drain.at, Outcome::Observed {});
-                journal::append(log, entry)?;
-                drain.appended += 1;
+        match self.flush_all(log).into_iter().next() {
+            Some((_, failure)) => Err(failure),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Segments::flush`], answering each drain that failed with its error.
+    fn flush_all(&mut self, log: &mut dyn Log) -> Vec<(Id, SegmentsError)> {
+        let mut failed = Vec::new();
+        let mut kept = Vec::new();
+        for mut drain in std::mem::take(&mut self.undelivered) {
+            if let Err(failure) = Self::append_drain(log, &mut drain) {
+                failed.push((drain.id.clone(), failure));
+                kept.push(drain);
             }
-            self.undelivered.remove(0);
+        }
+        self.undelivered = kept;
+        failed
+    }
+
+    /// Appends one drain from its first item not yet appended.
+    fn append_drain(log: &mut dyn Log, drain: &mut Drain) -> Result<(), SegmentsError> {
+        let items = drain.raw.items()?;
+        let whats = drain::entries(items, &drain.id)?;
+        for what in whats.into_iter().skip(drain.appended) {
+            let entry = journal::verified(&drain.who, what, &drain.at, Outcome::Observed {});
+            journal::append(log, entry)?;
+            drain.appended += 1;
         }
         Ok(())
     }
@@ -609,7 +632,7 @@ impl Segments {
             }
             return self.advance(parts, live, &at, operation);
         }
-        let cited = sign::cited(&live.record.snapshot, operation).ok_or(SegmentsError::Plan(
+        let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
         ))?;
         let transaction = self.fresh_transaction(parts)?;
@@ -719,6 +742,8 @@ impl Segments {
                 evidence: None,
                 ended: false,
                 outcome: None,
+                drains: Vec::new(),
+                record: None,
             },
         );
         self.advance(parts, live, &at, operation)
@@ -834,10 +859,15 @@ impl Segments {
             flight.started = Some(started);
             flight.answered = Some(answered);
             flight.unknown.extend(events.unknown.iter().cloned());
-            self.keep_drain(parts, live, &drained_at, drain::Raw::Events(events));
-            self.keep_drain(parts, live, &drained_at, drain::Raw::Uses(uses));
+            let kept = [
+                self.keep_drain(parts, live, &drained_at, drain::Raw::Events(events)),
+                self.keep_drain(parts, live, &drained_at, drain::Raw::Uses(uses)),
+            ];
+            self.flight_mut(at)?
+                .drains
+                .extend(kept.into_iter().flatten());
         }
-        self.deliver(parts.log)?;
+        self.deliver(parts.log, at)?;
         let outcome = self.account(parts, live, at)?;
         if is_final(&outcome) {
             self.finish(at, &outcome)?;
@@ -890,7 +920,7 @@ impl Segments {
             .chosen()
             .ok_or(SegmentsError::Plan("the record chose no route"))?;
         let operation = &chosen.parts[live.at].operations[place];
-        let cited = sign::cited(&live.record.snapshot, operation).ok_or(SegmentsError::Plan(
+        let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
         ))?;
         let counted = judge(
@@ -1256,26 +1286,33 @@ impl Segments {
         live: &Live<'_>,
         at: &Timestamp,
         raw: drain::Raw,
-    ) {
+    ) -> Option<Id> {
         if raw.is_empty() {
-            return;
+            return None;
         }
+        let id = parts.fresh.id();
         self.undelivered.push(Drain {
-            id: parts.fresh.id(),
+            id: id.clone(),
             at: at.clone(),
             who: live.core.clone(),
             raw,
             appended: 0,
         });
+        Some(id)
     }
 
-    /// Appends the drains kept. The log not taking them now holds nothing up: they wait, kept. Anything else is an
-    /// error, answered as it is.
-    fn deliver(&mut self, log: &mut dyn Log) -> Result<(), SegmentsError> {
-        match self.flush(log) {
-            Ok(()) | Err(SegmentsError::Append(AppendFailure::Unavailable)) => Ok(()),
-            Err(other) => Err(other),
+    /// Appends the drains kept. Another segment's drain that fails holds nothing up here, and the log not taking one
+    /// now holds nothing up either: they wait, kept. One of this segment's own that the contract can't carry, or the
+    /// log refuses, is answered as the error it is.
+    fn deliver(&mut self, log: &mut dyn Log, at: &(String, String)) -> Result<(), SegmentsError> {
+        let own = self.flight(at)?.drains.clone();
+        for (id, failure) in self.flush_all(log) {
+            let unavailable = matches!(failure, SegmentsError::Append(AppendFailure::Unavailable));
+            if own.contains(&id) && !unavailable {
+                return Err(failure);
+            }
         }
+        Ok(())
     }
 
     /// Ends a segment on the platform, once, keeps its record to hand over, hands it over, and ends its calls.
@@ -1294,11 +1331,20 @@ impl Segments {
             self.flight_mut(at)?.ended = true;
             if let Some(record) = record {
                 let drained_at = now(parts.clock)?;
-                self.keep_drain(parts, live, &drained_at, drain::Raw::Record(record));
+                let kept = self.keep_drain(parts, live, &drained_at, drain::Raw::Record(record));
+                self.flight_mut(at)?.record = kept;
             }
         }
-        // Its record reaches the log before its result: the result waits for it.
-        self.flush(parts.log)
+        // Its record reaches the log before its result: the result waits for it, and for nothing else.
+        let record = self.flight(at)?.record.clone();
+        let failed = self.flush_all(parts.log);
+        match failed
+            .into_iter()
+            .find(|(id, _)| Some(id) == record.as_ref())
+        {
+            Some((_, failure)) => Err(failure),
+            None => Ok(()),
+        }
     }
 
     /// The effect's one `result` entry.

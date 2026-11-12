@@ -758,10 +758,47 @@ pub fn route_end() -> RouteEnd {
     }
 }
 
+/// An order, as the tests name it and its segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub order: String,
+    pub withdrawal: String,
+    pub deposit: String,
+}
+
+impl Named {
+    /// The order every test runs: [`ORDER`], [`WITHDRAWAL`] and [`DEPOSIT`].
+    pub fn first() -> Self {
+        Named {
+            order: ORDER.into(),
+            withdrawal: WITHDRAWAL.into(),
+            deposit: DEPOSIT.into(),
+        }
+    }
+
+    /// Another order, `n`, over the same route.
+    pub fn another(n: u8) -> Self {
+        Named {
+            order: format!("ord-{n}"),
+            withdrawal: format!("p1-s1-of-{n}"),
+            deposit: format!("p1-s2-of-{n}"),
+        }
+    }
+
+    fn authorisation(&self) -> String {
+        format!("auth-{}", self.order)
+    }
+}
+
 /// The plan of the order's one part.
 pub fn plan(record: &DecisionRecord) -> PartPlan {
+    plan_of(record, &Named::first())
+}
+
+/// The plan of `named`'s one part.
+pub fn plan_of(record: &DecisionRecord, named: &Named) -> PartPlan {
     let operations = &record.chosen().unwrap().parts[0].operations;
-    let ids = [WITHDRAWAL, DEPOSIT];
+    let ids = [named.withdrawal.as_str(), named.deposit.as_str()];
     PartPlan {
         part_id: stm::Id::new(PART).unwrap(),
         segments: operations
@@ -780,8 +817,13 @@ pub fn plan(record: &DecisionRecord) -> PartPlan {
 
 /// The `route_chosen` input the order was opened by.
 pub fn route_chosen(record: &DecisionRecord) -> RecordedInput {
+    route_chosen_of(record, &Named::first())
+}
+
+/// The `route_chosen` input `named` was opened by.
+pub fn route_chosen_of(record: &DecisionRecord, named: &Named) -> RecordedInput {
     RecordedInput {
-        record_id: stm::RecordId::new("rec-chosen").unwrap(),
+        record_id: stm::RecordId::new(format!("rec-chosen-{}", named.order)).unwrap(),
         recorded_at: stm::Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap(),
         time_source: stm::Id::new("core_clock").unwrap(),
         source: Source {
@@ -790,13 +832,13 @@ pub fn route_chosen(record: &DecisionRecord) -> RecordedInput {
         },
         standing: Standing::Stated,
         subject: Subject {
-            order: stm::Id::new(ORDER).unwrap(),
+            order: stm::Id::new(named.order.as_str()).unwrap(),
             part: None,
             segment: None,
         },
         observed: Observed::RouteChosen {
             decision_record: stm::Id::new(record.record_id().as_str()).unwrap(),
-            parts: vec![plan(record)],
+            parts: vec![plan_of(record, named)],
             handed_on_from: None,
         },
     }
@@ -805,6 +847,12 @@ pub fn route_chosen(record: &DecisionRecord) -> RecordedInput {
 /// Appends what the log holds of the order before its segments run: the authorisation, the acceptance (an automatic
 /// deposit's, which needs no yes), the router's decision record and the route chosen.
 pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
+    seed_order(log, record, &Named::first());
+}
+
+/// [`seed`], for `named`.
+pub fn seed_order(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord, named: &Named) {
+    let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
     let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
     let entry = |what: What, outcome: Outcome| {
         Entry::Verified(VerifiedEntry {
@@ -824,8 +872,8 @@ pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
         &entry(
             What::Authorise {
                 authorisation: Authorisation {
-                    authorisation: id("auth-1"),
-                    order: id(ORDER),
+                    authorisation: authorisation.clone(),
+                    order: order.clone(),
                     origin_reserve: id(RESERVE),
                     destination: end.destination.clone(),
                     to_asset: end.to_asset.clone(),
@@ -843,11 +891,11 @@ pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
     log.take(
         &entry(
             What::Acceptance {
-                acceptance: id("acc-1"),
-                order: id(ORDER),
-                request: id("req-order-1"),
+                acceptance: id(&format!("acc-{}", named.order)),
+                order: order.clone(),
+                request: id(&format!("req-{}", named.order)),
                 quote: digest(&"ab".repeat(32)),
-                authorisation: id("auth-1"),
+                authorisation: authorisation.clone(),
                 basis: AcceptanceBasis::AutomaticDeposit,
                 parties: Parties {
                     requester: customer().party,
@@ -868,7 +916,7 @@ pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
         &entry(
             What::DecisionRecord {
                 decision_record: record.record_id().clone(),
-                order: id(ORDER),
+                order: order.clone(),
                 round: RoutingRound::Choice,
                 record: digest(&"cd".repeat(32)),
                 previous: None,
@@ -883,7 +931,7 @@ pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
     log.take(
         &entry(
             What::Input {
-                input: route_chosen(record),
+                input: route_chosen_of(record, named),
             },
             Outcome::Observed {},
         ),
@@ -920,6 +968,8 @@ pub struct Core {
     /// The operator, as Core signs in its name and the log reads it: its party is the one a module the operator
     /// publishes states for.
     pub operator: Actor,
+    /// The order the runs are of.
+    pub named: Named,
 }
 
 impl Core {
@@ -948,7 +998,18 @@ impl Core {
             ]),
             key: TestKey(context.deployment.operator_key.clone()),
             operator: operator(),
+            named: Named::first(),
         }
+    }
+
+    /// Seeds another order over the same route, follows it, and runs it from now on.
+    pub fn take_up(&mut self, named: Named) {
+        seed_order(&self.log, &self.record, &named);
+        assert!(
+            self.segments
+                .follow(&*self.clock, &route_chosen_of(&self.record, &named))
+        );
+        self.named = named;
     }
 
     /// Runs the order's part over `modules`, with `uses` reported and `grading` grading.
@@ -973,9 +1034,14 @@ impl Core {
         grading: &mut dyn Grading,
         session: &str,
     ) -> Result<Ran, SegmentsError> {
-        let (order, part, auth, origin, end) =
-            (id(ORDER), id(PART), id("auth-1"), id(RESERVE), route_end());
-        let segments = [id(WITHDRAWAL), id(DEPOSIT)];
+        let (order, part, auth, origin, end) = (
+            id(&self.named.order),
+            id(PART),
+            id(&self.named.authorisation()),
+            id(RESERVE),
+            route_end(),
+        );
+        let segments = [id(&self.named.withdrawal), id(&self.named.deposit)];
         let (caller, core_actor, operator_actor) = (core(), core(), self.operator.clone());
         let session = id(session);
         let live = Live {

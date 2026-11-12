@@ -575,3 +575,25 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   lost-answers test); the receipt rule (the replayed-receipt test); the record before the result (the
   revoked-release test); nothing given out recorded (its test); the staged version compared before policy (the
   promotion test); `Events::unknown` kept (the outcome-unknown test); drain errors answered (the drain test).
+
+### T-020-08, after the advisor's review of 7d16098
+
+- **One drain holds up no other.** `flush` tries every kept drain, each from its first item not yet appended,
+  keeps each that fails where it is, and answers the first failure; it no longer stops at the first. A final result
+  waits only for its own segment's record drain, and a segment's accounting is stopped only by an error in its own
+  drains (the log not taking them now stops nothing). Test `drain_the_log_cant_take_holds_up_no_other_segment`: one
+  order's bad drain stays kept and answered while a second order's segments settle, each record before its result.
+  The kit now runs more than one order over the route (`Named`, `Core::take_up`).
+- **The conversion bound includes the operator's limit.** `sign::cited` folds the operator's slippage limit for the
+  tuple (from the record's bounds, matched on provider and ends as the router's `commitments` does) into the cited
+  quote's slippage, the tighter of the two; with a floating rate the operator's limit alone bounds it. The bound is a
+  pure function (`judge::conversion_bound`, `judge::converts_within`), unit-tested over a firm rate, a bounded one,
+  the operator's tighter limit, a floating one, no quote, at the bound and one over. No simulated route has an
+  exchange, so the platform tests don't reach it.
+- **Rule-off, each red:** a record waiting for every drain, not its own (the no-stall test); any drain's error
+  stopping a segment (the no-stall test); the conversion bound (its unit test); the operator's limit where tighter
+  (`sign`'s unit test).
+- **Open, for the coordinator:** `REQ-ORD-5`'s operator half against `T-021-02`'s default that the operator reads
+  only by a permission, which core-internal grants only to regulators and checkers (the owner's form); Core's
+  `judge` counting a result from a module the operator publishes, which has no advertisement (first needed by
+  `T-020-13`'s hand-on).
