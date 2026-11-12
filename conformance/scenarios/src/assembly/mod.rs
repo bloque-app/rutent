@@ -1685,11 +1685,23 @@ mod tests {
         assert_eq!(moves, 1, "the deposit is not handed over");
         let started = &core.started[order.as_str()];
         let part = kit::id(started.plan[0].part_id.as_str());
-        let waits = core
+        let since = core
             .segments
             .waiting(&order, &part)
+            .cloned()
             .expect("the part waits at its floor");
-        assert_eq!(waits.evidenced.amount().as_str(), "990000");
+        // The wait is a recorded state-machine input, the part waiting since it was recorded (`T-020-10b`).
+        let waits = core
+            .verified_whats()
+            .into_iter()
+            .filter_map(|w| match w {
+                What::Input { input } if input.observed == Observed::WaitingAtFloor {} => {
+                    Some(input.recorded_at.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(waits, vec![since]);
     }
 
     // verifies: DEC-18
