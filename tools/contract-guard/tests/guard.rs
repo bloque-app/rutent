@@ -881,3 +881,48 @@ fn a_changelog_heading_that_is_not_a_version_is_refused_even_untouched() {
         "expected the heading refused, got {violations:?}"
     );
 }
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_use_in_nested_braces_or_through_super_counts_as_a_use() {
+    // Nested braces: the use of module-interface sits past the first closing brace.
+    for line in [
+        "use crate::{provider_role::{Id, Kind}, module_interface::OperationKind};",
+        "use crate::{provider_role::{types::{Id}}, module_interface::{OperationKind}};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+    }
+    // `super::` from the host's module, nested in the state machine's, names the state machine's module.
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 3.0.0\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .at_both("contracts/src/state_machine/mod.rs", "pub struct Order;")
+        .at_both("contracts/src/state_machine/host/mod.rs", "use super::{Order, RecordedInput};")
+        .at_both("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let violations = run(
+        &[
+            "contracts/state-machine/CHANGELOG.md",
+            "contracts/src/state_machine/mod.rs",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("Rust module uses state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+}

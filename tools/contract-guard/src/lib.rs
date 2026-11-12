@@ -645,7 +645,7 @@ pub fn check(
                 within(path, &referencing.module_dir)
                     && path.ends_with(".rs")
                     && files.head(path).is_some_and(|text| {
-                        crate_paths(&text)
+                        crate_paths(&text, &file_module(path))
                             .iter()
                             .any(|used| module_owner(used, &module_paths) == Some(moved_index))
                     })
@@ -734,48 +734,119 @@ pub fn check(
 /// A version as `semver` reads it: major, minor, patch.
 type Semver = (u64, u64, u64);
 
-/// Every path a Rust file names under `crate::`, braces expanded one level: `crate::a::B`, `crate::{a::B, c}`.
-fn crate_paths(text: &str) -> Vec<String> {
+/// The module path of a Rust file under `contracts/src/`: `a/b/mod.rs` and `a/b.rs` are `a::b`, `lib.rs` is the
+/// crate root, ``.
+fn file_module(path: &str) -> String {
+    let inner = path.strip_prefix("contracts/src/").unwrap_or(path);
+    let inner = inner.strip_suffix(".rs").unwrap_or(inner);
+    let inner = inner
+        .strip_suffix("/mod")
+        .unwrap_or(if inner == "lib" { "" } else { inner });
+    inner.replace('/', "::")
+}
+
+/// Every path a Rust file at module `here` names from the crate, as a path from the crate root: under `crate::`,
+/// or under `super::`, once or more, from `here`'s parents; braces expanded at every depth, so
+/// `crate::{a::{b, c}, d}` names `a::b`, `a::c` and `d`.
+fn crate_paths(text: &str, here: &str) -> Vec<String> {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let path_at = |rest: &str| -> String {
-        let mut out = String::new();
-        let mut chars = rest;
-        loop {
-            let len = chars.find(|c: char| !ident(c)).unwrap_or(chars.len());
-            if len == 0 {
-                break;
-            }
-            if !out.is_empty() {
-                out.push_str("::");
-            }
-            out.push_str(&chars[..len]);
-            chars = &chars[len..];
-            match chars.strip_prefix("::") {
-                Some(next) if next.starts_with(ident) => chars = next,
-                _ => break,
-            }
-        }
-        out
-    };
     let mut paths = Vec::new();
-    for (at, _) in text.match_indices("crate::") {
-        if at > 0 && text[..at].ends_with(ident) {
-            continue;
-        }
-        let rest = &text[at + "crate::".len()..];
-        if let Some(group) = rest.strip_prefix('{') {
-            let end = group.find('}').unwrap_or(group.len());
-            for item in group[..end].split(',') {
-                let item = item.trim();
-                if !item.is_empty() {
-                    paths.push(path_at(item));
-                }
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let boundary = at == 0 || !text[..at].ends_with(ident) && !text[..at].ends_with("::");
+        let base = if !boundary {
+            None
+        } else if let Some(after) = rest.strip_prefix("crate::") {
+            Some((String::new(), after))
+        } else if rest.starts_with("super::") {
+            let mut module: Vec<&str> = here.split("::").filter(|m| !m.is_empty()).collect();
+            let mut after = rest;
+            while let Some(next) = after.strip_prefix("super::") {
+                module.pop();
+                after = next;
             }
+            Some((module.join("::"), after))
         } else {
-            paths.push(path_at(rest));
+            None
+        };
+        match base {
+            Some((prefix, after)) => {
+                expand(&prefix, after, &mut paths);
+                at = text.len() - after.len();
+            }
+            None => at += rest.chars().next().map_or(1, char::len_utf8),
         }
     }
     paths
+}
+
+/// Expands the use tree at the start of `text` under `prefix` into `paths`.
+fn expand(prefix: &str, text: &str, paths: &mut Vec<String>) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let join = |a: &str, b: &str| {
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            format!("{a}::{b}")
+        }
+    };
+    let mut path = prefix.to_string();
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(group) = rest.strip_prefix('{') {
+            // The group runs to its matching brace.
+            let mut depth = 1;
+            let mut end = group.len();
+            for (i, c) in group.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let inner = &group[..end];
+            let mut depth = 0;
+            let mut start = 0;
+            for (i, c) in inner.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        expand(&path, &inner[start..i], paths);
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if !inner[start..].trim().is_empty() {
+                expand(&path, &inner[start..], paths);
+            }
+            return;
+        }
+        let len = rest.find(|c: char| !ident(c)).unwrap_or(rest.len());
+        if len == 0 {
+            if path != prefix || !prefix.is_empty() {
+                paths.push(path);
+            }
+            return;
+        }
+        path = join(&path, &rest[..len]);
+        rest = &rest[len..];
+        match rest.strip_prefix("::") {
+            Some(next) => rest = next,
+            None => {
+                paths.push(path);
+                return;
+            }
+        }
+    }
 }
 
 /// The contract whose Rust module is the longest prefix of `path`, as `module_paths` lists them.
