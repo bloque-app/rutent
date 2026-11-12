@@ -106,9 +106,10 @@ pub(super) struct Run {
     /// Every login of the filer's party policy permitted on it, with the authorisation each gave: while one of them is
     /// listed, it holds, and each carries it on under its own authorisation without asking policy again.
     logins: Vec<(Actor, Authorisation)>,
-    /// Whether its acceptance and start were built: from then on the acceptance may be in the log, so the filing is only
-    /// finished, never ended early, and if it ends at all the deposit is filed on no more.
-    accepted_built: bool,
+    /// Whether its acceptance may be in the log: an append of it was taken, or came back with the log unavailable. If
+    /// the filing ends after that, the deposit is filed on no more; an acceptance the log refused on its first append
+    /// was never written, and leaves the deposit free.
+    acceptance_written: bool,
     /// Whether a question about the deposit went unanswered: then, once the reserve is past its time to answer, the
     /// filing ends.
     unanswered: bool,
@@ -344,7 +345,7 @@ impl Arrivals {
             outcome: None,
             started: None,
             logins: vec![(well.filer.clone(), authorisation.clone())],
-            accepted_built: false,
+            acceptance_written: false,
             unanswered: false,
             spent: false,
             filing: well,
@@ -489,14 +490,14 @@ impl Run {
         }
     }
 
-    /// Ends the order, of `class`. Where its acceptance was built, and so may be in the log, the deposit is filed on no
+    /// Ends the order, of `class`. Where its acceptance may be in the log, the deposit is filed on no
     /// more, so no second acceptance rests on it.
     fn end(
         &mut self,
         desk: &mut Desk<'_, '_>,
         class: OrderRefusalClass,
     ) -> Result<(), ArrivalError> {
-        if self.accepted_built {
+        if self.acceptance_written {
             self.spent = true;
         }
         let what = refusal(&self.filing.request, Some(&self.order), class);
@@ -645,12 +646,17 @@ impl Run {
                 },
             )?;
             self.accepting = Some((acceptance, input, vec![accepted, start]));
-            self.accepted_built = true;
         }
         let Some((acceptance, input, pending)) = &mut self.accepting else {
             return Err(ArrivalError::NotNow);
         };
-        match flush(desk, pending) {
+        let flushed = flush(desk, pending);
+        // The acceptance is the first of the two: it may be in the log once an append of it was taken (it left the
+        // pending list) or came back unavailable; refused on its first append, it never was.
+        if pending.len() < 2 || matches!(flushed, Err(AppendFailure::Unavailable)) {
+            self.acceptance_written = true;
+        }
+        match flushed {
             Ok(()) => {
                 self.started = Some(input.clone());
                 self.outcome = Some(Filed::Started {
@@ -660,8 +666,8 @@ impl Run {
                 self.step = Step::Done;
                 Ok(())
             }
-            // A refused acceptance or start can't be carried on: the order ends. Where the acceptance was recorded,
-            // the deposit is filed on no more, so no second acceptance rests on it.
+            // A refused acceptance or start can't be carried on: the order ends. Where the acceptance may be in the
+            // log, the deposit is filed on no more, so no second acceptance rests on it.
             Err(AppendFailure::Refused(_)) => {
                 self.accepting = None;
                 self.end(desk, OrderRefusalClass::NoRouteRightNow)

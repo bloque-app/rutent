@@ -2625,3 +2625,64 @@ fn logins_policy_permitted_carry_a_filing_on_without_asking_again() {
     );
     assert_admitted(&env);
 }
+
+// Round 5 --------------------------------------------------------------------------------------------------------
+
+/// An acceptance the log refused on its first append was never written: its filing ends, but the deposit stays free
+/// for another filing (round 5).
+// verifies: REQ-ORD-15, REQ-ORD-13
+#[test]
+fn an_acceptance_refused_on_its_first_append_leaves_the_deposit_free() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    env.book.borrow_mut().refuse_next = Some("acceptance");
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(operator(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(filed, Filed::CantProceed { order: Some(_), .. }),
+        "{filed:?}"
+    );
+    assert!(env.acceptances().is_empty(), "nothing written");
+    let mut theirs = filing(reserve_filer(), &deposited);
+    theirs.request = id("deposit-reserve");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+}
+
+/// An acceptance written whose answer was lost may be in the log: if its filing then ends, the deposit is filed on
+/// no more, so no second acceptance rests on it (round 5).
+// verifies: REQ-ORD-15, REQ-ORD-34
+#[test]
+fn an_acceptance_whose_answer_was_lost_spends_the_deposit_if_its_filing_ends() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let one = filing(operator(), &deposited);
+    env.book.borrow_mut().lose_next = Some("acceptance");
+    assert!(file(&mut env, &mut providers, &mut arrivals, &one).is_err());
+    assert_eq!(env.acceptances().len(), 1, "written, its answer lost");
+    env.book.borrow_mut().refuse_next = Some("acceptance");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    assert!(
+        matches!(filed, Filed::CantProceed { order: Some(_), .. }),
+        "{filed:?}"
+    );
+    let mut theirs = filing(reserve_filer(), &deposited);
+    theirs.request = id("deposit-reserve");
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &theirs),
+        Err(ArrivalError::NotFileable)
+    );
+    assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+}

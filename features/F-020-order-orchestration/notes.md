@@ -754,6 +754,21 @@ both admitted by the log; and the same through the session ending) and
   deposit", which round 3's carrier rules and this round's backstop replaced.
 - **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
 
+### T-020-04, round 5 (approved; the low before merge)
+
+- **Spent only once the acceptance may be written.** Round 4's backstop spent the deposit once the acceptance was
+  *built*, so an acceptance the log refused on its first append, never written, stranded the deposit. Now the filing
+  notes its acceptance as possibly in the log once an append of it was taken or came back with the log unavailable
+  (its answer lost); only then does ending the filing spend the deposit. A refusal on the first append leaves the
+  deposit free for another filing. The reviewer's probe, `an_acceptance_refused_on_its_first_append_leaves_the_deposit_free`
+  (`refuse_next = Some("acceptance")`, then the reserve files and starts), was written first and red on `8da7a6a`
+  (`NotFileable`). `an_acceptance_whose_answer_was_lost_spends_the_deposit_if_its_filing_ends` (written, its answer
+  lost, then refused on the retry) came with the change and was green before it, the wider rule covering it; its
+  rule-off stands in.
+- **Rule-off**, each red: a refused first append leaves the deposit free (`if true`: the first test); an acceptance
+  taken spends it (`a_deposit_with_an_acceptance_recorded_is_filed_on_no_more`); an acceptance whose answer was lost
+  spends it (the second test); the spend itself on ending (round 4's row, rerun on the new flag).
+
 ## T-020-05
 
 - **Core's clock.** `snapshot::Clock` is Core's clock, read as a `Reading` to the nanosecond; `SystemClock` reads
