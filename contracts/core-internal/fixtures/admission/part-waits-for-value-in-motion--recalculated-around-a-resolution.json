@@ -3531,7 +3531,8 @@
                 "decimals": 2
               },
               "amount": "2500000"
-            }
+            },
+            "transaction": "tx-d3"
           },
           "decision": {
             "request": "req-201",

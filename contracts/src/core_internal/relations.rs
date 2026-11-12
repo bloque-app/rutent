@@ -869,6 +869,7 @@ pub static RELATIONS: [Relation; 77] = [
                         order,
                         carries_out,
                         resolution,
+                        ..
                     },
                     _,
                 )),
@@ -1178,7 +1179,7 @@ pub static RELATIONS: [Relation; 77] = [
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part, a move_value's own segment, a planless part's arrival or acceptance, through the transaction it names",
+                "an outcome's evidence is about its move's own order and part: a move_value's own segment, a stuck resolution's own transaction, or a planless part's arrival or acceptance",
             ),
             ("after", "an outcome's evidence follows its move in the log"),
             (
@@ -1434,6 +1435,7 @@ pub static RELATIONS: [Relation; 77] = [
                             order,
                             carries_out,
                             resolution,
+                            ..
                         },
                     ..
                 } => (
@@ -1511,6 +1513,7 @@ pub static RELATIONS: [Relation; 77] = [
                             order: o,
                             carries_out,
                             resolution,
+                            ..
                         },
                     ..
                 } if r == effect
@@ -3570,22 +3573,45 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
 }
 
 /// Whether `statement` is about the move `effect` moved: a `move_value`'s segment itself, through that segment's
-/// transaction; a stuck resolution's part, through a segment of its plan, or, for a planless part, which has no segment
-/// to name, through the transaction of the order's arrival or of the part's acceptance yes, so its silent resolution
-/// can't deadlock.
+/// transaction; a stuck resolution's own transaction, the one its effect names. A planless part's resolution, whose
+/// part has no segment, may also bind through the transaction of the order's arrival for that part or of the part's
+/// acceptance yes.
 fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &History) -> bool {
-    if let Some(Action::MoveValue { order, segment, .. }) = effect_action(effect).map(|(a, _)| a) {
-        return about_the_segment(statement, order, segment, history);
+    match effect_action(effect).map(|(a, _)| a) {
+        Some(Action::MoveValue { order, segment, .. }) => {
+            about_the_segment(statement, order, segment, history)
+        }
+        Some(Action::ResolveStuck {
+            order, transaction, ..
+        }) => {
+            about_the_resolution(statement, order, transaction, history)
+                || moved_part(effect, history).is_some_and(|(order, part)| {
+                    part.is_some_and(|part| {
+                        !planned(order.as_str(), part, history)
+                            && about_the_order_entry(statement, order, part, history)
+                    })
+                })
+        }
+        _ => false,
     }
-    moved_part(effect, history).is_some_and(|(order, part)| {
-        part.is_some_and(|part| {
-            if planned(order.as_str(), part, history) {
-                about_the_part(statement, order, part, history)
-            } else {
-                about_the_order_entry(statement, order, part, history)
-            }
-        })
-    })
+}
+
+/// Whether `statement` is about a stuck resolution of `order` through its own `transaction`: it names the order and
+/// that transaction, no segment, and the transaction is first bound to this order and to no segment
+/// (`binding_of`).
+fn about_the_resolution(
+    statement: &StatedEntry,
+    order: &Id,
+    transaction: &Id,
+    history: &History,
+) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    about.order.as_ref() == Some(order)
+        && about.transaction.as_ref() == Some(transaction)
+        && about.segment.is_none()
+        && binding_of(transaction, history) == Some((order, None))
 }
 
 /// Whether `part` of `order` has a plan in `history`: a route chosen naming it, or a recalculation or a change of
@@ -3662,31 +3688,6 @@ fn about_the_segment(statement: &StatedEntry, order: &Id, segment: &Id, history:
             .as_ref()
             .and_then(|t| binding_of(t, history))
             .is_some_and(|(o, s)| o == order && s == Some(segment))
-}
-
-/// Whether `statement` is about `part` of `order`: it names the order, and a segment of the part, its own or the
-/// one the transaction it names was first bound to (`binding_of`), the two agreeing, and the transaction bound to
-/// this order.
-fn about_the_part(statement: &StatedEntry, order: &Id, part: &str, history: &History) -> bool {
-    let Some(about) = &statement.about else {
-        return false;
-    };
-    if about.order.as_ref() != Some(order) {
-        return false;
-    }
-    let segment = match about
-        .transaction
-        .as_ref()
-        .and_then(|t| binding_of(t, history))
-    {
-        Some((bound, _)) if bound != order => return false,
-        Some((_, Some(bound))) => match &about.segment {
-            Some(named) if named != bound => return false,
-            _ => Some(bound),
-        },
-        _ => about.segment.as_ref(),
-    };
-    segment.is_some_and(|s| part_of_segment(order.as_str(), s.as_str(), history) == Some(part))
 }
 
 /// The index of `entry` in `history`: the candidates a row answers are `history`'s own entries.
@@ -3807,6 +3808,7 @@ fn in_motion(order: &str, part: &str, target: &Entry, history: &History) -> Matc
                     order: o,
                     carries_out,
                     resolution,
+                    ..
                 },
             ..
         } if o.as_str() == order && decided_part(order, carries_out, history) == Some(part) => {

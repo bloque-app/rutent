@@ -21,7 +21,8 @@
         "decimals": 2
       },
       "amount": "2500000"
-    }
+    },
+    "transaction": "tx-r21"
   },
   "decision": {
     "request": "req-201",

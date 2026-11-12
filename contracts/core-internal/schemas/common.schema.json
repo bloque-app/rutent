@@ -438,7 +438,8 @@
         "kind",
         "order",
         "carries_out",
-        "resolution"
+        "resolution",
+        "transaction"
       ],
       "properties": {
         "kind": {
@@ -455,6 +456,10 @@
         "resolution": {
           "description": "The outcome it moves, exactly as the decide step named it, the provider that moves it included; the log admits it only so.",
           "$ref": "urn:rutent:core-internal:stuck-decide#/$defs/resolution"
+        },
+        "transaction": {
+          "description": "The transaction the move goes under at that provider: what its outcome's evidence is about, as a move_value's is about its segment.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },

@@ -3389,7 +3389,8 @@
                 "decimals": 2
               },
               "amount": "2500000"
-            }
+            },
+            "transaction": "tx-d3"
           },
           "decision": {
             "request": "req-201",
@@ -3586,8 +3587,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -3632,8 +3632,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -3678,8 +3677,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -3982,7 +3980,8 @@
                 "decimals": 6
               },
               "amount": "1000000000"
-            }
+            },
+            "transaction": "tx-h3"
           },
           "decision": {
             "request": "req-211",

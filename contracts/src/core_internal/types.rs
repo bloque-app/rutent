@@ -459,6 +459,9 @@ pub enum Action {
         /// The outcome it moves, exactly as the decide step named it, the provider that moves it included: the log
         /// admits it only so (`admit_entry`).
         resolution: Resolution,
+        /// The transaction the move goes under at that provider: what its outcome's evidence is about, as a
+        /// `move_value`'s is about its segment (`outcome-confirmation-cites-verified-evidence`).
+        transaction: Id,
     },
 }
 
