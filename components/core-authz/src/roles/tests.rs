@@ -287,7 +287,8 @@ fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
 
 impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
-        if let Source::ActsFor { acts, party } = &need.from {
+        // The kind each actor states is the one its login is listed as: no test here turns on it (`T-021-05`'s do).
+        if let Source::ActsFor { acts, party, .. } = &need.from {
             let listed = self.acts_for.iter().any(|(a, _)| a == acts);
             let acts_for = self.acts_for.iter().any(|(a, p)| a == acts && p == party);
             return Reply::Given(if acts_for || !listed {

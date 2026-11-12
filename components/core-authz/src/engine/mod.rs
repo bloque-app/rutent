@@ -168,14 +168,17 @@ pub enum Source {
     /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
     OrderOrigin(Id),
     /// The deployment's register of actors: whether the actor `acts`, as external authentication established it,
-    /// acts for the accountable party `party` its request states. External authentication says who acts and nothing
-    /// more (`REQ-AUZ-1`), so a party is only the request's word until this says yes (`REQ-AUZ-8`). It answers by
-    /// `acts`.
+    /// acts for the accountable party `party` its request states, as the kind of actor `kind` it states. External
+    /// authentication says who acts and nothing more (`REQ-AUZ-1`), so a party and a kind are only the request's word
+    /// until this says yes (`REQ-AUZ-8`): an agent's login stating itself a person would otherwise escape its scope.
+    /// It answers by `acts`, yes only where it lists that login for that party as that kind.
     ActsFor {
         /// The actor.
         acts: Id,
         /// The party its request says it acts for.
         party: Id,
+        /// The kind of actor its request says it is (`T-021-05`).
+        kind: rutent_contracts::core_internal::ActorKind,
     },
     /// The scope an accountable party set for its agents (`REQ-AUZ-8`): whether the agent the input names (its
     /// `acts`), acting for `party`, may make the call `scope` names. It answers by the agent, as `Permissions` does,

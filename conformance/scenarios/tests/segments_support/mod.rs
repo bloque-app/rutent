@@ -392,10 +392,10 @@ impl authz::Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
-            authz::Source::ActsFor { acts, party } => {
+            authz::Source::ActsFor { acts, party, kind } => {
                 let listed = [core(), customer(), operator()];
                 match listed.iter().find(|a| &a.acts == acts) {
-                    Some(actor) => yes(&actor.party == party),
+                    Some(actor) => yes(&actor.party == party && &actor.kind == kind),
                     None => Reply::Missing,
                 }
             }

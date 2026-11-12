@@ -8,7 +8,9 @@
 //! request says an actor acts for is the request's word until the deployment's register of actors says yes
 //! (`Source::ActsFor`). A fixed rule, the first asked, holds every actor a request names to it, on every call: who
 //! asks, gives, decides, moves, reads, grants or asks about a person, a route's suggester and a permission's grantee.
-//! An actor the register says acts for another party acts for no accountable party, and is refused so
+//! The register binds the kind of actor too (`T-021-05`), so an agent's login can't state itself a person or a
+//! component and so escape the scope its party set. An actor the register says acts for another party, or is
+//! another kind, acts for no accountable party, and is refused so
 //! (`REQ-AUZ-8`), whatever else the request would pass; one the register says nothing of is a missing input. So every
 //! rule that reads a stated party, the sessions' and reads' of `T-021-02` among them, reads one the register has
 //! bound to its actor.
@@ -283,7 +285,7 @@ fn actors_named<'a>(asked: Asked<'a>) -> Vec<&'a Actor> {
     }
 }
 
-/// The register's word, for each actor `asked` names, that it acts for the party it states.
+/// The register's word, for each actor `asked` names, that it acts for the party it states, as the kind it states.
 fn acts_for(asked: Asked<'_>) -> Vec<Need> {
     let mut needs: Vec<Need> = Vec::new();
     for actor in actors_named(asked) {
@@ -292,6 +294,7 @@ fn acts_for(asked: Asked<'_>) -> Vec<Need> {
             from: Source::ActsFor {
                 acts: actor.acts.clone(),
                 party: actor.party.clone(),
+                kind: actor.kind,
             },
         };
         if !needs.contains(&need) {

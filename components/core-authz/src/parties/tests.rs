@@ -109,8 +109,9 @@ impl Policy for Permits {
 /// (`AgentScope`), each asked kept. Every other row's input says yes, so what these tests decide is this row's rule.
 #[derive(Default)]
 struct Registers {
-    /// Each actor listed, by its `acts`, with the party it acts for. An actor not listed is a missing input.
-    acts_for: Vec<(Id, Id)>,
+    /// Each actor listed, by its `acts`, with the party it acts for and the kind of actor it is. An actor not listed
+    /// is a missing input.
+    acts_for: Vec<(Id, Id, ActorKind)>,
     /// Each agent a party listed, with the calls in its scope. An agent not listed is a missing input.
     scopes: Vec<(Id, Id, Vec<Scope>)>,
     /// The scopes asked, in order.
@@ -121,13 +122,13 @@ impl Registers {
     /// Registers listing every actor of the fixtures as acting for its own party.
     fn of_the_fixtures() -> Self {
         let mut registers = Registers::default();
-        for (acts, party) in [
-            ("core-orch", "rutent"),
-            ("op-login-2", "operator"),
-            ("op-login-5", "operator-desk-b"),
-            ("examiner-3", "fin-regulator"),
+        for (acts, party, kind) in [
+            ("core-orch", "rutent", ActorKind::Component),
+            ("op-login-2", "operator", ActorKind::Person),
+            ("op-login-5", "operator-desk-b", ActorKind::Person),
+            ("examiner-3", "fin-regulator", ActorKind::Person),
         ] {
-            registers.acts_for.push((id(acts), id(party)));
+            registers.acts_for.push((id(acts), id(party), kind));
         }
         registers
     }
@@ -135,7 +136,7 @@ impl Registers {
     /// `actor` listed as acting for its party, and, where `scope` is some, in that scope of it.
     fn with(mut self, actor: &Actor, scope: Option<Vec<Scope>>) -> Self {
         self.acts_for
-            .push((actor.acts.clone(), actor.party.clone()));
+            .push((actor.acts.clone(), actor.party.clone(), actor.kind));
         if let Some(scope) = scope {
             self.scopes
                 .push((actor.party.clone(), actor.acts.clone(), scope));
@@ -166,9 +167,9 @@ impl Sources for Registers {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
-            Source::ActsFor { acts, party } => {
-                match self.acts_for.iter().find(|(a, _)| a == acts) {
-                    Some((_, p)) => yes(p == party),
+            Source::ActsFor { acts, party, kind } => {
+                match self.acts_for.iter().find(|(a, _, _)| a == acts) {
+                    Some((_, p, k)) => yes(p == party && k == kind),
                     None => Reply::Missing,
                 }
             }
@@ -316,7 +317,9 @@ fn agent_without_an_accountable_party_is_refused() {
     let elsewhere = agent("acme-treasury", "agent-8");
     let unknown = agent("acme-treasury", "agent-9");
     let mut registers = Registers::of_the_fixtures();
-    registers.acts_for.push((id("agent-8"), id("other-co")));
+    registers
+        .acts_for
+        .push((id("agent-8"), id("other-co"), ActorKind::Agent));
     registers
         .scopes
         .push((id("acme-treasury"), id("agent-8"), every_scope()));
@@ -728,22 +731,32 @@ fn charge_the_log_does_not_take_counts_nothing() {
     assert_eq!(policy.log.entries.len(), 1);
 }
 
-/// One definition of an actor's accountable party, for the rows that compare actors there: two agents of one party,
-/// or its person and its agent, are one; agents of two parties are two.
-// verifies: REQ-AUZ-8
+/// One definition of one accountable actor, for the rows that compare actors there: two agents of one party, or its
+/// person and its agent, are one; so is one login stating two parties, since one login can act for more than one.
+/// Only two logins of two parties are two.
+// verifies: REQ-AUZ-8, REQ-AUZ-4
 #[test]
 fn actors_are_compared_at_their_accountable_party() {
     let seven = agent("acme-treasury", "agent-7");
     let eight = agent("acme-treasury", "agent-8");
     let own = person("acme-treasury", "treasurer-1");
-    let other = agent("other-co", "agent-7");
+    let seven_elsewhere = agent("other-co", "agent-7");
+    let decider = person("operator", "op-login-2");
+    let mover = person("operator-desk-b", "op-login-2");
+    let other = agent("other-co", "agent-9");
     assert_eq!(accountable(&seven), &id("acme-treasury"));
-    assert!(same_party(&seven, &eight));
-    assert!(same_party(&seven, &own));
+    assert!(same_accountable_actor(&seven, &eight));
+    assert!(same_accountable_actor(&seven, &own));
     assert!(
-        !same_party(&seven, &other),
-        "the same agent id, another party"
+        same_accountable_actor(&seven, &seven_elsewhere),
+        "one login, two parties stated"
     );
+    assert!(
+        same_accountable_actor(&decider, &mover),
+        "the operator's login deciding for one desk and moving for another"
+    );
+    assert!(!same_accountable_actor(&seven, &other));
+    assert!(!same_accountable_actor(&decider, &other));
 }
 
 /// The rule itself, handed none of the inputs it named, takes the agent's scope as missing, never as a yes: a second
@@ -777,4 +790,347 @@ fn scope_rule_takes_an_input_it_was_not_given_as_missing() {
     let own = charge("req-3", &person("cust-1", "cust-1"), Work::Request, 1);
     assert_eq!(needs(Asked::Charge(&own)), Reply::Given(Vec::new()));
     assert_eq!(rule(Asked::Charge(&own), &[]), Reply::Given(Ruling::Permit));
+}
+
+/// An actor's kind is the register's, not the request's: an agent's login stating itself a person or a component is
+/// held to the kind the register lists for it, and acts for no one, so it escapes neither the scope its party set nor
+/// the rule that an agent is never its own party. A login the register lists as a person passes as one, and stating
+/// itself an agent it is held to its kind too.
+// verifies: REQ-AUZ-8, REQ-AUZ-1
+#[test]
+fn agent_stating_another_kind_acts_for_no_one() {
+    let scoped = agent("acme-treasury", "agent-7");
+    let treasurer = person("acme-treasury", "treasurer-1");
+    let mut policy = engine(
+        Registers::of_the_fixtures()
+            .with(&scoped, Some(vec![Scope::Charge(Work::Request)]))
+            .with(&treasurer, None),
+        Uniform::default(),
+    );
+    let moves = |by: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-move-value");
+        request.caller = by.clone();
+        request
+    };
+    assert_eq!(
+        policy.consult(Asked::Decide(&moves(&scoped))),
+        refused(RefusalClass::NotPermitted),
+        "outside its scope as the agent it is"
+    );
+    for kind in [ActorKind::Person, ActorKind::Component] {
+        let stated = Actor {
+            kind,
+            ..scoped.clone()
+        };
+        for (name, asked) in Calls::by(&stated).each() {
+            assert_eq!(
+                policy.consult(asked),
+                refused(RefusalClass::NoAccountableParty),
+                "{kind:?} {name}"
+            );
+        }
+        let decision = policy.decide(&moves(&stated)).unwrap();
+        assert!(decision.permit().is_none(), "{kind:?}");
+    }
+    assert_eq!(
+        policy.consult(Asked::Decide(&moves(&treasurer))),
+        Answer::Permit {}
+    );
+    let treasurer_as_agent = Actor {
+        kind: ActorKind::Agent,
+        ..treasurer.clone()
+    };
+    // Refused: the register says no to the kind, and, its party having set no scope for it, the scope is missing
+    // too, which the engine finds first, as it asks every input before any rule rules.
+    assert!(
+        matches!(
+            policy.consult(Asked::Decide(&moves(&treasurer_as_agent))),
+            Answer::Refuse { .. }
+        ),
+        "a person's login stating an agent is held to its kind too"
+    );
+
+    // An agent its register lists as its own party, stating itself a person, is still an agent: no one's.
+    let itself = agent("agent-7", "agent-7");
+    let mut policy = engine(
+        Registers::of_the_fixtures().with(&itself, Some(every_scope())),
+        Uniform::default(),
+    );
+    let as_person = Actor {
+        kind: ActorKind::Person,
+        ..itself.clone()
+    };
+    for (name, asked) in Calls::by(&as_person).each() {
+        assert_eq!(
+            policy.consult(asked),
+            refused(RefusalClass::NoAccountableParty),
+            "{name}"
+        );
+    }
+}
+
+/// Each call is its own scope: an agent its party scoped to exactly one call is permitted that call alone, by the
+/// rule, and refused every other. The table names each call's scope by hand, so no call can borrow another's.
+// verifies: REQ-AUZ-8
+#[test]
+fn each_scope_permits_its_own_call_alone() {
+    let a = agent("acme-treasury", "agent-7");
+    let decide = |fixture: &str| {
+        let mut request: DecisionRequest =
+            serde_json::from_value(read_fixture(&format!("valid/{fixture}"))).unwrap();
+        request.caller = a.clone();
+        request
+    };
+    let moved = decide("decision-request-to-move-value");
+    let posted = decide("decision-request-to-post-a-suggested-route");
+    let stale = decide("decision-request-to-mark-a-release-stale");
+    let promoted = decide("decision-request-to-promote-a-staged-release");
+    let erased = decide("decision-request-to-erase-a-kept-statement");
+    let Action::ChangeCatalogue { change: marks, .. } = stale.action else {
+        panic!("a catalogue change");
+    };
+    let Action::ChangeCatalogue {
+        change: promotes, ..
+    } = promoted.action
+    else {
+        panic!("a catalogue change");
+    };
+    // A request to resolve a stuck order fails its check and never reaches the consultation; were it to, it is a
+    // stuck move.
+    let calls = Calls::by(&a);
+    let mut resolved = moved.clone();
+    resolved.action = Action::ResolveStuck {
+        order: calls.move_stuck.order.clone(),
+        carries_out: calls.move_stuck.carries_out.clone(),
+        resolution: calls.decide_stuck.resolution.clone(),
+    };
+    let charge_of = |work| {
+        let mut c = calls.charge.clone();
+        c.work = work;
+        c
+    };
+    let (request, fan_out, person_question) = (
+        charge_of(Work::Request),
+        charge_of(Work::FanOut),
+        charge_of(Work::PersonQuestion),
+    );
+    let table: Vec<(&str, Asked<'_>, Scope)> = vec![
+        ("move_value", Asked::Decide(&moved), Scope::MoveValue),
+        ("post_route", Asked::Decide(&posted), Scope::PostRoute),
+        (
+            "mark_stale",
+            Asked::Decide(&stale),
+            Scope::ChangeCatalogue(marks),
+        ),
+        (
+            "promote",
+            Asked::Decide(&promoted),
+            Scope::ChangeCatalogue(promotes),
+        ),
+        ("erase", Asked::Decide(&erased), Scope::EraseStatement),
+        (
+            "authorise",
+            Asked::Authorise(&calls.authorise),
+            Scope::Authorise,
+        ),
+        (
+            "decide_stuck",
+            Asked::DecideStuck(&calls.decide_stuck),
+            Scope::DecideStuck,
+        ),
+        (
+            "move_stuck",
+            Asked::MoveStuck(&calls.move_stuck),
+            Scope::MoveStuck,
+        ),
+        ("resolve_stuck", Asked::Decide(&resolved), Scope::MoveStuck),
+        (
+            "open_session",
+            Asked::OpenSession(&calls.open_session),
+            Scope::OpenSession,
+        ),
+        (
+            "check_read",
+            Asked::CheckRead(&calls.check_read),
+            Scope::CheckRead,
+        ),
+        (
+            "grant",
+            Asked::GrantPermission(&calls.grant),
+            Scope::GrantPermission,
+        ),
+        (
+            "revoke",
+            Asked::RevokePermission(&calls.grant),
+            Scope::RevokePermission,
+        ),
+        (
+            "request",
+            Asked::Charge(&request),
+            Scope::Charge(Work::Request),
+        ),
+        (
+            "fan_out",
+            Asked::Charge(&fan_out),
+            Scope::Charge(Work::FanOut),
+        ),
+        (
+            "person_question",
+            Asked::Charge(&person_question),
+            Scope::Charge(Work::PersonQuestion),
+        ),
+        (
+            "ask",
+            Asked::AskAboutPerson(&calls.ask),
+            Scope::AskAboutPerson,
+        ),
+    ];
+    assert_ne!(marks, promotes);
+    let mut scopes: Vec<Scope> = Vec::new();
+    for (_, _, scope) in &table {
+        if !scopes.contains(scope) {
+            scopes.push(*scope);
+        }
+    }
+    for only in &scopes {
+        let mut sources = Registers::of_the_fixtures().with(&a, Some(vec![*only]));
+        for (name, asked, scope) in &table {
+            let Reply::Given(named) = needs(*asked) else {
+                panic!("the rule names its inputs");
+            };
+            let inputs: Vec<Input> = named
+                .into_iter()
+                .map(|need| {
+                    let Reply::Given(said) = sources.supply(&need) else {
+                        panic!("the register answers {need:?}");
+                    };
+                    Input { need, said }
+                })
+                .collect();
+            let expected = if scope == only {
+                Reply::Given(Ruling::Permit)
+            } else {
+                Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted))
+            };
+            assert_eq!(rule(*asked, &inputs), expected, "{name} under {only:?}");
+        }
+    }
+}
+
+/// Core's clock moving back doesn't start the bound again: a charge at a moment before the latest window counts in
+/// the latest window, and the count goes on when the clock comes forward again within it.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn clock_moving_back_keeps_counting_in_the_latest_window() {
+    let a = agent("acme-treasury", "agent-7");
+    let mut policy = engine(
+        Registers::of_the_fixtures().with(&a, Some(every_scope())),
+        bounds(3, 1),
+    );
+    let within = |n| ChargeOutcome::Within { remaining: safe(n) };
+    let over = ChargeOutcome::Over { bound: safe(3) };
+    let mut charge_at = |moment: &str, request: &str, count| {
+        policy.set_clock(Stopped::at(&at(moment)));
+        policy
+            .charge(&charge(request, &a, Work::Request, count))
+            .unwrap()
+            .outcome
+    };
+    assert_eq!(charge_at("2026-11-10T10:00:00Z", "req-1", 2), within(1));
+    assert_eq!(charge_at("2026-11-10T09:59:59Z", "req-2", 1), within(0));
+    assert_eq!(charge_at("2026-11-10T09:59:59Z", "req-3", 1), over);
+    assert_eq!(charge_at("2026-11-10T10:00:01Z", "req-4", 1), over);
+    assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 3);
+    // A charge counted while the clock stood back is counted at the latest window's start, so a rebuild finds it in
+    // the window it counted in.
+    let ten = std::time::Duration::from_secs(1_794_304_800);
+    let back = ten - std::time::Duration::from_secs(1);
+    assert_eq!(policy.charged().counted_at(back), ten);
+    let later = ten + std::time::Duration::from_secs(1);
+    assert_eq!(policy.charged().counted_at(later), later);
+}
+
+/// A charge's id is its party's own: two parties' charges under one id are two charges, each counted at its party.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn charge_ids_are_each_partys_own() {
+    let acme = agent("acme-treasury", "agent-7");
+    let other = agent("other-co", "agent-1");
+    let mut policy = engine(
+        Registers::of_the_fixtures()
+            .with(&acme, Some(every_scope()))
+            .with(&other, Some(every_scope())),
+        bounds(3, 1),
+    );
+    for who in [&acme, &other] {
+        assert_eq!(
+            policy
+                .charge(&charge("req-1", who, Work::Request, 2))
+                .unwrap()
+                .outcome,
+            ChargeOutcome::Within { remaining: safe(1) },
+            "{who:?}"
+        );
+    }
+    assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 2);
+    assert_eq!(policy.charged().used(&id("other-co"), Limit::Work), 2);
+}
+
+/// The counter is a function of what it counted: rebuilt from the charges counted before, each once by its party's
+/// id and those of an earlier window left out, it stands as the counter that counted them did, and holds the next
+/// charge to the same bound.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn counter_is_rebuilt_from_the_charges_counted() {
+    let acme = agent("acme-treasury", "agent-7");
+    let other = agent("other-co", "agent-1");
+    // 2026-11-10T10:00:00Z, and the window before it.
+    let now = std::time::Duration::from_secs(1_794_304_800);
+    let earlier = now - std::time::Duration::from_secs(WINDOW_SECS);
+    let counted = |charge: Charge, at| Counted { charge, at };
+    let mut rebuilt = Charged::default();
+    rebuilt.rebuild(
+        now,
+        vec![
+            counted(charge("req-1", &acme, Work::Request, 2), now),
+            // The same charge recorded again counts once.
+            counted(charge("req-1", &acme, Work::Request, 2), now),
+            counted(charge("req-1", &other, Work::FanOut, 4), now),
+            counted(charge("req-2", &acme, Work::PersonQuestion, 1), now),
+            // A window gone counts nothing now.
+            counted(charge("req-0", &acme, Work::Request, 5), earlier),
+        ],
+    );
+    assert_eq!(rebuilt.used(&id("acme-treasury"), Limit::Work), 2);
+    assert_eq!(rebuilt.used(&id("acme-treasury"), Limit::People), 1);
+    assert_eq!(rebuilt.used(&id("other-co"), Limit::Work), 4);
+    let again = charge("req-1", &acme, Work::Request, 2);
+    assert!(!rebuilt.reissues(&again));
+    assert_eq!(
+        rebuilt.standing(&again),
+        Standing::Fits {
+            remaining: safe(WORK_BOUND - 2)
+        },
+        "counted already"
+    );
+    let mut changed = again.clone();
+    changed.count = Count::new(3).unwrap();
+    assert!(rebuilt.reissues(&changed));
+    // The window before is gone, so its charge again is a new one.
+    let gone = charge("req-0", &acme, Work::Request, 5);
+    assert!(!rebuilt.reissues(&gone));
+
+    // Rebuilt, a counter holds nothing of what it held before; and a charge counted in a window later than the one
+    // Core's clock now stands in, as after the clock moved back, puts the counter in that latest window.
+    let mut held = Charged::default();
+    held.roll(now);
+    held.take(&charge("req-9", &acme, Work::Request, 7));
+    held.rebuild(
+        earlier,
+        vec![
+            counted(charge("req-1", &acme, Work::Request, 2), now),
+            counted(charge("req-0", &acme, Work::Request, 5), earlier),
+        ],
+    );
+    assert_eq!(held.used(&id("acme-treasury"), Limit::Work), 2);
 }

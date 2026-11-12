@@ -17,7 +17,10 @@
 //!   refusal, one out of reach not known (`REQ-AUZ-5`). An authorisation is a scope of its own, so an agent gives
 //!   one, the customer's new destination after a failed final deposit included, only where its party let it.
 //!
-//! A person or a component is its party's own, and is asked no scope. Who a party's agents are, and what each may
+//! The kind of actor is the register's, not the request's: `T-021-03`'s rule asks the register of actors for the
+//! login, its party and its kind together, so an agent's login stating itself a person or a component acts for no
+//! one, and escapes neither rule. A person or a component is its party's own, and is asked no scope. A route's
+//! suggester is asked no scope either: it doesn't act in the call, the operator who posts the route does. Who a party's agents are, and what each may
 //! do, is the deployment's register to keep and record (`F-030`); the engine only asks.
 //!
 //! # Limits bind at the party
@@ -37,15 +40,20 @@
 //! under an id already counted is refused.
 //!
 //! The window is a fixed one, [`WINDOW_SECS`] long, read from Core's own clock (`session::Clock`, the one sessions
-//! are bounded by), never from the time a charge states. Its bounds are the deployment's ([`Bounds`],
-//! [`Engine::set_bounds`]), [`Uniform`] until it hands others.
+//! are bounded by), never from the time a charge states. It only moves forward: Core's clock moving back keeps the
+//! count going in the latest window. A fixed window lets a party spend its bound at the end of one window and again
+//! at the start of the next, twice the bound in a moment; that burst is accepted, and a sliding window is the
+//! deployment's to ask for. Its bounds are the deployment's ([`Bounds`], [`Engine::set_bounds`]), [`Uniform`] until it
+//! hands others. The counter is a function of the charges it counted ([`Charged::rebuild`]), so it can be rebuilt from
+//! the log's permitted `charge` entries once core-internal's charge entry carries the engine's own time.
 //!
 //! # Who answers for an actor
 //!
-//! [`accountable`] and [`same_party`] are the one definition of an actor's accountable party, for the rows that
-//! compare actors there: `T-021-06`, which holds a stuck order's decider and mover to two parties, and `T-021-07`,
-//! which bounds questions about people at the asker's party. Each reads a party the consultation has bound, so it is
-//! read only of a call the fixed rules let through.
+//! [`accountable`] and [`same_accountable_actor`] are the one definition of an actor's accountable party and of two
+//! actors being one there, for the rows that compare actors: `T-021-06`, which holds a stuck order's decider and mover
+//! apart, and `T-021-07`, which bounds questions about people at the asker's party. Two actors are one where they act
+//! for one party or are one login, since a login may act for more than one party. Each reads a party the consultation
+//! has bound, so it is read only of a call the fixed rules let through.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -134,10 +142,12 @@ pub fn accountable(actor: &Actor) -> &Id {
     &actor.party
 }
 
-/// Whether `a` and `b` act for one accountable party, so count as one actor where actors are compared: two agents of
-/// one party, or a party's person and its agent, are one (`REQ-AUZ-4`, `REQ-AUZ-8`).
-pub fn same_party(a: &Actor, b: &Actor) -> bool {
-    accountable(a) == accountable(b)
+/// Whether `a` and `b` count as one accountable actor where actors are compared (`REQ-AUZ-4`, `REQ-AUZ-8`): they act
+/// for one accountable party, as two agents of one party or its person and its agent do, or they are one login,
+/// which may act for more than one party (an operator's login deciding for one desk and moving for another). Two
+/// actors are distinct only where both their parties and their logins differ.
+pub fn same_accountable_actor(a: &Actor, b: &Actor) -> bool {
+    accountable(a) == accountable(b) || a.acts == b.acts
 }
 
 /// What the fixed rule needs for `asked`: the party's word that its agent may make the call, for an agent with an
@@ -247,11 +257,12 @@ pub enum Standing {
 #[derive(Debug)]
 pub struct Charged {
     bounds: Box<dyn Bounds>,
-    /// The window now: its start, in whole windows since the epoch, by Core's clock.
+    /// The latest window counted in: its start, in whole windows since the epoch, by Core's clock. It only moves
+    /// forward.
     window: u64,
     used: HashMap<(Id, Limit), u64>,
-    /// The charges counted in the window now, by their ids.
-    counted: HashMap<Id, Charge>,
+    /// The charges counted in the window now, by their party and their id.
+    counted: HashMap<(Id, Id), Charge>,
 }
 
 impl Default for Charged {
@@ -271,20 +282,32 @@ impl Charged {
         self.used.get(&(party.clone(), limit)).copied().unwrap_or(0)
     }
 
-    /// Starts the window `now` falls in, where it isn't the one counted: every party's count starts again.
+    /// Starts the window `now` falls in, where it is later than the latest counted in: every party's count starts
+    /// again. Core's clock moving back starts nothing: the count goes on in the latest window.
     pub(crate) fn roll(&mut self, now: Duration) {
         let window = now.as_secs() / WINDOW_SECS;
-        if window != self.window {
+        if window > self.window {
             self.window = window;
             self.used.clear();
             self.counted.clear();
         }
     }
 
-    /// Whether `charge` names, under an id counted in the window now, another charge.
+    /// The moment a charge counted at Core's `now` is counted at: `now`, or the start of the latest window where the
+    /// clock has moved back before it, so a rebuild puts it in the window it was counted in.
+    pub fn counted_at(&self, now: Duration) -> Duration {
+        now.max(Duration::from_secs(self.window.saturating_mul(WINDOW_SECS)))
+    }
+
+    /// The key a charge is counted under: its party's, and its id within that party.
+    fn key(charge: &Charge) -> (Id, Id) {
+        (charge.party.clone(), charge.request.clone())
+    }
+
+    /// Whether `charge` names, under an id its party had counted in the window now, another charge.
     pub(crate) fn reissues(&self, charge: &Charge) -> bool {
         self.counted
-            .get(&charge.request)
+            .get(&Self::key(charge))
             .is_some_and(|counted| counted != charge)
     }
 
@@ -295,7 +318,7 @@ impl Charged {
         let bound = self.bounds.bound(&charge.party, limit);
         let used = self.used(&charge.party, limit);
         let safe = |n: u64| SafeInteger::try_from(n).expect("no more than the bound");
-        if self.counted.contains_key(&charge.request) {
+        if self.counted.contains_key(&Self::key(charge)) {
             return Standing::Fits {
                 remaining: safe(bound.get().saturating_sub(used)),
             };
@@ -310,12 +333,44 @@ impl Charged {
 
     /// Counts `charge` against its party, once.
     pub(crate) fn take(&mut self, charge: &Charge) {
-        if self.counted.contains_key(&charge.request) {
+        if self.counted.contains_key(&Self::key(charge)) {
             return;
         }
         let key = (charge.party.clone(), Limit::of(charge.work));
         *self.used.entry(key).or_insert(0) += charge.count.get();
-        self.counted.insert(charge.request.clone(), charge.clone());
+        self.counted.insert(Self::key(charge), charge.clone());
+    }
+}
+
+/// A charge counted within its bound, with the moment it was counted at by Core's clock ([`Charged::counted_at`]):
+/// what the log's permitted `charge` entries hold, once core-internal's charge entry carries the engine's own time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Counted {
+    /// The charge.
+    pub charge: Charge,
+    /// When it was counted, by Core's clock.
+    pub at: Duration,
+}
+
+impl Charged {
+    /// Rebuilds the counter, in place of what it held, from the charges `counted` before: those of the latest window,
+    /// the one `now` falls in or a later one any of them was counted in, each counted once under its party's id. The
+    /// counter is a function of them, so an engine opened again after a restart, or beside another, holds what they
+    /// hold. Its bounds stay as they are.
+    pub fn rebuild(&mut self, now: Duration, counted: impl IntoIterator<Item = Counted>) {
+        let counted: Vec<Counted> = counted.into_iter().collect();
+        let window_of = |at: Duration| at.as_secs() / WINDOW_SECS;
+        self.window = counted
+            .iter()
+            .map(|c| window_of(c.at))
+            .fold(window_of(now), u64::max);
+        self.used.clear();
+        self.counted.clear();
+        for c in counted {
+            if window_of(c.at) == self.window {
+                self.take(&c.charge);
+            }
+        }
     }
 }
 
