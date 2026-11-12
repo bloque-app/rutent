@@ -2453,3 +2453,44 @@ rule was switched off once, its test seen red, the file restored and touched.
   `late_delivery_is_recorded_and_moves_nothing` for the late-answer hand-off.
 - **Touches**: `components/core-orch/src/reversal/`, the seams above, `components/core-orch/tests/reversal.rs`. No
   manifest, no dependency, no lock or `licences/RECORD` line, no `DEC-20` path.
+- **Merged `m3` at `5d9dcca`** (`T-021-04b`'s per-part authorisations, `T-020-10b`'s waits at the floor): no
+  conflict; the seams above sit beside the per-part waits in `segments/mod.rs`, and every test passes on the merged
+  tree. The rule-off below ran on it.
+- **Red first, and rule-off.** The module was written before its tests (the harness had to be built to reach a
+  failed middle segment at all), so, as `T-020-08` and `T-020-11` did, each rule was switched off once by a scratch
+  script (`t-020-12-ruleoff.py`, outside the tree), the reversal tests run, the file restored and touched:
+
+  | Rule switched off | Red |
+  |---|---|
+  | not the failed provider's own word | the failed provider's test |
+  | only the origin reserve's word (ADR-0008) | the origin reserve's test (another party's answer) |
+  | not its publisher's | the failed provider's test (the shared publisher) |
+  | the inner confirmation the reserve's own | the failed provider's test |
+  | the reversed segment's transaction | the failed provider's test |
+  | in the asset it left in | the failed provider's test |
+  | in full | the failed provider's test (the short credit), the partial-evidence test |
+  | no deposit owes a reversal | the owed test |
+  | asked again after an answer that doesn't count | the failed provider's, origin reserve's and owed tests |
+  | discharged only on a completed reversal | the owed test, the failed provider's test |
+  | a statement kept once | the partial-evidence test (bytes kept once) |
+  | a showing only the failed provider's | the dispute test |
+  | no end while in motion | the end test |
+  | a return only of a complete order | the return test |
+  | a late approval only after the end | the late-approval test |
+  | a late report about its own transaction | the late-delivery test |
+  | an undone start only of a complete part | the undone-start test |
+  | an undone start's loss the origin reserve's | the undone-start and partial-evidence tests |
+  | the order Core follows takes the reversal (`observe` called) | the undone-start and origin reserve's tests |
+  | the hold released | the origin reserve's test |
+  | a statement only of the maker it must be (destination, origin reserve) | the return test |
+  | a showing answered only in its party's role | the dispute test |
+  | seam: `observe` takes `reversal_completed` | the undone-start and origin reserve's tests |
+  | seam: `observe` takes `end_requested` | the end and late-approval tests |
+  | seam: an ended part hands nothing over | the end and late-approval tests |
+  | seam: `Stuck::dispute` declares the part | the dispute test |
+
+  An input built only where the state machine takes it, and read again before its append (completion and end), is
+  held twice: each switched off alone stays green, all three together go red (the end test), as `T-020-11`'s
+  two-place check. Not switched off: the answer's signature (`Unattributable`), behind which the log's attribution
+  refuses an unverified answer as evidence; `Unasked` in `judge`, since `report` never completes whatever `judge`
+  answers; the question appended before it is sent; and `seen`'s read check, which its test counts.

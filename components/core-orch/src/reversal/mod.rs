@@ -576,11 +576,7 @@ impl Reversals {
     /// The party the provider's showing names, accepting it: it carries the reversal from then (`REQ-ORD-11`). `by`
     /// must act in that party's role; that it is the order's own customer, or the deployment's operator, is policy's
     /// to hold (`T-021-06`).
-    pub fn accept_fault(
-        &mut self,
-        at: At<'_>,
-        by: &Actor,
-    ) -> Result<Carrier, ReversalError> {
+    pub fn accept_fault(&mut self, at: At<'_>, by: &Actor) -> Result<Carrier, ReversalError> {
         let reversal = self
             .reversals
             .get_mut(&key(at.order, at.segment))
@@ -1050,7 +1046,10 @@ impl Reversals {
         makers: &[Id],
         refused: ReversalError,
     ) -> Result<Afterward, ReversalError> {
-        let kept = self.afterwards.entry(order.as_str().to_owned()).or_default();
+        let kept = self
+            .afterwards
+            .entry(order.as_str().to_owned())
+            .or_default();
         if !kept.iter().any(|a| a.bytes == bytes && a.event == event) {
             parts
                 .catalogue
@@ -1206,7 +1205,9 @@ fn input(
         subject: Subject {
             order: state_id(order.as_str(), "an order")?,
             part: part.map(|p| state_id(p.as_str(), "a part")).transpose()?,
-            segment: segment.map(|s| state_id(s.as_str(), "a segment")).transpose()?,
+            segment: segment
+                .map(|s| state_id(s.as_str(), "a segment"))
+                .transpose()?,
         },
         observed,
     };

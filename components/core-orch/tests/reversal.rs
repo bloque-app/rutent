@@ -12,13 +12,13 @@ use std::collections::BTreeMap;
 
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements,
-    Log, Reads, Signatures, StatementKeys,
+    AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements, Log, Reads,
+    Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
-    Destination, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Receipt,
-    Role, RouteEnd, SignedWith, Through, What, admit_entry, attribute,
+    Destination, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
+    ReadOutcome, Receipt, Role, RouteEnd, SignedWith, Through, What, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -134,8 +134,10 @@ impl Fresh for Ids {
 struct Store(Vec<Vec<u8>>);
 
 fn commitment(place: usize) -> Digest {
-    serde_json::from_value(json!({ "algorithm": "sha-256", "value": format!("{:064x}", place + 1) }))
-        .unwrap()
+    serde_json::from_value(
+        json!({ "algorithm": "sha-256", "value": format!("{:064x}", place + 1) }),
+    )
+    .unwrap()
 }
 
 impl Evidence for Store {
@@ -369,6 +371,12 @@ enum Reply {
         maker: &'static str,
         amount: Option<&'static str>,
     },
+    /// It confirms a credit as given where given, the inner confirmation made by `inner`, of `segment`, in `asset`.
+    Credit {
+        inner: &'static str,
+        segment: Option<&'static str>,
+        asset: Option<&'static str>,
+    },
     /// No credit has arrived.
     NotConfirmed,
     /// Nothing comes back.
@@ -402,17 +410,38 @@ impl Answering {
 
 /// The reserve's confirmation of a credit of `amount` of `asset` for `segment`, as `maker` signs it, answering
 /// `transaction`.
-fn confirmation(maker: &str, transaction: &str, segment: &str, asset: &str, amount: &str) -> Vec<u8> {
+fn confirmation(
+    maker: &str,
+    transaction: &str,
+    segment: &str,
+    asset: &str,
+    amount: &str,
+) -> Vec<u8> {
+    confirmation_inside(maker, maker, transaction, segment, asset, amount)
+}
+
+/// [`confirmation`], its inner confirmation made by `inner`.
+fn confirmation_inside(
+    maker: &str,
+    inner_maker: &str,
+    transaction: &str,
+    segment: &str,
+    asset: &str,
+    amount: &str,
+) -> Vec<u8> {
     let deployment = snapshot_support::deployment();
     let key = snapshot_support::statements_key(maker, 1);
     let mut inner = snapshot_support::envelope(
         &deployment,
         REVERSAL_CONFIRMATION_SHAPE,
-        maker,
+        inner_maker,
         2_000,
         json!({ "segment": segment, "asset": asset, "amount": amount }),
     );
-    snapshot_support::sign_value(&mut inner, &key);
+    snapshot_support::sign_value(
+        &mut inner,
+        &snapshot_support::statements_key(inner_maker, 1),
+    );
     let body = json!({
         "kind": "reversal_confirmation",
         "transaction": transaction,
@@ -440,6 +469,18 @@ impl Providers for Answering {
                 &q.segment,
                 &q.asset,
                 amount.unwrap_or(&q.amount),
+            )),
+            Reply::Credit {
+                inner,
+                segment,
+                asset,
+            } => Some(confirmation_inside(
+                RESERVE,
+                inner,
+                &q.transaction,
+                segment.unwrap_or(&q.segment),
+                asset.unwrap_or(&q.asset),
+                &q.amount,
             )),
             Reply::NotConfirmed => Some(result(
                 RESERVE,
@@ -611,18 +652,20 @@ impl World {
         let clock = TestClock(Cell::new(Reading::at(NOW)));
         let chosen = route_chosen(&record);
         let mut log = KeptLog::default();
-        log.0.push(Entry::Verified(rutent_contracts::core_internal::VerifiedEntry {
-            kind: rutent_contracts::core_internal::VerifiedKind::Verified,
-            who: core(),
-            what: What::Input {
-                input: chosen.clone(),
+        log.0.push(Entry::Verified(
+            rutent_contracts::core_internal::VerifiedEntry {
+                kind: rutent_contracts::core_internal::VerifiedKind::Verified,
+                who: core(),
+                what: What::Input {
+                    input: chosen.clone(),
+                },
+                when: rutent_contracts::core_internal::When {
+                    at: Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
+                    source: rutent_contracts::core_internal::TimeSource::CoreClock,
+                },
+                outcome: rutent_contracts::core_internal::Outcome::Observed {},
             },
-            when: rutent_contracts::core_internal::When {
-                at: Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
-                source: rutent_contracts::core_internal::TimeSource::CoreClock,
-            },
-            outcome: rutent_contracts::core_internal::Outcome::Observed {},
-        }));
+        ));
         let mut segments = Segments::new();
         assert!(segments.follow(&clock, &chosen));
         World {
@@ -971,9 +1014,44 @@ fn failed_providers_own_statement_does_not_complete_its_reversal() {
             stated: "99800000".into()
         }
     );
+    // In another asset, of another segment, or with a confirmation inside that isn't the reserve's own.
+    for (reply, expected) in [
+        (
+            Reply::Credit {
+                inner: RESERVE,
+                segment: None,
+                asset: Some("USDC"),
+            },
+            NotCounted::AnotherAsset,
+        ),
+        (
+            Reply::Credit {
+                inner: RESERVE,
+                segment: Some("tx-another"),
+                asset: None,
+            },
+            NotCounted::AnotherSegment,
+        ),
+        (
+            Reply::Credit {
+                inner: WALLET,
+                segment: None,
+                asset: None,
+            },
+            NotCounted::NotItsOwn,
+        ),
+    ] {
+        assert_eq!(
+            why(world.confirm(&mut Answering::replying(reply), "p1-s2")),
+            expected
+        );
+    }
     assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
     assert!(world.catalogue.owed().is_owed(&owed_id()));
-    assert!(world.held("p1-s2"), "the failed exchange's value is still held");
+    assert!(
+        world.held("p1-s2"),
+        "the failed exchange's value is still held"
+    );
     assert!(evidenced(&world.followed().parts[0]).is_err());
     assert!(
         !world
@@ -988,7 +1066,9 @@ fn failed_providers_own_statement_does_not_complete_its_reversal() {
     let mut world = World::published(Platform::settling().with(EXCHANGE, Act::Fail), "bank-co");
     assert_eq!(world.ran()[1], SegmentOutcome::Failed);
     assert!(matches!(
-        world.confirm(&mut Answering::confirming(), "p1-s2").unwrap(),
+        world
+            .confirm(&mut Answering::confirming(), "p1-s2")
+            .unwrap(),
         Confirmation::NotCompleted {
             why: NotCounted::SamePublisher,
             ..
@@ -1010,6 +1090,17 @@ fn origin_reserves_statement_completes_a_reversal_as_its_word() {
     let mut world = exchange_failed();
     let mark = world.log.0.len();
     assert!(evidenced(&world.followed().parts[0]).is_err());
+    // Another party than the origin reserve completes nothing (ADR-0008).
+    assert_eq!(
+        why(world.confirm(
+            &mut Answering::replying(Reply::Confirms {
+                maker: WALLET,
+                amount: None
+            }),
+            "p1-s2"
+        )),
+        NotCounted::NotTheOriginReserve
+    );
     let mut reserve = Answering::confirming();
     let done = match world.confirm(&mut reserve, "p1-s2").unwrap() {
         Confirmation::Completed(done) => done,
@@ -1082,7 +1173,12 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         json!({ "status": "failed", "evidence": piece(RESERVE) }),
     );
     assert_eq!(
-        world.with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), Fault::Customer, &by_the_reserve)),
+        world.with(|r, p, _| r.show_fault(
+            p,
+            at(&order, &part, &s2),
+            Fault::Customer,
+            &by_the_reserve
+        )),
         Err(ReversalError::NotTheProvider)
     );
     world
@@ -1093,7 +1189,9 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         Some(&Carrier::Provider(id(EXCHANGE)))
     );
     assert_eq!(
-        world.reversals.accept_fault(at(&order, &part, &s2), &operator()),
+        world
+            .reversals
+            .accept_fault(at(&order, &part, &s2), &operator()),
         Err(ReversalError::NotTheParty)
     );
     world
@@ -1123,11 +1221,19 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), Fault::Operator, &shown))
         .unwrap();
     assert_eq!(
-        world.reversals.accept_fault(at(&order, &part, &s2), &operator()),
+        world
+            .reversals
+            .accept_fault(at(&order, &part, &s2), &operator()),
         Ok(Carrier::Operator)
     );
-    assert_eq!(world.reversals.carrier(&order, &s2), Some(&Carrier::Operator));
-    assert_eq!(world.followed().parts[0].state, OrderState::FirstSegmentSettled);
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Operator)
+    );
+    assert_eq!(
+        world.followed().parts[0].state,
+        OrderState::FirstSegmentSettled
+    );
 }
 
 /// The exchange's failure puts its reversal on the catalogue's list, owed by the exchange, in COP, for what it took
@@ -1142,12 +1248,19 @@ fn owed_reversal_stays_owed_until_it_is_confirmed() {
         .with(|r, p, _| r.owe(p, at(&order, &part, &s2)))
         .unwrap();
     assert_eq!(
-        (owing.provider.as_str(), owing.asset.as_str(), owing.amount.as_str()),
+        (
+            owing.provider.as_str(),
+            owing.asset.as_str(),
+            owing.amount.as_str()
+        ),
         (EXCHANGE, "COP", EXCHANGED)
     );
     let owed = world.catalogue.owed().owed_by(EXCHANGE);
     assert_eq!(owed.len(), 1);
-    assert_eq!((owed[0].asset.as_str(), owed[0].amount), ("COP", 99_900_000));
+    assert_eq!(
+        (owed[0].asset.as_str(), owed[0].amount),
+        ("COP", 99_900_000)
+    );
     let own = result(
         EXCHANGE,
         "reversal",
@@ -1174,15 +1287,31 @@ fn owed_reversal_stays_owed_until_it_is_confirmed() {
         },
         Observation::StandingLost,
     ] {
-        world.catalogue.owed_mut().observe(&owed_id(), seen).unwrap();
+        world
+            .catalogue
+            .owed_mut()
+            .observe(&owed_id(), seen)
+            .unwrap();
         assert!(world.catalogue.owed().is_owed(&owed_id()));
     }
     assert!(matches!(
-        world.confirm(&mut Answering::confirming(), "p1-s2").unwrap(),
+        world
+            .confirm(&mut Answering::confirming(), "p1-s2")
+            .unwrap(),
         Confirmation::Completed(_)
     ));
     assert!(!world.catalogue.owed().is_owed(&owed_id()));
     assert!(world.catalogue.owed().owed_by(EXCHANGE).is_empty());
+
+    // A failed deposit owes no reversal: its value stays where it was.
+    let mut world = World::over(Platform::settling().with(WALLET, Act::Fail));
+    assert_eq!(world.ran()[2], SegmentOutcome::Failed);
+    let s3 = id("p1-s3");
+    assert_eq!(
+        world.with(|r, p, _| r.owe(p, at(&order, &part, &s3))),
+        Err(ReversalError::NotOwed)
+    );
+    assert!(world.catalogue.owed().owed_by(WALLET).is_empty());
 }
 
 /// The order complete, its origin reserve reports the withdrawal undone in pieces, a chargeback of part and then of
@@ -1192,13 +1321,25 @@ fn owed_reversal_stays_owed_until_it_is_confirmed() {
 #[test]
 fn partial_evidence_of_an_undone_start_is_kept() {
     let mut world = completed();
-    let mark = world.log.0.len();
+    let (mark, kept_bytes) = (world.log.0.len(), world.store.0.len());
     let (order, part, s1) = (id(ORDER), id(PART), id("p1-s1"));
     let (withdrawal_tx, _) = world.segments.sent(&order, &s1).unwrap();
     let withdrawal_tx = withdrawal_tx.as_str().to_owned();
     let pieces = [
-        confirmation(RESERVE, "tx-chargeback-1", &withdrawal_tx, "COP", "40000000"),
-        confirmation(RESERVE, "tx-chargeback-2", &withdrawal_tx, "COP", "60000000"),
+        confirmation(
+            RESERVE,
+            "tx-chargeback-1",
+            &withdrawal_tx,
+            "COP",
+            "40000000",
+        ),
+        confirmation(
+            RESERVE,
+            "tx-chargeback-2",
+            &withdrawal_tx,
+            "COP",
+            "60000000",
+        ),
     ];
     let mut kept = Vec::new();
     for piece in pieces.iter().chain(pieces.iter()) {
@@ -1221,7 +1362,16 @@ fn partial_evidence_of_an_undone_start_is_kept() {
         })
         .collect();
     assert_eq!(stated.len(), 2, "each piece is kept once");
-    assert!(stated.iter().all(|a| a.order.as_ref() == Some(&order) && a.segment.as_ref() == Some(&s1)));
+    assert_eq!(
+        world.store.0.len(),
+        kept_bytes + 2,
+        "each piece's bytes are kept once"
+    );
+    assert!(
+        stated
+            .iter()
+            .all(|a| a.order.as_ref() == Some(&order) && a.segment.as_ref() == Some(&s1))
+    );
     assert_eq!(world.followed().state, OrderState::Complete);
     assert_eq!(
         world.reversals.carrier(&order, &s1),
@@ -1292,8 +1442,14 @@ fn complete_order_whose_start_is_proven_undone_is_marked_failed() {
     let Operation::ReversalConfirmation(asked) = &reserve.asked[0].statement else {
         unreachable!()
     };
-    assert_eq!((asked.asset.as_str(), asked.amount.as_str()), ("COP", WITHDRAWN));
-    assert_eq!((done.whose.as_str(), done.grade), (RESERVE, EvidenceGrade::Statement));
+    assert_eq!(
+        (asked.asset.as_str(), asked.amount.as_str()),
+        ("COP", WITHDRAWN)
+    );
+    assert_eq!(
+        (done.whose.as_str(), done.grade),
+        (RESERVE, EvidenceGrade::Statement)
+    );
     assert_eq!(world.state_of("p1-s1"), SegmentState::ReversalComplete);
     assert_eq!(world.followed().parts[0].state, OrderState::Failed);
     assert_eq!(world.followed().state, OrderState::Failed);
@@ -1338,7 +1494,10 @@ fn return_after_complete_is_recorded_and_the_order_stays_complete() {
     let after = world
         .with(|r, p, _| r.returned(p, &order, &returned))
         .unwrap();
-    assert_eq!((after.event, after.maker.as_str()), (Afterwards::Returned, WALLET));
+    assert_eq!(
+        (after.event, after.maker.as_str()),
+        (Afterwards::Returned, WALLET)
+    );
     assert!(world.whats_from(mark).iter().any(|w| matches!(
         w,
         What::Afterwards { event: Afterwards::Returned, statement, .. } if *statement == after.statement
@@ -1390,7 +1549,14 @@ fn late_origin_approval_starts_nothing_and_is_visible() {
     let mut reads = Allowing::default();
     let seen = world
         .reversals
-        .seen(&mut reads, &world.clock, &mut world.ids, &customer(), None, &order)
+        .seen(
+            &mut reads,
+            &world.clock,
+            &mut world.ids,
+            &customer(),
+            None,
+            &order,
+        )
         .unwrap();
     assert_eq!(seen, vec![after]);
     assert_eq!(reads.0.len(), 1, "the read was checked");
@@ -1405,7 +1571,7 @@ fn late_delivery_is_recorded_and_moves_nothing() {
     let mut world = exchange_failed();
     let mark = world.log.0.len();
     let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
-    let (tx, _) = world.segments.sent(&order, &s2).unwrap();
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
     let late = result(
         EXCHANGE,
         "conversion",
@@ -1421,7 +1587,18 @@ fn late_delivery_is_recorded_and_moves_nothing() {
         .unwrap();
     assert_eq!(first, again, "kept once");
     assert_eq!(world.log.0.len(), mark + 1);
-    assert!(world.whats_from(mark).is_empty(), "nothing is recorded but the statement");
+    let Entry::Stated(kept) = &world.log.0[mark] else {
+        panic!("a statement")
+    };
+    assert_eq!(
+        kept.about.as_ref().and_then(|a| a.transaction.as_ref()),
+        Some(&tx),
+        "about the transaction it answers, so the log verifies it"
+    );
+    assert!(
+        world.whats_from(mark).is_empty(),
+        "nothing is recorded but the statement"
+    );
     assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
     assert!(world.held("p1-s2"));
     assert_eq!(world.admitted_from(mark), Ok(1));
