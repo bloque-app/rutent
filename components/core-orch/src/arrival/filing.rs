@@ -236,7 +236,7 @@ impl Run {
                 Step::Hold => self.hold(desk, arrivals)?,
                 Step::Route => self.route::<R>(desk)?,
                 Step::Accept => {
-                    if let Some(filed) = self.accept(desk)? {
+                    if let Some(filed) = self.take_acceptance(desk)? {
                         return Ok(filed);
                     }
                 }
@@ -423,7 +423,7 @@ impl Run {
 
     /// Asks policy for the filer's authorisation, and on its permit records the acceptance on the automatic deposit
     /// and the order's start.
-    fn accept(&mut self, desk: &mut Desk<'_, '_>) -> Result<Option<Filed>, ArrivalError> {
+    fn take_acceptance(&mut self, desk: &mut Desk<'_, '_>) -> Result<Option<Filed>, ArrivalError> {
         if self.accepting.is_none() {
             let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
             // Built and checked before policy is asked, so an acceptance that fails its own shape costs no permit.

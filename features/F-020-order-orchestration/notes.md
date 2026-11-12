@@ -440,6 +440,9 @@ Branch `f-020/t-020-04-arrivals`, from `m3` at `28038de`.
   once, sent once, its answer read once), since intake's kit fails only verified entries on demand, never a stated one:
   switched off, the retry test stays green, its retries stopping after the question was answered, where the built
   `arrival` entry is what is kept.
+- **The entry-point scan** (`T-021-01`'s) watches outer methods by name (`accept`, `grant`, `promote` and the
+  others in `CARRY_OUT`), so the filing's last step is `take_acceptance`, not `accept`: a step of that name read as
+  carrying out `change_catalogue: accept_module` without its effect.
 - **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes. No other
   row's module, no manifest, no contract and no `DEC-20` path.
 
