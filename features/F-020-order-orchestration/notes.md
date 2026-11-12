@@ -1667,6 +1667,21 @@ seen red again.
   the part read again (the stuck test); a pending wait holding the part (the rerun test); a recalculation's refusal
   clearing what kept it (the routed-afresh test).
 
+### T-020-10b, the approval's two lows (of `539576f`)
+
+Each test was written first and seen red on `539576f`; each rule was then switched off once and its test seen red.
+
+- **A stale pending wait outlived a recalculation that found a route.** When the order Core follows takes a
+  `route_recalculated` for a part (`Segments::observe`), the part's wait built and not yet recorded is dropped: it
+  was judged on the route replaced, and the new route's floor is judged afresh. Test
+  `pending_wait_goes_when_a_recalculation_finds_a_route_that_holds_the_floor`: the wait built under a run's 995 000,
+  the log unavailable, the recalculation from the ledger under the authorisation's 985 000, and the new route's run
+  hands its deposit over with no wait recorded.
+- **A benign drop surfaced as an error.** Where `run_part` meets a pending wait the order Core follows no longer
+  takes (`WaitNotTaken`), the wait is dropped and the same run goes on: the floor it judged at the segment before
+  held. Test `pending_wait_no_longer_taken_lets_the_run_go_on`, with Core's copy of the order rebuilt from its route
+  alone so it reads no value at the ledger to wait on (the one way a test reaches the case today).
+
 ## T-020-11
 
 - **One record, `stuck::Stuck`** (`components/core-orch/src/stuck/`). Core's record of the parts it declared stuck,

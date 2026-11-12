@@ -1611,3 +1611,107 @@ fn recalculated_floor_wait_the_log_refuses_is_routed_afresh() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// A wait built and not recorded, the log unavailable, then a recalculation records a route from the ledger that
+/// holds the floor: the stale wait goes with the old route, and the new route's run hands its deposit over.
+// verifies: REQ-ORD-27, REQ-ORD-2
+#[test]
+fn pending_wait_goes_when_a_recalculation_finds_a_route_that_holds_the_floor() {
+    let floor = PositiveAmount::new("985000").unwrap();
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(floor.clone()));
+    // This run judges a floor above what the route leaves: a wait is built.
+    core.floor = Some(PositiveAmount::new("995000").unwrap());
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::FloorWait, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    assert!(
+        core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut Recorded,
+            &session,
+        )
+        .is_err()
+    );
+    assert!(core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+    let mut recalc = Recalc::of(&core, Some(floor));
+    let done = recalculated(recalc.recalculate(&mut core, &mut world));
+    assert!(
+        !core.segments.floor_wait_pending(&id(ORDER), &id(PART)),
+        "the stale wait went with the old route"
+    );
+    let ran = recalc.run(&mut core, &mut world, &done);
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert!(floor_waits(&core).is_empty(), "no wait recorded");
+    assert_eq!(part(&core).state, OrderState::Complete);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A wait built and not recorded that the order Core follows no longer takes is dropped, and the same run goes on,
+/// judging the floor afresh: here Core's copy of the order was rebuilt from its route alone, so it reads no value
+/// at the ledger to wait on, and the run, under a floor the route holds, hands the deposit over.
+// verifies: REQ-ORD-27
+#[test]
+fn pending_wait_no_longer_taken_lets_the_run_go_on() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(PositiveAmount::new("985000").unwrap()));
+    core.floor = Some(PositiveAmount::new("995000").unwrap());
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::FloorWait, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    assert!(
+        core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut Recorded,
+            &session,
+        )
+        .is_err()
+    );
+    assert!(core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+    // Core's copy of the order, rebuilt from its route alone.
+    assert!(
+        core.segments
+            .follow(&*core.clock, &route_chosen(&core.record))
+    );
+    core.floor = Some(PositiveAmount::new("985000").unwrap());
+    let ran = core
+        .try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut Recorded,
+            &session,
+        )
+        .expect("the dropped wait is no error: the run goes on");
+    assert_eq!(segments(&ran).len(), 2, "the deposit is handed over");
+    assert!(!core.segments.floor_wait_pending(&id(ORDER), &id(PART)));
+    assert!(floor_waits(&core).is_empty());
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}

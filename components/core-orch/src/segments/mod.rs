@@ -833,6 +833,16 @@ impl Segments {
         if applied {
             tracked.order = next;
             tracked.since = clock.now();
+            // A recalculated route replaces the one a wait built and not yet recorded was judged on: that wait goes
+            // with it, and the new route's floor is judged afresh (`T-020-10b`).
+            if let (Observed::RouteRecalculated { .. }, Some(part)) =
+                (&input.observed, &input.subject.part)
+            {
+                self.drop_wait(&(
+                    input.subject.order.as_str().to_owned(),
+                    part.as_str().to_owned(),
+                ));
+            }
         }
         applied
     }
@@ -1146,16 +1156,22 @@ impl Segments {
                 // `held-part-takes-no-move`): only the customer's choice moves it on.
                 None if self.waiting(live.order, live.part).is_some() => break,
                 // A wait built and not yet recorded holds the part as a recorded one does, whatever floor this run
-                // names: it is recorded, or dropped where it no longer applies, before anything is handed over.
-                None if self.floor_wait_pending(live.order, live.part) => {
-                    self.wait_at_floor(
+                // names: it is recorded first, and the part waits. One the order Core follows no longer takes is
+                // dropped, and the run goes on: the floor this run judged at the segment before held.
+                None if self.floor_wait_pending(live.order, live.part)
+                    && match self.wait_at_floor(
                         parts.log,
                         parts.clock,
                         parts.fresh,
                         live.core,
                         live.order,
                         live.part,
-                    )?;
+                    ) {
+                        Ok(_) => true,
+                        Err(SegmentsError::WaitNotTaken(_)) => false,
+                        Err(other) => return Err(other),
+                    } =>
+                {
                     break;
                 }
                 None => {
