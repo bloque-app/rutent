@@ -1922,9 +1922,19 @@ impl Segments {
 
     /// A fresh transaction: never one the rounds asked under, nor one a segment ran under.
     fn fresh_transaction(&mut self, parts: &mut Parts<'_>) -> Result<Id, SegmentsError> {
+        self.claim_transaction(parts.fresh, parts.issued)
+    }
+
+    /// A fresh transaction, claimed: never one the rounds asked under, nor one a segment or a stuck resolution ran
+    /// under, so a stuck resolution's is its own (`stuck-resolution-transaction-is-its-own`, `T-020-11`).
+    pub(crate) fn claim_transaction(
+        &mut self,
+        fresh: &mut dyn Fresh,
+        issued: &Issued,
+    ) -> Result<Id, SegmentsError> {
         for _ in 0..DRAWS {
-            let id = parts.fresh.id();
-            if !parts.issued.contains(id.as_str())
+            let id = fresh.id();
+            if !issued.contains(id.as_str())
                 && Identifier::new(id.as_str()).is_some()
                 && self.transactions.insert(id.as_str().to_owned())
             {

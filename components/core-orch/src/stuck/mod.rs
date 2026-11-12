@@ -50,7 +50,11 @@
 //! is recorded `unanswered`, reported by its mover and confirmed by another actor, each through policy
 //! (`StuckOrders::report_outcome`, `confirm_outcome`) and each on its own statement, and then its final result; and
 //! a part all of whose value moved records `stuck_resolved`. The ends are the authorisation in force for each part,
-//! its origin account intake's.
+//! its origin account intake's. Each decision names a transaction of its own, drawn fresh from the register the
+//! segments draw theirs from, never a round's, a move's or another resolution's, and bound to no segment
+//! (`stuck-resolution-transaction-is-its-own`); its move's effect goes under it, and its outcome's evidence is two
+//! providers' results about the order and that transaction, made after the effect. The production [`Resolutions`]
+//! asks its provider under that transaction.
 //!
 //! **A segment's silent move** (`AC-6`). A segment's `move_value` whose outcome is unknown has its `unanswered`
 //! result recorded by the segments, and holds the part back from any decision while it may still move. Its mover,
@@ -96,7 +100,7 @@ use rutent_router::quote::declared_times;
 use rutent_stm::Stm;
 
 use crate::recalc::Recalculation;
-use crate::rounds::Fresh;
+use crate::rounds::{Fresh, Issued};
 use crate::segments::{Confirmed, Segments, SegmentsError, StatusError};
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
@@ -112,8 +116,10 @@ pub struct Parts<'a> {
     pub clock: &'a dyn Clock,
     /// Orchestration's handle on the log.
     pub log: &'a mut dyn OrchestrationLog,
-    /// Fresh identifiers: records, raises and requests.
+    /// Fresh identifiers: records, raises, requests and resolutions' transactions.
     pub fresh: &'a mut dyn Fresh,
+    /// The transactions the routing rounds asked under: no resolution's is one of them.
+    pub issued: &'a Issued,
     /// The segments Core handed over, and the orders it follows.
     pub segments: &'a mut Segments,
     /// Core's record of value in flight: a stuck order is marked there, and a resolution releases what it held.
@@ -375,6 +381,9 @@ pub enum ResolveError {
     DoneNeedsEvidence,
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
+    /// The source of fresh identifiers repeats ones Core used: no transaction of its own is drawn for the
+    /// resolution, and nothing is decided.
+    NoFreshTransaction,
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
     /// next call goes on from it.
     Append(AppendFailure),
@@ -1018,12 +1027,20 @@ impl Stuck {
             .ends
             .get(&key(deciding.order, deciding.part))
             .ok_or(ResolveError::NoEnds)?;
+        // The transaction the resolution goes under at its provider, decided with it: fresh, never a move's, a
+        // round's or another resolution's, and bound to no segment and no other order
+        // (`stuck-resolution-transaction-is-its-own`, `stuck-resolution-transaction-is-unbound-or-its-orders`).
+        let transaction = parts
+            .segments
+            .claim_transaction(parts.fresh, parts.issued)
+            .map_err(|_| ResolveError::NoFreshTransaction)?;
         let request = StuckDecide {
             request: parts.fresh.id(),
             order: deciding.order.clone(),
             part: deciding.part.clone(),
             decider: deciding.decider.clone(),
             resolution: deciding.resolution.clone(),
+            transaction,
             evidence: deciding.evidence.to_vec(),
             at: now(parts.clock)?,
         };
@@ -1120,10 +1137,12 @@ impl Stuck {
         let Some(permit) = decision.permit() else {
             return Ok(Moved::NotPermitted(decision.outcome));
         };
+        // The effect goes under the transaction its decide step named (`stuck-effect-moves-the-decided-resolution`).
         let action = Action::ResolveStuck {
             order: moving.order.clone(),
             carries_out: moving.carries_out.clone(),
             resolution: kept.request.resolution.clone(),
+            transaction: kept.request.transaction.clone(),
         };
         let entry = journal::built(
             moving.core,

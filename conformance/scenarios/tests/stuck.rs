@@ -140,7 +140,7 @@ fn run_with_the_deposit_refused(core: &mut Core, world: &mut World) -> Ran {
 /// nothing passed out and its effect's result is `failed`, its value not in motion), then recalculated from the
 /// reserve's ledger where its value sits, and offered no route: the reserve refuses every dry run of the deposit.
 fn left_no_route() -> (World, Core, Recalculation) {
-    let mut world = World::of(&[RESERVE]);
+    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
     let mut core = Core::over(&mut world);
     let mut watched = Watched::new(&mut world.fleet.platform);
     watched.refuse_begin = Some(1);
@@ -1096,12 +1096,15 @@ fn resolution_is_moved_once_by_another_party_on_its_decision() {
     );
     assert_eq!(policy.asked, asked, "policy isn't asked again");
     assert_eq!(moves.0.len(), 1, "moved once");
+    // The move goes under the transaction its decision named (`stuck-effect-moves-the-decided-resolution`).
+    let decided_under = decided_transaction(&core);
     assert_eq!(
         moves.0[0].action,
         Action::ResolveStuck {
             order: id(ORDER),
             carries_out: decided(&permitted),
             resolution: resolution.clone(),
+            transaction: decided_under,
         }
     );
     assert_eq!(count(&core, is_resolve_stuck), 1);
@@ -2292,7 +2295,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
     else {
         panic!("unknown, recorded unanswered");
     };
-    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
+    let (result, other) = results_after_the_resolution(&mut core);
     assert_eq!(results_of(&core, &effect), vec![Outcome::Unanswered {}]);
     assert_eq!(
         known_outcome(
@@ -2342,7 +2345,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             &first,
             &alice,
             (Resolved::Done, 1, &result),
-            &operation
+            &other
         ),
         Err(ResolveError::NoDecision),
         "nothing to confirm before a report"
@@ -2427,7 +2430,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
                 &first,
                 &confirmer,
                 (Resolved::Done, 1, &result),
-                &operation
+                &other
             ),
             Err(refused)
         );
@@ -2455,7 +2458,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             &first,
             &alice,
             (Resolved::Done, 1, &result),
-            &operation
+            &other
         ),
         Ok(Moved::CarriedOut {
             resolved: Resolved::Done,
@@ -2481,7 +2484,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             &first,
             &alice,
             (Resolved::Done, 1, &result),
-            &operation
+            &other
         ),
         Err(ResolveError::NoDecision),
         "recorded once"
@@ -2511,7 +2514,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
-    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
+    let (result, other) = results_after_the_resolution(&mut core);
     assert_eq!(
         known_outcome(
             &mut core,
@@ -2534,7 +2537,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
             &first,
             &alice,
             (Resolved::Failed, 1, &result),
-            &operation
+            &other
         ),
         Ok(Moved::CarriedOut {
             resolved: Resolved::Failed,
@@ -2755,16 +2758,14 @@ fn confirmation_names_the_report_it_confirms() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
-    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
+    let (result, other) = results_after_the_resolution(&mut core);
     let entries = |core: &Core| core.log.borrow().entries.len();
     let refused = |core: &mut Core,
                    stuck: &mut Stuck,
                    policy: &mut PermitsEveryStep,
                    report: (Resolved, u64, &Receipt)| {
         let before = entries(core);
-        let answer = confirm_outcome(
-            core, stuck, policy, ORDER, &first, &alice, report, &operation,
-        );
+        let answer = confirm_outcome(core, stuck, policy, ORDER, &first, &alice, report, &other);
         assert_eq!(answer, Err(ResolveError::NotTheReport), "{report:?}");
         assert_eq!(entries(core), before, "nothing recorded for {report:?}");
         assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
@@ -2798,7 +2799,7 @@ fn confirmation_names_the_report_it_confirms() {
         &mut core,
         &mut stuck,
         &mut policy,
-        (Resolved::Failed, 1, &operation),
+        (Resolved::Failed, 1, &other),
     );
     assert_eq!(
         known_outcome(
@@ -2823,7 +2824,7 @@ fn confirmation_names_the_report_it_confirms() {
             &first,
             &alice,
             (Resolved::Failed, 1, &result),
-            &operation
+            &other
         ),
         Ok(Moved::CarriedOut {
             resolved: Resolved::Failed,
@@ -2856,7 +2857,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
-    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
+    let (result, other) = results_after_the_resolution(&mut core);
     let mut unbuilt = Unbuilt::new(PolicyPath(Rc::clone(&core.log)));
     let (order, carries_out, actor) = (id(ORDER), decided(&first), segments_support::core());
     let reported = on_parts(&mut core, |parts| {
@@ -2886,7 +2887,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
             &first,
             &alice,
             (Resolved::Done, 1, &result),
-            &operation
+            &other
         ),
         Err(ResolveError::NoDecision),
         "nothing pending to confirm"
@@ -3124,4 +3125,25 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
     ));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+/// The transaction the log's first stuck decision named for its resolution.
+fn decided_transaction(core: &Core) -> Id {
+    core.log
+        .borrow()
+        .verified()
+        .iter()
+        .find_map(|v| match &v.what {
+            What::StuckDecide { request, .. } => Some(request.transaction.clone()),
+            _ => None,
+        })
+        .expect("a stuck decision")
+}
+
+/// Two results about the transaction the current order's stuck decision named, by two providers, made and appended
+/// now: [`RESERVE`]'s, then [`OTHER_RESERVE`]'s. A resolution's outcome is reported and confirmed on them
+/// (`outcome-confirmation-cites-verified-evidence`).
+fn results_after_the_resolution(core: &mut Core) -> (Receipt, Receipt) {
+    let transaction = decided_transaction(core);
+    results_after_the_move(core, None, transaction.as_str())
 }

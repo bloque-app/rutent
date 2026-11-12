@@ -950,80 +950,39 @@ pub fn results_after_the_move(
         }
     };
     let (first, second) = (result(RESERVE), result(OTHER_RESERVE));
+    // A stuck resolution's transaction has no question under it yet: the move under it, which the production
+    // resolutions would hand the provider (unbuilt), is asked here as the operator's operation about the order,
+    // naming no segment, so the providers' results answer it (`answer-follows-its-question`).
+    let question = segment.is_none().then(|| {
+        let placeholder = SuiteContext::default().deployment.operator_key;
+        let mut question = seed_envelope(
+            rutent_contracts::provider_role::OPERATION_SHAPE,
+            core.operator.acts.as_str(),
+            body.clone(),
+        );
+        question["made_at"] = made_at.as_str().into();
+        question["signature"]["key"] = placeholder.as_str().into();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
+        let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(
+            &real(placeholder.as_str()).sign(&input).to_bytes(),
+        )
+        .into();
+        stated_seed(
+            &mut core.store,
+            serde_json::to_vec(&question).unwrap(),
+            core.operator.clone(),
+            &order,
+            transaction,
+        )
+    });
     let mut log = core.log.borrow_mut();
+    if let Some(question) = question {
+        log.take(&question, Through::General).unwrap();
+    }
     let first = log.take(&first, Through::General).unwrap();
     let second = log.take(&second, Through::General).unwrap();
     (first, second)
-}
-
-/// Two statements about `segment` of the current order, made at Core's clock now, and appended to the log now: the
-/// operator's, signed under the deployment's placeholder key, and the reserve's result, signed with its statements
-/// key, so the log verifies each. A move's outcome is reported and confirmed on statements that follow the move
-/// (`outcome-confirmation-cites-verified-evidence`), by makers of different parties (`T-020-11`).
-pub fn statements_after_the_move(core: &mut Core, segment: &str) -> (Receipt, Receipt) {
-    let order = id(&core.named.order);
-    let made_at = core.clock.now().timestamp().unwrap();
-    let body =
-        json!({ "kind": "balance_verification", "transaction": format!("tx-outcome-{segment}") });
-    let envelope = |shape: &str, maker: &str| {
-        let mut e = seed_envelope(shape, maker, body.clone());
-        e["made_at"] = made_at.as_str().into();
-        e
-    };
-    let about = |entry: Entry| match entry {
-        Entry::Stated(mut stated) => {
-            stated.about = Some(rutent_contracts::core_internal::About {
-                order: Some(order.clone()),
-                segment: Some(id(segment)),
-                transaction: Some(id(&format!("tx-outcome-{segment}"))),
-            });
-            Entry::Stated(stated)
-        }
-        verified => verified,
-    };
-    let placeholder = SuiteContext::default().deployment.operator_key;
-    let mut question = envelope(
-        rutent_contracts::provider_role::OPERATION_SHAPE,
-        core.operator.acts.as_str(),
-    );
-    question["signature"]["key"] = placeholder.as_str().into();
-    question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
-    let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
-    question["signature"]["value"] =
-        rutent_conformance::signing::base64url(&real(placeholder.as_str()).sign(&input).to_bytes())
-            .into();
-    let question = about(stated_seed(
-        &mut core.store,
-        serde_json::to_vec(&question).unwrap(),
-        core.operator.clone(),
-        &order,
-        "unused",
-    ));
-    let mut report = envelope(rutent_contracts::provider_role::RESULT_SHAPE, RESERVE);
-    rutent_conformance::signing::sign_value(&mut report, &statements_key_of(RESERVE));
-    let publisher = Spec::of(SimRole::Reserve, RESERVE)
-        .make(&SuiteContext::default())
-        .advertisement()
-        .into_statement()
-        .statement
-        .publisher;
-    let reserve = Actor {
-        party: id(&publisher),
-        acts: id(RESERVE),
-        role: Role::Provider,
-        kind: ActorKind::Component,
-    };
-    let report = about(stated_seed(
-        &mut core.store,
-        serde_json::to_vec(&report).unwrap(),
-        reserve,
-        &order,
-        "unused",
-    ));
-    let mut log = core.log.borrow_mut();
-    let question = log.take(&question, Through::General).unwrap();
-    let report = log.take(&report, Through::General).unwrap();
-    (question, report)
 }
 
 /// The deposit's arrival at the origin reserve, on the reserve's report to the operator's question: one deposit, and

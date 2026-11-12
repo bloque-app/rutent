@@ -185,6 +185,7 @@ pub fn on_parts<T>(core: &mut Core, with: impl FnOnce(&mut Parts<'_>) -> T) -> T
         clock: &*core.clock,
         log: &mut general,
         fresh: &mut core.ids,
+        issued: &core.issued,
         segments: &mut core.segments,
         exposures: &mut core.exposures,
     };
