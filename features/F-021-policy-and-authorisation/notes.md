@@ -313,7 +313,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   against its caller's own) and questions about people (`Limit::People`: `person_question`). A charge that fits is
   counted only after its entry is in the log; one over the bound counts nothing and its work is not done. A charge's
   id names one charge: the same charge again answers within and counts once, anything else under a counted id is
-  refused, as `T-021-02`'s session ids are. The party is the charge's own (`Charge::check` holds it to its caller's),
+  refused, as `T-021-02`'s session ids are. Default: the ids counted are kept for the window now only, so the same
+  charge given again in a later window counts again there. The party is the charge's own (`Charge::check` holds it to its caller's),
   bound to the actor by `T-021-03`'s rule.
 - **The window is Core's clock's.** A fixed window, `WINDOW_SECS` (one hour), aligned to the epoch, read from the
   engine's clock (`session::Clock`, the one sessions are bounded by), never from a charge's `at`: a charge stating a
@@ -364,10 +365,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
   | Rule switched off | Tests that went red |
   |---|---|
-  | an agent that is its own party refused | `agent without an accountable party is refused` |
+  | an agent that is its own party refused | `agent without an accountable party is refused`; `scope rule takes an input it was not given as missing` |
   | a scope asked of an agent | `agent outside its party's scope is refused` |
-  | a scope's no refuses | `agent outside its party's scope is refused` |
-  | a scope that says nothing is missing (the rule's arm) | none: the engine's `verdict` refuses a missing input before the rule rules, so the arm is a second guard |
+  | a scope's no refuses | `agent outside its party's scope is refused`; `scope rule takes an input ...` |
+  | a scope that says nothing is missing (the rule's arm) | `scope rule takes an input it was not given as missing`, which calls the rule directly: through the engine no test reaches the arm, since `verdict` refuses a missing input before any rule rules, so the arm is a second guard |
   | a scope asked only of an agent | this row's scope, accountable-party and thousand-agent tests; 23 of `T-021-02`'s and `T-021-03`'s; the built and unbuilt table |
   | each call its own scope | `agent outside its party's scope is refused` |
   | the rule in `FIXED` | `agent without an accountable party ...`; `agent outside its party's scope ...` |

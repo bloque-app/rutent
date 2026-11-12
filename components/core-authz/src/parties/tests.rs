@@ -745,3 +745,36 @@ fn actors_are_compared_at_their_accountable_party() {
         "the same agent id, another party"
     );
 }
+
+/// The rule itself, handed none of the inputs it named, takes the agent's scope as missing, never as a yes: a second
+/// guard behind the engine, which refuses a missing input before any rule rules. An agent that is its own party is
+/// refused with nothing asked, and anyone else passes with nothing named.
+// verifies: REQ-AUZ-8, REQ-AUZ-5
+#[test]
+fn scope_rule_takes_an_input_it_was_not_given_as_missing() {
+    let acme = agent("acme-treasury", "agent-7");
+    let asked = charge("req-1", &acme, Work::FanOut, 1);
+    let Reply::Given(named) = needs(Asked::Charge(&asked)) else {
+        panic!("the rule names its inputs");
+    };
+    assert_eq!(named.len(), 1);
+    assert_eq!(rule(Asked::Charge(&asked), &[]), Reply::Missing);
+    let no = [Input {
+        need: named[0].clone(),
+        said: Said::No,
+    }];
+    assert_eq!(
+        rule(Asked::Charge(&asked), &no),
+        Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted))
+    );
+
+    let itself = charge("req-2", &agent("agent-7", "agent-7"), Work::FanOut, 1);
+    assert_eq!(needs(Asked::Charge(&itself)), Reply::Given(Vec::new()));
+    assert_eq!(
+        rule(Asked::Charge(&itself), &[]),
+        Reply::Given(Ruling::Refuse(RefusalClass::NoAccountableParty))
+    );
+    let own = charge("req-3", &person("cust-1", "cust-1"), Work::Request, 1);
+    assert_eq!(needs(Asked::Charge(&own)), Reply::Given(Vec::new()));
+    assert_eq!(rule(Asked::Charge(&own), &[]), Reply::Given(Ruling::Permit));
+}
