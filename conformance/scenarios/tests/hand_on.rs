@@ -818,3 +818,148 @@ fn operator_hand_on(
         )
     })
 }
+
+/// A part waiting at its floor (`T-020-10b`) is resumed by the customer's own choice: new terms with a lower floor,
+/// asked of policy only because the part waits, then a route from where the value sits to the same destination,
+/// held to those terms and recorded as a `route_recalculated`. The part waits no more, its route runs under the new
+/// authorisation, and the log admits it.
+// verifies: REQ-ORD-27, REQ-AUZ-3
+#[test]
+fn customers_new_floor_resumes_a_part_waiting_at_it() {
+    // The withdrawal delivers 1 % short, 990 000, below the floor of 995 000 the deposit's quote would leave.
+    let floor = rutent_contracts::router_api::PositiveAmount::new("995000").unwrap();
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(floor.clone()));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(rutent_conformance::sim::Delivery::Short { bps: 100 }),
+    );
+    let _ = core.run(&mut world);
+    let part = part_of(&core, ORDER);
+    assert_eq!(part.state, OrderState::WaitingForCustomer, "waits at its floor");
+
+    let current = authorisation_of(&Named::first(), Some(floor));
+    let mut lower = current.clone();
+    lower.authorisation = id("auth-ord-1-lower-floor");
+    lower.floor = rutent_contracts::router_api::PositiveAmount::new("900000");
+    lower.parts = Some(vec![id(PART)]);
+    lower.given_by = customer();
+    let mut elsewhere = new_destination(customer());
+    elsewhere.floor = current.floor.clone();
+    assert_eq!(
+        hand_on::authorise(
+            &core.segments,
+            &mut core.policy,
+            &current,
+            &elsewhere,
+            &customer().party
+        ),
+        Err(HandOnError::Refused(Refused::NoFailedDeposit)),
+        "no new destination from a floor wait"
+    );
+    let decision = hand_on::authorise(
+        &core.segments,
+        &mut core.policy,
+        &current,
+        &lower,
+        &customer().party,
+    )
+    .expect("asked");
+    assert!(decision.permit().is_some(), "{decision:?}");
+
+    let record_id = id("dr-resume-ord-1");
+    let record = segments_support::handing::route_from_the_ledger(
+        &mut world,
+        &core.clock,
+        &record_id,
+        Some(core.record.request.request_id.as_str()),
+        "990000",
+    );
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    let mut hand_on = HandOn::new();
+    let (order, part_id, actor) = (id(ORDER), id(PART), segments_support::core());
+    let mut resume = |core: &mut Core, acceptance: &str| {
+        let (recorded, acceptance) = (recorded(core), id(acceptance));
+        hand_parts(core, |parts| {
+            hand_on.resume(
+                parts,
+                hand_on::Resume {
+                    order: &order,
+                    part: &part_id,
+                    record: &record,
+                    authorisation: &lower,
+                    acceptance: &acceptance,
+                    recorded: &recorded,
+                    core: &actor,
+                },
+            )
+        })
+    };
+    // Not on the acceptance of the terms the part waits under: the customer accepts the new ones.
+    let before = entries(&core);
+    assert_eq!(
+        resume(&mut core, "acc-ord-1"),
+        Err(HandOnError::NotItsAcceptance)
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    segments_support::handing::seed_acceptance(
+        &core,
+        ORDER,
+        "acc-ord-1-lower-floor",
+        &lower.authorisation,
+    );
+    let resumed = resume(&mut core, "acc-ord-1-lower-floor").expect("resumed");
+    assert!(matches!(resumed.input.observed, Observed::RouteRecalculated { .. }));
+    let part = part_of(&core, ORDER);
+    assert_eq!(part.state, OrderState::FirstSegmentSettled, "it waits no more");
+    assert!(part.waiting_since.is_none());
+
+    let session = id(&world.context().session);
+    let (auth, origin) = (id("auth-ord-1-lower-floor"), id(RESERVE));
+    let (caller, core_actor, operator) = (
+        segments_support::core(),
+        segments_support::core(),
+        core.operator.clone(),
+    );
+    let new_floor = lower.floor.clone();
+    let live = rutent_core_orch::segments::Live {
+        order: &order,
+        part: &part_id,
+        segments: &resumed.segments,
+        record: &record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &resumed.route,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator,
+        session: Some(&session),
+        inputs: &core.inputs,
+        floor: new_floor.as_ref(),
+    };
+    let mut general = General(std::rc::Rc::clone(&core.log));
+    let mut parts = rutent_core_orch::segments::Parts {
+        clock: &*core.clock,
+        catalogue: &world.catalogue,
+        log: &mut general,
+        evidence: &mut core.store,
+        decisions: &mut core.policy,
+        modules: &mut world.fleet.platform,
+        uses: &mut NoProxy,
+        grading: &mut Recorded,
+        operator_key: &mut core.key,
+        fresh: &mut core.ids,
+        issued: &core.issued,
+        exposures: &mut core.exposures,
+    };
+    let ran = core.segments.run_part(&mut parts, &live).expect("the resumed part runs");
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert_eq!(part_of(&core, ORDER).state, OrderState::Complete);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}

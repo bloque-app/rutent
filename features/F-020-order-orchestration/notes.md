@@ -2341,3 +2341,97 @@ rule was switched off once, its test seen red, the file restored and touched.
   outcome's `unanswered` result, then on confirmation the `resolution_outcome` entry with both actors and both
   pieces of evidence (`Stuck::outcome_of`'s, into the log), then the final `done` or `failed` result.
 
+
+## T-020-13
+
+Branch `f-020/t-020-13-hand-on`, from `m3` at `066b2a7`, with `m3` at `5d9dcca` (`T-020-10b`) merged in.
+
+- **One record, `hand_on::HandOn`** (`components/core-orch/src/hand_on/`). Core's record of the parts it resolves
+  on the customer's choice and the orders it hands value on to, which the production assembly keeps durably
+  (`F-030`), as `Segments`. What it reaches comes in `hand_on::Parts` (Core's clock, the log, fresh ids, `Segments`,
+  `Exposures`). Every input is built once and appended until the log takes it; one the log refuses is dropped. The
+  rules are pure functions in `hand_on/rule.rs` (`new_terms`, `destination_change`, `proves_start`,
+  `requester_of`, `acceptance_of`), each held by a test of its own.
+- **A failed final deposit never rolls the order back** (`REQ-ORD-43`). Nothing here asks for a reversal or
+  releases the value: the deposit leaves it at its node, and the first answer is `T-020-10`'s recalculation to the
+  same destination. Only a part the state machine has waiting for the customer (`T-020-11`'s `no_route` at a failed
+  deposit's node, or `T-020-10b`'s `waiting_at_floor`) is resolved here; a part whose deposit failed but that still
+  has a route is refused `NotWaiting`, nothing asked. Test `failed final deposit is recalculated to the same
+  destination first`.
+- **New terms only from a waiting part** (`hand_on::authorise`, `T-021-04`'s hand-off: policy holds who gives new
+  terms, not when). Core asks policy's `authorise` for new terms only where every part they speak for is in the
+  order and waits for the customer, the giver is the order's customer acting as such (role `customer`, the party
+  the log holds as requester), the id is new, something is new (destination, to asset or floor), and the origin
+  reserve is kept. A new destination or to asset needs each of those parts waiting at a failed final deposit
+  (`INV-10`); a new floor alone resolves any wait (`T-021-04`'s default, `REQ-ORD-27`). An authorisation naming no
+  part speaks for every part, so every part must wait: a split order's other part goes on under its own terms.
+  Tests `with no route to it the order waits for the customer` and
+  `new_terms_are_asked_only_for_a_part_waiting_for_the_customer` (unit).
+- **The customer's new destination** (`HandOn::change_destination`, `REQ-ORD-43`, `INV-4`, `INV-10`). The router's
+  choice is taken from the assembly as its choice round's `DecisionRecord`; Core holds it to the customer's new
+  authorisation, never the record (`recalc::check_route` with that authorisation: from where the value sits, all of
+  it, ending at its destination reserve and node in its to asset, at least its floor after the operator's fee), then
+  to the state machine's rules (`destination_change`: the part waits at a failed final deposit, the route changes the
+  destination, it starts where the value sits), then the transition itself. Last, the customer's acceptance: of this
+  order, accepting the new authorisation (`changed-destination-rests-on-its-acceptance`). Recorded as
+  `destination_changed` (source `customer`, standing `stated`, Core's verified entry), citing the decision record and
+  the acceptance; once taken, the order Core follows takes it and the value's holds go (the settled segment's rest
+  hold and the retired ones); the new route's segments hold it as they run. Each move on the new route carries
+  `Changed::route` (`recalc::route_end` read from the route) to policy and the log. Tests
+  `customer's new destination starts from where the value sits` (unit, over the state machine, which also shows no
+  recalculation reaches the new destination) and `customers_new_route_is_held_to_its_new_authorisation` (the kit:
+  a route back to the kit's own destination refused as `ChangesDestination` against the new authorisation and as
+  `KeepsDestination` under the old, nothing recorded).
+- **A wait at the floor, resumed** (`HandOn::resume`, `T-020-10b`'s hand-off). After `5d9dcca` a part waiting at its
+  floor reads `Held` in `recalc::evidenced`, so `Recalculations` never routes it again. The customer's new terms (a
+  lower floor) resume it: the router's choice to the same destination is held to the new authorisation as above,
+  to `recalculation_keeps_destination` and `recalculation_starts_where_value_sits`, and recorded as
+  `route_recalculated` (source `orchestrator`, verified), citing its choice round's decision record. The order Core
+  follows takes it, the part waits no more, and its route runs under the new authorisation. The customer's choice
+  isn't a recalculation and counts against no bound (a reading, reversible); `Recalculations::followed_by` (a
+  seam in `recalc/mod.rs`) lets the assembly have the next recalculation follow that round (`REQ-AUD-4`). Test
+  `customers_new_floor_resumes_a_part_waiting_at_it`: the withdrawal delivers 1 % short, below the floor of
+  995 000; the customer's floor of 900 000 resumes it, the deposit settles, the log admits every entry.
+- **Handed on to a linked order** (`HandOn::hand_on`, `REQ-ORD-43`, `REQ-ORD-13`, `INV-4`). The linked order's
+  route comes as its decision record's id and its parts' plans. Core builds its `route_chosen` naming
+  `handed_on_from`, opens it with the state machine (`Stm::open`: a route handed on starts at an inner node, with no
+  withdrawal; otherwise `NotAHandedOnRoute`), and calls the start rule across the two orders,
+  `rutent_stm::handed_on_route_starts_where_value_sits(first, second)`, then holds every part of the linked order to
+  this part's own value (`at_rest`), before anything is recorded. The linked order's acceptance must be of the
+  linked order and name the first order's requester as its own (`REQ-ORD-13`; the log's
+  `hand-on-input-rests-on-the-linked-orders-acceptance` holds the same). Then the first order's `handed_on`
+  (`linked_order`, `acceptance`) is appended, then the linked order's `route_chosen`: `handed-on-route-points-back`
+  cites the earlier one, so the two records point to each other. Once `handed_on` is taken the `route_chosen` is
+  kept until the log takes it, so a part is never left handed on to an order not opened. The order Core follows
+  takes `handed_on` (the part is `handed_on` and takes no more), the first order's holds for the part go, and Core
+  follows the linked order. Tests `handed on route starting away from the value is refused` (from the other
+  reserve's ledger: `StartsAwayFromTheValue`; a route starting with a withdrawal: `NotAHandedOnRoute`; nothing
+  recorded, the linked order not opened) and `handed on route keeps the original customer as requester` (another
+  requester: `NotTheRequester`; another order's acceptance: `NotItsAcceptance`; then both records, in order, the
+  log admitting them, and the first order's part handed on, taking no more).
+- **The holding account's record proves the start** (`HandOn::prove_start`, `REQ-ORD-40`, `INV-5`). No segment of a
+  route handed on is handed over until the holding account's own record of its withdrawal is held for it:
+  `proves_start` holds `prov`'s `WithdrawalRecord` (`T-016-03`) to the linked order's starting reserve (the
+  holding account's provider, which counts as its origin reserve), the node and asset of its first segment, the
+  first order's value (`handed_on_from`), all of what the part held (what its settled segment handed on), and a
+  reference of its own. `Segments::run_part` refuses a route handed on until then
+  (`SegmentsError::StartUnproven`), and runs it under the recalculated part's guard (from an inner node, by no
+  withdrawal). Test `handed on route's withdrawal is proven by the holding account's record`: each wrong field
+  refused and nothing handed over; the reserve's own record of the whole value accepted, and the linked route's
+  deposit then settles from the ledger under the linked order's own authorisation, the log admitting it. The kit's
+  ledger is a private node, so the record there is its publisher's word (`REQ-ORD-40`); the test builds it.
+- **The operator's hand-on** (`Basis::Resolution`, `REQ-AUZ-4`). Only for a stuck part, and only once the log holds
+  the `resolve_stuck` effect at the receipt named, of this order, handing the value on to this linked order, its
+  decide step naming this part, and its result `done` (`stuck-resolved-follows-a-done-resolution`). The customer's
+  path doesn't reach a stuck part. Test `operators_hand_on_follows_its_done_resolution`: refused with no done
+  resolution, nothing recorded; decided by one desk, moved by another (the kit's `PermitsEveryStep` and `Moves`), then
+  handed on, source `operator`, the log admitting every entry.
+- **The kit** (additive, for `T-024-02` to fold): `seed_linked` in `segments_support/mod.rs` (a linked order's
+  authorisation through policy, its arrival, its acceptance by a named requester, its decision record, and no
+  route), and `segments_support/handing.rs` (`hand_parts`, `recorded_with_receipts`, `linked_plan`,
+  `from_the_ledger`, `linked_record`, `linked_route`, `route_from_the_ledger`, `seed_record`).
+- **A test artefact, named:** the kit's linked order's acceptance is an automatic deposit's, resting on a seeded
+  arrival, since a customer's given acceptance names the origin reserve's signed yes, which the kit doesn't make.
+  The log admits it; the row's `REQ-ORD-34` acceptance by the customer is intake's (`T-020-03`) to make for a
+  linked order. Every scenario's replayed log was admitted on the first run that reached it; none needed
+  classifying.

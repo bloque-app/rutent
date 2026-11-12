@@ -69,30 +69,45 @@ pub fn linked_route(
     clock: &super::TestClock,
     order: &str,
 ) -> rutent_contracts::router_api::DecisionRecord {
+    route_from_the_ledger(world, clock, &linked_record(order), None, super::AMOUNT)
+}
+
+/// The router's choice of the reserve's deposit from its ledger to its bank, under `record_id`, its request following
+/// the choice round of request `follows` where one is named, moving `amount`.
+pub fn route_from_the_ledger(
+    world: &mut super::World,
+    clock: &super::TestClock,
+    record_id: &Id,
+    follows: Option<&str>,
+    amount: &str,
+) -> rutent_contracts::router_api::DecisionRecord {
     use rutent_contracts::router_api::{PositiveAmount, Request, Router};
     use rutent_core_orch::snapshot::{Ask, Asked, Clock, Exposures, Received, Releases, Snapshots};
     use rutent_prov::module::types::Handled;
     use rutent_router::RouteFinder;
     use serde_json::json;
 
-    use super::{AMOUNT, bank, bounds, price, tuple};
+    use super::{bank, bounds, price, tuple};
 
     let context = world.context();
     let bounds = bounds(&context);
     let deposit = tuple(RESERVE, ledger(RESERVE), bank(RESERVE));
     let prices = [price(deposit.clone())];
     let (exposures, releases) = (Exposures::new(), Releases::new());
-    let record_id = linked_record(order);
+    let record_id = record_id.clone();
     let request = |round: serde_json::Value, request_id: &str| -> Request {
-        serde_json::from_value(json!({
+        let mut request = json!({
             "request_id": request_id,
             "round": round,
             "from": ledger(RESERVE),
             "to": bank(RESERVE),
-            "amount": AMOUNT,
+            "amount": amount,
             "objective": { "kind": "lowest_total_cost" },
-        }))
-        .unwrap()
+        });
+        if let Some(follows) = follows {
+            request["follows"] = follows.into();
+        }
+        serde_json::from_value(request).unwrap()
     };
     let started = clock.now().seconds;
     clock.set(started - 7_200);
@@ -114,7 +129,7 @@ pub fn linked_route(
         "transaction": "tx-dry-linked",
         "provider": RESERVE,
         "asset": "COP",
-        "amount": AMOUNT,
+        "amount": amount,
         "dry_run": true,
         "inputs": { "beneficiary.bank_account": "acct-2" },
         "origin": ledger(RESERVE)["node"].clone(),
@@ -129,7 +144,7 @@ pub fn linked_route(
         tuple: deposit,
         asked: Asked::DryRun {
             amount_in: PositiveAmount::new(
-                rutent_contracts::router_api::Amount::new(AMOUNT).unwrap(),
+                rutent_contracts::router_api::Amount::new(amount).unwrap(),
             )
             .unwrap(),
         },
@@ -159,4 +174,91 @@ pub fn linked_route(
     assert!(record.chosen().is_some(), "the router chose the linked route");
     assert_eq!(record.record_id(), &record_id);
     record
+}
+
+/// Appends a decision record of the kit's order `order` under `record_id`, the one a route the kit's router chose for
+/// it outside the rounds cites.
+pub fn seed_record(core: &Core, order: &str, record_id: &Id) {
+    use rutent_contracts::core_internal::{
+        Outcome, RoutingRound, Through, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    };
+    let at = rutent_contracts::router_api::Timestamp::new(
+        rutent_prov::catalogue::Instant(super::START)
+            .rfc3339()
+            .unwrap(),
+    )
+    .unwrap();
+    core.log
+        .borrow_mut()
+        .take(
+            &Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: super::core(),
+                what: What::DecisionRecord {
+                    decision_record: record_id.clone(),
+                    order: id(order),
+                    round: RoutingRound::Choice,
+                    record: super::digest(&"cf".repeat(32)),
+                    previous: None,
+                    shortlisted: None,
+                    verifiers: Vec::new(),
+                },
+                when: When {
+                    at,
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Observed {},
+            }),
+            Through::General,
+        )
+        .unwrap();
+}
+
+/// Appends the customer's acceptance `acceptance` of `order` under `authorisation`, as the kit's automatic deposit's
+/// (the kit's order holds one acceptance basis, `order-holds-one-acceptance-basis`): the acceptance of new terms that
+/// each move under them rests on (`move-rests-on-its-orders-acceptance`).
+pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation: &Id) {
+    use rutent_contracts::core_internal::{
+        AcceptanceBasis, Outcome, Parties, Through, TimeSource, VerifiedEntry, VerifiedKind, What,
+        When,
+    };
+    let at = rutent_contracts::router_api::Timestamp::new(
+        rutent_prov::catalogue::Instant(super::START)
+            .rfc3339()
+            .unwrap(),
+    )
+    .unwrap();
+    let requester = super::customer().party;
+    core.log
+        .borrow_mut()
+        .take(
+            &Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: super::core(),
+                what: What::Acceptance {
+                    acceptance: id(acceptance),
+                    order: id(order),
+                    request: id(&format!("req-{acceptance}")),
+                    quote: super::digest(&"ab".repeat(32)),
+                    authorisation: authorisation.clone(),
+                    basis: AcceptanceBasis::AutomaticDeposit,
+                    parties: Parties {
+                        requester: requester.clone(),
+                        beneficiary: requester.clone(),
+                        settlement_account_at: None,
+                        payer: requester,
+                    },
+                    origin_reserve: id(RESERVE),
+                    yeses: Vec::new(),
+                    session: None,
+                },
+                when: When {
+                    at,
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Observed {},
+            }),
+            Through::General,
+        )
+        .unwrap();
 }

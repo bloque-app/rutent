@@ -31,6 +31,10 @@
 //!    held, is held for it ([`proves_start`]); the segments refuse it before then
 //!    ([`SegmentsError::StartUnproven`](crate::segments::SegmentsError::StartUnproven)).
 //!
+//! 5. **A wait at the floor, resumed** ([`HandOn::resume`], `REQ-ORD-27`). A part waiting for the customer resumes
+//!    on a route to its own destination under the customer's new terms (a lower floor, say), which the customer
+//!    accepted, held to them and recorded as `route_recalculated`; it changes no destination (`INV-10`).
+//!
 //! **The operator's hand-on** ([`Basis::Resolution`]). The operator hands a stuck order's value on only as a stuck
 //! resolution, decided and moved under `REQ-AUZ-4` ([`Stuck`](crate::stuck::Stuck)); once its `resolve_stuck`
 //! effect's result is done, this module records the part's `handed_on` and the linked order's route the same way
@@ -194,6 +198,29 @@ pub struct Changed {
     pub amount: PositiveAmount,
 }
 
+/// A part waiting for the customer, resumed on a route to its own destination under the customer's new terms.
+#[derive(Debug, Clone, Copy)]
+pub struct Resume<'a> {
+    /// The order.
+    pub order: &'a Id,
+    /// The part waiting for the customer.
+    pub part: &'a Id,
+    /// The choice round's record of the route from where the value sits, routed under the new terms' floor.
+    pub record: &'a DecisionRecord,
+    /// The customer's new authorisation, in force for the part ([`authorise`]): the route is held to it.
+    pub authorisation: &'a Authorisation,
+    /// The customer's acceptance of the new terms, which the log holds: of this order, accepting the new
+    /// authorisation, which every move on the route rests on (`move-rests-on-its-orders-acceptance`, `REQ-ORD-34`).
+    pub acceptance: &'a Id,
+    /// The log's entries, as the log holds them: where the acceptance is read from.
+    pub recorded: &'a [Entry],
+    /// Core, acting on its own account: who writes the input and its entry.
+    pub core: &'a Actor,
+}
+
+/// A waiting part resumed.
+pub type Resumed = Changed;
+
 /// On whose word a part is handed on.
 #[derive(Debug, Clone, Copy)]
 pub enum Basis<'a> {
@@ -286,6 +313,14 @@ struct PendingChange {
     released: Vec<Id>,
 }
 
+/// A resumption built, kept until the log takes it.
+#[derive(Debug, Clone)]
+struct PendingResume {
+    step: Step,
+    resumed: Resumed,
+    released: Vec<Id>,
+}
+
 /// A hand-on built, kept until the log takes both its inputs.
 #[derive(Debug, Clone)]
 struct PendingHandOn {
@@ -310,6 +345,7 @@ struct Linked {
 pub struct HandOn {
     changes: BTreeMap<(String, String), PendingChange>,
     hand_ons: BTreeMap<(String, String), PendingHandOn>,
+    resumes: BTreeMap<(String, String), PendingResume>,
     linked: BTreeMap<String, Linked>,
 }
 
@@ -377,42 +413,16 @@ impl HandOn {
             return Err(HandOnError::NotItsAuthorisation);
         }
         let (from, settled, amount) = at_rest(parts.segments, change.order, part)?;
-        let chosen = change.record.chosen().ok_or(HandOnError::Rejected(
-            Rejected::NotApplicable(stm::Outcome::Applied {}),
-        ))?;
-        // Inside the customer's new authorisation, read from it and never from the record (`REQ-AUZ-3`).
-        check_route(
-            &change.record.bounds.operator_fee,
-            chosen.parts.as_slice(),
+        let (plan, ids, route) = plan_route(
+            parts.fresh,
+            &order,
+            change.record,
             &from,
             &amount,
             authorisation,
-        )
-        .map_err(HandOnError::Rejected)?;
-        let route_part = chosen.parts.first();
-        let mut used = used_ids(&order);
-        let mut plan = Vec::new();
-        let mut ids = Vec::new();
-        for operation in route_part.operations.as_slice() {
-            let id = fresh_segment(parts.fresh, &used)?;
-            used.push(id.as_str().to_owned());
-            plan.push(SegmentPlan {
-                segment_id: stm_id(id.as_str())?,
-                provider: stm_id(operation.provider.as_str())?,
-                kind: operation.kind,
-                from: operation.from.clone(),
-                to: operation.to.clone(),
-            });
-            ids.push(id);
-        }
+        )?;
         // The state machine's rules: another destination, from where the value sits (`INV-4`, `INV-10`).
         destination_change(part, &plan)?;
-        let route = route_end(
-            route_part,
-            &change.record.bounds.operator_fee,
-            authorisation,
-        )
-        .ok_or(HandOnError::Rejected(Rejected::ChangesDestination))?;
         let input = Self::part_input(
             parts,
             change.order,
@@ -445,6 +455,109 @@ impl HandOn {
         Ok(PendingChange {
             step,
             changed: Changed {
+                input,
+                receipt: placeholder(),
+                segments: ids,
+                route,
+                from,
+                amount,
+            },
+            released,
+        })
+    }
+
+    /// Resumes a part waiting for the customer on a route to its own destination, under the customer's new terms in
+    /// force for it (a lower floor, say; [`authorise`]): the waits at the floor `T-020-10b` records end this way
+    /// (`REQ-ORD-27`, `AC-12`). The router's choice is held to the new authorisation ([`check_route`]): from where
+    /// the value sits, all of it, to the authorisation's destination and to asset, leaving its floor; and to the
+    /// state machine's rules, as a `route_recalculated`, citing the choice round's decision record. It changes no
+    /// destination (`INV-10`). Built once and appended until the log takes it; the order Core follows then takes
+    /// it, and the next recalculation follows that round ([`Recalculations::followed_by`](crate::recalc::Recalculations::followed_by)).
+    pub fn resume(&mut self, parts: &mut Parts<'_>, resume: Resume<'_>) -> Result<Resumed, HandOnError> {
+        let at = key(resume.order, resume.part);
+        if !self.resumes.contains_key(&at) {
+            let built = Self::build_resume(parts, &resume)?;
+            self.resumes.insert(at.clone(), built);
+        }
+        let pending = self.resumes.get_mut(&at).ok_or(HandOnError::Unknown)?;
+        let receipt = match pending.step.append(parts.log) {
+            Ok(receipt) => receipt,
+            Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable.into()),
+            Err(refused) => {
+                self.resumes.remove(&at);
+                return Err(refused.into());
+            }
+        };
+        let pending = self.resumes.remove(&at).ok_or(HandOnError::Unknown)?;
+        let mut resumed = pending.resumed;
+        resumed.receipt = receipt;
+        if parts.segments.observe(parts.clock, &resumed.input) {
+            for segment in &pending.released {
+                parts.exposures.release(resume.order, segment);
+            }
+        }
+        Ok(resumed)
+    }
+
+    fn build_resume(parts: &mut Parts<'_>, resume: &Resume<'_>) -> Result<PendingResume, HandOnError> {
+        let order = parts
+            .segments
+            .order(resume.order)
+            .cloned()
+            .ok_or(Refused::Unknown)?;
+        let part = order
+            .parts
+            .iter()
+            .find(|p| p.part_id.as_str() == resume.part.as_str())
+            .ok_or(Refused::Unknown)?;
+        if part.state != OrderState::WaitingForCustomer {
+            return Err(Refused::NotWaiting(part.state).into());
+        }
+        let authorisation = resume.authorisation;
+        let speaks_for = authorisation
+            .parts
+            .as_ref()
+            .is_none_or(|ps| ps.iter().any(|p| p.as_str() == resume.part.as_str()));
+        if authorisation.order != *resume.order || !speaks_for {
+            return Err(HandOnError::NotItsAuthorisation);
+        }
+        let (from, settled, amount) = at_rest(parts.segments, resume.order, part)?;
+        let (plan, ids, route) = plan_route(parts.fresh, &order, resume.record, &from, &amount, authorisation)?;
+        if !stm::recalculation_keeps_destination(part, &plan) {
+            return Err(HandOnError::Rejected(Rejected::ChangesDestination));
+        }
+        if !stm::recalculation_starts_where_value_sits(part, &plan) {
+            return Err(HandOnError::Rejected(Rejected::StartsElsewhere));
+        }
+        let input = Self::part_input(
+            parts,
+            resume.order,
+            resume.part,
+            resume.core,
+            SourceKind::Orchestrator,
+            Observed::RouteRecalculated {
+                decision_record: stm_id(resume.record.record_id().as_str())?,
+                segments: plan,
+            },
+        )?;
+        let after = Stm::transition(&order, &input);
+        if after.last_input.outcome != (stm::Outcome::Applied {}) {
+            return Err(HandOnError::Rejected(Rejected::NotApplicable(
+                after.last_input.outcome,
+            )));
+        }
+        match acceptance_of(resume.recorded, resume.acceptance) {
+            Some(accepted)
+                if accepted.order == resume.order
+                    && *accepted.authorisation == authorisation.authorisation => {}
+            _ => return Err(HandOnError::NotItsAcceptance),
+        }
+        let step = built(parts, resume.core, &input)?;
+        let mut released = vec![settled];
+        released.extend(retiring(part));
+        Ok(PendingResume {
+            step,
+            resumed: Resumed {
                 input,
                 receipt: placeholder(),
                 segments: ids,
@@ -700,6 +813,44 @@ impl HandOn {
             observed,
         })
     }
+}
+
+/// The router's choice in `record`, held to `authorisation` ([`check_route`]) from `from`, moving `amount`: its plan,
+/// under fresh segment ids none of `order`'s segments had, those ids, and what each move on it ends at
+/// ([`route_end`]).
+fn plan_route(
+    fresh: &mut dyn Fresh,
+    order: &stm::Order,
+    record: &DecisionRecord,
+    from: &Endpoint,
+    amount: &PositiveAmount,
+    authorisation: &Authorisation,
+) -> Result<(Vec<SegmentPlan>, Vec<Id>, RouteEnd), HandOnError> {
+    let chosen = record
+        .chosen()
+        .ok_or(HandOnError::Rejected(Rejected::Split))?;
+    // Inside the customer's new authorisation, read from it and never from the record (`REQ-AUZ-3`).
+    let fee = &record.bounds.operator_fee;
+    check_route(fee, chosen.parts.as_slice(), from, amount, authorisation)
+        .map_err(HandOnError::Rejected)?;
+    let route_part = chosen.parts.first();
+    let mut used = used_ids(order);
+    let (mut plan, mut ids) = (Vec::new(), Vec::new());
+    for operation in route_part.operations.as_slice() {
+        let id = fresh_segment(fresh, &used)?;
+        used.push(id.as_str().to_owned());
+        plan.push(SegmentPlan {
+            segment_id: stm_id(id.as_str())?,
+            provider: stm_id(operation.provider.as_str())?,
+            kind: operation.kind,
+            from: operation.from.clone(),
+            to: operation.to.clone(),
+        });
+        ids.push(id);
+    }
+    let route = route_end(route_part, fee, authorisation)
+        .ok_or(HandOnError::Rejected(Rejected::ChangesDestination))?;
+    Ok((plan, ids, route))
 }
 
 /// Where `part`'s value rests, the settled segment that took it there, and what that segment handed on: all of
