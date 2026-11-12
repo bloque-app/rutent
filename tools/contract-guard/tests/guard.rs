@@ -812,3 +812,72 @@ fn a_referenced_contract_s_major_bump_needs_the_referencing_contract_s_major_bum
     let (fixture, changed) = referenced_major("2.2.0", "2.1.0");
     assert_eq!(run(&changed, &fixture), Vec::new());
 }
+
+/// module-interface's major moves, and router-api's Rust module re-exports one of its types, written `use_line`.
+fn module_use(use_line: &str, router_api: &str) -> (Fixture, Vec<&'static str>) {
+    let router_base = "# router-api changelog\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .head_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 5.0.0\n- A call kind renamed. (DEC-4, DEC-20, T-020-01)\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .at_both("contracts/src/module_interface/types.rs", "pub enum OperationKind {}")
+        .at_both("contracts/src/router_api/types.rs", use_line)
+        .base_only("contracts/router-api/CHANGELOG.md", router_base);
+    let mut changed = vec![
+        "contracts/module-interface/CHANGELOG.md",
+        "contracts/src/module_interface/types.rs",
+    ];
+    if router_api == "3.0.0" {
+        fixture = fixture.head_only("contracts/router-api/CHANGELOG.md", router_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/router-api/CHANGELOG.md",
+            &format!("# router-api changelog\n\n## {router_api}\n- Follows module-interface. (DEC-4, DEC-20, T-020-01)\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n"),
+        );
+        changed.push("contracts/router-api/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_rust_module_using_a_contract_whose_major_moved_needs_its_own_major_bump() {
+    for line in [
+        "pub use crate::module_interface::OperationKind as CallKind;",
+        "use crate::{provider_role::Id, module_interface::OperationKind};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+        let (fixture, changed) = module_use(line, "4.0.0");
+        assert_eq!(run(&changed, &fixture), Vec::new(), "{line}");
+    }
+    // A module that names no other contract's module asks nothing of it.
+    let (fixture, changed) = module_use("pub enum Route {}", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}
+
+// verifies: DEC-4
+#[test]
+fn a_changelog_heading_that_is_not_a_version_is_refused_even_untouched() {
+    let fixture = Fixture::default().at_both(
+        "contracts/router-api/CHANGELOG.md",
+        "# router-api changelog\n\n## next\n- Routes. (DEC-4, T-004-01)\n",
+    );
+    let violations = run(&[], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "router-api" && v.message.contains("not a version")),
+        "expected the heading refused, got {violations:?}"
+    );
+}

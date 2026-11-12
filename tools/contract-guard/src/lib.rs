@@ -18,9 +18,11 @@
 //!   touches every contract, since they ship as one crate.
 //! - A change that only adds or drops dependency edges of such packages (a feature another crate turns on) needs the
 //!   shared changelog's entry naming a `DEC-<n>`, like a shared file, and no contract's bump.
-//! - A contract whose major version moves changes every shape that references its schemas: a contract whose head
-//!   schemas name its URNs (`urn:rutent:<name>:`) needs a major bump too, though none of its own paths changed. A
-//!   contract new at the base needs none. Only direct references count: a chain of them moves one major at a time.
+//! - A contract whose major version moves changes every shape that references it: a contract whose head schemas
+//!   name its URNs (`urn:rutent:<name>:`), or whose Rust module uses its module (`crate::<module>`, re-exports
+//!   included), needs a major bump too, though none of its own paths changed. A contract new at the base needs none.
+//!   Only direct references count: a chain of them moves one major at a time. A changelog whose first heading isn't
+//!   a version is refused, touched or not, so it never hides a major.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -577,50 +579,93 @@ pub fn check(
         }
     }
 
-    // A referenced contract's major bump changes the shapes that reference it, though no path of theirs changed.
-    let top = |text: Option<String>| {
-        text.and_then(|t| {
-            sections(&t)
-                .into_iter()
-                .next()
-                .and_then(|s| semver(&s.version))
+    // A referenced contract's major bump changes the shapes and the Rust API that reference it, though no path of
+    // theirs changed: by a schema naming its URNs, or by the referencing module using its Rust module
+    // (`crate::<module>`, a re-export included).
+    let majors =
+        |contract: &Contract| -> Result<Option<((u64, u64, u64), (u64, u64, u64))>, String> {
+            let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
+            let (Some(base), Some(head)) = (files.base(&log), files.head(&log)) else {
+                return Ok(None);
+            };
+            let top = |text: &str| {
+                sections(text)
+                    .into_iter()
+                    .next()
+                    .map(|s| (semver(&s.version), s.version))
+            };
+            match (top(&base), top(&head)) {
+                (Some((Some(b), _)), Some((Some(h), _))) => Ok(Some((b, h))),
+                (_, Some((None, label))) | (Some((None, label)), _) => Err(format!(
+                    "the first heading of {log} is not a version: {label}, so a major moved by it can't be read"
+                )),
+                _ => Err(format!(
+                    "{log} has no version heading, so a major moved by it can't be read"
+                )),
+            }
+        };
+    let candidate_paths: BTreeSet<&String> = base_files.iter().chain(changed).collect();
+    let module_paths: Vec<(usize, String)> = head_contracts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, c)| {
+            c.module_dir
+                .strip_prefix("contracts/src/")
+                .map(|m| (index, m.replace('/', "::")))
         })
-    };
-    let majors = |contract: &Contract| {
-        let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
-        Some((top(files.base(&log))?, top(files.head(&log))?))
-    };
-    let schema_paths: BTreeSet<&String> = base_files.iter().chain(changed).collect();
-    for moved in &head_contracts {
-        let Some((base_version, head_version)) = majors(moved) else {
-            continue;
+        .collect();
+    for (moved_index, moved) in head_contracts.iter().enumerate() {
+        let (base_version, head_version) = match majors(moved) {
+            Ok(Some(versions)) => versions,
+            Ok(None) => continue,
+            Err(message) => {
+                // A touched contract's heading is refused above, with the same reason; one untouched is refused
+                // here, so a heading that isn't a version never lets a major go unseen.
+                if !touched.contains(&moved.name) {
+                    violations.push(violation(&moved.name, message));
+                }
+                continue;
+            }
         };
         if head_version.0 <= base_version.0 {
             continue;
         }
         let urn = format!("urn:rutent:{}:", moved.name);
         for (index, referencing) in head_contracts.iter().enumerate() {
-            if referencing.name == moved.name {
+            if index == moved_index || !base_contracts.iter().any(|c| c.name == referencing.name) {
                 continue;
             }
             let schemas = format!("{}/schemas", referencing.artefact_dir);
-            let references = schema_paths.iter().any(|path| {
+            let owned = |path: &&&String| owner(path, &head_contracts) == Some(index);
+            let by_schema = candidate_paths.iter().filter(owned).any(|path| {
                 within(path, &schemas)
                     && path.ends_with(".json")
-                    && owner(path, &head_contracts) == Some(index)
                     && files.head(path).is_some_and(|text| text.contains(&urn))
             });
-            if !references || !base_contracts.iter().any(|c| c.name == referencing.name) {
-                continue;
-            }
-            let Some((own_base, own_head)) = majors(referencing) else {
-                continue;
+            let by_module = candidate_paths.iter().filter(owned).any(|path| {
+                within(path, &referencing.module_dir)
+                    && path.ends_with(".rs")
+                    && files.head(path).is_some_and(|text| {
+                        crate_paths(&text)
+                            .iter()
+                            .any(|used| module_owner(used, &module_paths) == Some(moved_index))
+                    })
+            });
+            let how = match (by_schema, by_module) {
+                (false, false) => continue,
+                (true, false) => "its schemas reference",
+                (false, true) => "its Rust module uses",
+                (true, true) => "its schemas reference, and its Rust module uses,",
+            };
+            let (own_base, own_head) = match majors(referencing) {
+                Ok(Some(versions)) => versions,
+                Ok(None) | Err(_) => continue,
             };
             if own_head.0 <= own_base.0 {
                 violations.push(violation(
                     &referencing.name,
                     format!(
-                        "its schemas reference {}, whose major moved from {} to {}, so its shapes changed with it and need a major bump too (the base is {}.{}.{} and the head is {}.{}.{})",
+                        "{how} {}, whose major moved from {} to {}, so its shapes changed with it and need a major bump too (the base is {}.{}.{} and the head is {}.{}.{})",
                         moved.name,
                         base_version.0,
                         head_version.0,
@@ -685,6 +730,59 @@ pub fn check(
         }
     }
     Ok(violations)
+}
+
+/// Every path a Rust file names under `crate::`, braces expanded one level: `crate::a::B`, `crate::{a::B, c}`.
+fn crate_paths(text: &str) -> Vec<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let path_at = |rest: &str| -> String {
+        let mut out = String::new();
+        let mut chars = rest;
+        loop {
+            let len = chars.find(|c: char| !ident(c)).unwrap_or(chars.len());
+            if len == 0 {
+                break;
+            }
+            if !out.is_empty() {
+                out.push_str("::");
+            }
+            out.push_str(&chars[..len]);
+            chars = &chars[len..];
+            match chars.strip_prefix("::") {
+                Some(next) if next.starts_with(ident) => chars = next,
+                _ => break,
+            }
+        }
+        out
+    };
+    let mut paths = Vec::new();
+    for (at, _) in text.match_indices("crate::") {
+        if at > 0 && text[..at].ends_with(ident) {
+            continue;
+        }
+        let rest = &text[at + "crate::".len()..];
+        if let Some(group) = rest.strip_prefix('{') {
+            let end = group.find('}').unwrap_or(group.len());
+            for item in group[..end].split(',') {
+                let item = item.trim();
+                if !item.is_empty() {
+                    paths.push(path_at(item));
+                }
+            }
+        } else {
+            paths.push(path_at(rest));
+        }
+    }
+    paths
+}
+
+/// The contract whose Rust module is the longest prefix of `path`, as `module_paths` lists them.
+fn module_owner(path: &str, module_paths: &[(usize, String)]) -> Option<usize> {
+    module_paths
+        .iter()
+        .filter(|(_, m)| path == m || path.starts_with(&format!("{m}::")))
+        .max_by_key(|(_, m)| m.len())
+        .map(|(index, _)| *index)
 }
 
 fn violation(subject: &str, message: String) -> Violation {

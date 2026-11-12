@@ -41,3 +41,6 @@ directory (see `README.md`).
   (DEC-2, DEC-4, DEC-20, T-020-01)
 - The guard follows references: a contract whose schemas name another's URNs needs a major bump when that one's
   major moves, since its shapes change through the reference though none of its paths do. (DEC-4, DEC-20, T-020-01)
+- The guard also follows Rust uses: a contract whose module uses another's (`crate::<module>`, re-exports included)
+  needs a major bump when that one's major moves, and a changelog heading that isn't a version is refused even when
+  its contract is untouched (the review of `T-020-01`). (DEC-4, DEC-20, T-020-01)
