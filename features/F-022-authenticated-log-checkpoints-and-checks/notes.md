@@ -122,13 +122,18 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   accepted (`release_statement_keys`, with the statement's transaction, so a revoked release still signs for a
   segment that began or ran on it, and an exploited one signs nothing). `StatementKeys::publisher` answers from the
   log alone: a provider's publisher by the advertisement accepted last, and the operator's party for the operator
-  and for a module the log holds a done `accept_module` of and no advertisement. No advertisement is accepted for
-  such a module, so none can turn it into a provider's.
-- **Which module is the operator's** (a residual for `T-025-05`). The log knows a module the operator publishes only
-  as one with an accepted release and no advertisement, since no entry says whose a module is. A provider's release
-  accepted before the log recorded its advertisement would be read as the operator's until then; prov's admission
-  takes a provider's release only against its accepted advertisement, so this needs policy to accept a release out
-  of that order.
+  and for a module the operator publishes: one the log held no grant of when an `accept_module` of it was done,
+  and with no advertisement. No advertisement is accepted for such a module, so none can turn it into a
+  provider's, and a grant of it after its release changes nothing.
+- **Which module is the operator's** (a residual for `T-025-05`, the reviewer's should-fix on `371e45a`). No entry
+  says whose a module is, so the log reads a module as the operator's only where, when a release of it is done, the
+  log holds no grant (nor revocation) of it, and it has no advertisement. A granted provider whose release is done
+  before its advertisement is recorded is no operator's module: its party stays unknown, and its statements
+  unverified, until its advertisement is accepted, and then they verify under its own keys for its publisher.
+  Before this fix, orchestration, which alone orders those two appends, could lock any released provider out of
+  its advertisement for good. What is left: a module released before any grant of it is the operator's, and a later
+  grant changes nothing, so a provider can't be granted in after its release; whether a module is the operator's
+  needs a policy decision behind it either way.
 - **A failed sync can lose data** (a residual for `T-025-05`). On Linux, a write whose `fsync` failed may have had
   its dirty pages dropped, so a later `sync_all` can succeed with the data gone. `FileStore` syncs before every
   read-back and answers the failed append `Unavailable`, and the read-back takes only what the file holds, so a

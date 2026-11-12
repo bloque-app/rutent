@@ -39,9 +39,10 @@
 //!   the advertisement accepted last and the one in force at `made_at` list it for `statements` (the catalogue's
 //!   rule, so a retired key can't sign a statement backdated to before its retirement).
 //! - **The party a maker states for** is the publisher its advertisement accepted last names, for a provider, and the
-//!   operator's party for the operator and for a module the operator publishes: one the log holds an accepted release
-//!   of and no advertisement. `attribute` holds such a module to the statement keys of its accepted releases
-//!   (`release_statement_keys`), not to this register.
+//!   operator's party for the operator and for a module the operator publishes: one with a done release the log
+//!   held no grant of when the release was done, and no advertisement. `attribute` holds such a module to the
+//!   statement keys of its accepted releases (`release_statement_keys`), not to this register. A granted provider's
+//!   release done before its advertisement leaves its party unknown until the advertisement is accepted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -182,7 +183,7 @@ pub(super) struct Register {
     grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool)>>>,
     /// Each provider's tuples, each with the time of its last grant or revocation the log admitted, done or not.
     dated: BTreeMap<String, BTreeMap<String, i128>>,
-    /// The modules the log holds an accepted release of, its `accept_module` done.
+    /// The modules the operator publishes: each one the log held no grant of when an `accept_module` of it was done.
     released: BTreeSet<String>,
     /// The publisher each private node an accepted advertisement declares is on record for.
     nodes: BTreeMap<String, String>,
@@ -312,7 +313,12 @@ impl Register {
                             .or_default()
                             .push((when.at.unix_nanos(), *change == CatalogueChange::Grant));
                     }
-                    (CatalogueChange::AcceptModule, _) => {
+                    // A module is the operator's only where, when its release is done, the log holds no grant of
+                    // it: a granted provider's early release leaves its party to its advertisement, and a grant
+                    // after an operator module's release changes nothing.
+                    (CatalogueChange::AcceptModule, _)
+                        if !self.dated.contains_key(provider.as_str()) =>
+                    {
                         self.released.insert(provider.as_str().to_owned());
                     }
                     _ => {}

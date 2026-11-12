@@ -2794,3 +2794,44 @@ fn a_grant_trusts_only_the_keys_it_names_once_done() {
         "2026-11-08T00:00:01Z"
     ));
 }
+
+/// A granted provider whose release is done before its advertisement is recorded is no module of the operator's:
+/// its party is unknown, and its statements unverified, until its own advertisement is accepted, which no release
+/// stands in the way of; then its statements key signs, for its publisher, and its release's key signs nothing as
+/// the operator's.
+// verifies: REQ-AUD-2, REQ-CAT-23, REQ-MDL-1
+#[test]
+fn a_granted_providers_early_release_doesnt_make_it_the_operators() {
+    let release = signing_key("us-bank's module, 1.0.0", 22);
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("us-bank", GRANTED_AT);
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "accept_module", "provider": "us-bank", "version": "1.0.0", "statement_key": public_key(&release).as_str()}),
+        "2026-11-05T12:00:00Z",
+    );
+    assert!(!answered_for(
+        &mut run, "us-bank", OPERATOR, &release, "tx-e-1"
+    ));
+    assert!(!answered_for(
+        &mut run,
+        "us-bank",
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-e-2"
+    ));
+    run.advertise(
+        "us-bank",
+        &advertised("us-bank", &advertising_key("us-bank"), "us-bank"),
+    )
+    .unwrap();
+    assert!(answered_for(
+        &mut run,
+        "us-bank",
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-e-3"
+    ));
+    assert!(!answered_for(
+        &mut run, "us-bank", OPERATOR, &release, "tx-e-4"
+    ));
+}
