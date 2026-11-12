@@ -1124,12 +1124,18 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   closing, the ledger replayed), `provider_below_the_tuples_floor_is_not_routed_through` (the floor raised on the
   catalogue the part runs against, on each of the two tuples), `value_between_segments_rests_only_in_a_holding_account`
   (the same catalogue with no holding account registered) and `every_settled_segment_has_its_fee_record_and_no_balance_is_kept`
-  (two orders). With fakes in `components/core-orch/tests/closing.rs`, over the real `CMP-EVIDENCE` and
+  (two orders), and beyond the row, `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` (`REQ-ORD-33`,
+  `INV-8`: the waiting deposit run again appends nothing, then the movement recorded, the log refusing its evidence and
+  then its fee record for a run each, and the next run settles it once). With fakes in `components/core-orch/tests/closing.rs`, over the real `CMP-EVIDENCE` and
   `SimulatedNetwork`, since no simulated route has a segment inside a private node, crosses two providers' private
   nodes, or shares a movement: `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` (the
   router-api fixture's route through `ledger-in`), `route_across_two_private_nodes_replays_each_on_its_way_out` (five
   segments through `ledger-in`, the public `polygon` and `ledger-b`, matching and with a mismatch at the second node)
-  and `shared_movement_keeps_one_segment_per_order_as_the_providers_word`. The end-to-end scenarios are `T-024-04`'s
+  and `shared_movement_keeps_one_segment_per_order_as_the_providers_word`, and beyond the row
+  `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` (the guard's tuple keys against provider-role's
+  exchange and ramp fixtures). The segment-within test also checks the fee records under an operator's fee of 10 000.
+  Three of the row's seven aren't on the platform, though its done-when says they are: a kit route across two
+  providers' private nodes is `T-024-01`'s, and the platform scenarios `T-024-05`'s. The end-to-end scenarios are `T-024-04`'s
   and `T-024-05`'s.
 - **Written after the code, then each rule switched off.** The code came first (the seam's shape decided the tests'),
   so each rule was switched off once, its test run red, the file restored and touched (scratch helper
@@ -1142,6 +1148,10 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   | a holding account at the node between segments | `value_between_segments_rests_only_in_a_holding_account` |
   | the guard called in `run_part` | `value_between_segments_rests_only_in_a_holding_account` |
   | the reserve's statement graded by its own pieces | `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | a waiting segment isn't final, so a later run grades it again | `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` |
+  | an evidence or fee append that fails stops the settlement | `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` |
+  | a ramp's tuple keyed as a ramp | `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` |
+  | an exchange's tuple keyed by its to asset | `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` |
   | the provider's fee record | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
   | the operator's fee record on the final deposit | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
   | a movement relied on by another order backs nothing | `shared_movement_keeps_one_segment_per_order_as_the_providers_word` |
@@ -1155,8 +1165,14 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **Hand-off to `T-024-02`** (the assembly, in review). Swap `grading: &mut ProvidersWord` for
   `&mut closing::Evidenced { catalogue, records, books, closing }`, keeping one `Closing` beside `Segments`. In the
   simulated world the networks and the books live inside the platform's world, which `Parts` already borrows as the
-  modules, so the assembly's `Running` wrapper should copy them after each `carry_out`, as the test's `Recording`
-  does, into what implements `PublicRecords` and `Books`. No field of `Parts` or `Live` changed.
+  modules, so the assembly copies them into what implements `PublicRecords` and `Books` before every grading: at the
+  start of each run and after each `carry_out`, as the test's `run` and `Recording` do. A copy after `carry_out` alone
+  isn't enough: a resumed run carries nothing out, and a deposit on `polygon` or `bsc` (`Confirmations(2)`) is
+  pending at its first grading and final only once blocks are added, so it would wait for ever. `Closing` must live
+  as long as `Segments` (and as durably, `F-030`): a fresh one silently loses the private-rail close (the movement
+  into the node), the replay's earlier transactions and the inner segments' in-and-out records, and the
+  shared-movement guard; none of them errs. No field of `Parts` or `Live` changed. The kit gained `On::Evidence` and
+  `On::Fee` (additive); `T-024-02`'s rewritten kit keeps every name `closing.rs` uses.
 - **Gaps, with their owners.**
   - The log doesn't hold a final deposit's settlement to a public record and the reserve's statement: only Core does.
     A core-internal relation (the `segment_settled` of a part's last deposit cites grade-1 evidence and rests on the

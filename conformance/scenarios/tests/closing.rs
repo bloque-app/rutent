@@ -365,6 +365,151 @@ fn statement_alone_does_not_close_an_order() {
         .expect("the log admits every entry");
 }
 
+/// A deposit waiting for its public record is taken on from where it stopped once the record is there: graded again,
+/// it settles and the order closes, each entry it rests on, its result and its fee records appended once, and its hold
+/// released. Where the log can't take its evidence, then its fee record, now, the next run appends what is missing and
+/// nothing twice (`INV-8`).
+// verifies: REQ-ORD-33, INV-8
+#[test]
+fn deposit_waiting_for_its_public_record_closes_once_it_is_recorded() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut closing = Closing::new();
+    world.fleet.platform.world.script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let catalogue = world.catalogue.clone();
+    let ran = run(&mut core, &mut world, &catalogue, &mut closing);
+    let waiting = segments(&ran)[1].clone();
+    assert!(
+        matches!(
+            waiting.outcome,
+            SegmentOutcome::AwaitsEvidence(Short::NoPublicRecord(_))
+        ),
+        "{waiting:?}"
+    );
+    // Run again with nothing changed: it still waits, and nothing more is recorded.
+    let before = core.log.borrow().entries.len();
+    let again = run(&mut core, &mut world, &catalogue, &mut closing);
+    assert!(matches!(
+        segments(&again)[1].outcome,
+        SegmentOutcome::AwaitsEvidence(_)
+    ));
+    assert_eq!(
+        core.log.borrow().entries.len(),
+        before,
+        "nothing appended while it waits"
+    );
+    // The movement reaches the bank's public record.
+    let transaction = waiting.transaction.clone().expect("a transaction");
+    let book = world.fleet.platform.world.journal(RESERVE).to_vec();
+    let deposit = book
+        .iter()
+        .find(|e| transaction_of(&e.operation.statement).as_deref() == Some(transaction.as_str()))
+        .expect("the deposit in the reserve's book");
+    let amount = serde_json::to_value(&deposit.operation.statement).unwrap()["amount"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    world
+        .fleet
+        .platform
+        .world
+        .network_mut(&bank())
+        .expect("the bank's network")
+        .record(
+            MovementId::new(transaction.as_str()).unwrap(),
+            rutent_evidence::Movement {
+                destination: "acct-2".into(),
+                asset: "COP".into(),
+                amount,
+            },
+        )
+        .expect("recorded");
+    // The log can't take its evidence, then its fee record, now: each run takes it on from where it stopped.
+    for on in [On::Evidence, On::Fee] {
+        for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+            core.log
+                .borrow_mut()
+                .faults
+                .push_back((on, Fault::Unavailable));
+        }
+        let session = world.context().session;
+        let seen = World_::default();
+        let mut modules = Recording {
+            platform: &mut world.fleet.platform,
+            seen: seen.clone(),
+        };
+        modules.refresh();
+        let mut grading = Evidenced {
+            catalogue: &catalogue,
+            records: &seen,
+            books: &seen,
+            closing: &mut closing,
+        };
+        let stopped = core.try_run_with(
+            &catalogue,
+            &mut modules,
+            &mut NoProxy,
+            &mut grading,
+            &session,
+        );
+        assert!(stopped.is_err(), "{on:?}: {stopped:?}");
+        core.log.borrow_mut().faults.clear();
+    }
+    let ran = run(&mut core, &mut world, &catalogue, &mut closing);
+    assert!(
+        matches!(segments(&ran)[1].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert_eq!(state(&core), OrderState::Complete);
+    assert_eq!(
+        settled_inputs(&core),
+        [WITHDRAWAL, DEPOSIT],
+        "one settled input each"
+    );
+    let log = core.log.borrow();
+    assert_eq!(log.count(is_result), 2, "one result each");
+    let evidence: Vec<String> = log
+        .records()
+        .into_iter()
+        .filter_map(|(_, w)| match w {
+            What::Evidence { evidence, .. } => Some(evidence.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    let mut distinct = evidence.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        evidence.len(),
+        "each evidence entry once: {evidence:?}"
+    );
+    assert_eq!(
+        evidence_of(&core, DEPOSIT).len(),
+        2,
+        "the record and the reserve's statement"
+    );
+    assert_eq!(
+        log.count(|w| matches!(w, What::Fee { segment, .. } if segment.as_str() == DEPOSIT)),
+        2,
+        "the reserve's fee and the operator's, once each"
+    );
+    drop(log);
+    assert!(
+        !core.exposures.held().any(|h| h.segment.as_str() == DEPOSIT),
+        "its hold released"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// The route was chosen when the reserve's tuples took its evidence; the operator then raises the floor. The tuple a
 /// segment runs through is held to the floor as it stands before the segment is handed over: the withdrawal's floor
 /// raised, nothing is handed over; the deposit's raised once the withdrawal settled, the deposit isn't.

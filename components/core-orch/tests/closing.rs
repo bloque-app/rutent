@@ -8,18 +8,25 @@ mod snapshot_support;
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Destination, Entry, MismatchKind, Receipt, ReplayFound, Role, RouteEnd, What,
+    Actor, ActorKind, Destination, Entry, FeeTo, MismatchKind, Receipt, ReplayFound, Role,
+    RouteEnd, What,
 };
-use rutent_contracts::provider_role::{Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE};
+use rutent_contracts::provider_role::{
+    Advertisement, Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE, Statement,
+};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, Timestamp};
-use rutent_core_orch::closing::{Books, Closing, Evidenced, Moved, PublicRecords};
+use rutent_core_orch::closing::{
+    Books, Closing, Evidenced, Moved, PublicRecords, Unadmitted, admits,
+};
 use rutent_core_orch::segments::{Graded, Grading, Short, ToGrade};
 use rutent_evidence::replay::RecordedSegment;
 use rutent_evidence::{
     Finality, Movement, MovementId, NetworkRules, PublicNetwork, ReorgRule, SimulatedNetwork,
     Status,
 };
-use rutent_prov::catalogue::{Catalogue, Instant};
+use rutent_prov::catalogue::{
+    Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
+};
 use serde_json::{Value, json};
 
 fn id(text: &str) -> Id {
@@ -308,6 +315,58 @@ impl Part<'_> {
         bytes: &[u8],
         amount_out: &str,
     ) -> Graded {
+        let fee = no_fee();
+        self.with(
+            place,
+            provider,
+            transaction,
+            bytes,
+            amount_out,
+            &fee,
+            |settled| grading.grade(settled),
+        )
+    }
+
+    /// The fee records `closing::fees` writes for the segment at `place`, under the operator's `fee`.
+    fn fees(
+        &self,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amount_out: &str,
+        fee: &FeeFormula,
+    ) -> Vec<What> {
+        self.with(
+            place,
+            provider,
+            transaction,
+            bytes,
+            amount_out,
+            fee,
+            |settled| {
+                rutent_core_orch::closing::fees(settled)
+                    .into_iter()
+                    .map(|e| match e {
+                        Entry::Verified(v) => v.what,
+                        Entry::Stated(_) => panic!("a fee record is verified"),
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with<R>(
+        &self,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amount_out: &str,
+        fee: &FeeFormula,
+        then: impl FnOnce(&ToGrade<'_>) -> R,
+    ) -> R {
         let (core, operator) = (
             actor("rutent-core", Role::Core),
             actor("ops-lead", Role::Operator),
@@ -316,7 +375,7 @@ impl Part<'_> {
         let at = Timestamp::new("2026-11-10T09:00:00Z").unwrap();
         let result = receipt(10 + place as u64);
         let (provider, transaction) = (id(provider), id(transaction));
-        grading.grade(&ToGrade {
+        then(&ToGrade {
             evidence: &evidence,
             order: &self.order,
             part: &id("p1"),
@@ -326,7 +385,7 @@ impl Part<'_> {
             result: &result,
             bytes,
             operations: self.operations,
-            operator_fee: &no_fee(),
+            operator_fee: fee,
             place,
             segments: &self.segments,
             end: &self.end,
@@ -557,6 +616,33 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
             vec!["ledger-in".to_owned()],
             ReplayFound::ConsistentWithTheExit {}
         )]
+    );
+    // Its fee records: the reserve's, and the operator's, which it keeps back, by the operator's formula over what
+    // arrived, attributed to the operator.
+    let operators: FeeFormula = serde_json::from_value(
+        json!({ "flat": "10000", "proportional": { "numerator": "0", "denominator": "1" } }),
+    )
+    .unwrap();
+    let fees: Vec<(FeeTo, String, String)> = part
+        .fees(2, "reserve-wallet", "tx-d", &deposit, D.1, &operators)
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Fee {
+                to, party, amount, ..
+            } => Some((to, party.as_str().to_owned(), amount.as_str().to_owned())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fees,
+        [
+            (
+                FeeTo::Provider,
+                "reserve-wallet".to_owned(),
+                "1000000".to_owned()
+            ),
+            (FeeTo::Operator, "ops-lead".to_owned(), "10000".to_owned()),
+        ]
     );
 }
 
@@ -886,4 +972,132 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
         .collect();
     assert!(matches!(deposits[0], Graded::Settles { .. }));
     assert_eq!(deposits[1], Graded::Waits(Short::MovementShared));
+}
+
+/// Joins the provider-role fixture advertisement `fixture` to `catalogue`, granted for every tuple it offers in
+/// `category`, with the floor `Statement` on each.
+fn join_fixture(catalogue: &mut Catalogue, fixture: &str, category: Category) -> Advertisement {
+    let ad: Statement<Advertisement> = serde_json::from_value(read(&format!(
+        "provider-role/fixtures/valid/{fixture}.json"
+    )))
+    .unwrap();
+    let ad = ad.statement;
+    let grant = Grant::new(GrantTerms {
+        id: format!("g-{}", ad.provider),
+        provider: ad.provider.clone(),
+        party: "Acme Payments Ltd".into(),
+        granted_by: "operator-admin".into(),
+        granted_at: Instant(1_000),
+        expires_at: Instant(5_000_000_000),
+        categories: vec![category],
+        tuples: tuples_of(&ad),
+        reversal_capacity: ReversalCapacity::check(
+            Bond {
+                asset: "USDC".into(),
+                amount: 1_000,
+                held_by: "escrow-co".into(),
+            },
+            500,
+            "ops-lead",
+            Instant(1_000),
+        )
+        .unwrap(),
+    })
+    .unwrap();
+    let id = format!("g-{}", ad.provider);
+    catalogue.grant(grant).unwrap();
+    catalogue
+        .trust_advertising_key(
+            &id,
+            snapshot_support::public_key(&snapshot_support::advertising_key(&ad.provider)),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        &ad.provider,
+        &[&snapshot_support::statements_key(&ad.provider, 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    for key in tuples_of(&ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+    ad
+}
+
+/// The guard before a hand-over reads an exchange's and a ramp's tuples as the catalogue keys them: an operation at
+/// each is admitted under the floor its tuple has, refused once the floor is above what its provider declares, and a
+/// ramp into a private node with no holding account there is refused.
+// verifies: REQ-ORD-39, INV-5
+#[test]
+fn exchange_and_ramp_operations_are_held_to_their_own_tuples_floors() {
+    let mut catalogue = Catalogue::new();
+    catalogue.set_context(
+        snapshot_support::deployment(),
+        rutent_contracts::provider_role::VERSION,
+    );
+    catalogue.add_public_node("polygon").unwrap();
+    catalogue.publish_operator_module("wallet-module").unwrap();
+    catalogue
+        .register_public_holding("polygon", "wallet-module")
+        .unwrap();
+    join_fixture(
+        &mut catalogue,
+        "advertisement-exchange-within-one-node",
+        Category::Exchange,
+    );
+    join_fixture(
+        &mut catalogue,
+        "advertisement-ramp-between-a-public-and-a-private-node",
+        Category::Ramp,
+    );
+    let usdc = json!({ "id": "USDC", "decimals": 6 });
+    let usdt = json!({ "id": "USDT", "decimals": 6 });
+    let op = |kind: &str, provider: &str, from: (&str, &Value), to: (&str, &Value)| -> Operation {
+        serde_json::from_value(json!({
+            "kind": kind, "provider": provider,
+            "from": { "node": from.0, "asset": from.1 }, "to": { "node": to.0, "asset": to.1 },
+            "amount_in": "1000", "fee": { "asset": from.1["id"], "amount": "0" }, "amount_out": "1000",
+            "figures": ["f-1"],
+        }))
+        .unwrap()
+    };
+    let exchange = op(
+        "exchange",
+        "dex-pool",
+        ("polygon", &usdc),
+        ("polygon", &usdt),
+    );
+    let ramp = op(
+        "route",
+        "bridge-pay",
+        ("polygon", &usdc),
+        ("acme-ledger", &usdc),
+    );
+    assert_eq!(admits(&catalogue, &exchange, false), Ok(()));
+    assert_eq!(
+        admits(&catalogue, &ramp, false),
+        Err(Unadmitted::NoHoldingAccount),
+        "no holding account at acme-ledger yet"
+    );
+    catalogue
+        .register_private_holding("acme-ledger", "acme", "holding")
+        .unwrap();
+    assert_eq!(admits(&catalogue, &ramp, false), Ok(()));
+    // The ramp declares grade 2: a floor of 1 on its tuple stops it, and the exchange's tuple is its own.
+    let ramp_ad: Statement<Advertisement> = serde_json::from_value(read(
+        "provider-role/fixtures/valid/advertisement-ramp-between-a-public-and-a-private-node.json",
+    ))
+    .unwrap();
+    for key in tuples_of(&ramp_ad.statement) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::PublicRecord);
+    }
+    assert_eq!(
+        admits(&catalogue, &ramp, false),
+        Err(Unadmitted::BelowEvidenceFloor)
+    );
+    assert_eq!(admits(&catalogue, &exchange, false), Ok(()));
 }

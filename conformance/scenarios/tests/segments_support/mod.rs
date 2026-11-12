@@ -172,6 +172,10 @@ pub enum On {
     Refusal,
     /// A part's route recalculated (`T-020-10`).
     Recalculated,
+    /// A segment's graded evidence (`T-020-09`).
+    Evidence,
+    /// A segment's fee record (`T-020-09`).
+    Fee,
 }
 
 impl On {
@@ -197,6 +201,8 @@ impl On {
                 What::Input { input } if matches!(input.observed, Observed::RouteRecalculated { .. })),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
+            (On::Evidence, Entry::Verified(v)) => matches!(v.what, What::Evidence { .. }),
+            (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             _ => false,
         }
     }
