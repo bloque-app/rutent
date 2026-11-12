@@ -204,7 +204,7 @@
       ]
     },
     "action": {
-      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue or moves a stuck order's value (REQ-AUZ-1).",
+      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue, moves a stuck order's value or erases a kept statement (REQ-AUZ-1, REQ-AUD-13).",
       "type": "object",
       "required": [
         "kind"
@@ -215,6 +215,7 @@
             "move_value",
             "post_route",
             "change_catalogue",
+            "erase_statement",
             "resolve_stuck"
           ]
         }
@@ -263,6 +264,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_change_catalogue"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "erase_statement"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_erase_statement"
           }
         },
         {
@@ -388,6 +404,29 @@
         "statement_key": {
           "description": "The key the release's module signs its statements with: named exactly by accept_module, which the Rust types check.",
           "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "action_erase_statement": {
+      "description": "Erasing a kept statement's bytes from the evidence store, a decided action: the store erases only on its effect's done result, and the commitment stays in the log (REQ-AUD-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "commitment",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "erase_statement"
+        },
+        "commitment": {
+          "description": "The commitment the bytes are kept under.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "reason": {
+          "description": "Why, as a token: a label to read, which no decision branches on.",
+          "$ref": "#/$defs/token"
         }
       }
     },

@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 115 valid fixtures and 114 invalid ones, each
-  breaking one rule, and 265 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 54 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
+  breaking one rule, and 279 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 57 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -149,6 +149,18 @@
   operator reads the operator's own statements, made as the operator, as the operator's party; the rows over
   verified entries read a `VerifiedCiting`, which carries the maker the operator signs as. 265 admission cases.
   (DEC-4, DEC-20, REQ-AUD-5, REQ-AUZ-7, T-020-01)
+- Folded into 1.0.0 before its release: erasure is a decided action, and nothing cites an erased statement. A new
+  `Action::EraseStatement { commitment, reason }` goes through `Decisions::decide`; the log admits its effect on
+  the permit and its result like any decided action, and the `erasure` entry follows its effect's `done` result
+  (`erasure-is-carried-out-on-its-decision`). Once an erasure is done, no new entry cites the statement, by its
+  stated entry's receipt or its commitment (`nothing-cites-an-erased-statement`). A permission-free evidence read
+  is also of a statement the log verified. 116 valid fixtures, 115 invalid, 276 admission cases. (DEC-4, DEC-20,
+  REQ-AUD-13, REQ-AUZ-1, REQ-AUD-5, T-020-01)
+- Folded into 1.0.0 before its release: an erasure is refused while anything rests on the statement. The new
+  none-other row `erasure-waits-while-anything-rests-on-the-statement` refuses an `erasure` entry, and an
+  `erase_statement` decision, while an earlier entry cites the statement, so the log holds no done erasure the
+  evidence store must refuse ("refuse while cited", the owner's default). 279 admission cases. (DEC-4, DEC-20,
+  REQ-AUD-13, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

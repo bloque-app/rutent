@@ -186,6 +186,8 @@ struct Started {
     route: RouteEnd,
     session: Option<Id>,
     inputs: BTreeMap<String, String>,
+    /// The least the customer takes at the destination, as the authorisation in the log names it (`T-020-10`).
+    floor: Option<rutent_contracts::router_api::PositiveAmount>,
 }
 
 /// The operator's key, watched: every decision record Core signs is kept by its id, for the segments to run the
@@ -1015,6 +1017,7 @@ impl Core {
             },
             session: Some(request.session.clone()),
             inputs,
+            floor: authorised.floor.clone(),
         };
         if !self.segments.follow(&self.clock, start) {
             return Err(StepError::NotNow("the state machine opens the order"));
@@ -1088,6 +1091,7 @@ impl Core {
                 operator: &operator,
                 session: started.session.as_ref(),
                 inputs: &started.inputs,
+                floor: started.floor.as_ref(),
             };
             let mut running = Running {
                 platform: &mut self.fleet.platform,

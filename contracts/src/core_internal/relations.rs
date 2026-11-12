@@ -157,6 +157,79 @@ fn effect_action(entry: &VerifiedEntry) -> Option<(&Action, &Permit)> {
     }
 }
 
+/// The commitment the effect at `receipt` in `history` erases, where it is an `erase_statement` effect.
+fn erased_by<'a>(
+    receipt: &Receipt,
+    history: &'a History,
+) -> Option<&'a crate::module_interface::Digest> {
+    history.iter().find_map(|(r, e)| match &verified(e)?.what {
+        What::Effect {
+            action: Action::EraseStatement { commitment, .. },
+            ..
+        } if r == receipt => Some(commitment),
+        _ => None,
+    })
+}
+
+/// The commitment `entry` erases: an `erasure` entry's, or an `erase_statement` decision's.
+fn erasing(entry: &VerifiedEntry) -> Option<&crate::module_interface::Digest> {
+    match &entry.what {
+        What::Erasure { evidence } => Some(evidence),
+        What::Decide { request, .. } => match &request.action {
+            Action::EraseStatement { commitment, .. } => Some(commitment),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `entry` is one that can rest on a statement: anything but the erasure's own path (its decision, effect
+/// and record) and a read of a statement or a permission over one, which rest on nothing they name.
+fn rests_on_statements(entry: &VerifiedEntry) -> bool {
+    !matches!(
+        &entry.what,
+        What::Erasure { .. }
+            | What::CheckRead { .. }
+            | What::GrantPermission { .. }
+            | What::RevokePermission { .. }
+            | What::Result { .. }
+            | What::Effect {
+                action: Action::EraseStatement { .. },
+                ..
+            }
+    ) && !matches!(&entry.what, What::Decide { request, .. }
+        if matches!(request.action, Action::EraseStatement { .. }))
+}
+
+/// Whether `value` holds `needle` anywhere.
+fn holds_value(value: &serde_json::Value, needle: &serde_json::Value) -> bool {
+    value == needle
+        || match value {
+            serde_json::Value::Array(items) => items.iter().any(|v| holds_value(v, needle)),
+            serde_json::Value::Object(map) => map.values().any(|v| holds_value(v, needle)),
+            _ => false,
+        }
+}
+
+/// Whether `entry` cites the statement kept under `commitment`: the receipt of a stated entry of `history` naming
+/// it, or the commitment itself, anywhere in what it records.
+fn cites_statement(
+    entry: &VerifiedEntry,
+    commitment: &crate::module_interface::Digest,
+    history: &History,
+) -> bool {
+    let Ok(what) = serde_json::to_value(&entry.what) else {
+        return false;
+    };
+    let mut needles: Vec<serde_json::Value> = history
+        .iter()
+        .filter(|(_, e)| stated(e).is_some_and(|s| &s.commitment == commitment))
+        .filter_map(|(r, _)| serde_json::to_value(r).ok())
+        .collect();
+    needles.extend(serde_json::to_value(commitment).ok());
+    needles.iter().any(|n| holds_value(&what, n))
+}
+
 /// The provider of `segment` of `order`: the one this log's `move_value` effect for it names.
 fn segment_provider<'a>(order: &Id, segment: &Id, history: &'a History) -> Option<&'a Id> {
     history
@@ -274,7 +347,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 52] = [
+pub static RELATIONS: [Relation; 55] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1390,6 +1463,72 @@ pub static RELATIONS: [Relation; 52] = [
         answers: |_, _, _, _| Match::Holds,
     },
     Relation {
+        name: "erasure-is-carried-out-on-its-decision",
+        spec: &["REQ-AUD-13", "REQ-AUZ-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "an erasure follows a result of an erase effect of this log for its commitment",
+        fields: &[(
+            "done",
+            "an erasure follows its erase effect's done result: the store erases only then",
+        )],
+        cites: |e, _| match &e.what {
+            What::Erasure { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (What::Erasure { evidence }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            let What::Result { effect } = &t.what else {
+                return Match::NotTarget;
+            };
+            judge(
+                erased_by(effect, h) == Some(evidence),
+                &[t.outcome == (Outcome::Done {})],
+            )
+        },
+    },
+    Relation {
+        name: "erasure-waits-while-anything-rests-on-the-statement",
+        spec: &["REQ-AUD-13"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "no statement is erased while an entry of this log rests on it",
+        fields: &[],
+        // Refused while cited (the owner's default): its decision and its record both, so the log holds no done
+        // erasure the store must refuse.
+        cites: |e, _| match erasing(e) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| match (erasing(e), verified(t)) {
+            (Some(commitment), Some(t)) => judge(
+                rests_on_statements(t) && cites_statement(t, commitment, h),
+                &[],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "nothing-cites-an-erased-statement",
+        spec: &["REQ-AUD-13"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "no entry cites a statement whose erasure is done",
+        fields: &[],
+        cites: |e, _| {
+            if rests_on_statements(e) {
+                by_fields(0)
+            } else {
+                none()
+            }
+        },
+        answers: |e, _, t, h| match verified(t).map(|t| (&t.what, &t.outcome)) {
+            Some((What::Erasure { evidence }, Outcome::Done {})) => {
+                judge(cites_statement(e, evidence, h), &[])
+            }
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
         name: "erasure-names-a-kept-statement",
         spec: &["REQ-AUD-13"],
         quantifier: Quantifier::Exists,
@@ -1638,10 +1777,16 @@ pub static RELATIONS: [Relation; 52] = [
         spec: &["REQ-AUD-5", "REQ-AUZ-7"],
         quantifier: Quantifier::Exists,
         refusal: "a permitted evidence read without a permission is of a statement this log holds",
-        fields: &[(
-            "maker",
-            "a permitted evidence read without a permission is of a statement its reader made, or the operator's own for an operator of its party",
-        )],
+        fields: &[
+            (
+                "verified",
+                "a permitted evidence read without a permission is of a statement the log verified",
+            ),
+            (
+                "maker",
+                "a permitted evidence read without a permission is of a statement its reader made, or the operator's own for an operator of its party",
+            ),
+        ],
         // A party reads its own evidence without a permission (`REQ-AUD-5`); any other's rests on a permission,
         // whose scope `covers` the read.
         cites: |e, _| match &e.what {
@@ -1677,7 +1822,10 @@ pub static RELATIONS: [Relation; 52] = [
                 && s.attribution.maker().party == reader.party;
             judge(
                 &s.commitment == commitment,
-                &[maker_provider(s) == &reader.acts || operators_own],
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    maker_provider(s) == &reader.acts || operators_own,
+                ],
             )
         },
     },

@@ -65,11 +65,14 @@ use serde_json::{Value, json};
 
 // What every scenario kit shares is the assembly's kit (`T-024-02`): the route, who acts, the operator's key, fresh
 // identifiers, the bounds and the prices, and the listing of an advertisement in Core's catalogue.
+// Each test crate that mounts this kit uses its own share of these.
+use rutent_scenarios::kit::list;
+pub use rutent_scenarios::kit::price;
+#[allow(unused_imports)]
 pub use rutent_scenarios::kit::{
     AMOUNT, Counted as Ids, DECLARED, PlaceholderKey as TestKey, RESERVE, START, bank, bounds,
     core, customer, id, ledger, operator, tuple,
 };
-use rutent_scenarios::kit::{list, price};
 /// The order.
 pub const ORDER: &str = "ord-1";
 /// The part.
@@ -138,6 +141,8 @@ pub enum On {
     LaterResult,
     /// An order's refusal.
     Refusal,
+    /// A part's route recalculated (`T-020-10`).
+    Recalculated,
 }
 
 impl On {
@@ -159,6 +164,8 @@ impl On {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
             }
             (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
+            (On::Recalculated, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::RouteRecalculated { .. })),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
             _ => false,
@@ -222,6 +229,11 @@ impl TestLog {
             return Err(AppendFailure::Unavailable);
         }
         Ok(receipt(index, entry))
+    }
+
+    /// The receipt this log gave the entry at `index` (`T-020-10`: an order's history resumed from the log).
+    pub fn receipt_at(&self, index: usize) -> Receipt {
+        receipt(index, &self.entries[index].0)
     }
 
     /// Every verified entry's `what`, with its place.
@@ -649,7 +661,7 @@ impl Named {
         }
     }
 
-    fn authorisation(&self) -> String {
+    pub fn authorisation(&self) -> String {
         format!("auth-{}", self.order)
     }
 }
@@ -706,6 +718,33 @@ pub fn route_chosen_of(record: &DecisionRecord, named: &Named) -> RecordedInput 
             handed_on_from: None,
         },
     }
+}
+
+/// The second part of a split order (`T-020-10`): the same route as [`PART`], under its own segment ids.
+pub const SECOND_PART: &str = "p2";
+/// The second part's withdrawal.
+pub const SECOND_WITHDRAWAL: &str = "p2-s1";
+/// The second part's deposit.
+pub const SECOND_DEPOSIT: &str = "p2-s2";
+
+/// The `route_chosen` input of `named` split in two parts over the same route, [`PART`] and [`SECOND_PART`]
+/// (`T-020-10`). The router never splits, so the kit does.
+pub fn route_chosen_split(record: &DecisionRecord, named: &Named) -> RecordedInput {
+    let mut chosen = route_chosen_of(record, named);
+    let Observed::RouteChosen { parts, .. } = &mut chosen.observed else {
+        unreachable!("a route chosen");
+    };
+    let mut second = parts[0].clone();
+    second.part_id = stm::Id::new(SECOND_PART).unwrap();
+    for (segment, id) in second
+        .segments
+        .iter_mut()
+        .zip([SECOND_WITHDRAWAL, SECOND_DEPOSIT])
+    {
+        segment.segment_id = stm::Id::new(id).unwrap();
+    }
+    parts.push(second);
+    chosen
 }
 
 /// Appends what the log holds of the order before its segments run: the authorisation, the deposit's arrival at the
@@ -838,6 +877,21 @@ fn seed_arrival(
     .unwrap();
 }
 
+/// The authorisation the kit seeds for `named`, under `floor` (`T-020-10`).
+pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authorisation {
+    let end = route_end();
+    Authorisation {
+        authorisation: id(&named.authorisation()),
+        order: id(&named.order),
+        origin_reserve: id(RESERVE),
+        destination: end.destination,
+        to_asset: end.to_asset,
+        floor,
+        given_by: customer(),
+        at: Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap(),
+    }
+}
+
 /// [`seed`], for `named`.
 pub fn seed_order(
     log: &Rc<RefCell<TestLog>>,
@@ -845,6 +899,39 @@ pub fn seed_order(
     record: &DecisionRecord,
     named: &Named,
     operator: &Actor,
+) {
+    seed_order_under(log, store, record, named, operator, None);
+}
+
+/// [`seed_order`], its authorisation naming `floor` (`T-020-10`).
+pub fn seed_order_under(
+    log: &Rc<RefCell<TestLog>>,
+    store: &mut Store,
+    record: &DecisionRecord,
+    named: &Named,
+    operator: &Actor,
+    floor: Option<PositiveAmount>,
+) {
+    seed_chosen(
+        log,
+        store,
+        record,
+        named,
+        operator,
+        floor,
+        route_chosen_of(record, named),
+    );
+}
+
+/// [`seed_order_under`], the order opened by `chosen`.
+fn seed_chosen(
+    log: &Rc<RefCell<TestLog>>,
+    store: &mut Store,
+    record: &DecisionRecord,
+    named: &Named,
+    operator: &Actor,
+    floor: Option<PositiveAmount>,
+    chosen: RecordedInput,
 ) {
     let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
     let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
@@ -860,21 +947,11 @@ pub fn seed_order(
             outcome,
         })
     };
-    let end = route_end();
     let mut log = log.borrow_mut();
     log.take(
         &entry(
             What::Authorise {
-                authorisation: Authorisation {
-                    authorisation: authorisation.clone(),
-                    order: order.clone(),
-                    origin_reserve: id(RESERVE),
-                    destination: end.destination.clone(),
-                    to_asset: end.to_asset.clone(),
-                    floor: None,
-                    given_by: customer(),
-                    at: at.clone(),
-                },
+                authorisation: authorisation_of(named, floor),
                 decision: id("dec-auth"),
             },
             Outcome::Permitted {},
@@ -924,12 +1001,7 @@ pub fn seed_order(
     )
     .unwrap();
     log.take(
-        &entry(
-            What::Input {
-                input: route_chosen_of(record, named),
-            },
-            Outcome::Observed {},
-        ),
+        &entry(What::Input { input: chosen }, Outcome::Observed {}),
         Through::General,
     )
     .unwrap();
@@ -965,6 +1037,8 @@ pub struct Core {
     pub operator: Actor,
     /// The order the runs are of.
     pub named: Named,
+    /// The floor its authorisation names (`T-020-10`).
+    pub floor: Option<PositiveAmount>,
 }
 
 impl Core {
@@ -973,20 +1047,59 @@ impl Core {
         Self::over_with(world, operator(), |_| {})
     }
 
+    /// [`Core::over`], the order's authorisation naming `floor` (`T-020-10`).
+    pub fn under(world: &mut World, floor: Option<PositiveAmount>) -> Self {
+        Self::over_under(world, operator(), floor, |_| {})
+    }
+
     /// [`Core::over`], with `operator` as the operator Core signs as, and `before` appended to the log first.
     pub fn over_with(
         world: &mut World,
         operator: Actor,
         before: impl FnOnce(&Rc<RefCell<TestLog>>),
     ) -> Self {
+        Self::over_under(world, operator, None, before)
+    }
+
+    /// [`Core::over_with`], the order's authorisation naming `floor`.
+    fn over_under(
+        world: &mut World,
+        operator: Actor,
+        floor: Option<PositiveAmount>,
+        before: impl FnOnce(&Rc<RefCell<TestLog>>),
+    ) -> Self {
+        Self::opened(world, operator, floor, before, route_chosen_of)
+    }
+
+    /// [`Core::over`], the order split in two parts over the same route ([`route_chosen_split`], `T-020-10`).
+    pub fn split(world: &mut World) -> Self {
+        Self::opened(world, operator(), None, |_| {}, route_chosen_split)
+    }
+
+    fn opened(
+        world: &mut World,
+        operator: Actor,
+        floor: Option<PositiveAmount>,
+        before: impl FnOnce(&Rc<RefCell<TestLog>>),
+        open: fn(&DecisionRecord, &Named) -> RecordedInput,
+    ) -> Self {
         let clock = Rc::new(TestClock::at(START));
         let record = chosen_route(world, &clock);
         let log = Rc::new(RefCell::new(TestLog::default()));
         before(&log);
         let mut store = Store::default();
-        seed(&log, &mut store, &record, &operator);
+        let chosen = open(&record, &Named::first());
+        seed_chosen(
+            &log,
+            &mut store,
+            &record,
+            &Named::first(),
+            &operator,
+            floor.clone(),
+            chosen.clone(),
+        );
         let mut segments = Segments::new();
-        assert!(segments.follow(&*clock, &route_chosen(&record)));
+        assert!(segments.follow(&*clock, &chosen));
         let context = world.context();
         Core {
             policy: Policy::new(Rc::clone(&log)),
@@ -1005,6 +1118,7 @@ impl Core {
             key: TestKey(context.deployment.operator_key.clone()),
             operator,
             named: Named::first(),
+            floor,
         }
     }
 
@@ -1065,6 +1179,7 @@ impl Core {
             operator: &operator_actor,
             session: Some(&session),
             inputs: &self.inputs,
+            floor: self.floor.as_ref(),
         };
         let mut general = General(Rc::clone(&self.log));
         let mut parts = Parts {

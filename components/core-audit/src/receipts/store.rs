@@ -11,8 +11,9 @@
 //!   a checker's read only once policy allows it ([`calls::Reads`]).
 //!
 //! Erasure is the bound store's ([`BoundStore::erase`]): the store is bound once to the one log it serves
-//! ([`EvidenceStore::bind`]), and erases only what that log's own `erasure` entry names, made by the operator
-//! (`REQ-AUD-13`). The record comes first, so the bytes go only once the log holds the reference that stays. No
+//! ([`EvidenceStore::bind`]), and erases only on that log's own decision: the `done` result of an `erase_statement`
+//! effect on a permitting decision of policy's (`REQ-AUD-13`, `REQ-AUZ-1`). The record comes first, so the bytes go
+//! only once the log holds the decision and the reference that stays; the `erasure` entry follows. No
 //! erasure reaches an advertisement, a provider's public statement whose bytes the log reads back on opening, nor
 //! a statement any entry of the log rests on. Nothing is erased but by an erasure: how long anything is kept is the
 //! operator's (`REQ-AUD-13`).
@@ -38,12 +39,11 @@ use rutent_contracts::core_internal::calls::{
     self, AppendFailure, Evidence, Fetched, Kept, KeptStatements,
 };
 use rutent_contracts::core_internal::{
-    Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt, Role,
-    Salt, Violation, What,
+    Action, Encoded, Entry, KeptStatement, Outcome, ReadCheck, ReadOutcome, Reads as Read, Receipt,
+    Salt, VerifiedEntry, Violation, What,
 };
 use rutent_contracts::module_interface::{Digest, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, signing_input};
-use rutent_contracts::router_api::Id;
 use serde::{Deserialize, Serialize};
 
 use crate::log::kept::{base64url, from_base64url};
@@ -62,20 +62,31 @@ pub const ANSWER_OF_ANOTHER_READ: &str = "policy's answer to a fetch is the answ
 /// The refusal of a fetch, or an erasure, of a commitment no statement was ever kept under.
 pub const NOT_KEPT: &str = "a statement is kept under that commitment, or was and was erased";
 
-/// The refusal of an erasure the log holds no `done` erasure entry for, at the receipt given.
-pub const NO_RECORDED_ERASURE: &str =
-    "an erasure is carried out only on the log's done erasure entry naming the commitment";
+/// The refusal of an erasure the bound log holds no permitted decision for, at the receipt given: the `done`
+/// result of an `erase_statement` effect, on a permitting `decide` of that action (`REQ-AUD-13`, `REQ-AUZ-1`).
+pub const NO_DECIDED_ERASURE: &str = "an erasure is carried out only on the done result of a permitted erase effect for its commitment";
 
-/// The refusal of an erasure by anyone but the operator: an actor in the operator's role, for the operator's
-/// party. Until core-internal makes erasure a decided action, the operator's own record is what authorises one.
-pub const ERASURE_BY_THE_OPERATOR: &str = "an erasure is the operator's: its entry's actor is in the operator's role, for the operator's party";
+/// A carried-out erasure the log holds no `erasure` entry for: a finding, not a refusal.
+pub const ERASURE_NOT_RECORDED: &str =
+    "every erasure the store carried out has its erasure entry in the log";
+
+/// A carried-out erasure the log records as failed, though its bytes went: a finding, not a refusal.
+pub const ERASURE_RECORDED_AS_FAILED: &str =
+    "an erasure the store carried out is recorded done, never failed";
+
+/// A carried-out erasure whose statement an entry of the log cites: a finding, not a refusal.
+pub const ERASED_YET_CITED: &str = "no entry of the log cites a statement the store erased";
+
+/// The refusal to erase what no stated entry of the log names: an erasure reaches only what a reference names.
+pub const NAMED_BY_NO_ENTRY: &str =
+    "an erasure reaches only a statement a stated entry of the log names";
 
 /// The refusal to erase a statement an entry of the log rests on: a report, an arrival, graded evidence, a
 /// reliance, a stuck order's decision, a measure, a raise, or any other entry citing it.
 pub const EVIDENCE_RESTED_ON: &str = "no erasure reaches a statement an entry of the log rests on";
 
-/// The refusal to bind a store holding a statement marked erased that no erasure in the log records.
-pub const MARK_WITHOUT_ITS_ERASURE: &str = "every statement the evidence store marks erased has its done erasure, the operator's, in the log";
+/// The refusal to bind a store holding a statement marked erased that no permitted erasure in the log decided.
+pub const MARK_WITHOUT_ITS_ERASURE: &str = "every statement the evidence store marks erased has the done result of a permitted erase effect in the log";
 
 /// The refusal to erase an advertisement: a provider's public statement, which the log reads back on opening and
 /// no erasure reaches (`REQ-AUD-13`, the coordinator's ruling).
@@ -439,12 +450,13 @@ impl EvidenceStore {
     ///
     /// Binding reconciles the store with the log, so a crash anywhere in an erasure leaves nothing half done:
     ///
-    /// - every erasure the log records as done, by the operator, of a statement still kept, is carried out, where
-    ///   [`BoundStore::erasable`] allows it (an erasure cut short after its entry and before its mark); one the
-    ///   store refuses, by anyone, is reported ([`BoundStore::refused_erasures`]), a finding for the outside checker
-    ///   (`T-022-04`);
-    /// - a statement marked erased with no such erasure in the log refuses the binding
-    ///   ([`MARK_WITHOUT_ITS_ERASURE`]): bytes went with no record of it;
+    /// - every erasure the log decided, the `done` result of a permitted erase effect, of a statement still kept,
+    ///   is carried out, where [`BoundStore::erasable`] allows it (an erasure cut short after its result and before
+    ///   its mark); one the store refuses is reported ([`BoundStore::refused_erasures`]), a finding for the outside
+    ///   checker (`T-022-04`); one carried out that the log has no `erasure` entry for, or whose statement an entry
+    ///   cites, is reported too ([`BoundStore::unsettled_erasures`]);
+    /// - a statement marked erased with no such decided erasure in the log refuses the binding
+    ///   ([`MARK_WITHOUT_ITS_ERASURE`]): bytes went with no decision behind it;
     /// - every stated entry whose bytes the store neither keeps nor marks erased is reported
     ///   ([`BoundStore::missing`]), a finding for the outside checker (`T-022-04`): bytes gone with no erasure.
     pub fn bind<S: Store, K: KeptStatements>(
@@ -456,6 +468,7 @@ impl EvidenceStore {
             log,
             missing: Vec::new(),
             refused: Vec::new(),
+            unsettled: Vec::new(),
         };
         bound.reconcile()?;
         Ok(bound)
@@ -468,30 +481,46 @@ pub struct BoundStore<S: Store, K: KeptStatements> {
     log: Rc<RefCell<AuditLog<S, K>>>,
     missing: Vec<Receipt>,
     refused: Vec<(Receipt, Violation)>,
+    unsettled: Vec<(Receipt, Violation)>,
 }
 
-/// The commitment the entry recorded at `at` erases, where it is a verified `erasure` entry, done, by an actor in
-/// the operator's role for the operator's party.
-fn erasure_at<'a>(
+/// The verified entry `entries` records at `at`, where `at` is that entry's own receipt.
+fn verified_at<'a>(entries: &'a [(Receipt, Entry)], at: &Receipt) -> Option<&'a VerifiedEntry> {
+    let (r, e) = usize::try_from(at.index.get())
+        .ok()
+        .and_then(|i| entries.get(i))?;
+    match e {
+        Entry::Verified(v) if r == at => Some(v),
+        _ => None,
+    }
+}
+
+/// The commitment the entry recorded at `at` erases, where it is the `done` result of an `erase_statement` effect
+/// whose permit is a permitting `decide` of that same action: the log's decision to erase it (`REQ-AUD-13`,
+/// `REQ-AUZ-1`). The log admitted each step on the one before; the store reads them again from its own log.
+fn decided_erasure<'a>(
     entries: &'a [(Receipt, Entry)],
-    operator_party: &Id,
     at: &Receipt,
 ) -> Result<&'a Digest, AppendFailure> {
-    let recorded = usize::try_from(at.index.get())
-        .ok()
-        .and_then(|i| entries.get(i))
-        .filter(|(r, _)| r == at);
-    match recorded {
-        Some((_, Entry::Verified(v))) if matches!(v.outcome, Outcome::Done {}) => match &v.what {
-            What::Erasure { evidence } => {
-                if v.who.role != Role::Operator || v.who.party != *operator_party {
-                    return Err(AppendFailure::Refused(Violation(ERASURE_BY_THE_OPERATOR)));
-                }
-                Ok(evidence)
-            }
-            _ => Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
-        },
-        _ => Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE))),
+    let refused = || AppendFailure::Refused(Violation(NO_DECIDED_ERASURE));
+    let result = verified_at(entries, at).ok_or_else(refused)?;
+    let (What::Result { effect }, Outcome::Done {}) = (&result.what, result.outcome) else {
+        return Err(refused());
+    };
+    let effect = verified_at(entries, effect).ok_or_else(refused)?;
+    let What::Effect {
+        action: action @ Action::EraseStatement { commitment, .. },
+        decision,
+    } = &effect.what
+    else {
+        return Err(refused());
+    };
+    let decided = verified_at(entries, decision.receipt()).ok_or_else(refused)?;
+    match (&decided.what, decided.outcome) {
+        (What::Decide { request, .. }, Outcome::Permitted {}) if request.action == *action => {
+            Ok(commitment)
+        }
+        _ => Err(refused()),
     }
 }
 
@@ -507,7 +536,8 @@ fn holds_value(value: &serde_json::Value, needle: &serde_json::Value) -> bool {
 
 /// Whether an entry of `entries` rests on the statement kept under `commitment`: cites the receipt of a stated
 /// entry naming it, or names the commitment itself, as a stuck order's decision names its evidence. Stated entries,
-/// erasures and reads (a read of a statement, and a permission over one) rest on nothing they name.
+/// erasures, the erasure's decided path, and reads (a read of a statement, and a permission over one) rest on nothing
+/// they name.
 fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
     let mut needles: Vec<serde_json::Value> = entries
         .iter()
@@ -518,52 +548,78 @@ fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
     entries.iter().any(|(_, e)| match e {
         Entry::Stated(_) => false,
         Entry::Verified(v) => {
-            !matches!(
-                v.what,
-                What::Erasure { .. }
-                    | What::CheckRead { .. }
-                    | What::GrantPermission { .. }
-                    | What::RevokePermission { .. }
-            ) && serde_json::to_value(&v.what)
-                .is_ok_and(|what| needles.iter().any(|n| holds_value(&what, n)))
+            // The erasure's own path (its decision, its effect and their result) rests on nothing it names.
+            let erasing = match &v.what {
+                What::Decide { request, .. } => {
+                    matches!(request.action, Action::EraseStatement { .. })
+                }
+                What::Effect { action, .. } => matches!(action, Action::EraseStatement { .. }),
+                What::Result { .. } => true,
+                _ => false,
+            };
+            !erasing
+                && !matches!(
+                    v.what,
+                    What::Erasure { .. }
+                        | What::CheckRead { .. }
+                        | What::GrantPermission { .. }
+                        | What::RevokePermission { .. }
+                )
+                && serde_json::to_value(&v.what)
+                    .is_ok_and(|what| needles.iter().any(|n| holds_value(&what, n)))
         }
     })
 }
 
 impl<S: Store, K: KeptStatements> BoundStore<S, K> {
-    fn operator_party(&self) -> Id {
-        self.log.borrow().settings().operator_party.clone()
-    }
-
     fn reconcile(&mut self) -> Result<(), AppendFailure> {
-        let party = self.operator_party();
         let entries = self.log.borrow().entries().to_vec();
-        let recorded: Vec<(Receipt, Digest)> = entries
+        let decided: Vec<(Receipt, Digest)> = entries
             .iter()
             .filter_map(|(r, _)| {
-                erasure_at(&entries, &party, r)
+                decided_erasure(&entries, r)
                     .ok()
                     .map(|c| (r.clone(), c.clone()))
             })
             .collect();
         let marks: Vec<String> = self.inner.borrow().erased.iter().cloned().collect();
         for mark in marks {
-            if !recorded.iter().any(|(_, c)| c.value.as_str() == mark) {
+            if !decided.iter().any(|(_, c)| c.value.as_str() == mark) {
                 return Err(AppendFailure::Refused(Violation(MARK_WITHOUT_ITS_ERASURE)));
             }
         }
-        // Every done erasure the log records is carried out, or, where the store refuses it, reported.
+        // Every erasure the log decided is carried out, or, where the store refuses it, reported.
         self.refused = Vec::new();
-        for (at, e) in &entries {
-            let done_erasure = matches!(e, Entry::Verified(v)
-                if matches!(v.what, What::Erasure { .. }) && matches!(v.outcome, Outcome::Done {}));
-            if !done_erasure {
-                continue;
-            }
+        for (at, _) in &decided {
             match self.erase(at) {
                 Ok(()) => {}
                 Err(AppendFailure::Refused(why)) => self.refused.push((at.clone(), why)),
                 Err(e) => return Err(e),
+            }
+        }
+        // An erasure carried out is settled once the log records it, and while nothing cites what it erased: the
+        // store erases on the done result, and the `erasure` entry, and the end of citations, follow.
+        self.unsettled = Vec::new();
+        for (at, commitment) in &decided {
+            if !self.is_erased(commitment) {
+                continue;
+            }
+            let recorded = |outcome: Outcome| {
+                entries.iter().any(|(_, e)| {
+                    matches!(e, Entry::Verified(v) if v.outcome == outcome
+                        && matches!(&v.what, What::Erasure { evidence } if evidence == commitment))
+                })
+            };
+            if recorded(Outcome::Failed {}) {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASURE_RECORDED_AS_FAILED)));
+            } else if !recorded(Outcome::Done {}) {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASURE_NOT_RECORDED)));
+            }
+            if cited(&entries, commitment) {
+                self.unsettled
+                    .push((at.clone(), Violation(ERASED_YET_CITED)));
             }
         }
         let inner = self.inner.borrow();
@@ -588,17 +644,28 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         &self.missing
     }
 
-    /// The erasures the log records as done that the store refused when it was bound, by receipt, with why: an
-    /// erasure recorded but not carried out, by anyone but the operator, of an advertisement, of a statement an
-    /// entry rests on. A finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`].
+    /// The erasures the log decided that the store refused when it was bound, by the receipt of their `done` result,
+    /// with why: an erasure decided but not carried out, of an advertisement, of a statement an entry rests on, of
+    /// one no stated entry names. A finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`].
     pub fn refused_erasures(&self) -> &[(Receipt, Violation)] {
         &self.refused
     }
 
+    /// The erasures carried out that the log hadn't settled when the store was bound, by the receipt of their `done`
+    /// result, with why: one with no `erasure` entry recording it done ([`ERASURE_NOT_RECORDED`]: a crash between the
+    /// store's erasure and the entry, which orchestration appends on its retry), one recorded as failed though its
+    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]), or one whose statement an entry of
+    /// the log cites ([`ERASED_YET_CITED`]: a citation that landed between the done result and the entry). A
+    /// finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`] and
+    /// [`BoundStore::refused_erasures`].
+    pub fn unsettled_erasures(&self) -> &[(Receipt, Violation)] {
+        &self.unsettled
+    }
+
     /// Whether the statement kept under `commitment` may be erased, over the log's history: it is kept, or was and
-    /// is erased already; it is no advertisement, by its bytes or by any stated entry naming it; and no entry of
-    /// the log rests on it. Run it before appending the erasure's entry, so the log records no erasure the store
-    /// would refuse.
+    /// is erased already; a stated entry of the log names it; it is no advertisement, by its bytes or by any stated
+    /// entry naming it; and no entry of the log rests on it. Run it before asking policy to erase, so no erasure is
+    /// decided that the store would refuse.
     pub fn erasable(&self, commitment: &Digest) -> Result<(), AppendFailure> {
         let inner = self.inner.borrow();
         if inner.erased.contains(commitment.value.as_str()) {
@@ -608,6 +675,13 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
             .kept(commitment)
             .ok_or(AppendFailure::Refused(Violation(NOT_KEPT)))?;
         let log = self.log.borrow();
+        let named = log
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, Entry::Stated(s) if s.commitment == *commitment));
+        if !named {
+            return Err(AppendFailure::Refused(Violation(NAMED_BY_NO_ENTRY)));
+        }
         let labelled = log.entries().iter().any(|(_, e)| {
             matches!(e, Entry::Stated(s) if s.commitment == *commitment
                 && s.what.statement.as_str() == ADVERTISEMENT_SHAPE)
@@ -623,21 +697,19 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         Ok(())
     }
 
-    /// Erases, outside the log, the statement the `erasure` entry at `at` names (`REQ-AUD-13`): its bytes and its
+    /// Erases, outside the log, the statement the erasure the log decided names (`REQ-AUD-13`): its bytes and its
     /// salt go, and its place in the restatement index; its commitment stays, in the log's stated entry and in the
     /// store's mark, so a read of it answers [`Fetched::Erased`] and history still checks.
     ///
-    /// It is carried out only on the bound log's own record: the log must hold, at `at`, a verified `erasure` entry
-    /// whose outcome is `done`, by an actor in the operator's role for the operator's party
-    /// ([`ERASURE_BY_THE_OPERATOR`]). So the reference is recorded before anything is erased. Should the erasure be
-    /// cut short after its entry, by a failure answered `Unavailable`, calling this again carries it out, and so
-    /// does binding the store again after a crash. It refuses what [`BoundStore::erasable`] refuses. A statement
-    /// erased already answers `Ok`.
+    /// It is carried out only on the bound log's own decision: `at` must be the receipt of a `done` result of an
+    /// `erase_statement` effect for that commitment, whose permit is a permitting `decide` of that action
+    /// ([`NO_DECIDED_ERASURE`]). Who may erase is policy's to decide. Once this answers `Ok`, orchestration appends
+    /// the `erasure` entry, which the log admits only after that result. Should the erasure be cut short after its
+    /// result, by a failure answered `Unavailable`, calling this again carries it out, and so does binding the store
+    /// again after a crash. It refuses what [`BoundStore::erasable`] refuses. A statement erased already answers
+    /// `Ok`.
     pub fn erase(&self, at: &Receipt) -> Result<(), AppendFailure> {
-        let commitment = {
-            let log = self.log.borrow();
-            erasure_at(log.entries(), &log.settings().operator_party, at)?.clone()
-        };
+        let commitment = decided_erasure(self.log.borrow().entries(), at)?.clone();
         self.erasable(&commitment)?;
         let mut inner = self.inner.borrow_mut();
         let key = commitment.value.as_str().to_owned();

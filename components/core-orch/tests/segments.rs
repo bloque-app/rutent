@@ -355,6 +355,7 @@ fn run(modules: &mut Fake) -> (Ran, KeptLog) {
         operator: &operator_actor,
         session: Some(&session),
         inputs: &inputs,
+        floor: None,
     };
     let mut parts = Parts {
         clock: &clock,
