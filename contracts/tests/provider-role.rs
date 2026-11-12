@@ -89,6 +89,10 @@ impl AnsweredOperation {
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         (
+            "result-withdrawal-billing-its-fee-separately-as-text",
+            vec![("/statement/outcome/fee/billed_separately", "type")],
+        ),
+        (
             "advertisement-key-without-a-purpose",
             vec![("/statement/keys/0", "required")],
         ),

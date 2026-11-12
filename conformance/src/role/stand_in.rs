@@ -591,6 +591,7 @@ impl Reserve {
         let fee = Fee {
             asset: asset.to_owned(),
             amount: "0".to_owned(),
+            billed_separately: None,
         };
         if dry_run {
             return ReserveMovementOutcome::DryRunAccepted(ReserveDryRunAnswer {
@@ -732,6 +733,7 @@ impl Typed for Reserve {
                         fee: Fee {
                             asset: t.asset.clone(),
                             amount: "0".to_owned(),
+                            billed_separately: None,
                         },
                         evidence: evidence(
                             EvidenceGrade::SignedByProvider,
@@ -984,6 +986,7 @@ impl Exchange {
                 c.from.clone()
             },
             amount: "0".to_owned(),
+            billed_separately: None,
         };
         let Some(value) =
             amount(&c.amount).filter(|v| self.advertises(&c.node, &c.from, &c.to, *v))
@@ -1384,6 +1387,7 @@ impl Ramp {
         let fee = Fee {
             asset: t.asset.clone(),
             amount: if on_top { "1" } else { "0" }.to_owned(),
+            billed_separately: None,
         };
         if t.dry_run {
             return TransferOutcome::DryRunAccepted(TransferQuote {
