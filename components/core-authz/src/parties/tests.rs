@@ -1288,53 +1288,103 @@ fn rebuild_counts_no_window_below_the_engines_own() {
 }
 
 /// Core's clock jumping far ahead, once, freezes nothing: a charge counted more than a window ahead of Core's now
-/// doesn't choose the window and isn't counted in it, and is set apart for the operator. The bound holds again once
-/// the clock is back, for this engine and for a fresh one over the same log.
+/// doesn't choose the window, which follows Core's now, but it still counts in it, so the glitch only takes what it
+/// charged off the bound, failing closed, and is set apart for the operator. The window moves on with Core's clock, for
+/// this engine and for a fresh one over the same log.
 // verifies: REQ-OPS-1, REQ-AUZ-8
 #[test]
 fn clock_jumping_far_ahead_freezes_no_window() {
     let a = agent("acme-treasury", "agent-7");
     let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
     let within = |n| ChargeOutcome::Within { remaining: safe(n) };
+    let over = ChargeOutcome::Over { bound: safe(3) };
     let mut policy = engine(registers(), bounds(3, 1));
-    policy.set_clock(Stopped::at(&at("2030-01-01T00:00:00Z")));
-    assert_eq!(
+    let mut charge_at = |policy: &mut Tested, moment: &str, request: &str, count| {
+        policy.set_clock(Stopped::at(&at(moment)));
         policy
-            .charge(&charge("req-1", &a, Work::Request, 2))
+            .charge(&charge(request, &a, Work::Request, count))
             .unwrap()
-            .outcome,
+            .outcome
+    };
+    assert_eq!(
+        charge_at(&mut policy, "2030-01-01T00:00:00Z", "req-1", 2),
         within(1)
     );
-    // Back to now: the charge of 2030 is ahead, apart, and the window is now's.
-    policy.set_clock(Stopped::at(&at(NOW)));
-    assert_eq!(
-        policy
-            .charge(&charge("req-2", &a, Work::Request, 3))
-            .unwrap()
-            .outcome,
-        within(0)
-    );
+    // Back to now: the charge of 2030 is ahead and set apart, and still counts.
+    assert_eq!(charge_at(&mut policy, NOW, "req-2", 1), within(0));
     assert_eq!(policy.charged().ahead().len(), 1);
     assert_eq!(policy.charged().ahead()[0].charge.request, id("req-1"));
+    assert_eq!(charge_at(&mut policy, NOW, "req-3", 1), over);
+    // The next window by Core's clock: the window moved on, now's charge is gone, the glitch's still counts.
+    assert_eq!(
+        charge_at(&mut policy, "2026-11-10T10:00:00Z", "req-4", 1),
+        within(0)
+    );
+    // A fresh engine over the same log follows Core's clock the same.
+    let mut fresh = engine(registers(), bounds(3, 1));
+    fresh.log.entries = policy.log.entries.clone();
+    assert_eq!(
+        charge_at(&mut fresh, "2026-11-10T11:00:00Z", "req-5", 1),
+        within(0)
+    );
+    assert_eq!(fresh.charged().ahead().len(), 1);
+}
+
+/// Core's clock stepping back more than a window gives no fresh bound: the charges of the later window are ahead of
+/// Core's now and still count, so the party spent its bound and the next charge is over.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn clock_stepping_back_more_than_a_window_gives_no_fresh_bound() {
+    let a = agent("acme-treasury", "agent-7");
+    let mut policy = engine(
+        Registers::of_the_fixtures().with(&a, Some(every_scope())),
+        bounds(3, 1),
+    );
+    policy.set_clock(Stopped::at(&at("2026-11-10T10:00:00Z")));
+    assert!(matches!(
+        policy
+            .charge(&charge("req-1", &a, Work::Request, 3))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Within { .. }
+    ));
+    // One hour and one second back: two windows behind.
+    policy.set_clock(Stopped::at(&at("2026-11-10T08:59:59Z")));
     assert_eq!(
         policy
-            .charge(&charge("req-3", &a, Work::Request, 1))
+            .charge(&charge("req-2", &a, Work::Request, 1))
             .unwrap()
             .outcome,
         ChargeOutcome::Over { bound: safe(3) }
     );
-    // The entry stays in the log, and a fresh engine over it isn't frozen either.
-    let mut fresh = engine(registers(), bounds(3, 1));
-    fresh.log.entries = policy.log.entries.clone();
-    fresh.set_clock(Stopped::at(&at("2026-11-10T10:00:00Z")));
-    assert_eq!(
-        fresh
-            .charge(&charge("req-4", &a, Work::Request, 3))
+}
+
+/// Two engines over one log whose clocks are more than a window apart hold a party to one bound: what one counted is
+/// ahead of the other's now, and still counts there.
+// verifies: REQ-OPS-1, REQ-AUZ-8, AC-18
+#[test]
+fn engines_with_skewed_clocks_hold_a_party_to_one_bound() {
+    let a = agent("acme-treasury", "agent-7");
+    let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
+    let mut ahead = engine(registers(), bounds(3, 1));
+    ahead.set_clock(Stopped::at(&at("2026-11-10T12:00:00Z")));
+    assert!(matches!(
+        ahead
+            .charge(&charge("req-1", &a, Work::Request, 3))
             .unwrap()
             .outcome,
-        within(0)
+        ChargeOutcome::Within { .. }
+    ));
+    let mut behind = engine(registers(), bounds(3, 1));
+    behind.log.entries = ahead.log.entries.clone();
+    behind.set_clock(Stopped::at(&at(NOW)));
+    assert_eq!(
+        behind
+            .charge(&charge("req-2", &a, Work::Request, 1))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { bound: safe(3) }
     );
-    assert_eq!(fresh.charged().ahead().len(), 1);
 }
 
 /// A charge Core's clock gives no time for that an entry can hold is refused, nothing recorded and nothing counted,

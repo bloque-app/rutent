@@ -635,12 +635,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `T-021-04`'s, a first read of another log, or one frozen after the engine's last charge, passes: that the read is of
   the very log the handle appends to is the assembly's word. Besides, no rebuild counts a window below the engine's own
   charges in it (`Charged::counted`, `own`), a floor behind the two checks.
-- **A jump of the clock freezes no window** (item 2). A charge counted more than one window ahead of Core's now
-  neither chooses the window nor counts in it, and is set apart: `Charged::ahead()` lists them after each read, the
-  flag the operator reads, since core-internal has no raise for it and this row makes no contract change. The entry
-  stays in the log, so a fresh engine over it is not frozen either, and it counts again once Core's clock reaches its
-  window. One window ahead still chooses the window, so a clock stepping back less than a window keeps the latest
-  window. Surfacing `ahead()` to the operator's channel is the assembly's (`T-024-02`'s) or `F-023`'s to wire.
+- **A jump of the clock freezes no window** (item 2; revised in round 3, below). A charge counted more than one
+  window ahead of Core's now doesn't choose the window, and is set apart: `Charged::ahead()` lists them after each
+  read. The entry stays in the log, so a fresh engine over it is not frozen either. One window ahead still chooses the
+  window, so a clock stepping back less than a window keeps the latest window.
 - **A time no entry can hold is refused** (item 3). Where Core's clock gives a moment RFC 3339 can't hold, the charge is
   refused as `Err(AppendFailure::Refused)`, nothing recorded and nothing counted, never recorded at the time the charge
   states.
@@ -674,3 +672,27 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | intake's `told` holds the kind | `actor stating another kind is not the requester` |
   | intake's `open` holds the kind | `actor stating another kind is not the requester` |
   | intake's own order's record (`speaks_for`) holds the kind | `actor stating another kind is not the requester` |
+
+### T-021-05, round 3 (approved, before the merge)
+
+- **A step back of more than a window gives no fresh bound** (low 1, the reviewer's fix). A charge ahead of Core's now
+  by more than a window still never chooses the window, but it now counts in the window chosen. A clock stepping back
+  more than a window (1 h 1 s after the bound was spent: the next charge is over), or two engines over one log whose
+  clocks are further apart than a window, give the party no second bound; a jump forward and back takes off the bound
+  only what was charged during the glitch, in every window until Core's clock reaches it, which fails closed. The 2030
+  jump still recovers: the window follows Core's now, now's charges leave it at the next window, the glitch's stay.
+  Tests: `clock_stepping_back_more_than_a_window_gives_no_fresh_bound`,
+  `engines_with_skewed_clocks_hold_a_party_to_one_bound`, and `clock_jumping_far_ahead_freezes_no_window` as revised.
+- **Who surfaces `ahead()`** (low 2). Nothing calls `Charged::ahead()` yet. Owner: `T-023-01`, the operator's notices.
+  It must surface to the operator, after a charge whose read set any apart, each charge counted ahead of Core's now
+  by more than a window: its party, its request id, its kind of work and count, and the moment it was counted at
+  beside Core's now, so the operator sees a clock that jumped and what it cost the party. The assembly reaches it as
+  `engine.charged().ahead()`.
+- **The intake hand-off is tracked** (item 3): recorded in `F-020`'s notes under `T-020-03`, for its owner, due before
+  `M4`, with the reviewer's severity: low, the agent's own party only, read only.
+- **Rule-offs** (core-authz's lib tests):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a charge far ahead still counts in the window | `clock stepping back more than a window ...`; `engines with skewed clocks ...`; `clock jumping far ahead ...` |
+  | a charge far ahead chooses no window | `clock jumping far ahead freezes no window` |

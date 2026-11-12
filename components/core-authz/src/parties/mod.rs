@@ -41,7 +41,8 @@
 //!
 //! The window is a fixed one, [`WINDOW_SECS`] long, read from Core's own clock (`session::Clock`, the one sessions
 //! are bounded by), never from the time a charge states. It only moves forward: Core's clock moving back keeps the
-//! count going in the latest window. A fixed window lets a party spend its bound at the end of one window and again
+//! count going in the latest window; a charge counted more than a window ahead of Core's now never chooses the window
+//! but still counts in it, so neither a step back nor a jump forward gives a fresh bound. A fixed window lets a party spend its bound at the end of one window and again
 //! at the start of the next, twice the bound in a moment; that burst is accepted, and a sliding window is the
 //! deployment's to ask for. Its bounds are the deployment's ([`Bounds`], [`Engine::set_bounds`]), [`Uniform`] until it
 //! hands others. The counter is the log's: before every charge the engine reads the
@@ -295,8 +296,9 @@ impl Default for Charged {
 
 impl Charged {
     /// The charges the log's last read held counted more than a window ahead of Core's now, as after the clock
-    /// jumped forward and came back: none of them chose the window or counted in it. The operator's to look at; the
-    /// assembly can surface them, since core-internal has no raise for them.
+    /// jumped forward and came back, or from another engine whose clock runs ahead: none of them chose the window,
+    /// and each still counts in it. The operator's to look at (`T-023-01` surfaces them), since core-internal has no
+    /// raise for them.
     pub fn ahead(&self) -> &[Counted] {
         &self.ahead
     }
@@ -411,9 +413,11 @@ impl Charged {
     /// counter is a function of them, so an engine opened again after a restart, or beside another, holds what they
     /// hold. Its bounds stay as they are.
     ///
-    /// A charge counted more than one window ahead of `now` neither chooses the window nor counts in it: it is set
-    /// apart ([`Charged::ahead`]), so a clock that jumped forward once and came back freezes no window, in this
-    /// engine or in a fresh one over the same log. No window is counted below this engine's own charges in it.
+    /// A charge counted more than one window ahead of `now` doesn't choose the window, so a clock that jumped forward
+    /// once and came back freezes no window, in this engine or in a fresh one over the same log; but it counts in the
+    /// window chosen, so a clock stepping back more than a window, or two engines whose clocks are further apart than
+    /// that, give no fresh bound. It is set apart for the operator ([`Charged::ahead`]). No window is counted below
+    /// this engine's own charges in it.
     pub fn rebuild(&mut self, now: Duration, counted: impl IntoIterator<Item = Counted>) {
         let counted: Vec<Counted> = counted.into_iter().collect();
         let window_of = |at: Duration| at.as_secs() / WINDOW_SECS;
@@ -432,6 +436,12 @@ impl Charged {
             if window_of(c.at) == self.window {
                 self.take(&c.charge);
             }
+        }
+        // Ahead of Core's now, they don't choose the window, but they still count in it: a clock that stepped back,
+        // or another engine's clock ahead of this one's, gives no fresh bound, and a jump forward takes off the bound
+        // only what was charged during it, failing closed.
+        for c in &ahead {
+            self.take(&c.charge);
         }
         let window = self.window;
         self.own.retain(|c| window_of(c.at) == window);
