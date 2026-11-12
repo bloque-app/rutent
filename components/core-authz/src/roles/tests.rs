@@ -73,6 +73,19 @@ impl crate::funds::Recorded for Kept {
     fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
         Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
     }
+
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        let plan = crate::funds::plan_of_the_fixtures_move();
+        Ok(crate::funds::part_in(
+            std::iter::once(&plan).chain(self.0.iter().map(|(_, e)| e)),
+            order,
+            segment,
+        ))
+    }
 }
 
 impl Log for Kept {
