@@ -18,14 +18,20 @@
     "authorisation": "auth-19",
     "basis": "given",
     "origin_reserve": "us-bank",
-    "reserve_yes": {
-      "log": "log-main",
-      "index": 85,
-      "entry": {
-        "algorithm": "sha-256",
-        "value": "8686868686868686868686868686868686868686868686868686868686868686"
+    "yeses": [
+      {
+        "part": "p1",
+        "origin_reserve": "us-bank",
+        "reserve_yes": {
+          "log": "log-main",
+          "index": 85,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "8686868686868686868686868686868686868686868686868686868686868686"
+          }
+        }
       }
-    },
+    ],
     "session": "sess-300"
   },
   "when": {

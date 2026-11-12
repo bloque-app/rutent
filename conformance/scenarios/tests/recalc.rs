@@ -103,13 +103,8 @@ impl Recalc {
     fn of(core: &Core, floor: Option<PositiveAmount>) -> Self {
         let mut recalculations = Recalculations::new();
         recalculations.follow(&id(ORDER), &core.record.request.request_id);
-        // The kit's log: the authorisation, the acceptance, the decision record, the route chosen.
-        let previous = core.log.borrow().receipt_at(2);
-        assert!(matches!(
-            core.log.borrow().entries[2].0,
-            rutent_contracts::core_internal::Entry::Verified(ref v)
-                if matches!(v.what, What::DecisionRecord { .. })
-        ));
+        // The order's last decision record in the kit's log: the one its route was chosen by.
+        let previous = core.log.borrow().receipt_at(seeded_record(core));
         Recalc {
             recalculations,
             history: History::recorded(previous, Vec::new()),
@@ -244,6 +239,19 @@ impl Recalc {
     }
 }
 
+/// Where the kit's log holds the order's decision record, which its route was chosen by.
+fn seeded_record(core: &Core) -> usize {
+    core.log
+        .borrow()
+        .entries
+        .iter()
+        .position(|(e, _)| {
+            matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(v.what, What::DecisionRecord { .. }))
+        })
+        .expect("the kit seeds the order's decision record")
+}
+
 fn segments(ran: &Ran) -> &[Accounted] {
     match ran {
         Ran::Segments(done) => done,
@@ -365,7 +373,10 @@ fn failed_provider_pays_only_the_return_to_its_origin() {
         3,
         "the kit's, the shortlist's and the choice's"
     );
-    assert_eq!(previous[1], Some(core.log.borrow().receipt_at(2)));
+    assert_eq!(
+        previous[1],
+        Some(core.log.borrow().receipt_at(seeded_record(&core)))
+    );
     assert!(previous[2].is_some());
     let Observed::RouteRecalculated { segments: plan, .. } = &done.input.observed else {
         panic!("{:?}", done.input);
@@ -393,8 +404,52 @@ fn failed_provider_pays_only_the_return_to_its_origin() {
             done.segments[0].as_str().to_owned()
         ]
     );
-    core.admitted(&world.catalogue)
+    let admitted = core
+        .admitted(&world.catalogue)
         .expect("the log admits every entry, the recalculation from its evidenced value included");
+    // The new route's move is admitted on `move-segment-is-in-its-orders-plan`, its provider the one the
+    // recalculated plan names; were the plan to name another, the same move would be refused on that row's
+    // provider field.
+    let history: Vec<(Receipt, rutent_contracts::core_internal::Entry)> = admitted
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (core.log.borrow().receipt_at(i), e.clone()))
+        .collect();
+    let at = history
+        .iter()
+        .position(|(_, e)| {
+            matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(&v.what, What::Effect { action: Action::MoveValue { segment, .. }, .. }
+                    if *segment == done.segments[0]))
+        })
+        .expect("the new route's move");
+    let mut elsewhere = history[..at].to_vec();
+    for (_, entry) in &mut elsewhere {
+        if let rutent_contracts::core_internal::Entry::Verified(v) = entry
+            && let What::Input { input } = &mut v.what
+            && let Observed::RouteRecalculated { segments, .. } = &mut input.observed
+        {
+            segments[0].provider = stm::Id::new("sim-reserve-z").unwrap();
+        }
+    }
+    rutent_contracts::core_internal::admit_entry(
+        &history[..at],
+        &history[at].1,
+        rutent_contracts::core_internal::Through::General,
+        &operator().acts,
+    )
+    .expect("the move by the provider its recalculated plan names is admitted");
+    let refused = rutent_contracts::core_internal::admit_entry(
+        &elsewhere,
+        &history[at].1,
+        rutent_contracts::core_internal::Through::General,
+        &operator().acts,
+    )
+    .expect_err("a move by a provider the plan doesn't name is refused");
+    assert_eq!(
+        refused.0,
+        "a value-moving effect is made by the provider its plan names for the segment"
+    );
 }
 
 /// Once the route is recalculated, the failed deposit is retired: running the old route again hands nothing over,

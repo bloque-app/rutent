@@ -1143,8 +1143,10 @@ fn what_comes_back_is_kept_when_a_later_step_fails() {
             .entries
             .iter()
             .filter(|(e, _)| {
+                // A segment's result, apart from the reserve's report the order's arrival rests on.
                 matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
-                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about.as_ref().is_some_and(|a| a.segment.is_some()))
             })
             .count();
         assert_eq!(stated_results, 2, "{on:?}: each result kept once");
@@ -1364,14 +1366,17 @@ fn promotion_whose_staged_version_differs_from_its_permit_is_refused() {
 #[test]
 fn segment_on_a_release_revoked_mid_flight_settles_on_its_result() {
     let mut world = World::of(&[RESERVE]);
-    let mut core = Core::over(&mut world);
-    // The operator states for the party the reserve's module states for.
-    core.operator.party = id(&format!("{RESERVE}-publisher"));
+    // The operator states for the party the reserve's module states for, and the log took the release's acceptance
+    // before the order's arrival, so the module's statements are verified by the release's key from the first.
+    let mut module_operator = operator();
+    module_operator.party = id(&format!("{RESERVE}-publisher"));
     let key = world.installed[0].declaration.outside.statement_key.clone();
-    seed_change(
-        &core.log,
-        release_change(CatalogueChange::AcceptModule, "1.0.0", Some(key)),
-    );
+    let mut core = Core::over_with(&mut world, module_operator, |log| {
+        seed_change(
+            log,
+            release_change(CatalogueChange::AcceptModule, "1.0.0", Some(key)),
+        )
+    });
     let catalogue = std::mem::replace(
         &mut world.catalogue,
         rutent_prov::catalogue::Catalogue::new(),

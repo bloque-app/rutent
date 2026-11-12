@@ -49,14 +49,33 @@ pub type History = [(Receipt, Entry)];
 
 /// The citations an entry makes under a row, given the history: a verified entry's, or, for a row of
 /// [`STATED_RELATIONS`], a stated entry's.
-pub type Cites<C = VerifiedEntry> = fn(&C, &History) -> Vec<Cite>;
+pub type Cites<C = VerifiedCiting> = fn(&C, &History) -> Vec<Cite>;
 
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
-pub type Answers<C = VerifiedEntry> = fn(&C, &Cite, &Entry, &History) -> Match;
+pub type Answers<C = VerifiedCiting> = fn(&C, &Cite, &Entry, &History) -> Match;
+
+/// A verified entry as the rows of [`RELATIONS`] read it: with the maker this deployment's operator signs its own
+/// statements as, so a row can tell the operator's own statements from a module's it publishes. It reads as the
+/// entry itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedCiting {
+    /// The verified entry.
+    pub entry: VerifiedEntry,
+    /// The maker the deployment's operator signs as.
+    pub operator: Id,
+}
+
+impl core::ops::Deref for VerifiedCiting {
+    type Target = VerifiedEntry;
+
+    fn deref(&self) -> &VerifiedEntry {
+        &self.entry
+    }
+}
 
 /// One row of the citation table, over the citing entries of kind `C`: verified entries ([`RELATIONS`]) or stated
 /// ones ([`STATED_RELATIONS`]).
-pub struct Relation<C: 'static = VerifiedEntry> {
+pub struct Relation<C: 'static = VerifiedCiting> {
     /// The row's name, which its fixtures are named after.
     pub name: &'static str,
     /// The `SPEC.md` ids that demand the relation.
@@ -255,7 +274,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 47] = [
+pub static RELATIONS: [Relation; 52] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -364,7 +383,8 @@ pub static RELATIONS: [Relation; 47] = [
                 return Match::NotTarget;
             };
             judge(
-                t != e && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
+                t != &e.entry
+                    && matches!(&t.what, What::Effect { decision, .. } if decision == permit),
                 &[],
             )
         },
@@ -431,6 +451,35 @@ pub static RELATIONS: [Relation; 47] = [
         },
     },
     Relation {
+        name: "owner-change-rests-on-its-destination-check",
+        spec: &["REQ-ORD-24"],
+        quantifier: Quantifier::Exists,
+        refusal: "an order waiting on a new owner rests on a destination check of this log that found one",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::OrderRefusal {
+                order: Some(_),
+                class: OrderRefusalClass::DestinationOwnerChanged,
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::OrderRefusal {
+                    order: Some(order), ..
+                },
+                Some(What::DestinationCheck {
+                    order: o, outcome, ..
+                }),
+            ) => judge(
+                o == order && *outcome == DestinationOutcome::OwnerChanged,
+                &[],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
         name: "move-rests-on-its-orders-acceptance",
         spec: &["REQ-ORD-34"],
         quantifier: Quantifier::Exists,
@@ -464,6 +513,120 @@ pub static RELATIONS: [Relation; 47] = [
                     authorisation: a,
                     ..
                 } => judge(o == order, &[a == authorisation]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "automatic-deposit-rests-on-its-arrival",
+        spec: &["REQ-ORD-15", "REQ-ORD-32"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance on an automatic deposit rests on an arrival of its order in this log",
+        fields: &[(
+            "reserve",
+            "an automatic deposit's arrival is at the acceptance's origin reserve",
+        )],
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                basis: AcceptanceBasis::AutomaticDeposit,
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::Acceptance {
+                    order,
+                    origin_reserve,
+                    ..
+                },
+                Some(What::Arrival {
+                    reserve,
+                    order: Some(arrived_for),
+                    ..
+                }),
+            ) => judge(arrived_for == order, &[reserve == origin_reserve]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "order-holds-one-acceptance-basis",
+        spec: &["REQ-ORD-32", "REQ-ORD-34"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an order is accepted on one basis: given, or an automatic deposit, never both",
+        fields: &[],
+        cites: |e, _| match &e.what {
+            What::Acceptance { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::Acceptance { order, basis, .. },
+                Some(What::Acceptance {
+                    order: o, basis: b, ..
+                }),
+            ) => judge(o == order && b != basis, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "first-move-rests-on-its-parts-yes",
+        spec: &["REQ-ORD-32"],
+        quantifier: Quantifier::Exists,
+        refusal: "a part's first move rests on an acceptance of its order naming that part's yes",
+        fields: &[
+            (
+                "origin_reserve",
+                "a part's first move is from the origin reserve its part's yes names",
+            ),
+            (
+                "provider",
+                "a part's first move, its withdrawal, is made by its origin reserve",
+            ),
+        ],
+        cites: |e, h| match first_segment_part(e, h) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| {
+            let (
+                Some((
+                    Action::MoveValue {
+                        order,
+                        origin_reserve,
+                        provider,
+                        ..
+                    },
+                    _,
+                )),
+                Some(part),
+                Some(t),
+            ) = (effect_action(e), first_segment_part(e, h), verified(t))
+            else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                // An automatic deposit's order moves on no yes (`REQ-ORD-32`).
+                What::Acceptance {
+                    order: o,
+                    basis: AcceptanceBasis::AutomaticDeposit,
+                    ..
+                } if o == order => judge(true, &[true, provider == origin_reserve]),
+                What::Acceptance {
+                    order: o,
+                    basis: AcceptanceBasis::Given,
+                    yeses,
+                    ..
+                } if o == order => match yeses.iter().find(|y| y.part.as_str() == part) {
+                    Some(yes) => judge(
+                        true,
+                        &[
+                            &yes.origin_reserve == origin_reserve,
+                            provider == origin_reserve,
+                        ],
+                    ),
+                    None => Match::NotTarget,
+                },
                 _ => Match::NotTarget,
             }
         },
@@ -588,7 +751,8 @@ pub static RELATIONS: [Relation; 47] = [
                 return Match::NotTarget;
             };
             judge(
-                t != e && matches!(&t.what, What::Result { effect: other } if other == effect),
+                t != &e.entry
+                    && matches!(&t.what, What::Result { effect: other } if other == effect),
                 &[],
             )
         },
@@ -708,14 +872,50 @@ pub static RELATIONS: [Relation; 47] = [
         spec: &["REQ-ORD-34"],
         quantifier: Quantifier::Exists,
         refusal: "a chosen route rests on an acceptance of its order in this log",
-        fields: &[],
+        fields: &[
+            (
+                "parts",
+                "a chosen route's acceptance names one yes per part, in the plan's order",
+            ),
+            (
+                "origin_reserve",
+                "a part's yes is its first segment's provider's: the reserve it withdraws from",
+            ),
+        ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::RouteChosen { .. }) => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match verified(t).map(|t| &t.what) {
-            Some(What::Acceptance { order, .. }) => judge(order.as_str() == input_order(e), &[]),
-            _ => Match::NotTarget,
+        answers: |e, _, t, _| {
+            let Some(Observed::RouteChosen { parts, .. }) = input(e).map(|i| &i.observed) else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::Acceptance {
+                    order,
+                    basis,
+                    yeses,
+                    ..
+                }) => judge(
+                    order.as_str() == input_order(e),
+                    // A given acceptance names a yes for each part of the plan, in its order, and no other; an
+                    // automatic deposit's names none (`REQ-ORD-32`).
+                    &[
+                        *basis == AcceptanceBasis::AutomaticDeposit
+                            || (yeses.len() == parts.len()
+                                && yeses
+                                    .iter()
+                                    .zip(parts)
+                                    .all(|(y, p)| y.part.as_str() == p.part_id.as_str())),
+                        yeses.iter().zip(parts).all(|(y, p)| {
+                            p.segments
+                                .first()
+                                .is_some_and(|s| s.provider.as_str() == y.origin_reserve.as_str())
+                        }),
+                    ],
+                ),
+                _ => Match::NotTarget,
+            }
         },
     },
     Relation {
@@ -1347,7 +1547,7 @@ pub static RELATIONS: [Relation; 47] = [
             };
             match &t.what {
                 What::AskAboutPerson { question: earlier } => judge(
-                    t != e
+                    t != &e.entry
                         && earlier.order == question.order
                         && earlier
                             .ask
@@ -1431,6 +1631,54 @@ pub static RELATIONS: [Relation; 47] = [
                 judge(Some(&change.permission) == check.permission.as_ref(), &[])
             }
             _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "own-evidence-read-is-of-the-readers-statement",
+        spec: &["REQ-AUD-5", "REQ-AUZ-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a permitted evidence read without a permission is of a statement this log holds",
+        fields: &[(
+            "maker",
+            "a permitted evidence read without a permission is of a statement its reader made, or the operator's own for an operator of its party",
+        )],
+        // A party reads its own evidence without a permission (`REQ-AUD-5`); any other's rests on a permission,
+        // whose scope `covers` the read.
+        cites: |e, _| match &e.what {
+            What::CheckRead {
+                check:
+                    ReadCheck {
+                        reads: Reads::Evidence { .. },
+                        permission: None,
+                        ..
+                    },
+            } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::CheckRead {
+                    check:
+                        ReadCheck {
+                            reader,
+                            reads: Reads::Evidence { commitment },
+                            ..
+                        },
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            // The operator's own statements are made as the operator; a person logged in as the operator reads
+            // them as its party, which policy's `ActsFor` binds the login to before any read is permitted.
+            let operators_own = reader.role == Role::Operator
+                && maker_provider(s) == &e.operator
+                && s.attribution.maker().party == reader.party;
+            judge(
+                &s.commitment == commitment,
+                &[maker_provider(s) == &reader.acts || operators_own],
+            )
         },
     },
     Relation {
@@ -1637,30 +1885,28 @@ pub static RELATIONS: [Relation; 47] = [
                 "an acceptance's yes names the transaction it was asked under, which the reserve signed",
             ),
         ],
+        // Each part's yes is cited on its own, and held to that part's origin reserve.
         cites: |e, _| match &e.what {
-            What::Acceptance {
-                reserve_yes: Some(receipt),
-                ..
-            } => alloc::vec![by_receipt(receipt, 0)],
+            What::Acceptance { yeses, .. } => yeses
+                .iter()
+                .enumerate()
+                .map(|(i, y)| by_receipt(&y.reserve_yes, i))
+                .collect(),
             _ => none(),
         },
-        answers: |e, _, t, _| {
-            let (
-                What::Acceptance {
-                    order,
-                    origin_reserve,
-                    ..
-                },
-                Some(statement),
-            ) = (&e.what, stated(t))
+        answers: |e, c, t, _| {
+            let (What::Acceptance { order, yeses, .. }, Some(statement)) = (&e.what, stated(t))
             else {
+                return Match::NotTarget;
+            };
+            let Some(yes) = yeses.get(c.index) else {
                 return Match::NotTarget;
             };
             judge(
                 true,
                 &[
                     matches!(statement.attribution, Attribution::Verified { .. }),
-                    maker_provider(statement) == origin_reserve,
+                    maker_provider(statement) == &yes.origin_reserve,
                     statement.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
                     statement
                         .about
@@ -1720,31 +1966,56 @@ pub static RELATIONS: [Relation; 47] = [
         spec: &["REQ-ORD-38", "REQ-ORD-40"],
         quantifier: Quantifier::Exists,
         refusal: "a value-moving effect's segment is in a route of its order this log recorded",
-        fields: &[(
-            "order",
-            "a value-moving effect's segment is in a route of its own order",
-        )],
+        fields: &[
+            (
+                "order",
+                "a value-moving effect's segment is in a route of its own order",
+            ),
+            (
+                "provider",
+                "a value-moving effect is made by the provider its plan names for the segment",
+            ),
+        ],
         cites: |e, _| match effect_action(e) {
             Some((Action::MoveValue { .. }, _)) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| {
-            let (Some((Action::MoveValue { order, segment, .. }, _)), Some(i)) =
-                (effect_action(e), verified(t).and_then(input))
+            let (
+                Some((
+                    Action::MoveValue {
+                        order,
+                        segment,
+                        provider,
+                        ..
+                    },
+                    _,
+                )),
+                Some(i),
+            ) = (effect_action(e), verified(t).and_then(input))
             else {
                 return Match::NotTarget;
             };
-            let planned = |plan: &[crate::state_machine::SegmentPlan]| {
+            let planned = |plan: &'_ [crate::state_machine::SegmentPlan]| {
                 plan.iter()
-                    .any(|s| s.segment_id.as_str() == segment.as_str())
+                    .find(|s| s.segment_id.as_str() == segment.as_str())
+                    .map(|s| s.provider.as_str() == provider.as_str())
             };
             let listed = match &i.observed {
-                Observed::RouteChosen { parts, .. } => parts.iter().any(|p| planned(&p.segments)),
+                Observed::RouteChosen { parts, .. } => {
+                    parts.iter().find_map(|p| planned(&p.segments))
+                }
                 Observed::RouteRecalculated { segments, .. }
                 | Observed::DestinationChanged { segments, .. } => planned(segments),
                 _ => return Match::NotTarget,
             };
-            judge(listed, &[i.subject.order.as_str() == order.as_str()])
+            judge(
+                listed.is_some(),
+                &[
+                    i.subject.order.as_str() == order.as_str(),
+                    listed == Some(true),
+                ],
+            )
         },
     },
     Relation {
@@ -1803,7 +2074,7 @@ pub static RELATIONS: [Relation; 47] = [
         answers: |e, _, t, _| match verified(t) {
             Some(earlier) => match input(earlier) {
                 Some(i) => judge(
-                    earlier != e
+                    earlier != &e.entry
                         && matches!(i.observed, Observed::RouteChosen { .. })
                         && i.subject.order.as_str() == input_order(e),
                     &[],
@@ -1848,11 +2119,34 @@ fn read_of_order(entry: &VerifiedEntry) -> Option<&Id> {
     match &entry.what {
         What::CheckRead { check } if entry.outcome == (Outcome::Permitted {}) => match &check.reads
         {
-            Reads::Order { order } | Reads::Segment { order, .. } => Some(order),
+            Reads::Order { order } | Reads::OrderState { order } | Reads::Segment { order, .. } => {
+                Some(order)
+            }
             _ => None,
         },
         _ => None,
     }
+}
+
+/// Where `entry` moves value on the first segment of a part's route, by the `route_chosen` plan `history` holds: the
+/// part's id.
+fn first_segment_part<'a>(entry: &VerifiedEntry, history: &'a History) -> Option<&'a str> {
+    let Some((Action::MoveValue { order, segment, .. }, _)) = effect_action(entry) else {
+        return None;
+    };
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        let Observed::RouteChosen { parts, .. } = &i.observed else {
+            return None;
+        };
+        if i.subject.order.as_str() != order.as_str() {
+            return None;
+        }
+        parts.iter().find_map(|part| {
+            let first = part.segments.first()?.segment_id.as_str();
+            (first == segment.as_str()).then_some(part.part_id.as_str())
+        })
+    })
 }
 
 /// Where `entry` moves value on a segment of a part's route, by the `route_chosen` plan `history` holds, and that
@@ -1905,12 +2199,19 @@ fn planned_end<'a>(
     })
 }
 
-/// Whether a permission's `scope` covers `reads`: the trail covers every order and segment, an order its segments,
-/// and anything else only itself.
+/// Whether a permission's `scope` covers `reads`: the trail covers every order, order state and segment, an order
+/// its state and its segments, and anything else only itself.
 pub fn covers(scope: &Reads, reads: &Reads) -> bool {
     match (scope, reads) {
-        (Reads::Trail {}, Reads::Trail {} | Reads::Order { .. } | Reads::Segment { .. }) => true,
+        (
+            Reads::Trail {},
+            Reads::Trail {}
+            | Reads::Order { .. }
+            | Reads::OrderState { .. }
+            | Reads::Segment { .. },
+        ) => true,
         (Reads::Order { order }, Reads::Order { order: o })
+        | (Reads::Order { order }, Reads::OrderState { order: o })
         | (Reads::Order { order }, Reads::Segment { order: o, .. }) => order == o,
         _ => scope == reads,
     }
@@ -2085,7 +2386,13 @@ pub fn admit_entry(
         _ => {}
     }
     match entry {
-        Entry::Verified(entry) => admit_under(&RELATIONS, entry, history),
+        Entry::Verified(entry) => {
+            let citing = VerifiedCiting {
+                entry: entry.clone(),
+                operator: operator.clone(),
+            };
+            admit_under(&RELATIONS, &citing, history)
+        }
         Entry::Stated(entry) => {
             let citing = StatedCiting {
                 entry: entry.clone(),

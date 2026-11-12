@@ -176,6 +176,186 @@
         },
         "commitment": {
           "algorithm": "sha-256",
+          "value": "e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-yes-1b"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 104,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0505050505050505050505050505050505050505050505050505050505050505"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "eu-bank",
+            "acts": "eu-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-yes-1b"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 105,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0606060606060606060606060606060606060606060606060606060606060606"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-yes-1c"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 106,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0707070707070707070707070707070707070707070707070707070707070707"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-yes-1c"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 107,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0808080808080808080808080808080808080808080808080808080808080808"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "operator",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
           "value": "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6"
         },
         "about": {
@@ -187,10 +367,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 104,
+        "index": 108,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0505050505050505050505050505050505050505050505050505050505050505"
+          "value": "0909090909090909090909090909090909090909090909090909090909090909"
         }
       },
       "entry": {
@@ -232,10 +412,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 105,
+        "index": 109,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0606060606060606060606060606060606060606060606060606060606060606"
+          "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
         }
       },
       "entry": {
@@ -267,10 +447,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 106,
+        "index": 110,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0707070707070707070707070707070707070707070707070707070707070707"
+          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
         }
       },
       "entry": {
@@ -313,10 +493,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 107,
+        "index": 111,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0808080808080808080808080808080808080808080808080808080808080808"
+          "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
         }
       },
       "entry": {
@@ -359,10 +539,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 108,
+        "index": 112,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0909090909090909090909090909090909090909090909090909090909090909"
+          "value": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
         }
       },
       "entry": {
@@ -405,10 +585,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 109,
+        "index": 113,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
         }
       },
       "entry": {
@@ -451,10 +631,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 110,
+        "index": 114,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          "value": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
         }
       },
       "entry": {
@@ -496,10 +676,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 111,
+        "index": 115,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+          "value": "1010101010101010101010101010101010101010101010101010101010101010"
         }
       },
       "entry": {
@@ -541,10 +721,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 112,
+        "index": 116,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
         }
       },
       "entry": {
@@ -582,10 +762,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 113,
+        "index": 117,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+          "value": "1212121212121212121212121212121212121212121212121212121212121212"
         }
       },
       "entry": {
@@ -622,10 +802,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 114,
+        "index": 118,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+          "value": "1313131313131313131313131313131313131313131313131313131313131313"
         }
       },
       "entry": {
@@ -647,10 +827,10 @@
           },
           "previous": {
             "log": "log-main",
-            "index": 113,
+            "index": 117,
             "entry": {
               "algorithm": "sha-256",
-              "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+              "value": "1212121212121212121212121212121212121212121212121212121212121212"
             }
           }
         },
@@ -666,10 +846,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 115,
+        "index": 119,
         "entry": {
           "algorithm": "sha-256",
-          "value": "1010101010101010101010101010101010101010101010101010101010101010"
+          "value": "1414141414141414141414141414141414141414141414141414141414141414"
         }
       },
       "entry": {
@@ -697,14 +877,44 @@
             "payer": "cust-1"
           },
           "origin_reserve": "us-bank",
-          "reserve_yes": {
-            "log": "log-main",
-            "index": 102,
-            "entry": {
-              "algorithm": "sha-256",
-              "value": "0303030303030303030303030303030303030303030303030303030303030303"
+          "yeses": [
+            {
+              "part": "p1",
+              "origin_reserve": "us-bank",
+              "reserve_yes": {
+                "log": "log-main",
+                "index": 102,
+                "entry": {
+                  "algorithm": "sha-256",
+                  "value": "0303030303030303030303030303030303030303030303030303030303030303"
+                }
+              }
+            },
+            {
+              "part": "p2",
+              "origin_reserve": "eu-bank",
+              "reserve_yes": {
+                "log": "log-main",
+                "index": 104,
+                "entry": {
+                  "algorithm": "sha-256",
+                  "value": "0505050505050505050505050505050505050505050505050505050505050505"
+                }
+              }
+            },
+            {
+              "part": "p3",
+              "origin_reserve": "us-bank",
+              "reserve_yes": {
+                "log": "log-main",
+                "index": 106,
+                "entry": {
+                  "algorithm": "sha-256",
+                  "value": "0707070707070707070707070707070707070707070707070707070707070707"
+                }
+              }
             }
-          },
+          ],
           "session": "sess-1"
         },
         "when": {
@@ -719,10 +929,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 116,
+        "index": 120,
         "entry": {
           "algorithm": "sha-256",
-          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+          "value": "1515151515151515151515151515151515151515151515151515151515151515"
         }
       },
       "entry": {
@@ -773,10 +983,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 117,
+        "index": 121,
         "entry": {
           "algorithm": "sha-256",
-          "value": "1212121212121212121212121212121212121212121212121212121212121212"
+          "value": "1616161616161616161616161616161616161616161616161616161616161616"
         }
       },
       "entry": {
@@ -810,7 +1020,7 @@
                   "segments": [
                     {
                       "segment_id": "p1-s1",
-                      "provider": "reserve-bank-co",
+                      "provider": "us-bank",
                       "kind": "withdrawal",
                       "from": {
                         "node": {
@@ -831,7 +1041,7 @@
                     },
                     {
                       "segment_id": "p1-s2",
-                      "provider": "exchange-a",
+                      "provider": "fx-desk",
                       "kind": "exchange",
                       "from": {
                         "node": "ledger-in",
@@ -876,7 +1086,7 @@
                   "segments": [
                     {
                       "segment_id": "p2-s1",
-                      "provider": "reserve-bank-co",
+                      "provider": "eu-bank",
                       "kind": "withdrawal",
                       "from": {
                         "node": {
@@ -942,7 +1152,7 @@
                   "segments": [
                     {
                       "segment_id": "p3-s1",
-                      "provider": "reserve-bank-co",
+                      "provider": "us-bank",
                       "kind": "withdrawal",
                       "from": {
                         "node": {
@@ -1019,10 +1229,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 118,
+        "index": 122,
         "entry": {
           "algorithm": "sha-256",
-          "value": "1313131313131313131313131313131313131313131313131313131313131313"
+          "value": "1717171717171717171717171717171717171717171717171717171717171717"
         }
       },
       "entry": {

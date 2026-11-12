@@ -873,10 +873,134 @@ pub fn route_chosen_of(record: &DecisionRecord, named: &Named) -> RecordedInput 
     }
 }
 
-/// Appends what the log holds of the order before its segments run: the authorisation, the acceptance (an automatic
-/// deposit's, which needs no yes), the router's decision record and the route chosen.
-pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
-    seed_order(log, record, &Named::first());
+/// Appends what the log holds of the order before its segments run: the authorisation, the deposit's arrival at the
+/// origin reserve, on the reserve's report to the operator's question, the acceptance (an automatic deposit's, which
+/// needs no yes and rests on that arrival), the router's decision record and the route chosen.
+pub fn seed(
+    log: &Rc<RefCell<TestLog>>,
+    store: &mut Store,
+    record: &DecisionRecord,
+    operator: &Actor,
+) {
+    seed_order(log, store, record, &Named::first(), operator);
+}
+
+/// A stated entry of `bytes`, kept in `store`, claimed by `maker`, unverified, about `order` and `transaction`.
+fn stated_seed(
+    store: &mut Store,
+    bytes: Vec<u8>,
+    maker: Actor,
+    order: &Id,
+    transaction: &str,
+) -> Entry {
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let kept = store.keep(&bytes).unwrap();
+    serde_json::from_value(json!({
+        "kind": "stated",
+        "attribution": { "signature": "unverified", "claimed_by": maker },
+        "what": { "statement": value["shape"] },
+        "when": { "at": value["made_at"], "source": "party_stated" },
+        "received_at": value["made_at"],
+        "outcome": { "status": "stated" },
+        "signed_with": { "scheme": "ed25519", "key": value["signature"]["key"] },
+        "commitment": kept.commitment,
+        "about": { "order": order, "transaction": transaction },
+    }))
+    .unwrap()
+}
+
+/// An envelope of `shape` made by `maker` at the start, around `body`, unsigned.
+fn seed_envelope(shape: &str, maker: &str, body: Value) -> Value {
+    json!({
+        "deployment": SuiteContext::default().deployment,
+        "protocol_version": rutent_contracts::provider_role::VERSION,
+        "shape": shape,
+        "maker": maker,
+        "made_at": Instant(START).rfc3339().unwrap(),
+        "signature": { "scheme": "ed25519", "key": "", "value": "" },
+        "statement": body,
+    })
+}
+
+/// The deposit's arrival at [`RESERVE`] for `named`'s order: the operator's question under its own transaction, the
+/// reserve's signed report answering it, and the `arrival` citing that report, which the automatic deposit's
+/// acceptance rests on.
+fn seed_arrival(
+    log: &mut TestLog,
+    store: &mut Store,
+    record: &DecisionRecord,
+    named: &Named,
+    operator: &Actor,
+    entry: &dyn Fn(What, Outcome) -> Entry,
+) {
+    let order = id(&named.order);
+    let transaction = format!("tx-deposit-{}", named.order);
+    let body = json!({ "kind": "balance_verification", "transaction": transaction });
+    // The question, signed as the operator, under the placeholder key the log reads it by.
+    let placeholder = SuiteContext::default().deployment.operator_key;
+    let mut question = seed_envelope(
+        rutent_contracts::provider_role::OPERATION_SHAPE,
+        operator.acts.as_str(),
+        body.clone(),
+    );
+    question["signature"]["key"] = placeholder.as_str().into();
+    question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
+    let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
+    question["signature"]["value"] =
+        rutent_conformance::signing::base64url(&real(placeholder.as_str()).sign(&input).to_bytes())
+            .into();
+    let question = stated_seed(
+        store,
+        serde_json::to_vec(&question).unwrap(),
+        operator.clone(),
+        &order,
+        &transaction,
+    );
+    log.take(&question, Through::General).unwrap();
+    // The reserve's report, signed with its statements key.
+    let mut report = seed_envelope(rutent_contracts::provider_role::RESULT_SHAPE, RESERVE, body);
+    rutent_conformance::signing::sign_value(&mut report, &statements_key_of(RESERVE));
+    let publisher = Spec::of(SimRole::Reserve, RESERVE)
+        .make(&SuiteContext::default())
+        .advertisement()
+        .into_statement()
+        .statement
+        .publisher;
+    let reserve = Actor {
+        party: id(&publisher),
+        acts: id(RESERVE),
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    };
+    let report = stated_seed(
+        store,
+        serde_json::to_vec(&report).unwrap(),
+        reserve,
+        &order,
+        &transaction,
+    );
+    let report = log.take(&report, Through::General).unwrap();
+    let chosen = record.chosen().unwrap();
+    let first = chosen.parts.first().operations.first();
+    let NodeRef::Outer(node) = &first.from.node else {
+        panic!("the route starts at an outer node");
+    };
+    log.take(
+        &entry(
+            What::Arrival {
+                reserve: id(RESERVE),
+                node: node.clone(),
+                asset: first.from.asset.clone(),
+                amount: first.amount_in.amount().clone(),
+                order: Some(order),
+                matched: rutent_contracts::core_internal::ArrivalMatch::Matches,
+                report,
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
 }
 
 /// The authorisation the kit seeds for `named`, under `floor` (`T-020-10`).
@@ -895,15 +1019,23 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
 }
 
 /// [`seed`], for `named`.
-pub fn seed_order(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord, named: &Named) {
-    seed_order_under(log, record, named, None);
+pub fn seed_order(
+    log: &Rc<RefCell<TestLog>>,
+    store: &mut Store,
+    record: &DecisionRecord,
+    named: &Named,
+    operator: &Actor,
+) {
+    seed_order_under(log, store, record, named, operator, None);
 }
 
 /// [`seed_order`], its authorisation naming `floor` (`T-020-10`).
 pub fn seed_order_under(
     log: &Rc<RefCell<TestLog>>,
+    store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
+    operator: &Actor,
     floor: Option<PositiveAmount>,
 ) {
     let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
@@ -932,6 +1064,7 @@ pub fn seed_order_under(
         Through::Policy,
     )
     .unwrap();
+    seed_arrival(&mut log, store, record, named, operator, &entry);
     log.take(
         &entry(
             What::Acceptance {
@@ -948,7 +1081,7 @@ pub fn seed_order_under(
                     payer: customer().party,
                 },
                 origin_reserve: id(RESERVE),
-                reserve_yes: None,
+                yeses: Vec::new(),
                 session: None,
             },
             Outcome::Observed {},
@@ -1019,22 +1152,43 @@ pub struct Core {
 impl Core {
     /// Core with the order's route chosen over `world` and its log seeded.
     pub fn over(world: &mut World) -> Self {
-        Self::under(world, None)
+        Self::over_with(world, operator(), |_| {})
     }
 
     /// [`Core::over`], the order's authorisation naming `floor` (`T-020-10`).
     pub fn under(world: &mut World, floor: Option<PositiveAmount>) -> Self {
+        Self::over_under(world, operator(), floor, |_| {})
+    }
+
+    /// [`Core::over`], with `operator` as the operator Core signs as, and `before` appended to the log first.
+    pub fn over_with(
+        world: &mut World,
+        operator: Actor,
+        before: impl FnOnce(&Rc<RefCell<TestLog>>),
+    ) -> Self {
+        Self::over_under(world, operator, None, before)
+    }
+
+    /// [`Core::over_with`], the order's authorisation naming `floor`.
+    fn over_under(
+        world: &mut World,
+        operator: Actor,
+        floor: Option<PositiveAmount>,
+        before: impl FnOnce(&Rc<RefCell<TestLog>>),
+    ) -> Self {
         let clock = Rc::new(TestClock::at(START));
         let record = chosen_route(world, &clock);
         let log = Rc::new(RefCell::new(TestLog::default()));
-        seed_order_under(&log, &record, &Named::first(), floor);
+        before(&log);
+        let mut store = Store::default();
+        seed_order_under(&log, &mut store, &record, &Named::first(), &operator, floor);
         let mut segments = Segments::new();
         assert!(segments.follow(&*clock, &route_chosen(&record)));
         let context = world.context();
         Core {
             policy: Policy::new(Rc::clone(&log)),
             log,
-            store: Store::default(),
+            store,
             clock,
             ids: Ids::default(),
             issued: Issued::new(),
@@ -1046,14 +1200,15 @@ impl Core {
                 ("beneficiary.bank_account".to_owned(), "acct-2".to_owned()),
             ]),
             key: TestKey(context.deployment.operator_key.clone()),
-            operator: operator(),
+            operator,
             named: Named::first(),
         }
     }
 
     /// Seeds another order over the same route, follows it, and runs it from now on.
     pub fn take_up(&mut self, named: Named) {
-        seed_order(&self.log, &self.record, &named);
+        let operator = self.operator.clone();
+        seed_order(&self.log, &mut self.store, &self.record, &named, &operator);
         assert!(
             self.segments
                 .follow(&*self.clock, &route_chosen_of(&self.record, &named))
