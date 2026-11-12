@@ -207,25 +207,39 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Whose a statement is** (`core-authz`'s `Source::Statement`). The store keeps bytes and nothing about who they
   concern; whose they are, the maker's party or the one told about its own part, is the log's stated entry naming
   the commitment, which the assembly reads to answer policy (`T-024-02`).
-- **Erasure records first, the operator's, on the bound log.** `BoundStore::erase(at)` carries an erasure out only
-  on its own log's record: a verified `erasure` entry at the receipt `at`, whose outcome is `done`, made by an actor
-  in the operator's role for the operator's party (`ERASURE_BY_THE_OPERATOR`; the review of `746e398`, B1: a
-  provider's erasure was carried out). So the reference that stays is recorded before anything goes (`INV-7`).
-  `BoundStore::erasable(commitment)` runs the store's checks beforehand, so orchestration appends no erasure the
-  store would refuse. An erasure names a kept statement, and the log refuses one no stated entry holds
-  (`erasure-names-a-kept-statement`). It removes the bytes and the salt, and the index's place for them, and leaves a
-  mark, `erased/<commitment>`, so a read answers `Erased`. Erasing one erased already is `Ok`.
-- **A crash anywhere in an erasure** (the review of `746e398`, S1). An erasure has three steps: the log's entry,
-  the shelf's mark, the removal of the bytes. A failure answered `Unavailable` after the entry is carried out by
-  calling `erase` again. After a crash, binding reconciles the store with the log: it carries out every done
-  erasure of the operator's whose statement is still kept, where `erasable` allows it (a crash after the entry,
-  before the mark); the shelf's opening removes bytes left behind their mark (a crash between the mark and the
-  removal); a mark no done erasure of the operator's in the log records refuses the binding
-  (`MARK_WITHOUT_ITS_ERASURE`: bytes went with no record); and every stated entry whose bytes are neither kept nor
+- **Erasure is decided, then carried out, then recorded** (core-internal's fold of `384c9be` and `1100765`, which
+  made erasure a decided action). The path, each step admitted by the log on the one before: policy's permitting
+  `decide` of `erase_statement` for the commitment, its effect, the effect's `done` result, the store's erasure,
+  then the `erasure` entry, which the log admits only after that result (`erasure-is-carried-out-on-its-decision`),
+  and all of it refused while anything rests on the statement (`erasure-waits-while-anything-rests-on-the-statement`).
+  `BoundStore::erase(at)` takes the receipt of that `done` result, from its own log, and reads the path back: a
+  `done` result of an `erase_statement` effect whose permit is a permitting `decide` of that action
+  (`NO_DECIDED_ERASURE`). So the decision, and the reference that stays, are recorded before anything goes
+  (`INV-7`). `BoundStore::erasable(commitment)` runs the store's checks beforehand, so no erasure is decided that the
+  store would refuse: a stated entry of the log names the statement (`NAMED_BY_NO_ENTRY`: the `erasure` entry's own
+  row, `erasure-names-a-kept-statement`, comes after the bytes go now, so the store holds it itself), and the rest
+  below. It removes the bytes and the salt, and the index's place for them, and leaves a mark,
+  `erased/<commitment>`, so a read answers `Erased`. Erasing one erased already is `Ok`, so orchestration retries
+  until it can append the `erasure` entry.
+- **The operator-label check is dropped.** Until the fold, the store erased only on an `erasure` entry by an actor
+  in the operator's role for the operator's party (`ERASURE_BY_THE_OPERATOR`, the review of `746e398`, B1). On the
+  decided path the authority is policy's permit, which the log admits only from policy's handle, and the `erasure`
+  entry is Core's record of what was done, no longer the authority; a check of its actor would be a second policy in
+  the store, so it is gone. The store's re-reading of the permit as a permitting `decide` of the same action is
+  defence the log already gives (`effect-permits-a-decided-action`): switched off, it fails no test, since the log
+  admits no erase effect without such a permit.
+- **A crash anywhere in an erasure** (the review of `746e398`, S1). After the `done` result there are three steps:
+  the shelf's mark, the removal of the bytes, the `erasure` entry. A failure answered `Unavailable` is carried out by
+  calling `erase` again. After a crash, binding reconciles the store with the log: it carries out every erasure the
+  log decided (a `done` result of a permitted erase effect) whose statement is still kept, where `erasable` allows
+  it (a crash after the result, before the mark); the shelf's opening removes bytes left behind their mark (a crash
+  between the mark and the removal); a mark no erasure the log decided accounts for refuses the binding
+  (`MARK_WITHOUT_ITS_ERASURE`: bytes went with no decision); and every stated entry whose bytes are neither kept nor
   marked erased is reported, by receipt, in `BoundStore::missing`, a finding for the outside checker (`T-022-04`).
-  Every done erasure the log records that the store refuses on binding, by anyone but the operator, of an
-  advertisement, or of what an entry rests on, is reported beside it, by receipt and why, in
-  `BoundStore::refused_erasures` (the review of `c74610d`: it was skipped silently).
+  Every decided erasure the store refuses on binding (of an advertisement, of what no stated entry names) is
+  reported beside it, by its result's receipt and why, in `BoundStore::refused_erasures`. A crash after the store
+  erased and before the `erasure` entry leaves the bytes erased and the decision recorded; orchestration appends the
+  entry on its retry.
 - **No erasure reaches what an entry rests on** (the review of `746e398`, S3, the coordinator's cautious default
   until the owner rules). `erasable` refuses a statement any verified entry of the log cites: by the receipt of a
   stated entry naming its commitment (a report pair, an arrival, graded evidence, a reliance, an acceptance, a
@@ -237,11 +251,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   is an advertisement's, nor bytes any stated entry of the log labels one, since the log reads back, on opening, the
   bytes of every entry labelled so (`ADVERTISEMENT_NEVER_ERASED`). A test holds that the log still opens after
   both were tried.
-- **Who may erase** (an item for `F-020`, the contract author's; the coordinator's default is a decided action).
-  core-internal's `erasure` is a verified entry with no decision behind it, and no row ties it to a permit. Until
-  the contract makes it one (a policy permit, then an effect and its result), the store erases on the bound log's
-  done erasure by the operator. Once it lands, the store erases only on the `done` result of a permitted erase
-  effect.
+- **Who may erase** is policy's: an erasure is a decided action, and policy's role table answers no rule for
+  `erase_statement` yet, so policy refuses every one until its rows add the operator's permission (core-internal's
+  README hand-off to `F-021`).
 - **Retention is the operator's** (`REQ-AUD-13`): the store erases nothing on its own, on no schedule.
 - **A party's receipt** (`receipts::receipt`). In the style of RFC 9943's receipts: the log's signed word that an
   entry, by its record's digest, sits at its index in a tree of a given size whose RFC 9162 root it names, with the
@@ -315,7 +327,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   by its commitment alone, a read resting on nothing,
   binding carrying out a recorded erasure, refusing a mark with no erasure and reporting bytes gone with none, a
   failed write keeping its place, and a receipt checked against the log it names. After fold `01e`: a read of an
-  order's state covering no entry, and a refused recorded erasure being reported, whoever recorded it.
+  order's state covering no entry, and a refused recorded erasure being reported, whoever recorded it. After the
+  erasure fold: only a `done` result, only the log's own entry at its receipt, only what a stated entry names,
+  binding carrying out a decided erasure, a mark needing its decided erasure, and a refused decided erasure being
+  reported. The operator-label rules of the review of `746e398` are gone with the check.
 - Some checks are implied by others, so switching one off alone fails no test: a receipt's key being the log's (the
   signature is verified under the log's key), its shape (only the issuer signs, and it signs that shape), its entry
   digest and its inclusion proof (each implies the other for a receipt the log signed; off together, they fail), and

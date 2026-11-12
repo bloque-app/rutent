@@ -8,7 +8,7 @@
 //!   through [`Keeper`] ([`Evidence`]), whose reads policy allows first. It replaces `T-022-01`'s stand-in,
 //!   `log::KeptInMemory`, with no change to the log.
 //! - [`EvidenceStore::bind`] binds the store, once, to the log it serves, reconciling the two; [`BoundStore::erase`]
-//!   then erases, outside the log, only what that log's own `erasure` entry, the operator's, names, and nothing an
+//!   then erases, outside the log, only on that log's done result of a permitted erase effect, and nothing an
 //!   entry rests on; the reference stays and history still checks (`REQ-AUD-13`).
 //! - [`Issuer`] signs a party's receipt of an entry about its own part, in the style of RFC 9943, which
 //!   [`holds_against`] checks against the history the operator shows (`REQ-AUD-5`).
