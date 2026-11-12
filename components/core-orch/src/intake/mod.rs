@@ -678,10 +678,57 @@ impl Intake {
             }
         }
 
+        // The acceptance, then the order's start, each built once, here, and appended as built, after policy's
+        // permit. Both are built and checked before policy is asked, so an acceptance that fails its own shape costs
+        // no permit. The acceptance names each part of the start's plan with its yes and its origin reserve, the
+        // provider of its first move, and the authorisation it gives.
+        let authorisation_id = desk.parts.fresh.id();
+        let input = route_chosen(desk, order, by, &offered)?;
+        let Observed::RouteChosen { parts, .. } = &input.observed else {
+            return Err(IntakeError::Unofferable);
+        };
+        let yeses = parts
+            .iter()
+            .zip(&offered.reserve_yes)
+            .map(|(part, yes)| {
+                let first = part.segments.first().ok_or(IntakeError::Unofferable)?;
+                Ok(PartYes {
+                    part: Id::new(part.part_id.as_str()).ok_or(IntakeError::Unofferable)?,
+                    origin_reserve: Id::new(first.provider.as_str())
+                        .ok_or(IntakeError::Unofferable)?,
+                    reserve_yes: yes.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, IntakeError>>()?;
+        let acceptance = desk.parts.fresh.id();
+        let accepted = record::build(
+            desk.parts.clock,
+            by,
+            What::Acceptance {
+                acceptance: acceptance.clone(),
+                order: order.clone(),
+                request: request.request.clone(),
+                quote: offered.digest.clone(),
+                authorisation: authorisation_id.clone(),
+                basis: AcceptanceBasis::Given,
+                parties: request.parties.clone(),
+                origin_reserve: request.origin_reserve.clone(),
+                yeses,
+                session: Some(offered.session.clone()),
+            },
+        )?;
+        let start = record::build(
+            desk.parts.clock,
+            desk.core,
+            What::Input {
+                input: input.clone(),
+            },
+        )?;
+
         // The authorisation, naming the destination with the account the requester gave (`REQ-ORD-35`) and the
         // actor that accepted (`REQ-AUZ-9`), held by policy to the register of actors.
         let authorisation = Authorisation {
-            authorisation: desk.parts.fresh.id(),
+            authorisation: authorisation_id,
             order: order.clone(),
             origin_reserve: request.origin_reserve.clone(),
             destination: request.destination.clone(),
@@ -724,50 +771,6 @@ impl Intake {
         }
         kept.owner = resolved;
         kept.changed_owner = None;
-
-        // The acceptance, then the order's start, each built once, here, and appended as built. The acceptance names
-        // each part of the start's plan with its yes and its origin reserve, the provider of its first move.
-        let input = route_chosen(desk, order, by, &offered)?;
-        let Observed::RouteChosen { parts, .. } = &input.observed else {
-            return Err(IntakeError::Unofferable);
-        };
-        let yeses = parts
-            .iter()
-            .zip(&offered.reserve_yes)
-            .map(|(part, yes)| {
-                let first = part.segments.first().ok_or(IntakeError::Unofferable)?;
-                Ok(PartYes {
-                    part: Id::new(part.part_id.as_str()).ok_or(IntakeError::Unofferable)?,
-                    origin_reserve: Id::new(first.provider.as_str())
-                        .ok_or(IntakeError::Unofferable)?,
-                    reserve_yes: yes.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, IntakeError>>()?;
-        let acceptance = desk.parts.fresh.id();
-        let accepted = record::build(
-            desk.parts.clock,
-            by,
-            What::Acceptance {
-                acceptance: acceptance.clone(),
-                order: order.clone(),
-                request: request.request.clone(),
-                quote: offered.digest.clone(),
-                authorisation: authorisation.authorisation.clone(),
-                basis: AcceptanceBasis::Given,
-                parties: request.parties.clone(),
-                origin_reserve: request.origin_reserve.clone(),
-                yeses,
-                session: Some(offered.session.clone()),
-            },
-        )?;
-        let start = record::build(
-            desk.parts.clock,
-            desk.core,
-            What::Input {
-                input: input.clone(),
-            },
-        )?;
         kept.accepting = Some(Accepting {
             by: by.clone(),
             acceptance,

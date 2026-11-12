@@ -273,6 +273,12 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
     acceptance, its yes and its second effect by what they are, not by places the fixture moved.
 - **Touches**: `components/core-orch/src/intake/`, its tests, the scenario kit and one scenario test of `T-020-08`'s,
   `T-022-01`'s log test, and these notes. No `DEC-20` path and no shared manifest.
+- **Review of `e6682d1`.** The guard against a route with fewer yeses than parts, or one yes for two, has its test:
+  `even_split_answered_by_one_yes_is_not_shown`, over `Splitter` at 500 and 500, where the rounds answer both parts'
+  withdrawals with one question. The quote is refused `no_route_right_now`, nothing is shown, and policy is never
+  asked; switched off, or with only its count half, red. And the acceptance and the start are built and checked
+  before policy is asked, the authorisation's id drawn first, so an acceptance that fails its own shape costs no
+  permit.
 
 ## T-020-05
 

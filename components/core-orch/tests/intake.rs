@@ -1034,8 +1034,14 @@ fn agent_repeating_its_persons_request_gets_the_same_answer() {
 
 // Each part's yes, a change of owner's class, a start refused ---------------------------------------------------------
 
-/// A router that splits the route the router finds into two parts, of 600 and 400, each citing its own dry runs:
-/// unconfirmed until both parts' withdrawals and deposits were asked at their amounts, then chosen.
+thread_local! {
+    /// The two parts' amounts [`Splitter`] splits into.
+    static SPLIT: std::cell::Cell<[&'static str; 2]> = const { std::cell::Cell::new(["600", "400"]) };
+}
+
+/// A router that splits the route the router finds into two parts, of 600 and 400 unless [`SPLIT`] says otherwise,
+/// each citing its own dry runs: unconfirmed until both parts' withdrawals and deposits were asked at their amounts,
+/// then chosen.
 struct Splitter;
 
 impl Router for Splitter {
@@ -1066,7 +1072,7 @@ impl Router for Splitter {
         };
         let mut unconfirmed = None;
         let mut parts = Vec::new();
-        for (p, amount) in ["600", "400"].into_iter().enumerate() {
+        for (p, amount) in SPLIT.with(|s| s.get()).into_iter().enumerate() {
             let mut operations = template.clone();
             for (o, op) in operations.as_array_mut().unwrap().iter_mut().enumerate() {
                 op["amount_in"] = amount.into();
@@ -1229,4 +1235,46 @@ fn half_accepted_order_is_never_started() {
         })
         .unwrap();
     assert_eq!(start, &logged);
+}
+
+// verifies: REQ-ORD-32
+#[test]
+fn even_split_answered_by_one_yes_is_not_shown() {
+    // Two parts of 500 at one reserve: the rounds ask the withdrawal once at 500, so both parts would rest on one
+    // statement. The route isn't shown, the order has no route right now, and policy is never asked.
+    let mut env = Env::new();
+    let mut bounds = serde_json::to_value(&env.bounds).unwrap();
+    bounds["max_parts"] = 2.into();
+    env.bounds = serde_json::from_value(bounds).unwrap();
+    let mut sim = env.sim();
+    let order = order_of(
+        &env.open(&mut sim, &order_request("client-req-1", customer()))
+            .unwrap(),
+    );
+    SPLIT.with(|s| s.set(["500", "500"]));
+    let told = env.with(&mut sim, |intake, desk| {
+        intake.quote::<Splitter>(desk, &customer(), &order)
+    });
+    SPLIT.with(|s| s.set(["600", "400"]));
+    let told = told.unwrap();
+    // Whatever was shown, the customer accepting it can't reach policy.
+    if let Status::Quoted { digest, .. } = status_of(&told).clone() {
+        let _ = env.accept(&mut sim, &order, &customer(), &digest);
+    }
+    assert_eq!(
+        status_of(&told),
+        &Status::CantProceed {
+            class: OrderRefusalClass::NoRouteRightNow
+        }
+    );
+    assert!(
+        !env.book
+            .borrow()
+            .verified()
+            .iter()
+            .any(|w| matches!(w, What::Shown { .. }))
+    );
+    assert!(env.policy.asked.is_empty());
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    assert_admitted(&env);
 }
