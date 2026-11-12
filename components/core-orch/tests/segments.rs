@@ -464,7 +464,8 @@ fn call_the_live_segment_doesnt_name_is_refused() {
             .is_none(),
         "the segment ended, and its calls with it"
     );
-    // The effect was recorded before the operation was handed over, and its one result says it went unanswered.
+    // The effect was recorded before the operation was handed over, and its one result says it failed: the platform
+    // refused it before its module passed anything out.
     let kinds: Vec<_> = log
         .0
         .iter()
@@ -479,7 +480,7 @@ fn call_the_live_segment_doesnt_name_is_refused() {
         kinds,
         vec![
             (true, Outcome::ToTakeEffect {}),
-            (false, Outcome::Unanswered {})
+            (false, Outcome::Failed {})
         ]
     );
 }

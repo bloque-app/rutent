@@ -94,6 +94,19 @@ impl StuckDecide {
     }
 }
 
+impl Authorisation {
+    /// Checks that the parts it names, where it names any, are at least one, each once.
+    pub fn check(&self) -> Result<(), Violation> {
+        match &self.parts {
+            Some(parts) => listed(
+                parts,
+                "an authorisation names the parts it covers, at least one, each once",
+            ),
+            None => Ok(()),
+        }
+    }
+}
+
 impl SessionRequest {
     /// Checks that the session it asks for ends after it is asked for.
     pub fn check(&self) -> Result<(), Violation> {
@@ -284,6 +297,8 @@ impl What {
             | What::Authorise { .. }
             | What::StuckDecide { .. }
             | What::StuckMove { .. }
+            | What::ReportOutcome { .. }
+            | What::ConfirmOutcome { .. }
             | What::OpenSession { .. }
             | What::Charge { .. }
             | What::AskAboutPerson { .. }
@@ -319,7 +334,8 @@ impl What {
             | What::StuckCall { .. }
             | What::Afterwards { .. }
             | What::Reliance { .. }
-            | What::Refiling { .. } => matches!(outcome, Outcome::Observed {}),
+            | What::Refiling { .. }
+            | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
 
@@ -330,7 +346,7 @@ impl What {
             What::Effect { action, .. } => action.check(),
             What::StuckDecide { request, .. } => request.check(),
             What::OpenSession { request, .. } => request.check(),
-            What::Charge { charge } => charge.check(),
+            What::Charge { charge, .. } => charge.check(),
             What::AskAboutPerson { question } => question.check(),
             What::HandOver { item, .. } => item.check(),
             What::ReportPair { pair } => pair.check(),
@@ -402,6 +418,13 @@ impl What {
                 rests_on,
                 "graded evidence rests on stated entries, at least one, each once",
             ),
+            What::Arrival {
+                order: Some(_),
+                notice: None,
+                ..
+            } => Err(Violation(
+                "an arrival naming an order names the notice of the deposit it is of",
+            )),
             What::Replay { nodes, found, .. } => {
                 listed(
                     nodes,
@@ -437,8 +460,8 @@ impl What {
                     ReplayFound::ConsistentWithTheExit {} => Ok(()),
                 }
             }
-            What::Authorise { .. }
-            | What::Result { .. }
+            What::Authorise { authorisation, .. } => authorisation.check(),
+            What::Result { .. }
             | What::StuckMove { .. }
             | What::CheckRead { .. }
             | What::Refiling { .. }
@@ -452,7 +475,10 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Command { .. }
-            | What::Erasure { .. } => Ok(()),
+            | What::Erasure { .. }
+            | What::ReportOutcome { .. }
+            | What::ConfirmOutcome { .. }
+            | What::InputNotTaken { .. } => Ok(()),
         }
     }
 }
@@ -464,8 +490,12 @@ impl VerifiedEntry {
         if !self.what.allows(&self.outcome) {
             return Err(Violation("an entry's outcome is one its call can have"));
         }
-        if matches!(self.what, What::Command { .. }) && self.who.role != Role::Operator {
-            return Err(Violation("an operator command is the operator's"));
+        if let What::Charge { counted_at, .. } = &self.what
+            && counted_at.is_some() != (self.outcome == (Outcome::Permitted {}))
+        {
+            return Err(Violation(
+                "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
+            ));
         }
         if let What::CheckRead { check } = &self.what
             && self.outcome == (Outcome::Permitted {})
@@ -590,6 +620,7 @@ macro_rules! checked_serde {
 
 checked_serde!(
     Action,
+    Authorisation,
     DecisionRequest,
     PermissionChange,
     StuckDecide,

@@ -566,6 +566,7 @@ fn authorisation() -> Authorisation {
         authorisation: Id::new("auth-1").unwrap(),
         order: Id::new("ord-1").unwrap(),
         origin_reserve: Id::new("res-a").unwrap(),
+        origin_account: None,
         destination: Destination {
             reserve: Id::new("res-c").unwrap(),
             node: OuterNode {
@@ -575,6 +576,7 @@ fn authorisation() -> Authorisation {
         },
         to_asset: cop(),
         floor: None,
+        parts: None,
         given_by: customer(),
         at: Timestamp::new("2026-11-09T01:00:00Z").unwrap(),
     }

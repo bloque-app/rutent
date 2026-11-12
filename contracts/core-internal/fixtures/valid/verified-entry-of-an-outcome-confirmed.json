@@ -1,0 +1,56 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "confirm_outcome",
+    "request": {
+      "request": "req-confirm-es",
+      "order": "ord-1",
+      "effect": {
+        "log": "log-main",
+        "index": 169,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4646464646464646464646464646464646464646464646464646464646464646"
+        }
+      },
+      "outcome": "failed",
+      "report": {
+        "log": "log-main",
+        "index": 176,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+        }
+      },
+      "confirmer": {
+        "party": "operator",
+        "acts": "op-login-2",
+        "role": "operator",
+        "kind": "person"
+      },
+      "confirmed_with": {
+        "log": "log-main",
+        "index": 175,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
+        }
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-req-confirm-es"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

@@ -1803,6 +1803,243 @@
           "status": "observed"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 190,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-closing-0",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "orchestrator",
+              "id": "core-orch"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-1",
+              "part": "p1",
+              "segment": "p1-s1"
+            },
+            "observed": {
+              "kind": "provider_bound"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 191,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-closing-1",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "evidence_checker",
+              "id": "evidence"
+            },
+            "standing": "verified",
+            "subject": {
+              "order": "ord-1",
+              "part": "p1",
+              "segment": "p1-s1"
+            },
+            "observed": {
+              "kind": "segment_settled",
+              "evidence": "ev-closing-1"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 192,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-closing-2",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "orchestrator",
+              "id": "core-orch"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-1",
+              "part": "p1",
+              "segment": "p1-s2"
+            },
+            "observed": {
+              "kind": "provider_bound"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 193,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-closing-3",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "evidence_checker",
+              "id": "evidence"
+            },
+            "standing": "verified",
+            "subject": {
+              "order": "ord-1",
+              "part": "p1",
+              "segment": "p1-s2"
+            },
+            "observed": {
+              "kind": "segment_settled",
+              "evidence": "ev-closing-2"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 194,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-closing-4",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "orchestrator",
+              "id": "core-orch"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-1",
+              "part": "p1",
+              "segment": "p1-s3"
+            },
+            "observed": {
+              "kind": "provider_bound"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
     }
   ],
   "entry": {

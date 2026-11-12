@@ -475,6 +475,11 @@ impl Policy {
     pub fn refuse(&self, class: RefusalClass) {
         self.refuse.set(Some(class));
     }
+
+    /// The deployment's switch, to refuse from within a run and permit again after it (`T-020-11`).
+    pub fn refuser(&self) -> Rc<Cell<Option<RefusalClass>>> {
+        Rc::clone(&self.refuse)
+    }
 }
 
 impl Decisions for Policy {
@@ -889,85 +894,196 @@ fn seed_envelope(shape: &str, maker: &str, body: Value) -> Value {
     })
 }
 
-/// The deposit's arrival at [`RESERVE`] for `named`'s order: the operator's question under its own transaction, the
-/// reserve's signed report answering it, and the `arrival` citing that report, which the automatic deposit's
-/// acceptance rests on.
+/// A second simulated reserve, of another party: installed beside [`RESERVE`] where a move's outcome is reported
+/// and confirmed, so its two results are by two makers the catalogue knows, neither the operator.
+pub const OTHER_RESERVE: &str = "sim-reserve-b";
+
+/// Two results about the current order through `transaction`, and about `segment` where one is named, made at Core's
+/// clock now and appended to the log now: [`RESERVE`]'s and [`OTHER_RESERVE`]'s, each signed with its maker's
+/// statements key, so the log verifies each. A move's outcome is reported and confirmed on two such results, which
+/// follow the move, by two providers' parties (`outcome-confirmation-cites-verified-evidence`,
+/// `outcome-confirmation-rests-on-its-report`). The world must have [`OTHER_RESERVE`] installed.
+pub fn results_after_the_move(
+    core: &mut Core,
+    segment: Option<&str>,
+    transaction: &str,
+) -> (Receipt, Receipt) {
+    let order = id(&core.named.order);
+    let made_at = core.clock.now().timestamp().unwrap();
+    let body = json!({ "kind": "balance_verification", "transaction": transaction });
+    let mut result = |maker: &str| {
+        let mut e = seed_envelope(
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            maker,
+            body.clone(),
+        );
+        e["made_at"] = made_at.as_str().into();
+        rutent_conformance::signing::sign_value(&mut e, &statements_key_of(maker));
+        let publisher = Spec::of(SimRole::Reserve, maker)
+            .make(&SuiteContext::default())
+            .advertisement()
+            .into_statement()
+            .statement
+            .publisher;
+        let actor = Actor {
+            party: id(&publisher),
+            acts: id(maker),
+            role: Role::Provider,
+            kind: ActorKind::Component,
+        };
+        match stated_seed(
+            &mut core.store,
+            serde_json::to_vec(&e).unwrap(),
+            actor,
+            &order,
+            transaction,
+        ) {
+            Entry::Stated(mut stated) => {
+                stated.about = Some(rutent_contracts::core_internal::About {
+                    order: Some(order.clone()),
+                    segment: segment.map(id),
+                    transaction: Some(id(transaction)),
+                });
+                Entry::Stated(stated)
+            }
+            verified => verified,
+        }
+    };
+    let (first, second) = (result(RESERVE), result(OTHER_RESERVE));
+    // A stuck resolution's transaction has no question under it yet: the move under it, which the production
+    // resolutions would hand the provider (unbuilt), is asked here as the operator's operation about the order,
+    // naming no segment, so the providers' results answer it (`answer-follows-its-question`).
+    let question = segment.is_none().then(|| {
+        let placeholder = SuiteContext::default().deployment.operator_key;
+        let mut question = seed_envelope(
+            rutent_contracts::provider_role::OPERATION_SHAPE,
+            core.operator.acts.as_str(),
+            body.clone(),
+        );
+        question["made_at"] = made_at.as_str().into();
+        question["signature"]["key"] = placeholder.as_str().into();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
+        let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(
+            &real(placeholder.as_str()).sign(&input).to_bytes(),
+        )
+        .into();
+        stated_seed(
+            &mut core.store,
+            serde_json::to_vec(&question).unwrap(),
+            core.operator.clone(),
+            &order,
+            transaction,
+        )
+    });
+    let mut log = core.log.borrow_mut();
+    if let Some(question) = question {
+        log.take(&question, Through::General).unwrap();
+    }
+    let first = log.take(&first, Through::General).unwrap();
+    let second = log.take(&second, Through::General).unwrap();
+    (first, second)
+}
+
+/// The deposit's arrival at the origin reserve, on the reserve's report to the operator's question: one deposit, and
+/// one arrival, for each part of `chosen`'s route, each naming its part where the route has more than one
+/// (`split-deposit-arrival-names-its-part`).
 fn seed_arrival(
     log: &mut TestLog,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
     operator: &Actor,
+    chosen: &RecordedInput,
     entry: &dyn Fn(What, Outcome) -> Entry,
 ) {
     let order = id(&named.order);
-    let transaction = format!("tx-deposit-{}", named.order);
-    let body = json!({ "kind": "balance_verification", "transaction": transaction });
-    // The question, signed as the operator, under the placeholder key the log reads it by.
-    let placeholder = SuiteContext::default().deployment.operator_key;
-    let mut question = seed_envelope(
-        rutent_contracts::provider_role::OPERATION_SHAPE,
-        operator.acts.as_str(),
-        body.clone(),
-    );
-    question["signature"]["key"] = placeholder.as_str().into();
-    question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
-    let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
-    question["signature"]["value"] =
-        rutent_conformance::signing::base64url(&real(placeholder.as_str()).sign(&input).to_bytes())
-            .into();
-    let question = stated_seed(
-        store,
-        serde_json::to_vec(&question).unwrap(),
-        operator.clone(),
-        &order,
-        &transaction,
-    );
-    log.take(&question, Through::General).unwrap();
-    // The reserve's report, signed with its statements key.
-    let mut report = seed_envelope(rutent_contracts::provider_role::RESULT_SHAPE, RESERVE, body);
-    rutent_conformance::signing::sign_value(&mut report, &statements_key_of(RESERVE));
-    let publisher = Spec::of(SimRole::Reserve, RESERVE)
-        .make(&SuiteContext::default())
-        .advertisement()
-        .into_statement()
-        .statement
-        .publisher;
-    let reserve = Actor {
-        party: id(&publisher),
-        acts: id(RESERVE),
-        role: Role::Provider,
-        kind: ActorKind::Component,
+    let Observed::RouteChosen { parts, .. } = &chosen.observed else {
+        panic!("a route chosen");
     };
-    let report = stated_seed(
-        store,
-        serde_json::to_vec(&report).unwrap(),
-        reserve,
-        &order,
-        &transaction,
-    );
-    let report = log.take(&report, Through::General).unwrap();
-    let chosen = record.chosen().unwrap();
-    let first = chosen.parts.first().operations.first();
-    let NodeRef::Outer(node) = &first.from.node else {
-        panic!("the route starts at an outer node");
-    };
-    log.take(
-        &entry(
-            What::Arrival {
-                reserve: id(RESERVE),
-                node: node.clone(),
-                asset: first.from.asset.clone(),
-                amount: first.amount_in.amount().clone(),
-                order: Some(order),
-                matched: rutent_contracts::core_internal::ArrivalMatch::Matches,
-                report,
-            },
-            Outcome::Observed {},
-        ),
-        Through::General,
-    )
-    .unwrap();
+    let split = parts.len() > 1;
+    for plan in parts {
+        let transaction = if split {
+            format!("tx-deposit-{}-{}", named.order, plan.part_id.as_str())
+        } else {
+            format!("tx-deposit-{}", named.order)
+        };
+        let body = json!({ "kind": "balance_verification", "transaction": transaction });
+        // The question, signed as the operator, under the placeholder key the log reads it by.
+        let placeholder = SuiteContext::default().deployment.operator_key;
+        let mut question = seed_envelope(
+            rutent_contracts::provider_role::OPERATION_SHAPE,
+            operator.acts.as_str(),
+            body.clone(),
+        );
+        question["signature"]["key"] = placeholder.as_str().into();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(&[0u8; 64]).into();
+        let input = signing_input(&serde_json::to_vec(&question).unwrap()).unwrap();
+        question["signature"]["value"] = rutent_conformance::signing::base64url(
+            &real(placeholder.as_str()).sign(&input).to_bytes(),
+        )
+        .into();
+        let question = stated_seed(
+            store,
+            serde_json::to_vec(&question).unwrap(),
+            operator.clone(),
+            &order,
+            &transaction,
+        );
+        log.take(&question, Through::General).unwrap();
+        // The reserve's report, signed with its statements key.
+        let mut report =
+            seed_envelope(rutent_contracts::provider_role::RESULT_SHAPE, RESERVE, body);
+        rutent_conformance::signing::sign_value(&mut report, &statements_key_of(RESERVE));
+        let publisher = Spec::of(SimRole::Reserve, RESERVE)
+            .make(&SuiteContext::default())
+            .advertisement()
+            .into_statement()
+            .statement
+            .publisher;
+        let reserve = Actor {
+            party: id(&publisher),
+            acts: id(RESERVE),
+            role: Role::Provider,
+            kind: ActorKind::Component,
+        };
+        let report = stated_seed(
+            store,
+            serde_json::to_vec(&report).unwrap(),
+            reserve,
+            &order,
+            &transaction,
+        );
+        // The deposit's notice is this report: it met the order at once.
+        let notice = match &report {
+            Entry::Stated(stated) => stated.commitment.clone(),
+            Entry::Verified(_) => unreachable!("a stated report"),
+        };
+        let report = log.take(&report, Through::General).unwrap();
+        let chosen = record.chosen().unwrap();
+        let first = chosen.parts.first().operations.first();
+        let NodeRef::Outer(node) = &first.from.node else {
+            panic!("the route starts at an outer node");
+        };
+        log.take(
+            &entry(
+                What::Arrival {
+                    reserve: id(RESERVE),
+                    node: node.clone(),
+                    asset: first.from.asset.clone(),
+                    amount: first.amount_in.amount().clone(),
+                    order: Some(order.clone()),
+                    matched: rutent_contracts::core_internal::ArrivalMatch::Matches,
+                    report,
+                    notice: Some(notice),
+                    part: split.then(|| id(plan.part_id.as_str())),
+                },
+                Outcome::Observed {},
+            ),
+            Through::General,
+        )
+        .unwrap();
+    }
 }
 
 /// The authorisation the kit seeds for `named`, under `floor` (`T-020-10`).
@@ -977,9 +1093,12 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
         authorisation: id(&named.authorisation()),
         order: id(&named.order),
         origin_reserve: id(RESERVE),
+        // The payer's account at the reserve, the one the kit's withdrawal names (`payer.bank_account`).
+        origin_account: Some(id("acct-1")),
         destination: end.destination,
         to_asset: end.to_asset,
         floor,
+        parts: None,
         given_by: customer(),
         at: Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap(),
     }
@@ -1051,7 +1170,7 @@ fn seed_chosen(
         "the customer authorises its order through policy"
     );
     let mut log = log.borrow_mut();
-    seed_arrival(&mut log, store, record, named, operator, &entry);
+    seed_arrival(&mut log, store, record, named, operator, &chosen, &entry);
     log.take(
         &entry(
             What::Acceptance {
@@ -1352,8 +1471,16 @@ impl Core {
                 }
                 verified => verified.clone(),
             };
-            admit_entry(&history, &entry, *through, &operator().acts)
-                .map_err(|v| (i, v.0.to_owned()))?;
+            admit_entry(
+                &history,
+                &entry,
+                *through,
+                &rutent_contracts::core_internal::DeploymentOperator {
+                    maker: operator().acts,
+                    party: operator().party,
+                },
+            )
+            .map_err(|v| (i, v.0.to_owned()))?;
             // The receipt the writer was handed: this log answers before it attributes.
             history.push((receipt(i, appended), entry));
         }

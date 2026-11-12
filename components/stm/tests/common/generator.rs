@@ -12,7 +12,7 @@
 
 use super::*;
 use rutent_contracts::state_machine::host::{Delivery, Host, TransitionRecord};
-use rutent_contracts::state_machine::{Destination, StuckReason, value_at};
+use rutent_contracts::state_machine::{Destination, ResolvedTo, StuckReason, value_at};
 use rutent_stm::reference_host::{MemoryStore, ReferenceHost};
 
 pub struct Rng(u64);
@@ -287,8 +287,20 @@ impl Gen {
                 let route = self.restart_route(&part, new_destination);
                 (None, destination_changed(route))
             }
-            71..=75 => (None, no_route()),
-            76..=79 => (
+            71..=73 => (None, no_route()),
+            74..=75 => (None, Observed::WaitingAtFloor {}),
+            76..=77 => (
+                None,
+                Observed::StuckResolved {
+                    to: if self.rng.pct(50) {
+                        ResolvedTo::Destination
+                    } else {
+                        ResolvedTo::Origin
+                    },
+                    evidence: id("ev-resolved"),
+                },
+            ),
+            78..=79 => (
                 None,
                 Observed::StuckDeclared {
                     reason: if self.rng.pct(50) {

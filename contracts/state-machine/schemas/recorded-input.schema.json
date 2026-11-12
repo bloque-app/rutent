@@ -123,10 +123,16 @@
           "$ref": "#/$defs/withdrawal_cancelled"
         },
         {
+          "$ref": "#/$defs/waiting_at_floor"
+        },
+        {
           "$ref": "#/$defs/end_requested"
         },
         {
           "$ref": "#/$defs/stuck_declared"
+        },
+        {
+          "$ref": "#/$defs/stuck_resolved"
         },
         {
           "$ref": "#/$defs/handed_on"
@@ -236,7 +242,9 @@
                 "destination_changed",
                 "no_route",
                 "withdrawal_cancelled",
+                "waiting_at_floor",
                 "stuck_declared",
+                "stuck_resolved",
                 "handed_on"
               ]
             }
@@ -533,6 +541,19 @@
       },
       "additionalProperties": false
     },
+    "waiting_at_floor": {
+      "description": "The part is past the customer's floor, its worst acceptable outcome (REQ-ORD-27, AC-12, AC-42): the value evidenced at its node and the quotes still ahead, or every route a recalculation found, fall below it. Core judges the floor and records the judgement; the state machine reads no amount. By the published rule, a part whose value is evidenced at a node waits for the customer, from the input's recorded_at; one already waiting or stuck, or whose value is in flight, doesn't change.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "waiting_at_floor"
+        }
+      },
+      "additionalProperties": false
+    },
     "end_requested": {
       "description": "The order is asked to end without completing (REQ-ORD-12).",
       "type": "object",
@@ -562,6 +583,30 @@
             "over_time",
             "dispute"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "stuck_resolved": {
+      "description": "A stuck part's resolution delivered its value (REQ-AUZ-4, ADR-0011): one party decided the outcome, another moved the value, and the move's result is done. to names where the value went: the order's destination, and the part is complete, or back to its origin, and the part ended without completing. By the published rule only a stuck part takes it. A resolution handing the value on to a linked order is handed_on.",
+      "type": "object",
+      "required": [
+        "kind",
+        "to",
+        "evidence"
+      ],
+      "properties": {
+        "kind": {
+          "const": "stuck_resolved"
+        },
+        "to": {
+          "enum": [
+            "destination",
+            "origin"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/id"
         }
       },
       "additionalProperties": false

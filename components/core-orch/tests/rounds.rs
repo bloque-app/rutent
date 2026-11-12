@@ -587,6 +587,42 @@ fn person_questions_are_charged_against_the_callers_people_limit() {
     );
 }
 
+// verifies: REQ-AUZ-8, REQ-AUZ-5, REQ-OPS-1
+#[test]
+fn a_charge_policy_refuses_or_cannot_decide_sends_nothing_and_says_why() {
+    use rutent_contracts::core_internal::{ChargeOutcome, NotKnownCause, RefusalClass};
+    let inputs = on_polygon(&[RESERVE, SIBLING], RESERVE);
+    let reserves = [(RESERVE, "acme"), (SIBLING, "acme")];
+    let refused = ChargeOutcome::Refused {
+        class: RefusalClass::NotPermitted,
+    };
+    let not_known = ChargeOutcome::NotKnown {
+        cause: NotKnownCause::VerifierUnreachable,
+    };
+    for (answer, why) in [
+        (
+            refused,
+            NotOffered::ChargeRefused {
+                class: RefusalClass::NotPermitted,
+            },
+        ),
+        (
+            not_known,
+            NotOffered::ChargeNotKnown {
+                cause: NotKnownCause::VerifierUnreachable,
+            },
+        ),
+    ] {
+        let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
+        env.bound.answers = Some(answer);
+        let mut sim = env.sim();
+        let routed = run(&mut env, &mut sim, &inputs);
+        // Policy's own answer, never a bound passed: no question is sent.
+        assert!(sim.received.is_empty(), "{:?}", sim.received);
+        assert_eq!(routed.offer, Offer::NotOffered(why), "{answer:?}");
+    }
+}
+
 // verifies: REQ-AUD-4
 #[test]
 fn every_routing_calls_decision_record_is_chained_to_the_orders_history() {

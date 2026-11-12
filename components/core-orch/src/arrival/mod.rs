@@ -6,10 +6,12 @@
 //! One [`Arrivals`] takes value arriving at a reserve, in three calls, reaching what intake reaches (its [`Desk`]):
 //!
 //! 1. **[`Arrivals::arrive`]** takes a reserve's [`Report`]: what arrived, where, to whose account, and the reserve's
-//!    notice, its signed statement, kept and appended about nothing, since no order is bound to it. One notice is one
-//!    arrival: the same notice again, by its bytes or as the evidence store finds it restated, is the same arrival, and
-//!    with other figures it is refused. The orders open there ([`OpenOrders`]), read again on every call, decide what
-//!    it is:
+//!    notice, its signed statement naming the transaction the reserve gave the credit, kept and appended about that
+//!    transaction alone, since no order is bound to it. One deposit is one arrival: a deposit is known by that
+//!    transaction, whatever bytes carry it, and reported again with other figures it is refused. Every `arrival` names
+//!    the deposit's notice by its commitment (`arrival-names-its-notice`), so the log holds one order per deposit
+//!    (`one-order-per-deposit`), and one held against a part of a split order names the part. The orders open there
+//!    ([`OpenOrders`]), read again on every call, decide what it is:
 //!    - **none open** for its holder at its reserve, outer node, asset and account, other than orders that already
 //!      have their arrival: an `arrival` with no order, citing the notice. It opens no order and holds nothing, so
 //!      nothing counts against the operator (`REQ-ORD-14`);
@@ -40,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    Actor, ArrivalMatch, Destination, Entry, OrderRefusalClass, Parties, Receipt, Role, What,
+    About, Actor, ArrivalMatch, Destination, Entry, OrderRefusalClass, Parties, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Denomination, OuterNode};
@@ -87,10 +89,13 @@ pub struct OpenOrder {
     pub account: Id,
     /// The party that holds the account: the order's payer.
     pub holder: Id,
-    /// The amount it states, in the asset's unit.
+    /// The amount it states, in the asset's unit: the part's, where `part` names one.
     pub amount: PositiveAmount,
     /// The session the reserve is asked in about the account (`REQ-CAT-3`).
     pub session: Id,
+    /// The part of the order whose value it waits on, where its route has more than one: an arrival held against it
+    /// names that part.
+    pub part: Option<Id>,
 }
 
 /// Value arriving at a reserve, as the reserve's module reported it: what arrived, where, to whose account, and the
@@ -269,6 +274,8 @@ pub(super) struct Recorded {
     holder: Id,
     order: Option<Id>,
     matched: ArrivalMatch,
+    /// The commitment of the reserve's notice of the deposit: what an arrival naming an order names it by.
+    notice: Digest,
 }
 
 /// The open order an arrival is held against, and how it met it.
@@ -282,6 +289,8 @@ struct Target {
 #[derive(Debug, Clone)]
 struct Noted {
     report: Report,
+    /// The deposit's transaction, as the reserve's notice signs it: the key a deposit is known by.
+    transaction: String,
     /// The commitment the evidence store keeps its bytes under.
     commitment: Digest,
     notice: Entry,
@@ -342,32 +351,19 @@ const NOT_A_NOTICE: &[&str] = &[
     rutent_contracts::router_api::DECISION_RECORD_SHAPE,
 ];
 
-/// The kinds of provider-role result: each answers an operation, so none is a notice of value arriving.
-const RESULT_KINDS: &[&str] = &[
-    "withdrawal",
-    "deposit",
-    "transfer",
-    "conversion",
-    "balance_verification",
-    "judgement",
-    "reversal",
-    "reversal_confirmation",
-    "holding_balance",
-];
-
-/// Whether `report`'s notice is its reserve's own, about nothing: made by the reserve, its body naming no
-/// transaction, and of no shape a contract names for something else (an advertisement, a declaration, an operation, a
-/// result of a known kind, a judgement, a confirmation, a release assertion or a decision record). provider-role has
-/// no shape for a notice of value arriving, so nothing else of its body is read.
-fn its_own_notice(report: &Report) -> bool {
-    serde_json::from_slice::<NoticeEnvelope>(&report.notice).is_ok_and(|n| {
-        let kind = n.statement.get("kind").and_then(|k| k.as_str());
-        n.maker == report.reserve.as_str()
-            && n.statement.get("transaction").is_none()
-            && !NOT_A_NOTICE.contains(&n.shape.as_str())
-            && !(n.shape == rutent_contracts::provider_role::RESULT_SHAPE
-                && kind.is_some_and(|k| RESULT_KINDS.contains(&k)))
-    })
+/// The deposit's transaction `report`'s notice signs, where the notice is its reserve's own: made by the reserve, its
+/// body naming the transaction the reserve gave the credit, and of no shape a contract names for something else (an
+/// advertisement, a declaration, an operation, a judgement, a confirmation, a release assertion or a decision record),
+/// nor a result, which answers a question Core asked under its transaction (`answer-follows-its-question`).
+/// provider-role has no shape for a notice of value arriving, so nothing else of its body is read.
+fn notice_transaction(report: &Report) -> Option<String> {
+    let n = serde_json::from_slice::<NoticeEnvelope>(&report.notice).ok()?;
+    let transaction = n.statement.get("transaction")?.as_str()?.to_owned();
+    (n.maker == report.reserve.as_str()
+        && Id::new(&transaction).is_some()
+        && !NOT_A_NOTICE.contains(&n.shape.as_str())
+        && n.shape != rutent_contracts::provider_role::RESULT_SHAPE)
+        .then_some(transaction)
 }
 
 /// Whether two filings are the same but for which login of the filer's party made them (`REQ-OPS-5`).
@@ -443,46 +439,40 @@ impl Arrivals {
         open: &mut dyn OpenOrders,
         report: &Report,
     ) -> Result<Arrived, ArrivalError> {
+        let transaction = notice_transaction(report).ok_or(ArrivalError::NotItsNotice)?;
+        // One deposit, one arrival: a deposit is known by the transaction its reserve's notice signs, whatever bytes
+        // carry it (`one-order-per-deposit`); the same deposit with other figures is refused.
         let at = match self
             .notices
             .iter()
-            .position(|n| n.report.notice == report.notice)
+            .position(|n| n.report.reserve == report.reserve && n.transaction == transaction)
         {
-            Some(at) if &self.notices[at].report != report => {
+            Some(at) if !same_figures(&self.notices[at].report, report) => {
                 return Err(ArrivalError::OtherFigures);
             }
             Some(at) => at,
             None => {
-                if !its_own_notice(report) {
-                    return Err(ArrivalError::NotItsNotice);
-                }
                 let maker =
                     confirm::reserve_maker(desk.parts.catalogue, desk.operator, &report.reserve);
-                // The notice is about nothing: no order is bound to it, and its body names no transaction.
-                let (notice, restates) = journal::stated(
+                // The notice is about the deposit's own transaction, bound to no order.
+                let about = About {
+                    order: None,
+                    segment: None,
+                    transaction: Id::new(&transaction),
+                };
+                let (notice, _) = journal::stated(
                     &mut *desk.parts.evidence,
                     desk.parts.clock,
                     &report.notice,
                     maker,
-                    None,
+                    Some(about),
                 )?;
-                // The same signed content, restated in other bytes, is the same notice.
-                if let Some(restated) = restates
-                    && let Some(at) = self.notices.iter().position(|n| n.commitment == restated)
-                {
-                    if !same_figures(&self.notices[at].report, report) {
-                        return Err(ArrivalError::OtherFigures);
-                    }
-                    let mut noted = self.notices[at].clone();
-                    let result = self.carry_on(desk, open, &mut noted);
-                    self.notices[at] = noted;
-                    return result;
-                }
                 let Entry::Stated(stated) = &notice else {
                     return Err(ArrivalError::Unrecordable);
                 };
                 self.notices.push(Noted {
                     report: report.clone(),
+                    transaction,
                     commitment: stated.commitment.clone(),
                     notice,
                     notice_receipt: None,
@@ -527,9 +517,9 @@ impl Arrivals {
                     )
                 }
             };
-            let (order, matched, cites) = match target {
+            let (order, matched, cites, part) = match target {
                 // No order open for it: it opens none, and rests on the reserve's notice.
-                None => (None, ArrivalMatch::NoOrder, notice.clone()),
+                None => (None, ArrivalMatch::NoOrder, notice.clone(), None),
                 // Held against the open order, on the reserve's answer to Core's question about that order.
                 Some(target) => {
                     if noted.confirming.is_none() {
@@ -564,7 +554,12 @@ impl Arrivals {
                             notice,
                         });
                     };
-                    (Some(target.order.order.clone()), target.matched, answer)
+                    (
+                        Some(target.order.order.clone()),
+                        target.matched,
+                        answer,
+                        target.order.part.clone(),
+                    )
                 }
             };
             let what = What::Arrival {
@@ -575,6 +570,8 @@ impl Arrivals {
                 order,
                 matched,
                 report: cites,
+                notice: Some(noted.commitment.clone()),
+                part,
             };
             noted.arrival = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }
@@ -600,6 +597,7 @@ impl Arrivals {
             holder: report.holder.clone(),
             order: order.clone(),
             matched,
+            notice: noted.commitment.clone(),
         });
         let outcome = match order {
             None => Arrived::NoOrder { arrival },

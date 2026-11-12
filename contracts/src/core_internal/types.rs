@@ -459,6 +459,10 @@ pub enum Action {
         /// The outcome it moves, exactly as the decide step named it, the provider that moves it included: the log
         /// admits it only so (`admit_entry`).
         resolution: Resolution,
+        /// The transaction the move goes under at that provider, exactly as the decide step named it: what its
+        /// outcome's evidence is about, as a `move_value`'s is about its segment
+        /// (`outcome-confirmation-cites-verified-evidence`).
+        transaction: Id,
     },
 }
 
@@ -620,7 +624,7 @@ pub struct Effect {
 /// recalculated route acts only within it, and anything else needs a new one (`REQ-AUZ-3`). Schema:
 /// `urn:rutent:core-internal:authorisation`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct Authorisation {
     /// The authorisation's id.
     pub authorisation: Id,
@@ -631,6 +635,15 @@ pub struct Authorisation {
     /// acceptance; this names the order's first part's reserve, the one policy holds against the order's origin
     /// when it asks whether the operator may act for the user there.
     pub origin_reserve: Id,
+    /// The account at the origin reserve the value comes from, by reference: where a stuck resolution returns it
+    /// (`delivery-goes-to-the-parts-ends`). Intake fills it (`T-020-03`); absent, no delivery back to the origin
+    /// is admitted.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub origin_account: Option<Id>,
     /// The destination.
     pub destination: Destination,
     /// The asset delivered there.
@@ -642,6 +655,15 @@ pub struct Authorisation {
         skip_serializing_if = "Option::is_none"
     )]
     pub floor: Option<PositiveAmount>,
+    /// The parts of the order it covers, at least one, each once; absent, it covers every part. Destinations change
+    /// per part, so a replacement for one part's new destination names that part, and replaces the earlier
+    /// authorisation for it alone: the order's other parts go on under theirs (`T-021-04`).
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parts: Option<Vec<Id>>,
     /// Who gave it: a user at the origin, its agent, or the operator acting for it where the origin reserve
     /// declared it can't require the user's own withdrawal (`REQ-AUZ-9`). The record says who acted.
     pub given_by: Actor,
@@ -690,10 +712,16 @@ pub struct StuckDecide {
     pub request: Id,
     /// The stuck order.
     pub order: Id,
+    /// The order's stuck part: a resolution resolves one part, and the log admits it only for a part that stands
+    /// stuck (`only-a-declared-stuck-part-is-resolved`).
+    pub part: Id,
     /// Who decides.
     pub decider: Actor,
     /// The outcome decided.
     pub resolution: Resolution,
+    /// The transaction the resolution goes under at its provider: part of what is decided, so the move step can't
+    /// choose another, and its outcome's evidence binds through it.
+    pub transaction: Id,
     /// The evidence relied on, by digest, at least one, each once.
     pub evidence: Vec<Digest>,
     /// When, by Core's clock.
@@ -977,17 +1005,31 @@ pub enum ChargeOutcome {
         /// The bound.
         bound: SafeInteger,
     },
+    /// Policy refused the work, for the class given: a scope it isn't in, say. Not a bound passed.
+    Refused {
+        /// Why.
+        class: RefusalClass,
+    },
+    /// Policy couldn't decide, its counter or the party's scope register out of reach, so the work isn't done and
+    /// the charge isn't refused (`REQ-AUZ-5`: not known is never a refusal).
+    NotKnown {
+        /// Why.
+        cause: NotKnownCause,
+    },
 }
 
 impl ChargeOutcome {
     /// The outcome of the entry that records this answer: within the bound is permitted, over it refused as
-    /// `over_bound`.
+    /// `over_bound`, a refusal refused for its class, and not known not known, as [`PersonOutcome::outcome`] maps
+    /// them.
     pub fn outcome(self) -> Outcome {
         match self {
             ChargeOutcome::Within { .. } => Outcome::Permitted {},
             ChargeOutcome::Over { .. } => Outcome::Refused {
                 class: RefusalClass::OverBound,
             },
+            ChargeOutcome::Refused { class } => Outcome::Refused { class },
+            ChargeOutcome::NotKnown { cause } => Outcome::NotKnown { cause },
         }
     }
 }
@@ -1833,6 +1875,15 @@ pub enum What {
     Charge {
         /// The charge.
         charge: Charge,
+        /// The engine's own clock when it counted the charge, beside the entry's `when.at`: present exactly where
+        /// the charge was counted, `permitted` within the bound, so an engine started again rebuilds each party's
+        /// count by window from the log (`T-021-05`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        counted_at: Option<Timestamp>,
     },
     /// A question about a person.
     AskAboutPerson {
@@ -1989,6 +2040,24 @@ pub enum What {
         matched: ArrivalMatch,
         /// The receipt of the stated entry holding the reserve's report.
         report: Receipt,
+        /// The deposit it is of, by the commitment of the reserve's notice of it, the statement the deposit was
+        /// first reported in: on an arrival naming an order, required, whether it files an earlier arrival held
+        /// against no order (its notice) or the deposit met the order at once (its own report's). One deposit
+        /// opens one order (`one-order-per-deposit`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        notice: Option<Digest>,
+        /// The part of the order it is for: required where the order's route has more than one part
+        /// (`split-deposit-arrival-names-its-part`). The arrival's matcher fills it (`T-020-04`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        part: Option<Id>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {
@@ -2176,6 +2245,102 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// An input recorded, but not taken: the state machine or the host refused it, so it moves no order, and the
+    /// log keeps its trace (`REQ-AUD-1`) beside the inputs it took, which `standing` reads alone.
+    InputNotTaken {
+        /// The input.
+        input: RecordedInput,
+        /// Why it wasn't taken.
+        reason: NotTaken,
+    },
+    /// A move whose outcome was unknown, a `move_value` or a stuck resolution's `resolve_stuck`, its outcome
+    /// reported by its own mover: a decision on policy's handle, answered by policy for its reporter. It settles
+    /// nothing until another actor confirms it ([`What::ConfirmOutcome`]).
+    ReportOutcome {
+        /// The request.
+        request: OutcomeReport,
+        /// The decision.
+        decision: Id,
+    },
+    /// A move whose outcome was unknown, its mover's report of it confirmed by an actor of another party and login:
+    /// a decision on policy's handle, answered by policy for its confirmer (`REQ-AUZ-4`, ADR-0011).
+    ConfirmOutcome {
+        /// The request.
+        request: OutcomeConfirmation,
+        /// The decision.
+        decision: Id,
+    },
+}
+
+/// Why a recorded input wasn't taken: the state machine's answer, or the host's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotTaken {
+    /// The state machine answered it not applicable, for this reason.
+    NotApplicable {
+        /// Why.
+        reason: crate::state_machine::NotApplicableReason,
+    },
+    /// Its record id names another input this log holds: the host's exactly-once refuses it (`RecordIdReused`).
+    RecordIdReused {},
+}
+
+/// A move's outcome, once unknown, as its own mover reports it (`REQ-AUZ-4`, ADR-0011): for a `move_value`, the
+/// actor its `decide` step was for, or one of that actor's accountable party; for a stuck resolution's
+/// `resolve_stuck`, its `stuck_move`'s mover. Its evidence is a verified stated entry of the log about the move's
+/// order and part, by receipt. Policy decides it, the way it decides a stuck order's steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeReport {
+    /// The request's id.
+    pub request: Id,
+    /// The order.
+    pub order: Id,
+    /// The receipt of the effect whose outcome was unknown.
+    pub effect: Receipt,
+    /// What the move came to.
+    pub outcome: MoveOutcome,
+    /// Who reports it: the move's own mover.
+    pub reporter: Actor,
+    /// The report's evidence: a verified stated entry about the move's order and part, by receipt.
+    pub evidence: Receipt,
+    /// When, by Core's clock.
+    pub at: Timestamp,
+}
+
+/// The confirmation of a move's outcome, once unknown, on two actors' word (`REQ-AUZ-4`, ADR-0011): it cites its
+/// mover's permitted report by receipt, and an actor of another accountable party and another login than the
+/// reporter confirms it with its own evidence, a verified stated entry about the move's order and part, another
+/// entry than the report's, by another maker. Policy decides it, the way it decides a stuck order's steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeConfirmation {
+    /// The request's id.
+    pub request: Id,
+    /// The order.
+    pub order: Id,
+    /// The receipt of the effect whose outcome was unknown.
+    pub effect: Receipt,
+    /// What the move came to: the report's outcome.
+    pub outcome: MoveOutcome,
+    /// The receipt of the report it confirms: a permitted `report_outcome` of the same effect and outcome.
+    pub report: Receipt,
+    /// Who confirms it.
+    pub confirmer: Actor,
+    /// The confirmation's evidence: a verified stated entry about the move's order and part, by receipt.
+    pub confirmed_with: Receipt,
+    /// When, by Core's clock.
+    pub at: Timestamp,
+}
+
+/// What a move whose outcome was unknown came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveOutcome {
+    /// It moved the value.
+    Done,
+    /// It didn't.
+    Failed,
 }
 
 /// How what a verified entry records came out. Schema: `urn:rutent:core-internal:verified-entry#/$defs/outcome`.

@@ -746,3 +746,183 @@ fn base_files_without_a_changelog_fail() {
         "a contract that owns base files must keep a base changelog, got {violations:?}"
     );
 }
+
+/// The state machine's major moves, and the host's schemas reference its shapes; `host` is the host's version at
+/// the head, its changelog changed only if it moved.
+fn referenced_major(state_machine: &str, host: &str) -> (Fixture, Vec<&'static str>) {
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            &format!(
+                "# state-machine changelog\n\n## {state_machine}\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"
+            ),
+        )
+        .at_both(
+            "contracts/state-machine/schemas/order.schema.json",
+            "{\"$id\": \"urn:rutent:state-machine:order\"}",
+        )
+        .at_both(
+            "contracts/state-machine/host/schemas/snapshot.schema.json",
+            "{\"$ref\": \"urn:rutent:state-machine:order\"}",
+        )
+        .base_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let mut changed = vec![
+        "contracts/state-machine/CHANGELOG.md",
+        "contracts/state-machine/schemas/order.schema.json",
+    ];
+    if host == "2.1.0" {
+        fixture = fixture.head_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/state-machine/host/CHANGELOG.md",
+            &format!("# host changelog\n\n## {host}\n- Follows state-machine. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"),
+        );
+        changed.push("contracts/state-machine/host/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_referenced_contract_s_major_bump_needs_the_referencing_contract_s_major_bump() {
+    let (fixture, changed) = referenced_major("3.0.0", "2.1.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("reference state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "2.2.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("major bump")),
+        "a minor bump of the host is not enough, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+    // A minor bump of the referenced contract asks nothing of the host.
+    let (fixture, changed) = referenced_major("2.2.0", "2.1.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}
+
+/// module-interface's major moves, and router-api's Rust module re-exports one of its types, written `use_line`.
+fn module_use(use_line: &str, router_api: &str) -> (Fixture, Vec<&'static str>) {
+    let router_base = "# router-api changelog\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .head_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 5.0.0\n- A call kind renamed. (DEC-4, DEC-20, T-020-01)\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .at_both("contracts/src/module_interface/types.rs", "pub enum OperationKind {}")
+        .at_both("contracts/src/router_api/types.rs", use_line)
+        .base_only("contracts/router-api/CHANGELOG.md", router_base);
+    let mut changed = vec![
+        "contracts/module-interface/CHANGELOG.md",
+        "contracts/src/module_interface/types.rs",
+    ];
+    if router_api == "3.0.0" {
+        fixture = fixture.head_only("contracts/router-api/CHANGELOG.md", router_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/router-api/CHANGELOG.md",
+            &format!("# router-api changelog\n\n## {router_api}\n- Follows module-interface. (DEC-4, DEC-20, T-020-01)\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n"),
+        );
+        changed.push("contracts/router-api/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_rust_module_using_a_contract_whose_major_moved_needs_its_own_major_bump() {
+    for line in [
+        "pub use crate::module_interface::OperationKind as CallKind;",
+        "use crate::{provider_role::Id, module_interface::OperationKind};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+        let (fixture, changed) = module_use(line, "4.0.0");
+        assert_eq!(run(&changed, &fixture), Vec::new(), "{line}");
+    }
+    // A module that names no other contract's module asks nothing of it.
+    let (fixture, changed) = module_use("pub enum Route {}", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}
+
+// verifies: DEC-4
+#[test]
+fn a_changelog_heading_that_is_not_a_version_is_refused_even_untouched() {
+    let fixture = Fixture::default().at_both(
+        "contracts/router-api/CHANGELOG.md",
+        "# router-api changelog\n\n## next\n- Routes. (DEC-4, T-004-01)\n",
+    );
+    let violations = run(&[], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "router-api" && v.message.contains("not a version")),
+        "expected the heading refused, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_use_in_nested_braces_or_through_super_counts_as_a_use() {
+    // Nested braces: the use of module-interface sits past the first closing brace.
+    for line in [
+        "use crate::{provider_role::{Id, Kind}, module_interface::OperationKind};",
+        "use crate::{provider_role::{types::{Id}}, module_interface::{OperationKind}};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+    }
+    // `super::` from the host's module, nested in the state machine's, names the state machine's module.
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 3.0.0\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .at_both("contracts/src/state_machine/mod.rs", "pub struct Order;")
+        .at_both("contracts/src/state_machine/host/mod.rs", "use super::{Order, RecordedInput};")
+        .at_both("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let violations = run(
+        &[
+            "contracts/state-machine/CHANGELOG.md",
+            "contracts/src/state_machine/mod.rs",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("Rust module uses state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+}

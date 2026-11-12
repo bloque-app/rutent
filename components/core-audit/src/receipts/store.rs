@@ -70,7 +70,9 @@ pub const NO_DECIDED_ERASURE: &str = "an erasure is carried out only on the done
 pub const ERASURE_NOT_RECORDED: &str =
     "every erasure the store carried out has its erasure entry in the log";
 
-/// A carried-out erasure the log records as failed, though its bytes went: a finding, not a refusal.
+/// A carried-out erasure the log records as failed, though its bytes went: a finding, not a refusal. The log refuses
+/// such an entry (core-internal's `erasure-is-carried-out-on-its-decision`), so only a log that skipped admission
+/// holds one; an admitting log leaves the erasure unrecorded instead ([`ERASURE_NOT_RECORDED`]).
 pub const ERASURE_RECORDED_AS_FAILED: &str =
     "an erasure the store carried out is recorded done, never failed";
 
@@ -654,7 +656,8 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// The erasures carried out that the log hadn't settled when the store was bound, by the receipt of their `done`
     /// result, with why: one with no `erasure` entry recording it done ([`ERASURE_NOT_RECORDED`]: a crash between the
     /// store's erasure and the entry, which orchestration appends on its retry), one recorded as failed though its
-    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]), or one whose statement an entry of
+    /// bytes went ([`ERASURE_RECORDED_AS_FAILED`]: an admitted log can't hold one, since the log refuses such an
+    /// entry; kept as a defence against a log that skipped admission), or one whose statement an entry of
     /// the log cites ([`ERASED_YET_CITED`]: a citation that landed between the done result and the entry). A
     /// finding for the outside checker (`T-022-04`), beside [`BoundStore::missing`] and
     /// [`BoundStore::refused_erasures`].

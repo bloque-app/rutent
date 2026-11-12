@@ -504,7 +504,7 @@ fn reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties() {
 
 // verifies: DEC-18
 #[test]
-fn silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it() {
+fn silent_provider_records_its_deposit_failed_and_moves_nothing_for_it() {
     use rutent_contracts::core_internal::{Action, Outcome};
     use rutent_scenarios::harness::Fault;
     let run = Scenario::new(
@@ -534,13 +534,14 @@ fn silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it() {
         .collect();
     assert_eq!(effects.len(), 2);
     assert_eq!(run.movements().values().sum::<usize>(), 1);
-    // The deposit's effect ends unanswered, and the order stays past its first segment, not complete.
+    // The platform refused the deposit before its module passed anything out, so its effect failed: its result is
+    // `failed`, not `unanswered`, and the order stays past its first segment, not complete.
     let deposit = effects[1];
-    let unanswered = run.log.iter().any(|e| {
+    let failed = run.log.iter().any(|e| {
         matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect } if u64::from(effect.index) == deposit as u64)
-            && v.outcome == Outcome::Unanswered {})
+            && v.outcome == Outcome::Failed {})
     });
-    assert!(unanswered, "the deposit's result is unanswered");
+    assert!(failed, "the deposit's result is failed");
     assert_eq!(
         run.state_names().values().cloned().collect::<Vec<_>>(),
         vec![Some("first_segment_settled".to_owned())]

@@ -24,7 +24,7 @@ use rutent_contracts::core_internal::{
     Receipt, ReportPair, SessionAnswer, SessionRequest, StatedEntry, StuckDecide, StuckMove,
     VERSION, VerifiedEntry,
 };
-use rutent_contracts::core_internal::{Quantifier, STATED_RELATIONS, Through};
+use rutent_contracts::core_internal::{DeploymentOperator, Quantifier, STATED_RELATIONS, Through};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::router_api::Id;
@@ -73,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 39] = [
+const RUST_RULES: [(&str, &str); 38] = [
     (
         "verified-entry-of-a-replay-of-a-silent-node-not-replayed",
         "a replay's node that recorded nothing is one it replayed",
@@ -149,10 +149,6 @@ const RUST_RULES: [(&str, &str); 39] = [
     (
         "verified-entry-of-an-acceptance-given-without-the-reserves-yes",
         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
-    ),
-    (
-        "verified-entry-of-a-command-by-a-provider",
-        "an operator command is the operator's",
     ),
     (
         "charge-to-another-party-than-its-callers",
@@ -241,7 +237,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 82] = [
+const SCHEMA_RULES: [SchemaRule; 86] = [
     (
         "verified-entry-of-a-replay-resting-on-nothing",
         &[("/what", "required")],
@@ -276,6 +272,26 @@ const SCHEMA_RULES: [SchemaRule; 82] = [
         "authorisation-with-a-floor-of-zero",
         &[("/floor", "pattern")],
         "a positive amount is up to 78 decimal digits with no leading zeros, above zero",
+    ),
+    (
+        "verified-entry-of-a-charge-counted-without-when",
+        &[("/what", "required")],
+        "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
+    ),
+    (
+        "verified-entry-of-a-charge-over-its-bound-said-counted",
+        &[("/what", "not")],
+        "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
+    ),
+    (
+        "authorisation-naming-no-parts",
+        &[("/parts", "minItems")],
+        "an authorisation names the parts it covers, at least one, each once",
+    ),
+    (
+        "authorisation-naming-a-part-twice",
+        &[("/parts", "uniqueItems")],
+        "an authorisation names the parts it covers, at least one, each once",
     ),
     (
         "authorisation-without-its-origin-reserve",
@@ -1077,6 +1093,27 @@ fn operator() -> Id {
     Id::new("operator").unwrap()
 }
 
+/// The deployment's operator as the world's log knows it: the maker it signs its own statements as, and its party,
+/// both `operator`.
+fn deployment_operator() -> DeploymentOperator {
+    DeploymentOperator {
+        maker: operator(),
+        party: operator(),
+    }
+}
+
+/// The deployment's operator a case is admitted under: the world's, or the maker and party the case names, which
+/// may differ, so no case can hide a row reading the one for the other.
+fn operator_of(case: &Value) -> DeploymentOperator {
+    match &case["operator"] {
+        Value::Null => deployment_operator(),
+        named => DeploymentOperator {
+            maker: Id::new(named["maker"].as_str().unwrap()).unwrap(),
+            party: Id::new(named["party"].as_str().unwrap()).unwrap(),
+        },
+    }
+}
+
 /// The handle a case's entry comes through: the one it names, or else the one its kind belongs to.
 fn through(case: &Value, entry: &Entry) -> Through {
     match case["through"].as_str() {
@@ -1156,7 +1193,12 @@ fn every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say() {
         }
         assert!(entry.is_valid(&case["entry"]), "{name}: the entry");
         let appended: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
-        let got = admit_entry(&history, &appended, through(case, &appended), &operator());
+        let got = admit_entry(
+            &history,
+            &appended,
+            through(case, &appended),
+            &operator_of(case),
+        );
         let want = expected(name, case);
         if got != want {
             failures.push(format!("{name}: got {got:?}, expected {want:?}"));
@@ -1206,7 +1248,12 @@ fn every_entry_of_a_complete_log_is_admitted_on_what_came_before_it() {
             .collect();
         let appended: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
         assert_eq!(
-            admit_entry(&history, &appended, through(&case, &appended), &operator()),
+            admit_entry(
+                &history,
+                &appended,
+                through(&case, &appended),
+                &deployment_operator()
+            ),
             Ok(()),
             "{name}"
         );
@@ -1221,11 +1268,13 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
         .filter(|(n, _)| shape_of(n) == "verified-entry")
         .collect();
     // The decision kinds, by their tag on the wire, written out apart from `is_decision`.
-    const DECISION_CALLS: [&str; 10] = [
+    const DECISION_CALLS: [&str; 12] = [
         "decide",
         "authorise",
         "stuck_decide",
         "stuck_move",
+        "report_outcome",
+        "confirm_outcome",
         "open_session",
         "check_read",
         "grant_permission",
@@ -1296,12 +1345,12 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
         serde_json::from_value(fixture("valid", "verified-entry-of-a-decision")).unwrap();
     assert!(GeneralEntry::try_from(forged.clone()).is_err());
     assert_eq!(
-        admit_entry(&[], &forged, Through::General, &operator()),
+        admit_entry(&[], &forged, Through::General, &deployment_operator()),
         Err(Violation(DECISION_ON_THE_GENERAL_HANDLE))
     );
     let effect: Entry =
         serde_json::from_value(fixture("valid", "verified-entry-of-an-effect")).unwrap();
-    assert!(admit_entry(&[], &effect, Through::General, &operator()).is_err());
+    assert!(admit_entry(&[], &effect, Through::General, &deployment_operator()).is_err());
 }
 
 /// The log's sources for an attribution, as a case states them.
@@ -1580,7 +1629,15 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
     let recorded = attribute(&claim, &[], &mut source, &mut keys, &signatures).unwrap();
     assert_eq!(recorded, claim);
     history[slot].1 = Entry::Stated(recorded);
-    assert!(admit_entry(&history, &acceptance, Through::General, &operator()).is_err());
+    assert!(
+        admit_entry(
+            &history,
+            &acceptance,
+            Through::General,
+            &deployment_operator()
+        )
+        .is_err()
+    );
 
     // Where the reserve's key did sign it, the log attributes it to the reserve, and the acceptance is admitted.
     let mut signed = sources_like(&source);
@@ -1591,7 +1648,12 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
     assert_eq!(recorded.attribution, Attribution::Verified { who: reserve });
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
-        admit_entry(&history, &acceptance, Through::General, &operator()),
+        admit_entry(
+            &history,
+            &acceptance,
+            Through::General,
+            &deployment_operator()
+        ),
         Ok(())
     );
 }
@@ -1671,7 +1733,12 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
     let at = &yeses[0].reserve_yes;
     // The genuine yes admits its own acceptance.
     assert_eq!(
-        admit_entry(&history, &acceptance, Through::General, &operator()),
+        admit_entry(
+            &history,
+            &acceptance,
+            Through::General,
+            &deployment_operator()
+        ),
         Ok(())
     );
     let Some((_, Entry::Stated(yes))) = history.iter().find(|(r, _)| r == at).cloned() else {
@@ -1710,7 +1777,15 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
         a
     });
     replayed[slot].1 = Entry::Stated(moved);
-    assert!(admit_entry(&replayed, &acceptance, Through::General, &operator()).is_err());
+    assert!(
+        admit_entry(
+            &replayed,
+            &acceptance,
+            Through::General,
+            &deployment_operator()
+        )
+        .is_err()
+    );
 
     // Re-appended for another order with its transaction kept: the bytes bear it out, but Core asked the question
     // under that transaction for the yes's own order, so the log refuses it.
@@ -1724,7 +1799,7 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
             &history,
             &Entry::Stated(kept.clone()),
             Through::General,
-            &operator()
+            &deployment_operator()
         ),
         Err(Violation(
             "an answer is about the order its question asked for"
@@ -1762,7 +1837,7 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
             &with_false_label,
             &Entry::Stated(kept.clone()),
             Through::General,
-            &operator()
+            &deployment_operator()
         ),
         Err(Violation(stated_row("transaction-belongs-to-one-order")))
     );
@@ -1772,7 +1847,12 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
     // the genuine question and answer that follow are admitted.
     let before: Vec<(Receipt, Entry)> = history[..question_at].to_vec();
     assert_eq!(
-        admit_entry(&before, &Entry::Stated(kept), Through::General, &operator()),
+        admit_entry(
+            &before,
+            &Entry::Stated(kept),
+            Through::General,
+            &deployment_operator()
+        ),
         Err(Violation(stated_row("answer-follows-its-question")))
     );
     let mut genuine = before.clone();
@@ -1781,7 +1861,7 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
             &genuine,
             &Entry::Stated(question.clone()),
             Through::General,
-            &operator()
+            &deployment_operator()
         ),
         Ok(())
     );
@@ -1793,7 +1873,7 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
             &genuine,
             &Entry::Stated(again),
             Through::General,
-            &operator()
+            &deployment_operator()
         ),
         Ok(())
     );
@@ -1819,7 +1899,7 @@ fn a_result_about_nothing_whose_body_names_a_transaction_is_not_verified() {
         .collect();
     let pair: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
     assert_eq!(
-        admit_entry(&history, &pair, Through::General, &operator()),
+        admit_entry(&history, &pair, Through::General, &deployment_operator()),
         Ok(())
     );
     let Entry::Verified(VerifiedEntry {
@@ -1852,7 +1932,7 @@ fn a_result_about_nothing_whose_body_names_a_transaction_is_not_verified() {
     ));
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
-        admit_entry(&history, &pair, Through::General, &operator()),
+        admit_entry(&history, &pair, Through::General, &deployment_operator()),
         Err(Violation("a sent report is a verified statement"))
     );
 }
@@ -1877,7 +1957,7 @@ fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answe
         .collect();
     let answer: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
     assert_eq!(
-        admit_entry(&history, &answer, Through::General, &operator()),
+        admit_entry(&history, &answer, Through::General, &deployment_operator()),
         Ok(())
     );
     let Entry::Stated(yes) = &answer else {
@@ -1920,7 +2000,7 @@ fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answe
     ));
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
-        admit_entry(&history, &answer, Through::General, &operator()),
+        admit_entry(&history, &answer, Through::General, &deployment_operator()),
         Err(Violation("a question is a verified statement"))
     );
     // With the party it claims bound to its key, the same statement is verified to the provider, not the operator.
@@ -1938,7 +2018,7 @@ fn a_providers_operation_claiming_to_be_the_operators_question_licenses_no_answe
     );
     history[slot].1 = Entry::Stated(recorded);
     assert_eq!(
-        admit_entry(&history, &answer, Through::General, &operator()),
+        admit_entry(&history, &answer, Through::General, &deployment_operator()),
         Err(Violation(
             "a question is the operator's own statement, signed as the operator"
         ))
@@ -2442,6 +2522,18 @@ impl StuckOrders for Unbuilt {
     fn move_stuck(&mut self, _: &StuckMove) -> Result<Decision, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
+    fn report_outcome(
+        &mut self,
+        _: &rutent_contracts::core_internal::OutcomeReport,
+    ) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+    fn confirm_outcome(
+        &mut self,
+        _: &rutent_contracts::core_internal::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
 }
 impl PersonQuestions for Unbuilt {
     fn ask_about_person(&mut self, _: &PersonQuestion) -> Result<PersonAnswer, AppendFailure> {
@@ -2559,4 +2651,52 @@ fn every_call_between_cores_parts_can_be_held_as_a_trait_object() {
         operator.raise(&read("raise-of-a-report-difference")),
         Delivery::Undelivered
     );
+}
+
+/// The log's own check of an entry built in memory: an `authorise` entry whose authorisation names no part, or one
+/// part twice, can't be read from the wire (deserialising checks it), so it is built here from the world's, and the
+/// log refuses it before any row (`T-021-04`).
+// verifies: REQ-AUZ-3, DEC-4
+#[test]
+fn the_log_refuses_an_authorisation_naming_no_part_or_one_part_twice() {
+    let cases = admission_fixtures();
+    let (_, case) = cases
+        .iter()
+        .find(|(name, _)| name == "world--auth1")
+        .expect("the world's authorisation");
+    let history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                serde_json::from_value(item["receipt"].clone()).unwrap(),
+                serde_json::from_value(item["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    assert_eq!(
+        admit_entry(&history, &entry, through(case, &entry), &operator_of(case)),
+        Ok(()),
+        "the world's authorisation is admitted"
+    );
+    let rule = Violation("an authorisation names the parts it covers, at least one, each once");
+    for parts in [vec![], vec![Id::new("p1").unwrap(), Id::new("p1").unwrap()]] {
+        let mut built = entry.clone();
+        let Entry::Verified(v) = &mut built else {
+            panic!("a verified entry")
+        };
+        let What::Authorise { authorisation, .. } = &mut v.what else {
+            panic!("an authorise entry")
+        };
+        authorisation.parts = Some(parts.clone());
+        assert_eq!(
+            admit_entry(&history, &built, through(case, &built), &operator_of(case)),
+            Err(rule.clone()),
+            "{parts:?}"
+        );
+        // Nor does it read from the wire.
+        assert!(serde_json::from_value::<Entry>(serde_json::to_value(&built).unwrap()).is_err());
+    }
 }

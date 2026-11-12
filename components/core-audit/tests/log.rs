@@ -610,11 +610,14 @@ fn kind(entry: &Entry) -> &'static str {
         What::Reliance { .. } => "reliance",
         What::Command { .. } => "command",
         What::Erasure { .. } => "erasure",
+        What::ReportOutcome { .. } => "report_outcome",
+        What::ConfirmOutcome { .. } => "confirm_outcome",
+        What::InputNotTaken { .. } => "input_not_taken",
     }
 }
 
 /// Every kind [`kind`] names.
-const KINDS: [&str; 35] = [
+const KINDS: [&str; 38] = [
     "decide",
     "authorise",
     "effect",
@@ -649,6 +652,9 @@ const KINDS: [&str; 35] = [
     "reliance",
     "command",
     "erasure",
+    "report_outcome",
+    "confirm_outcome",
+    "input_not_taken",
     "stated",
 ];
 
@@ -781,6 +787,52 @@ fn every_record_kind_core_writes_is_in_the_log() {
     let found: BTreeSet<&str> = run.log.entries().iter().map(|(_, e)| kind(e)).collect();
     let all: BTreeSet<&str> = KINDS.into_iter().collect();
     assert_eq!(found, all);
+}
+
+/// No erasure reaches a statement a stuck order's decision relies on: the decision names its evidence by commitment,
+/// and the log refuses an erasure's decision while it rests on it. The order is the world's, built in full: its
+/// session, its shown quote, its acceptance on the reserve's verified yes, its permitted authorisation, its part
+/// declared stuck, and the decision to deliver its value (core-internal's
+/// `erasure-waits-while-anything-rests-on-the-statement`).
+// verifies: REQ-AUD-13, REQ-AUD-2, REQ-AUZ-4
+#[test]
+fn no_erasure_reaches_a_statement_a_stuck_decision_relies_on() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    let decided = world()
+        .into_iter()
+        .find(|(_, e)| e["what"]["call"] == "stuck_decide")
+        .expect("the world's stuck decision")
+        .1;
+    let mut relied = decided["what"]["request"]["evidence"][0].clone();
+    run.rewrite(&mut relied);
+    assert!(
+        run.log
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, Entry::Stated(s)
+            if serde_json::to_value(&s.commitment).unwrap() == relied)),
+        "the statement the decision relies on is the log's"
+    );
+    let operator = actor(OPERATOR, "op-login-2", "operator", "person");
+    let action =
+        json!({"kind": "erase_statement", "commitment": relied, "reason": "retention_ended"});
+    assert_eq!(
+        run.append(json!({
+            "kind": "verified",
+            "who": operator,
+            "what": {"call": "decide", "decision": "dec-erase-relied",
+                     "request": {"request": "req-erase-relied", "caller": operator, "action": action,
+                                 "at": "2026-11-10T09:00:00Z"}},
+            "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+            "outcome": {"status": "permitted"},
+        })),
+        Err(AppendFailure::Refused(Violation(
+            "no statement is erased while an entry of this log rests on it"
+        )))
+    );
 }
 
 // --- INV-7, NFR-5 -------------------------------------------------------------------------------------------------
@@ -1542,21 +1594,29 @@ fn an_effect_on_a_permit_this_log_holds_no_decision_for_is_refused() {
     assert_eq!(run.log.len(), 2);
 }
 
-/// An entry built in memory is held to the contract's rules as one read from the wire: a command whose `who` isn't
-/// the operator, which the general handle's type lets through, is refused.
+/// An entry built in memory is held to the contract's rules as one read from the wire: a command recorded with an
+/// outcome no command can have breaks its shape's rules, and a command whose `who` isn't the deployment's operator,
+/// which both the general handle's type and the shape let through, breaks the admission row
+/// `operator-command-is-the-deployment-operators`. The log refuses both, and records nothing.
 // verifies: REQ-AUD-1, REQ-AUD-6
 #[test]
 fn an_entry_breaking_the_contracts_rules_is_refused_however_it_was_built() {
     let mut run = Run::new(MemoryStore::new());
     let command = valid("verified-entry-of-an-operator-command");
-    let mut entry: VerifiedEntry = serde_json::from_value(command).unwrap();
-    entry.who = serde_json::from_value(actor("rutent", "core-orch", "core", "component")).unwrap();
-    assert!(entry.check().is_err());
-    let general = GeneralEntry::try_from(Entry::Verified(entry)).unwrap();
-    assert!(matches!(
-        run.log.append(&general),
-        Err(AppendFailure::Refused(_))
-    ));
+    let mut shapeless: VerifiedEntry = serde_json::from_value(command.clone()).unwrap();
+    shapeless.outcome = rutent_contracts::core_internal::Outcome::Permitted {};
+    assert!(shapeless.check().is_err());
+    let mut by_core: VerifiedEntry = serde_json::from_value(command).unwrap();
+    by_core.who =
+        serde_json::from_value(actor("rutent", "core-orch", "core", "component")).unwrap();
+    assert!(by_core.check().is_ok(), "the shape lets it through");
+    for entry in [shapeless, by_core] {
+        let general = GeneralEntry::try_from(Entry::Verified(entry)).unwrap();
+        assert!(matches!(
+            run.log.append(&general),
+            Err(AppendFailure::Refused(_))
+        ));
+    }
     assert!(run.log.is_empty());
 }
 

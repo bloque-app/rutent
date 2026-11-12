@@ -251,7 +251,7 @@ switched off alone and seen red:
 | a provider's operation delivered twice | the replay check (the second delivery never made) |
 | two seeds, two runs | the seed check (Core's identifiers drawn from a seed of 7, whatever the scenario's) |
 | a settlement account's reserve not a party | `reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties` |
-| the silence fault | `silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it` |
+| the silence fault | `silent_provider_records_its_deposit_failed_and_moves_nothing_for_it` |
 | the crate's hold on the log | the compile-fail doc tests (Core's disk made public again) |
 | the floor the authorisation names, handed to the segments (`Live::floor`, `T-020-10`) | `floor_the_authorisation_names_holds_the_part_at_the_segment_that_crosses_it` (the floor handed over as none) |
 | the authorisation an order runs under: a permitted `authorise` of that order | `order_runs_under_its_permitted_authorisation_not_an_earlier_refusal_of_its_id`, against the first entry of the id |

@@ -106,14 +106,10 @@ pub(super) struct Run {
     /// Every login of the filer's party policy permitted on it, with the authorisation each gave: while one of them is
     /// listed, it holds, and each carries it on under its own authorisation without asking policy again.
     logins: Vec<(Actor, Authorisation)>,
-    /// Whether its acceptance may be in the log: an append of it was taken, or came back with the log unavailable. If
-    /// the filing ends after that, the deposit is filed on no more; an acceptance the log refused on its first append
-    /// was never written, and leaves the deposit free.
-    acceptance_written: bool,
     /// Whether a question about the deposit went unanswered: then, once the reserve is past its time to answer, the
     /// filing ends.
     unanswered: bool,
-    /// Whether it ended on the reserve's no, or after its acceptance was recorded: the deposit is filed on no more.
+    /// Whether it ended on the reserve's no, or after the deposit was held against it: the deposit is filed on no more.
     spent: bool,
 }
 
@@ -285,6 +281,7 @@ impl Arrivals {
             authorisation: desk.parts.fresh.id(),
             order: order.clone(),
             origin_reserve: arrival.reserve.clone(),
+            origin_account: Some(arrival.account.clone()),
             destination: well.destination.clone(),
             to_asset: well.route.to.asset.clone(),
             floor: well
@@ -292,6 +289,7 @@ impl Arrivals {
                 .floor
                 .as_ref()
                 .and_then(|f| PositiveAmount::new(f.as_str())),
+            parts: None,
             given_by: well.filer.clone(),
             at: now,
         };
@@ -329,7 +327,15 @@ impl Arrivals {
             destination: well.destination.clone(),
             outcome: DestinationOutcome::Resolved,
         };
-        let pending = vec![journal::build(desk.parts.clock, desk.core, check)?];
+        let check = match journal::build(desk.parts.clock, desk.core, check) {
+            Ok(check) => check,
+            // Permitted, but no order opens: the assembly drops the record it was handed.
+            Err(failure) => {
+                orders.withdrawn(&order);
+                return Err(ArrivalError::Log(failure));
+            }
+        };
+        let pending = vec![check];
         Ok(Ok(Run {
             asked: filing,
             arrival,
@@ -345,7 +351,6 @@ impl Arrivals {
             outcome: None,
             started: None,
             logins: vec![(well.filer.clone(), authorisation.clone())],
-            acceptance_written: false,
             unanswered: false,
             spent: false,
             filing: well,
@@ -490,16 +495,13 @@ impl Run {
         }
     }
 
-    /// Ends the order, of `class`. Where its acceptance may be in the log, the deposit is filed on no
-    /// more, so no second acceptance rests on it.
+    /// Ends the order, of `class`. Once the deposit was held against it, the deposit is filed on no more: one deposit
+    /// opens one order.
     fn end(
         &mut self,
         desk: &mut Desk<'_, '_>,
         class: OrderRefusalClass,
     ) -> Result<(), ArrivalError> {
-        if self.acceptance_written {
-            self.spent = true;
-        }
         let what = refusal(&self.filing.request, Some(&self.order), class);
         self.pending
             .push(journal::build(desk.parts.clock, desk.core, what)?);
@@ -585,6 +587,10 @@ impl Run {
                 order: Some(self.order.clone()),
                 matched: ArrivalMatch::Matches,
                 report,
+                // The deposit, by its reserve's notice: one deposit opens one order (`one-order-per-deposit`). A
+                // deposit's order is routed as one part, so its arrival names none.
+                notice: Some(self.arrival.notice.clone()),
+                part: None,
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }
@@ -592,6 +598,8 @@ impl Run {
             return Err(ArrivalError::NotNow);
         };
         let receipt = journal::once(&mut *desk.parts.log, entry, receipt)?;
+        // The deposit opened this order: whatever comes of it, it opens no other.
+        self.spent = true;
         arrivals.note(Recorded {
             receipt,
             order: Some(self.order.clone()),
@@ -650,13 +658,7 @@ impl Run {
         let Some((acceptance, input, pending)) = &mut self.accepting else {
             return Err(ArrivalError::NotNow);
         };
-        let flushed = flush(desk, pending);
-        // The acceptance is the first of the two: it may be in the log once an append of it was taken (it left the
-        // pending list) or came back unavailable; refused on its first append, it never was.
-        if pending.len() < 2 || matches!(flushed, Err(AppendFailure::Unavailable)) {
-            self.acceptance_written = true;
-        }
-        match flushed {
+        match flush(desk, pending) {
             Ok(()) => {
                 self.started = Some(input.clone());
                 self.outcome = Some(Filed::Started {
@@ -666,8 +668,8 @@ impl Run {
                 self.step = Step::Done;
                 Ok(())
             }
-            // A refused acceptance or start can't be carried on: the order ends. Where the acceptance may be in the
-            // log, the deposit is filed on no more, so no second acceptance rests on it.
+            // A refused acceptance or start can't be carried on: the order ends, and its deposit, held against it, is
+            // filed on no more.
             Err(AppendFailure::Refused(_)) => {
                 self.accepting = None;
                 self.end(desk, OrderRefusalClass::NoRouteRightNow)
@@ -688,9 +690,14 @@ impl Run {
             inputs: self.filing.inputs.clone(),
             needs: self.filing.needs.clone(),
         };
+        // One deposit funds one part: a split route would need an arrival naming each part
+        // (`split-deposit-arrival-names-its-part`), and one deposit has one arrival naming an order
+        // (`one-order-per-deposit`).
+        let mut bounds = desk.bounds.clone();
+        bounds.max_parts = std::num::NonZeroU8::MIN;
         let routing = Routing {
             request: &self.filing.route,
-            bounds: desk.bounds,
+            bounds: &bounds,
             prices: desk.prices,
             order: &order,
             core: desk.core,
@@ -860,6 +867,8 @@ fn not_offered(routed: &Routed, why: &NotOffered) -> OrderRefusalClass {
         NotOffered::NoReservesYes | NotOffered::NotEligible { .. } => {
             OrderRefusalClass::NoRouteRightNow
         }
+        NotOffered::ChargeRefused { .. } => OrderRefusalClass::RefusedByPolicy,
+        NotOffered::ChargeNotKnown { .. } => OrderRefusalClass::NoRouteRightNow,
     }
 }
 

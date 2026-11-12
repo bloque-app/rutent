@@ -331,6 +331,20 @@ fn every_segment_ends_settled_or_reversed_in_full_or_its_order_stuck() {
             }
             // At the end, once the evidence has arrived: a part is done or held. Nothing is left started, of
             // unknown outcome or owing a reversal unless the part is stuck (or waiting for the customer).
+            // A stuck part's resolution moved its value outside its segments: they show where it stood then.
+            if part.resolved_to.is_some() {
+                assert!(
+                    matches!(
+                        part.state,
+                        OrderState::Complete
+                            | OrderState::Failed
+                            | OrderState::EndedWithoutCompleting
+                    ),
+                    "{at}: resolved but {:?}",
+                    part.state
+                );
+                continue;
+            }
             match part.state {
                 OrderState::Complete => {
                     assert!(

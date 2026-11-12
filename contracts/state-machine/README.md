@@ -44,6 +44,12 @@ field by field in Rust is checked only when `check` is called; a `StateMachine` 
 | A part has a `deposit_failed_at` only where a final deposit failed: its last segment, or one a recalculation retired | can't be stated | `Order::check` |
 | The destination reserve is a provider-role identifier | `identifier` | `Order::check`, with the router's own `Id` |
 | `deposit_failed_at` is overwritten by each failed final deposit, cleared by `destination_changed`, kept by a recalculation | can't be stated: a transition | `deposit_failed_at_after`, applied by `CMP-STM` with every input |
+| A part resolved to its destination is complete, or failed after; one resolved to its origin ended without completing | `if`/`then` | `Order::check` |
+| A stuck part's resolution ends it: complete at its destination, ended without completing at its origin; a part that isn't stuck doesn't change (`REQ-AUZ-4`, `REQ-STM-6`) | can't be stated: a transition | `after_stuck_resolved`, applied by `CMP-STM` to a `stuck_resolved` input, else `not_applicable` / `not_from_this_state` |
+| `waiting_since`, when present, is an RFC 3339 date-time, never `null` | `format` and `pattern` | `Timestamp`, `deserialize_with` |
+| A part has `waiting_since` exactly while it waits for the customer | `if`/`then`/`else` | `Order::check` |
+| `waiting_since` is the `recorded_at` of the input that made the part wait, kept while it goes on waiting, dropped when it stops | can't be stated: a transition | `waiting_since_after`, applied by `CMP-STM` with every input that changes a part |
+| Past the customer's floor, a part whose value is evidenced at a node waits for the customer; one already waiting or stuck, or whose value is in flight or not yet withdrawn, doesn't change (`REQ-ORD-27`, `INV-4`) | can't be stated: a transition | `after_waiting_at_floor`, applied by `CMP-STM` to a `waiting_at_floor` input, else `not_applicable` / `not_from_this_state` |
 | With no route left, a part becomes stuck unless its value sits at the node where the destination reserve lives, after a failed final deposit, when it waits for the customer (`REQ-ORD-28`, `REQ-ORD-43`, `spec-no-route-left`) | can't be stated: a transition | `after_no_route`, applied by `CMP-STM` to a `no_route` input |
 
 ## No route left
@@ -68,6 +74,46 @@ and is reversed:
 The rule places nothing, and the input is not applicable, when the value is in flight (a segment started, owed a
 reversal, or with its outcome unknown) or still outside the book (the withdrawal hasn't settled: nothing has moved,
 `REQ-ORD-12`, `REQ-ORD-40`). `stuck_declared` no longer takes `no_route_left`: no route left has one path.
+
+## Waiting past the floor
+
+A customer may set a floor, a worst acceptable outcome; past it, the order waits for the customer, in a state
+visible to them with its age (`REQ-ORD-27`, `AC-12`, `AC-42`). Core judges the floor, at a settled segment or at a
+recalculation, against the value evidenced and the quotes still ahead, and records its judgement as a
+`waiting_at_floor` input about the part. The state machine reads no amount, so the input carries none.
+
+The state is the one the contract already had, `waiting_for_customer`: a part past its floor waits for the customer
+as one after a failed final deposit with no route left does. A published rule, `after_waiting_at_floor`, places the
+part:
+
+- a part whose value is evidenced at a node (`value_at`) **waits for the customer**;
+- a part already waiting or stuck doesn't change (a stuck part is the operator's), and nor does one whose value is in
+  flight or not yet withdrawn: a floor is judged on value that sits somewhere (`INV-4`). The input is then
+  `not_applicable` / `not_from_this_state`.
+
+The age is `waiting_since`, which a part carries exactly while it waits, for any cause: the `recorded_at` of the
+input that made it wait, kept while it goes on waiting, dropped when it stops (`waiting_since_after`). A reader with
+a clock shows the age as its now less `waiting_since`; the state machine reads no clock (`REQ-STM-5`).
+
+No provider starts on a waiting part. The customer's choice resolves it: a `route_recalculated` within a new
+authorisation (a lower floor, say), a `destination_changed`, or a `handed_on`, each as for any waiting part.
+
+## A stuck part's resolution
+
+A stuck part is resolved in two steps under policy (`REQ-AUZ-4`, ADR-0011): one party decides the outcome, naming
+the evidence, and another moves the value. core-internal's `deliver` resolution sends the value to the order's own
+destination or back to its origin; once the move's result is done, Core records `stuck_resolved`, with `to` naming
+which, and the evidence it arrived on. ADR-0011 and `REQ-AUZ-4` don't name the outcomes; the names are core-internal's.
+A published rule, `after_stuck_resolved`, ends the part:
+
+- delivered to the **destination**, the part is **complete**;
+- returned to the **origin**, the part **ended without completing**;
+- a part that isn't stuck doesn't change; the input is `not_applicable` / `not_from_this_state`.
+
+The value may have been in flight when the part was declared stuck, so the rule doesn't ask where it sits, and the
+part's segments may not show it delivered: the part keeps `resolved_to`, which says so. Having ended, the part takes
+no later report (`REQ-STM-6`): a late delivery on its segment moves nothing twice (`AC-5`). A resolution handing the
+value on to a linked order is `handed_on`, as for a waiting part.
 
 ## The destination
 

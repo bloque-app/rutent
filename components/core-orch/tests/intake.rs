@@ -1333,3 +1333,36 @@ fn request_claiming_to_follow_another_routing_is_refused() {
     );
     assert!(sim.received.is_empty(), "no provider was asked");
 }
+
+/// The authorisation names, as its origin account, the payer's account the order's inputs give
+/// (`payer.bank_account`), where a stuck resolution may return the value; never another account the inputs carry,
+/// the destination's included. An order naming no payer's account authorises no return to its origin.
+// verifies: REQ-AUZ-4, REQ-AUZ-3
+#[test]
+fn authorisation_names_the_payers_account_as_its_origin() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let mut request = order_request("client-req-1", customer());
+    request.inputs.insert(
+        rutent_core_orch::stuck::PAYER_ACCOUNT.into(),
+        "acct-of-the-payer".into(),
+    );
+    env.accepted(&mut sim, &request, &customer());
+    let authorisation = env.policy.asked.pop().expect("an authorisation");
+    assert_eq!(authorisation.origin_account, Some(id("acct-of-the-payer")));
+    assert_admitted(&env);
+
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    env.accepted(
+        &mut sim,
+        &order_request("client-req-2", customer()),
+        &customer(),
+    );
+    let authorisation = env.policy.asked.pop().expect("an authorisation");
+    assert_eq!(
+        authorisation.origin_account, None,
+        "the destination's account is no origin"
+    );
+    assert_admitted(&env);
+}

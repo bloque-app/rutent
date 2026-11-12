@@ -739,6 +739,13 @@ impl Intake {
             authorisation: authorisation_id,
             order: order.clone(),
             origin_reserve: request.origin_reserve.clone(),
+            // The payer's account at the origin reserve, as the order's inputs name it: where a stuck resolution may
+            // return the value (`delivery-goes-to-the-parts-ends`). None where the order names none, and then no
+            // delivery back to the origin is admitted.
+            origin_account: request
+                .inputs
+                .get(crate::stuck::PAYER_ACCOUNT)
+                .and_then(|account| Id::new(account.as_str())),
             destination: request.destination.clone(),
             to_asset: request.route.to.asset.clone(),
             floor: request
@@ -746,6 +753,7 @@ impl Intake {
                 .floor
                 .as_ref()
                 .and_then(|f| PositiveAmount::new(f.as_str())),
+            parts: None,
             given_by: by.clone(),
             at: record::now(desk.parts.clock)?,
         };

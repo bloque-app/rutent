@@ -52,8 +52,8 @@ pub enum AppendFailure {
 }
 
 /// The kinds of verified entry only policy writes: each policy call's record of its answer (`decide`, `authorise`,
-/// `stuck_decide`, `stuck_move`, `open_session`, `check_read`, `grant_permission`, `revoke_permission`, `charge`,
-/// `ask_about_person`).
+/// `stuck_decide`, `stuck_move`, `report_outcome`, `confirm_outcome`, `open_session`, `check_read`,
+/// `grant_permission`, `revoke_permission`, `charge`, `ask_about_person`).
 pub fn is_decision(what: &What) -> bool {
     matches!(
         what,
@@ -61,6 +61,8 @@ pub fn is_decision(what: &What) -> bool {
             | What::Authorise { .. }
             | What::StuckDecide { .. }
             | What::StuckMove { .. }
+            | What::ReportOutcome { .. }
+            | What::ConfirmOutcome { .. }
             | What::OpenSession { .. }
             | What::CheckRead { .. }
             | What::GrantPermission { .. }
@@ -200,7 +202,9 @@ pub trait StatementKeys {
 
     /// The maker this deployment's operator signs its own statements as, Core's questions among them, with the
     /// deployment's `operator_key`: a statement's `acts`, not the party a module the operator publishes states for.
-    /// The log hands it to [`admit_entry`](super::admit_entry).
+    /// The log hands it to [`admit_entry`](super::admit_entry), with the party it states for ([`Self::publisher`]),
+    /// as a [`DeploymentOperator`](super::DeploymentOperator): the two differ, and a row reads each where it means
+    /// it.
     fn operator(&mut self) -> Result<Id, AppendFailure>;
 
     /// The party `maker` states for: its publisher, by the advertisements the log recorded, or the operator's
@@ -324,6 +328,21 @@ pub trait StuckOrders {
     /// The move step: permitted only to an actor whose accountable party is not the decider's, and only for the
     /// outcome the decision named. Its permit is what an [`Action::ResolveStuck`] effect cites.
     fn move_stuck(&mut self, request: &StuckMove) -> Result<Decision, AppendFailure>;
+
+    /// A move's outcome, once unknown, as its own mover reports it, naming its evidence; it settles nothing until
+    /// confirmed (`outcome-report-rests-on-its-move`).
+    fn report_outcome(
+        &mut self,
+        request: &super::types::OutcomeReport,
+    ) -> Result<Decision, AppendFailure>;
+
+    /// The confirmation of a move's outcome, once unknown, citing its mover's report, by an actor of another party
+    /// and login than the reporter, naming its own evidence; permitted, it settles the move
+    /// (`unknown-outcome-settles-on-its-confirmation`).
+    fn confirm_outcome(
+        &mut self,
+        request: &super::types::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure>;
 }
 
 /// Questions about people (`REQ-CPL-2`, `REQ-CPL-5`).

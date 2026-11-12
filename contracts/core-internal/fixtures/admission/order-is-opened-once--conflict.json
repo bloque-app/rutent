@@ -967,7 +967,8 @@
               "role": "customer",
               "kind": "person"
             },
-            "at": "2026-11-10T09:00:00Z"
+            "at": "2026-11-10T09:00:00Z",
+            "origin_account": "acct-ref-0"
           }
         },
         "when": {
@@ -1237,7 +1238,7 @@
     "what": {
       "call": "input",
       "input": {
-        "record_id": "rec-0001",
+        "record_id": "rec-in_route",
         "recorded_at": "2026-11-06T10:00:00Z",
         "time_source": "core-orch clock",
         "source": {

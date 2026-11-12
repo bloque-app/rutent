@@ -8,8 +8,10 @@
   "required": [
     "request",
     "order",
+    "part",
     "decider",
     "resolution",
+    "transaction",
     "evidence",
     "at"
   ],
@@ -22,12 +24,20 @@
       "description": "The stuck order.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
+    "part": {
+      "description": "The order's stuck part: a resolution resolves one part, and the log admits it only for a part that stands stuck.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
     "decider": {
       "description": "Who decides.",
       "$ref": "urn:rutent:core-internal:common#/$defs/actor"
     },
     "resolution": {
       "$ref": "#/$defs/resolution"
+    },
+    "transaction": {
+      "description": "The transaction the resolution goes under at its provider: part of what is decided, so the move step can't choose another, and its outcome's evidence binds through it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "evidence": {
       "description": "The evidence relied on, by digest, at least one, each once.",

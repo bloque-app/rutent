@@ -1,5 +1,39 @@
 # state-machine changelog
 
+## 3.0.0
+- Breaking: a part waiting past its floor is a recorded state (`REQ-ORD-27`, `AC-12`, `AC-42`). A new observed kind,
+  `waiting_at_floor {}`, about one part, records Core's judgement that the part is past the customer's floor; it
+  carries no amount, since no transition reads one. The state is the existing `waiting_for_customer`, which fits:
+  no new state is added. The published rule `after_waiting_at_floor` makes a part whose value is evidenced at a
+  node wait; a part already waiting or stuck, or whose value is in flight or not yet withdrawn, doesn't change
+  (`INV-4`). A part now carries `waiting_since` exactly while it waits, for any cause: the `recorded_at` of the
+  input that made it wait, kept by the published rule `waiting_since_after`, so the order shows its age to a reader
+  with a clock. An order waiting without `waiting_since` was valid at 2.1.0 and is refused now, and a new
+  `Observed` variant breaks exhaustive matches, so this is a major bump. Fixtures: the waiting order gains
+  `waiting_since`, and so do the three invalid ones that wait, each still breaking its own rule; new ones for
+  the input, an order waiting at its floor, and four refusals (a waiting order without `waiting_since`, one that
+  has it while not waiting, the input naming a segment, the input carrying an amount). (DEC-4, DEC-20,
+  T-020-01, T-020-10)
+- Breaking, in the same major: a stuck part's resolution ends it (`REQ-AUZ-4`, ADR-0011). A new observed kind
+  about one part, `stuck_resolved { to, evidence }`, records that the resolution's move delivered the value, `to`
+  the order's `destination` or back to its `origin`; the names are core-internal's `deliver` resolution's, since
+  ADR-0011 and `REQ-AUZ-4` name none. The published rule `after_stuck_resolved` makes a stuck part complete, or
+  ended without completing, and leaves any other part as it is. A part ended so carries `resolved_to`, since its
+  segments may not show the delivery. Before it, no input ended a resolved part, which stayed stuck. New fixtures:
+  the input both ways, an order delivered and one returned by their resolutions, and five refusals. (DEC-4,
+  DEC-20, T-020-01, T-020-11)
+- Every transition rule is published, in `state_machine::rules`, one function each: `open`, `guard` (another
+  order, a repeat, an ended order or part, an unknown part), `after_segment_input` (the segment table),
+  `after_restart`, `after_stuck_declared`, `after_withdrawal_cancelled`, `after_handed_on`, `after_end_requested`,
+  `finish`, with `is_ended` and `order_state_of`. `CMP-STM` dispatches each input to them, and core-internal's
+  reading of a part's standing does too, so the log and the state machine apply one set of rules. Additive: no
+  shape or behaviour changes. (DEC-4, DEC-20, T-020-01)
+- One dispatch table: `rules::transition` is the transition, every input dispatched to the rule of its kind and
+  finished; `CMP-STM`'s `StateMachine::transition` is it, and core-internal's reading of a part's standing steps
+  by it, so the two can't dispatch apart. Additive. (DEC-4, DEC-20, T-020-01)
+- The schemas also follow router-api 4.0.0: a segment plan is router-api's typed operation, by reference, so its
+  4.0.0 shapes are the state machine's from this version. (DEC-4, DEC-20, T-020-01)
+
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/state_machine`) is `no_std` with `alloc`:
   it uses `core` and `alloc` paths, and the crate's
