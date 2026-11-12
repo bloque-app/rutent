@@ -325,6 +325,8 @@ pub enum ResolveError {
     /// A confirmation names another report than the mover's current one: another outcome, version or evidence.
     /// Nothing is recorded.
     NotTheReport,
+    /// A move's reports have run out of versions: no further report is taken, so none is ever confused with another.
+    ReportsExhausted,
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
@@ -1095,7 +1097,11 @@ impl Stuck {
         if outcome == Resolved::Unknown {
             return Err(ResolveError::OutcomeUnknown);
         }
-        motion.reports = motion.reports.saturating_add(1);
+        // A version past the last a u64 holds is refused, never reused: a confirmation names its report by it.
+        motion.reports = motion
+            .reports
+            .checked_add(1)
+            .ok_or(ResolveError::ReportsExhausted)?;
         motion.reported = Some((outcome, evidence.clone(), motion.reports));
         Ok(Moved::AwaitsConfirmation {
             report: motion.reports,
