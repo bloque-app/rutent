@@ -206,6 +206,16 @@ the two together.
   `authorise` and `stuck_decide` permits back none. A kept statement leaves the store only through
   `Evidence::fetch`, which runs its own read check.
 - **Not known moves nothing.** `not_known` is its own answer, never a refusal and never a permit (`REQ-AUZ-5`).
+- **A move's unknown outcome settles on two actors' word, and what the log can tell apart.** The mover reports it
+  (`report_outcome`), and another actor confirms that report (`confirm_outcome`), each on its own statement, by its
+  own maker, about the move and after it. The log holds the two actors apart by their accountable party and their
+  login, as the actors' own fields name them. For a silent `move_value`, its mover is the actor its `decide` was for,
+  or one of that actor's accountable party: typically Core, so the two actors may be Core (the decide actor's
+  party) and one person, the confirmer. The log can't see further: it reads no `ActsFor` register, so it can't tell
+  whether a confirmer and a reporter of different parties both act, through their `ActsFor` chains, for one
+  accountable party. Policy can, and that check is `T-021-06`'s: policy's answer to `confirm_outcome` refuses where
+  the confirmer's and the reporter's `ActsFor` chains reach a common accountable party (`REQ-AUZ-4`, ADR-0011,
+  `THR-70`).
 - **Detection only reaches the operator.** The checks answer orchestration with a receipt and nothing else, so
   nothing orchestration holds can act on what a comparison found. A difference goes to `Operator::raise`, which
   answers only whether it was delivered; the raise's entry records that (`done` or `failed`). A `Raise` holds its id,
@@ -350,6 +360,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-021-05` | work charged to the party | `charge` |
 | `T-021-06` | decide and move, the evidence relied on | `stuck_decide` (`evidence`), `stuck_move` |
 | `T-020-11`, `T-021-06` | a move's unknown outcome, reported by its mover and confirmed by another actor, each on a statement about the move's part | `report_outcome`, `confirm_outcome` citing its report |
+| `T-021-06` | policy's confirmation of a move's outcome refused where the confirmer's and the reporter's `ActsFor` chains reach a common accountable party, which the log can't see | `confirm_outcome` (its answer) |
 | `T-021-07` | questions about people, the set asked; a reserve's proof; presence; a payer's reference | `ask_about_person`; stated entries; `acceptance.parties.payer` |
 | `T-021-07` | whose judgement was relied on, and by whom | `reliance` |
 | `T-022-01` | every action, refusal and unanswered request | the entries above; `result` with `unanswered` |

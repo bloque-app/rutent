@@ -386,6 +386,10 @@
   names. Admitted: `ord-21`'s planless `p3`, through its acceptance yes's transaction and through its arrival's;
   refused: through another transaction of the order. 440 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2,
   T-020-01)
+- Folded into 1.0.0 before its release: the README records that for a silent `move_value` the two actors may be
+  Core, the decide actor's party, and one person, and hands `T-021-06` the check the log can't make: policy's answer
+  to `confirm_outcome` refuses where the confirmer's and the reporter's `ActsFor` chains reach a common accountable
+  party. (DEC-4, REQ-AUZ-4, ADR-0011, T-020-01, T-021-06)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
