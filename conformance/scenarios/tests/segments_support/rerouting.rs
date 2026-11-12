@@ -80,8 +80,8 @@ pub struct Rerouting {
 }
 
 impl Rerouting {
-    /// The kit's order followed for recalculation from the choice round that chose its route, each recalculation's
-    /// records chained to the order's decision record in the kit's log.
+    /// The kit's current order followed for recalculation from the choice round that chose its route, each
+    /// recalculation's records chained to that order's own decision record in the kit's log.
     pub fn of(core: &Core) -> Self {
         let mut recalculations = Recalculations::new();
         recalculations.follow(&id(&core.named.order), &core.record.request.request_id);
@@ -91,7 +91,8 @@ impl Rerouting {
             .iter()
             .position(|(e, _)| {
                 matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
-                    if matches!(v.what, rutent_contracts::core_internal::What::DecisionRecord { .. }))
+                    if matches!(&v.what, rutent_contracts::core_internal::What::DecisionRecord { order, .. }
+                        if order.as_str() == core.named.order))
             })
             .expect("the kit seeds the order's decision record");
         let previous = log.receipt_at(seeded);
