@@ -642,6 +642,15 @@ pub struct Authorisation {
         skip_serializing_if = "Option::is_none"
     )]
     pub floor: Option<PositiveAmount>,
+    /// The parts of the order it covers, at least one, each once; absent, it covers every part. Destinations change
+    /// per part, so a replacement for one part's new destination names that part, and replaces the earlier
+    /// authorisation for it alone: the order's other parts go on under theirs (`T-021-04`).
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parts: Option<Vec<Id>>,
     /// Who gave it: a user at the origin, its agent, or the operator acting for it where the origin reserve
     /// declared it can't require the user's own withdrawal (`REQ-AUZ-9`). The record says who acted.
     pub given_by: Actor,

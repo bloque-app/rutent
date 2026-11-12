@@ -401,8 +401,14 @@ impl What {
                 rests_on,
                 "graded evidence rests on stated entries, at least one, each once",
             ),
-            What::Authorise { .. }
-            | What::Result { .. }
+            What::Authorise { authorisation, .. } => match &authorisation.parts {
+                Some(parts) => listed(
+                    parts,
+                    "an authorisation names the parts it covers, at least one, each once",
+                ),
+                None => Ok(()),
+            },
+            What::Result { .. }
             | What::StuckMove { .. }
             | What::CheckRead { .. }
             | What::Refiling { .. }

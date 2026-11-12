@@ -489,41 +489,66 @@ pub static RELATIONS: [Relation; 64] = [
                 "floor",
                 "a value-moving effect's route delivers at least its authorisation's floor",
             ),
+            (
+                "part",
+                "a value-moving effect's authorisation covers the part its segment is of",
+            ),
+            (
+                "in_force",
+                "a value-moving effect's authorisation is in force for its part: no later authorisation of the order covering the part replaced it",
+            ),
         ],
         cites: |e, _| match effect_action(e) {
             Some((Action::MoveValue { .. }, _)) => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| {
+        // Destinations change per part, so an authorisation may cover only some parts, and a replacement replaces
+        // the earlier one for the parts it names alone (`T-021-04`).
+        answers: |e, _, t, h| {
             let (
                 Some((
                     Action::MoveValue {
                         order,
+                        segment,
                         authorisation,
                         route,
                         ..
                     },
                     _,
                 )),
-                Some(t),
+                Some(v),
             ) = (effect_action(e), permitted(t))
             else {
                 return Match::NotTarget;
             };
-            match &t.what {
+            match &v.what {
                 What::Authorise {
                     authorisation: a, ..
-                } => judge(
-                    &a.authorisation == authorisation,
-                    &[
-                        &a.order == order,
-                        a.destination == route.destination,
-                        a.to_asset == route.to_asset,
-                        a.floor
-                            .as_ref()
-                            .is_none_or(|f| &route.delivers >= f.amount()),
-                    ],
-                ),
+                } => {
+                    let part = part_of_segment(order.as_str(), segment.as_str(), h);
+                    let replaced = position(t, h).is_some_and(|at| {
+                        h[at + 1..].iter().any(|(_, later)| {
+                            matches!(&permitted(later).map(|l| &l.what), Some(What::Authorise {
+                                authorisation: r, ..
+                            }) if &r.order == order && r.authorisation != a.authorisation
+                                && part.is_some_and(|p| covers_part(r, p)))
+                        })
+                    });
+                    judge(
+                        &a.authorisation == authorisation,
+                        &[
+                            &a.order == order,
+                            a.destination == route.destination,
+                            a.to_asset == route.to_asset,
+                            a.floor
+                                .as_ref()
+                                .is_none_or(|f| &route.delivers >= f.amount()),
+                            // An unplanned segment is `move-segment-is-in-its-orders-plan`'s.
+                            part.is_none_or(|p| covers_part(a, p)),
+                            !replaced,
+                        ],
+                    )
+                }
                 _ => Match::NotTarget,
             }
         },
@@ -562,19 +587,26 @@ pub static RELATIONS: [Relation; 64] = [
         spec: &["REQ-ORD-34"],
         quantifier: Quantifier::Exists,
         refusal: "a value-moving effect rests on an acceptance of its order in this log",
-        fields: &[(
-            "authorisation",
-            "a value-moving effect's acceptance names its authorisation",
-        )],
+        fields: &[
+            (
+                "authorisation",
+                "a value-moving effect's acceptance names its authorisation",
+            ),
+            (
+                "part",
+                "a value-moving effect's acceptance has a yes for the part its segment is of",
+            ),
+        ],
         cites: |e, _| match effect_action(e) {
             Some((Action::MoveValue { .. }, _)) => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| {
+        answers: |e, _, t, h| {
             let (
                 Some((
                     Action::MoveValue {
                         order,
+                        segment,
                         authorisation,
                         ..
                     },
@@ -589,8 +621,20 @@ pub static RELATIONS: [Relation; 64] = [
                 What::Acceptance {
                     order: o,
                     authorisation: a,
+                    basis,
+                    yeses,
                     ..
-                } => judge(o == order, &[a == authorisation]),
+                } => {
+                    // A given acceptance has a yes per part it accepts; an automatic deposit's has none, for the
+                    // order's one part. A part's first move is `first-move-rests-on-its-parts-yes`'s, and an
+                    // unplanned segment `move-segment-is-in-its-orders-plan`'s.
+                    let part = part_of_segment(order.as_str(), segment.as_str(), h);
+                    let first = first_segment_part(e, h).is_some();
+                    let covered = first
+                        || *basis == AcceptanceBasis::AutomaticDeposit
+                        || part.is_none_or(|p| yeses.iter().any(|y| y.part.as_str() == p));
+                    judge(o == order, &[a == authorisation, covered])
+                }
                 _ => Match::NotTarget,
             }
         },
@@ -2738,6 +2782,14 @@ fn resolved_to(
         }
         _ => None,
     })
+}
+
+/// Whether `authorisation` covers `part`: every part where it names none.
+fn covers_part(authorisation: &Authorisation, part: &str) -> bool {
+    authorisation
+        .parts
+        .as_ref()
+        .is_none_or(|parts| parts.iter().any(|p| p.as_str() == part))
 }
 
 /// The index of `entry` in `history`: the candidates a row answers are `history`'s own entries.

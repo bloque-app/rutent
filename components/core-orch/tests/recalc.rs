@@ -575,6 +575,7 @@ fn authorisation() -> Authorisation {
         },
         to_asset: cop(),
         floor: None,
+        parts: None,
         given_by: customer(),
         at: Timestamp::new("2026-11-09T01:00:00Z").unwrap(),
     }

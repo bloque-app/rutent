@@ -1043,6 +1043,7 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
         destination: end.destination,
         to_asset: end.to_asset,
         floor,
+        parts: None,
         given_by: customer(),
         at: Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap(),
     }

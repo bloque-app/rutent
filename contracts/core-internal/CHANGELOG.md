@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
-  breaking one rule, and 317 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 115 invalid ones, each
+  breaking one rule, and 322 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 66 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -203,6 +203,14 @@
   `done` result of a `resolve_stuck` effect whose decision names that part, and only to where the decision sent the
   value: the order's authorised destination, or its origin reserve. 317 admission cases, 66 relations. (DEC-4,
   DEC-20, REQ-AUZ-4, REQ-ORD-28, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: an authorisation per part (`T-021-04`'s review). Destinations change per
+  part, so the authorisation's terms, which `Asked::Authorise` and the logged `authorise` entry carry, gain
+  `parts`, the parts it covers, at least one, each once; absent, every part. A replacement replaces the earlier
+  authorisation for the parts it names alone. `move-rests-on-its-authorisation` holds a move to an authorisation
+  that covers its segment's part (`part`) and that no later authorisation of the order covering that part replaced
+  (`in_force`), so a split order's other parts go on under theirs; `move-rests-on-its-orders-acceptance` holds a
+  later move to an acceptance with a yes for its part. One valid fixture, 117; 322 admission cases. (DEC-4,
+  DEC-20, REQ-AUZ-3, REQ-ORD-34, T-020-01, T-021-04)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -738,6 +738,7 @@ impl Intake {
                 .floor
                 .as_ref()
                 .and_then(|f| PositiveAmount::new(f.as_str())),
+            parts: None,
             given_by: by.clone(),
             at: record::now(desk.parts.clock)?,
         };
