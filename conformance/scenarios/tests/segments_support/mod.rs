@@ -384,6 +384,19 @@ impl rutent_core_authz::funds::Recorded for PolicyPath {
             log.entries.iter().map(|(entry, _)| entry),
         ))
     }
+
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::funds::part_in(
+            log.entries.iter().map(|(entry, _)| entry),
+            order,
+            segment,
+        ))
+    }
 }
 
 /// Policy's read of a stuck order's steps, each entry with the receipt the log gave it (`T-021-06`).

@@ -189,6 +189,20 @@ impl<L: Entries> rutent_core_authz::funds::Recorded for PolicyHandle<L> {
             .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
         Ok(rutent_core_authz::parties::charged_in(&entries))
     }
+
+    fn part_of(
+        &mut self,
+        order: &rutent_contracts::router_api::Id,
+        segment: &rutent_contracts::router_api::Id,
+    ) -> Result<Option<rutent_contracts::router_api::Id>, rutent_core_authz::funds::ReadFailure>
+    {
+        let entries = self
+            .0
+            .borrow()
+            .entries()
+            .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(rutent_core_authz::funds::part_in(&entries, order, segment))
+    }
 }
 
 /// Policy's read of a stuck order's steps, each entry with its receipt, on policy's handle itself (`T-021-06`).

@@ -701,6 +701,15 @@ mod tests {
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(&self.0))
         }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            let plan = crate::funds::plan_of_the_fixtures_move();
+            Ok(crate::funds::part_in(
+                std::iter::once(&plan).chain(&self.0),
+                order,
+                segment,
+            ))
+        }
     }
 
     impl crate::stuck::Receipted for Taking {
@@ -731,6 +740,10 @@ mod tests {
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Err(ReadFailure::Unavailable)
         }
+
+        fn part_of(&mut self, _: &Id, _: &Id) -> Result<Option<Id>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
+        }
     }
 
     /// A log that holds every entry to the contract's admission, as `CMP-CORE-AUDIT`'s log must, on each of its two
@@ -752,6 +765,15 @@ mod tests {
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+        }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            let plan = crate::funds::plan_of_the_fixtures_move();
+            Ok(crate::funds::part_in(
+                std::iter::once(&plan).chain(self.0.iter().map(|(_, e)| e)),
+                order,
+                segment,
+            ))
         }
     }
 
@@ -1838,6 +1860,10 @@ mod tests {
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             self.log.charged()
         }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            self.log.part_of(order, segment)
+        }
     }
 
     impl crate::stuck::Receipted for Seen {
@@ -2279,6 +2305,20 @@ mod tests {
                 .map(|d| Entry::Verified(d.entry().clone()))
                 .collect();
             Ok(crate::parties::charged_in(&entries))
+        }
+
+        fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
+            let entries: Vec<Entry> = self
+                .0
+                .iter()
+                .map(|d| Entry::Verified(d.entry().clone()))
+                .collect();
+            let plan = crate::funds::plan_of_the_fixtures_move();
+            Ok(crate::funds::part_in(
+                std::iter::once(&plan).chain(&entries),
+                order,
+                segment,
+            ))
         }
     }
 
