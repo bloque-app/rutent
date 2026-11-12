@@ -44,8 +44,12 @@
 //! count going in the latest window. A fixed window lets a party spend its bound at the end of one window and again
 //! at the start of the next, twice the bound in a moment; that burst is accepted, and a sliding window is the
 //! deployment's to ask for. Its bounds are the deployment's ([`Bounds`], [`Engine::set_bounds`]), [`Uniform`] until it
-//! hands others. The counter is a function of the charges it counted ([`Charged::rebuild`]), so it can be rebuilt from
-//! the log's permitted `charge` entries once core-internal's charge entry carries the engine's own time.
+//! hands others. The counter is the log's: before every charge the engine reads the
+//! log's permitted `charge` entries through policy's handle ([`Recorded::charged`], [`charged_in`]) and rebuilds it
+//! from them ([`Charged::rebuild`]), so an engine opened again after a restart, or beside another, holds what the log
+//! holds. Each charge's entry is recorded at the moment Core's clock counted it ([`Charged::counted_at`]), never at the
+//! time the charge states, so the rebuild finds it in the window it was counted in. A log that can't be read leaves
+//! the counter an input the decision doesn't have, and the charge is refused.
 //!
 //! # Who answers for an actor
 //!
@@ -60,8 +64,8 @@ use std::time::Duration;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Charges, PolicyLog};
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Answer, CatalogueChange, Charge, ChargeAnswer, ChargeOutcome,
-    RefusalClass, What, Work,
+    Action, Actor, ActorKind, Answer, CatalogueChange, Charge, ChargeAnswer, ChargeOutcome, Entry,
+    Outcome, RefusalClass, VerifiedEntry, What, Work,
 };
 use rutent_contracts::provider_role::SafeInteger;
 use rutent_contracts::router_api::Id;
@@ -69,6 +73,7 @@ use rutent_contracts::router_api::Id;
 use crate::engine::{
     Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources, charge_outcome,
 };
+use crate::funds::Recorded;
 
 /// How long one window of the bounds lasts, in seconds, by Core's clock: each party's count starts again at each
 /// window's start.
@@ -282,17 +287,6 @@ impl Charged {
         self.used.get(&(party.clone(), limit)).copied().unwrap_or(0)
     }
 
-    /// Starts the window `now` falls in, where it is later than the latest counted in: every party's count starts
-    /// again. Core's clock moving back starts nothing: the count goes on in the latest window.
-    pub(crate) fn roll(&mut self, now: Duration) {
-        let window = now.as_secs() / WINDOW_SECS;
-        if window > self.window {
-            self.window = window;
-            self.used.clear();
-            self.counted.clear();
-        }
-    }
-
     /// The moment a charge counted at Core's `now` is counted at: `now`, or the start of the latest window where the
     /// clock has moved back before it, so a rebuild puts it in the window it was counted in.
     pub fn counted_at(&self, now: Duration) -> Duration {
@@ -352,6 +346,30 @@ pub struct Counted {
     pub at: Duration,
 }
 
+/// The charges `entries` hold as permitted, in their order, each with the moment the engine counted it: each
+/// verified `charge` entry whose outcome is `permitted`, at its entry's own time, which the engine takes from Core's
+/// clock ([`Charged::counted_at`]), never from the charge's `at`. The one definition every
+/// [`Recorded`](crate::funds::Recorded) reads charges by.
+pub fn charged_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Counted> {
+    entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Verified(VerifiedEntry {
+                what: What::Charge { charge },
+                outcome: Outcome::Permitted {},
+                when,
+                ..
+            }) => Some(Counted {
+                charge: charge.clone(),
+                at: Duration::from_nanos(
+                    u64::try_from(when.at.unix_nanos().max(0)).unwrap_or(u64::MAX),
+                ),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 impl Charged {
     /// Rebuilds the counter, in place of what it held, from the charges `counted` before: those of the latest window,
     /// the one `now` falls in or a later one any of them was counted in, each counted once under its party's id. The
@@ -386,25 +404,59 @@ impl<L, P, S> Engine<L, P, S> {
     }
 }
 
-/// Work charged to the accountable party its caller acts for, decided through the one consultation, held to the
-/// party's bound in the window now, and recorded before it is answered. Only a charge recorded within the bound is
-/// counted.
-impl<L: PolicyLog, P: Policy, S: Sources> Charges for Engine<L, P, S> {
+/// `at` since the epoch, by Core's clock, as an RFC 3339 UTC time to the second: the time a charge's entry is
+/// recorded at, which the rebuild reads it by.
+fn timestamp(at: Duration) -> Option<rutent_contracts::router_api::Timestamp> {
+    let secs = i64::try_from(at.as_secs()).ok()?;
+    let (days, secs) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a civil date (proleptic Gregorian).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    rutent_contracts::router_api::Timestamp::new(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        secs / 3_600,
+        secs / 60 % 60,
+        secs % 60
+    ))
+}
+
+/// Work charged to the accountable party its caller acts for: the counter rebuilt from the log's read, the charge
+/// decided through the one consultation, held to the party's bound in the latest window, and recorded at the moment
+/// Core's clock counted it before it is answered. A log that can't be read leaves the counter an input the decision
+/// doesn't have, and the charge is refused. Only a charge recorded within the bound is counted.
+impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Charges for Engine<L, P, S> {
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
         charge.check().map_err(AppendFailure::Refused)?;
-        self.charged.roll(self.register.clock.now());
-        let answer = if self.charged.reissues(charge) {
-            Answer::Refuse {
-                class: RefusalClass::NotPermitted,
+        let now = self.register.clock.now();
+        let read = self.log.charged();
+        let answer = match read {
+            Err(_) => Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            },
+            Ok(counted) => {
+                self.charged.rebuild(now, counted);
+                if self.charged.reissues(charge) {
+                    Answer::Refuse {
+                        class: RefusalClass::NotPermitted,
+                    }
+                } else {
+                    self.consult(Asked::Charge(charge))
+                }
             }
-        } else {
-            self.consult(Asked::Charge(charge))
         };
         let outcome = charge_outcome(answer, self.charged.standing(charge));
         let what = What::Charge {
             charge: charge.clone(),
         };
-        let receipt = self.record(&charge.caller, what, &charge.at, outcome.outcome())?;
+        let at = timestamp(self.charged.counted_at(now)).unwrap_or_else(|| charge.at.clone());
+        let receipt = self.record(&charge.caller, what, &at, outcome.outcome())?;
         if matches!(outcome, ChargeOutcome::Within { .. }) {
             self.charged.take(charge);
         }

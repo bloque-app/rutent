@@ -61,6 +61,20 @@ impl PolicyLog for Kept {
     }
 }
 
+/// What the log reads as permitted (`T-021-04`): the fixtures' authorisation, held before the test began, then each
+/// authorisation it took as permitted.
+impl crate::funds::Recorded for Kept {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, crate::funds::ReadFailure> {
+        let mut held: Vec<Authorisation> = vec![valid!("authorisation-of-one-order-with-a-floor")];
+        held.extend(crate::funds::permitted_in(self.0.iter().map(|(_, e)| e)));
+        Ok(held)
+    }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
+        Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+    }
+}
+
 impl Log for Kept {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         self.admit(entry.entry().clone(), Through::General)
@@ -377,7 +391,9 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
     asked
 }
 
-/// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`.
+/// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`,
+/// over a log that held the fixtures' authorisation as permitted before the test began, so the fixtures' move acts
+/// inside it (`T-021-04`).
 fn engine(log: Kept, register: Register) -> Engine<Kept, Permits, Register> {
     Engine::with_policy(log, Permits::default(), register)
 }

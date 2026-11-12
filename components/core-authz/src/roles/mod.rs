@@ -58,8 +58,8 @@
 //! way says no, and either is a refusal; one out of reach gives not known. The decision's entry records who acted
 //! (`who`, the request's caller), and an authorisation's its giver (`given_by`).
 //!
-//! The rule on an authorisation holds from when `T-021-04` builds `authorise` through the engine's consultation, as
-//! every call does; until then its stub permits nothing.
+//! The rule on an authorisation holds on every `authorise`, which `T-021-04` decides through the engine's
+//! consultation, as every call is.
 
 use rutent_contracts::core_internal::{Action, Actor, CatalogueChange, RefusalClass, Role};
 use rutent_contracts::router_api::Id;

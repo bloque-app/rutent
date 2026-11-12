@@ -62,6 +62,25 @@ fn safe(n: u64) -> SafeInteger {
 struct Kept {
     entries: Vec<Entry>,
     refusing: bool,
+    /// Its read fails.
+    unreadable: bool,
+}
+
+/// The log's read, on policy's handle: what it holds as permitted (`T-021-04`) and as counted.
+impl crate::funds::Recorded for Kept {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, crate::funds::ReadFailure> {
+        if self.unreadable {
+            return Err(crate::funds::ReadFailure::Unavailable);
+        }
+        Ok(crate::funds::permitted_in(&self.entries))
+    }
+
+    fn charged(&mut self) -> Result<Vec<Counted>, crate::funds::ReadFailure> {
+        if self.unreadable {
+            return Err(crate::funds::ReadFailure::Unavailable);
+        }
+        Ok(charged_in(&self.entries))
+    }
 }
 
 impl PolicyLog for Kept {
@@ -590,7 +609,17 @@ fn agent_outside_its_partys_scope_is_refused() {
         "the scope is asked of the agent, within its party"
     );
 
+    // Through the engine's own `authorise` (`T-021-04`): the agent outside the scope is refused and recorded so, its
+    // party's other agent, scoped for it, authorises.
+    use rutent_contracts::core_internal::calls::Authorisations;
+    let narrowly = policy.authorise(&Calls::by(&narrow).authorise).unwrap();
+    assert_eq!(narrowly.outcome, refused(RefusalClass::NotPermitted));
+    assert!(narrowly.permit().is_none());
     let calls = Calls::by(&wide);
+    assert_eq!(
+        policy.authorise(&calls.authorise).unwrap().outcome,
+        Answer::Permit {}
+    );
     assert_eq!(
         policy.consult(Asked::Authorise(&calls.authorise)),
         Answer::Permit {}
@@ -1123,7 +1152,7 @@ fn counter_is_rebuilt_from_the_charges_counted() {
     // Rebuilt, a counter holds nothing of what it held before; and a charge counted in a window later than the one
     // Core's clock now stands in, as after the clock moved back, puts the counter in that latest window.
     let mut held = Charged::default();
-    held.roll(now);
+    held.rebuild(now, Vec::new());
     held.take(&charge("req-9", &acme, Work::Request, 7));
     held.rebuild(
         earlier,
@@ -1133,4 +1162,49 @@ fn counter_is_rebuilt_from_the_charges_counted() {
         ],
     );
     assert_eq!(held.used(&id("acme-treasury"), Limit::Work), 2);
+}
+
+/// The counter is the log's: an engine opened again over the same log holds every party to what the log holds as
+/// counted, the same charge again counting once, and one whose read of the log fails refuses every charge and counts
+/// nothing.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn counter_is_the_logs_across_a_restart() {
+    let a = agent("acme-treasury", "agent-7");
+    let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
+    let within = |n| ChargeOutcome::Within { remaining: safe(n) };
+    let mut first = engine(registers(), bounds(3, 1));
+    let counted = charge("req-1", &a, Work::Request, 2);
+    assert_eq!(first.charge(&counted).unwrap().outcome, within(1));
+
+    // Opened again over the same log.
+    let mut again = engine(registers(), bounds(3, 1));
+    again.log.entries = first.log.entries.clone();
+    assert_eq!(
+        again
+            .charge(&charge("req-2", &a, Work::Request, 2))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { bound: safe(3) }
+    );
+    assert_eq!(again.charge(&counted).unwrap().outcome, within(1), "once");
+    assert_eq!(
+        again
+            .charge(&charge("req-3", &a, Work::Request, 1))
+            .unwrap()
+            .outcome,
+        within(0)
+    );
+
+    // A read that fails: no charge is within.
+    let mut blind = engine(registers(), bounds(3, 1));
+    blind.log.unreadable = true;
+    assert_eq!(
+        blind
+            .charge(&charge("req-4", &a, Work::Request, 1))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { bound: safe(0) }
+    );
+    assert_eq!(blind.charged().used(&id("acme-treasury"), Limit::Work), 0);
 }
