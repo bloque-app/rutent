@@ -165,13 +165,16 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 ### Gaps, each named for its owner
 
-- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): authorisations (`T-021-04`),
-  charges (`T-021-05`) and questions about people (`T-021-07`) are each decided as the engine decides a call: its
+- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): charges (`T-021-05`) and
+  questions about people (`T-021-07`) are each decided as the engine decides a call: its
   own fixed rules (`core-authz`'s `Fixed`, the register of actors and the roles' rule among them) over the same
   records, then the deployment's policy, which `Core::refuse` reaches. The answer alone is the stand-in's: an
   authorisation recorded as the consultation's answer; a charge within a bound no scenario reaches where permitted,
   over a bound of 0 where not, so `AC-18`'s shared limit can't be shown on it; a question about a person refused
-  where refused and otherwise not known. Each still writes its answer outside the engine's `consult`, which the
+  where refused and otherwise not known. Authorisations were answered so too until `T-021-04` built them on the
+  engine; its merge dropped that `impl` for the engine's, and gave the assembly's policy handle the read of
+  `CoreLog` the engine's register needs (`F-021`'s notes). Each that remains still writes its answer outside the
+  engine's `consult`, which the
   entry-point scan over Core's three crates can't see, so `T-025-05` should review them until each row builds its
   call on the engine; dropping one is deleting its `impl` and forwarding to the engine, as `Decisions` does.
 - **Promotion.** Nothing in the assembly calls `Segments::promote`, so no scenario of this row promotes a staged

@@ -1505,6 +1505,7 @@ dependencies = [
 name = "rutent-core-authz"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",

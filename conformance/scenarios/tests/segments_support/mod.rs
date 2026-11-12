@@ -16,8 +16,8 @@ use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::CatalogueChange;
 use rutent_contracts::core_internal::Effect;
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DecisionEntry, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements,
-    Log, PolicyLog, Reads, Signatures, StatementKeys,
+    AppendFailure, Authorisations, DecisionEntry, Decisions, Evidence, Fetched, GeneralEntry, Kept,
+    KeptStatements, Log, PolicyLog, Reads, Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Authorisation, Decision, DecisionRequest, Destination,
@@ -335,6 +335,17 @@ impl PolicyLog for PolicyPath {
     }
 }
 
+/// Policy's read of the log, on its own handle: the authorisations the log holds as permitted, so the engine's register
+/// is the log's (`T-021-04`).
+impl rutent_core_authz::funds::Recorded for PolicyPath {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::funds::permitted_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
+}
+
 /// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
 pub struct Deployment_ {
     pub refuse: Rc<Cell<Option<RefusalClass>>>,
@@ -356,7 +367,7 @@ impl authz::Policy for Deployment_ {
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
 /// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), and
-/// whose order this is.
+/// whose order this is: the customer is the requester of every order the kit seeds, and its party of [`ORDER`].
 pub struct Register;
 
 impl authz::Sources for Register {
@@ -380,6 +391,8 @@ impl authz::Sources for Register {
             authz::Source::OrderParties(order) => {
                 yes(order.as_str() == ORDER && need.input == customer().party)
             }
+            // The customer authorises each order the kit seeds through the engine (`T-021-04`).
+            authz::Source::Requester(_) => yes(need.input == customer().party),
             _ => Reply::Missing,
         }
     }
@@ -396,14 +409,15 @@ pub struct Policy {
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
         let refuse = Rc::new(Cell::new(None));
+        let engine = Engine::with_policy(
+            PolicyPath(log),
+            Deployment_ {
+                refuse: Rc::clone(&refuse),
+            },
+            Register,
+        );
         Self {
-            engine: Engine::with_policy(
-                PolicyPath(log),
-                Deployment_ {
-                    refuse: Rc::clone(&refuse),
-                },
-                Register,
-            ),
+            engine,
             refuse,
             asked: Vec::new(),
         }
@@ -419,6 +433,12 @@ impl Decisions for Policy {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         self.asked.push(request.clone());
         self.engine.decide(request)
+    }
+}
+
+impl Authorisations for Policy {
+    fn authorise(&mut self, authorisation: &Authorisation) -> Result<Decision, AppendFailure> {
+        self.engine.authorise(authorisation)
     }
 }
 
@@ -749,14 +769,16 @@ pub fn route_chosen_split(record: &DecisionRecord, named: &Named) -> RecordedInp
 
 /// Appends what the log holds of the order before its segments run: the authorisation, the deposit's arrival at the
 /// origin reserve, on the reserve's report to the operator's question, the acceptance (an automatic deposit's, which
-/// needs no yes and rests on that arrival), the router's decision record and the route chosen.
+/// needs no yes and rests on that arrival), the router's decision record and the route chosen. The authorisation is
+/// the customer's, given through `policy`, so the engine holds the order's moves to it (`T-021-04`).
 pub fn seed(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     operator: &Actor,
 ) {
-    seed_order(log, store, record, &Named::first(), operator);
+    seed_order(log, policy, store, record, &Named::first(), operator);
 }
 
 /// A stated entry of `bytes`, kept in `store`, claimed by `maker`, unverified, about `order` and `transaction`.
@@ -895,17 +917,19 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
 /// [`seed`], for `named`.
 pub fn seed_order(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
     operator: &Actor,
 ) {
-    seed_order_under(log, store, record, named, operator, None);
+    seed_order_under(log, policy, store, record, named, operator, None);
 }
 
 /// [`seed_order`], its authorisation naming `floor` (`T-020-10`).
 pub fn seed_order_under(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
@@ -914,6 +938,7 @@ pub fn seed_order_under(
 ) {
     seed_chosen(
         log,
+        policy,
         store,
         record,
         named,
@@ -924,8 +949,10 @@ pub fn seed_order_under(
 }
 
 /// [`seed_order_under`], the order opened by `chosen`.
+#[allow(clippy::too_many_arguments)]
 fn seed_chosen(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
@@ -947,18 +974,12 @@ fn seed_chosen(
             outcome,
         })
     };
+    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the customer authorises its order through policy"
+    );
     let mut log = log.borrow_mut();
-    log.take(
-        &entry(
-            What::Authorise {
-                authorisation: authorisation_of(named, floor),
-                decision: id("dec-auth"),
-            },
-            Outcome::Permitted {},
-        ),
-        Through::Policy,
-    )
-    .unwrap();
     seed_arrival(&mut log, store, record, named, operator, &entry);
     log.take(
         &entry(
@@ -1088,9 +1109,11 @@ impl Core {
         let log = Rc::new(RefCell::new(TestLog::default()));
         before(&log);
         let mut store = Store::default();
+        let mut policy = Policy::new(Rc::clone(&log));
         let chosen = open(&record, &Named::first());
         seed_chosen(
             &log,
+            &mut policy,
             &mut store,
             &record,
             &Named::first(),
@@ -1102,7 +1125,7 @@ impl Core {
         assert!(segments.follow(&*clock, &chosen));
         let context = world.context();
         Core {
-            policy: Policy::new(Rc::clone(&log)),
+            policy,
             log,
             store,
             clock,
@@ -1125,7 +1148,14 @@ impl Core {
     /// Seeds another order over the same route, follows it, and runs it from now on.
     pub fn take_up(&mut self, named: Named) {
         let operator = self.operator.clone();
-        seed_order(&self.log, &mut self.store, &self.record, &named, &operator);
+        seed_order(
+            &self.log,
+            &mut self.policy,
+            &mut self.store,
+            &self.record,
+            &named,
+            &operator,
+        );
         assert!(
             self.segments
                 .follow(&*self.clock, &route_chosen_of(&self.record, &named))

@@ -38,6 +38,19 @@ impl PolicyLog for Recording {
     }
 }
 
+/// What policy reads of the log (`T-021-04`): its decisions, the only entries it reads.
+impl rutent_scenarios::Entries for Recording {
+    fn entries(&self) -> Option<Vec<Entry>> {
+        Some(
+            self.decisions
+                .iter()
+                .cloned()
+                .map(Entry::Verified)
+                .collect(),
+        )
+    }
+}
+
 /// Names an item only for a type that doesn't implement [`PolicyLog`]: for one that does, the two impls make the
 /// name ambiguous and the test doesn't build.
 trait NotPolicyLog<A> {
