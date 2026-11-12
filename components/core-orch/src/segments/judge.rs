@@ -10,6 +10,11 @@
 //! 3. **This transaction's**: it is of the operation's kind and names the segment's transaction, and it isn't a
 //!    dry-run answer, which no real operation is answered by.
 //! 4. **Its amounts hold** against the operation and the tuple's terms (`check_amounts`).
+//! 5. **It gives out no more than it could**: a segment that keeps its asset gives out at most what it took in, and a
+//!    conversion at most what the quote its operation cites gives for what it took in, moved by no more than that
+//!    quote's slippage (`REQ-ORD-21`, `INV-1`). A conversion with no such quote, or a floating rate, has no bound
+//!    and doesn't count. `check_amounts` holds what is taken in, never what is given out, so without this a result
+//!    could hand the next segment more than arrived.
 //!
 //! A result that doesn't count is no result: the segment waits for one that does, and no outcome is recorded on it.
 
@@ -36,6 +41,20 @@ pub enum NotCounted {
     DryRunAnswer,
     /// Its amounts break the rules against the operation (`check_amounts`).
     Amounts(Vec<AmountMismatch>),
+    /// It gives out more than it took in, or, for a conversion, more than its cited quote and slippage allow, or
+    /// a conversion it cites no bounded quote for.
+    GivesOutMore,
+}
+
+/// The quote a conversion's operation cites: what it takes in, what it gives out, and how far its rate may move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quoted {
+    /// What the quote takes in.
+    pub amount_in: String,
+    /// What it gives out for that.
+    pub amount_out: String,
+    /// How far the rate may move against it, in basis points: 0 for a firm rate, `None` for a floating one.
+    pub slippage_bps: Option<u16>,
 }
 
 /// What a result that counts says of its segment.
@@ -66,6 +85,7 @@ pub fn judge(
     provider: &Id,
     operation: &Operation,
     terms: &Terms,
+    quoted: Option<&Quoted>,
     received: &[u8],
 ) -> Result<Counted, NotCounted> {
     catalogue
@@ -96,23 +116,42 @@ pub fn judge(
         amount_out: amount_out.to_owned(),
         remainder: remainder.clone(),
     };
+    // Same asset: no more out than in.
+    let kept = |amount_in: &str, amount_out: &str| match (whole(amount_in), whole(amount_out)) {
+        (Some(i), Some(o)) if o <= i => Ok(settled(amount_in, amount_out)),
+        _ => Err(NotCounted::GivesOutMore),
+    };
+    // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most.
+    let converted = |amount_in: &str, amount_out: &str| {
+        let bound = quoted.and_then(|q| {
+            let bps = u128::from(q.slippage_bps?);
+            whole(&q.amount_out)?
+                .checked_mul(whole(amount_in)?)?
+                .checked_mul(10_000 + bps)?
+                .checked_div(whole(&q.amount_in)?.checked_mul(10_000)?)
+        });
+        match (bound, whole(amount_out)) {
+            (Some(bound), Some(o)) if o <= bound => Ok(settled(amount_in, amount_out)),
+            _ => Err(NotCounted::GivesOutMore),
+        }
+    };
     match &result.statement {
         ResultBody::Withdrawal(r) | ResultBody::Deposit(r) => match &r.outcome {
-            ReserveMovementOutcome::Succeeded(s) => Ok(settled(&s.amount_in, &s.amount_out)),
+            ReserveMovementOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out),
             ReserveMovementOutcome::Failed(_) => Ok(Counted::Failed),
             ReserveMovementOutcome::Unknown(_) => Ok(Counted::Unknown),
             ReserveMovementOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
             ReserveMovementOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         ResultBody::Transfer(r) => match &r.outcome {
-            TransferOutcome::Succeeded(s) => Ok(settled(&s.amount_in, &s.amount_out)),
+            TransferOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out),
             TransferOutcome::Failed(_) => Ok(Counted::Failed),
             TransferOutcome::Unknown(_) => Ok(Counted::Unknown),
             TransferOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
             TransferOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         ResultBody::Conversion(r) => match &r.outcome {
-            ConversionOutcome::Succeeded(s) => Ok(settled(&s.amount_in, &s.amount_out)),
+            ConversionOutcome::Succeeded(s) => converted(&s.amount_in, &s.amount_out),
             ConversionOutcome::Failed(_) => Ok(Counted::Failed),
             ConversionOutcome::Unknown(_) => Ok(Counted::Unknown),
             ConversionOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
@@ -120,6 +159,13 @@ pub fn judge(
         },
         _ => Err(NotCounted::AnotherOperation),
     }
+}
+
+/// A whole amount in decimal digits, if it fits.
+fn whole(text: &str) -> Option<u128> {
+    (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
 }
 
 /// The transaction a value-moving operation names.

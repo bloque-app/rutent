@@ -4,8 +4,9 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::provider_role::{
-    Conversion, Deposit, Direction, NodeRef, OPERATION_SHAPE, Operation, Signature,
-    SignatureScheme, Statement, Terms, Transfer, Withdrawal, signing_input,
+    Conversion, ConversionOutcome, ConversionResult, Deposit, Direction, NodeRef, OPERATION_SHAPE,
+    Operation, ResultBody, Signature, SignatureScheme, Slippage, Statement, Terms, Transfer,
+    Withdrawal, signing_input,
 };
 use rutent_contracts::router_api::{
     self, CatalogueSnapshot, Endpoint, FigureValue, Id, OperationKind, PolicyBounds,
@@ -129,6 +130,8 @@ pub(super) fn sign(
 pub(super) struct Cited<'a> {
     pub terms: &'a Terms,
     pub declared_seconds: Option<u64>,
+    /// The conversion quote the operation cites, which bounds what a conversion gives out.
+    pub quoted: Option<super::judge::Quoted>,
 }
 
 /// The tuple figure and price an operation cites, in `snapshot`.
@@ -139,6 +142,7 @@ pub(super) fn cited<'a>(
     let figure = |id: &Id| snapshot.figures.iter().find(|f| &f.figure_id == id);
     let mut terms = None;
     let mut declared_seconds = None;
+    let mut quoted = None;
     for id in operation.figures.iter() {
         let Some(f) = figure(id) else { continue };
         if f.origin.provider() != Some(&operation.provider) {
@@ -151,12 +155,30 @@ pub(super) fn cited<'a>(
             FigureValue::Price {
                 settlement_seconds, ..
             } => declared_seconds = declared_seconds.or(Some(u64::from(*settlement_seconds))),
+            FigureValue::FreshQuote { quote, .. } => {
+                if let ResultBody::Conversion(ConversionResult {
+                    outcome: ConversionOutcome::DryRunAccepted(q),
+                    ..
+                }) = &quote.statement
+                {
+                    quoted = quoted.or(Some(super::judge::Quoted {
+                        amount_in: q.amount_in.clone(),
+                        amount_out: q.amount_out.clone(),
+                        slippage_bps: match q.slippage {
+                            Slippage::Firm(_) => Some(0),
+                            Slippage::Bounded(b) => Some(b.max_bps.get()),
+                            Slippage::Floating(_) => None,
+                        },
+                    }));
+                }
+            }
             _ => {}
         }
     }
     Some(Cited {
         terms: terms?,
         declared_seconds,
+        quoted,
     })
 }
 

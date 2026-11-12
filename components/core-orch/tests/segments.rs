@@ -1,6 +1,6 @@
 //! The segments' rules the simulated providers can't show (`T-020-08`): a route across three providers whose
 //! withdrawal names a cross-module call, which no simulated provider's nodes admit and no simulated release declares,
-//! and the promotion of a staged release on its permit.
+//! and a segment record's move mapped to the log's item.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -11,20 +11,17 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, Log,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Answer, CatalogueChange, Decision, DecisionRequest, Destination,
-    Effect, Entry, Outcome, ReadCheck, Receipt, Role, RouteEnd, What,
+    Actor, ActorKind, Answer, Decision, DecisionRequest, Destination, Effect, Entry, Outcome,
+    ReadCheck, Receipt, Role, RouteEnd, What,
 };
 use rutent_contracts::module_interface::{
     CallRefusalReason, Declaration, Identifier, OperationKind, PlatformRefusal,
 };
-use rutent_contracts::provider_role::{
-    Denomination, Operation, OuterNode, PublicKey, SafeInteger, Statement,
-};
+use rutent_contracts::provider_role::{Denomination, Operation, OuterNode, PublicKey, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id, Timestamp};
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
 use rutent_core_orch::segments::{
-    Answered, Live, Modules, NoProxy, Parts, PromoteRefused, ProvidersWord, Ran, SegmentOutcome,
-    Segments,
+    Answered, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, SegmentOutcome, Segments,
 };
 use rutent_core_orch::snapshot::{Clock, Exposures, Reading};
 use rutent_prov::catalogue::{Catalogue, Instant};
@@ -476,81 +473,4 @@ fn segment_record_reaches_the_log_with_each_move_when_it_ends() {
             at: Timestamp::new(Instant(1_794_200_000).rfc3339().unwrap()).unwrap(),
         }]
     );
-}
-
-fn promotion(change: CatalogueChange, version: &str) -> (DecisionRequest, Effect) {
-    let action = Action::ChangeCatalogue {
-        change,
-        provider: id("reserve-bank-co"),
-        version: Some(id(version)),
-        tuple: None,
-    };
-    let request = DecisionRequest {
-        request: id("req-promote"),
-        caller: operator(),
-        action: action.clone(),
-        at: Timestamp::new("2026-11-10T00:00:00Z").unwrap(),
-    };
-    let permit = Decision {
-        request: request.request.clone(),
-        decision: id("dec-promote"),
-        outcome: Answer::Permit {},
-        receipt: receipt(1),
-    }
-    .permit()
-    .unwrap();
-    let effect = Effect {
-        action,
-        decision: permit,
-        receipt: receipt(2),
-    };
-    (request, effect)
-}
-
-/// A permit to promote one release promotes no other: the platform promotes whatever is staged, so Core compares the
-/// staged version with the permit's first, and promotes by the permitting decision's caller.
-// verifies: REQ-AUZ-6
-#[test]
-fn promotion_whose_staged_version_differs_from_its_permit_is_refused() {
-    let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
-    let mut modules = fake();
-    modules.staged = Some("2.0.0".into());
-    let mut segments = Segments::new();
-
-    let (request, effect) = promotion(CatalogueChange::Promote, "1.5.0");
-    assert_eq!(
-        segments.promote(&mut modules, &clock, &request, &effect),
-        Err(PromoteRefused::NotTheStagedVersion {
-            staged: "2.0.0".into()
-        })
-    );
-    let (request, effect) = promotion(CatalogueChange::AcceptModule, "2.0.0");
-    assert_eq!(
-        segments.promote(&mut modules, &clock, &request, &effect),
-        Err(PromoteRefused::NotAPromotion(CatalogueChange::AcceptModule))
-    );
-    let (mut other, effect) = promotion(CatalogueChange::Promote, "2.0.0");
-    other.request = id("req-other");
-    assert_eq!(
-        segments.promote(&mut modules, &clock, &other, &effect),
-        Err(PromoteRefused::NotItsRequest)
-    );
-    assert!(modules.promoted.is_empty(), "nothing was promoted");
-
-    let (request, effect) = promotion(CatalogueChange::Promote, "2.0.0");
-    assert_eq!(
-        segments.promote(&mut modules, &clock, &request, &effect),
-        Ok("2.0.0".into())
-    );
-    assert_eq!(
-        modules.promoted,
-        vec![("reserve-bank-co".to_owned(), "ops-lead".to_owned())],
-        "by the permitting decision's caller"
-    );
-    modules.staged = Some("2.0.0".into());
-    assert_eq!(
-        segments.promote(&mut modules, &clock, &request, &effect),
-        Err(PromoteRefused::AlreadyActed)
-    );
-    let _ = SafeInteger::try_from(0).unwrap();
 }

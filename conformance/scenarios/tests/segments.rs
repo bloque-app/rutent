@@ -7,15 +7,17 @@ mod segments_support;
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::{Act, Behaviour, Delivery};
 use rutent_contracts::core_internal::{
-    Answer, HandedOver, OrderRefusalClass, Outcome, RefusalClass, Role, UseOf, UseOutcome, What,
+    Answer, CatalogueChange, HandedOver, OrderRefusalClass, Outcome, RefusalClass, Role, UseOf,
+    UseOutcome, What,
 };
 use rutent_contracts::module_interface::Identifier;
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::state_machine::{Observed, OrderState};
 use rutent_core_orch::segments::{
-    Accounted, NoProxy, NotCounted, ProvidersWord, Ran, SegmentOutcome, SegmentsError, StatusError,
-    UnknownBy,
+    Accounted, NoProxy, NotCounted, PromoteRefused, Promotion, ProvidersWord, Ran, SegmentOutcome,
+    SegmentsError, StatusError, UnknownBy,
 };
+use rutent_prov::module::lifecycle::Staging;
 use segments_support::*;
 use serde_json::json;
 
@@ -54,12 +56,37 @@ fn handled(world: &World) -> usize {
     world.fleet.platform.operations_received(RESERVE)
 }
 
+/// The withdrawal begins on 1.0.0 while 1.1.0 is staged; mid-flight the operator puts 1.1.0 in force and marks
+/// 1.0.0 stale, so the segment moves. Each segment's record reaches the log when it ends, with the version it began
+/// on, the one it ran on and its move, before its result.
 // verifies: REQ-MDL-5
 #[test]
 fn segments_record_of_its_versions_and_moves_reaches_the_log_when_it_ends() {
     let mut world = World::of(&[RESERVE]);
+    admit_release(&mut world, "1.1.0", Staging::new(1, 0, 0));
+    assert_eq!(
+        world.fleet.platform.lifecycle().staged(RESERVE),
+        Some("1.1.0")
+    );
     let mut core = Core::over(&mut world);
-    let ran = core.run(&mut world);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let mut first = true;
+    watched.during = Some(Box::new(move |platform, _| {
+        if std::mem::take(&mut first) {
+            let at = rutent_prov::catalogue::Instant(START);
+            platform
+                .promote(RESERVE, "ops-lead", at)
+                .expect("1.1.0 in force");
+            assert_eq!(platform.mark_stale(RESERVE, "1.0.0", "ops-lead", at), Ok(1));
+        }
+    }));
+    let ran = core.run_over(&catalogue, &mut watched);
+    drop(watched);
+    world.catalogue = catalogue;
     let done = segments(&ran);
     assert_eq!(done.len(), 2, "{done:?}");
     assert!(
@@ -68,23 +95,29 @@ fn segments_record_of_its_versions_and_moves_reaches_the_log_when_it_ends() {
         "{done:?}"
     );
     let log = core.log.borrow();
+    let at = |pick: &dyn Fn(&What) -> bool| {
+        log.records()
+            .into_iter()
+            .find(|(_, w)| pick(w))
+            .map(|(i, _)| i)
+    };
     let records: Vec<_> = log
         .records()
         .into_iter()
-        .filter_map(|(_, w)| match w {
+        .filter_map(|(i, w)| match w {
             What::HandOver {
                 item:
                     HandedOver::SegmentRecord {
                         transaction,
-                        provider,
                         began_on,
                         runs_on,
                         moves,
+                        ..
                     },
                 ..
             } => Some((
+                i,
                 transaction.clone(),
-                provider.clone(),
                 began_on.clone(),
                 runs_on.clone(),
                 moves.clone(),
@@ -93,13 +126,31 @@ fn segments_record_of_its_versions_and_moves_reaches_the_log_when_it_ends() {
         })
         .collect();
     assert_eq!(records.len(), 2, "one record per segment, when it ended");
-    for (place, (transaction, provider, began_on, runs_on, moves)) in records.iter().enumerate() {
-        assert_eq!(Some(transaction), done[place].transaction.as_ref());
-        assert_eq!(provider.as_str(), RESERVE);
-        assert_eq!(began_on.as_str(), "1.0.0");
-        assert_eq!(runs_on.as_str(), "1.0.0");
-        assert!(moves.is_empty());
-    }
+    let (index, transaction, began_on, runs_on, moves) = &records[0];
+    assert_eq!(Some(transaction), done[0].transaction.as_ref());
+    assert_eq!((began_on.as_str(), runs_on.as_str()), ("1.0.0", "1.1.0"));
+    assert_eq!(moves.len(), 1);
+    assert_eq!(
+        (
+            moves[0].from.as_str(),
+            moves[0].to.as_str(),
+            moves[0].reason
+        ),
+        (
+            "1.0.0",
+            "1.1.0",
+            rutent_contracts::core_internal::MoveReason::Stale
+        )
+    );
+    let (_, _, began_on, runs_on, moves) = &records[1];
+    assert_eq!((began_on.as_str(), runs_on.as_str()), ("1.1.0", "1.1.0"));
+    assert!(moves.is_empty());
+    // The record precedes the withdrawal's result.
+    let result = at(&|w| matches!(w, What::Result { .. })).unwrap();
+    assert!(
+        *index < result,
+        "the record reaches the log before the result"
+    );
     drop(log);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
@@ -307,6 +358,7 @@ fn failed_withdrawal_cancels_the_order_with_nothing_moved() {
             &*core.clock,
             &mut core.ids,
             &customer(),
+            None,
             &id(ORDER),
         )
         .unwrap();
@@ -535,6 +587,13 @@ fn outcome_unknown_is_left_only_on_stated_evidence() {
         "what it passed out is in the log"
     );
     drop(log);
+    assert!(
+        !core
+            .segments
+            .unknown_outcomes(&id(ORDER), &id(WITHDRAWAL))
+            .is_empty(),
+        "what ended it is kept with the segment"
+    );
 
     // The module never got as far as the operation: nothing moved, and no outcome is unknown.
     let mut world = World::of(&[RESERVE]);
@@ -661,7 +720,11 @@ fn segments_actual_settlement_time_is_recorded_beside_the_declared_one() {
     );
 }
 
-/// The withdrawal settled and the deposit waits on the person: the order waits between segments.
+/// The withdrawal settled and the deposit waits on the person: the order waits between segments. Its customer
+/// reads its state and age; every read goes to the policy engine and is recorded. Under `T-021-02`'s default the
+/// operator reads an order only by a permission policy holds for it, and core-internal lets a permission be granted
+/// only to a regulator or a checker, so the operator's read is refused, recorded, until the owner's form rules
+/// otherwise; the read itself is the same call.
 // verifies: REQ-ORD-5
 #[test]
 fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
@@ -679,30 +742,40 @@ fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
     ));
     core.clock.advance(120);
     let mut reads = Policy::new(std::rc::Rc::clone(&core.log));
-    for reader in [customer(), operator()] {
-        let status = core
-            .segments
-            .status(&mut reads, &*core.clock, &mut core.ids, &reader, &id(ORDER))
-            .expect("the read is allowed");
-        assert_eq!(status.state, OrderState::FirstSegmentSettled, "{reader:?}");
-        assert_eq!(
-            status.parts,
-            vec![(id(PART), OrderState::FirstSegmentSettled)]
-        );
-        assert_eq!(status.age_seconds, 120, "{reader:?}");
-    }
+    let read = |core: &mut Core, reads: &mut Policy, reader, permission| {
+        core.segments.status(
+            reads,
+            &*core.clock,
+            &mut core.ids,
+            &reader,
+            permission,
+            &id(ORDER),
+        )
+    };
+    let status = read(&mut core, &mut reads, customer(), None).expect("the customer reads it");
+    assert_eq!(status.state, OrderState::FirstSegmentSettled);
+    assert_eq!(
+        status.parts,
+        vec![(id(PART), OrderState::FirstSegmentSettled)]
+    );
+    assert_eq!(
+        status.age_seconds, 120,
+        "the time it has waited in its state"
+    );
+    let by_permission = id("perm-operations");
+    assert!(
+        matches!(
+            read(&mut core, &mut reads, operator(), Some(&by_permission)),
+            Err(StatusError::Refused(_))
+        ),
+        "the operator reads by policy, which holds no permission of its yet"
+    );
     let stranger = rutent_contracts::core_internal::Actor {
         party: id("another-customer"),
         ..customer()
     };
     assert!(matches!(
-        core.segments.status(
-            &mut reads,
-            &*core.clock,
-            &mut core.ids,
-            &stranger,
-            &id(ORDER)
-        ),
+        read(&mut core, &mut reads, stranger, None),
         Err(StatusError::Refused(_))
     ));
     // Each read is recorded, allowed or refused.
@@ -785,27 +858,23 @@ fn retried_effect_append_is_acted_on_once() {
     assert_eq!(in_flight(&core), "0");
 }
 
-/// Held from its hand-over until it is accounted for: a settled segment is released, a segment whose outcome is
-/// unknown stays held.
+/// Held from its hand-over until it is accounted for, at the amount it moves: the withdrawal, settled, is released;
+/// the deposit, whose outcome is unknown, stays held at what arrived, not at the quote.
 // verifies: REQ-ORD-8
 #[test]
 fn segment_handed_over_is_held_in_flight_until_it_is_accounted_for() {
     let mut world = World::of(&[RESERVE]);
     let mut core = Core::over(&mut world);
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
     world
         .fleet
         .world()
         .script_for(RESERVE, "deposit", Behaviour::act(Act::Unknown));
-    let held = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let catalogue = std::mem::replace(
-        &mut world.catalogue,
-        rutent_prov::catalogue::Catalogue::new(),
-    );
-    let ran = {
-        let mut watched = Watched::new(&mut world.fleet.platform);
-        core.run_over(&catalogue, &mut watched)
-    };
-    world.catalogue = catalogue;
+    let ran = core.run(&mut world);
     let done = segments(&ran);
     assert!(matches!(done[0].outcome, SegmentOutcome::Settled { .. }));
     assert!(matches!(done[1].outcome, SegmentOutcome::Unknown(_)));
@@ -814,13 +883,11 @@ fn segment_handed_over_is_held_in_flight_until_it_is_accounted_for() {
         .held()
         .map(|h| (h.segment.as_str().to_owned(), h.amount.as_str().to_owned()))
         .collect();
-    held.borrow_mut().extend(holds.clone());
     assert_eq!(
         holds,
-        vec![(DEPOSIT.to_owned(), AMOUNT.to_owned())],
-        "the withdrawal, accounted for, is released; the deposit, in flight, is held"
+        vec![(DEPOSIT.to_owned(), "990000".to_owned())],
+        "the withdrawal, accounted for, is released; the deposit, in flight, is held at what it moves"
     );
-    assert_eq!(in_flight(&core), AMOUNT);
 }
 
 /// The chosen part starts at the reserve's ledger with its deposit, and no withdrawal: refused, recorded, and nothing
@@ -868,16 +935,401 @@ fn part_breaking_the_route_guard_is_refused_before_any_segment_is_handed_over() 
 fn move_policy_does_not_permit_hands_nothing_over() {
     let mut world = World::of(&[RESERVE]);
     let mut core = Core::over(&mut world);
-    core.policy.answer = Answer::Refuse {
-        class: RefusalClass::OutsideAuthorisation,
-    };
+    core.policy.refuse(RefusalClass::OutsideAuthorisation);
     let before = handled(&world);
     let ran = core.run(&mut world);
     assert_eq!(
         segments(&ran)[0].outcome,
-        SegmentOutcome::NotPermitted(core.policy.answer)
+        SegmentOutcome::NotPermitted(Answer::Refuse {
+            class: RefusalClass::OutsideAuthorisation
+        })
     );
     assert_eq!(handled(&world), before);
     assert_eq!(core.log.borrow().count(is_effect), 0);
     assert_eq!(in_flight(&core), "0");
+}
+
+/// A withdrawal's result, signed by its provider, says it gave out twice what it took in. It doesn't count, and the
+/// deposit is never handed the surplus.
+// verifies: REQ-ORD-21, INV-1
+#[test]
+fn result_giving_out_more_than_it_took_in_does_not_count() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let key = statements_key_of(RESERVE);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.alter = Some((
+        0,
+        Box::new(move |bytes| {
+            resigned(&bytes, &key, |v| {
+                v["statement"]["outcome"]["amount_out"] = "2000000".into();
+            })
+        }),
+    ));
+    let ran = core.run_over(&catalogue, &mut watched);
+    let carried = watched.carried.len();
+    drop(watched);
+    world.catalogue = catalogue;
+    let done = segments(&ran);
+    assert_eq!(
+        done[0].outcome,
+        SegmentOutcome::NoResult(NotCounted::GivesOutMore)
+    );
+    assert_eq!(carried, 1, "the deposit is never handed over");
+    assert_eq!(in_flight(&core), AMOUNT, "only what was moved is held");
+    assert_eq!(core.log.borrow().count(is_result), 0);
+}
+
+/// A withdrawal settles with nothing given out: the part can't go on, and the order is told so.
+// verifies: REQ-ORD-21
+#[test]
+fn segment_settling_with_nothing_given_out_ends_the_part_with_its_refusal() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let key = statements_key_of(RESERVE);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.alter = Some((
+        0,
+        Box::new(move |bytes| {
+            resigned(&bytes, &key, |v| {
+                v["statement"]["outcome"]["amount_out"] = "0".into();
+            })
+        }),
+    ));
+    let ran = core.run_over(&catalogue, &mut watched);
+    let carried = watched.carried.len();
+    drop(watched);
+    world.catalogue = catalogue;
+    let done = segments(&ran);
+    assert!(
+        matches!(&done[0].outcome, SegmentOutcome::Settled { amount_out, .. } if amount_out.as_str() == "0"),
+        "{done:?}"
+    );
+    assert_eq!(carried, 1);
+    assert_eq!(
+        core.log.borrow().count(|w| matches!(
+            w,
+            What::OrderRefusal {
+                class: OrderRefusalClass::NoRouteForAmount,
+                ..
+            }
+        )),
+        1
+    );
+}
+
+/// The log takes the withdrawal's result, then its provider-bound input, then the segment record, and loses every
+/// answer: each time the run stops with what came back kept, and running the part again goes on from there, moving nothing twice and
+/// recording each entry once.
+// verifies: REQ-MDL-8, REQ-MDL-5, INV-7, INV-8
+#[test]
+fn what_comes_back_is_kept_when_a_later_step_fails() {
+    for on in [On::StatedResult, On::Bound, On::Record] {
+        let mut world = World::of(&[RESERVE]);
+        let mut core = Core::over(&mut world);
+        for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+            // The log takes the entry, and each answer is lost.
+            core.log
+                .borrow_mut()
+                .faults
+                .push_back((on, Fault::LostAnswer));
+        }
+        let before = handled(&world);
+        let session = world.context().session;
+        let stopped = core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut ProvidersWord,
+            &session,
+        );
+        assert_eq!(
+            stopped,
+            Err(SegmentsError::Append(
+                rutent_contracts::core_internal::calls::AppendFailure::Unavailable
+            )),
+            "{on:?}"
+        );
+        let ran = core.run(&mut world);
+        let done = segments(&ran);
+        assert!(
+            done.iter()
+                .all(|d| matches!(d.outcome, SegmentOutcome::Settled { .. })),
+            "{on:?}: {done:?}"
+        );
+        assert_eq!(handled(&world) - before, 2, "{on:?}: each operation once");
+        let log = core.log.borrow();
+        let stated_results = log
+            .entries
+            .iter()
+            .filter(|(e, _)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE)
+            })
+            .count();
+        assert_eq!(stated_results, 2, "{on:?}: each result kept once");
+        assert_eq!(
+            log.count(|w| matches!(
+                w,
+                What::HandOver {
+                    item: HandedOver::SegmentRecord { .. },
+                    ..
+                }
+            )),
+            2,
+            "{on:?}"
+        );
+        assert_eq!(log.count(is_effect), 2, "{on:?}");
+        drop(log);
+        core.admitted(&world.catalogue)
+            .unwrap_or_else(|e| panic!("{on:?}: {e:?}"));
+    }
+}
+
+/// A drain naming something the contract can't carry is kept whole, the error answered every time it is tried,
+/// and what the operation gave back stays with its segment.
+// verifies: REQ-MDL-8
+#[test]
+fn drain_the_log_cant_take_is_kept_whole_and_answered() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.spoil = true;
+    let session = SuiteContext::default().session;
+    let stopped = core.try_run_with(
+        &catalogue,
+        &mut watched,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    drop(watched);
+    world.catalogue = catalogue;
+    assert!(
+        matches!(stopped, Err(SegmentsError::Uncarried(_))),
+        "{stopped:?}"
+    );
+    assert_eq!(core.segments.undelivered(), 1, "the drain is kept whole");
+    let mut general = General(std::rc::Rc::clone(&core.log));
+    assert!(matches!(
+        core.segments.flush(&mut general),
+        Err(SegmentsError::Uncarried(_))
+    ));
+    assert_eq!(core.segments.undelivered(), 1);
+    assert!(
+        core.segments
+            .in_flight(&id(ORDER), &id(WITHDRAWAL))
+            .is_some(),
+        "the withdrawal and what it gave back stay in flight"
+    );
+}
+
+/// The log takes the withdrawal's effect three times and loses each answer. Running the part again appends the same
+/// entry again, not a second effect, and acts on it once.
+// verifies: INV-8, INV-7
+#[test]
+fn effect_whose_answers_were_lost_is_appended_again_unchanged() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Effect, Fault::LostAnswer));
+    }
+    let before = handled(&world);
+    let session = world.context().session;
+    let stopped = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    assert!(stopped.is_err());
+    assert_eq!(handled(&world), before, "nothing without its receipt");
+    let ran = core.run(&mut world);
+    assert_eq!(segments(&ran).len(), 2);
+    assert_eq!(
+        core.log.borrow().count(is_effect),
+        2,
+        "one effect per segment"
+    );
+    assert_eq!(core.policy.asked.len(), 2, "one decision per segment");
+    assert_eq!(handled(&world) - before, 2);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The log answers the deposit's effect with the withdrawal's receipt. Core has acted on that receipt, so it hands
+/// the deposit over to no one, whatever segment the receipt came back for.
+// verifies: INV-8
+#[test]
+fn effect_receipt_acted_on_before_is_not_acted_on_again() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::EffectOf(DEPOSIT), Fault::Replay));
+    let before = handled(&world);
+    let session = world.context().session;
+    let ran = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    assert!(
+        matches!(ran, Err(SegmentsError::AlreadyActed(_))),
+        "{ran:?}"
+    );
+    assert_eq!(
+        handled(&world) - before,
+        1,
+        "the deposit was never handed over"
+    );
+}
+
+/// 1.1.0 is staged beside 1.0.0. A promotion naming another version is refused before policy is asked; one naming
+/// 1.1.0 is decided, recorded as an effect, carried out by the decision's caller, and its result recorded.
+// verifies: REQ-AUZ-6
+#[test]
+fn promotion_whose_staged_version_differs_from_its_permit_is_refused() {
+    let mut world = World::of(&[RESERVE]);
+    admit_release(&mut world, "1.1.0", Staging::new(1, 0, 0));
+    let mut core = Core::over(&mut world);
+    let (provider, caller, core_actor) = (id(RESERVE), operator(), segments_support::core());
+    let mut general = General(std::rc::Rc::clone(&core.log));
+    let other = id("1.0.5");
+    let refused = core.segments.promote(
+        &mut general,
+        &mut core.policy,
+        &mut world.fleet.platform,
+        &*core.clock,
+        &mut core.ids,
+        &Promotion {
+            provider: &provider,
+            version: &other,
+            caller: &caller,
+            core: &core_actor,
+        },
+    );
+    assert_eq!(
+        refused,
+        Err(PromoteRefused::NotTheStagedVersion {
+            staged: "1.1.0".into()
+        })
+    );
+    assert!(core.policy.asked.is_empty(), "policy isn't asked");
+    assert_eq!(
+        world.fleet.platform.lifecycle().in_force(RESERVE),
+        Some("1.0.0")
+    );
+    let staged = id("1.1.0");
+    let promoted = core.segments.promote(
+        &mut general,
+        &mut core.policy,
+        &mut world.fleet.platform,
+        &*core.clock,
+        &mut core.ids,
+        &Promotion {
+            provider: &provider,
+            version: &staged,
+            caller: &caller,
+            core: &core_actor,
+        },
+    );
+    assert_eq!(promoted, Ok("1.1.0".into()));
+    assert_eq!(
+        world.fleet.platform.lifecycle().in_force(RESERVE),
+        Some("1.1.0")
+    );
+    let decision = world
+        .fleet
+        .platform
+        .lifecycle()
+        .decisions()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        decision.by.as_str(),
+        caller.acts.as_str(),
+        "by the decision's caller"
+    );
+    let log = core.log.borrow();
+    let results: Vec<_> = log
+        .verified()
+        .into_iter()
+        .filter(|v| is_result(&v.what))
+        .map(|v| v.outcome)
+        .collect();
+    assert_eq!(results, vec![Outcome::Done {}]);
+    drop(log);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The reserve's module stands for the operator's party, so the log verifies its statements by the release it
+/// accepted, as it does a module the operator publishes (core-internal's `release_statement_keys`). Mid-flight, its
+/// release is revoked. The segment's record, handed over before its result, shows it ran on that release, so its
+/// result is still the module's and the segment settles on it; were the result first, it would be no one's.
+// verifies: REQ-MDL-20, REQ-MDL-5
+#[test]
+fn segment_on_a_release_revoked_mid_flight_settles_on_its_result() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    // The operator states for the party the reserve's module states for.
+    core.operator.party = id(&format!("{RESERVE}-publisher"));
+    let key = world.installed[0].declaration.outside.statement_key.clone();
+    seed_change(
+        &core.log,
+        release_change(CatalogueChange::AcceptModule, "1.0.0", Some(key)),
+    );
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let log = std::rc::Rc::clone(&core.log);
+    let mut first = true;
+    watched.during = Some(Box::new(move |_, _| {
+        if std::mem::take(&mut first) {
+            seed_change(
+                &log,
+                release_change(CatalogueChange::RevokeRelease, "1.0.0", None),
+            );
+        }
+    }));
+    let ran = core.run_over(&catalogue, &mut watched);
+    drop(watched);
+    world.catalogue = catalogue;
+    let done = segments(&ran);
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    let admitted = core
+        .admitted(&world.catalogue)
+        .expect("the log admits every entry");
+    let verified = admitted.iter().any(|e| matches!(e,
+        rutent_contracts::core_internal::Entry::Stated(s)
+            if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                && s.about.as_ref().and_then(|a| a.segment.as_ref()).map(|x| x.as_str()) == Some(WITHDRAWAL)
+                && matches!(s.attribution, rutent_contracts::core_internal::Attribution::Verified { .. })));
+    assert!(verified, "the withdrawal's result is the module's");
 }

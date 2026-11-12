@@ -13,16 +13,17 @@ use ed25519_dalek::{Signer, Verifier};
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::signing::real;
 use rutent_conformance::sim::{Role as SimRole, Spec};
+use rutent_contracts::core_internal::CatalogueChange;
 use rutent_contracts::core_internal::Effect;
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements, Log, Reads,
-    Signatures, StatementKeys,
+    AppendFailure, DecisionEntry, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements,
+    Log, PolicyLog, Reads, Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
-    AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Decision, DecisionRequest,
-    Destination, Entry, KeptStatement, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck,
-    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through,
-    TimeSource, VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
+    AcceptanceBasis, Actor, ActorKind, Authorisation, Decision, DecisionRequest, Destination,
+    Entry, KeptStatement, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, Receipt,
+    RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through, TimeSource, VerifiedEntry,
+    VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::module_interface::{Identifier, Name, PlatformRefusal};
@@ -39,6 +40,8 @@ use rutent_contracts::state_machine::{
     self as stm, Observed, PartPlan, RecordedInput, SegmentPlan, Source, SourceKind, Standing,
     Subject,
 };
+use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Ruling, Said};
+use rutent_core_authz::roles::Permission;
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
 use rutent_core_orch::segments::{
     Answered, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments, SegmentsError,
@@ -50,7 +53,7 @@ use rutent_core_orch::snapshot::{
 use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, Publisher, ReversalCapacity, tuples_of,
 };
-use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
+use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord, Staging};
 use rutent_prov::module::platform::Platform;
 use rutent_prov::module::types::Events;
 use rutent_prov::module::types::Handled;
@@ -143,20 +146,48 @@ pub enum Fault {
     Unavailable,
     /// It takes it, and its answer is lost: the caller sees `Unavailable`.
     LostAnswer,
+    /// It answers with the receipt of the first effect it holds, as a log that mixed up its answers would: the
+    /// entry is not appended.
+    Replay,
 }
 
 /// Which entries a fault is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum On {
+    /// Any effect.
     Effect,
+    /// The effect of the segment named.
+    EffectOf(&'static str),
+    /// Any item handed over.
     HandOver,
+    /// A segment's record, handed over.
+    Record,
+    /// A provider's result, as its stated entry.
+    StatedResult,
+    /// The input that binds a segment's provider.
+    Bound,
 }
 
 impl On {
     fn matches(self, entry: &Entry) -> bool {
         match (self, entry) {
             (On::Effect, Entry::Verified(v)) => matches!(v.what, What::Effect { .. }),
+            (On::EffectOf(segment), Entry::Verified(v)) => matches!(&v.what,
+                What::Effect { action: rutent_contracts::core_internal::Action::MoveValue { segment: s, .. }, .. }
+                    if s.as_str() == segment),
             (On::HandOver, Entry::Verified(v)) => matches!(v.what, What::HandOver { .. }),
+            (On::Record, Entry::Verified(v)) => matches!(
+                v.what,
+                What::HandOver {
+                    item: rutent_contracts::core_internal::HandedOver::SegmentRecord { .. },
+                    ..
+                }
+            ),
+            (On::StatedResult, Entry::Stated(s)) => {
+                s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+            }
+            (On::Bound, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if input.observed == Observed::ProviderBound {}),
             _ => false,
         }
     }
@@ -183,6 +214,15 @@ impl TestLog {
         };
         if fault == Some(Fault::Unavailable) {
             return Err(AppendFailure::Unavailable);
+        }
+        if fault == Some(Fault::Replay) {
+            let (index, first) = self
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, (e, _))| On::Effect.matches(e))
+                .expect("an effect to replay");
+            return Ok(receipt(index, &first.0));
         }
         let index = match self.entries.iter().position(|(e, _)| e == entry) {
             Some(index) => index,
@@ -285,98 +325,112 @@ fn commitment(place: usize) -> Digest {
 
 // Policy ------------------------------------------------------------------------------------------------------------
 
-/// Policy, as the engine would answer: each decision appended through policy's handle before it is given.
+/// Policy's handle on the shared log.
+pub struct PolicyPath(pub Rc<RefCell<TestLog>>);
+
+impl PolicyLog for PolicyPath {
+    fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+        self.0
+            .borrow_mut()
+            .take(&Entry::Verified(entry.entry().clone()), Through::Policy)
+    }
+}
+
+/// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
+pub struct Deployment_ {
+    pub refuse: Rc<Cell<Option<RefusalClass>>>,
+}
+
+impl authz::Policy for Deployment_ {
+    fn needs(&mut self, _: authz::Asked<'_>) -> Reply<Vec<Need>> {
+        Reply::Given(Vec::new())
+    }
+
+    fn rule(&mut self, _: authz::Asked<'_>, _: &[Input]) -> Reply<Ruling> {
+        Reply::Given(match self.refuse.get() {
+            Some(class) => Ruling::Refuse(class),
+            None => Ruling::Permit,
+        })
+    }
+}
+
+/// The deployment's registers, as the policy engine asks them: which actor acts for which party
+/// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
+/// authorisation onward, the operator's login promotes a staged release), and whose order this is.
+pub struct Register;
+
+impl authz::Sources for Register {
+    fn supply(&mut self, need: &Need) -> Reply<Said> {
+        let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
+        match &need.from {
+            authz::Source::ActsFor { acts, party } => {
+                let listed = [core(), customer(), operator()];
+                match listed.iter().find(|a| &a.acts == acts) {
+                    Some(actor) => yes(&actor.party == party),
+                    None => Reply::Missing,
+                }
+            }
+            authz::Source::Permissions { permission, .. } => yes(match permission {
+                Permission::CarryOnward => need.input == core().acts,
+                Permission::Change(CatalogueChange::Promote) => need.input == operator().acts,
+                _ => false,
+            }),
+            authz::Source::OrderParties(order) => {
+                yes(order.as_str() == ORDER && need.input == customer().party)
+            }
+            _ => Reply::Missing,
+        }
+    }
+}
+
+/// Policy: the policy engine itself, its fixed rules first, over the deployment's policy and registers, appending
+/// each decision through policy's handle before it answers. What it was asked is kept.
 pub struct Policy {
-    pub log: Rc<RefCell<TestLog>>,
-    pub answer: Answer,
+    engine: Engine<PolicyPath, Deployment_, Register>,
+    refuse: Rc<Cell<Option<RefusalClass>>>,
     pub asked: Vec<DecisionRequest>,
-    next: u64,
 }
 
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
+        let refuse = Rc::new(Cell::new(None));
         Self {
-            log,
-            answer: Answer::Permit {},
+            engine: Engine::with_policy(
+                PolicyPath(log),
+                Deployment_ {
+                    refuse: Rc::clone(&refuse),
+                },
+                Register,
+            ),
+            refuse,
             asked: Vec::new(),
-            next: 0,
         }
     }
 
-    fn decide_with(&mut self, what: What, at: &Timestamp, outcome: Outcome) -> Receipt {
-        let entry = Entry::Verified(VerifiedEntry {
-            kind: VerifiedKind::Verified,
-            who: core(),
-            what,
-            when: When {
-                at: at.clone(),
-                source: TimeSource::CoreClock,
-            },
-            outcome,
-        });
-        self.log
-            .borrow_mut()
-            .take(&entry, Through::Policy)
-            .expect("the policy entry is admitted")
+    /// From now on, the deployment's policy refuses with `class`.
+    pub fn refuse(&self, class: RefusalClass) {
+        self.refuse.set(Some(class));
     }
 }
 
 impl Decisions for Policy {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         self.asked.push(request.clone());
-        self.next += 1;
-        let decision = id(&format!("dec-{}", self.next));
-        let receipt = self.decide_with(
-            What::Decide {
-                request: request.clone(),
-                decision: decision.clone(),
-            },
-            &request.at,
-            self.answer.outcome(),
-        );
-        Ok(Decision {
-            request: request.request.clone(),
-            decision,
-            outcome: self.answer,
-            receipt,
-        })
+        self.engine.decide(request)
     }
 }
 
 impl Reads for Policy {
     fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
-        let allowed = match check.reader.role {
-            Role::Customer => check.reader.party == customer().party,
-            Role::Operator => true,
-            _ => false,
-        };
-        let outcome = if allowed {
-            ReadOutcome::Allowed {}
-        } else {
-            ReadOutcome::Refused {
-                class: RefusalClass::NotPermitted,
-            }
-        };
-        let receipt = self.decide_with(
-            What::CheckRead {
-                check: check.clone(),
-            },
-            &check.at,
-            outcome.outcome(),
-        );
-        Ok(ReadAnswer {
-            request: check.request.clone(),
-            outcome,
-            receipt,
-        })
+        self.engine.check_read(check)
     }
 
-    fn grant_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
-        Err(AppendFailure::Unavailable)
+    fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.engine.grant_permission(change)
     }
 
-    fn revoke_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
-        Err(AppendFailure::Unavailable)
+    fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.engine.revoke_permission(change)
     }
 }
 
@@ -863,6 +917,9 @@ pub struct Core {
     pub record: DecisionRecord,
     pub inputs: BTreeMap<String, String>,
     pub key: TestKey,
+    /// The operator, as Core signs in its name and the log reads it: its party is the one a module the operator
+    /// publishes states for.
+    pub operator: Actor,
 }
 
 impl Core {
@@ -890,6 +947,7 @@ impl Core {
                 ("beneficiary.bank_account".to_owned(), "acct-2".to_owned()),
             ]),
             key: TestKey(context.deployment.operator_key.clone()),
+            operator: operator(),
         }
     }
 
@@ -918,7 +976,7 @@ impl Core {
         let (order, part, auth, origin, end) =
             (id(ORDER), id(PART), id("auth-1"), id(RESERVE), route_end());
         let segments = [id(WITHDRAWAL), id(DEPOSIT)];
-        let (caller, core_actor, operator_actor) = (core(), core(), operator());
+        let (caller, core_actor, operator_actor) = (core(), core(), self.operator.clone());
         let session = id(session);
         let live = Live {
             order: &order,
@@ -994,11 +1052,12 @@ impl Core {
                         catalogue,
                         store: &self.store,
                         at: self.clock.now().floor(),
+                        operator: &self.operator,
                     };
                     let mut keys = Sources { ..sources };
                     let signatures = Sources { ..sources };
                     Entry::Stated(
-                        attribute(claim, &mut sources, &mut keys, &signatures)
+                        attribute(claim, &history, &mut sources, &mut keys, &signatures)
                             .map_err(|e| (i, format!("{e:?}")))?,
                     )
                 }
@@ -1018,6 +1077,7 @@ struct Sources<'a> {
     catalogue: &'a Catalogue,
     store: &'a Store,
     at: Instant,
+    operator: &'a Actor,
 }
 
 impl KeptStatements for Sources<'_> {
@@ -1044,12 +1104,12 @@ impl StatementKeys for Sources<'_> {
     }
 
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
-        if maker == &operator().acts {
-            return Ok(Some(operator().party));
+        if maker == &self.operator.acts {
+            return Ok(Some(self.operator.party.clone()));
         }
         Ok(
             match self.catalogue.publishers().publisher(maker.as_str()) {
-                Some(Publisher::Operator) => Some(operator().party),
+                Some(Publisher::Operator) => Some(self.operator.party.clone()),
                 Some(Publisher::Party(party)) => Id::new(party),
                 None => None,
             },
@@ -1140,7 +1200,7 @@ pub fn snapshot_of(record: &DecisionRecord) -> &CatalogueSnapshot {
 // The platform, watched ---------------------------------------------------------------------------------------------
 
 /// What a test does while an operation is handed over, with the platform as it stands then.
-pub type During<'a> = Box<dyn FnMut(&Platform<SimWorld>, &Statement<ProviderOperation>) + 'a>;
+pub type During<'a> = Box<dyn FnMut(&mut Platform<SimWorld>, &Statement<ProviderOperation>) + 'a>;
 
 /// What a test makes of the result a module gave for one operation.
 pub type Alter<'a> = Box<dyn FnMut(Vec<u8>) -> Vec<u8> + 'a>;
@@ -1156,6 +1216,8 @@ pub struct Watched<'a> {
     pub alter: Option<(usize, Alter<'a>)>,
     pub takes: Option<(Rc<TestClock>, u64)>,
     pub transactions: Rc<RefCell<Vec<String>>>,
+    /// Each drain of events holds, besides, a state read the contract can't carry: one of no transaction.
+    pub spoil: bool,
 }
 
 impl<'a> Watched<'a> {
@@ -1168,6 +1230,7 @@ impl<'a> Watched<'a> {
             alter: None,
             takes: None,
             transactions: Rc::new(RefCell::new(Vec::new())),
+            spoil: false,
         }
     }
 
@@ -1218,7 +1281,7 @@ impl Modules for Watched<'_> {
             .to_owned();
         self.transactions.borrow_mut().push(transaction);
         if let Some(during) = self.during.as_mut() {
-            during(self.platform, operation);
+            during(&mut *self.platform, operation);
         }
         let answered = Modules::carry_out(&mut *self.platform, effect, provider, operation);
         if let Some((clock, seconds)) = &self.takes {
@@ -1233,7 +1296,18 @@ impl Modules for Watched<'_> {
     }
 
     fn take_events(&mut self) -> Events {
-        let events = Modules::take_events(&mut *self.platform);
+        let mut events = Modules::take_events(&mut *self.platform);
+        if self.spoil {
+            events
+                .state_reads
+                .push(rutent_prov::module::types::StateEvent {
+                    provider: RESERVE.into(),
+                    part: rutent_contracts::module_interface::PartName::Outside,
+                    transaction: String::new(),
+                    key: "book".into(),
+                    found: true,
+                });
+        }
         self.drained.push(events.clone());
         events
     }
@@ -1325,4 +1399,129 @@ pub fn resigned(
     change(&mut value);
     rutent_conformance::signing::sign_value(&mut value, key);
     serde_json::to_vec(&value).unwrap()
+}
+
+// A second release, catalogue changes, the log's own record of them ------------------------------------------------
+
+/// Admits `version` of [`RESERVE`]'s release, the same module under another version, as its provider asserts it, with
+/// `staging` set first: `None` puts it in force once accepted, a staging stages it beside the version in force.
+pub fn admit_release(world: &mut World, version: &str, staging: Option<Staging>) {
+    world.fleet.platform.set_staging(staging);
+    let installed = world.installed[0].clone();
+    let mut declaration = installed.declaration.clone();
+    declaration.version = Identifier::new(version).unwrap();
+    let guests = rutent_scenarios::sim::disk::guests();
+    let binaries = rutent_contracts::module_interface::Parts {
+        sandboxed: std::fs::read(guests.join("sim-reserve-sandboxed.wasm")).unwrap(),
+        outside: std::fs::read(guests.join("sim-outside.wasm")).unwrap(),
+    };
+    let context = SuiteContext::default();
+    let keys = Spec::of(SimRole::Reserve, RESERVE)
+        .make(&context)
+        .advertisement()
+        .into_statement()
+        .statement
+        .keys;
+    let advertising = keys
+        .iter()
+        .find(|k| k.purpose == rutent_contracts::provider_role::KeyPurpose::Advertising)
+        .unwrap()
+        .public_key
+        .clone();
+    let assertion = rutent_scenarios::sim::fleet::assertion_signed_by(
+        &declaration,
+        &binaries,
+        &real(advertising.as_str()),
+    );
+    let admitted = world.fleet.admit(&assertion, &binaries);
+    let rutent_prov::module::types::Admitted::Artefact(artefact) = admitted else {
+        panic!("the release is admitted: {admitted:?}");
+    };
+    if artefact.acceptance.accepted.is_none() {
+        world
+            .fleet
+            .accept(RESERVE, &artefact)
+            .expect("the release is accepted");
+    }
+}
+
+/// A catalogue change as the log holds one carried out: policy's permitting decision, its effect and a `done` result.
+pub fn seed_change(log: &Rc<RefCell<TestLog>>, action: rutent_contracts::core_internal::Action) {
+    let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
+    let entry = |who: Actor, what: What, outcome: Outcome| {
+        Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who,
+            what,
+            when: When {
+                at: at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome,
+        })
+    };
+    let mut log = log.borrow_mut();
+    let n = log.entries.len();
+    let request = DecisionRequest {
+        request: id(&format!("req-change-{n}")),
+        caller: operator(),
+        action: action.clone(),
+        at: at.clone(),
+    };
+    let decision = id(&format!("dec-change-{n}"));
+    let decided = log
+        .take(
+            &entry(
+                operator(),
+                What::Decide {
+                    request: request.clone(),
+                    decision: decision.clone(),
+                },
+                Outcome::Permitted {},
+            ),
+            Through::Policy,
+        )
+        .unwrap();
+    let permit = Decision {
+        request: request.request.clone(),
+        decision,
+        outcome: rutent_contracts::core_internal::Answer::Permit {},
+        receipt: decided,
+    }
+    .permit()
+    .unwrap();
+    let effect = log
+        .take(
+            &entry(
+                core(),
+                What::Effect {
+                    action,
+                    decision: permit,
+                },
+                Outcome::ToTakeEffect {},
+            ),
+            Through::General,
+        )
+        .unwrap();
+    log.take(
+        &entry(core(), What::Result { effect }, Outcome::Done {}),
+        Through::General,
+    )
+    .unwrap();
+}
+
+/// A change about [`RESERVE`]'s release `version`.
+pub fn release_change(
+    change: CatalogueChange,
+    version: &str,
+    statement_key: Option<PublicKey>,
+) -> rutent_contracts::core_internal::Action {
+    rutent_contracts::core_internal::Action::ChangeCatalogue {
+        change,
+        provider: id(RESERVE),
+        version: Some(id(version)),
+        tuple: None,
+        advertising_keys: Vec::new(),
+        statement_key,
+    }
 }

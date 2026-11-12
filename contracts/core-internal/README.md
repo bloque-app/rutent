@@ -429,6 +429,11 @@ These are defaults taken where the row left a choice open. Each is reversible by
 - **Acting once on an effect is orchestration's.** The log admits an identical effect entry again, as a retry of an
   append that failed, so it can't stop orchestration from acting twice on one receipt. `T-020-08` owns an effect's
   idempotency: it acts on each effect's receipt once, whatever retries the append had (`INV-8`).
+- **An operation that ended with no answer has no item** (a gap `T-020-08` found). The platform reports it in
+  `Events::unknown`: its module passed something out, then the operation ended before an answer. `HandedOver` has
+  no item for it, so orchestration keeps it with the segment in flight and hands over only what the module passed
+  out, the outbound call records among it. An item for it, so an outcome unknown can cite the platform's own
+  record, is a bump of this contract, for a new `F-020` row.
 - **A question on a shortlisted route** carries the shortlisted providers and the verifiers its tuples need, which
   receive the subject; it asks only among them (`REQ-CPL-6`, a shape rule), and its shortlist's decision record names
   them both (`shortlisted-authority-cites-its-shortlist`). `T-020-06` fills a shortlist record's `verifiers` from the

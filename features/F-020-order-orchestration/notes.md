@@ -500,3 +500,78 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   effect); the actual settlement time (the settlement test); policy's permit required (the not-permitted test); and,
   for promotion, the staged version compared and the effect acted on once (the promotion test). The explicit
   transaction check in `judge` wasn't switched off alone: `check_amounts` refuses another transaction too.
+
+### T-020-08, review answers
+
+- **Merged** `m3` at 74bb7b1 (fast-forward, before `ab48413`) and at bd9e1d5 (a merge commit): `T-021-03`'s roles,
+  and core-internal's grant and release keys, with `attribute` taking the history.
+- **B1, what a result gives out.** `check_amounts` holds what a segment takes in, never what it gives out, so a
+  result signed by its provider could claim more out than in and hand the next segment the surplus. `judge` now
+  refuses it (`NotCounted::GivesOutMore`): a segment that keeps its asset gives out at most what it took in; a
+  conversion at most what the fresh quote its operation cites gives for what it took in, moved by no more than that
+  quote's slippage (0 for a firm rate); a conversion that cites no such quote, or a floating one, has no bound and
+  doesn't count. The hold is taken at the amount the segment moves (its operation's `amount_in`; an exchange's out
+  side by the route's own rate, rounded up), not the quote. Test `result_giving_out_more_than_it_took_in_does_not_count`
+  (`REQ-ORD-21`, `INV-1`); the held-in-flight test now holds the deposit at what arrived after a short withdrawal.
+- **B2, nothing that came back is lost.** Each segment is kept in `Segments` from its permit to its final outcome,
+  with everything it needs to go on: its signed operation, its effect, whether it began and was carried out, the
+  answer as the platform gave it, when it started, and each of its entries, built once and appended unchanged until
+  the log gives its receipt. The drains are taken and kept whole, as taken (`Events`, the uses, the segment record),
+  before any step that can fail, and are written as entries only when they are appended, from the first item not yet
+  appended. A step that fails returns its error with all of that kept; running the part again resumes the segment
+  where it stopped, carrying nothing out twice and appending each entry once. A segment whose outcome is final is
+  refused as handed over; one whose outcome isn't (no result, unknown, waiting on the person) is taken on from what
+  it kept. Test `what_comes_back_is_kept_when_a_later_step_fails`, over the result's stated entry, the
+  provider-bound input and the segment record; `drain_the_log_cant_take_is_kept_whole_and_answered`.
+- **Should-fix answered.**
+  1. `hand_over` is private.
+  2. Promotion: `Segments::promote` asks the decision itself, from a `Promotion` (provider, version, caller,
+     Core's actor), so the permitting decision's caller is the request Core sent and the platform's `by`; it
+     refuses a version that isn't the staged one before policy is asked, appends the effect, compares again, calls
+     the platform, appends the `result` (`done` or `failed`), and marks the effect acted on only once the platform
+     put the release in force.
+  3. The receipt rule alone: `effect_receipt_acted_on_before_is_not_acted_on_again`, a log answering the deposit's
+     effect with the withdrawal's receipt. The restart gap is `F-030`'s: a fresh `Segments` knows nothing of the
+     effects acted on before it, so only the production assembly's durable copy stops a second `move_value` on a
+     segment after a restart.
+  4. An answer that can't be serialised after `Handled::Answered` is `OutcomeUnknown` (no test: serde can't be made
+     to fail on a statement the platform built).
+  5. A failed `provider_bound` append leaves the segment begun and in flight with its operation kept; the next run
+     appends it and goes on (in the B2 test).
+  6. "Done when": a second release of the simulated reserve now runs on the platform. The promotion test promotes
+     it, staged beside 1.0.0; the record test moves the withdrawal off 1.0.0, marked stale mid-flight after 1.1.0 is
+     put in force, so its record carries the move. The calls test stays with fakes: no simulated provider's nodes admit
+     a route across two providers, which a call needs a callee on, and adding one is `T-024-01`'s kit; the module
+     scenarios that run cross-module calls are `T-024-07`'s (`AC-20`). `impl Uses for CredentialProxy` isn't run for
+     real: the simulated world resolves nothing through a proxy, and the assembly with the production world and its
+     proxy is `T-024-02`'s; the secret-use test feeds `Use` values through the seam.
+  7. `Events::unknown` is kept with the segment in flight (`Segments::unknown_outcomes`), and core-internal's README
+     hand-offs say an item for it needs a bump.
+- **Nits.** `flush` answers a drain the contract can't carry, or an entry the log refuses, as the error it is, every
+  time, holding back only the drains after it. A settled segment that gave out nothing ends the part with an
+  `order_refusal` of `no_route_for_amount` (test `segment_settling_with_nothing_given_out_ends_the_part_with_its_refusal`).
+  An effect whose answers were all lost is appended again unchanged on the next run, not a second effect (test
+  `effect_whose_answers_were_lost_is_appended_again_unchanged`).
+- **The record before the result (`REQ-MDL-20`, on the coordinator's word).** A final outcome ends the segment and
+  hands its record over before its result's stated entry is appended, so the log attributes the result knowing the
+  release the segment ran on: a release revoked mid-flight keeps its key only for segments whose record shows they
+  ran on it. `PLAN.md`'s row says so. Test `segment_on_a_release_revoked_mid_flight_settles_on_its_result`: the kit
+  makes the operator state for the reserve's publisher, so the log verifies the reserve's results by the releases it
+  accepted, as for a module the operator publishes; its 1.0.0 is accepted, then revoked mid-flight, and the
+  withdrawal's result is still verified. The catalogue refuses to publish a provider with a publisher as the
+  operator's, so the kit's log view does it instead. Judging a module the operator publishes by its release's key,
+  in Core's own `judge`, which goes through the catalogue's advertisements, is open: no route segment runs through one
+  yet (`T-020-13`'s hand-on is the first that will).
+- **Policy in the tests.** The tests' policy is now `CMP-CORE-AUTHZ`'s engine itself, its fixed rules first, over a
+  deployment that permits and registers that answer `ActsFor` for Core's actor, the customer and the operator,
+  `CarryOnward` for Core's actor and promotion for the operator. So every move is decided as the assembly will decide
+  it. One consequence: under `T-021-02`'s default the operator reads an order only by a permission policy holds for
+  it, and core-internal grants permissions only to regulators and checkers, so the operator's half of `REQ-ORD-5` is
+  refused, recorded, until the owner's form rules otherwise; `Segments::status` takes the reader's permission for
+  when it does. The state-and-age test pins that.
+- **Rule-off for the review's rules, each red:** the surplus rule (the surplus test); the hold at the amount moved
+  (the held test); the answer kept and not carried out again, and the result's stated entry built once (the B2 test,
+  whose log takes each entry and loses its answer); the segment resumed rather than decided again (the
+  lost-answers test); the receipt rule (the replayed-receipt test); the record before the result (the
+  revoked-release test); nothing given out recorded (its test); the staged version compared before policy (the
+  promotion test); `Events::unknown` kept (the outcome-unknown test); drain errors answered (the drain test).

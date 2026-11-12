@@ -74,21 +74,21 @@ pub enum Unappended {
     Append(AppendFailure),
 }
 
-/// Keeps `bytes`, a statement as received or as Core signed it, and appends its stated entry, claimed by `maker`,
-/// unverified, received at `received_at`, about `about`.
-pub(super) fn append_stated(
-    log: &mut dyn Log,
+/// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
+/// unverified, received at `received_at`, about `about`: built once, and appended unchanged however often it is
+/// tried, so its bytes are kept once.
+pub(super) fn stated_entry(
     evidence: &mut dyn Evidence,
     received_at: &Timestamp,
     bytes: &[u8],
     maker: Actor,
     about: About,
-) -> Result<Receipt, Unappended> {
+) -> Result<Entry, Unappended> {
     let claimed: Claimed = serde_json::from_slice(bytes).map_err(|_| Unappended::Unrecordable)?;
     let shape = ShapeId::new(claimed.shape).ok_or(Unappended::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(Unappended::Unrecordable)?;
     let kept = evidence.keep(bytes).map_err(Unappended::Append)?;
-    let entry = Entry::Stated(StatedEntry {
+    Ok(Entry::Stated(StatedEntry {
         kind: StatedKind::Stated,
         attribution: Attribution::Unverified { claimed_by: maker },
         what: StatedWhat { statement: shape },
@@ -107,8 +107,7 @@ pub(super) fn append_stated(
         commitment: kept.commitment,
         about: Some(about),
         relayed_by: None,
-    });
-    append(log, entry).map_err(Unappended::Append)
+    }))
 }
 
 /// The refusal of a time Core's clock reads that no timestamp holds.

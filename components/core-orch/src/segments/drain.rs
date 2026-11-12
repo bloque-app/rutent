@@ -28,9 +28,48 @@ pub struct Uncarried {
     pub what: &'static str,
 }
 
+/// One drain as it was taken, kept whole until every item of it is appended: what the platform or the proxy handed
+/// over is never lost to a step that fails after it was taken.
+#[derive(Debug, Clone)]
+pub(super) enum Raw {
+    /// One call of `take_events`.
+    Events(Events),
+    /// One call of `take_uses`.
+    Uses(Vec<Use>),
+    /// One segment's record, as `end_segment` handed it over.
+    Record(SegmentRecord),
+}
+
+impl Raw {
+    /// Its items, in order.
+    pub(super) fn items(&self) -> Result<Vec<HandedOver>, Uncarried> {
+        match self {
+            Raw::Events(events) => of_events(events),
+            Raw::Uses(uses) => of_uses(uses),
+            Raw::Record(record) => of_record(record).map(|r| vec![r]),
+        }
+    }
+
+    /// Whether it holds nothing to append.
+    pub(super) fn is_empty(&self) -> bool {
+        match self {
+            Raw::Events(e) => {
+                e.records.is_empty()
+                    && e.lookups.is_empty()
+                    && e.state_reads.is_empty()
+                    && e.calls.is_empty()
+                    && e.limits.is_empty()
+            }
+            Raw::Uses(u) => u.is_empty(),
+            Raw::Record(_) => false,
+        }
+    }
+}
+
 /// The items of one platform drain, in its order: outbound call records, cross-module calls, secret lookups, state
 /// reads and bounds hit. An operation that ended with no answer (`Events::unknown`) has no item in the contract; it
-/// is carried into its segment's outcome instead (a gap for a later `F-020` row, in the feature's notes).
+/// is kept with its segment in flight instead (a gap for a later `F-020` row with a core-internal bump, in the
+/// feature's notes).
 pub(super) fn of_events(events: &Events) -> Result<Vec<HandedOver>, Uncarried> {
     let Events {
         records,

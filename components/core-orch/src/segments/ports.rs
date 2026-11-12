@@ -108,9 +108,11 @@ impl<W: World> Modules for Platform<W> {
     ) -> Answered {
         let _permitted = effect;
         match Platform::handle(self, provider.as_str(), operation) {
+            // The module answered, so it may have moved value: an answer that can't be kept is no answer, and its
+            // outcome is unknown, never a refusal that would say nothing moved.
             Handled::Answered(result) => match serde_json::to_vec(&*result) {
                 Ok(bytes) => Answered::Bytes(bytes),
-                Err(_) => Answered::Refused(PlatformRefusal::MalformedOutput),
+                Err(_) => Answered::Refused(PlatformRefusal::OutcomeUnknown),
             },
             Handled::Refused(refusal) => Answered::Refused(refusal),
         }
