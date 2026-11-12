@@ -67,6 +67,10 @@ pub enum Asked<'a> {
     DecideStuck(&'a StuckDecide),
     /// A stuck order's move step (`REQ-AUZ-4`).
     MoveStuck(&'a StuckMove),
+    /// A move's outcome, once unknown, as its mover reports it (`REQ-AUZ-4`, ADR-0011).
+    ReportOutcome(&'a rutent_contracts::core_internal::OutcomeReport),
+    /// The confirmation of a move's outcome by an actor of another party and login (`REQ-AUZ-4`, ADR-0011).
+    ConfirmOutcome(&'a rutent_contracts::core_internal::OutcomeConfirmation),
     /// A session (`REQ-CAT-3`).
     OpenSession(&'a SessionRequest),
     /// A read (`REQ-AUZ-7`).
@@ -90,6 +94,8 @@ impl Asked<'_> {
             Asked::Authorise(a) => &a.given_by,
             Asked::DecideStuck(r) => &r.decider,
             Asked::MoveStuck(r) => &r.mover,
+            Asked::ReportOutcome(r) => &r.reporter,
+            Asked::ConfirmOutcome(c) => &c.confirmer,
             Asked::OpenSession(r) => &r.requester,
             Asked::CheckRead(c) => &c.reader,
             Asked::GrantPermission(c) | Asked::RevokePermission(c) => &c.by,
@@ -604,9 +610,9 @@ pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
 }
 
 /// A charge answered on the engine's verdict: within the party's bound, with `standing` what is left of it, only where
-/// the verdict permits and the work fits. A charge policy doesn't permit is over a bound of 0: core-internal's
-/// `ChargeOutcome` has no refusal and no not known, and a party policy won't let cause the work has no allowance for
-/// it. The only place in Core that writes a charge within its bound.
+/// the verdict permits and the work fits; over the bound where it permits and the work doesn't fit; refused for the
+/// verdict's own class, and not known for its own cause, so the record says why (`REQ-AUZ-5`: not known is never a
+/// refusal). The only place in Core that writes a charge within its bound.
 pub(crate) fn charge_outcome(
     answer: Answer,
     standing: crate::parties::Standing,
@@ -616,10 +622,8 @@ pub(crate) fn charge_outcome(
     match (answer, standing) {
         (Answer::Permit {}, Standing::Fits { remaining }) => ChargeOutcome::Within { remaining },
         (Answer::Permit {}, Standing::Over { bound }) => ChargeOutcome::Over { bound },
-        (Answer::Refuse { .. } | Answer::NotKnown { .. }, _) => ChargeOutcome::Over {
-            bound: rutent_contracts::provider_role::SafeInteger::try_from(0)
-                .expect("0 is a safe integer"),
-        },
+        (Answer::Refuse { class }, _) => ChargeOutcome::Refused { class },
+        (Answer::NotKnown { cause }, _) => ChargeOutcome::NotKnown { cause },
     }
 }
 
@@ -1086,6 +1090,13 @@ mod tests {
             .unwrap();
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), not_known);
+        // A move's outcome, reported and confirmed, waits on `T-021-06` too.
+        let decision = policy.report_outcome(&outcome_report()).unwrap();
+        assert!(decision.permit().is_none());
+        assert_eq!(last(&mut policy), not_known);
+        let decision = policy.confirm_outcome(&outcome_confirmation()).unwrap();
+        assert!(decision.permit().is_none());
+        assert_eq!(last(&mut policy), not_known);
 
         // The delegate's session waits on its holder's word, which no source can give.
         policy.set_clock(crate::session::Stopped::at(
@@ -1123,8 +1134,14 @@ mod tests {
         let charge = policy
             .charge(&fixture!("charge-of-fanned-out-work"))
             .unwrap();
-        assert!(matches!(charge.outcome, ChargeOutcome::Over { .. }));
-        assert_eq!(last(&mut policy), refused(RefusalClass::OverBound));
+        // Not known, as every call is on the unbuilt engine: the register of actors can't be reached.
+        assert!(matches!(charge.outcome, ChargeOutcome::NotKnown { .. }));
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         let answer = policy
             .ask_about_person(&fixture!(
                 "person-question-on-the-persons-authority-first-asked",
@@ -1794,6 +1811,18 @@ mod tests {
         }
     }
 
+    /// The request of the fixture's outcome report, as its entry holds it.
+    fn outcome_report() -> rutent_contracts::core_internal::OutcomeReport {
+        let entry: serde_json::Value = fixture!("verified-entry-of-an-outcome-reported");
+        serde_json::from_value(entry["what"]["request"].clone()).unwrap()
+    }
+
+    /// The request of the fixture's outcome confirmation, as its entry holds it.
+    fn outcome_confirmation() -> rutent_contracts::core_internal::OutcomeConfirmation {
+        let entry: serde_json::Value = fixture!("verified-entry-of-an-outcome-confirmed");
+        serde_json::from_value(entry["what"]["request"].clone()).unwrap()
+    }
+
     /// The policy call a decision entry records.
     fn call_of(what: &What) -> &'static str {
         match what {
@@ -1801,6 +1830,7 @@ mod tests {
             What::Authorise { .. } => "authorise",
             What::StuckDecide { .. } => "decide_stuck",
             What::StuckMove { .. } => "move_stuck",
+            What::ReportOutcome { .. } => "report_outcome",
             What::ConfirmOutcome { .. } => "confirm_outcome",
             What::OpenSession { .. } => "open_session",
             What::CheckRead { .. } => "check_read",
@@ -1871,15 +1901,21 @@ mod tests {
                 },
             ),
             (
+                "report_outcome",
+                Call::Unbuilt {
+                    row: "T-021-06",
+                    call: |e| {
+                        e.report_outcome(&outcome_report())
+                            .is_ok_and(|d| d.permit().is_some())
+                    },
+                },
+            ),
+            (
                 "confirm_outcome",
                 Call::Unbuilt {
                     row: "T-021-06",
                     call: |e| {
-                        let entry: serde_json::Value =
-                            fixture!("verified-entry-of-an-outcome-confirmed");
-                        let request =
-                            serde_json::from_value(entry["what"]["request"].clone()).unwrap();
-                        e.confirm_outcome(&request)
+                        e.confirm_outcome(&outcome_confirmation())
                             .is_ok_and(|d| d.permit().is_some())
                     },
                 },
@@ -2139,7 +2175,9 @@ mod tests {
         let _ = engine.ask_about_person(&fixture!(
             "person-question-on-the-persons-authority-first-asked"
         ));
-        assert_eq!(engine.log.0.len(), 10, "every call appended its entry");
+        let _ = engine.report_outcome(&outcome_report());
+        let _ = engine.confirm_outcome(&outcome_confirmation());
+        assert_eq!(engine.log.0.len(), 12, "every call appended its entry");
         for entry in &engine.log.0 {
             assert!(rutent_contracts::core_internal::calls::is_decision(
                 &entry.entry().what
@@ -2172,6 +2210,6 @@ mod tests {
             Err(AppendFailure::Refused(v))
                 if v.0 != rutent_contracts::core_internal::calls::RECORD_ON_THE_POLICY_HANDLE
         ));
-        assert_eq!(engine.log.0.len(), 10, "nothing more reached the handle");
+        assert_eq!(engine.log.0.len(), 12, "nothing more reached the handle");
     }
 }

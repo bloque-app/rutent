@@ -285,6 +285,7 @@ impl Arrivals {
             authorisation: desk.parts.fresh.id(),
             order: order.clone(),
             origin_reserve: arrival.reserve.clone(),
+            origin_account: Some(arrival.account.clone()),
             destination: well.destination.clone(),
             to_asset: well.route.to.asset.clone(),
             floor: well
@@ -292,6 +293,7 @@ impl Arrivals {
                 .floor
                 .as_ref()
                 .and_then(|f| PositiveAmount::new(f.as_str())),
+            parts: None,
             given_by: well.filer.clone(),
             at: now,
         };
@@ -585,6 +587,8 @@ impl Run {
                 order: Some(self.order.clone()),
                 matched: ArrivalMatch::Matches,
                 report,
+                notice: None,
+                part: None,
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }
