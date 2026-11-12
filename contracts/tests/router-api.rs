@@ -352,7 +352,7 @@ const RUST_RULES: [(&str, &str); 129] = [
     ),
     (
         "catalogue-snapshot-disagreeing-judgements",
-        "eligibility judgements of one subject for one tuple agree",
+        "eligibility judgements of one subject and class for one tuple agree",
     ),
     (
         "catalogue-snapshot-tuple-listed-twice",

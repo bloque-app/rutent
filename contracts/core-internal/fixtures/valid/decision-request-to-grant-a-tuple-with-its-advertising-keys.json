@@ -1,0 +1,19 @@
+{
+  "request": "req-105",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "grant",
+    "provider": "fx-desk",
+    "tuple": "usdc-cop",
+    "advertising_keys": [
+      "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    ]
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

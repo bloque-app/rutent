@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Fee, ReserveMovementOutcome, ResultBody, TransferOutcome,
+    ConversionOutcome, Fee, ReserveMovementOutcome, ResultBody, TransferOutcome, VoidedBy,
 };
 use rutent_contracts::router_api::{
     Amount, CatalogueSnapshot, Endpoint, Figure, FigureValue, NonEmpty, Operation, PolicyBounds,
@@ -221,6 +221,36 @@ impl<'a> Search<'a> {
             _ => true,
         };
         figure.is_within_validity() && !self.is_void(figure) && in_time
+    }
+
+    /// A usable fresh quote about `operation`'s tuple, accepted for another amount than the one entering it and
+    /// voided by `amount_changes`: the quote the choice round names when it drops the operation's candidate as
+    /// `quote_voided` (`REQ-QTE-1`). The first in the snapshot's order.
+    pub(crate) fn voided_quote(&self, operation: &Operation) -> Option<&'a Figure> {
+        let asked = operation.amount_in.amount().as_str();
+        self.statements
+            .get(operation.figures.first().as_str())?
+            .iter()
+            .copied()
+            .find(|f| {
+                let FigureValue::FreshQuote { quote, .. } = &f.value else {
+                    return false;
+                };
+                let voided_by = match &quote.statement {
+                    ResultBody::Transfer(r) => match &r.outcome {
+                        TransferOutcome::DryRunAccepted(q) => &q.voided_by,
+                        _ => return false,
+                    },
+                    ResultBody::Conversion(r) => match &r.outcome {
+                        ConversionOutcome::DryRunAccepted(q) => &q.voided_by,
+                        _ => return false,
+                    },
+                    _ => return false,
+                };
+                self.is_usable(f)
+                    && voided_by.contains(&VoidedBy::AmountChanges)
+                    && accepted(&quote.statement).is_some_and(|a| a.amount_in != asked)
+            })
     }
 
     /// Every statement about a segment's tuple that bears on `asked` entering it: each fresh quote and dry run

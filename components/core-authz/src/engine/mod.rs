@@ -145,6 +145,38 @@ pub enum Source {
         /// The segment.
         segment: Id,
     },
+    /// The deployment's register of permissions: whether the actor the input names (its `acts`), acting for `party`,
+    /// holds `permission`. It answers by the actor, never by the party alone, so each of a party's logins or
+    /// components holds only what it is listed for (`REQ-AUZ-2`, `REQ-AUZ-6`, `REQ-AUZ-9`). Who is listed, and each
+    /// change to that, is the deployment's to keep and record (`F-030`); the engine only asks.
+    Permissions {
+        /// The accountable party the actor acts for.
+        party: Id,
+        /// The one permission asked about.
+        permission: crate::roles::Permission,
+    },
+    /// A reserve's declarations at publishing (`REQ-CAT-6`): whether the reserve made the declaration the input
+    /// names, such as that it can't require the user's own withdrawal, under which the operator may act for the
+    /// user there (`REQ-AUZ-9`). A reserve makes each declaration either way at publishing, so the assembly answers
+    /// no, not nothing, for one a reserve that published didn't make; nothing is left for a reserve that never
+    /// published, which refuses as a missing input.
+    Declarations(Id),
+    /// The record of an order: whether the party the input names is its requester, whose agents act in its party
+    /// (`REQ-AUZ-9`, `REQ-ORD-13`).
+    Requester(Id),
+    /// The record of an order: whether the reserve the input names is its origin reserve, the provider of its first
+    /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
+    OrderOrigin(Id),
+    /// The deployment's register of actors: whether the actor `acts`, as external authentication established it,
+    /// acts for the accountable party `party` its request states. External authentication says who acts and nothing
+    /// more (`REQ-AUZ-1`), so a party is only the request's word until this says yes (`REQ-AUZ-8`). It answers by
+    /// `acts`.
+    ActsFor {
+        /// The actor.
+        acts: Id,
+        /// The party its request says it acts for.
+        party: Id,
+    },
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -271,11 +303,24 @@ pub(crate) struct Rule {
 
 /// The fixed rules, in the order the engine asks them. Each later row of `F-021` adds its own entry here, and the lead
 /// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
-pub(crate) const FIXED: &[Rule] = &[Rule {
-    name: "T-021-02: a session is its holder's or its delegate's, bounded in time; a read is its reader's",
-    needs: crate::session::needs,
-    rule: crate::session::rule,
-}];
+pub(crate) const FIXED: &[Rule] = &[
+    Rule {
+        name: "T-021-03: every actor a request names acts only for the party the register says it acts for",
+        needs: crate::roles::acts_for_needs,
+        rule: crate::roles::acts_for_rule,
+    },
+    Rule {
+        name: "T-021-02: a session is its holder's or its delegate's, bounded in time; a read is its reader's",
+        needs: crate::session::needs,
+        rule: crate::session::rule,
+    },
+    Rule {
+        name: "T-021-03: only the operator posts a route; each operator permission alone allows its own action; \
+               the operator acts for a user only at a reserve that declared it",
+        needs: crate::roles::needs,
+        rule: crate::roles::rule,
+    },
+];
 
 /// The rules `SPEC.md` sets, which every engine asks first: [`Engine::with_policy`] puts them there, so no assembly can leave
 /// one out. Among them, as between two policies, a refusal beats not known.
@@ -550,6 +595,9 @@ impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
 
 #[cfg(test)]
 mod tests {
+    /// A well-formed Ed25519 key for the catalogue changes that name one.
+    const A_KEY: &str = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
+
     /// A valid fixture of the contract, read as whatever type the call site wants.
     macro_rules! fixture {
         ($name:expr $(,)?) => {{
@@ -752,6 +800,11 @@ mod tests {
     }
 
     /// Verifiers and providers whose answers the test sets, input by input, and which keep what they were asked.
+    ///
+    /// The deployment's register lists Core's own actor, `core-orch`, as carrying the user's authorisation onward,
+    /// and says every actor the fixtures name acts for the party it states (`T-021-03`), so the fixtures' requests pass
+    /// the fixed rules on every engine here. Those words are the register's, answered here and kept out of `asked`,
+    /// which counts the inputs the tests set.
     #[derive(Default)]
     struct Given {
         says: Vec<(Need, Reply<Said>)>,
@@ -760,11 +813,25 @@ mod tests {
 
     impl Sources for Given {
         fn supply(&mut self, need: &Need) -> Reply<Said> {
+            if need == &core_carries_onward() || matches!(need.from, Source::ActsFor { .. }) {
+                return Reply::Given(Said::Yes);
+            }
             self.asked.push(need.clone());
             self.says
                 .iter()
                 .find(|(n, _)| n == need)
                 .map_or(Reply::Missing, |(_, said)| said.clone())
+        }
+    }
+
+    /// The register's word that Core's `core-orch` carries the user's authorisation onward.
+    fn core_carries_onward() -> Need {
+        Need {
+            input: id("core-orch"),
+            from: Source::Permissions {
+                party: id("rutent"),
+                permission: crate::roles::Permission::CarryOnward,
+            },
         }
     }
 
@@ -782,11 +849,35 @@ mod tests {
         }
     }
 
-    /// The request to move value, with `action` in its place.
+    /// The request to move value, with `action` in its place: asked by the operator's login where only the operator
+    /// may ask for it (`T-021-03`), by Core otherwise.
     fn request(action: Action) -> DecisionRequest {
         let mut request: DecisionRequest = fixture!("decision-request-to-move-value");
+        if matches!(
+            action,
+            Action::PostRoute { .. } | Action::ChangeCatalogue { .. }
+        ) {
+            request.caller = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+        }
         request.action = action;
         request
+    }
+
+    /// Sources that say yes to every input the fixed rules need for each of `requests`, so that what is decided is
+    /// the deployment's policy's ruling.
+    fn yes_to_the_fixed_rules<'a>(
+        requests: impl IntoIterator<Item = &'a DecisionRequest>,
+    ) -> Given {
+        let mut given = Given::default();
+        for request in requests {
+            let Reply::Given(needs) = Fixed::default().needs(Asked::Decide(request)) else {
+                panic!("the fixed rules name their inputs");
+            };
+            given
+                .says
+                .extend(needs.into_iter().map(|n| (n, Reply::Given(Said::Yes))));
+        }
+        given
     }
 
     /// Every action a decision request carries, each catalogue change once and a posted route with and without its
@@ -811,6 +902,7 @@ mod tests {
             CatalogueChange::Reinstate,
             CatalogueChange::WithdrawRelease,
             CatalogueChange::SetSlippage,
+            CatalogueChange::Promote,
         ] {
             match change {
                 CatalogueChange::Grant
@@ -821,13 +913,21 @@ mod tests {
                 | CatalogueChange::DeclareExploited
                 | CatalogueChange::Reinstate
                 | CatalogueChange::WithdrawRelease
-                | CatalogueChange::SetSlippage => {}
+                | CatalogueChange::SetSlippage
+                | CatalogueChange::Promote => {}
             }
             actions.push(Action::ChangeCatalogue {
                 change,
                 provider: id("bridge-pay"),
                 version: change.is_about_a_release().then(|| id("2.1.0")),
                 tuple: change.is_about_a_tuple().then(|| id("usd-cop")),
+                advertising_keys: if change == CatalogueChange::Grant {
+                    vec![rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()]
+                } else {
+                    vec![]
+                },
+                statement_key: (change == CatalogueChange::AcceptModule)
+                    .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
             });
         }
         for action in &actions {
@@ -860,11 +960,18 @@ mod tests {
         let refused = |class| Outcome::Refused { class };
         let mut policy = Unbuilt::new(Taking::default());
 
+        // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
+        // which no source can give.
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         let decision = policy
             .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();
@@ -901,9 +1008,15 @@ mod tests {
         assert!(matches!(read.outcome, ReadOutcome::Refused { .. }));
         assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let grant: PermissionChange = fixture!("permission-change-granting-a-regulator-the-trail");
+        // The grant waits on the register's word that its actors act for the parties they state (`T-021-03`).
         let granted = policy.grant_permission(&grant).unwrap();
         assert!(granted.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(
+            last(&mut policy),
+            Outcome::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            }
+        );
         // Nothing was granted, so there is nothing to revoke.
         let revoked = policy.revoke_permission(&grant).unwrap();
         assert!(revoked.permit().is_none());
@@ -940,13 +1053,14 @@ mod tests {
     #[test]
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
+        let actions = every_decided_action();
+        assert_eq!(actions.len(), 13);
+        let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
             denies(),
-            Given::default(),
+            yes_to_the_fixed_rules(&requests),
         );
-        let actions = every_decided_action();
-        assert_eq!(actions.len(), 12);
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             assert_eq!(
@@ -972,8 +1086,11 @@ mod tests {
         assert_eq!(policy.policy.1.ruled.len(), actions.len());
 
         let permits = Service::ruling(Reply::Given(Ruling::Permit));
-        let mut policy =
-            Engine::with_policy(Guarded::with_a_decision_record(), permits, Given::default());
+        let mut policy = Engine::with_policy(
+            Guarded::with_a_decision_record(),
+            permits,
+            yes_to_the_fixed_rules(&requests),
+        );
         for action in &actions {
             let decision = policy.decide(&request(action.clone())).unwrap();
             let permit = decision.permit().expect("a permit");
@@ -1018,22 +1135,53 @@ mod tests {
             Role::Core,
         ];
         let kinds = [ActorKind::Person, ActorKind::Agent, ActorKind::Component];
-        let denies = Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
-        let mut policy =
-            Engine::with_policy(Guarded::with_a_decision_record(), denies, Given::default());
-        let mut callers = Vec::new();
+        let mut requests = Vec::new();
         for role in roles {
             for kind in kinds {
-                let caller = actor("operator", "op-login-2", role, kind);
                 for action in every_decided_action() {
                     let mut asked = request(action);
-                    asked.caller = caller.clone();
-                    let decision = policy.decide(&asked).unwrap();
-                    assert!(decision.permit().is_none(), "{caller:?}");
-                    callers.push(caller.clone());
+                    asked.caller = actor("operator", "op-login-2", role, kind);
+                    requests.push(asked);
                 }
             }
         }
+        // Every input the fixed rules name is given yes, so each caller they let through is the deployment's to decide.
+        let denies = Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
+        let mut policy = Engine::with_policy(
+            Guarded::with_a_decision_record(),
+            denies,
+            yes_to_the_fixed_rules(&requests),
+        );
+        let mut callers = Vec::new();
+        for asked in &requests {
+            let caller = &asked.caller;
+            let decision = policy.decide(asked).unwrap();
+            assert!(decision.permit().is_none(), "{caller:?}");
+            // `T-021-03`'s fixed rule lets only the operator post a route or change the catalogue, and only the user,
+            // Core or the operator ask to move value; it refuses the rest before the deployment's policy is asked.
+            let reaches = match asked.action {
+                Action::MoveValue { .. } => {
+                    matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
+                }
+                _ => caller.role == Role::Operator,
+            };
+            if reaches {
+                callers.push(caller.clone());
+            } else {
+                assert_eq!(
+                    decision.outcome,
+                    Answer::Refuse {
+                        class: RefusalClass::NotPermitted
+                    },
+                    "{caller:?}"
+                );
+            }
+        }
+        assert_eq!(
+            callers.len(),
+            3 * 13 + 2 * 3,
+            "the operator on every action, the user and Core on a move"
+        );
         let seen: Vec<Actor> = policy
             .policy
             .1
@@ -1054,12 +1202,18 @@ mod tests {
                 },
             )
         });
-        let mut policy =
-            Engine::with_policy(Guarded::default(), knows_one_operator, Given::default());
         let mut stale: DecisionRequest = fixture!("decision-request-to-mark-a-release-stale");
+        let mut other = stale.clone();
+        other.request = id("req-103");
+        other.caller.acts = id("op-login-9");
+        // Both logins hold the permission the fixed rule asks for, so the refusal is the deployment's policy's.
+        let mut policy = Engine::with_policy(
+            Guarded::default(),
+            knows_one_operator,
+            yes_to_the_fixed_rules([&stale, &other]),
+        );
         assert!(policy.decide(&stale).unwrap().permit().is_some());
-        stale.request = id("req-103");
-        stale.caller.acts = id("op-login-9");
+        stale = other;
         let decision = policy.decide(&stale).unwrap();
         assert_eq!(
             decision.outcome,

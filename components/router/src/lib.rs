@@ -87,8 +87,10 @@ use search::{Path, Search, answer_of};
 /// `0.2.0` since router-api 3.0.0 (`T-011-05`): the same inputs now give a record that also names the candidates
 /// the contract couldn't state before. `0.3.0` since `T-011-06`: each segment also names the calls it makes.
 /// `0.4.0` since `T-020-02`: the floor is judged after the operator's fee, so the same inputs may drop a
-/// candidate as below the floor that `0.3.0` kept.
-pub const VERSION: &str = "rutent-router-0.4.0";
+/// candidate as below the floor that `0.3.0` kept. `0.5.0` since `T-020-06`: a choice-round candidate whose
+/// operation's quote, at another amount, lists `amount_changes` is dropped as `quote_voided`, citing that quote, where
+/// `0.4.0` dropped it as `unconfirmed`.
+pub const VERSION: &str = "rutent-router-0.5.0";
 
 /// The route finder: the router API's [`Router`], as ADR-0006 and `DEC-8` decide it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -124,6 +126,9 @@ impl Router for RouteFinder {
             .enumerate()
             .map(|(i, (path, dropped))| {
                 let mut operations: Vec<_> = path.steps.into_iter().map(|s| s.operation).collect();
+                if let Some(DropReason::QuoteVoided { figure, .. }) = &dropped {
+                    cite_voided(&search, &mut operations, figure);
+                }
                 calls::name(snapshot, &mut operations);
                 let part = Part {
                     operations: NonEmpty::new(operations).expect("a path takes a segment"),
@@ -145,6 +150,26 @@ impl Router for RouteFinder {
             chosen,
         }
     }
+}
+
+/// Adds the voided quote to the citations of the first operation it voids: the one its candidate is dropped at.
+fn cite_voided(
+    search: &Search<'_>,
+    operations: &mut [rutent_contracts::router_api::Operation],
+    figure: &Id,
+) {
+    let Some(operation) = operations.iter_mut().find(|o| {
+        search
+            .voided_quote(o)
+            .is_some_and(|q| &q.figure_id == figure)
+    }) else {
+        return;
+    };
+    let mut figures = operation.figures.as_slice().to_vec();
+    if !figures.contains(figure) {
+        figures.push(figure.clone());
+    }
+    operation.figures = NonEmpty::new(figures).expect("an operation cites its tuple");
 }
 
 impl Search<'_> {
