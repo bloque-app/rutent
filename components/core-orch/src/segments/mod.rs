@@ -269,18 +269,6 @@ pub enum Ran {
     Segments(Vec<Accounted>),
 }
 
-/// Where a part waits for the customer past its floor (`REQ-ORD-27`, `T-020-10`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Waits {
-    /// The settled segment it waits after, where its value is evidenced.
-    pub after: Id,
-    /// What is evidenced there.
-    pub evidenced: PositiveAmount,
-    /// What the quotes still ahead would leave the customer after the operator's fee; `None` where Core couldn't
-    /// count it, which holds no floor.
-    pub left: Option<Amount>,
-}
-
 /// A settled segment's actual settlement time, as its `settlement` entry recorded it (`REQ-QTE-3`, `T-020-11`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settlement {
@@ -509,8 +497,6 @@ pub struct Segments {
     undelivered: Vec<Drain>,
     flights: BTreeMap<(String, String), InFlight>,
     orders: BTreeMap<String, Tracked>,
-    /// The parts that wait for the customer past their floor, by order and part.
-    waiting: BTreeMap<(String, String), Waits>,
     /// The stuck parts whose resolution moved all their value, by order and part: they hold nothing, and take no
     /// rest hold (`T-020-11`).
     resolved: BTreeSet<(String, String)>,
@@ -632,10 +618,46 @@ impl Segments {
         Ok(())
     }
 
-    /// Where `part` of `order` waits for the customer past its floor, if it does (`REQ-ORD-27`).
-    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&Waits> {
-        self.waiting
-            .get(&(order.as_str().to_owned(), part.as_str().to_owned()))
+    /// Since when `part` of `order` waits for the customer, as the order Core follows has it: its `waiting_since`,
+    /// from the input that made it wait, a `waiting_at_floor` past its floor among them (`REQ-ORD-27`, `AC-12`,
+    /// `T-020-10b`). `None` while it doesn't wait.
+    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&stm::Timestamp> {
+        self.orders
+            .get(order.as_str())?
+            .order
+            .parts
+            .iter()
+            .find(|p| p.part_id.as_str() == part.as_str())
+            .filter(|p| p.state == OrderState::WaitingForCustomer)?
+            .waiting_since
+            .as_ref()
+    }
+
+    /// Records that `part` of `order` waits past its floor where `settled`, the part's segment that settled last,
+    /// left its value: a `waiting_at_floor` input by `core`, the step of that segment, built once and appended until
+    /// the log takes it; the order Core follows takes it then (`REQ-ORD-27`, `AC-12`, `T-020-10b`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wait_at_floor(
+        &mut self,
+        log: &mut dyn Log,
+        clock: &dyn Clock,
+        fresh: &mut dyn Fresh,
+        core: &Actor,
+        order: &Id,
+        part: &Id,
+        settled: &Id,
+    ) -> Result<Receipt, SegmentsError> {
+        let at = (order.as_str().to_owned(), settled.as_str().to_owned());
+        self.input_by(
+            log,
+            clock,
+            fresh,
+            (core, order, part),
+            &at,
+            "floor",
+            None,
+            Observed::WaitingAtFloor {},
+        )
     }
 
     /// Whether the order Core follows retired `segment`: a recalculation replaced it (`T-020-10`).
@@ -911,8 +933,9 @@ impl Segments {
     ///
     /// After each segment that settles with a later one to hand over, the part's floor ([`Live::floor`]) is checked
     /// against what that segment gave out and the quotes still ahead (`recalc::left_after`, `REQ-ORD-27`, `AC-42`):
-    /// below it, nothing more is handed over and the part waits for the customer ([`Segments::waiting`]), however
-    /// often it is run. Every run goes through here, so the check can't be skipped (`T-020-10`).
+    /// below it, nothing more is handed over and the part waits for the customer: a `waiting_at_floor` input is
+    /// recorded, the order Core follows takes it, and a part waiting so takes no move however often it is run
+    /// ([`Segments::waiting`]). Every run goes through here, so the check can't be skipped (`T-020-10`, `T-020-10b`).
     pub fn run_part(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1006,6 +1029,9 @@ impl Segments {
             // one, with what it gave out.
             let done = match self.standing(live, place) {
                 Some(done) => done,
+                // A part waiting for the customer takes no move, whatever its run is asked (`REQ-ORD-27`, the log's
+                // `held-part-takes-no-move`): only the customer's choice moves it on.
+                None if self.waiting(live.order, live.part).is_some() => break,
                 None => {
                     // Before a segment is first handed over, its provider and the node it leaves the value at are
                     // held to the catalogue as it stands now (`T-020-09`'s seam): the evidence floor on its tuple
@@ -1111,18 +1137,17 @@ impl Segments {
                         &next,
                     );
                     if !holds_floor(left.as_ref(), live.floor) {
-                        let waits = Waits {
-                            after: live.segments[place].clone(),
-                            evidenced: next,
-                            left,
-                        };
-                        self.waiting.insert(
-                            (
-                                live.order.as_str().to_owned(),
-                                live.part.as_str().to_owned(),
-                            ),
-                            waits,
-                        );
+                        // Past the floor, the part waits for the customer, recorded as a state-machine input on
+                        // the value the settled segment evidenced at its node (`waiting_at_floor`).
+                        self.wait_at_floor(
+                            parts.log,
+                            parts.clock,
+                            parts.fresh,
+                            live.core,
+                            live.order,
+                            live.part,
+                            &live.segments[place],
+                        )?;
                         break;
                     }
                     amount = next;
