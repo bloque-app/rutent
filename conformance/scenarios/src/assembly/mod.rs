@@ -24,17 +24,21 @@
 //!   statements by the keys it holds that way, and by no setting.
 //! - **The state machine.** Every input the log takes is fed to the host, in the log's order ([`machine::Feed`]).
 //! - **Staging**, set explicitly ([`Staged`]): there is no default (`PLAN.md` §4.4, `F-030` sets the deployment's).
+//! - **Grading** (`T-020-09`): each part runs under `closing::Evidenced`, over the simulated networks and the reserves'
+//!   books as read before every grading (at the start of each run and after each operation carried out), with one
+//!   `Closing` kept beside the segments, rebuilt from the log whenever Core is put together on a disk
+//!   (`Closing::recorded`).
 //!
 //! # What isn't, and why
 //!
 //! - The credential proxy: the simulated world resolves nothing through one, so the segments take uses from
 //!   [`NoProxy`], and the proxy's `take_uses` runs only in `F-030`'s production assembly.
-//! - Grading: `T-020-09` isn't built, so a settled segment's evidence is the provider's word ([`ProvidersWord`]).
 //! - What survives a restart: Core's own records (intake's, the segments', `Issued`) are in memory. A Core opened
 //!   again on a [`durable::Disk`] reads back the log and the evidence store, and nothing of what it had acted on
 //!   (`F-030`).
 
 pub mod durable;
+mod grading;
 pub mod machine;
 pub mod policy;
 
@@ -67,8 +71,8 @@ use rutent_core_orch::intake::{
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{
-    Live, Modules, NoProxy, Parts as SegmentParts, ProvidersWord, Ran, Segments, SegmentsError,
-    Status, StatusError,
+    Live, Modules, NoProxy, Parts as SegmentParts, Ran, Segments, SegmentsError, Status,
+    StatusError,
 };
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
 use rutent_prov::catalogue::Catalogue;
@@ -265,6 +269,7 @@ struct Running<'a> {
     feed: &'a mut Feed,
     log: &'a Rc<RefCell<CoreLog>>,
     swap_to: Option<&'a mut (dyn Environment + 'static)>,
+    readings: &'a grading::Readings,
 }
 
 impl Modules for Running<'_> {
@@ -308,12 +313,15 @@ impl Modules for Running<'_> {
         }
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
+        self.readings.refresh(&self.platform.world);
         if !self.faults.deliver_twice {
             return first;
         }
         // The same operation again, under its transaction: the provider answers it as it did, and Core takes the
         // answer that came second, where one came.
-        match Modules::carry_out(self.platform, effect, provider, operation) {
+        let again = Modules::carry_out(self.platform, effect, provider, operation);
+        self.readings.refresh(&self.platform.world);
+        match again {
             again @ rutent_core_orch::segments::Answered::Bytes(_) => {
                 self.faults.delivered_twice += 1;
                 again
@@ -396,6 +404,16 @@ impl Destinations for Owners {
     }
 }
 
+/// What goes on across a restart of Core: what is outside it, and the source of its fresh identifiers.
+struct Carried {
+    fleet: Fleet,
+    installed: Vec<Installed>,
+    clock: SharedClock,
+    feed: Feed,
+    fresh: Seeded,
+    ties: bool,
+}
+
 /// Core, put together.
 pub struct Core {
     /// Core's one clock.
@@ -416,6 +434,9 @@ pub struct Core {
     pub(crate) catalogue: Catalogue,
     intake: Intake,
     segments: Segments,
+    /// What the grading took across orders, kept as long as the segments (`T-020-09`).
+    closing: rutent_core_orch::closing::Closing,
+    readings: grading::Readings,
     issued: Issued,
     exposures: Exposures,
     releases: Releases,
@@ -494,27 +515,78 @@ impl Core {
         environment: &mut dyn Environment,
         disk: Disk,
     ) -> Result<Self, AssemblyError> {
-        let context = context();
-        // The platform and the simulated providers, staging set explicitly.
-        let mut fleet = Fleet::with_context(config.deadline, context.clone());
-        let installed: Vec<Installed> = config
-            .providers
-            .iter()
-            .map(|spec| fleet.install(spec.clone()))
-            .collect();
-        fleet.platform.set_staging(config.staging.policy());
+        Self::assemble_with(config, environment, disk, None)
+    }
 
-        // First trust in a provider is its grant's, and an advertisement made before its grant rides on none: Core's
-        // clock starts before the earliest advertisement was made, for the grants.
-        let earliest = installed
-            .iter()
-            .filter_map(|one| {
-                rutent_contracts::router_api::Timestamp::new(&one.advertisement.statement().made_at)
-            })
-            .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
-            .min()
-            .unwrap_or(kit::START);
-        let clock = SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+    /// Core opened again on its disk after it stopped (`T-020-09`): what is outside Core goes on as it stands (the
+    /// platform with the providers and their networks, the state machine's host, the clock), and Core's own parts are
+    /// put together again over what the disk holds: the log and the evidence store read back, and, from the log,
+    /// what the grading took (`Closing::recorded`). The rest of Core's own record (intake's, the segments', `Issued`)
+    /// is in memory and starts empty (`F-030`); the providers are granted again on the reopened log.
+    ///
+    /// # Errors
+    ///
+    /// If Core can't be put together again.
+    pub fn reopened(
+        self,
+        config: &Config,
+        environment: &mut dyn Environment,
+    ) -> Result<Self, AssemblyError> {
+        let carried = Carried {
+            fleet: self.fleet,
+            installed: self.installed,
+            clock: self.clock,
+            feed: self.feed,
+            fresh: self.fresh,
+            ties: self.readings.ties(),
+        };
+        Self::assemble_with(config, environment, self.disk, Some(carried))
+    }
+
+    fn assemble_with(
+        config: &Config,
+        environment: &mut dyn Environment,
+        disk: Disk,
+        carried: Option<Carried>,
+    ) -> Result<Self, AssemblyError> {
+        let context = context();
+        let reopened = carried.is_some();
+        let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
+            Some(c) => (
+                c.fleet,
+                c.installed,
+                c.clock,
+                Some(c.feed),
+                Some(c.fresh),
+                c.ties,
+            ),
+            None => {
+                // The platform and the simulated providers, staging set explicitly.
+                let mut fleet = Fleet::with_context(config.deadline, context.clone());
+                let installed: Vec<Installed> = config
+                    .providers
+                    .iter()
+                    .map(|spec| fleet.install(spec.clone()))
+                    .collect();
+                fleet.platform.set_staging(config.staging.policy());
+
+                // First trust in a provider is its grant's, and an advertisement made before its grant rides on
+                // none: Core's clock starts before the earliest advertisement was made, for the grants.
+                let earliest = installed
+                    .iter()
+                    .filter_map(|one| {
+                        rutent_contracts::router_api::Timestamp::new(
+                            &one.advertisement.statement().made_at,
+                        )
+                    })
+                    .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
+                    .min()
+                    .unwrap_or(kit::START);
+                let clock =
+                    SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+                (fleet, installed, clock, None, None, false)
+            }
+        };
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
         let (store, log) = read_back(&disk, &clock).map_err(AssemblyError::Log)?;
@@ -586,8 +658,12 @@ impl Core {
             .flat_map(|s| kit::reserve_prices(&s.provider))
             .collect();
 
-        let feed =
-            Feed::new(environment, config.delivery, config.seed).map_err(AssemblyError::Host)?;
+        let feed = match carried_feed {
+            Some(feed) => feed,
+            None => {
+                Feed::new(environment, config.delivery, config.seed).map_err(AssemblyError::Host)?
+            }
+        };
         let mut core = Core {
             general: GeneralHandle(Rc::clone(&log)),
             log,
@@ -602,6 +678,8 @@ impl Core {
             catalogue,
             intake: Intake::new(),
             segments: Segments::new(),
+            closing: rutent_core_orch::closing::Closing::new(),
+            readings: grading::Readings::default(),
             issued: Issued::new(),
             exposures: Exposures::new(),
             releases: Releases::new(),
@@ -609,7 +687,7 @@ impl Core {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
             },
-            fresh: Seeded::new(config.seed),
+            fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds(&context),
             prices,
             quotes: BTreeMap::new(),
@@ -622,6 +700,17 @@ impl Core {
         };
         // Each provider is granted before the advertisement it sends was made; then the clock moves to the
         // scenario's start, and each advertisement is recorded as received then.
+        // What the grading reads, and what it took, rebuilt from the log the disk holds (`T-020-09`).
+        core.readings = grading::Readings::of(&core.installed);
+        if ties {
+            core.readings.tie_by_destination();
+        }
+        core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
+        if reopened {
+            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
+            core.relist()?;
+            return Ok(core);
+        }
         let installed = core.installed.clone();
         for one in &installed {
             core.grant(one)?;
@@ -640,6 +729,12 @@ impl Core {
             .values()
             .filter_map(|bytes| record_in(bytes))
             .collect()
+    }
+
+    /// From now on, the destination's network ties each deposit to the first movement to its account of its amount, as
+    /// a reserve paying two orders with one payment would have it: a fault the scenarios plant (`T-020-09`).
+    pub fn tie_payments_by_destination(&mut self) {
+        self.readings.tie_by_destination();
     }
 
     /// The log.
@@ -750,6 +845,112 @@ impl Core {
             kit::grant(&mut self.catalogue, installed, terms);
             self.verified(What::Result { effect }, Outcome::Done {})
                 .map_err(|e| listing("the grant's result", e))?;
+        }
+        Ok(())
+    }
+
+    /// Core's catalogue rebuilt from its log, as after a restart: each tuple granted by a `done` grant, at its effect's
+    /// time and under its id, as [`Core::grant`] granted it, and each advertisement the log holds joined at the time
+    /// the log received it, as [`Core::advertise`] joined it, once the bytes the evidence store kept under the log's
+    /// commitment are the installed provider's advertisement. A `done` catalogue change of any other kind (a revoke, a
+    /// release accepted, revoked or promoted) refuses the reopening: it isn't replayed, and a catalogue rebuilt
+    /// without it would grant what the log revoked.
+    ///
+    /// # Errors
+    ///
+    /// On a catalogue change it doesn't replay, or an advertisement whose kept bytes aren't the installed one's.
+    fn relist(&mut self) -> Result<(), AssemblyError> {
+        let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let kept = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
+            .map_err(|e| AssemblyError::Listing(format!("the evidence store's shelf: {e:?}")))?
+            .kept;
+        let done: Vec<&Receipt> = entries
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(v) if v.outcome == (Outcome::Done {}) => match &v.what {
+                    What::Result { effect } => Some(effect),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let decider = kit::operator_login();
+        for (receipt, entry) in &entries {
+            let Entry::Verified(v) = entry else {
+                if let Entry::Stated(s) = entry
+                    && s.what.statement.as_str() == ADVERTISEMENT_SHAPE
+                    && let Some(one) = self.installed.iter().find(|one| {
+                        one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
+                    })
+                {
+                    let one = one.clone();
+                    let bytes = kept
+                        .iter()
+                        .find(|k| k.kept.commitment == s.commitment)
+                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
+                    if bytes.as_deref() != Some(one.advertisement.bytes()) {
+                        return Err(AssemblyError::Listing(format!(
+                            "the advertisement the log holds for {} isn't the installed one: its commitment's bytes differ",
+                            s.attribution.maker().acts.as_str()
+                        )));
+                    }
+                    let at = rutent_core_authz::session::instant(&s.received_at);
+                    kit::join(&mut self.catalogue, &one, at);
+                    let statement = one.advertisement.statement();
+                    if let Some(reserve) = &statement.statement.offers.reserve {
+                        self.records.declarations.borrow_mut().insert(
+                            statement.statement.provider.clone(),
+                            ReserveDeclaration::clone(&reserve.declaration),
+                        );
+                    }
+                }
+                continue;
+            };
+            let What::Effect {
+                action:
+                    Action::ChangeCatalogue {
+                        change,
+                        provider,
+                        tuple,
+                        ..
+                    },
+                ..
+            } = &v.what
+            else {
+                continue;
+            };
+            if !done.contains(&receipt) {
+                continue;
+            }
+            let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
+                return Err(AssemblyError::Listing(format!(
+                    "the log holds a {change:?} of {} that Core::relist doesn't replay",
+                    provider.as_str()
+                )));
+            };
+            let Some(one) = self
+                .installed
+                .iter()
+                .find(|one| one.advertisement.statement().statement.provider == provider.as_str())
+                .cloned()
+            else {
+                continue;
+            };
+            let statement = one.advertisement.statement();
+            let Some(tuple) = rutent_prov::catalogue::tuples_of(&statement.statement)
+                .into_iter()
+                .find(|t| &kit::tuple_id(provider.as_str(), t) == tuple_id)
+            else {
+                continue;
+            };
+            let mut terms = kit::grant_terms(
+                &one,
+                decider.acts.as_str(),
+                rutent_core_authz::session::instant(&v.when.at),
+            );
+            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(receipt.index));
+            terms.tuples = vec![tuple];
+            kit::grant(&mut self.catalogue, &one, terms);
         }
         Ok(())
     }
@@ -1095,6 +1296,8 @@ impl Core {
                 inputs: &started.inputs,
                 floor: started.floor.as_ref(),
             };
+            let readings = self.readings.clone();
+            readings.refresh(&self.fleet.platform.world);
             let mut running = Running {
                 platform: &mut self.fleet.platform,
                 clock: &self.clock,
@@ -1102,6 +1305,13 @@ impl Core {
                 feed: &mut self.feed,
                 log: &self.log,
                 swap_to: self.swap_to.as_deref_mut(),
+                readings: &readings,
+            };
+            let mut grading = rutent_core_orch::closing::Evidenced {
+                catalogue: &self.catalogue,
+                records: &readings,
+                books: &readings,
+                closing: &mut self.closing,
             };
             let mut decisions = self.policy.clone();
             let mut parts = SegmentParts {
@@ -1112,7 +1322,7 @@ impl Core {
                 decisions: &mut decisions,
                 modules: &mut running,
                 uses: &mut NoProxy,
-                grading: &mut ProvidersWord,
+                grading: &mut grading,
                 operator_key: &mut self.signer,
                 fresh: &mut self.fresh,
                 issued: &self.issued,
@@ -1289,6 +1499,77 @@ mod tests {
             ))
         ));
         assert!(!core.started.contains_key(order.as_str()));
+    }
+
+    /// Core alone, put together, and the config it was put together under.
+    fn alone() -> (Core, Config) {
+        let scenario = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce));
+        let (core, _) = scenario.core(1, &mut machine::Reference);
+        (core, scenario.config(1))
+    }
+
+    /// A Core opened again rebuilds its catalogue from the grants and advertisements its log holds, and from nothing
+    /// else: a catalogue change it doesn't replay, here a promotion, refuses the reopening rather than leave the
+    /// catalogue short of it (a revoked tuple granted again, a release not in force).
+    // verifies: REQ-MDL-4, REQ-AUZ-6
+    #[test]
+    fn reopened_core_refuses_a_catalogue_change_it_does_not_replay() {
+        let (mut core, config) = alone();
+        let installed = core.installed[0].clone();
+        let provider = kit::id(&installed.advertisement.statement().statement.provider);
+        let action = Action::ChangeCatalogue {
+            change: CatalogueChange::Promote,
+            provider: provider.clone(),
+            version: Some(kit::id("1.0.0")),
+            tuple: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+        };
+        let request = DecisionRequest {
+            request: core.fresh.id(),
+            caller: kit::operator_login(),
+            action: action.clone(),
+            at: core.clock.timestamp(),
+        };
+        let decision =
+            rutent_contracts::core_internal::calls::Decisions::decide(&mut core.policy, &request)
+                .unwrap();
+        let permit = decision.permit().expect("the operator's login may promote");
+        let effect = core
+            .verified(
+                What::Effect {
+                    action,
+                    decision: permit,
+                },
+                Outcome::ToTakeEffect {},
+            )
+            .unwrap();
+        core.verified(What::Result { effect }, Outcome::Done {})
+            .unwrap();
+        let reopened = core.reopened(&config, &mut machine::Reference);
+        assert!(
+            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("doesn't replay")),
+            "{:?}",
+            reopened.err()
+        );
+    }
+
+    /// A Core opened again joins an advertisement only where the bytes the evidence store kept under the log's
+    /// commitment are the installed provider's: the same statement in other bytes refuses the reopening.
+    // verifies: REQ-AUD-2, REQ-CAT-6
+    #[test]
+    fn reopened_core_joins_only_the_advertisement_its_log_committed_to() {
+        let (mut core, config) = alone();
+        let mut bytes = core.installed[0].advertisement.bytes().to_vec();
+        bytes.push(b' ');
+        core.installed[0].advertisement =
+            rutent_conformance::role::Received::from_bytes(bytes).expect("the same statement");
+        let reopened = core.reopened(&config, &mut machine::Reference);
+        assert!(
+            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("commitment")),
+            "{:?}",
+            reopened.err()
+        );
     }
 
     /// An order of 1 000 000 whose customer takes no less than 995 000, accepted, and its withdrawal scripted to

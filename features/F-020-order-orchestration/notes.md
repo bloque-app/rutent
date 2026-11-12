@@ -1040,3 +1040,663 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
   `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
   No manifest, no dependency, no `DEC-20` path.
+
+## T-020-11
+
+- **One record, `stuck::Stuck`** (`components/core-orch/src/stuck/`). Core's record of the parts it declared stuck,
+  the decisions it holds for their resolution, the moves in progress and each tuple's settlement history, which the
+  production assembly keeps durably (`F-030`), as `Segments`. What it reaches comes in `stuck::Parts` (Core's clock,
+  the log, fresh ids, `Segments`, `Exposures`); policy's `StuckOrders`, the operator's `Operator` channel and the
+  `Resolutions` that carry a resolution out are handed to the calls that use them.
+- **No route left** (`Stuck::no_route`, `REQ-ORD-28`). Only a recalculation's `NoRouteLeft`, `NoRoute` or `Rejected`
+  records the `no_route` input (`StuckError::RouteLeft` otherwise); it cites the routing's decision record, or, past
+  the bound, where nothing was routed, the order's last decision record, which the caller names
+  (`NoRouteLeft::last_record`). The state machine places the part: stuck, or waiting for the customer at a failed
+  final deposit's node (`REQ-ORD-43`; the kit's single-reserve route always ends there, so the stuck test leaves the
+  deposit never handed over, its begin refused, and the routing offering nothing from the ledger). Nothing is rolled
+  back: no reversal, no hold released, nothing handed over. The value resting at the node is held there under the
+  settled segment that took it there (`Exposures::hold_resting`, an additive seam in `T-020-05`'s module), so the
+  ceilings in flight count it. Built once and appended until the log takes
+  it; before it is appended the part is read again, and an input it no longer takes is dropped
+  (`StuckError::NotApplicable`). Once taken, the order Core follows takes it (`Segments::observe`), and a stuck
+  order is marked in `Exposures`. Reading, reversible.
+- **`T-020-10`'s hand-offs.** `NoRouteLeft` is recorded as above. A stuck or waiting part isn't recalculated: the
+  part's `evidenced` already refused one `Held`, and now holds, since the order Core follows takes `no_route` and
+  `stuck_declared` (the no-route test sees `NotNow(Held(Stuck))`, no one asked). A retried recalculation's append
+  re-reads the part since `T-020-10`'s review, so a part declared stuck in between reads `Held`; no test stages it,
+  since this row's declarations can't reach a part whose recalculation waits on the log (one needs the value
+  evidenced, the other a segment in flight or no route), and `dispute` is `T-020-12`'s.
+- **`T-020-08`'s hand-off: what stays in flight.** A segment carried out with no final outcome (no result that
+  counts, an outcome unknown, waiting on the person) is timed from when it was carried out
+  (`Segments::carried_since`); past its time the part is declared stuck, and only its resolution moves the value.
+- **Over time** (`Stuck::watch`, `REQ-ORD-29`). The clock runs on twice the p99 of the segment's tuple (provider,
+  from, to) once that tuple has `HISTORY` (20) settlements, over its latest `WINDOW` (200), and on twice its
+  advertised time (the router's `declared_times` over the chosen record) until then; keyed by tuple, so a reserve's
+  withdrawal history doesn't time its deposit. The p99 is by nearest rank, so below a hundred samples it is the
+  slowest; over the window it falls as well as rises. Both figures are the coordinator's defaults, reversible, on
+  the owner's form. Whole seconds, Core's
+  clock; strictly longer than twice: at exactly twice it isn't stuck. An advertised time the record can't give
+  (`u64::MAX`) times nothing: no contract-valid record lacks one. The figures (`stuck_call`) are appended before the
+  `stuck_declared` (`over_time`) that rests on them, each built once. Readings, reversible.
+- **The operator's warning, a reading; hand-off to `T-023-01`.** No `Raise` difference fits a stuck order, so the
+  warning is the declaration handed back (`Watch::Stuck(StuckCalled)`, with its figures and both receipts), the
+  `stuck_declared` input, and the order on the operator's stuck view at once. Delivering it to the operator is
+  `T-023-01`'s: `AC-41` notifies the operator of every state change, this one included.
+- **A material change in a p99** (`Stuck::learn`, `REQ-ORD-6`, `THR-24`). Each settled segment's time
+  (`Segments::settlements`, in the log's order) joins its tuple's history once. The first p99, formed at `HISTORY`
+  settlements, is compared with the advertised time the settlements declared, and raised if it differs by
+  `MATERIAL_BPS` (half) of it, citing the settlement that formed it; it is the baseline from then. Each later p99,
+  over the window, is compared with the baseline, and raised if it moves by half of it, either way: up, or down
+  once the slow settlements leave the window (unit test `p99_falls_after_a_long_slow_history_and_the_fall_is_raised`;
+  before the review, with no window, it could never fall, so "either way" held only upward). A raise names the
+  provider, cites the settlement the baseline rests on and the one that moved it, and is recorded `done` or `failed`
+  as the channel answered; the new p99 is the baseline from then. A raise whose
+  entry the log can't take now is appended as built, never raised twice; one the log refuses is dropped. Detection
+  never holds up the clock: `watch` times the part whatever learning answered, and `learn` answers its failure
+  when called on its own (`REQ-ORD-9`'s "only detects"; on the advisor's review). Readings, reversible.
+- **By value and age** (`Stuck::stuck_values`, `REQ-OPS-2`, `THR-58`). A stuck part's value is what it holds,
+  in flight or at rest at its node (`Exposures::stuck`), less what its resolutions moved. Ranked within each asset,
+  largest first, then oldest; no rate converts across assets. Age from the first declaration. Like
+  `Exposures::stuck`, the view is Core's own read, with no read check: the operator's console that shows it is a
+  later row's. An exchange in flight is held in both its assets; moving the whole of it in either resolves the
+  part, since it is one value. Reading, reversible.
+- **Visible to the customer and the provider** (`REQ-ORD-6`). The customer reads its order's state through
+  `Segments::status`; the provider reads its own segment through `stuck::seen_by_provider`, a `Reads::Segment` read
+  naming the provider as the order Core follows has it, never the reader's word. Each read is recorded either way.
+- **Resolution, in two steps** (`REQ-AUZ-4`, ADR-0011). `Stuck::decide` asks policy's `decide_stuck` only for a part
+  Core declared stuck, still stuck in the order it follows and unresolved, with no move of it in progress or of
+  unknown outcome, naming evidence, delivering to the order's destination or its origin exactly, moving no more than
+  the part still holds in the asset named, through a provider of the part (`THR-77`'s "to a friend"). The two ends
+  come from Core's records, never from the caller (`Stuck::follow`): the destination is the order's authorisation's,
+  held to every part's destination in the order Core follows; the origin is the reserve and outer node the order's
+  withdrawal took the value from, held to the authorisation's origin reserve. The destination's account is the
+  log's own record: the order's latest permitted `authorise` entry (`Stuck::follow` reads the log's entries as the
+  log holds them, as `T-021-04`'s engine does). The origin's account isn't in the log as such: the log holds the
+  withdrawal Core signed only by its stated entry's commitment, its bytes in the evidence store. So the origin's
+  account is checked at each decision against the accounts that operation names among its inputs, as Core kept it
+  (`Segments::sent`); a residual: any account the withdrawal named passes, a beneficiary's included, where the
+  tuple's terms make the withdrawal carry one. The assembly follows the order when it takes it up; the ends first
+  followed stand, and others are refused. A permit
+  answering Core's own request is kept for its move (`NotItsAnswer` otherwise). `Stuck::carry_out` moves only on a
+  decision Core holds, of that order, by a mover of neither the decider's party nor its login, whatever policy
+  answers, only while no other move of the part is in progress, and only for what the part still holds then; then
+  `move_stuck`, and only its permit answering Core's request backs the `resolve_stuck` effect, built once, acted on
+  once for its own receipt in the one register the segments keep too (`Segments::act_on`), carried out by
+  `Resolutions`. A move that stopped after its effect was built goes on from there without asking policy again,
+  only for its own mover and order. Before it acts the part is read again: one that left `stuck` while the move
+  stalled (resolved, or completed by a result recorded since), or holds less than the move names now, is moved no
+  more, the move dropped and its decision spent. Each move spends its decision, whatever came of it; an effect the log refuses drops its move and frees the part, its decision spent too. `done` records its result and counts what moved; the part is resolved, its holds released and every
+  other decision for it spent, only once all of it moved. `failed` records its result and leaves the part held for a
+  new decision. `unknown` records no result yet, and holds the part: nothing more is decided or moved for it until
+  its outcome is known, on two actors' word: its own mover, for its own order, reports done or failed naming its
+  evidence by an opaque reference (`Stuck::known_outcome`), which settles nothing, a later report replacing it and
+  counting one more version; an actor of another party and login confirms it naming the report it confirms (its
+  outcome, version and evidence, all the current report's, or nothing is recorded) and its own evidence
+  (`Stuck::confirm_outcome`; the decider may, under ADR-0011), and only then is it recorded as the effect's result, once, with both actors and their evidence kept
+  (`Stuck::outcome_of`). Done counts what moved and the part resolves once all of it moved; failed frees the part.
+  The real answer is evidence Core checks, the provider's stated result for the effect's transaction, which the
+  production `Resolutions` mover row (the coordinator's) or `T-020-12` owns. The order's stuck mark goes only once the order holds nothing more, so resolving one part of
+  a split order keeps another part's live holds and the mark. Readings, reversible.
+- **Hand-off to `T-021-04`: the order's authorisation.** `Stuck::follow` reads the order's permitted `authorise`
+  entry from the entries it is handed, and takes them as the log's: that holds only where the assembly passes the
+  log's own entries, never a caller's. Once policy registers authorisations, Core reads them from there. The rule
+  on the assembly until then: it calls `follow` with the log's entries as the log holds them, when it takes the
+  order up.
+- **Gap for `T-021-06`: policy's stuck rules are unbuilt.** The engine's `StuckOrders` is only `Unbuilt`'s, which
+  answers not known, so nothing moves through the real engine yet (the refusal test runs on it), and no fixed rule
+  compares the decider and the mover: Core holds that rule itself, party and login, and the log's
+  `stuck-move-carries-out-its-decide-step` holds the party after. The tests' `PermitsEveryStep` (kit) stands where
+  `T-021-06`'s rules will, permitting every step, so Core's own rules are seen to hold where policy permits wrongly.
+  For `T-021-06` to decide, since Core can't: which roles may decide, move and confirm a move's outcome (a customer
+  as decider; the desk of the provider holding the funds as mover; and no customer, nor that desk, as the confirmer
+  of an outcome, `THR-70`'s colluding customer and provider), and the evidence digests checked against the store.
+- **Hand-off: the contract's half (`T-020-01f`, unmerged).** The contract author is adding a log row that admits a
+  resolution only for a declared, unresolved stuck part, resolved once, and a state-machine input that ends a
+  resolved part. Until then `stuck-decision-is-of-a-stuck-order` admits a `stuck_decide` after any `no_route` of the
+  order, one that left the part waiting included (Core refuses it, `NotStuck`), and a resolved part stays `stuck` in
+  the state machine while Core holds it resolved.
+- **Hand-off: a late delivery** (`T-020-12`, `T-024-06`: `AC-5`, `THR-76`). A segment's answer is taken once, when
+  it is carried out, so a provider's late outcome has no path into Core: that is `T-020-12`'s (reversals and late
+  reports) and `T-024-06`'s scenario. What this row does: a stuck part's run records what a segment it carried out
+  already gave back, each step once, and carries nothing out (test
+  `stuck_part_records_what_its_carried_segment_gave_back`).
+- **Gap: carrying a resolution out.** `Resolutions` is a seam; `stuck::Unbuilt` fails every resolution, so nothing
+  moves and the value stays held. No row owns the production one: `hand_on` is `T-020-13`'s ("the operator hands
+  the value on to a linked order"); `deliver`, to the destination or back to the origin, is in no row, an item for
+  the plan (a new `F-020` row).
+- **Hand-off to the contract's author: who reported and who confirmed an outcome.** The log records the confirmed
+  outcome as the effect's `result`, but not who reported or confirmed it, nor their evidence: that needs a contract
+  kind and a row, which the coordinator is queuing with the contract's author. Until then Core keeps them
+  (`Stuck::outcome_of`).
+- **Item for provider-role: the payer's account input.** provider-role names no input itself (a tuple's terms list
+  what its operations require), so `PAYER_ACCOUNT` (`payer.bank_account`) is the name provider-role's fixtures and
+  the simulated providers use, not a contract term. A contract-named key for the payer's account is an item for
+  provider-role's author.
+- **Durability, `F-030`'s.** A fresh `Stuck` holds no declaration, decision or move: after a restart the order Core
+  follows is rebuilt from the log's inputs (`Segments::follow_recorded`), so it still reads stuck and `run_part`
+  still refuses it, and a fresh `Stuck` decides nothing for it (test `restart_keeps_a_stuck_part_from_moving`); the
+  kept decisions, what moved, the resolved mark and the timings come only from the durable copy. The segments' mark
+  of a resolved part (`mark_resolved`) isn't rebuilt by `Segments::follow_recorded` either, so after a restart a
+  stuck part's late settlement could take its rest hold back: `F-030`'s until `stuck_resolved` lands, when the
+  state machine itself ends the part.
+- **Seams in `T-020-08`'s module** (`segments/mod.rs`, additive; the coordinator's word not asked, reversible):
+  `observe` takes a part's `no_route` and `stuck_declared` as well as `route_recalculated`, never a segment's input;
+  `run_part` on a stuck part hands nothing over, carries nothing out and takes no hold, recording only what a
+  carried-out segment gave back, a value it settled at an inner node held there at rest while the part is still
+  stuck, and refuses it (`SegmentsError::Stuck`) when there is nothing to record; `sent` reads the operation Core
+  signed for a segment; `act_on` marks an effect acted
+  on in the one register; `follow_recorded` rebuilds an order's state from the log; `stuck`, `carried_since` and
+  `settlements` (`Settlement`, with its declared time) read what the stuck clock runs on. In `T-020-05`'s
+  `snapshot/exposure.rs`: `Exposures::hold_resting`. `T-020-12` and `T-020-13` share the wave and may touch the same file: each seam is its own
+  function or one guard.
+- **The kit** (`conformance/scenarios/tests/segments_support/`, additive, for `T-024-02` to fold): `On::Stuck`,
+  `On::Raise` and `Fault::Refuse`;
+  the register answers `SegmentProvider` (every kit segment is the reserve's) and lists `provider_desk` and
+  `other_provider_desk`; `rerouting.rs` runs a recalculation of the kit's order and its recalculated route
+  (with the rounds' ports, of which `T-020-10`'s `tests/recalc.rs` still keeps its own copy, left for `T-024-02` so as
+  not to touch that file in parallel);
+  `resolving.rs` holds `staff`, `destination`, `origin`, `Raises`, `Moves` (with scripted outcomes),
+  `PermitsEveryStep` (which can answer another request), `on_parts`, `watch` and `follow`.
+- **Tests.** Thirty in `conformance/scenarios/tests/stuck.rs`; all but
+  `real_logs_receipt_passes_the_receipt_rule` run on the platform with the simulated providers and replay the log
+  through `attribute` and `admit_entry`, the timing ones moving the kit's clock.
+  - The row's: the no-route, twice-the-p99, no-history, figures, material-change and move-step tests.
+  - This row's besides: `no_route_at_a_failed_final_deposit_waits_for_the_customer`,
+    `stuck_state_is_visible_to_the_customer_and_the_provider`, `resolution_is_moved_once_by_another_party_on_its_decision`,
+    `resolution_elsewhere_or_beyond_the_stuck_value_is_refused`, `raise_the_log_refuses_holds_up_no_stuck_call`.
+  - The first review's: `resumed_move_never_pays_a_part_twice`, `partial_resolution_leaves_the_rest_to_decide`,
+    `replayed_receipt_moves_nothing_without_its_record`, `failed_or_unknown_move_spends_its_decision`,
+    `resolution_ends_come_from_cores_records`, `stuck_part_records_what_its_carried_segment_gave_back`,
+    `no_route_the_log_couldnt_take_is_appended_by_the_next_watch`, `restart_keeps_a_stuck_part_from_moving`.
+  - After `d3eabf2`: `resolved_part_takes_no_hold_back_when_run_again`, `ends_followed_at_take_up_survive_a_recalculation`,
+    `effect_the_log_refuses_frees_the_part_and_spends_its_decision`, `real_logs_receipt_passes_the_receipt_rule`.
+  - The re-review's: `stalled_move_pays_nothing_once_its_part_completed`,
+    `settlement_recorded_late_keeps_a_stuck_parts_value_held`, `unknown_move_takes_its_known_outcome_once_from_its_mover`,
+    `segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit`; and the ends test, extended.
+  - Round 3's: `resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late`; the stalled-move test,
+    extended.
+  - Round 4's: `unknown_move_takes_its_known_outcome_once_on_two_actors_word` (the known-outcome test, renamed) and
+    `confirmed_failure_frees_the_part_for_a_new_decision`.
+  - Round 5's: `confirmation_names_the_report_it_confirms`.
+  - Nine unit tests in the module: `one_large_stuck_order_is_seen_among_many_small`,
+    `resolving_one_part_keeps_another_parts_live_hold`, `only_the_payers_account_is_the_origins`, and six over the
+    clock's figures and history.
+- **Rule-off, each red.** The code came first, so each rule was switched off once by a scratch script, its tests
+  run, the file restored and touched: strictly over twice (the boundary unit test and the twice-the-p99 test); the
+  p99 once a tuple has history (the twice-the-p99 test); history keyed by tuple (the no-history test); the figures
+  before the declaration (the figures test); a material change raised, and recorded as delivered or not (the
+  material-change test); the resting value kept at the declaration (the no-route test) and counted in the view (the
+  large-among-small test); only a no-route answer recording `no_route` (the no-route test); `observe` taking
+  `no_route` and `stuck_declared` (the no-route and visibility tests); a stuck part handing nothing over (the
+  no-route and twice-the-p99 tests); the mover of another party, and a move only on a decision Core holds (the
+  move-step test); delivering only to the order's ends, no more than the part holds through its provider, and the
+  evidence named (the elsewhere test); carried out once with its outcome kept, and resolved once (the moved-once
+  test); on the advisor's review, a resumed move only by its own mover and only for its own order (the moved-once
+  test), learning never holding up the clock and a refused raise dropped (the refused-raise test). A decision only
+  of a stuck part is held twice, by Core's declaration and by the order it follows: each
+  switched off alone stays green, both together go red (the waiting test). Reading the part again before a kept
+  declaration is appended is defence in depth that no test reaches alone. The review's rules are below.
+- **Touches**: `components/core-orch/src/stuck/`, the seams above, `conformance/scenarios/tests/stuck.rs` and the
+  kit's additions. No manifest, no dependency, no lock or `licences/RECORD` line, no `DEC-20` path.
+
+### T-020-11, review answers (of `3cff030`)
+
+The fresh reviewer found 1 critical, 2 high, 6 medium and 3 low. Each is answered here; the coordinator's defaults
+are taken where it gave them. Each new rule was switched off by a scratch script and its test seen red, then restored
+and touched (below).
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Critical: a resumed move pays a part twice | One move of a part at a time: `decide` and a fresh `carry_out` are refused while one is in progress (`MoveInProgress`); `advance` reads the part again before acting; resolving a part spends every other decision and drops every move of it that never acted | `resumed_move_never_pays_a_part_twice`, the reviewer's sequence |
+| 2 | High: resolving 1 unit closes a 1 000 000 part | Each part counts what its resolutions moved; it resolves only when nothing is left; a decision, and again its move, is held to what is left; the view shows what is left | `partial_resolution_leaves_the_rest_to_decide` |
+| 3 | High: a replayed receipt moves value with no record | A receipt is taken only if its digest is the entry's own, otherwise the append is tried again; effects acted on are held in `Segments`' one register (`act_on`) | `replayed_receipt_moves_nothing_without_its_record`, with `Fault::Replay` |
+| 4 | Medium: a failed decision stays usable for ever | `Resolved::Unknown` added: no result yet, the part held, nothing more decided or moved for it (`OutcomeUnknown`); every move, failed included, spends its decision | `failed_or_unknown_move_spends_its_decision` (carol can't rerun bob's) |
+| 5 | Medium: one login under two stated parties passes | The login is compared too (`SameLogin`); the roles a decider and a mover may hold are named for `T-021-06` above | in `move_step_without_another_actors_decision_is_refused` |
+| 6 | Medium: the order's ends come from the caller | `Stuck::follow` reads them from the authorisation, held to the order Core follows, and the order's withdrawal; `Deciding` carries none; the assembly rule and the `T-021-04` hand-off are named above | `resolution_ends_come_from_cores_records` |
+| 7 | Medium: timing | `HISTORY` 20, `WINDOW` 200, the first p99 compared with the advertised time; the "either way" claim corrected above | `p99_falls_after_a_long_slow_history_and_the_fall_is_raised`, `slow_first_settlements_against_the_advertised_time_are_raised`, the material-change scenario |
+| 8 | Medium: a late delivery on a stuck part can't be recorded | A stuck part's run records what a carried-out segment gave back, carrying nothing out; a provider's late outcome has no path into Core, handed to `T-020-12` and `T-024-06` above | `stuck_part_records_what_its_carried_segment_gave_back` |
+| 9 | Medium: the split-order release has no test | Unit test over `Declared` and `Exposures` built directly | `resolving_one_part_keeps_another_parts_live_hold` |
+| 10 | Low: `watch` overwrites a kept `no_route` | It appends it as built | `no_route_the_log_couldnt_take_is_appended_by_the_next_watch` |
+| 11 | Low: kept decisions keyed by policy's echoed id | Keyed by Core's own request, and an answer to another request is refused (`NotItsAnswer`), at decide and at move | in the move-step test |
+| 12 | Low: no restart test of the two-place check | `Segments::follow_recorded` rebuilds the order from the log | `restart_keeps_a_stuck_part_from_moving` |
+| gap | Resting value not in the ceilings | Contained, so done: `Exposures::hold_resting` | in the no-route test (`in_flight` counts it) |
+| gap | The warning, the contract's half, `Resolutions` | Hand-offs to `T-023-01`, `T-020-01f`, `T-020-13` and a new row, above | — |
+| 13 | Found after `d3eabf2`: a resolved part took its hold back when run again, since the stuck path went through the segments' hold | A stuck part's segment takes no hold (`advance`'s `hold`) | `resolved_part_takes_no_hold_back_when_run_again` |
+| 14 | Found after `d3eabf2`: the receipt rule was tested only against the kit's log | Pinned against `CMP-CORE-AUDIT`'s `AuditLog`: the same canonical JSON, SHA-256, lower-case hex (`stuck::is_receipt_of`, now public) | `real_logs_receipt_passes_the_receipt_rule` |
+| 15 | Found after `d3eabf2`: a later `follow` replaced the order's ends | The ends first followed stand; the same again is nothing, others are refused. The assembly follows the order at take-up. A recalculation keeps the settled withdrawal, so the origin is still read after one | `ends_followed_at_take_up_survive_a_recalculation` |
+| 16 | Found after `d3eabf2`: an effect the log refuses held the part for ever | A refused effect drops its move, frees the part and spends its decision; nothing moved and its permit backs nothing | `effect_the_log_refuses_frees_the_part_and_spends_its_decision` |
+
+- **Red first.** The review's tests (1 to 12) use the reworked API (`follow`, scripted `Moves`), so they don't compile
+  against `3cff030`: each rule they hold was shown red by switching it off alone, not by writing the test first
+  (below). Rows 13 to 16 were written test-first against `d3eabf2` and seen red for the right reason before each
+  fix (one hold taken back; a refused effect's move taken on again; another authorisation's ends accepted), then
+  switched off once more after it.
+- **Rule-off, the review's rules, each red:** decide waiting while a move is in progress, and no other move then (the
+  pays-twice test); a part resolving only once all of it moved, and the move held to what is left (the partial
+  test); a receipt only of its own entry (the replay test); a carried-out move spending its decision, and an unknown
+  outcome holding the part (the failed-or-unknown test); the decider's login (the move-step test); a decision
+  answering Core's own request (the move-step test); the ends from Core's records, and an authorisation that is the
+  order's (the ends test); the value at rest held (the no-route test); a stuck part recording what it carried out
+  (the carried-segment test); a kept `no_route` never overwritten (its test); another part's live hold kept (its unit
+  test); the order rebuilt from the log (the restart test); twenty settlements before a p99, the window, and the
+  first p99 against the advertised time (the timing unit tests and the material-change test). The one register of
+  effects acted on is defence in depth behind the receipt rule, which the replay test holds, and no test reaches it
+  alone. The part read again before a move acts is no longer defence in depth: the re-review's stalled-move test
+  reaches it alone (below). After `d3eabf2`, each
+  red too: a stuck part taking no hold (the resolved-part test), the ends first followed standing (the take-up
+  test), a refused effect freeing the part (the refused-effect test).
+
+### T-020-11, re-review answers (of `4d35507`)
+
+The re-review held fixes 1 to 5, 7 and 9 to 16, and found four more, two of them high, all in the path where a stuck
+part records what a segment gave back. Each test was written first and seen red for the right reason, then each rule
+switched off once more after its fix.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| N1 | High: a stalled move paid out after its part completed | Before a move acts, the part is read again, stuck and unresolved (`unresolved`) and holding what the move names (`within`); otherwise the move is dropped and its decision spent. Red first: the move answered `Done`, paying twice | `stalled_move_pays_nothing_once_its_part_completed` |
+| N2 | High: a late settlement left a stuck part's value outside every hold | A segment settling on the stuck path, while the part is still stuck, rests its value held at the inner node it reached. Red first: nothing held | `settlement_recorded_late_keeps_a_stuck_parts_value_held` |
+| N3 | Medium: the accounts in the ends could be steered | The destination, account included, from the log's permitted `authorise` entry, never one refused; the origin's account checked against the withdrawal Core signed, since the log holds it only by commitment (stated above). Red first: it didn't compile against the old `follow` | `resolution_ends_come_from_cores_records`, a friend's account at each end |
+| N4 | Low: `Unknown` had no way out | `Stuck::known_outcome`: its own mover, its own order, once, done resolving and failed freeing. Learning the outcome is the production `Resolutions`'s (the coordinator's plan row). Red first: it didn't compile | `unknown_move_takes_its_known_outcome_once_from_its_mover` |
+| nit | The repeated tests bullet | Rewritten above | — |
+| E | From `T-020-09`'s review: evidence `CMP-EVIDENCE` refuses should be a stuck trigger | It is one already: a refusal from the grading seam leaves the segment carried out with no final outcome and its value held, so the stuck clock runs on it, and past its limit the part is declared stuck. Since `T-020-09` merged (`m3` at `31c3772`), the refusal is its `SegmentOutcome::AwaitsEvidence(Short::Refused)`: it stays out of the segments' `is_final`, so `carried_since` keeps timing it; adding it there turns the test red. The test passed on its first run, being of behaviour already there; switching off the timing of a segment that awaits evidence turned it red | `segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit` |
+
+- **Rule-off, each red:** the part re-read before a move acts, alone (the stalled-move test); a late settlement on
+  a stuck part held at rest (its test); the destination only from a permitted authorisation, exactly, and the
+  origin's account one the withdrawal named (the ends test); a known outcome only from its own mover, only of an
+  unknown move of its order, never itself unknown, and a known done counting what moved (the known-outcome test); a
+  segment awaiting evidence timed (the refused-evidence test).
+- **The entry-point scan** (`T-021-03`'s) caught `follow` comparing an outcome by writing `Outcome::Permitted`; it
+  reads it through a `matches!` pattern now, which the scan takes as read, not written.
+- **Held for the contract branch** (`f-020/t-020-01f-erasure-decided`, not in `m3`): `StuckDecide.part`, and the
+  `stuck_resolved { to, evidence }` input once a resolution's move is `done` and the part has nothing left. Core
+  already doesn't produce the histories the new rows refuse (a resolution of a part not declared stuck or waiting,
+  one resolved twice, another move on a held part, a second move on one segment); each is to be checked against
+  the rows once they land.
+
+### T-020-11, round 3 answers (of `f073a51`)
+
+N1 to N3 held; two mediums and two lows remained. Each test was written first and seen red for the right reason
+(R2 and R4b by not compiling against the old API), then each rule switched off once more after its fix.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| R1 | Medium: a resolved part took a rest hold back, never released | Resolving a part marks it resolved in `Segments` (`mark_resolved`), and a stuck part's late settlement takes a rest hold only for a part not so marked: the state machine still reads it stuck until `stuck_resolved` lands. Red first: 1 000 000 held after resolution | `resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late` (a settled withdrawal, not `Act::Unknown`) |
+| R2 | Medium: the mover alone could make a part pay twice | The coordinator's default, reversible: a known `failed` is only reported (`Moved::AwaitsConfirmation`), and recorded, the part freed, once an actor of another party and login confirms it (then `Stuck::confirm_failed`, since round 4 `Stuck::confirm_outcome`; `SameParty`, `SameLogin`); a known `done` from the mover alone stays, since it frees nothing. The real fix is evidence, above | in `unknown_move_takes_its_known_outcome_once_from_its_mover`: the mover alone can't free the part, a same-party or same-login confirmer is refused |
+| R3 | Low: a dropped move left an effect with no result | A move dropped before it acts, its effect recorded, gets its `failed` result: it never took effect. Red first: one effect left open | in `stalled_move_pays_nothing_once_its_part_completed` (no `to_take_effect` left open) |
+| R4a | Low: `follow` trusts the slice it is handed | Stated in its docs and in the `T-021-04` hand-off above: it holds only where the assembly passes the log's own entries | — |
+| R4b | Low: any account the withdrawal named passed as the origin's | Only the payer's input (`PAYER_ACCOUNT`, `payer.bank_account`, the name provider-role's fixtures and the simulated providers use; provider-role names no input itself, so a contract-named key is a provider-role item) | `only_the_payers_account_is_the_origins` (a withdrawal carrying the beneficiary's account too) |
+| R4c | Low: per-part authorisation is coming (`T-020-01f`, `parts: Option<Vec<PartId>>`) | Work for its merge, each rule named below; it fails closed today | — |
+
+- **Work for the per-part authorisation's merge**, each a rule of `Stuck::follow` that a per-part authorisation
+  breaks: (1) the latest permitted authorisation is chosen per order, where it must be per part; (2) one destination
+  is held to every part, where each part has its own; (3) the ends first followed stand per order, where they stand
+  per part, and a new authorisation for one part (`REQ-ORD-43`'s new destination) must not be refused for the
+  others; (4) the origin is read from the first part's first segment only, where each part has its own withdrawal
+  and payer. Until then a split order whose parts are authorised apart fails closed: `follow` refuses it
+  (`NotItsAuthorisation`), and nothing is decided for it.
+- **Rule-off, each red:** a resolved part taking no rest hold (the late-settlement test; the first rule-off kept the
+  check by mistake and stayed green, and the corrected one, inverting the guard, went red); a failure only reported
+  until confirmed, a confirmer of another party, and of another login (the known-outcome test); a dropped move's
+  effect getting its result (the stalled-move test); only the payer's account being the origin's (its unit test).
+
+### T-020-11, round 4 answers (of `e0ca48a`)
+
+R1 to R3 held; one medium and two lows remained. The tests were written first and seen red by not compiling
+against the old API, then each rule switched off once more after its fix.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| S1 | Medium: one actor's word settled a move's outcome, and the log doesn't record whose | Done is held to the rule failed was: the mover only reports, naming its evidence (`known_outcome`, `Moved::AwaitsConfirmation`), and a later report replaces it; an actor of another party and another login confirms, naming its own (`confirm_outcome`), and only then is the outcome recorded, the part resolved or freed, with both actors and their evidence kept (`outcome_of`). The confirmer's roles for `T-021-06`, and the log's record of who reported and confirmed for the contract's author, are named above | `unknown_move_takes_its_known_outcome_once_on_two_actors_word` (the mover's done alone resolves nothing; a confirmed done resolves; same-party and same-login confirmers refused; a switch from failed to done leaves only the last pending), `confirmed_failure_frees_the_part_for_a_new_decision` |
+| S2 | Low: `mark_resolved` and `act_on` were public | `pub(crate)` | — |
+| S3 | Low: the `PAYER_ACCOUNT` name | An item for provider-role, above | — |
+| gap | `resolved` isn't rebuilt after a restart | `F-030`'s until `stuck_resolved` lands, above | — |
+
+- **Rule-off, each red:** a confirmer of another party, and of another login; only the last report pending; nothing
+  confirmed without a report (the two-actors test). That the mover's done alone resolves nothing is held by the
+  report step and those checks together: `known_outcome` records nothing and takes no `Parts`.
+
+### T-020-11, round 5 answer (of `66b5881`)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| T1 | Medium: the confirmer didn't say which outcome it confirmed, so the mover could re-report after the confirmer committed | Each report of a move counts a version (`Moved::AwaitsConfirmation { report }`). `Confirming` names the outcome, the report's version and the report's evidence; a confirmation is refused (`NotTheReport`) and records nothing unless all three are the current report's | `confirmation_names_the_report_it_confirms`: failed then done, a confirmation of the first refused and nothing recorded; mixed ones refused; the same in reverse; the current report's confirmed |
+
+- **Red first:** the test was written first and seen red by not compiling against the old `Confirming`.
+- **Rule-off, red:** the report's outcome, version and evidence matched (the round 5 test).
+
+## T-020-09
+
+- **The grading, `closing::Evidenced`** (`components/core-orch/src/closing/`). It implements the segments' `Grading`
+  seam, which now answers `Graded::Settles { cites, entries }` (the entries `segment_settled` rests on, the first the
+  evidence it cites) or `Graded::Waits(Short)`, and appends nothing itself: the segments append what it answers, each
+  entry once, kept with the segment like every other step (`INV-8`). What it reads comes in the struct: the catalogue
+  (declared grades, which nodes are private or public, holding accounts), `PublicRecords` (each public network's rules
+  and movements, and the network's own tie of a movement to a segment's transaction, `DEC-13`), `Books` (each private
+  node's publisher's record of the segments inside it) and `Closing`, Core's record across orders of which segment
+  each public movement evidences and what each settled segment's grading found, which the production assembly keeps
+  durably (`F-030`), as `Segments`.
+- **Graded through `CMP-EVIDENCE`** (`REQ-ORD-39`, `DEC-13`). The result's pieces go through `grade_outcome` against
+  the grade the provider declared. A claim of grade 1 or 2 is backed only by `public_record_check` of the segment's
+  own public movement (at its public end, its destination's first), on the piece whose reference is that movement; an
+  unbacked claim is a statement. The `evidence` entry says whose: the piece's `by` where a backed proof is the best
+  piece (the network, or the receipt's maker), otherwise the provider. Reading, reversible.
+- **Closing at a part's final deposit** (`REQ-ORD-33`). Core checks the deposit's movement itself, held to the route's
+  one destination (its account, its to asset and what the deposit gave out), and records two `evidence` entries, both
+  resting on the reserve's verified result: the cited one, grade 1, whose the network; and `{cites}.reserve`, the
+  reserve's signed statement, at the grade the reserve's own pieces earn (never the network record it names), whose
+  the reserve. The result's envelope is the reserve's "signed statement
+  for its own book" (provider-role's README). Without a final public record the deposit waits
+  (`SegmentOutcome::AwaitsEvidence(Short::NoPublicRecord)`): no `segment_settled`, no `result`, the value held, the
+  segment in flight and graded again on the next run, so a movement that becomes final later closes it. Nothing is
+  recorded of a waiting deposit's grade beyond its result's stated entry (default, reversible: an evidence entry
+  built while waiting would change once the record turns final, and one id can't carry two entries). A deposit to a
+  rail declared private closes on the public movement into the private node instead, plus the reserve's statement,
+  and records no replay.
+- **Inside a private node.** A segment whose two ends are private settles on its provider's evidence (grade 3 or 4 by
+  necessity, ADR-0007). Where the value leaves the node on a final public record, each such segment gets two more
+  `evidence` entries, `{cites}.in.{place}` and `{cites}.out.{place}`, grade 1, whose the network of the movement into
+  the node and of the movement out, resting on that segment's own result. Reading, reversible.
+- **Replay** (`REQ-ORD-41`, `DEC-24`). At a segment from a private node onto a public one, the private nodes passed
+  since the value last left a public node are replayed with `replay_route` against the movement out and the stated
+  outcome (the segment's to asset and what it gave out), each node's record asked of `Books` for the transactions of
+  the segments that touched it. A new core-internal entry, `replay`, records it: `consistent_with_the_exit` (never
+  proof), each `mismatch` with its node, or `nothing_recorded`. Two private nodes with a public node between are
+  replayed in turn, each as the value leaves it; two adjacent ones together, as one hands to the other. A mismatch
+  stops nothing: it is recorded (raising it is `T-022-05`'s). An exit with no public movement to compare is a
+  `public_exit` mismatch. The replay entry cites nothing earlier (admitted on its own checks, like `holding_check`).
+- **One movement, one segment** (`REQ-ORD-38`). The first segment whose grading relies on a movement holds it in
+  `Closing`; for any other order's segment that movement backs nothing, so it is graded on its other pieces, the
+  provider's word unless they grade higher, and each order keeps its own segment and its own entry. A final deposit
+  on a movement another deposit closed on waits (`Short::MovementShared`).
+- **Before a segment is handed over** (`closing::admits`, called from `run_part`): its provider's declared grade is at
+  or above the floor the operator set on its tuple now, and a tuple with no floor or a provider with no declaration
+  is refused (`REQ-ORD-39`); a segment that isn't its part's last leaves the value at an inner node with a holding
+  account (`INV-5`, `REQ-CAT-23`). The snapshot left such providers and nodes out when the route was chosen; this
+  holds a segment to the catalogue as it stands, so a floor raised since stops it. A refusal is recorded as
+  `order_refusal` `no_route_right_now` (`RouteRefusal::BelowEvidenceFloor`, `NoHoldingAccount`) and the part answers
+  `Ran::Refused`, also where earlier segments settled (they stand). A result graded below its tuple's floor still
+  settles, recorded as graded: the floor is a routing rule. Readings, reversible.
+- **Fees** (`REQ-AUD-11`, `closing::fees`). After `segment_settled`, built once and appended as the segment's step:
+  the fee its result states, to its provider (only where the fee is in the asset the segment takes in, which `judge`
+  holds), and on a part's final deposit the operator's, `rutent_router::quote::operator_fee` over what the deposit
+  gave out, attributed to the operator's `acts`, recorded at zero too. `billed_separately` is always false: provider-role
+  has no field for a fee billed apart (gap below). Fees are recorded whatever the grading, `ProvidersWord` included.
+  Nothing sums them.
+- **Seams in other rows' files** (each named in the commit):
+  - `segments/ports.rs` and `segments/mod.rs` (`T-020-08`): `ToGrade` carries what the grading reads (the part, the
+    transaction, the result's bytes, the part's operations, the operator's fee formula, the place, the segments, the
+    route's end, what the result says it gave out, the operator); `Grading::grade` answers `Graded`; `Short`;
+    `SegmentOutcome::AwaitsEvidence`; the graded entries and the fee records kept with the segment; the guard before a
+    first hand-over. `ProvidersWord` stays, answering the same grade-4 entry as before, documented as a stand-in that
+    closes on a statement and so is no grading for an order that closes.
+  - `snapshot/route.rs` (`T-020-05`): the two `RouteRefusal` variants.
+  - `components/core-orch/tests/segments.rs` (`T-020-08`): its catalogue was empty, so the guard refused the
+    withdrawal; it now joins the withdrawal's reserve with a floor and a holding account (`admitting`).
+  - `conformance/scenarios/tests/segments.rs` (`T-020-08`): `first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries`
+    re-runs under an empty catalogue; the withdrawal still settles on its first verdict, and the deposit, never handed
+    over, is now refused as below its floor rather than run.
+  - `components/core-audit/tests/log.rs` (`T-022-01`): the new kind in its exhaustive list and its standalone fixtures.
+- **Contract: core-internal 1.0.0, folded** (unreleased, no bump). `What::Replay`, `ReplayFound`, `ReplayMismatch`,
+  `MismatchKind`, the schema's `what_replay`, three valid and four invalid fixtures, the README's home row and the
+  standalone list, the CHANGELOG line. `contracts/` is a `DEC-20` path. `PLAN.md` §4.4 gives `contracts/` to `T-020-01`
+  and `T-020-02` in `M3`; this is made on the brief's word, since `REQ-ORD-41`'s replay had no home and the home table
+  says a record not listed needs the contract changed.
+- **Tests.** On the running platform with the simulated providers (`conformance/scenarios/tests/closing.rs`, over
+  `T-020-08`'s kit, a `Recording` wrapper keeping the bank network and the reserve's book as Core reads them):
+  `statement_alone_does_not_close_an_order` (the reserve's `unrecorded` deposit; then the same route on the record,
+  closing, the ledger replayed), `provider_below_the_tuples_floor_is_not_routed_through` (the floor raised on the
+  catalogue the part runs against, on each of the two tuples), `value_between_segments_rests_only_in_a_holding_account`
+  (the same catalogue with no holding account registered) and `every_settled_segment_has_its_fee_record_and_no_balance_is_kept`
+  (two orders), and beyond the row, `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` (`REQ-ORD-33`,
+  `INV-8`: the waiting deposit run again appends nothing, then the movement recorded, the log refusing its evidence and
+  then its fee record for a run each, and the next run settles it once). With fakes in `components/core-orch/tests/closing.rs`, over the real `CMP-EVIDENCE` and
+  `SimulatedNetwork`, since no simulated route has a segment inside a private node, crosses two providers' private
+  nodes, or shares a movement: `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` (the
+  router-api fixture's route through `ledger-in`), `route_across_two_private_nodes_replays_each_on_its_way_out` (five
+  segments through `ledger-in`, the public `polygon` and `ledger-b`, matching and with a mismatch at the second node)
+  and `shared_movement_keeps_one_segment_per_order_as_the_providers_word`, and beyond the row
+  `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` (the guard's tuple keys against provider-role's
+  exchange and ramp fixtures). The segment-within test also checks the fee records under an operator's fee of 10 000.
+  Three of the row's seven aren't on the platform, though its done-when says they are: a kit route across two
+  providers' private nodes is `T-024-01`'s, and the platform scenarios `T-024-05`'s. The end-to-end scenarios are `T-024-04`'s
+  and `T-024-05`'s.
+- **Written after the code, then each rule switched off.** The code came first (the seam's shape decided the tests'),
+  so each rule was switched off once, its test run red, the file restored and touched (scratch helper
+  `t-020-09-ruleoff.py`, outside the tree):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a final deposit closes only on a final public record | `statement_alone_does_not_close_an_order`; `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | the tuple's floor before hand-over | `provider_below_the_tuples_floor_is_not_routed_through` |
+  | a holding account at the node between segments | `value_between_segments_rests_only_in_a_holding_account` |
+  | the guard called in `run_part` | `value_between_segments_rests_only_in_a_holding_account` |
+  | the reserve's statement graded by its own pieces | `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | a waiting segment isn't final, so a later run grades it again | `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` |
+  | an evidence or fee append that fails stops the settlement | `deposit_waiting_for_its_public_record_closes_once_it_is_recorded` |
+  | a ramp's tuple keyed as a ramp | `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` |
+  | an exchange's tuple keyed by its to asset | `exchange_and_ramp_operations_are_held_to_their_own_tuples_floors` |
+  | the provider's fee record | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
+  | the operator's fee record on the final deposit | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
+  | a movement relied on by another order backs nothing | `shared_movement_keeps_one_segment_per_order_as_the_providers_word` |
+  | whose the evidence is, from the backed piece | `shared_movement_keeps_one_segment_per_order_as_the_providers_word` |
+  | the replay on the way out | `route_across_two_private_nodes_replays_each_on_its_way_out` |
+  | each node replayed in turn (the run stops at a public node) | `route_across_two_private_nodes_replays_each_on_its_way_out` |
+  | the inner segment's public movements in and out | `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | contract: a mismatch is against a node replayed | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+  | contract: a replay names its nodes | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+
+- **Hand-off to `T-024-02`** (the assembly, in review). Swap `grading: &mut ProvidersWord` for
+  `&mut closing::Evidenced { catalogue, records, books, closing }`, keeping one `Closing` beside `Segments`. In the
+  simulated world the networks and the books live inside the platform's world, which `Parts` already borrows as the
+  modules, so the assembly copies them into what implements `PublicRecords` and `Books` before every grading: at the
+  start of each run and after each `carry_out`, as the test's `run` and `Recording` do. A copy after `carry_out` alone
+  isn't enough: a resumed run carries nothing out, and a deposit on `polygon` or `bsc` (`Confirmations(2)`) is
+  pending at its first grading and final only once blocks are added, so it would wait for ever. `Closing` must live
+  as long as `Segments` (and as durably, `F-030`): a fresh one silently loses the private-rail close (the movement
+  into the node), the replay's earlier transactions and the inner segments' in-and-out records, and the
+  shared-movement guard; none of them errs. No field of `Parts` or `Live` changed. The kit gained `On::Evidence` and
+  `On::Fee` (additive); `T-024-02`'s rewritten kit keeps every name `closing.rs` uses.
+- **Gaps, with their owners.**
+  - The log doesn't hold a final deposit's settlement to a public record and the reserve's statement: only Core does.
+    A core-internal relation (the `segment_settled` of a part's last deposit cites grade-1 evidence and rests on the
+    reserve's verified result) would make it the log's too. `T-020-01`'s contract, foldable while 1.0.0 is
+    unreleased; not added here.
+  - A fee billed separately: provider-role 3.0.0's `Fee` has no flag, so every record says `false`. A provider-role
+    change (released): reported, not made.
+  - A private node's record of its inner segments has no provider-role shape, so `Books` is a seam the assembly fills
+    from each publisher (`F-015`'s notes): a provider-role change, for the owner.
+  - Each real network's movement-to-segment matching, finality and reorg rules (`PublicRecords`): `F-031`, one task per
+    network (`DEC-13`).
+  - A final deposit made in pieces (several movements) can't close: its one destination's movement is one. The
+    simulation's `Delivery::Pieces` makes one; the rule for pieces (`REQ-ORD-30`) is open, for the coordinator.
+  - Routing away from a reserve that can't give a public record ("A reserve that can't give them MUST NOT end a
+    route"): the router and the catalogue's (`F-011`, `F-012`); here such a deposit only waits.
+  - A replay mismatch is recorded, not raised to the operator: `T-022-05`'s raise.
+  - Evidence `CMP-EVIDENCE` refuses (a claim above the declared grade, a reused movement) leaves the segment waiting,
+    held: the stuck path (`T-020-11`) resolves it.
+- **Touches**: `components/core-orch/src/closing/`, the seams above, the two new test files, the contract's files. No
+  manifest, no dependency, no `licences/RECORD` line. `DEC-20` path: `contracts/` (core-internal).
+
+### T-020-09, review answers (of `8b272a9`)
+
+Each answer's test was written first and seen red, except where the table says the code came first; then each new
+rule was switched off once, its test seen red, the file restored and touched.
+
+| Finding | Answer | Test |
+|---|---|---|
+| H1, a deposit from a public node into a private rail never closed | `movement_into` takes the deposit's own movement where the deposit is the segment that enters the private node; a final deposit into a private rail is held to the network's matching, not the route's account, and its record names the rail (`movement.node`) | `final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it` (core-orch) |
+| H2a, `ProvidersWord` closed a part on grade 4 | it answers `Waits(NoPublicRecord)` for a part's final deposit | `providers_word_never_closes_a_part` |
+| H2b, the log let a statement alone close | core-internal row `final-deposit-closes-on-a-public-record` (none other): a part's last segment, a deposit, settles only on grade-1 evidence naming its movement on the network its `move_value` route names (or naming the private `node` it went into), resting on a verified statement of the segment's provider | the contract's cases; `providers_word_never_closes_a_part` (a grading that settles on the word anyway is refused) |
+| H3, no entry named the movement | `evidence.movement { network, id, node }`, only at grade 1; `replay.movement`, the movement out; row `movement-evidences-one-segment`: no second segment relies on a movement, of another order, or of its order where neither names a node (a node's movements in and out evidence each segment inside it); `Closing::recorded` rebuilds Core's record from the log | `one_payment_closes_one_order_across_a_restart`: two orders to one account for one amount, one payment, a restart between the gradings: rebuilt, the second waits; forgotten, the log refuses it |
+| M4, a node caught misreporting still got grade-1 in/out entries | the in and out entries are written only where the node's replay found its records consistent with the exit | `route_across_two_private_nodes_replays_each_on_its_way_out` (mismatching run) |
+| M5, whose was the piece's `by` | a public record is the network's Core checked, whatever the piece names; the module doc says a non-final segment's destination tie rests on each network's matching (`F-031`), and that the amount compared is what the provider says it gave out, gross or net being the network's matching too (`F-031`) | `public_record_is_the_networks_whatever_the_piece_names` (`by` an auditor of the reserve's choosing) |
+| M6, `replay` cited nothing | `replay.rests_on`, the exit's result; row `replay-rests-on-its-exit` (order, segment); invalid fixtures for a silent node not replayed and a replay resting on nothing; refused cases for a missing result, another order's and another segment's | the contract's cases |
+| M7, the final-deposit guards untested | a wrong account, a wrong asset, a movement not yet final | `evidence_for_another_segment_does_not_close_an_order` (passed when written: the guards were there; each switched off below) |
+| L8, a mid-route refusal appended on every run | kept per order and part, answered as recorded while the guard refuses for the same reason | `refusal_mid_route_is_recorded_once_and_leaves_the_order_to_be_recalculated`, which also reads `recalc::evidenced` at the ledger |
+| L9, `PublishersWord` recorded a check that didn't run | it records no replay entry | none reachable: Core replays only towards a public exit (reading kept) |
+| L10, shared movement | default kept; the reading is on the owner's form | — |
+| L11, no public record possible | `Grading::can_close`: a part whose final deposit's destination Core reads no public record of, and which no publisher declares a private rail, isn't routed (`RouteRefusal::NoPublicRecord`), before anything is handed over; `ProvidersWord` answers that every part can | `reserve_that_cant_give_a_public_record_is_not_routed_to` (the code came first; switched off below) |
+| Billed separately | provider-role 3.1.0: `fee.billed_separately`, optional; core-internal's `fee.billed_separately` is what the provider stated, absent where it said nothing; the operator's fee record says nothing | `segment_within_…` (absent, then `true`); `every_settled_segment_has_its_fee_record_…` (the simulated reserve says nothing) |
+| The fakes and the log | the fake-backed tests record the order's plan and moves, each result's stated entry, and admit every entry the grading answers, and each `segment_settled`, through the real `admit_entry` | every test in `components/core-orch/tests/closing.rs` |
+| Nits | an unlisted provider is `ProviderNotListed`; core-audit appends the replay after its world, resting on a world result, rather than standalone; `nothing_recorded` names every silent node; the fake's operator fee is the operator's | `exchange_and_ramp_…`, `every_node_that_recorded_nothing_is_named`, `segment_within_…` |
+
+- **Rule-off, each red:**
+
+  | Rule switched off | Red |
+  |---|---|
+  | a deposit entering a private rail uses its own movement | `final_deposit_into_a_private_rail_…` |
+  | `ProvidersWord` waits at a final deposit | `providers_word_never_closes_a_part` |
+  | the close names its movement | `segment_within_…` |
+  | `Closing` rebuilt from the log | `one_payment_closes_one_order_across_a_restart` |
+  | in and out entries only where the replay is consistent | `route_across_two_private_nodes_…` |
+  | a public record is the network's | `public_record_is_the_networks_…` |
+  | the final deposit held to the destination's account | `evidence_for_another_segment_…` |
+  | the asset compared (switching off the to-asset hold alone can't go red: a deposit's own asset is the route's to asset, so the network adapter was made to pass any asset) | `evidence_for_another_segment_…` |
+  | only a final movement | `evidence_for_another_segment_…` |
+  | a part that can't close isn't routed | `reserve_that_cant_give_a_public_record_…` |
+  | billing as the provider stated | `segment_within_…` |
+  | an unlisted provider named as such | `exchange_and_ramp_…` |
+  | every silent node named | `every_node_that_recorded_nothing_is_named` |
+  | a mid-route refusal recorded once | `refusal_mid_route_…` |
+  | row `final-deposit-closes-on-a-public-record` | the contract's citation test; `providers_word_never_closes_a_part` |
+  | row `movement-evidences-one-segment` | `one_payment_closes_one_order_across_a_restart` |
+  | the row's node-level exemption within one order | `segment_within_…` |
+  | row `replay-rests-on-its-exit` | the contract's citation test |
+  | a movement named only on a public record (contract check) | the contract's fixture test |
+  | a silent node is one replayed (contract check) | the contract's fixture test |
+
+- **Readings, reversible.** A node's movements in and out evidence every segment inside it, of its one order, so the
+  movement row lets them share a movement within the order when the entry names the node; another order never. A
+  final deposit naming a private `node` is let off the network comparison: the log can't tell a node declared private
+  (a residual for `T-025-05`, beside the other catalogue residuals). The reserve's own entry at a close is graded by
+  its own pieces, at best grade 3. `Closing` relies on a movement only where an entry names it for its segment alone.
+- **The kit's stand-in.** The platform tests that are about something else (`segments.rs`, `recalc.rs` and the kit's
+  runners) now grade with `segments_support::Recorded`: a segment on its provider's word, and a part's final deposit
+  on the movement the simulated reserve records, by the segment's transaction, taken as found. Under `ProvidersWord`
+  their deposits now wait. The closing tests grade through `closing::Evidenced`.
+- **Hand-off to `T-024-02`, sharper.** The assembly on `m3` wires `ProvidersWord`, so once this merges every
+  scenario's final deposit waits and no order completes: it must switch to `closing::Evidenced`, refreshing what it
+  reads of the networks and books before every grading, and keep `Closing` beside `Segments`, rebuilt with
+  `Closing::recorded` from the log after a restart.
+- **The three fake-backed row tests** (inside a private node, across two, one shared movement) need simulated
+  shapes the kit doesn't have: a route through a provider's segment inside its private node, one across two
+  providers' private nodes, and a reserve answering two orders with one movement. Their done-when ("on the running
+  platform") goes on the owner's form; the shapes are `T-024-01`'s, the scenarios `T-024-05`'s.
+- **Contracts, `DEC-20` paths.** core-internal 1.0.0, folded (unreleased): `evidence.movement`, `replay.rests_on` and
+  `replay.movement`, `nothing_recorded.nodes`, an optional `fee.billed_separately`, `PublicMovement`, the three rows
+  in `contracts/src/core_internal/relations/closing.rs` (registered by one line each in `relations.rs`, `mod.rs` and
+  the contract's test), fixtures, README and CHANGELOG. provider-role 3.1.0 (released, minor, authorised by the
+  coordinator): an optional `fee.billed_separately`, a valid and an invalid fixture; every `Fee` literal in the
+  workspace and the plain-wallet guest gained `billed_separately: None`.
+
+### T-020-09, re-review answers (of `bc99b4f`)
+
+| Finding | Answer | Test |
+|---|---|---|
+| 1, high: a deposit into a private rail from another private node closed on the customer's payment into the first node | the coordinator's default, on the owner's form: a private rail closes only on the deposit's own movement, which only a deposit from a public node has; otherwise it waits, and `Grading::can_close` refuses a part ending in a deposit from a private node into a private rail, so it isn't routed | `deposit_into_a_private_rail_from_a_private_node_does_not_close` (the reviewer's route) |
+| 2a, restart: `Closing::recorded` rebuilt only grade-1 movements | `evidence.movement` names every movement Core checked, at whatever grade it earned, and `Closing::recorded` takes every movement the log names, its own and a node's | `movements_core_checked_are_taken_live_and_after_a_restart` (restart half) |
+| 2b, live: node-level movements never entered Core's record | Core takes every movement it checked, its own and each node's in and out, keyed by order and segment, a node's reused within its order (`Closing::free_for`), exactly as the log's row does | the same test (live half): order B, tied to order A's movements, is graded off them and waits on the deposit, with nothing refused |
+| 3, reading 2 too wide | the row requires the `node` a final deposit names to be its authorised destination's network; whether the rail is declared private stays a residual for `T-025-05` | refused case `final-deposit-closes-on-a-public-record--conflict-naming-another-node` |
+| 4, router-api's operation fee changed with no record | a line under router-api 4.0.0 (unreleased, no bump): its `fee` is provider-role's by reference and may carry `billed_separately`, which the router never sets | the guard |
+| 5, 3.0.0 statements | provider-role 3.1.0's changelog says statements made under 3.0.0 are refused under 3.1.0 by `check_context` and must be re-signed | — |
+| 6, the movement id's encoding | `PublicRecords`' docs: one label per chain and one canonical spelling per movement id, the matching `F-031`'s; grade-2 evidence a public-record check backs names and takes its movement, as every grade does now | covered by 2 |
+| 7, README | the movement row names a node's reuse within its one order | — |
+
+- **Rule-off, each red:**
+
+  | Rule switched off | Red |
+  |---|---|
+  | a private rail closes on no earlier movement (the old reach back restored) | `deposit_into_a_private_rail_from_a_private_node_does_not_close` |
+  | `can_close` refuses a private rail from a private node | the same |
+  | every movement Core checked named in its evidence | `movements_core_checked_are_taken_live_and_after_a_restart` |
+  | every movement Core checked taken live, its own and the node's | the same (switching off either alone stays green: each node's movements in and out are also the own movements of the segments that entered and left it, so either take covers the other) |
+  | `Closing::recorded` takes every movement the log names | the same |
+  | the movement row at any grade | the same (its forgetful-Core half) |
+  | the rail a final deposit names is its authorised network | the contract's citation test |
+
+  The filter that a private rail's own movement be from a public node, switched off alone, stays green: a deposit from
+  a private node into a private rail has no public end, so it checks no movement of its own; the filter stays as
+  defence in depth.
+- **Contracts.** core-internal 1.0.0, folded: the movement row at any grade, a node's reuse within its order, the rail
+  named as the authorised network; the invalid fixture `verified-entry-of-signed-evidence-naming-a-public-movement` is
+  valid now, renamed `verified-entry-of-signed-evidence-naming-the-movement-core-checked`; README and CHANGELOG.
+  router-api 4.0.0 and provider-role 3.1.0 changelog lines. `DEC-20` path: `contracts/`.
+
+### T-020-09, the assembly graded through `CMP-EVIDENCE` (after `m3` at `970828a`)
+
+- **Merged `m3` at `970828a`** (`T-024-02`, the assembly and the scenario harness), a merge commit; it merged
+  cleanly, the segments kit's additions on both sides kept.
+- **The assembly's grading** (`conformance/scenarios/src/assembly/`, the grading wiring only, so `T-021-04`'s change to
+  the authorise stand-in merges beside it): each part runs under `closing::Evidenced`. `grading.rs` holds the
+  readings, a copy of the simulated networks (each reserve's bank, and `polygon` and `bsc` where an exchange or a
+  ramp is installed) and the reserves' books, refreshed at the start of each run and after each `carry_out` (the
+  operation delivered twice too), since the world lives inside the platform the segments hold as their modules. One
+  `Closing` is kept on `Core` beside `Segments`, built by `Closing::recorded` from the log whenever Core is put
+  together on a disk, so a Core opened again takes the movements its log names.
+- **Every scenario still completes its orders**: the simulated reserve records each deposit's movement on its bank
+  network (instant finality) to the destination account, so each order closes on that public record and the
+  reserve's statement. Nothing in the closing rules was loosened. The assembly's four checks pass (the swap check
+  asserts each order complete; the crash check stops Core, and nothing in the harness runs a Core on after it, so the
+  rebuild runs at every assembly and is held by `one_payment_closes_one_order_across_a_restart` and
+  `movements_core_checked_are_taken_live_and_after_a_restart` in core-orch).
+- **Test** `assembled_order_closes_on_the_public_record_and_the_reserves_statement` (`assembly_wiring.rs`): the
+  assembled order's deposit closes on grade-1 evidence of its movement on the bank network, naming it, and the
+  reserve's statement.
+- **Rule-off, each red:** `ProvidersWord` wired back (the wiring test, and the swap check's "each order completed");
+  the readings not refreshed after an operation (the wiring test: the deposit's movement isn't seen and it waits).
+  `Closing::recorded` at assembly, switched off, stays green at this level: no assembly scenario runs a reopened Core
+  on.
+- **The restart scenario (closing the gap above).** `checks::restart_keeps_what_closing_took`, run by
+  `reopened_core_keeps_what_its_grading_took` (`tests/assembly.rs`): the first order completes; Core crashes before
+  the second order's withdrawal (the crash check's fault); it is opened again on the same disk (`Step::Restart`,
+  `Core::reopened`); with the reserve now paying two orders with one payment (`Fault::OnePaymentForTwo`: the network
+  ties a movement by its destination and amount), a third order to the same account for the same amount is tied to
+  the first order's movements. Checked: Core stopped mid-order, the first order completed, nothing stopped on a
+  refusal of the log, the third order's withdrawal settles off the movement and its deposit waits, and no movement
+  evidences two orders. Switched off, `Closing::recorded` at assembly turns it red: the reopened Core takes the first
+  order's movements afresh and the log refuses it (`movement-evidences-one-segment`), so the third order stops; and
+  without the planted tie the third order closes on its own payment.
+- **What `Core::reopened` keeps and rebuilds.** What is outside Core goes on as it stands: the platform with the
+  providers and their networks, the state machine's host, the clock, and the source of fresh identifiers (so no id
+  repeats). Core's own parts are put together again over the disk: the log and the evidence store read back, the
+  grading's `Closing` rebuilt by `Closing::recorded`, and the catalogue rebuilt from the log (each `done` grant at its
+  effect's time and each advertisement at the time the log received it, `Core::relist`), since granting again on the
+  reopened log would put each grant after the advertisement it trusts. Intake's, the segments' and `Issued` start
+  empty (`F-030`), so an order Core was running when it stopped stays where it stopped. The harness's
+  `Step::Restart` reopens Core after a crash or without one; after a crash with no restart, the steps after it are
+  skipped, as before.
+
+### T-020-09, the approval's low items (after `m3` at `85386b8`)
+
+- **Merged `m3` at `85386b8`** (`T-021-04`: the assembly's authorise through the engine, the policy handle reading
+  `CoreLog` through `Entries`): no conflict beside this row's grading wiring; both rows' tests pass on the merged tree.
+- **`Core::relist` fails loudly** on a `done` catalogue change it doesn't replay (a revoke, a release accepted,
+  revoked or promoted): the reopening is refused (`AssemblyError::Listing`) rather than rebuild a catalogue that grants
+  what the log revoked. Test `reopened_core_refuses_a_catalogue_change_it_does_not_replay` (a promotion in the log).
+- **`Core::relist` checks the log's commitment**: an advertisement is joined only where the bytes the evidence store
+  kept under the stated entry's commitment (`bearing_out`) are the installed provider's. Test
+  `reopened_core_joins_only_the_advertisement_its_log_committed_to` (the same statement in other bytes).
+- **A restart between a grade-3 withdrawal and its deposit**: `restart_between_a_withdrawal_and_its_deposit_keeps_the_movement_into_the_node`
+  (core-orch): rebuilt from the log, Core knows the withdrawal's movement into the node from the evidence naming it,
+  and the exchange inside the node still gets its in and out records. It passed when written: the rebuild was there
+  from the re-review round; switched off below.
+- **`Readings::of`** takes the networks the fleet serves through `fleet::networks_of`; the polygon and bsc block gap
+  is in `F-024`'s notes.
+- **Rule-off, each red:** relist's refusal of a change it doesn't replay (its test); the commitment check (its test);
+  `Closing::recorded` rebuilding a settled segment's own movement (the restart-between test).
+
+### T-020-11, merged with `m3`
+
+- **At `970828a`** (`T-024-02`'s assembly and shared kit, `T-020-10`, `T-022-03`): the segments kit's actors, keys,
+  identifiers, route and bounds come from the shared kit (`rutent_scenarios::kit`); only `provider_desk` and
+  `other_provider_desk` stay in the segments kit. The rounds ports in `rerouting.rs` stay: the assembly's are private.
+- **At `31c3772`** (`T-021-04`, `T-020-09`): the grading seam answers `Graded::Settles` or `Waits`, and the kit's
+  `ProvidersWord` no longer settles a part's final deposit. This row's helpers grade through the kit's `Recorded`,
+  as its other platform tests do; the refused-evidence test's fake answers `Waits(Short::Refused(_))`, and its
+  segment awaits evidence (`AwaitsEvidence`), timed by the stuck clock. Conflicts in `segments/mod.rs` (`Segments`'
+  fields), the kit (`On`, the register) and these notes kept both sides.
+- **Still for the contract branch's merge:** `StuckDecide.part`; `stuck_resolved { to, evidence }`; an unknown
+  outcome's `unanswered` result, then on confirmation the `resolution_outcome` entry with both actors and both
+  pieces of evidence (`Stuck::outcome_of`'s, into the log), then the final `done` or `failed` result.
+

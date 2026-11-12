@@ -1,6 +1,6 @@
 //! The assembly's wiring, each piece held by a test that fails without it (`T-024-02`): one clock, policy's sources
 //! answered from the records, the evidence store bound to Core's own log, staging set explicitly, and the rounds'
-//! transactions kept across routings.
+//! transactions kept across routings, and the grading through `CMP-EVIDENCE` (`T-020-09`).
 
 use rutent_contracts::core_internal::{Entry, What};
 use rutent_contracts::module_interface::Digest;
@@ -580,4 +580,52 @@ fn a_tuples_id_is_the_digest_of_its_canonical_json() {
             format!("tuple-{}", &digest[..32])
         );
     }
+}
+
+/// The assembled Core grades through `CMP-EVIDENCE` (`T-020-09`): the order's final deposit closes on a public record
+/// of its movement on the reserve's bank network, the record naming the movement, and on the reserve's own statement,
+/// and the order completes; a statement alone would close nothing.
+// verifies: REQ-ORD-33, REQ-ORD-39
+#[test]
+fn assembled_order_closes_on_the_public_record_and_the_reserves_statement() {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    let (core, order) = one_order(Given::one_reserve(Staged::AtOnce));
+    let evidence: Vec<(EvidenceGrade, String, bool)> = core
+        .log()
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Evidence {
+                    order: o,
+                    grade,
+                    whose,
+                    movement,
+                    ..
+                } if o == &order => Some((*grade, whose.as_str().to_owned(), movement.is_some())),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect();
+    let bank = format!("{RESERVE}-bank");
+    assert!(
+        evidence.contains(&(EvidenceGrade::PublicRecord, bank, true)),
+        "the deposit's public record, naming its movement: {evidence:?}"
+    );
+    assert!(
+        evidence.contains(&(EvidenceGrade::SignedByProvider, RESERVE.to_owned(), false)),
+        "the reserve's statement: {evidence:?}"
+    );
+    let settled = core
+        .log()
+        .entries()
+        .iter()
+        .filter(|(_, e)| {
+            matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
+                if input.subject.order.as_str() == order.as_str()
+                    && matches!(input.observed, rutent_contracts::state_machine::Observed::SegmentSettled { .. })))
+        })
+        .count();
+    assert_eq!(settled, 2, "the withdrawal and the deposit settled");
 }

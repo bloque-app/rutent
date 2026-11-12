@@ -21,15 +21,15 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Authorisation, Decision, DecisionRequest, Destination,
-    Entry, KeptStatement, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, Receipt,
-    RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through, TimeSource, VerifiedEntry,
-    VerifiedKind, What, When, admit_entry, attribute,
+    Entry, KeptStatement, Outcome, Parties, PermissionChange, PublicMovement, ReadAnswer,
+    ReadCheck, Receipt, RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through,
+    TimeSource, VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::module_interface::{Identifier, Name, PlatformRefusal};
 use rutent_contracts::provider_role::{
-    Denomination, Deployment, NodeRef, OuterNode, PublicKey, SafeInteger, canonicalize,
-    signing_input,
+    Denomination, Deployment, EvidenceGrade, NodeRef, OuterNode, PublicKey, SafeInteger,
+    canonicalize, signing_input,
 };
 use rutent_contracts::provider_role::{Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{
@@ -44,8 +44,8 @@ use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Rulin
 use rutent_core_authz::roles::Permission;
 use rutent_core_orch::rounds::Issued;
 use rutent_core_orch::segments::{
-    Answered, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments, SegmentsError,
-    Uses,
+    Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments,
+    SegmentsError, ToGrade, Uses,
 };
 use rutent_core_orch::snapshot::{
     Ask, Asked, Clock, Exposures, Reading, Received, Releases, Snapshots,
@@ -120,6 +120,8 @@ pub enum Fault {
     /// It answers with the receipt of the first effect it holds, as a log that mixed up its answers would: the
     /// entry is not appended.
     Replay,
+    /// It refuses it: nothing is appended (`T-020-11`).
+    Refuse,
 }
 
 /// Which entries a fault is for.
@@ -135,6 +137,8 @@ pub enum On {
     Record,
     /// A provider's result, as its stated entry.
     StatedResult,
+    /// The result of the segment named, as its stated entry (`T-020-11`).
+    StatedResultOf(&'static str),
     /// The input that binds a segment's provider.
     Bound,
     /// A result, once the log holds one already.
@@ -143,6 +147,14 @@ pub enum On {
     Refusal,
     /// A part's route recalculated (`T-020-10`).
     Recalculated,
+    /// A part declared stuck, or left no route (`T-020-11`).
+    Stuck,
+    /// A raise to the operator (`T-020-11`).
+    Raise,
+    /// A segment's graded evidence (`T-020-09`).
+    Evidence,
+    /// A segment's fee record (`T-020-09`).
+    Fee,
 }
 
 impl On {
@@ -163,11 +175,24 @@ impl On {
             (On::StatedResult, Entry::Stated(s)) => {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
             }
+            (On::StatedResultOf(segment), Entry::Stated(s)) => {
+                s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about
+                        .as_ref()
+                        .and_then(|a| a.segment.as_ref())
+                        .is_some_and(|g| g.as_str() == segment)
+            }
             (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
             (On::Recalculated, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteRecalculated { .. })),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
+            (On::Raise, Entry::Verified(v)) => matches!(v.what, What::Raise { .. }),
+            (On::Stuck, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed,
+                    Observed::StuckDeclared { .. } | Observed::NoRoute { .. })),
+            (On::Evidence, Entry::Verified(v)) => matches!(v.what, What::Evidence { .. }),
+            (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             _ => false,
         }
     }
@@ -208,6 +233,11 @@ impl TestLog {
         };
         if fault == Some(Fault::Unavailable) {
             return Err(AppendFailure::Unavailable);
+        }
+        if fault == Some(Fault::Refuse) {
+            return Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("the test log refuses it"),
+            ));
         }
         if fault == Some(Fault::Replay) {
             let (index, first) = self
@@ -376,8 +406,9 @@ impl authz::Policy for Deployment_ {
 
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
-/// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), and
-/// whose order this is: the customer is the requester of every order the kit seeds, and its party of [`ORDER`].
+/// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), whose
+/// order this is (the customer is the requester of every order the kit seeds, and its party of [`ORDER`]), and which
+/// provider a segment ran at: every segment the kit's routes run is the reserve's (`T-020-11`).
 pub struct Register;
 
 impl authz::Sources for Register {
@@ -385,7 +416,13 @@ impl authz::Sources for Register {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
             authz::Source::ActsFor { acts, party, kind } => {
-                let listed = [core(), customer(), operator()];
+                let listed = [
+                    core(),
+                    customer(),
+                    operator(),
+                    provider_desk(),
+                    other_provider_desk(),
+                ];
                 match listed.iter().find(|a| &a.acts == acts) {
                     Some(actor) => yes(&actor.party == party && &actor.kind == kind),
                     None => Reply::Missing,
@@ -401,6 +438,7 @@ impl authz::Sources for Register {
             authz::Source::OrderParties(order) => {
                 yes(order.as_str() == ORDER && need.input == customer().party)
             }
+            authz::Source::SegmentProvider { .. } => yes(need.input.as_str() == RESERVE),
             // The customer authorises each order the kit seeds through the engine (`T-021-04`).
             authz::Source::Requester(_) => yes(need.input == customer().party),
             _ => Reply::Missing,
@@ -463,6 +501,29 @@ impl Reads for Policy {
 
     fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
         self.engine.revoke_permission(change)
+    }
+}
+
+// Who acts, besides the shared kit's -----------------------------------------------------------------------------
+
+/// The reserve's own desk, a person acting for the reserve: the provider of every segment the kit's routes run
+/// (`T-020-11`).
+pub fn provider_desk() -> Actor {
+    Actor {
+        party: id(RESERVE),
+        acts: id("sim-reserve-a-desk"),
+        role: Role::Provider,
+        kind: ActorKind::Person,
+    }
+}
+
+/// Another provider's desk, which ran no segment of the kit's routes (`T-020-11`).
+pub fn other_provider_desk() -> Actor {
+    Actor {
+        party: id("sim-reserve-b"),
+        acts: id("sim-reserve-b-desk"),
+        role: Role::Provider,
+        kind: ActorKind::Person,
     }
 }
 
@@ -1246,7 +1307,7 @@ impl Core {
             world_catalogue,
             modules,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1258,7 +1319,7 @@ impl Core {
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1574,6 +1635,64 @@ impl Modules for Watched<'_> {
     }
 }
 
+/// The grading the platform tests that aren't about closing run under (`T-020-09`): a segment on its provider's
+/// word, as [`ProvidersWord`] grades it, and a part's final deposit on the movement the simulated reserve records on
+/// its destination's network, which it names by the segment's transaction (`rutent_conformance::sim::movements_of`),
+/// taken as found rather than read, plus the reserve's statement. The tests of closing grade through
+/// `closing::Evidenced`, which reads the networks (`tests/closing.rs`).
+pub struct Recorded;
+
+impl Grading for Recorded {
+    fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        if !rutent_core_orch::closing::is_final_deposit(settled) {
+            return ProvidersWord.grade(settled);
+        }
+        let network = settled.end.destination.node.network.clone();
+        let evidence = |evidence: Id, grade, whose: Id, movement| {
+            Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: settled.core.clone(),
+                what: What::Evidence {
+                    evidence,
+                    order: settled.order.clone(),
+                    segment: settled.segment.clone(),
+                    grade,
+                    whose,
+                    rests_on: vec![settled.result.clone()],
+                    movement,
+                },
+                when: When {
+                    at: settled.at.clone(),
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Observed {},
+            })
+        };
+        let movement = PublicMovement {
+            network: id(&network),
+            id: settled.transaction.clone(),
+            node: None,
+        };
+        Graded::Settles {
+            cites: settled.evidence.clone(),
+            entries: vec![
+                evidence(
+                    settled.evidence.clone(),
+                    EvidenceGrade::PublicRecord,
+                    id(&network),
+                    Some(movement),
+                ),
+                evidence(
+                    id(&format!("{}.reserve", settled.evidence.as_str())),
+                    EvidenceGrade::Statement,
+                    settled.provider.clone(),
+                    None,
+                ),
+            ],
+        }
+    }
+}
+
 /// The proxy's uses as a world with one would report them for each operation handed over: its statement key,
 /// resolved, and a secret its outside part asked for and was refused.
 pub struct UsesOf(pub Rc<RefCell<Vec<String>>>, pub usize);
@@ -1764,3 +1883,8 @@ pub fn release_change(
         statement_key,
     }
 }
+
+// Stuck orders and recalculation, for `T-020-11` --------------------------------------------------------------------
+
+pub mod rerouting;
+pub mod resolving;

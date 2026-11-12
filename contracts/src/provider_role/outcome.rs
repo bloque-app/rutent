@@ -600,6 +600,14 @@ pub struct Fee {
     pub asset: String,
     /// The amount, in the origin unit (a conversion's `from` unit).
     pub amount: String,
+    /// Whether the provider bills it separately, outside the amounts it reports (`REQ-AUD-11`, since 3.1.0). Absent
+    /// where it doesn't say: a fee record then says nothing either way.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub billed_separately: Option<bool>,
 }
 
 /// One piece of evidence for an outcome, graded, naming whose it is (`REQ-ORD-33`, `REQ-ORD-39`).

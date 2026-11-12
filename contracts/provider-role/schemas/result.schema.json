@@ -1328,6 +1328,10 @@
         },
         "amount": {
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "billed_separately": {
+          "description": "Whether the provider bills the fee separately, outside the amounts it reports (REQ-AUD-11, since 3.1.0). Absent where it doesn't say.",
+          "type": "boolean"
         }
       }
     },

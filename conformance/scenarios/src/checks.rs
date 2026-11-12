@@ -431,3 +431,84 @@ pub fn one_seed_one_run(environment: &mut dyn Environment, swap_to: SwapTo<'_>) 
         );
     }
 }
+
+/// A Core stopped mid-order and opened again on its disk takes what its grading took before it stopped
+/// (`Closing::recorded`, `T-020-09`, `REQ-ORD-38`, `REQ-ORD-33`): the first order closes on its deposit's public movement;
+/// Core crashes before the second order's withdrawal; opened again on the same disk, with the reserve now paying two
+/// orders with one payment, a third order to the same account for the same amount is tied to the first's movement, and
+/// its deposit waits rather than close on it a second time. Nothing stops on a refusal of the log, and no movement
+/// evidences two orders.
+pub fn restart_keeps_what_closing_took(environment: &mut dyn Environment, swap_to: SwapTo<'_>) {
+    for seed in seeds(&DEFAULT_SEEDS) {
+        base("a Core opened again keeps what its grading took")
+            .when(order(1))
+            .when(Step::Run)
+            .when(order(2))
+            .when(Step::Plant(Fault::CrashBeforeEffect(2)))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Plant(Fault::OnePaymentForTwo))
+            .when(order(3))
+            .when(Step::Run)
+            .then("Core was stopped mid-order", |run| {
+                check(run.crashed && run.orders.len() == 3, || {
+                    format!("crashed {}, orders {:?}", run.crashed, run.orders)
+                })
+            })
+            .then("the first order completed", |run| {
+                let first = run.orders[0].as_str();
+                check(
+                    run.state_names().get(first) == Some(&Some("complete".to_owned())),
+                    || format!("{:?}", run.state_names()),
+                )
+            })
+            .then("nothing stopped on the log's refusal", |run| {
+                check(run.stopped.is_empty(), || format!("{:?}", run.stopped))
+            })
+            .then(
+                "the third order's deposit waits: its only payment closed the first",
+                |run| {
+                    let third = run.orders[2].as_str();
+                    let settled = run
+                        .inputs
+                        .iter()
+                        .filter(|i| {
+                            i.subject.order.as_str() == third
+                                && matches!(
+                                    i.observed,
+                                    rutent_contracts::state_machine::Observed::SegmentSettled { .. }
+                                )
+                        })
+                        .count();
+                    check(
+                        settled == 1
+                            && run.state_names().get(third) != Some(&Some("complete".to_owned())),
+                        || format!("{settled} settled, {:?}", run.state_names().get(third)),
+                    )
+                },
+            )
+            .then("no movement evidences two orders", |run| {
+                let mut by: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+                for e in &run.log {
+                    if let Entry::Verified(v) = e
+                        && let What::Evidence {
+                            order,
+                            movement: Some(m),
+                            ..
+                        } = &v.what
+                    {
+                        let orders = by
+                            .entry((m.network.as_str().to_owned(), m.id.as_str().to_owned()))
+                            .or_default();
+                        if !orders.contains(&order.as_str().to_owned()) {
+                            orders.push(order.as_str().to_owned());
+                        }
+                    }
+                }
+                check(!by.is_empty() && by.values().all(|o| o.len() == 1), || {
+                    format!("{by:?}")
+                })
+            })
+            .run(seed, environment, swap_to());
+    }
+}

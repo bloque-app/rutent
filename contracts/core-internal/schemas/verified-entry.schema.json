@@ -70,6 +70,7 @@
             "settlement",
             "evidence",
             "fee",
+            "replay",
             "stuck_call",
             "afterwards",
             "reliance",
@@ -497,6 +498,21 @@
           },
           "then": {
             "$ref": "#/$defs/what_fee"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "replay"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_replay"
           }
         },
         {
@@ -1373,6 +1389,10 @@
           "items": {
             "$ref": "urn:rutent:core-internal:receipt"
           }
+        },
+        "movement": {
+          "description": "The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment of one order (REQ-ORD-38).",
+          "$ref": "#/$defs/public_movement"
         }
       }
     },
@@ -1387,8 +1407,7 @@
         "to",
         "party",
         "amount",
-        "asset",
-        "billed_separately"
+        "asset"
       ],
       "properties": {
         "call": {
@@ -1419,8 +1438,161 @@
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
         },
         "billed_separately": {
-          "description": "Whether it was billed separately, outside the amounts reported.",
+          "description": "Whether it was billed separately, outside the amounts reported, as its provider stated it; absent where the provider didn't say.",
           "type": "boolean"
+        }
+      }
+    },
+    "what_replay": {
+      "description": "Private nodes' recorded segments replayed through CMP-EVIDENCE where the value leaves them onto a public node, against the public movement out and the stated outcome (REQ-ORD-41, DEC-24). A match is consistency with the public exit, not proof; a route ending inside a node has no such record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "nodes",
+        "found",
+        "rests_on"
+      ],
+      "properties": {
+        "call": {
+          "const": "replay"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment the value left the private nodes by, onto the public node.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "nodes": {
+          "description": "The private nodes replayed, in route order, at least one, each once.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        },
+        "found": {
+          "$ref": "#/$defs/replay_found"
+        },
+        "rests_on": {
+          "description": "The receipt of the exit segment's result, its stated entry: what the replay was compared with.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "movement": {
+          "description": "The public movement out it was compared with, where the network ties one to the exit.",
+          "$ref": "#/$defs/public_movement"
+        }
+      }
+    },
+    "replay_found": {
+      "description": "What the replay found: consistency with the public exit (never proof, THR-131), each way the records disagree, or a node that recorded nothing.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "consistent_with_the_exit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "mismatches"
+          ],
+          "properties": {
+            "status": {
+              "const": "mismatch"
+            },
+            "mismatches": {
+              "description": "Each way the records disagree, at least one, each once, each against a node replayed.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/replay_mismatch"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "nodes"
+          ],
+          "properties": {
+            "status": {
+              "const": "nothing_recorded"
+            },
+            "nodes": {
+              "description": "Each node whose publisher recorded nothing, in route order, at least one, each once: each one replayed.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "replay_mismatch": {
+      "description": "One way a replayed record disagrees, and the node it is against: where value passes between two nodes, the one it leaves.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "kind"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "malformed",
+            "broken_chain",
+            "fee_mismatch",
+            "handoff_broken",
+            "public_exit",
+            "stated_outcome"
+          ]
+        }
+      }
+    },
+    "public_movement": {
+      "description": "A movement on a public network, as Core checked it (REQ-ORD-33, REQ-ORD-38, DEC-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "id"
+      ],
+      "properties": {
+        "network": {
+          "description": "The public network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "id": {
+          "description": "The movement's identifier on it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node it moved the value into or out of, where it evidences that node's segments rather than one segment alone: a part's final deposit to a rail declared private, or a segment inside a private node (REQ-ORD-33).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },

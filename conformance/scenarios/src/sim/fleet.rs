@@ -92,7 +92,7 @@ pub struct Installed {
 }
 
 /// The simulated public networks a provider's tuples are on.
-fn networks_of(spec: &Spec) -> Vec<String> {
+pub(crate) fn networks_of(spec: &Spec) -> Vec<String> {
     match spec.role {
         Role::Reserve => vec![spec.bank()],
         Role::Exchange => vec!["polygon".to_owned()],
