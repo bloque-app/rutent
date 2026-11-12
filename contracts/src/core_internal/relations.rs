@@ -58,15 +58,29 @@ pub type Cites<C = VerifiedCiting> = fn(&C, &History) -> Vec<Cite>;
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
 pub type Answers<C = VerifiedCiting> = fn(&C, &Cite, &Entry, &History) -> Match;
 
-/// A verified entry as the rows of [`RELATIONS`] read it: with the maker this deployment's operator signs its own
-/// statements as, so a row can tell the operator's own statements from a module's it publishes. It reads as the
-/// entry itself.
+/// The deployment's operator, as the log knows it: the maker it signs its own statements as
+/// ([`StatementKeys::operator`](super::calls::StatementKeys::operator)), and the accountable party it is, which that
+/// maker states for ([`StatementKeys::publisher`](super::calls::StatementKeys::publisher)). The two differ: a
+/// deployment's operator may sign as `conformance-operator` and be the party `operator`, and a row reads each where
+/// it means it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentOperator {
+    /// The maker the deployment's operator signs its statements as: a statement's `acts`.
+    pub maker: Id,
+    /// The operator's accountable party: the `party` its people act for.
+    pub party: Id,
+}
+
+/// A verified entry as the rows of [`RELATIONS`] read it: with the deployment's operator, by the maker it signs its
+/// own statements as, so a row can tell the operator's own statements from a module's it publishes, and by its
+/// party, so a row can tell the operator's people from anyone stating the operator's role. It reads as the entry
+/// itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedCiting {
     /// The verified entry.
     pub entry: VerifiedEntry,
-    /// The maker the deployment's operator signs as.
-    pub operator: Id,
+    /// The deployment's operator.
+    pub operator: DeploymentOperator,
 }
 
 impl core::ops::Deref for VerifiedCiting {
@@ -1996,7 +2010,7 @@ pub static RELATIONS: [Relation; 77] = [
                         o.as_ref() == Some(order),
                         // The deployment's operator, by the party the log knows it as, not any actor stating the
                         // operator's role; or the arrival's own reserve acting for itself.
-                        (e.who.role == Role::Operator && e.who.party == e.operator)
+                        (e.who.role == Role::Operator && e.who.party == e.operator.party)
                             || (e.who.role == Role::Provider && &e.who.party == reserve),
                     ],
                 ),
@@ -2527,7 +2541,7 @@ pub static RELATIONS: [Relation; 77] = [
             // The operator's own statements are made as the operator; a person logged in as the operator reads
             // them as its party, which policy's `ActsFor` binds the login to before any read is permitted.
             let operators_own = reader.role == Role::Operator
-                && maker_provider(s) == &e.operator
+                && maker_provider(s) == &e.operator.maker
                 && s.attribution.maker().party == reader.party;
             judge(
                 &s.commitment == commitment,
@@ -4015,8 +4029,8 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the maker this deployment's operator signs
-/// its own statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
+/// A verified entry is read with `operator`, the deployment's operator by its maker and its party
+/// ([`DeploymentOperator`]); a stated entry is held to [`STATED_RELATIONS`] alike, with the operator's maker. Before any row, the
 /// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
 /// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
 /// refused even where its type was got round. Before that, the entry is held to its own shape's rules
@@ -4026,7 +4040,7 @@ pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
     through: Through,
-    operator: &Id,
+    operator: &DeploymentOperator,
 ) -> Result<(), Violation> {
     // An entry built in memory is held to its shape's rules, as one read from the wire is when it deserialises.
     entry.check()?;
@@ -4052,7 +4066,7 @@ pub fn admit_entry(
         Entry::Stated(entry) => {
             let citing = StatedCiting {
                 entry: entry.clone(),
-                operator: operator.clone(),
+                operator: operator.maker.clone(),
             };
             admit_under(&STATED_RELATIONS, &citing, history)
         }

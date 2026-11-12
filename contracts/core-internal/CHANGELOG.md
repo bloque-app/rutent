@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 440 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 442 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -390,6 +390,16 @@
   Core, the decide actor's party, and one person, and hands `T-021-06` the check the log can't make: policy's answer
   to `confirm_outcome` refuses where the confirmer's and the reporter's `ActsFor` chains reach a common accountable
   party. (DEC-4, REQ-AUZ-4, ADR-0011, T-020-01, T-021-06)
+- Folded into 1.0.0 before its release: `admit_entry` reads the deployment's operator by its maker and by its party
+  (int-arrivals' report on `T-020-01`). It took one `operator` id, the maker the operator signs its statements as
+  (`StatementKeys::operator`), and `refiling-files-an-arrival-anew` compared a refiler's party with it, so where the
+  maker and the party differ (a deployment signing as `conformance-operator`, its people acting for `operator`) the
+  operator's own login was refused, and a party named as the maker passed. `admit_entry` now takes a
+  `DeploymentOperator {maker, party}`: the stated rows and the operator's own statements read the maker, the refiling's
+  filer the party, which the log knows as the one `StatementKeys::publisher` answers for the operator's maker. The
+  world's operator is maker and party `operator`; a case may name another pair. Admitted: the operator's login under
+  a maker of another name; refused: a party named as the maker. 442 admission cases. (DEC-4, DEC-20, REQ-ORD-23,
+  T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
