@@ -1001,3 +1001,30 @@ fn session_that_isnt_the_requesters_is_refused_before_the_reserve_is_asked() {
         assert_admitted(&env);
     }
 }
+
+// verifies: REQ-OPS-5, REQ-ORD-19
+#[test]
+fn agent_repeating_its_persons_request_gets_the_same_answer() {
+    // The person opens; its agent sends the same request under the same identifier, and is told the same, with
+    // nothing more recorded: who acts for the party is left out when a repeat is compared.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let first = env
+        .open(&mut sim, &order_request("client-req-1", customer()))
+        .unwrap();
+    let before = env.len();
+    let again = env
+        .open(&mut sim, &order_request("client-req-1", agent()))
+        .unwrap();
+    assert_eq!(again, first);
+    assert_eq!(env.len(), before);
+
+    // Another body under the identifier is still another request, whoever sends it.
+    let mut other = order_request("client-req-1", agent());
+    other.route = route("999");
+    assert!(matches!(
+        env.open(&mut sim, &other),
+        Err(IntakeError::Conflicting { .. })
+    ));
+    assert_admitted(&env);
+}

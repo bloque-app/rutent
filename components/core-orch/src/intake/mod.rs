@@ -14,10 +14,11 @@
 //!    rules, or whose session policy's register ([`SessionRegister`]) doesn't hold open for the requester, is
 //!    refused with nothing created: an `order_refusal` naming no order, and the caller is told [`Told::Refused`].
 //!    Any other opens one order, told [`Told::Exists`] with its outcome to come. The same request again under the
-//!    same identifier opens nothing and is told the same; another request under it is refused as
-//!    [`IntakeError::Conflicting`], with nothing recorded (`REQ-ORD-19`, `INV-8`). Its destination is resolved,
-//!    and the owner it resolves to kept, so a later change of owner shows. The order is kept before anything is
-//!    appended, so an append that failed is carried on, under the same order, by the same request again.
+//!    same identifier, from any actor of the requester's, opens nothing and is told the same (`REQ-OPS-5`);
+//!    another request under it is refused as [`IntakeError::Conflicting`], with nothing recorded (`REQ-ORD-19`,
+//!    `INV-8`). Its destination is resolved, and the owner it resolves to kept, so a later change of owner shows.
+//!    The order is kept before anything is appended, so an append that failed is carried on, under the same
+//!    order, by the same request again.
 //! 2. **[`Intake::quote`]** runs one routing ([`rounds::route`]). Every question to a provider, the reserve's
 //!    request for its yes among them, is the rounds': asked under a fresh transaction for the order, signed with the
 //!    operator's key and appended about that order and transaction before it is sent, its answer appended with
@@ -335,7 +336,7 @@ struct Accepting {
 /// One request identifier's record, under its requester.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Kept {
-    /// The request as the caller made it: a repeat is the same request only if it equals this.
+    /// The request as the caller made it: a repeat is the same request only if it equals this, but for who acts.
     asked: OrderRequest,
     /// The request as intake runs it, the destination's account set as the deposit's input.
     request: OrderRequest,
@@ -441,7 +442,7 @@ impl Intake {
         }
         let key = key(&caller.party, &request.request);
         if let Some(kept) = self.requests.get_mut(&key) {
-            if kept.asked != request {
+            if !same_request(&kept.asked, &request) {
                 return Err(IntakeError::Conflicting {
                     order: kept.order.clone(),
                 });
@@ -829,6 +830,22 @@ fn session_is_the_requesters(
     Ok(desk.sessions.held(&request.session).is_some_and(|held| {
         held.holder == request.parties.requester && held.expires_at.unix_nanos() > now.unix_nanos()
     }))
+}
+
+/// Whether `again` repeats `first`: the same request in every field but who acts for the party, which the key
+/// already holds, so any actor of the requester's, a person or an agent, repeating it is told the same
+/// (`REQ-OPS-5`, `REQ-ORD-19`).
+fn same_request(first: &OrderRequest, again: &OrderRequest) -> bool {
+    let caller = Actor {
+        acts: first.caller.acts.clone(),
+        kind: first.caller.kind,
+        ..again.caller.clone()
+    };
+    first
+        == &OrderRequest {
+            caller,
+            ..again.clone()
+        }
 }
 
 /// Whether `caller` speaks for the request's requester: an actor for its party, in the customer's role, a person or

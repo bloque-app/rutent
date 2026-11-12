@@ -218,6 +218,11 @@ once and its test seen red again.
 - **Should-fix 6, a split order's yes.** A `// T-020-01e:` note where the acceptance takes the first part's yes;
   each part's is cited once core-internal's acceptance names them.
 - **Nit.** The carry-on path doesn't resolve the destination again: policy permitted on the resolution made then.
+- **A repeat by another actor of the party** (the coordinator's ruling, `REQ-OPS-5`). A repeated request is compared
+  leaving out who acts for the party (the caller's `acts` and `kind`; its party and role are the key's and the
+  gate's): the customer's agent repeating its person's request under the same identifier is told the same, and
+  nothing is recorded. Another body is `Conflicting`, whoever sends it. Test
+  `agent_repeating_its_persons_request_gets_the_same_answer`, red first (`Conflicting`); rule-off red.
 - **Rule-off, each red:** a carry-on by any actor of the party; a stated party trusted, without `ActsFor` (on the
   carry-on and on the confirmation); an owner change released without naming the owner; a refusal of the caller
   ending the order; a retry rebuilding its entries; a refused append waited on; any session taken; one register for
