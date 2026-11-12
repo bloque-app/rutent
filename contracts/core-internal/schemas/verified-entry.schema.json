@@ -1545,6 +1545,10 @@
         "movement": {
           "description": "The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment of one order (REQ-ORD-38).",
           "$ref": "#/$defs/public_movement"
+        },
+        "publisher": {
+          "description": "Inside a private node, the node's publisher whose word it is, labelled as such (REQ-ORD-3): the party its maker states for. Absent where it isn't a publisher's word.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },

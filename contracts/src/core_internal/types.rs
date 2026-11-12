@@ -2137,6 +2137,14 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         movement: Option<PublicMovement>,
+        /// Inside a private node, the node's publisher whose word it is, labelled as such (`REQ-ORD-3`'s third
+        /// sentence): the party its maker states for. Absent where it isn't a publisher's word.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        publisher: Option<Id>,
     },
     /// The fee captured on a settled segment, attributed to a provider or the operator, with no balance kept
     /// (`REQ-AUD-11`).

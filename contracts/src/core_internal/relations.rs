@@ -2031,6 +2031,10 @@ pub static RELATIONS: [Relation; 88] = [
                 "reserve",
                 "a completed reversal's evidence is the word of the reserve at the segment's from-node",
             ),
+            (
+                "publisher",
+                "a publisher's word inside its private node is labelled with the publisher its statement states for, graded a statement",
+            ),
         ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::ReversalCompleted { .. }) => by_fields(0),
@@ -4390,6 +4394,7 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
             whose,
             grade,
             rests_on,
+            publisher,
             ..
         }),
     ) = (input(entry), verified(target).map(|t| &t.what))
@@ -4428,14 +4433,27 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
             }
             _ => None,
         });
+    // Inside a private node, its publisher's word counts, labelled as such: a statement by `whose` stating for
+    // the publisher the label names, graded a statement.
+    let labelled = publisher.as_ref().is_some_and(|p| {
+        *grade == EvidenceGrade::Statement
+            && rests_on.iter().any(|r| {
+                entry_at(r, history).and_then(stated).is_some_and(|s| {
+                    matches!(s.attribution, Attribution::Verified { .. })
+                        && maker_provider(s) == whose
+                        && &s.attribution.maker().party == p
+                })
+            })
+    });
     let another = moved.is_some_and(|(provider, origin)| {
-        whose != provider || (whose == origin && *grade == EvidenceGrade::Statement)
+        whose != provider || (whose == origin && *grade == EvidenceGrade::Statement) || labelled
     });
     match found {
         Match::Mismatch(i) => Match::Mismatch(i),
+        _ if publisher.is_some() && !labelled => Match::Mismatch(5),
         _ if !another => Match::Mismatch(2),
         _ if !made => Match::Mismatch(3),
-        _ if !reserve => Match::Mismatch(4),
+        _ if !reserve && !labelled => Match::Mismatch(4),
         _ => Match::Holds,
     }
 }

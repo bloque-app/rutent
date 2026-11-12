@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 131 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 506 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 508 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 94 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -523,6 +523,13 @@
   on it, by its holder (`handed-on-route-starts-on-its-holding-record`, ahead of the authorisation rows). The world
   records us-bank's withdrawal record starting ord-2. One valid fixture, 506 admission cases, 94 relations. (DEC-4,
   DEC-20, REQ-ORD-40, REQ-ORD-43, INV-5, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a publisher's word, labelled (`REQ-ORD-3`'s third sentence, the reviews since
+  `T-020-01` landed). Inside a private node, its publisher's word counts for a reversal, labelled as such, and no
+  field carried the label. `evidence` gains `publisher`, optional: the party the statement it rests on states for.
+  `reversal-rests-on-its-evidence` admits the failed provider's own statement where it is so labelled and graded a
+  statement, and refuses a label naming another publisher (field `publisher`). Admitted: p1-s2's reversal on
+  fx-desk's word, fx-group's module, labelled fx-group; refused: labelled another group. 508 admission cases. (DEC-4,
+  DEC-20, REQ-ORD-3, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
