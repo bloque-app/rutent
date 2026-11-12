@@ -113,7 +113,7 @@ A published rule, `after_stuck_resolved`, ends the part:
 The value may have been in flight when the part was declared stuck, so the rule doesn't ask where it sits, and the
 part's segments may not show it delivered: the part keeps `resolved_to`, which says so. Having ended, the part takes
 no later report (`REQ-STM-6`): a late delivery on its segment moves nothing twice (`AC-5`). A resolution handing the
-value on to a linked order is `handed_on`, as for a waiting part.
+value on to a linked order is `handed_on`, as for a waiting part. A hand-on whose linked order was refused and never opened is taken back by `hand_on_taken_back`: the part waits again where its final deposit failed, or else is stuck.
 
 ## The destination
 

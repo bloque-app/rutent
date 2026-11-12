@@ -333,7 +333,13 @@ impl Gen {
                     },
                 )
             }
-            85..=87 => (None, Observed::WithdrawalCancelled {}),
+            85..=86 => (None, Observed::WithdrawalCancelled {}),
+            87 => (
+                None,
+                Observed::HandOnTakenBack {
+                    linked_order: part.linked_order.clone().unwrap_or_else(|| id("ord-next")),
+                },
+            ),
             88..=90 => return self.run.input(None, None, Observed::EndRequested {}),
             91..=95 => {
                 // Noise: a random kind about a random segment of the part.

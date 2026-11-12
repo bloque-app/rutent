@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 83] = [
+pub static RELATIONS: [Relation; 84] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1738,6 +1738,33 @@ pub static RELATIONS: [Relation; 83] = [
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "hand-on-taken-back-rests-on-the-linked-orders-refusal",
+        spec: &["REQ-ORD-43", "REQ-ORD-18"],
+        quantifier: Quantifier::Exists,
+        refusal: "a hand-on is taken back only on the linked order's refusal in this log",
+        fields: &[(
+            "unopened",
+            "a hand-on is taken back only while its linked order never opened",
+        )],
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::HandOnTakenBack { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some(Observed::HandOnTakenBack { linked_order }) = input(e).map(|i| &i.observed)
+            else {
+                return Match::NotTarget;
+            };
+            match verified(t).map(|t| &t.what) {
+                Some(What::OrderRefusal { order: Some(o), .. }) => judge(
+                    o.as_str() == linked_order.as_str(),
+                    &[!opened(linked_order.as_str(), h)],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
     },
     Relation {
         name: "chosen-route-rests-on-its-orders-acceptance",

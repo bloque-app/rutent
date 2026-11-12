@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 491 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 89 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 494 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 90 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -509,6 +509,11 @@
   now starts from USDC at ledger-in. Refused: p1 waiting at its floor, p1-s6 settled and its final deposit not tried,
   sent to a new destination or handed on to ord-41. 491 admission cases. (DEC-4, DEC-20, INV-10, REQ-ORD-43,
   T-020-01)
+- Folded into 1.0.0 before its release: a hand-on whose linked order was refused is taken back (the reviews since
+  `T-020-01` landed), on the state machine's new `hand_on_taken_back`. `hand-on-taken-back-rests-on-the-linked-
+  orders-refusal` holds it to an `order_refusal` of the linked order, which never opened (field `unopened`).
+  Admitted: p3 taking back its hand-on to ord-2 on ord-2's refusal; refused: without the refusal, and once ord-2
+  opened. 494 admission cases, 90 relations. (DEC-4, DEC-20, REQ-ORD-43, REQ-ORD-18, T-020-01, T-020-13)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
