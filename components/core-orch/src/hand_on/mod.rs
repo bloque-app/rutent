@@ -49,7 +49,7 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, GeneralEntry};
 use rutent_contracts::core_internal::{
-    Action, Actor, Authorisation, Decision, Entry, Outcome, Receipt, Resolution, RouteEnd,
+    Action, Actor, Authorisation, Decision, Entry, Outcome, Receipt, Resolution, Role, RouteEnd,
     TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::router_api::{DecisionRecord, Endpoint, Id, PositiveAmount};
@@ -67,8 +67,8 @@ use crate::snapshot::{Clock, Exposures, OrchestrationLog};
 use crate::stuck::{Stuck, StuckError, is_receipt_of};
 
 pub use rule::{
-    Accepted, Refused, Unproven, acceptance_of, after_failed_final_deposit, destination_change,
-    new_terms, proves_start, requester_of,
+    Accepted, InForce, Refused, Unproven, acceptance_of, after_failed_final_deposit,
+    destination_change, fresh_terms, in_force, new_terms, proves_start, requester_of, waited_from,
 };
 
 /// How many times in all an append the log can't take now is tried.
@@ -113,8 +113,31 @@ pub enum HandOnError {
     NotItsAcceptance,
     /// The linked order's acceptance names another requester than the first order's (`REQ-ORD-13`).
     NotTheRequester,
-    /// The new authorisation isn't for this order, or doesn't speak for the part.
+    /// The linked order's acceptance isn't the customer's own: given, in the customer's session, by the customer or
+    /// its agent (`REQ-ORD-43`, `REQ-ORD-34`).
+    NotTheCustomersAcceptance,
+    /// The log holds no decision record of the linked order under the id its route cites
+    /// (`input-cites-its-decision-record`): nothing was recorded.
+    NoDecisionRecord,
+    /// The linked order's parts aren't those its acceptance has a yes for, in order, each from the reserve its first
+    /// segment runs at (`chosen-route-rests-on-its-orders-acceptance`): nothing was recorded.
+    PlanOutsideItsAcceptance,
+    /// Core follows the linked order already: it was opened, and is opened once (`order-is-opened-once`).
+    AlreadyOpened,
+    /// The log refused the linked order's `route_chosen` outright after the first order's `handed_on` went in: the
+    /// refusal is recorded as the linked order's, so the part isn't left handed on to an order that silently never
+    /// opened. The state machine has no input that takes a hand-on back: an item for the contract's author.
+    LinkedRefused {
+        /// The linked order.
+        linked: Id,
+        /// The receipt of its refusal's entry.
+        refusal: Receipt,
+    },
+    /// The log holds no authorisation of the customer's in force for the part, permitted since it began to wait
+    /// ([`fresh_terms`]), or the parts new terms speak for have different terms in force.
     NotItsAuthorisation,
+    /// The operator's hand-on isn't stated by the operator.
+    NotTheOperator,
     /// No done `resolve_stuck` effect handing this part on to the linked order is in the log
     /// (`stuck-resolved-follows-a-done-resolution`).
     NoDoneResolution,
@@ -148,49 +171,54 @@ impl From<AppendFailure> for HandOnError {
 }
 
 /// Asks policy to register `new`, the customer's new terms for `order`, only where [`new_terms`] holds them to a
-/// waiting part (the gate `T-021-04` leaves to orchestration): `current` are the terms in force, `requester` the
-/// order's customer as the log holds it ([`requester_of`]). Refused, with nothing asked, otherwise.
+/// waiting part (the gate `T-021-04` leaves to orchestration). The terms in force and the order's customer are read
+/// from `recorded`, the log's entries as the log holds them, never from the caller ([`in_force`],
+/// [`requester_of`]): every part `new` speaks for must have the same terms in force. Refused, with nothing asked,
+/// otherwise.
 ///
 /// Once policy permits terms that keep the destination (a new floor), `stuck` follows the order's ends again over
-/// `recorded`, the log's entries as the log holds them then, so its ends check is never stale (`T-020-11b`). Terms
-/// that move the destination are followed once the order Core follows takes the change
-/// ([`HandOn::change_destination`]): until then the part's destination is the old one, which `Stuck::follow` holds
-/// the authorisation to.
+/// the log's entries read then, so its ends check is never stale (`T-020-11b`). Terms that move the destination are
+/// followed once the order Core follows takes the change ([`HandOn::change_destination`]): until then the part's
+/// destination is the old one, which `Stuck::follow` holds the authorisation to.
 pub fn authorise(
     segments: &Segments,
     stuck: &mut Stuck,
     authorisations: &mut dyn Authorisations,
-    terms: Terms<'_>,
+    new: &Authorisation,
     recorded: &mut dyn FnMut() -> Vec<Entry>,
 ) -> Result<Decision, HandOnError> {
-    let Terms {
-        current,
-        new,
-        requester,
-    } = terms;
     let order = segments
         .order(&new.order)
         .ok_or(HandOnError::Refused(Refused::Unknown))?;
+    let entries = recorded();
+    let requester = requester_of(&entries, &new.order).ok_or(HandOnError::Unknown)?;
+    let mut current: Option<&Authorisation> = None;
+    for part in &order.parts {
+        let speaks = new
+            .parts
+            .as_ref()
+            .is_none_or(|ps| ps.iter().any(|p| p.as_str() == part.part_id.as_str()));
+        if !speaks {
+            continue;
+        }
+        let held = in_force(&entries, &new.order, part.part_id.as_str())
+            .ok_or(HandOnError::NotItsAuthorisation)?
+            .authorisation;
+        if current.is_some_and(|c| c.authorisation != held.authorisation) {
+            return Err(HandOnError::NotItsAuthorisation);
+        }
+        current = Some(held);
+    }
+    let current = current.ok_or(HandOnError::Refused(Refused::NotItsAuthorisation))?;
     new_terms(order, current, new, requester)?;
-    let decision = authorisations.authorise(new)?;
     let keeps_ends = new.destination == current.destination && new.to_asset == current.to_asset;
+    let decision = authorisations.authorise(new)?;
     if decision.permit().is_some() && keeps_ends {
         stuck
             .follow(segments, &recorded(), &new.order)
             .map_err(HandOnError::Follow)?;
     }
     Ok(decision)
-}
-
-/// The terms [`authorise`] asks for.
-#[derive(Debug, Clone, Copy)]
-pub struct Terms<'a> {
-    /// The terms in force for the parts.
-    pub current: &'a Authorisation,
-    /// The customer's new terms.
-    pub new: &'a Authorisation,
-    /// The order's customer as the log holds it ([`requester_of`]).
-    pub requester: &'a Id,
 }
 
 /// The customer's new destination for one part.
@@ -205,9 +233,8 @@ pub struct Change<'a> {
     /// The customer's acceptance of the new destination, which the log holds: of this order, accepting the new
     /// authorisation.
     pub acceptance: &'a Id,
-    /// The customer's new authorisation, in force for the part ([`authorise`]): the new route is held to it.
-    pub authorisation: &'a Authorisation,
-    /// The log's entries, as the log holds them: where the acceptance is read from.
+    /// The log's entries, as the log holds them: where the customer's new authorisation, in force for the part
+    /// ([`fresh_terms`]), and the acceptance are read from. The new route is held to that authorisation.
     pub recorded: &'a [Entry],
     /// The customer, whose choice the input records.
     pub customer: &'a Actor,
@@ -242,12 +269,11 @@ pub struct Resume<'a> {
     pub part: &'a Id,
     /// The choice round's record of the route from where the value sits, routed under the new terms' floor.
     pub record: &'a DecisionRecord,
-    /// The customer's new authorisation, in force for the part ([`authorise`]): the route is held to it.
-    pub authorisation: &'a Authorisation,
     /// The customer's acceptance of the new terms, which the log holds: of this order, accepting the new
     /// authorisation, which every move on the route rests on (`move-rests-on-its-orders-acceptance`, `REQ-ORD-34`).
     pub acceptance: &'a Id,
-    /// The log's entries, as the log holds them: where the acceptance is read from.
+    /// The log's entries, as the log holds them: where the customer's fresh terms, in force for the part
+    /// ([`fresh_terms`]), and the acceptance are read from. The route is held to those terms.
     pub recorded: &'a [Entry],
     /// Core, acting on its own account: who writes the input and its entry.
     pub core: &'a Actor,
@@ -361,8 +387,12 @@ struct PendingResume {
 struct PendingHandOn {
     handed_on: (Step, RecordedInput),
     route_chosen: (Step, RecordedInput),
+    /// The linked order's refusal, appended only where the log refuses its `route_chosen` outright.
+    refusal: Step,
     at: Endpoint,
     released: Vec<Id>,
+    /// The linked order's start, as Core's records name it.
+    linked: Linked,
 }
 
 /// A linked order's start: the first order, the part's value, and the route's first segment.
@@ -381,6 +411,10 @@ pub struct HandOn {
     changes: BTreeMap<(String, String), PendingChange>,
     hand_ons: BTreeMap<(String, String), PendingHandOn>,
     resumes: BTreeMap<(String, String), PendingResume>,
+    /// The parts handed on whose linked order the log refused, with that refusal's receipt.
+    stranded: BTreeMap<(String, String), (Id, Receipt)>,
+    /// The holding accounts' records spent, by provider and reference, with the linked order each proved.
+    spent: BTreeMap<(String, String), String>,
     linked: BTreeMap<String, Linked>,
 }
 
@@ -445,14 +479,10 @@ impl HandOn {
         if part.state != OrderState::WaitingForCustomer {
             return Err(Refused::NotWaiting(part.state).into());
         }
-        let authorisation = change.authorisation;
-        let speaks_for = authorisation
-            .parts
-            .as_ref()
-            .is_none_or(|ps| ps.iter().any(|p| p.as_str() == change.part.as_str()));
-        if authorisation.order != *change.order || !speaks_for {
-            return Err(HandOnError::NotItsAuthorisation);
-        }
+        // The customer's fresh terms, as the log holds them in force for the part, never the caller's
+        // (`REQ-AUZ-3`): the terms the part waited under are no answer.
+        let authorisation = fresh_terms(change.recorded, change.order, change.part.as_str())
+            .ok_or(HandOnError::NotItsAuthorisation)?;
         let (from, settled, amount) = at_rest(parts.segments, change.order, part)?;
         let (plan, ids, route) = plan_route(
             parts.fresh,
@@ -561,14 +591,10 @@ impl HandOn {
         if part.state != OrderState::WaitingForCustomer {
             return Err(Refused::NotWaiting(part.state).into());
         }
-        let authorisation = resume.authorisation;
-        let speaks_for = authorisation
-            .parts
-            .as_ref()
-            .is_none_or(|ps| ps.iter().any(|p| p.as_str() == resume.part.as_str()));
-        if authorisation.order != *resume.order || !speaks_for {
-            return Err(HandOnError::NotItsAuthorisation);
-        }
+        // The customer's fresh terms, as the log holds them in force for the part, never the caller's
+        // (`REQ-AUZ-3`): the terms the part waited under are no answer.
+        let authorisation = fresh_terms(resume.recorded, resume.order, resume.part.as_str())
+            .ok_or(HandOnError::NotItsAuthorisation)?;
         let (from, settled, amount) = at_rest(parts.segments, resume.order, part)?;
         let (plan, ids, route) = plan_route(
             parts.fresh,
@@ -625,14 +651,23 @@ impl HandOn {
     }
 
     /// Hands a part's value on to a linked order (see the module's docs): the first order's `handed_on`, then the
-    /// linked order's `route_chosen` naming `handed_on_from`, each built once and appended until the log takes it.
-    /// A hand-on built and not yet taken whole is appended as built, and nothing is checked again.
+    /// linked order's `route_chosen` naming `handed_on_from`. Everything the `route_chosen` needs is checked before
+    /// the first is appended. A hand-on built is appended as built while the log can't take it now, and nothing is
+    /// checked again; one whose `handed_on` the log refuses is dropped. Where the log refuses the `route_chosen`
+    /// outright after the `handed_on` went in, the linked order's refusal is recorded once and is the answer from
+    /// then ([`HandOnError::LinkedRefused`]).
     pub fn hand_on(
         &mut self,
         parts: &mut Parts<'_>,
         handing: Handing<'_>,
     ) -> Result<HandedOn, HandOnError> {
         let at = key(handing.order, handing.part);
+        if let Some((linked, refusal)) = self.stranded.get(&at) {
+            return Err(HandOnError::LinkedRefused {
+                linked: linked.clone(),
+                refusal: refusal.clone(),
+            });
+        }
         if !self.hand_ons.contains_key(&at) {
             let built = Self::build_hand_on(parts, &handing)?;
             self.hand_ons.insert(at.clone(), built);
@@ -647,10 +682,27 @@ impl HandOn {
                 return Err(refused.into());
             }
         };
-        // Once the first order is handed on, the linked order's route is kept until the log takes it: the value is
-        // never left handed on to an order that wasn't opened.
-        let route_chosen_receipt = pending.route_chosen.0.append(parts.log)?;
+        // Once the first order is handed on, the linked order's route is appended as built while the log can't take
+        // it now. One the log refuses outright is the linked order's refusal, recorded, so the part handed on isn't
+        // left with no record of why its linked order never opened.
+        let route_chosen_receipt = match pending.route_chosen.0.append(parts.log) {
+            Ok(receipt) => receipt,
+            Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable.into()),
+            Err(_) => {
+                let refusal = pending.refusal.append(parts.log)?;
+                let pending = self.hand_ons.remove(&at).ok_or(HandOnError::Unknown)?;
+                let _ = parts.segments.observe(parts.clock, &pending.handed_on.1);
+                self.stranded
+                    .insert(at, (handing.linked.clone(), refusal.clone()));
+                return Err(HandOnError::LinkedRefused {
+                    linked: handing.linked.clone(),
+                    refusal,
+                });
+            }
+        };
         let pending = self.hand_ons.remove(&at).ok_or(HandOnError::Unknown)?;
+        self.linked
+            .insert(handing.linked.as_str().to_owned(), pending.linked.clone());
         let (handed_on, route_chosen) = (pending.handed_on.1, pending.route_chosen.1);
         if parts.segments.observe(parts.clock, &handed_on) {
             for segment in &pending.released {
@@ -682,32 +734,83 @@ impl HandOn {
             .find(|p| p.part_id.as_str() == handing.part.as_str())
             .ok_or(Refused::Unknown)?;
         let entries: Vec<Entry> = handing.recorded.iter().map(|(_, e)| e.clone()).collect();
-        match handing.basis {
-            // The customer's own choice resolves a part waiting for it; a stuck part is the operator's.
-            Basis::Customer if part.state != OrderState::WaitingForCustomer => {
-                return Err(Refused::NotWaiting(part.state).into());
+        let requester = requester_of(&entries, handing.order).ok_or(HandOnError::Unknown)?;
+        let (at, settled, amount) = at_rest(parts.segments, handing.order, part)?;
+        // The linked order's starting reserve, the holding account's provider, from Core's records, never the
+        // caller's: the reserve the customer's linked route starts at, or the provider the operator's resolution
+        // names as holding the value.
+        let reserve = match handing.basis {
+            Basis::Customer => {
+                // The customer's own word: the order's requester, acting as its customer.
+                if handing.by.role != Role::Customer || handing.by.party != *requester {
+                    return Err(Refused::NotTheCustomer.into());
+                }
+                // A part waiting for it; a stuck part is the operator's.
+                if part.state != OrderState::WaitingForCustomer {
+                    return Err(Refused::NotWaiting(part.state).into());
+                }
+                // A hand-on moves the value to another order's destination: only after a failed final deposit
+                // (`INV-10`), as a new destination.
+                if !after_failed_final_deposit(part) {
+                    return Err(Refused::NoFailedDeposit.into());
+                }
+                handing
+                    .plan
+                    .first()
+                    .and_then(|p| p.segments.first())
+                    .and_then(|s| Id::new(s.provider.as_str()))
+                    .ok_or(HandOnError::NotAHandedOnRoute)?
             }
-            Basis::Customer => {}
             Basis::Resolution { effect } => {
+                if handing.by.role != Role::Operator {
+                    return Err(HandOnError::NotTheOperator);
+                }
                 if part.state != OrderState::Stuck {
                     return Err(Refused::NotWaiting(part.state).into());
                 }
-                done_hand_on(handing.recorded, effect, handing)?;
+                done_hand_on(handing.recorded, effect, handing, &at, &amount)?
             }
+        };
+        // The linked order is opened once (`order-is-opened-once`).
+        if parts.segments.order(handing.linked).is_some() {
+            return Err(HandOnError::AlreadyOpened);
         }
-        // The linked order's acceptance keeps the original customer as requester (`REQ-ORD-13`).
-        let requester = requester_of(&entries, handing.order).ok_or(HandOnError::Unknown)?;
-        match acceptance_of(&entries, handing.acceptance) {
+        // Its route cites a decision record of its own (`input-cites-its-decision-record`).
+        let recorded_route = entries.iter().any(|e| {
+            matches!(e, Entry::Verified(v) if matches!(&v.what,
+                What::DecisionRecord { decision_record, order, .. }
+                    if decision_record == handing.decision_record && order == handing.linked))
+        });
+        if !recorded_route {
+            return Err(HandOnError::NoDecisionRecord);
+        }
+        // Its acceptance is the customer's own, of the linked order, keeping the original customer as requester
+        // (`REQ-ORD-13`, `REQ-ORD-34`), with one yes per part of the plan, in order, each from the reserve its first
+        // segment runs at (`chosen-route-rests-on-its-orders-acceptance`).
+        let accepted = match acceptance_of(&entries, handing.acceptance) {
             Some(accepted) if accepted.order != handing.linked => {
                 return Err(HandOnError::NotItsAcceptance);
             }
             Some(accepted) if accepted.requester != requester => {
                 return Err(HandOnError::NotTheRequester);
             }
-            Some(_) => {}
+            Some(accepted) if !accepted.customers_own() => {
+                return Err(HandOnError::NotTheCustomersAcceptance);
+            }
+            Some(accepted) => accepted,
             None => return Err(HandOnError::NotItsAcceptance),
+        };
+        let fits = accepted.yeses.len() == handing.plan.len()
+            && accepted.yeses.iter().zip(handing.plan).all(|(yes, plan)| {
+                yes.part.as_str() == plan.part_id.as_str()
+                    && plan
+                        .segments
+                        .first()
+                        .is_some_and(|s| s.provider.as_str() == yes.origin_reserve.as_str())
+            });
+        if !fits {
+            return Err(HandOnError::PlanOutsideItsAcceptance);
         }
-        let (at, settled, _) = at_rest(parts.segments, handing.order, part)?;
         let now = now(parts.clock)?;
         let route_chosen = RecordedInput {
             record_id: stm::RecordId::new(parts.fresh.id().as_str())
@@ -746,7 +849,7 @@ impl HandOn {
             handing.order,
             handing.part,
             handing.by,
-            source_kind(handing.by),
+            source_kind(handing.by)?,
             Observed::HandedOn {
                 linked_order: stm_id(handing.linked.as_str())?,
                 acceptance: stm_id(handing.acceptance.as_str())?,
@@ -760,82 +863,65 @@ impl HandOn {
         }
         let handed_on_step = built(parts, handing.core, &handed_on)?;
         let route_chosen_step = built(parts, handing.core, &route_chosen)?;
+        let refusal = built_what(
+            parts,
+            handing.core,
+            What::OrderRefusal {
+                request: handing.decision_record.clone(),
+                order: Some(handing.linked.clone()),
+                class: rutent_contracts::core_internal::OrderRefusalClass::MalformedRequest,
+            },
+        )?;
+        let first_segment = handing
+            .plan
+            .first()
+            .and_then(|p| p.segments.first())
+            .cloned()
+            .ok_or(HandOnError::NotAHandedOnRoute)?;
         let mut released = vec![settled];
         released.extend(retiring(part));
         Ok(PendingHandOn {
             handed_on: (handed_on_step, handed_on),
             route_chosen: (route_chosen_step, route_chosen),
+            refusal,
             at,
             released,
+            linked: Linked {
+                from: handing.order.clone(),
+                amount: amount.amount().clone(),
+                reserve,
+                first: first_segment,
+            },
         })
     }
 
     /// Holds `record`, the holding account's own record of its withdrawal for `linked`, a route handed on, to the
-    /// linked order's start ([`proves_start`], `REQ-ORD-40`): made by `reserve`, the linked order's starting reserve,
-    /// at its route's first node, in its asset, of the first order's value, and of all the part held. Once proven,
-    /// the segments hand the linked order's segments over; before, they refuse them.
+    /// linked order's start as Core recorded it when it handed the value on ([`proves_start`], `REQ-ORD-40`): made
+    /// by the linked order's starting reserve (the reserve its route starts at, or the provider the operator's
+    /// resolution named), at its route's first node, in its asset, of the first order's value, and of all the part
+    /// held. One record proves one start: its reference, once spent, proves no other linked order. Once proven, the
+    /// segments hand the linked order's segments over; before, they refuse them. A linked order this record of
+    /// Core's didn't hand on (after a restart, say) is [`HandOnError::Unknown`]: `F-030`'s.
     pub fn prove_start(
         &mut self,
         segments: &mut Segments,
         linked: &Id,
-        reserve: &Id,
         record: &WithdrawalRecord,
     ) -> Result<(), HandOnError> {
-        if !self.linked.contains_key(linked.as_str()) {
-            let order = segments.order(linked).ok_or(HandOnError::Unknown)?;
-            let from = order
-                .handed_on_from
-                .as_ref()
-                .and_then(|f| Id::new(f.as_str()))
-                .ok_or(HandOnError::Unknown)?;
-            let first_segment = order
-                .parts
-                .first()
-                .and_then(|p| p.segments.first())
-                .ok_or(HandOnError::Unknown)?;
-            let first = SegmentPlan {
-                segment_id: first_segment.segment_id.clone(),
-                provider: first_segment.provider.clone(),
-                kind: first_segment.kind,
-                from: first_segment.from.clone(),
-                to: first_segment.to.clone(),
-            };
-            let handed = segments.order(&from).ok_or(HandOnError::Unknown)?;
-            let part = handed
-                .parts
-                .iter()
-                .find(|p| {
-                    p.state == OrderState::HandedOn
-                        && p.linked_order.as_ref().map(|l| l.as_str()) == Some(linked.as_str())
-                })
-                .ok_or(HandOnError::Unknown)?;
-            let settled = part
-                .segments
-                .iter()
-                .rev()
-                .find(|s| s.state == SegmentState::Settled)
-                .and_then(|s| Id::new(s.segment_id.as_str()))
-                .ok_or(HandOnError::Unknown)?;
-            let amount = segments
-                .handed_on(&from, &settled)
-                .cloned()
-                .ok_or(HandOnError::Unknown)?;
-            self.linked.insert(
-                linked.as_str().to_owned(),
-                Linked {
-                    from,
-                    amount,
-                    reserve: reserve.clone(),
-                    first,
-                },
-            );
-        }
         let held = self
             .linked
             .get(linked.as_str())
             .ok_or(HandOnError::Unknown)?;
         proves_start(record, &held.reserve, &held.first, &held.from, &held.amount)
             .map_err(HandOnError::Unproven)?;
+        let spent = (record.by.clone(), record.reference.clone());
+        match self.spent.get(&spent) {
+            Some(proved) if proved != linked.as_str() => {
+                return Err(HandOnError::Unproven(Unproven::ReferenceSpent));
+            }
+            _ => {}
+        }
+        self.spent.insert(spent, linked.as_str().to_owned());
         segments.prove_start(linked);
         Ok(())
     }
@@ -947,18 +1033,21 @@ fn retiring(part: &stm::Part) -> Vec<Id> {
         .collect()
 }
 
-/// Whether the log holds, at `effect`, a done `resolve_stuck` effect of `handing`'s order handing the value on to
-/// its linked order, decided for its part (`stuck-resolved-follows-a-done-resolution`).
+/// The provider holding the value, as the log's done `resolve_stuck` effect at `effect` names it: an effect of
+/// `handing`'s order handing the value on to its linked order, decided for its part, moving the part's whole value
+/// in the asset it sits in at `at`, and whose result is done (`stuck-resolved-follows-a-done-resolution`).
 fn done_hand_on(
     recorded: &[(Receipt, Entry)],
     effect: &Receipt,
     handing: &Handing<'_>,
-) -> Result<(), HandOnError> {
+    at: &Endpoint,
+    amount: &PositiveAmount,
+) -> Result<Id, HandOnError> {
     let verified = |e: &Entry| match e {
         Entry::Verified(v) => Some(v.clone()),
         Entry::Stated(_) => None,
     };
-    let carries_out = recorded
+    let (carries_out, by) = recorded
         .iter()
         .find(|(r, _)| r == effect)
         .and_then(|(_, e)| verified(e))
@@ -968,11 +1057,23 @@ fn done_hand_on(
                     Action::ResolveStuck {
                         order,
                         carries_out,
-                        resolution: Resolution::HandOn { linked_order, .. },
+                        resolution:
+                            Resolution::HandOn {
+                                by,
+                                linked_order,
+                                asset,
+                                amount: moved,
+                            },
                         ..
                     },
                 ..
-            } if order == *handing.order && linked_order == *handing.linked => Some(carries_out),
+            } if order == *handing.order
+                && linked_order == *handing.linked
+                && asset == at.asset
+                && moved == *amount =>
+            {
+                Some((carries_out, by))
+            }
             _ => None,
         })
         .ok_or(HandOnError::NoDoneResolution)?;
@@ -991,7 +1092,7 @@ fn done_hand_on(
         })
     });
     if decided_for_part && done {
-        Ok(())
+        Ok(by)
     } else {
         Err(HandOnError::NoDoneResolution)
     }
@@ -1019,19 +1120,42 @@ fn built(parts: &Parts<'_>, core: &Actor, input: &RecordedInput) -> Result<Step,
     })
 }
 
+/// Builds `what` as Core's verified entry, checked.
+fn built_what(parts: &Parts<'_>, core: &Actor, what: What) -> Result<Step, HandOnError> {
+    let entry = Entry::Verified(VerifiedEntry {
+        kind: VerifiedKind::Verified,
+        who: core.clone(),
+        what,
+        when: When {
+            at: now(parts.clock)?,
+            source: TimeSource::CoreClock,
+        },
+        outcome: Outcome::Observed {},
+    });
+    entry.check().map_err(AppendFailure::Refused)?;
+    let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+    Ok(Step {
+        entry,
+        receipt: None,
+    })
+}
+
 /// The state machine's source for an input stated by `by`.
 fn source_of(by: &Actor) -> Result<Source, HandOnError> {
     Ok(Source {
-        kind: source_kind(by),
+        kind: source_kind(by)?,
         id: stm_id(by.acts.as_str())?,
     })
 }
 
-fn source_kind(by: &Actor) -> SourceKind {
+/// The source kind of `by`'s word: only the customer's role is the customer's, the operator's the operator's, and
+/// Core's the orchestrator's; any other role states no hand-on.
+fn source_kind(by: &Actor) -> Result<SourceKind, HandOnError> {
     match by.role {
-        rutent_contracts::core_internal::Role::Operator => SourceKind::Operator,
-        rutent_contracts::core_internal::Role::Core => SourceKind::Orchestrator,
-        _ => SourceKind::Customer,
+        Role::Customer => Ok(SourceKind::Customer),
+        Role::Operator => Ok(SourceKind::Operator),
+        Role::Core => Ok(SourceKind::Orchestrator),
+        _ => Err(Refused::NotTheCustomer.into()),
     }
 }
 

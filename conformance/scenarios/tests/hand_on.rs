@@ -11,6 +11,7 @@ mod segments_support;
 use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::{Authorisation, Destination, What};
 use rutent_contracts::provider_role::OuterNode;
+use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::{Observed, OrderState, SegmentState};
 use rutent_core_orch::hand_on::{
     self, Basis, HandOn, HandOnError, HandedOn, Handing, Refused, Unproven,
@@ -148,6 +149,18 @@ fn hand_on_to(
     plan: &[rutent_contracts::state_machine::PartPlan],
     acceptance: &str,
 ) -> Result<HandedOn, HandOnError> {
+    hand_on_as(core, hand_on, linked, plan, acceptance, &customer())
+}
+
+/// [`hand_on_to`], on the word of `by`, the customer's path.
+fn hand_on_as(
+    core: &mut Core,
+    hand_on: &mut HandOn,
+    linked: &str,
+    plan: &[rutent_contracts::state_machine::PartPlan],
+    acceptance: &str,
+    by: &rutent_contracts::core_internal::Actor,
+) -> Result<HandedOn, HandOnError> {
     let recorded = recorded_with_receipts(core);
     let (order, part, linked, record, acceptance) = (
         id(ORDER),
@@ -156,7 +169,7 @@ fn hand_on_to(
         linked_record(linked),
         id(acceptance),
     );
-    let (customer, actor) = (customer(), segments_support::core());
+    let actor = segments_support::core();
     hand_parts(core, &mut Stuck::new(), |parts| {
         hand_on.hand_on(
             parts,
@@ -169,7 +182,7 @@ fn hand_on_to(
                 acceptance: &acceptance,
                 basis: Basis::Customer,
                 recorded: &recorded,
-                by: &customer,
+                by,
                 core: &actor,
             },
         )
@@ -221,11 +234,7 @@ fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
             &core.segments,
             &mut stuck,
             &mut core.policy,
-            hand_on::Terms {
-                current: &current,
-                new: &new_destination(customer()),
-                requester: &customer().party,
-            },
+            &new_destination(customer()),
             &mut reader,
         ),
         Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
@@ -235,7 +244,7 @@ fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
     seed_linked(
         &mut core,
         &Named::another(2),
-        &customer().party,
+        &customer(),
         &linked_record("ord-2"),
     );
     let seeded = entries(&core);
@@ -317,7 +326,6 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
     );
 
     // Anyone else's new destination is never asked of policy.
-    let current = authorisation_of(&Named::first(), None);
     let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
     segments_support::resolving::follow(&core, &mut stuck).expect("its ends are Core's");
     let held = stuck.ends_of(&id(ORDER), &id(PART));
@@ -327,11 +335,7 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
             &core.segments,
             &mut stuck,
             &mut core.policy,
-            hand_on::Terms {
-                current: &current,
-                new: &new_destination(operator()),
-                requester: &customer().party,
-            },
+            &new_destination(operator()),
             &mut reader,
         ),
         Err(HandOnError::Refused(Refused::NotTheCustomer))
@@ -343,11 +347,7 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
             &core.segments,
             &mut stuck,
             &mut core.policy,
-            hand_on::Terms {
-                current: &current,
-                new: &whole_order,
-                requester: &customer().party,
-            },
+            &whole_order,
             &mut reader,
         ),
         Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
@@ -361,11 +361,7 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
         &core.segments,
         &mut stuck,
         &mut core.policy,
-        hand_on::Terms {
-            current: &current,
-            new: &new_destination(customer()),
-            requester: &customer().party,
-        },
+        &new_destination(customer()),
         &mut reader,
     )
     .expect("asked");
@@ -390,7 +386,7 @@ fn handed_on_route_starting_away_from_the_value_is_refused() {
     seed_linked(
         &mut core,
         &Named::another(2),
-        &customer().party,
+        &customer(),
         &linked_record("ord-2"),
     );
     let before = entries(&core);
@@ -436,7 +432,7 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
     seed_linked(
         &mut core,
         &Named::another(2),
-        &customer().party,
+        &customer(),
         &linked_record("ord-2"),
     );
     let mut hand_on = HandOn::new();
@@ -461,7 +457,7 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         "nothing handed over"
     );
 
-    let (linked, reserve) = (id("ord-2"), id(RESERVE));
+    let linked = id("ord-2");
     let wrong: [Wrong; 5] = [
         (
             |r| r.by = OTHER_RESERVE.into(),
@@ -479,7 +475,7 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         let mut proof = withdrawal_record();
         change(&mut proof);
         assert_eq!(
-            hand_on.prove_start(&mut core.segments, &linked, &reserve, &proof),
+            hand_on.prove_start(&mut core.segments, &linked, &proof),
             Err(HandOnError::Unproven(why))
         );
         assert_eq!(
@@ -488,7 +484,7 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         );
     }
     hand_on
-        .prove_start(&mut core.segments, &linked, &reserve, &withdrawal_record())
+        .prove_start(&mut core.segments, &linked, &withdrawal_record())
         .expect("the holding account's own record proves the start");
     // Proven, the linked order's route runs from the ledger: its deposit settles at the destination, under its own
     // authorisation, and the log admits it.
@@ -573,13 +569,16 @@ fn handed_on_route_keeps_the_original_customer_as_requester() {
     seed_linked(
         &mut core,
         &Named::another(3),
-        &id("someone-else"),
+        &rutent_contracts::core_internal::Actor {
+            party: id("someone-else"),
+            ..customer()
+        },
         &linked_record("ord-3"),
     );
     seed_linked(
         &mut core,
         &Named::another(2),
-        &customer().party,
+        &customer(),
         &linked_record("ord-2"),
     );
     let before = entries(&core);
@@ -676,47 +675,51 @@ fn handed_on_route_keeps_the_original_customer_as_requester() {
         .expect("the log admits every entry");
 }
 
-/// The customer's new route is held to the new authorisation, never to the router's record, and to the state
-/// machine's rules, before anything is recorded: a route the router chose from the ledger back to the kit's own
-/// destination doesn't reach the new one the customer authorised, and under the terms in force it keeps the
-/// destination, which is a recalculation and not the customer's choice. The simulated providers route to no other
-/// destination, so a change taken is held by Core's rules in `components/core-orch/tests/hand_on.rs`.
+/// The customer's new route is held to the customer's new authorisation as the log holds it, never to the
+/// router's record: once policy has permitted the customer's new destination, a route the router chose from the
+/// ledger back to the kit's own destination doesn't reach it, and nothing is recorded.
 // verifies: REQ-ORD-43, INV-10
 #[test]
 fn customers_new_route_is_held_to_its_new_authorisation() {
     let (mut world, mut core) = waiting_for_the_customer();
+    let new = new_destination(customer());
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    hand_on::authorise(
+        &core.segments,
+        &mut stuck,
+        &mut core.policy,
+        &new,
+        &mut reader,
+    )
+    .expect("asked")
+    .permit()
+    .expect("permitted");
+    segments_support::handing::seed_acceptance(&core, ORDER, "acc-new", &new.authorisation);
     let record = linked_route(&mut world, &core.clock, "ord-1");
     let before = entries(&core);
     let entries_now = recorded(&core);
     let mut hand_on = HandOn::new();
-    let (order, part, acceptance) = (id(ORDER), id(PART), id("acc-ord-1"));
+    let (order, part, acceptance) = (id(ORDER), id(PART), id("acc-new"));
     let (customer, actor) = (customer(), segments_support::core());
-    let mut change = |core: &mut Core, authorisation: &Authorisation| {
-        hand_parts(core, &mut Stuck::new(), |parts| {
-            hand_on.change_destination(
-                parts,
-                hand_on::Change {
-                    order: &order,
-                    part: &part,
-                    record: &record,
-                    acceptance: &acceptance,
-                    authorisation,
-                    recorded: &entries_now,
-                    customer: &customer,
-                    core: &actor,
-                },
-            )
-        })
-    };
+    let back_home = hand_parts(&mut core, &mut stuck, |parts| {
+        hand_on.change_destination(
+            parts,
+            hand_on::Change {
+                order: &order,
+                part: &part,
+                record: &record,
+                acceptance: &acceptance,
+                recorded: &entries_now,
+                customer: &customer,
+                core: &actor,
+            },
+        )
+    });
     assert_eq!(
-        change(&mut core, &new_destination(segments_support::customer())),
+        back_home,
         Err(HandOnError::Rejected(
             rutent_core_orch::recalc::Rejected::ChangesDestination
         ))
-    );
-    assert_eq!(
-        change(&mut core, &authorisation_of(&Named::first(), None)),
-        Err(HandOnError::Refused(Refused::KeepsDestination))
     );
     assert_eq!(entries(&core), before, "nothing recorded");
     assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
@@ -767,7 +770,7 @@ fn operators_hand_on_follows_its_done_resolution() {
     seed_linked(
         &mut core,
         &Named::another(2),
-        &customer().party,
+        &customer(),
         &linked_record("ord-2"),
     );
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
@@ -924,11 +927,7 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
             &core.segments,
             &mut stuck,
             &mut core.policy,
-            hand_on::Terms {
-                current: &current,
-                new: &elsewhere,
-                requester: &customer().party,
-            },
+            &elsewhere,
             &mut reader,
         ),
         Err(HandOnError::Refused(Refused::NoFailedDeposit)),
@@ -938,11 +937,7 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
         &core.segments,
         &mut stuck,
         &mut core.policy,
-        hand_on::Terms {
-            current: &current,
-            new: &lower,
-            requester: &customer().party,
-        },
+        &lower,
         &mut reader,
     )
     .expect("asked");
@@ -975,7 +970,6 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
                     order: &order,
                     part: &part_id,
                     record: &record,
-                    authorisation: &lower,
                     acceptance: &acceptance,
                     recorded: &recorded,
                     core: &actor,
@@ -1059,4 +1053,617 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
     assert_eq!(part_of(&core, ORDER).state, OrderState::Complete);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+// The review of `55bd1bc` ----------------------------------------------------------------------------------------
+
+/// The kit's order waiting at its floor of 995 000, its withdrawal having delivered 1 % short (`T-020-10b`).
+fn waiting_at_the_floor() -> (World, Core) {
+    let floor = rutent_contracts::router_api::PositiveAmount::new("995000").unwrap();
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(floor));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(rutent_conformance::sim::Delivery::Short { bps: 100 }),
+    );
+    let _ = core.run(&mut world);
+    assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
+    (world, core)
+}
+
+/// Everything the linked order's `route_chosen` needs is checked before the first order's `handed_on` is appended,
+/// so nothing is handed on to an order the log won't open: its decision record must be the linked order's in the
+/// log, its parts must be those the linked acceptance has the yeses for, from the reserves that gave them, and the
+/// linked order must not be open already.
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn hand_on_is_checked_whole_before_its_first_record() {
+    let (_world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let before = entries(&core);
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+
+    let recorded = recorded_with_receipts(&core);
+    let (order, part, linked, acceptance, missing) = (
+        id(ORDER),
+        id(PART),
+        id("ord-2"),
+        id("acc-ord-2"),
+        id("dr-nowhere"),
+    );
+    let (customer, actor) = (customer(), segments_support::core());
+    let unrecorded = hand_parts(&mut core, &mut Stuck::new(), |parts| {
+        hand_on.hand_on(
+            parts,
+            Handing {
+                order: &order,
+                part: &part,
+                linked: &linked,
+                decision_record: &missing,
+                plan: &plan,
+                acceptance: &acceptance,
+                basis: Basis::Customer,
+                recorded: &recorded,
+                by: &customer,
+                core: &actor,
+            },
+        )
+    });
+    assert_eq!(unrecorded, Err(HandOnError::NoDecisionRecord));
+
+    let mut another_part = plan.clone();
+    another_part[0].part_id = rutent_contracts::state_machine::Id::new("p7").unwrap();
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &another_part, "acc-ord-2"),
+        Err(HandOnError::PlanOutsideItsAcceptance)
+    );
+    let mut another_reserve = plan.clone();
+    another_reserve[0].segments[0].provider =
+        rutent_contracts::state_machine::Id::new(OTHER_RESERVE).unwrap();
+    assert_eq!(
+        hand_on_to(
+            &mut core,
+            &mut hand_on,
+            "ord-2",
+            &another_reserve,
+            "acc-ord-2"
+        ),
+        Err(HandOnError::PlanOutsideItsAcceptance)
+    );
+
+    assert!(core.segments.follow(
+        &*core.clock,
+        &route_chosen_of(&core.record, &Named::another(2))
+    ));
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::AlreadyOpened)
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
+}
+
+/// Where the log refuses the linked order's `route_chosen` outright after the first order's `handed_on` went in, the
+/// refusal is recorded as the linked order's, once, so the part isn't left handed on to an order that silently never
+/// opened; asked again, the same refusal is the answer and nothing more is recorded.
+// verifies: REQ-ORD-43
+#[test]
+fn linked_route_the_log_refuses_is_recorded_as_refused() {
+    let (world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::Chosen, Fault::Refuse));
+    let refused = hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2");
+    let Err(HandOnError::LinkedRefused { refusal, .. }) = refused else {
+        panic!("recorded as refused: {refused:?}");
+    };
+    let is_linked_refusal =
+        |w: &What| matches!(w, What::OrderRefusal { order: Some(o), .. } if o.as_str() == "ord-2");
+    assert_eq!(count(&core, is_linked_refusal), 1);
+    assert_eq!(
+        part_of(&core, ORDER).state,
+        OrderState::HandedOn,
+        "as the log holds it"
+    );
+    assert!(core.segments.order(&id("ord-2")).is_none(), "never opened");
+    let after = entries(&core);
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::LinkedRefused {
+            linked: id("ord-2"),
+            refusal
+        })
+    );
+    assert_eq!(entries(&core), after, "recorded once");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The customer's hand-on is the customer's own: stated by the customer, the order's requester, on the customer's
+/// given acceptance of the linked order. Anyone else's word, another customer's, or an acceptance that is an
+/// automatic deposit's, hands nothing on.
+// verifies: REQ-ORD-43, REQ-ORD-34, REQ-AUZ-3
+#[test]
+fn customers_hand_on_is_the_customers_own() {
+    let (_world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    seed_linked_on_a_deposit(
+        &mut core,
+        &Named::another(3),
+        &customer().party,
+        &linked_record("ord-3"),
+    );
+    let before = entries(&core);
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    assert_eq!(
+        hand_on_as(
+            &mut core,
+            &mut hand_on,
+            "ord-2",
+            &plan,
+            "acc-ord-2",
+            &operator()
+        ),
+        Err(HandOnError::Refused(Refused::NotTheCustomer))
+    );
+    let another = rutent_contracts::core_internal::Actor {
+        party: id("someone-else"),
+        ..customer()
+    };
+    assert_eq!(
+        hand_on_as(
+            &mut core,
+            &mut hand_on,
+            "ord-2",
+            &plan,
+            "acc-ord-2",
+            &another
+        ),
+        Err(HandOnError::Refused(Refused::NotTheCustomer))
+    );
+    let on_a_deposit = from_the_ledger(&core, "p1-s1-of-3");
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-3", &on_a_deposit, "acc-ord-3"),
+        Err(HandOnError::NotTheCustomersAcceptance)
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+}
+
+/// A hand-on moves the value to another order's destination, so the customer's own takes the same ground as a new
+/// destination (`INV-10`): only at a final deposit that failed. A part waiting at its floor isn't handed on.
+// verifies: REQ-ORD-43, INV-10
+#[test]
+fn customers_hand_on_from_a_floor_wait_is_refused() {
+    let (_world, mut core) = waiting_at_the_floor();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let before = entries(&core);
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Refused(Refused::NoFailedDeposit))
+    );
+    assert_eq!(entries(&core), before);
+}
+
+/// A route handed on runs only where Core follows its order: after a restart, a fresh `Segments` holds no start
+/// proven, and a linked route's record claiming to follow another round moves nothing.
+// verifies: REQ-ORD-40, INV-4
+#[test]
+fn route_handed_on_isnt_run_by_a_core_that_doesnt_follow_it() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on");
+    core.segments = rutent_core_orch::segments::Segments::new();
+    let record = segments_support::handing::route_from_the_ledger(
+        &mut world,
+        &core.clock,
+        &linked_record("ord-2"),
+        Some(core.record.request.request_id.as_str()),
+        AMOUNT,
+    );
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    assert_eq!(
+        run_linked(&mut core, &mut world, &record).map(|_| ()),
+        Err(SegmentsError::StartUnproven(id("ord-2")))
+    );
+    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+}
+
+/// The holding account's record proves one linked order's start, and only from the reserve the linked route
+/// starts at: one with no reference proves nothing, a reserve named by the caller is never taken, and a record
+/// already spent on one linked order proves no other.
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
+    let (_world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on");
+    let linked = id("ord-2");
+    let mut unreferenced = withdrawal_record();
+    unreferenced.reference = String::new();
+    assert_eq!(
+        hand_on.prove_start(&mut core.segments, &linked, &unreferenced),
+        Err(HandOnError::Unproven(Unproven::NoReference))
+    );
+    let mut theirs = withdrawal_record();
+    theirs.by = OTHER_RESERVE.into();
+    assert_eq!(
+        hand_on.prove_start(&mut core.segments, &linked, &theirs),
+        Err(HandOnError::Unproven(Unproven::NotTheStartingReserves)),
+        "the caller's reserve isn't the start's"
+    );
+    hand_on
+        .prove_start(&mut core.segments, &linked, &withdrawal_record())
+        .expect("the reserve's own record proves it, the caller's earlier word kept for nothing");
+
+    // Another world, another linked order, the same record: spent.
+    let (_other_world, mut other) = waiting_for_the_customer();
+    seed_linked(
+        &mut other,
+        &Named::another(3),
+        &customer(),
+        &linked_record("ord-3"),
+    );
+    let plan = from_the_ledger(&other, "p1-s1-of-3");
+    hand_on_to(&mut other, &mut hand_on, "ord-3", &plan, "acc-ord-3").expect("handed on");
+    assert_eq!(
+        hand_on.prove_start(&mut other.segments, &id("ord-3"), &withdrawal_record()),
+        Err(HandOnError::Unproven(Unproven::ReferenceSpent))
+    );
+}
+
+/// The operator's hand-on rests on a done resolution that moved the part's whole value, in its asset: a done
+/// resolution of less hands nothing on.
+// verifies: REQ-ORD-43, REQ-AUZ-4
+#[test]
+fn operators_hand_on_needs_a_resolution_of_the_whole_value() {
+    let (mut world, mut core) = stuck_with_no_route();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let decision = serde_json::json!({ "request": "req-forged", "decision": "dec-forged" });
+    let resolution = serde_json::json!({
+        "kind": "hand_on", "by": RESERVE, "linked_order": "ord-2",
+        "asset": { "id": "COP", "decimals": 2 }, "amount": "1",
+    });
+    let at = rutent_core_orch::snapshot::Clock::now(&*core.clock)
+        .timestamp()
+        .unwrap();
+    let verified =
+        |who: &rutent_contracts::core_internal::Actor, what: serde_json::Value, outcome: &str| {
+            serde_json::from_value::<rutent_contracts::core_internal::Entry>(serde_json::json!({
+                "kind": "verified", "who": who, "what": what,
+                "when": { "at": at, "source": "core_clock" }, "outcome": { "status": outcome },
+            }))
+            .unwrap()
+        };
+    let decide = append_entry(
+        &core,
+        &verified(
+            &alice,
+            serde_json::json!({
+                "call": "stuck_decide",
+                "request": { "request": "req-forged", "order": ORDER, "part": PART, "decider": alice,
+                    "resolution": resolution, "transaction": "tx-forged",
+                    "evidence": [digest(&"ab".repeat(32))], "at": at },
+                "decision": "dec-forged",
+            }),
+            "permitted",
+        ),
+        rutent_contracts::core_internal::Through::Policy,
+    );
+    let effect = append_entry(
+        &core,
+        &verified(
+            &segments_support::core(),
+            serde_json::json!({
+                "call": "effect",
+                "action": { "kind": "resolve_stuck", "order": ORDER, "carries_out": decision,
+                    "resolution": resolution, "transaction": "tx-forged" },
+                "decision": { "request": "req-forged-move", "decision": "dec-forged-move", "answer": "permit",
+                    "receipt": decide },
+            }),
+            "to_take_effect",
+        ),
+        rutent_contracts::core_internal::Through::General,
+    );
+    append_entry(
+        &core,
+        &verified(
+            &segments_support::core(),
+            serde_json::json!({ "call": "result", "effect": effect }),
+            "done",
+        ),
+        rutent_contracts::core_internal::Through::General,
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    assert_eq!(
+        operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob),
+        Err(HandOnError::NoDoneResolution)
+    );
+    let _ = &mut world;
+}
+
+/// The kit's order stuck with no route: its deposit never begun, then no route from the ledger.
+fn stuck_with_no_route() -> (World, Core) {
+    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(1);
+    let _ = core.run_over(&world.catalogue, &mut watched);
+    drop(watched);
+    world
+        .fleet
+        .world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let outcome = Rerouting::of(&core)
+        .recalculate(&mut core, &mut world)
+        .unwrap();
+    let mut stuck = Stuck::new();
+    let (order, part, last) = (id(ORDER), id(PART), core.record.record_id().clone());
+    let actor = segments_support::core();
+    let declared = on_parts(&mut core, |parts| {
+        stuck.no_route(
+            parts,
+            NoRouteLeft {
+                order: &order,
+                part: &part,
+                outcome: &outcome,
+                last_record: &last,
+                core: &actor,
+            },
+        )
+    })
+    .expect("no route recorded");
+    assert_eq!(declared.state, OrderState::Stuck);
+    (world, core)
+}
+
+/// The kit's choice round's record of the route from the ledger, made to end at the other reserve's bank instead:
+/// the simulated reserves route only between their own bank and ledger, so the kit writes the record of a route to
+/// another destination that the router would choose where one existed.
+fn record_to_the_other_reserve(
+    world: &mut World,
+    core: &Core,
+    record_id: &Id,
+) -> rutent_contracts::router_api::DecisionRecord {
+    let record = segments_support::handing::route_from_the_ledger(
+        world,
+        &core.clock,
+        record_id,
+        Some(core.record.request.request_id.as_str()),
+        AMOUNT,
+    );
+    // The deposit becomes the other reserve's, to its bank, from the ledger where the value sits.
+    let text = serde_json::to_value(&record).unwrap().to_string();
+    let to_other = text
+        .replace(
+            &format!("\"network\":\"{RESERVE}-bank\""),
+            &format!("\"network\":\"{OTHER_RESERVE}-bank\""),
+        )
+        .replace(
+            &format!("\"provider\":\"{RESERVE}\""),
+            &format!("\"provider\":\"{OTHER_RESERVE}\""),
+        )
+        .replace(
+            &format!("\"maker\":\"{RESERVE}\""),
+            &format!("\"maker\":\"{OTHER_RESERVE}\""),
+        );
+    let record: rutent_contracts::router_api::DecisionRecord =
+        serde_json::from_str(&to_other).unwrap();
+    record
+}
+
+/// The customer's new destination, taken: after a failed final deposit with no route left, the customer's new
+/// authorisation to the other reserve's bank, permitted by policy, and the customer's acceptance of it; the route
+/// from the ledger where the value sits is held to that authorisation and recorded as `destination_changed`, the
+/// part's destination is the customer's, Core's stuck ends follow it, and the log admits every entry. An
+/// acceptance of the terms the part waited under is no acceptance of the new ones.
+// verifies: REQ-ORD-43, INV-10, REQ-ORD-34
+#[test]
+fn customers_new_destination_is_taken_from_where_the_value_sits() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    let new = new_destination(customer());
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    let decision = hand_on::authorise(
+        &core.segments,
+        &mut stuck,
+        &mut core.policy,
+        &new,
+        &mut reader,
+    )
+    .expect("asked");
+    assert!(decision.permit().is_some(), "{decision:?}");
+    let record_id = id("dr-new-destination-ord-1");
+    let record = record_to_the_other_reserve(&mut world, &core, &record_id);
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    segments_support::handing::seed_acceptance(
+        &core,
+        ORDER,
+        "acc-ord-1-new-destination",
+        &new.authorisation,
+    );
+    let mut hand_on = HandOn::new();
+    let (order, part, actor, customer) =
+        (id(ORDER), id(PART), segments_support::core(), customer());
+    let mut change = |core: &mut Core, stuck: &mut Stuck, acceptance: &str| {
+        let (recorded, acceptance) = (recorded(core), id(acceptance));
+        hand_parts(core, stuck, |parts| {
+            hand_on.change_destination(
+                parts,
+                hand_on::Change {
+                    order: &order,
+                    part: &part,
+                    record: &record,
+                    acceptance: &acceptance,
+                    recorded: &recorded,
+                    customer: &customer,
+                    core: &actor,
+                },
+            )
+        })
+    };
+    let before = entries(&core);
+    assert_eq!(
+        change(&mut core, &mut stuck, "acc-ord-1"),
+        Err(HandOnError::NotItsAcceptance),
+        "the acceptance of the old terms"
+    );
+    assert_eq!(entries(&core), before);
+    let changed = change(&mut core, &mut stuck, "acc-ord-1-new-destination").expect("changed");
+    assert!(matches!(
+        changed.input.observed,
+        Observed::DestinationChanged { .. }
+    ));
+    let part = part_of(&core, ORDER);
+    assert_eq!(part.destination.provider.as_str(), OTHER_RESERVE);
+    assert_eq!(part.state, OrderState::FirstSegmentSettled);
+    let (followed, _) = stuck.ends_of(&id(ORDER), &id(PART)).expect("followed");
+    assert_eq!(
+        followed, new.destination,
+        "Core's stuck ends are the new ones"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The customer's choice rests on terms the log holds: a destination change or a resume under an authorisation the
+/// log never holds as the customer's, permitted and in force for the part, is refused, as is a resume under the
+/// terms the part waited under; and the terms in force that policy is asked against are the log's, never the
+/// caller's.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn customers_choice_rests_on_terms_the_log_holds() {
+    // A new destination policy was never asked for.
+    let (mut world, mut core) = waiting_for_the_customer();
+    let new = new_destination(customer());
+    let record_id = id("dr-new-destination-ord-1");
+    let record = record_to_the_other_reserve(&mut world, &core, &record_id);
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    segments_support::handing::seed_acceptance(&core, ORDER, "acc-new", &new.authorisation);
+    let mut hand_on = HandOn::new();
+    let (order, part, actor, customer_actor) =
+        (id(ORDER), id(PART), segments_support::core(), customer());
+    let recorded_now = recorded(&core);
+    let acceptance = id("acc-new");
+    let before = entries(&core);
+    let unpermitted = hand_parts(&mut core, &mut Stuck::new(), |parts| {
+        hand_on.change_destination(
+            parts,
+            hand_on::Change {
+                order: &order,
+                part: &part,
+                record: &record,
+                acceptance: &acceptance,
+                recorded: &recorded_now,
+                customer: &customer_actor,
+                core: &actor,
+            },
+        )
+    });
+    assert_eq!(unpermitted, Err(HandOnError::NotItsAuthorisation));
+    assert_eq!(entries(&core), before);
+
+    // At the floor: a resume under the old terms, and one under terms policy never permitted.
+    let (mut world, mut core) = waiting_at_the_floor();
+    let current = authorisation_of(&Named::first(), core.floor.clone());
+    let mut lower = current.clone();
+    lower.authorisation = id("auth-ord-1-lower-floor");
+    lower.floor = rutent_contracts::router_api::PositiveAmount::new("900000");
+    lower.parts = Some(vec![id(PART)]);
+    let record_id = id("dr-resume-ord-1");
+    let record = segments_support::handing::route_from_the_ledger(
+        &mut world,
+        &core.clock,
+        &record_id,
+        Some(core.record.request.request_id.as_str()),
+        "990000",
+    );
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    segments_support::handing::seed_acceptance(&core, ORDER, "acc-lower", &lower.authorisation);
+    let recorded_now = recorded(&core);
+    let (acc_lower, acc_old) = (id("acc-lower"), id("acc-ord-1"));
+    let before = entries(&core);
+    for acceptance in [&acc_lower, &acc_old] {
+        let resumed = hand_parts(&mut core, &mut Stuck::new(), |parts| {
+            hand_on.resume(
+                parts,
+                hand_on::Resume {
+                    order: &order,
+                    part: &part,
+                    record: &record,
+                    acceptance,
+                    recorded: &recorded_now,
+                    core: &actor,
+                },
+            )
+        });
+        assert_eq!(resumed, Err(HandOnError::NotItsAuthorisation));
+    }
+    assert_eq!(entries(&core), before);
+
+    // The terms in force are the log's: a new destination, with a new floor, from a floor wait is refused, whatever
+    // terms a caller would have claimed in force.
+    let mut moved = new_destination(customer());
+    moved.floor = lower.floor.clone();
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    let authorised = count(&core, is_authorise);
+    assert_eq!(
+        hand_on::authorise(
+            &core.segments,
+            &mut stuck,
+            &mut core.policy,
+            &moved,
+            &mut reader,
+        ),
+        Err(HandOnError::Refused(Refused::NoFailedDeposit))
+    );
+    assert_eq!(count(&core, is_authorise), authorised, "policy not asked");
 }

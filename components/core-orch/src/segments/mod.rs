@@ -1142,10 +1142,16 @@ impl Segments {
         // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
         // A route handed on (`REQ-ORD-43`, `T-020-13`) starts at the inner node where the first order's value sat,
         // by no withdrawal, and only once the holding account's own record proves the value left it (`REQ-ORD-40`).
+        // An order Core doesn't follow (after a restart, say) may be a route handed on whose proof it doesn't hold:
+        // a route starting at an inner node is refused for it, failing closed, until Core follows the order again.
         let handed_on = self
             .orders
             .get(live.order.as_str())
-            .is_some_and(|t| t.order.handed_on_from.is_some());
+            .is_none_or(|t| t.order.handed_on_from.is_some())
+            && matches!(
+                part.operations.first().from.node,
+                rutent_contracts::provider_role::NodeRef::Inner(_)
+            );
         if handed_on && !self.proven.contains(live.order.as_str()) {
             return Err(SegmentsError::StartUnproven(live.order.clone()));
         }

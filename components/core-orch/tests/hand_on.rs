@@ -202,6 +202,20 @@ fn new_terms_are_asked_only_for_a_part_waiting_for_the_customer() {
         new_terms(order, &in_force(), &origin, &customer),
         Err(Refused::ChangesOrigin)
     );
+    let mut account = to_another();
+    account.origin_account = Some(rid("acct-elsewhere"));
+    assert_eq!(
+        new_terms(order, &in_force(), &account, &customer),
+        Err(Refused::ChangesOrigin),
+        "the payer's account is the origin's"
+    );
+    let mut none = to_another();
+    none.parts = Some(Vec::new());
+    assert_eq!(
+        new_terms(order, &in_force(), &none, &customer),
+        Err(Refused::NotItsAuthorisation),
+        "terms covering no part"
+    );
     let mut unknown = to_another();
     unknown.parts = Some(vec![rid("p1"), rid("p7")]);
     assert_eq!(
