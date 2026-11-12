@@ -28,6 +28,9 @@
   `finish`, with `is_ended` and `order_state_of`. `CMP-STM` dispatches each input to them, and core-internal's
   reading of a part's standing does too, so the log and the state machine apply one set of rules. Additive: no
   shape or behaviour changes. (DEC-4, DEC-20, T-020-01)
+- One dispatch table: `rules::transition` is the transition, every input dispatched to the rule of its kind and
+  finished; `CMP-STM`'s `StateMachine::transition` is it, and core-internal's reading of a part's standing steps
+  by it, so the two can't dispatch apart. Additive. (DEC-4, DEC-20, T-020-01)
 - The schemas also follow router-api 4.0.0: a segment plan is router-api's typed operation, by reference, so its
   4.0.0 shapes are the state machine's from this version. (DEC-4, DEC-20, T-020-01)
 

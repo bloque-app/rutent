@@ -18,9 +18,10 @@ use alloc::vec::Vec;
 
 use super::{
     Destination, Id, LastInput, NotApplicableReason, Observed, OperationKind, Order, OrderState,
-    Outcome, Part, RecordedInput, Scope, Segment, SegmentPlan, SegmentState,
-    deposit_failed_at_after, destination_change_applies, recalculation_keeps_destination,
-    recalculation_starts_where_value_sits, value_at,
+    Outcome, Part, RecordedInput, Scope, Segment, SegmentPlan, SegmentState, after_no_route,
+    after_stuck_resolved, after_waiting_at_floor, deposit_failed_at_after,
+    destination_change_applies, recalculation_keeps_destination,
+    recalculation_starts_where_value_sits, value_at, waiting_since_after,
 };
 
 /// Not applicable, for the reason given.
@@ -460,4 +461,75 @@ pub fn after_restart(
     part.deposit_failed_at = failed_at;
     part.state = by_first_segment(part);
     Outcome::Applied {}
+}
+
+/// The transition (`REQ-STM-3`): `input` on `order`, dispatched to the rule of its kind, and the order [`finish`]
+/// makes of it. `CMP-STM`'s `StateMachine::transition` is this, and core-internal's reading of a part's standing
+/// steps an order by it, so the two dispatch alike.
+pub fn transition(order: &Order, input: &RecordedInput) -> Order {
+    let mut next = order.clone();
+    let outcome = apply(&mut next, input);
+    finish(order, next, input, outcome)
+}
+
+/// Dispatches `input` to the published rule of its kind.
+fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
+    let (index, used) = match guard(order, input) {
+        Err(outcome) => return outcome,
+        Ok(Target::Order) => {
+            return match &input.observed {
+                Observed::EndRequested {} => after_end_requested(order),
+                _ => not_from_this_state(),
+            };
+        }
+        Ok(Target::Part { index, used }) => (index, used),
+    };
+    let order_id = order.order_id.clone();
+    let before = order.parts[index].clone();
+    let part = &mut order.parts[index];
+    let outcome = match &input.observed {
+        Observed::ProviderBound {}
+        | Observed::SegmentSettled { .. }
+        | Observed::SegmentFailed {}
+        | Observed::SegmentOutcomeUnknown {}
+        | Observed::ReversalCompleted { .. } => after_segment_input(part, input),
+        Observed::RouteRecalculated { segments, .. } => {
+            after_restart(part, &used, input, segments, false)
+        }
+        Observed::DestinationChanged { segments, .. } => {
+            after_restart(part, &used, input, segments, true)
+        }
+        Observed::NoRoute { .. } => match after_no_route(part) {
+            Some(state) if state != part.state => {
+                part.state = state;
+                Outcome::Applied {}
+            }
+            _ => not_from_this_state(),
+        },
+        Observed::WaitingAtFloor {} => match after_waiting_at_floor(part) {
+            Some(state) => {
+                part.state = state;
+                Outcome::Applied {}
+            }
+            None => not_from_this_state(),
+        },
+        Observed::StuckResolved { to, .. } => match after_stuck_resolved(part, *to) {
+            Some(state) => {
+                part.state = state;
+                part.resolved_to = Some(*to);
+                Outcome::Applied {}
+            }
+            None => not_from_this_state(),
+        },
+        Observed::StuckDeclared { .. } => after_stuck_declared(part),
+        Observed::WithdrawalCancelled {} => after_withdrawal_cancelled(part),
+        Observed::HandedOn { linked_order, .. } => after_handed_on(part, &order_id, linked_order),
+        // Order-scope kinds never reach a part.
+        Observed::RouteChosen { .. } | Observed::EndRequested {} => not_from_this_state(),
+    };
+    if outcome == (Outcome::Applied {}) {
+        // The published update rule: a part says since when it waits, exactly while it waits.
+        part.waiting_since = waiting_since_after(&before, part.state, input);
+    }
+    outcome
 }

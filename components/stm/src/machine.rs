@@ -17,20 +17,14 @@
 //!
 //! # One source for the rules
 //!
-//! Every rule is the contract's, published in [`rules`](rutent_contracts::state_machine::rules): this module only
-//! dispatches each input to the rule of its kind, as core-internal's reading of a part's standing does, so the two
-//! can't drift apart (`T-020-01`).
+//! Every rule is the contract's, published in [`rules`](rutent_contracts::state_machine::rules), and so is the one
+//! dispatch table: `transition` is the contract's `rules::transition`, which core-internal's reading of a part's
+//! standing steps by too, so the two can't drift apart (`T-020-01`).
 //!
 //! No transition reads an amount.
 
-use rutent_contracts::state_machine::rules::{
-    Target, after_end_requested, after_handed_on, after_restart, after_segment_input,
-    after_stuck_declared, after_withdrawal_cancelled, finish, guard, not_from_this_state, open,
-};
-use rutent_contracts::state_machine::{
-    Observed, Order, Outcome, RecordedInput, StateMachine, after_no_route, after_stuck_resolved,
-    after_waiting_at_floor, waiting_since_after,
-};
+use rutent_contracts::state_machine::rules::{open, transition};
+use rutent_contracts::state_machine::{Order, RecordedInput, StateMachine};
 
 /// The state machine of rutent's orders: `open` from the input that accepted a route, `transition` on every
 /// recorded input after. Pure and deterministic: no clock, no randomness, no I/O, no amount.
@@ -43,70 +37,6 @@ impl StateMachine for Stm {
     }
 
     fn transition(state: &Order, input: &RecordedInput) -> Order {
-        let mut next = state.clone();
-        let outcome = apply(&mut next, input);
-        finish(state, next, input, outcome)
+        transition(state, input)
     }
-}
-
-/// Dispatches `input` to the published rule of its kind.
-fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
-    let (index, used) = match guard(order, input) {
-        Err(outcome) => return outcome,
-        Ok(Target::Order) => {
-            return match &input.observed {
-                Observed::EndRequested {} => after_end_requested(order),
-                _ => not_from_this_state(),
-            };
-        }
-        Ok(Target::Part { index, used }) => (index, used),
-    };
-    let order_id = order.order_id.clone();
-    let before = order.parts[index].clone();
-    let part = &mut order.parts[index];
-    let outcome = match &input.observed {
-        Observed::ProviderBound {}
-        | Observed::SegmentSettled { .. }
-        | Observed::SegmentFailed {}
-        | Observed::SegmentOutcomeUnknown {}
-        | Observed::ReversalCompleted { .. } => after_segment_input(part, input),
-        Observed::RouteRecalculated { segments, .. } => {
-            after_restart(part, &used, input, segments, false)
-        }
-        Observed::DestinationChanged { segments, .. } => {
-            after_restart(part, &used, input, segments, true)
-        }
-        Observed::NoRoute { .. } => match after_no_route(part) {
-            Some(state) if state != part.state => {
-                part.state = state;
-                Outcome::Applied {}
-            }
-            _ => not_from_this_state(),
-        },
-        Observed::WaitingAtFloor {} => match after_waiting_at_floor(part) {
-            Some(state) => {
-                part.state = state;
-                Outcome::Applied {}
-            }
-            None => not_from_this_state(),
-        },
-        Observed::StuckResolved { to, .. } => match after_stuck_resolved(part, *to) {
-            Some(state) => {
-                part.state = state;
-                part.resolved_to = Some(*to);
-                Outcome::Applied {}
-            }
-            None => not_from_this_state(),
-        },
-        Observed::StuckDeclared { .. } => after_stuck_declared(part),
-        Observed::WithdrawalCancelled {} => after_withdrawal_cancelled(part),
-        Observed::HandedOn { linked_order, .. } => after_handed_on(part, &order_id, linked_order),
-        // Order-scope kinds never reach a part.
-        Observed::RouteChosen { .. } | Observed::EndRequested {} => not_from_this_state(),
-    };
-    if outcome == (Outcome::Applied {}) {
-        // The published update rule: a part says since when it waits, exactly while it waits.
-        part.waiting_since = waiting_since_after(&before, part.state, input);
-    }
-    outcome
 }

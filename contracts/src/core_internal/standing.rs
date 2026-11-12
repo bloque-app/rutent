@@ -2,8 +2,8 @@
 //! reads where a part stands the same way (`T-020-01`, `T-020-10`, `T-020-11`).
 //!
 //! The reading is the state machine's own: each of the order's inputs goes, in the log's order, through the
-//! transition rules the state-machine contract publishes ([`rules`](crate::state_machine::rules)), dispatched by
-//! kind as `CMP-STM` dispatches them. An input those rules don't take (one `CMP-STM` would answer not applicable)
+//! state-machine contract's one transition ([`rules::transition`](crate::state_machine::rules::transition)), the
+//! very function `CMP-STM` steps by. An input those rules don't take (one `CMP-STM` would answer not applicable)
 //! is one the log refuses ([`state_machine_takes`]), so an admitted log holds only inputs the state machine took,
 //! and what a row reads of a part is what the state machine holds. The differential oracle in `CMP-STM`'s tests
 //! holds the two to each other. A stuck resolution's move counts once its result is `done`, which the state machine
@@ -14,13 +14,9 @@ use alloc::string::{String, ToString};
 
 use super::relations::History;
 use super::types::{Action, Entry, Outcome as EntryOutcome, VerifiedEntry, What};
-use crate::state_machine::rules::{
-    Target, after_end_requested, after_handed_on, after_restart, after_segment_input,
-    after_stuck_declared, after_withdrawal_cancelled, finish, guard, not_from_this_state, open,
-};
+use crate::state_machine::rules::open;
 use crate::state_machine::{
     Observed, OperationKind, Order, OrderState, Outcome, Part, RecordedInput, SegmentState,
-    after_no_route, after_stuck_resolved, after_waiting_at_floor, waiting_since_after,
 };
 
 /// Where a part stands after a history.
@@ -75,71 +71,9 @@ fn input(entry: &VerifiedEntry) -> Option<&RecordedInput> {
     }
 }
 
-/// One transition: `input` on `order`, through the published rules, dispatched by its kind as `CMP-STM` does.
+/// One transition: `input` on `order`, by the state-machine contract's own `rules::transition`, as `CMP-STM` steps.
 pub(crate) fn step(order: &Order, input: &RecordedInput) -> Order {
-    let mut next = order.clone();
-    let outcome = apply(&mut next, input);
-    finish(order, next, input, outcome)
-}
-
-fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
-    let (index, used) = match guard(order, input) {
-        Err(outcome) => return outcome,
-        Ok(Target::Order) => {
-            return match &input.observed {
-                Observed::EndRequested {} => after_end_requested(order),
-                _ => not_from_this_state(),
-            };
-        }
-        Ok(Target::Part { index, used }) => (index, used),
-    };
-    let order_id = order.order_id.clone();
-    let before = order.parts[index].clone();
-    let part = &mut order.parts[index];
-    let placed = |part: &mut Part, state: Option<OrderState>| match state {
-        Some(state) => {
-            part.state = state;
-            Outcome::Applied {}
-        }
-        None => not_from_this_state(),
-    };
-    let outcome = match &input.observed {
-        Observed::ProviderBound {}
-        | Observed::SegmentSettled { .. }
-        | Observed::SegmentFailed {}
-        | Observed::SegmentOutcomeUnknown {}
-        | Observed::ReversalCompleted { .. } => after_segment_input(part, input),
-        Observed::RouteRecalculated { segments, .. } => {
-            after_restart(part, &used, input, segments, false)
-        }
-        Observed::DestinationChanged { segments, .. } => {
-            after_restart(part, &used, input, segments, true)
-        }
-        Observed::NoRoute { .. } => {
-            let state = after_no_route(part).filter(|s| *s != part.state);
-            placed(part, state)
-        }
-        Observed::WaitingAtFloor {} => {
-            let state = after_waiting_at_floor(part);
-            placed(part, state)
-        }
-        Observed::StuckResolved { to, .. } => {
-            let state = after_stuck_resolved(part, *to);
-            let outcome = placed(part, state);
-            if outcome == (Outcome::Applied {}) {
-                part.resolved_to = Some(*to);
-            }
-            outcome
-        }
-        Observed::StuckDeclared { .. } => after_stuck_declared(part),
-        Observed::WithdrawalCancelled {} => after_withdrawal_cancelled(part),
-        Observed::HandedOn { linked_order, .. } => after_handed_on(part, &order_id, linked_order),
-        Observed::RouteChosen { .. } | Observed::EndRequested {} => not_from_this_state(),
-    };
-    if outcome == (Outcome::Applied {}) {
-        part.waiting_since = waiting_since_after(&before, part.state, input);
-    }
-    outcome
+    crate::state_machine::rules::transition(order, input)
 }
 
 /// Whether the state machine takes `outcome`: it applied the input, or recorded it late or as a repeat.
