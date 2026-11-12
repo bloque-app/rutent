@@ -1,0 +1,28 @@
+# The VOS host server (T-024-02): one host of the host contract, `Stm` on a cluster of VOS nodes, served over a
+# JSON-lines wire for a caller that can't link VOS, rutent-scenarios-vos. A member of the client's workspace (../../client).
+#
+# LICENCE. Its server links the client and through it `vos-node` and `vos-wire`, so it is AGPL-3.0-or-later like the
+# client (vos-licence-v0). Its library, the wire, is plain serde over the contract's types: without the `vos` feature,
+# off by default, nothing of VOS is compiled or linked, which is how rutent-scenarios-vos uses it.
+[package]
+name = "rutent-stm-vos-serve"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+workspace = "../../client"
+
+[features]
+# The server, which links VOS through the client.
+vos = ["dep:rutent-stm", "dep:rutent-stm-vos", "rutent-stm-vos/vos"]
+
+[[bin]]
+name = "rutent-stm-vos-serve"
+required-features = ["vos"]
+
+[dependencies]
+rutent-contracts = { path = "../../../../../contracts" }
+rutent-stm = { path = "../../..", optional = true }
+rutent-stm-vos = { path = "../../client", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

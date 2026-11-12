@@ -41,15 +41,12 @@ pub fn paths() -> Paths {
         .get_or_init(|| {
             let (target, profile) = build_directories();
             let mut build = cargo();
+            // In rutent's own workspace, whichever workspace runs the test: `rutent-scenarios-vos` runs these in the
+            // VOS client's (`T-024-02`).
             build
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "rutent-prov",
-                    "--bins",
-                    "--target-dir",
-                ])
+                .args(["build", "--quiet", "--manifest-path"])
+                .arg(root().join("Cargo.toml"))
+                .args(["-p", "rutent-prov", "--bins", "--target-dir"])
                 .arg(&target);
             if profile.file_name().is_some_and(|n| n == "release") {
                 build.arg("--release");

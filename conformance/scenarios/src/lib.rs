@@ -3,8 +3,19 @@
 //!
 //! Core's three crates import none of one another (`DEC-2`); this package is where they meet, each handed the
 //! others' calls of `rutent_contracts::core_internal::calls`. It may import every crate of ours, and nothing in the
-//! workspace imports it. `F-024` owns it; `T-020-01` put in it only the one wiring every later row relies on, the
-//! log's two handles.
+//! workspace imports it. `F-024` owns it; `T-020-01` put in it the one wiring every later row relies on, the log's two
+//! handles, and `T-024-02` the rest:
+//!
+//! - [`assembly`]: Core put together, [`assembly::Core`], with the policy engine, the log and the evidence store, the
+//!   platform and the simulated providers, and the state machine on its host.
+//! - [`harness`]: scenarios as given, when and then, each accepting an `AC-*`, with faults injected and runs seeded.
+//! - [`checks`]: `T-024-02`'s four checks, which the reference host's run and the VOS replicas' run share.
+//! - [`kit`]: what every scenario kit shares.
+//! - [`sim`]: the simulated providers' platform side (`T-024-01`).
+//!
+//! The policy calls whose rows haven't built them on the engine yet (authorisations, charges, questions about
+//! people) are answered beside it on policy's handle, the engine's own ([`assembly::policy::PolicySide`]): the handle
+//! the engine holds is still the only policy handle.
 //!
 //! **Who holds which handle on the log.** The assembly alone holds the log. It hands policy's handle,
 //! [`PolicyLog`], to the policy engine and to no other part, and orchestration's, [`Log`], to orchestration. A
@@ -13,6 +24,10 @@
 //! [`GeneralEntry`] can't hold anyway. This holds while Core's parts share one process; split across processes, a
 //! decision entry would need the engine's signature (`T-025-05`).
 
+pub mod assembly;
+pub mod checks;
+pub mod harness;
+pub mod kit;
 pub mod sim;
 
 use rutent_contracts::core_internal::Receipt;

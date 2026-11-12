@@ -51,6 +51,14 @@ jobs:
         run: cargo build -p rutent-contracts --no-default-features --target riscv32imac-unknown-none-elf
       - name: Test (includes the boundary check)
         run: cargo test --workspace
+      # T-024-02: the assembled Core's scenarios again, under seeds of their own. `cargo test` above runs them under
+      # their default seeds (1, 2 and 3); a failing run names its seed, and `RUTENT_SCENARIO_SEEDS=<seed>` replays it.
+      - name: Scenarios, seeded (T-024-02)
+        run: |
+          echo "scenario seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo test -p rutent-scenarios --test assembly
+        env:
+          RUTENT_SCENARIO_SEEDS: "11,12,13,14,15"
       # T-013-05 (B-09): seeded, time-bounded mutation fuzzing of the admitting compiler, every binary through its
       # own isolated process. The checked-in corpus runs in the Test step above; this runs on beyond it. The run id
       # goes to the step summary and F-013's notes cite it. A crash writes its binaries to the findings artefact.

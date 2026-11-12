@@ -1,0 +1,25 @@
+# The scenarios on three VOS replicas (T-024-02): rutent-scenarios's checks, with the state machine on three VOS
+# replicas. A member of the client's workspace (../client), with its lock, so no VOS crate enters rutent's own
+# Cargo.lock.
+#
+# It runs the assembled Core, whose module platform builds only with a newer toolchain than VOS's crates do, so it
+# links nothing of VOS: it drives the host server, `rutent-stm-vos-serve` (serve/, AGPL-3.0-or-later, built by
+# ../scenarios.sh), over that package's wire, one server per cluster. So it is MIT, like rutent, and its tests need
+# the server and the nodes, behind its `vos` feature.
+[package]
+name = "rutent-scenarios-vos"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+workspace = "../client"
+
+[features]
+# The tests, which need the host server and VOS's binaries (../scenarios.sh).
+vos = []
+
+[dependencies]
+rutent-contracts = { path = "../../../../contracts" }
+rutent-scenarios = { path = "../../../../conformance/scenarios" }
+rutent-stm-vos-serve = { path = "serve" }
+serde_json = "1"

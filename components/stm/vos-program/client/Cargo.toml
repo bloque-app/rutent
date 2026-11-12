@@ -43,6 +43,12 @@ rutent-conformance = { path = "../../../../conformance" }
 
 [workspace]
 resolver = "3"
+# The assembled Core's scenarios on three VOS replicas and their host server (T-024-02), in this workspace so that its
+# lock, not rutent's, holds them.
+members = [".", "../scenarios", "../scenarios/serve"]
+# A command run here without a package builds the client alone: the scenarios build with their own toolchain, from
+# their directory (../scenarios.sh).
+default-members = ["."]
 
 # VOS's own patch at the commit (its Cargo.toml): fjall's lsm-tree with its fixes, on a fork. A patch does not reach
 # a workspace that depends on VOS, so it is repeated here, in the workspace root, to link what VOS links.
