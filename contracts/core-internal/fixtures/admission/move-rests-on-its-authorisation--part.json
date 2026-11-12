@@ -1002,7 +1002,7 @@
         "what": {
           "call": "input",
           "input": {
-            "record_id": "rec-0001",
+            "record_id": "rec-in_route",
             "recorded_at": "2026-11-06T10:00:00Z",
             "time_source": "core-orch clock",
             "source": {
