@@ -85,7 +85,7 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Action, Actor, Answer, Decided, Decision, Destination, Difference, Effect, Entry, MoveOutcome,
     Outcome, OutcomeConfirmation, OutcomeReport, Permit, Raise, ReadCheck, ReadOutcome, Receipt,
-    Resolution, StuckBasis, StuckDecide, StuckMove, What,
+    Resolution, Role, StuckBasis, StuckDecide, StuckMove, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Denomination, NodeRef, SafeInteger};
@@ -912,7 +912,14 @@ impl Stuck {
     /// is the part's destination, and its origin account (intake fills it from the payer's account,
     /// [`PAYER_ACCOUNT`]) at its origin reserve, at the outer node the part's withdrawal took the value from, the
     /// part's origin. The ends first followed for a part stand: following again with others is refused
-    /// ([`StuckError::NotItsAuthorisation`]).
+    /// ([`StuckError::NotItsAuthorisation`]), unless a later authorisation of the customer's covering the part replaced
+    /// its terms, when the part takes its new ends and every other part keeps its own (`T-021-04`). The customer is
+    /// read as the engine and the log both read it: its role, and the acceptance's requester.
+    ///
+    /// The origin account isn't one of the terms the engine holds a move to, so two authorisations differing only
+    /// there are one set of terms to the engine. The log's rule rules here, since it admits the delivery
+    /// (`delivery-goes-to-the-parts-ends`): the customer's later one is in force for the parts it covers, and its
+    /// origin account is the parts' origin.
     ///
     /// `recorded` is taken as the log's: this holds only where the assembly passes the log's own entries, never a
     /// caller's, until Core reads authorisations from policy's register (`T-021-04`).
@@ -935,6 +942,8 @@ impl Stuck {
         let mut found = Vec::new();
         for part in &followed.parts {
             let mut current: Option<&rutent_contracts::core_internal::Authorisation> = None;
+            // Whether a later authorisation of the customer's replaced the first in force for the part.
+            let mut replaced = false;
             for entry in recorded {
                 let Entry::Verified(v) = entry else { continue };
                 if !matches!(v.outcome, Outcome::Permitted {}) {
@@ -950,10 +959,13 @@ impl Stuck {
                     .parts
                     .as_ref()
                     .is_none_or(|ps| ps.iter().any(|p| p.as_str() == part.part_id.as_str()));
-                if &a.order == order
-                    && covers
-                    && (current.is_none() || requester == Some(&a.given_by.party))
-                {
+                // After the first, only the customer's sets the terms: the engine reads the customer by role, the
+                // log by the acceptance's requester, and the roles rule holds a customer to the requester, so Core
+                // asks both (`T-021-04`).
+                let by_the_customer =
+                    a.given_by.role == Role::Customer && requester == Some(&a.given_by.party);
+                if &a.order == order && covers && (current.is_none() || by_the_customer) {
+                    replaced |= current.is_some();
                     current = Some(a);
                 }
             }
@@ -989,22 +1001,36 @@ impl Stuck {
                     destination: destination.clone(),
                     origin,
                 },
+                replaced,
             ));
         }
         if found.is_empty() {
             return Err(StuckError::NotItsAuthorisation);
         }
-        // The ends first followed stand: following again with the same is nothing, and with others is refused.
-        if found
-            .iter()
-            .any(|(at, ends)| self.ends.get(at).is_some_and(|held| held != ends))
-        {
+        // The ends first followed stand, part by part: following again with the same is nothing, and with others
+        // that no later authorisation of the customer's explains is refused, the order whole. A part whose terms the
+        // customer replaced takes its new ends, and no other part's change.
+        if found.iter().any(|(at, ends, replaced)| {
+            !replaced && self.ends.get(at).is_some_and(|held| held != ends)
+        }) {
             return Err(StuckError::NotItsAuthorisation);
         }
-        for (at, ends) in found {
-            self.ends.entry(at).or_insert(ends);
+        for (at, ends, replaced) in found {
+            if replaced {
+                self.ends.insert(at, ends);
+            } else {
+                self.ends.entry(at).or_insert(ends);
+            }
         }
         Ok(())
+    }
+
+    /// The two ends Core holds for `part` of `order` ([`Stuck::follow`]): its destination, and its origin where one
+    /// is admitted.
+    pub fn ends_of(&self, order: &Id, part: &Id) -> Option<(Destination, Option<Destination>)> {
+        self.ends
+            .get(&key(order, part))
+            .map(|ends| (ends.destination.clone(), ends.origin.clone()))
     }
 
     /// The decide step (see the module's docs): Core's own checks first, then policy's decision, recorded by

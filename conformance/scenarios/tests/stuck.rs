@@ -3147,3 +3147,157 @@ fn results_after_the_resolution(core: &mut Core) -> (Receipt, Receipt) {
     let transaction = decided_transaction(core);
     results_after_the_move(core, None, transaction.as_str())
 }
+
+/// The order's first permitted authorisation, as the log holds it, given anew: under `authorisation`, for `parts`
+/// (none: the whole order), by `given_by`, delivering to `account` at the order's destination and drawing from
+/// `origin_account` at its origin.
+fn authorised_anew(
+    core: &Core,
+    authorisation: &str,
+    parts: Option<Vec<Id>>,
+    given_by: rutent_contracts::core_internal::Actor,
+    account: &str,
+    origin_account: &str,
+) -> rutent_contracts::core_internal::Entry {
+    let mut first = recorded(core)
+        .into_iter()
+        .find_map(|e| match e {
+            rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(v.what, What::Authorise { .. })
+                    && matches!(v.outcome, Outcome::Permitted {}) =>
+            {
+                Some(v)
+            }
+            _ => None,
+        })
+        .expect("the order's authorisation");
+    if let What::Authorise {
+        authorisation: a, ..
+    } = &mut first.what
+    {
+        a.authorisation = id(authorisation);
+        a.parts = parts;
+        a.destination.account = id(account);
+        a.origin_account = Some(id(origin_account));
+        a.given_by = given_by.clone();
+    }
+    first.who = given_by;
+    rutent_contracts::core_internal::Entry::Verified(first)
+}
+
+/// `T-021-04`'s per-part authorisations: a split order whose first part's destination changes, the customer
+/// authorising `p1` alone to another account. Following the order again takes `p1`'s new ends, as the log reads the
+/// authorisation in force for it, and keeps `p2`'s. A difference no later authorisation of the customer's explains is
+/// still refused and changes nothing: the first authorisation read otherwise. A later one by anyone else, or by the
+/// customer's own party in another role, is in force for no part, as the engine reads it, and changes nothing either.
+/// Where a later one of the customer's differs only in its origin account, its origin rules, as the log's rule takes
+/// it for the part's origin (`delivery-goes-to-the-parts-ends`).
+// verifies: REQ-AUZ-4, REQ-AUZ-3
+#[test]
+fn a_parts_new_destination_replaces_its_ends_and_keeps_the_others() {
+    let mut world = World::of(&[RESERVE]);
+    let core = Core::split(&mut world);
+    let mut stuck = Stuck::new();
+    follow(&core, &mut stuck).expect("its ends are Core's");
+    let (order, p1, p2) = (id(ORDER), id(PART), id(SECOND_PART));
+    let at = |account: &str| Destination {
+        account: id(account),
+        ..destination(&core)
+    };
+    let origin_at = |account: &str| Destination {
+        account: id(account),
+        ..origin()
+    };
+    let first = (destination(&core), Some(origin()));
+    assert_eq!(stuck.ends_of(&order, &p1), Some(first.clone()));
+    assert_eq!(stuck.ends_of(&order, &p2), Some(first.clone()));
+
+    // Someone else's, and the customer's party in another role: in force for no part.
+    let customers_party_as_operator = rutent_contracts::core_internal::Actor {
+        role: rutent_contracts::core_internal::Role::Operator,
+        ..rutent_scenarios::kit::customer()
+    };
+    for given_by in [staff("desk-a", "alice"), customers_party_as_operator] {
+        let mut others = recorded(&core);
+        others.push(authorised_anew(
+            &core,
+            "auth-p1-by-another",
+            Some(vec![p1.clone()]),
+            given_by,
+            "acct-of-a-friend",
+            "acct-1",
+        ));
+        stuck
+            .follow(&core.segments, &others, &order)
+            .expect("another's authorisation sets nothing");
+        assert_eq!(stuck.ends_of(&order, &p1), Some(first.clone()));
+    }
+
+    // The first authorisation read otherwise, with no later one of the customer's: refused, nothing changed.
+    let tampered: Vec<_> = recorded(&core)
+        .into_iter()
+        .map(|e| match e {
+            rutent_contracts::core_internal::Entry::Verified(mut v)
+                if matches!(v.what, What::Authorise { .. }) =>
+            {
+                if let What::Authorise { authorisation, .. } = &mut v.what {
+                    authorisation.destination.account = id("acct-of-a-friend");
+                }
+                rutent_contracts::core_internal::Entry::Verified(v)
+            }
+            other => other,
+        })
+        .collect();
+    assert_eq!(
+        stuck.follow(&core.segments, &tampered, &order),
+        Err(StuckError::NotItsAuthorisation)
+    );
+    assert_eq!(stuck.ends_of(&order, &p1), Some(first.clone()));
+
+    // The customer's new destination for p1: p1 takes it, p2 keeps its own.
+    let mut changed = recorded(&core);
+    changed.push(authorised_anew(
+        &core,
+        "auth-p1-new",
+        Some(vec![p1.clone()]),
+        rutent_scenarios::kit::customer(),
+        "acct-new",
+        "acct-1",
+    ));
+    stuck
+        .follow(&core.segments, &changed, &order)
+        .expect("a part's new destination replaces its ends");
+    assert_eq!(
+        stuck.ends_of(&order, &p1),
+        Some((at("acct-new"), Some(origin())))
+    );
+    assert_eq!(stuck.ends_of(&order, &p2), Some(first.clone()));
+    stuck
+        .follow(&core.segments, &changed, &order)
+        .expect("following again with the same is nothing");
+    assert_eq!(
+        stuck.ends_of(&order, &p1),
+        Some((at("acct-new"), Some(origin())))
+    );
+
+    // The customer's, differing only in its origin account: the log's rule takes it for p2's origin.
+    changed.push(authorised_anew(
+        &core,
+        "auth-p2-origin",
+        Some(vec![p2.clone()]),
+        rutent_scenarios::kit::customer(),
+        destination(&core).account.as_str(),
+        "acct-9",
+    ));
+    stuck
+        .follow(&core.segments, &changed, &order)
+        .expect("the customer's origin account rules");
+    assert_eq!(
+        stuck.ends_of(&order, &p2),
+        Some((destination(&core), Some(origin_at("acct-9"))))
+    );
+    assert_eq!(
+        stuck.ends_of(&order, &p1),
+        Some((at("acct-new"), Some(origin())))
+    );
+}
