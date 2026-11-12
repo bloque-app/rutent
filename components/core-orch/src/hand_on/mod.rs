@@ -36,7 +36,7 @@
 //!    accepted, held to them and recorded as `route_recalculated`; it changes no destination (`INV-10`).
 //!
 //! **The operator's hand-on** ([`Basis::Resolution`]). The operator hands a stuck order's value on only as a stuck
-//! resolution, decided and moved under `REQ-AUZ-4` ([`Stuck`](crate::stuck::Stuck)); once its `resolve_stuck`
+//! resolution, decided and moved under `REQ-AUZ-4` ([`Stuck`]); once its `resolve_stuck`
 //! effect's result is done, this module records the part's `handed_on` and the linked order's route the same way
 //! (`stuck-resolved-follows-a-done-resolution`).
 //!
