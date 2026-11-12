@@ -165,13 +165,16 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 ### Gaps, each named for its owner
 
-- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): authorisations (`T-021-04`),
-  charges (`T-021-05`) and questions about people (`T-021-07`) are each decided as the engine decides a call: its
+- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): charges (`T-021-05`) and
+  questions about people (`T-021-07`) are each decided as the engine decides a call: its
   own fixed rules (`core-authz`'s `Fixed`, the register of actors and the roles' rule among them) over the same
   records, then the deployment's policy, which `Core::refuse` reaches. The answer alone is the stand-in's: an
   authorisation recorded as the consultation's answer; a charge within a bound no scenario reaches where permitted,
   over a bound of 0 where not, so `AC-18`'s shared limit can't be shown on it; a question about a person refused
-  where refused and otherwise not known. Each still writes its answer outside the engine's `consult`, which the
+  where refused and otherwise not known. Authorisations were answered so too until `T-021-04` built them on the
+  engine; its merge dropped that `impl` for the engine's, and gave the assembly's policy handle the read of
+  `CoreLog` the engine's register needs (`F-021`'s notes). Each that remains still writes its answer outside the
+  engine's `consult`, which the
   entry-point scan over Core's three crates can't see, so `T-025-05` should review them until each row builds its
   call on the engine; dropping one is deleting its `impl` and forwarding to the engine, as `Decisions` does.
 - **Promotion.** Nothing in the assembly calls `Segments::promote`, so no scenario of this row promotes a staged
@@ -275,5 +278,8 @@ on its own toolchain. The four checks also ran on the twin's toolchain, nightly-
 guests, prov's executables and the scenarios build and pass on it. The VOS tests themselves weren't run locally:
 CI runs them.
 
-**Runs.** CI's run ids for the `ci` job and the `STM on VOS` workflow are pending the orchestrating session's push
-of this branch (`stm-vos.yml` lists it as a trigger); none is recorded until then.
+**Runs.** At `m3`'s merge of this row (`970828a`), every workflow passed: `CI` run 43184990293 (the `ci` job,
+with the seeded step), `STM on VOS` run 43184990196, `Contract guard` 43184990355, `licences` 43184990320 and
+`records` 43184990233. On the branch, `STM on VOS` passed at `28b6353` (run 43176806840, the first to reach the
+twin's scenarios on three VOS replicas) and at `304fa27` (run 43178711555). Run 43165714465 at `ebd6def` failed at
+the twin's lint step before any scenario ran; `28b6353` fixed it.

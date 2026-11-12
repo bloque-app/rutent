@@ -266,13 +266,12 @@ impl authz::Policy for Deployment {
 /// The policy engine as the assembly builds it.
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
-/// Policy, as the other parts reach it: the engine for the calls it builds (decisions, sessions and reads), and,
+/// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions and
+/// reads), and,
 /// beside it, on policy's handle, the calls whose rows haven't built them on the engine yet. Each of those is decided
 /// as the engine decides a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
 /// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
 ///
-/// - **Authorisations (`T-021-04`).** The consultation's answer, recorded as the `authorise` entry the log holds a
-///   move to (`move-rests-on-its-authorisation`).
 /// - **Charges (`T-021-05`).** Within a bound no scenario reaches where the consultation permits, over a bound of 0
 ///   where it doesn't.
 /// - **Questions about people (`T-021-07`).** Refused where the consultation refuses; otherwise not known, since no
@@ -411,21 +410,11 @@ impl Reads for PolicySide {
     }
 }
 
+/// The engine's own, since `T-021-04` built it: decided through its one consultation, held to the register it reads
+/// from the log on its policy handle, and recorded there before it answers.
 impl Authorisations for PolicySide {
     fn authorise(&mut self, a: &Authorisation) -> Result<Decision, AppendFailure> {
-        let giver = &a.given_by;
-        let answer = self.consult(authz::Asked::Authorise(a));
-        let what = What::Authorise {
-            authorisation: a.clone(),
-            decision: a.authorisation.clone(),
-        };
-        let receipt = self.record(giver, what, &a.at, answer.outcome())?;
-        Ok(Decision {
-            request: a.authorisation.clone(),
-            decision: a.authorisation.clone(),
-            outcome: answer,
-            receipt,
-        })
+        self.engine.borrow_mut().authorise(a)
     }
 }
 
