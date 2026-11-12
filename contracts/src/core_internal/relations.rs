@@ -347,7 +347,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 55] = [
+pub static RELATIONS: [Relation; 57] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2210,6 +2210,78 @@ pub static RELATIONS: [Relation; 55] = [
         },
     },
     Relation {
+        name: "recalculation-waits-for-moves-in-flight",
+        spec: &["REQ-ORD-2", "INV-4", "REQ-ORD-22"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a part is recalculated only once every move on its later segments has a final result",
+        fields: &[],
+        // A move in flight may still deliver: recalculating around it moves the same value twice. A failed deposit
+        // or a completed reversal settles where the value is, so the part may move on.
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::RouteRecalculated { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (Some(recalculated), Some(t)) = (input(e), verified(t)) else {
+                return Match::NotTarget;
+            };
+            let Some((Action::MoveValue { order, segment, .. }, _)) = effect_action(t) else {
+                return Match::NotTarget;
+            };
+            let part = recalculated.subject.part.as_ref().map(|p| p.as_str());
+            judge(
+                order.as_str() == recalculated.subject.order.as_str()
+                    && part.is_some()
+                    && part_of_segment(order.as_str(), segment.as_str(), h) == part
+                    && !segment_input(order.as_str(), segment.as_str(), h, |o, kind| {
+                        matches!(
+                            o,
+                            Observed::SegmentSettled { .. } | Observed::ReversalCompleted { .. }
+                        ) || (matches!(o, Observed::SegmentFailed {})
+                            && kind == Some(crate::router_api::OperationKind::Deposit))
+                    })
+                    && !has_final_result(t, h),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "retired-segment-takes-no-move",
+        spec: &["INV-4", "REQ-ORD-2"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a segment a recalculation retired takes no further move",
+        fields: &[],
+        cites: |e, _| match effect_action(e) {
+            Some((Action::MoveValue { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (Some((Action::MoveValue { order, segment, .. }, _)), Some(i)) =
+                (effect_action(e), verified(t).and_then(input))
+            else {
+                return Match::NotTarget;
+            };
+            let Observed::RouteRecalculated { segments, .. } = &i.observed else {
+                return Match::NotTarget;
+            };
+            let (order, segment) = (order.as_str(), segment.as_str());
+            let Some(at) = h.iter().position(|(_, e)| e == t) else {
+                return Match::NotTarget;
+            };
+            let before = &h[..at];
+            judge(
+                i.subject.order.as_str() == order
+                    && part_of_segment(order, segment, before)
+                        .is_some_and(|p| i.subject.part.as_ref().is_some_and(|q| q.as_str() == p))
+                    && !segments.iter().any(|s| s.segment_id.as_str() == segment)
+                    && !segment_input(order, segment, before, |o, _| {
+                        matches!(o, Observed::SegmentSettled { .. })
+                    }),
+                &[],
+            )
+        },
+    },
+    Relation {
         name: "order-is-opened-once",
         spec: &["REQ-ORD-19"],
         quantifier: Quantifier::NoneOther,
@@ -2319,6 +2391,86 @@ fn first_segment_before<'a>(entry: &VerifiedEntry, history: &'a History) -> Opti
                 .skip(1)
                 .any(|s| s.segment_id.as_str() == segment.as_str());
             later.then_some(first)
+        })
+    })
+}
+
+/// The part `segment` of `order` belongs to, by the plans `history` holds: a `route_chosen` part listing it, or the
+/// part a `route_recalculated` or `destination_changed` gave it to.
+fn part_of_segment<'a>(order: &str, segment: &str, history: &'a History) -> Option<&'a str> {
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        if i.subject.order.as_str() != order {
+            return None;
+        }
+        match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts
+                .iter()
+                .find(|p| p.segments.iter().any(|s| s.segment_id.as_str() == segment))
+                .map(|p| p.part_id.as_str()),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments
+                .iter()
+                .any(|s| s.segment_id.as_str() == segment)
+                .then(|| i.subject.part.as_ref().map(|p| p.as_str()))
+                .flatten(),
+            _ => None,
+        }
+    })
+}
+
+/// The kind of operation `segment` of `order` runs, by the plans `history` holds.
+fn segment_kind(
+    order: &str,
+    segment: &str,
+    history: &History,
+) -> Option<crate::router_api::OperationKind> {
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        if i.subject.order.as_str() != order {
+            return None;
+        }
+        let plan: Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts.iter().flat_map(|p| &p.segments).collect(),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+            _ => return None,
+        };
+        plan.into_iter()
+            .find(|s| s.segment_id.as_str() == segment)
+            .map(|s| s.kind)
+    })
+}
+
+/// Whether `history` holds an input about `segment` of `order` that `found` accepts, given the segment's kind.
+fn segment_input(
+    order: &str,
+    segment: &str,
+    history: &History,
+    found: impl Fn(&Observed, Option<crate::router_api::OperationKind>) -> bool,
+) -> bool {
+    let kind = segment_kind(order, segment, history);
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|i| {
+            i.subject.order.as_str() == order
+                && i.subject
+                    .segment
+                    .as_ref()
+                    .is_some_and(|s| s.as_str() == segment)
+                && found(&i.observed, kind)
+        })
+    })
+}
+
+/// Whether the effect `effect` has a final result in `history`: `done` or `failed`.
+fn has_final_result(effect: &VerifiedEntry, history: &History) -> bool {
+    let Some((at, _)) = history.iter().find(|(_, e)| verified(e) == Some(effect)) else {
+        return false;
+    };
+    history.iter().any(|(_, e)| {
+        verified(e).is_some_and(|r| {
+            matches!(&r.what, What::Result { effect } if effect == at)
+                && matches!(r.outcome, Outcome::Done {} | Outcome::Failed {})
         })
     })
 }

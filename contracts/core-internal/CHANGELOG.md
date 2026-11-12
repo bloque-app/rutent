@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
-  breaking one rule, and 279 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 57 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 288 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 59 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -161,6 +161,13 @@
   `erase_statement` decision, while an earlier entry cites the statement, so the log holds no done erasure the
   evidence store must refuse ("refuse while cited", the owner's default). 279 admission cases. (DEC-4, DEC-20,
   REQ-AUD-13, T-020-01)
+- Folded into 1.0.0 before its release: no recalculation goes around a move in flight, and a retired segment takes
+  no move. The none-other row `recalculation-waits-for-moves-in-flight` refuses a `route_recalculated` while a
+  `move_value` effect on a segment of that part has no final result, unless the segment settled, its reversal
+  completed, or it is a deposit that failed, so a move that may still deliver is never routed around and the same
+  value never moves twice. The none-other row `retired-segment-takes-no-move` refuses a `move_value` effect on a
+  segment a recalculation of its part left out of the new plan, unless it settled first. 288 admission cases, 59
+  relations. (DEC-4, DEC-20, REQ-ORD-2, REQ-ORD-22, INV-4, T-020-01, T-020-10)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
