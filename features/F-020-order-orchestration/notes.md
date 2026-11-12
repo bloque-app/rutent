@@ -2453,9 +2453,10 @@ rule was switched off once, its test seen red, the file restored and touched.
   `late_delivery_is_recorded_and_moves_nothing` for the late-answer hand-off.
 - **Touches**: `components/core-orch/src/reversal/`, the seams above, `components/core-orch/tests/reversal.rs`. No
   manifest, no dependency, no lock or `licences/RECORD` line, no `DEC-20` path.
-- **Merged `m3` at `5d9dcca`** (`T-021-04b`'s per-part authorisations, `T-020-10b`'s waits at the floor): no
-  conflict; the seams above sit beside the per-part waits in `segments/mod.rs`, and every test passes on the merged
-  tree. The rule-off below ran on it.
+- **Merged `m3` at `5d9dcca`** (`T-021-04b`'s per-part authorisations, `T-020-10b`'s waits at the floor) and then
+  at `d4da424` (`T-020-11b`'s per-part ends in `stuck/`): no conflict; the seams above sit beside the per-part waits
+  in `segments/mod.rs` and the per-part ends in `stuck/mod.rs`, and every test passes on the merged tree. The
+  rule-off below ran after the first merge, and the `Stuck::dispute` row again after the second.
 - **Red first, and rule-off.** The module was written before its tests (the harness had to be built to reach a
   failed middle segment at all), so, as `T-020-08` and `T-020-11` did, each rule was switched off once by a scratch
   script (`t-020-12-ruleoff.py`, outside the tree), the reversal tests run, the file restored and touched:
