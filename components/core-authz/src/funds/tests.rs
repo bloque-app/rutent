@@ -7,11 +7,13 @@ use proptest::prelude::*;
 use rutent_contracts::core_internal::calls::{DecisionEntry, Decisions};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, DecisionRequest, Destination, Entry, NotKnownCause, Outcome, Receipt,
-    RefusalClass, Role, RouteEnd,
+    RefusalClass, Role, RouteEnd, VerifiedEntry,
 };
 use rutent_contracts::provider_role::{Denomination, OuterNode};
 use rutent_contracts::router_api::{Amount, Id, PositiveAmount};
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::engine::{Input, Need, Reply, Ruling, Said, Source};
 
@@ -43,14 +45,27 @@ fn actor(party: &str, acts: &str, role: Role, kind: ActorKind) -> Actor {
     }
 }
 
-/// A log that takes every decision entry, so what was recorded can be seen.
-#[derive(Default)]
-struct Taking(Vec<Entry>);
+/// A log that takes every decision entry, shared by every engine over it, as one log is across a restart or between
+/// two engines.
+#[derive(Default, Clone)]
+struct Shared(Rc<RefCell<Vec<Entry>>>);
 
-impl PolicyLog for Taking {
+impl PolicyLog for Shared {
     fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
-        self.0.push(Entry::Verified(entry.entry().clone()));
+        self.0
+            .borrow_mut()
+            .push(Entry::Verified(entry.entry().clone()));
         Ok(valid!("receipt-of-an-appended-entry"))
+    }
+}
+
+/// The read of a [`Shared`] log the assembly hands an engine.
+#[derive(Debug)]
+struct Reading(Rc<RefCell<Vec<Entry>>>);
+
+impl Recorded for Reading {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
+        Ok(permitted_in(self.0.borrow().iter()))
     }
 }
 
@@ -94,10 +109,26 @@ impl Policy for Deployment {
     }
 }
 
-type Policed = Engine<Taking, Deployment, Sayings>;
+type Policed = Engine<Shared, Deployment, Sayings>;
 
+/// An engine over a log of its own.
 fn engine() -> Policed {
-    Engine::with_policy(Taking::default(), Deployment::default(), Sayings::default())
+    engine_over(&Shared::default())
+}
+
+/// An engine opened over `log`, handed its read of it: after a restart, or beside another engine over one log.
+fn engine_over(log: &Shared) -> Policed {
+    let mut engine = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
+    engine.set_record(Box::new(Reading(Rc::clone(&log.0))));
+    engine
+}
+
+/// The last entry the log took.
+fn last_entry(policy: &Policed) -> VerifiedEntry {
+    let Some(Entry::Verified(entry)) = policy.log.0.borrow().last().cloned() else {
+        panic!("a verified entry");
+    };
+    entry
 }
 
 /// The fixtures' authorisation: `auth-17`, for `ord-17`, given by its requester `cust-1`, to `acct-ref-9` at
@@ -146,10 +177,7 @@ const NOT_PERMITTED: Answer = Answer::Refuse {
 /// The answer to a move, which the log records as it was given.
 fn decided(policy: &mut Policed, request: &DecisionRequest) -> Answer {
     let decision = policy.decide(request).unwrap();
-    let Some(Entry::Verified(entry)) = policy.log.0.last() else {
-        panic!("a verified entry");
-    };
-    assert_eq!(entry.outcome, decision.outcome.outcome());
+    assert_eq!(last_entry(policy).outcome, decision.outcome.outcome());
     decision.outcome
 }
 
@@ -217,54 +245,187 @@ fn a_recalculation() -> impl Strategy<Value = (Recalculated, i64)> {
     )
 }
 
+/// One step of a run on one order: an authorisation given, under one of three terms, by one of four givers, under
+/// one of five ids; a move under one of those ids, on a route recalculated against the terms that id names; or a
+/// restart, a fresh engine opened over the same log.
+#[derive(Debug, Clone)]
+enum Step {
+    Give {
+        terms: usize,
+        by: usize,
+        id: usize,
+    },
+    Move {
+        id: usize,
+        recalculated: Recalculated,
+        around: i64,
+    },
+    Restart,
+}
+
+fn a_step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        3 => (0..3usize, 0..4usize, 0..5usize).prop_map(|(terms, by, id)| Step::Give { terms, by, id }),
+        5 => (0..5usize, a_recalculation()).prop_map(|(id, (recalculated, around))| Step::Move {
+            id,
+            recalculated,
+            around,
+        }),
+        1 => Just(Step::Restart),
+    ]
+}
+
+/// The givers a step draws: the customer, its agent, the operator acting for the user, the origin reserve. The
+/// sources and the deployment let each through, so only this row's rules tell them apart.
+fn giver(by: usize) -> Actor {
+    match by {
+        0 => actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+        1 => actor("cust-1", "agent-7", Role::Customer, ActorKind::Agent),
+        2 => actor("operator", "op-login-2", Role::Operator, ActorKind::Person),
+        _ => actor("us-bank", "us-bank", Role::Provider, ActorKind::Component),
+    }
+}
+
+/// What the order's register should be, kept apart from the engine's: the terms in force and the ids given under
+/// them since they came into force, and every authorisation given, by id.
+#[derive(Default)]
+struct Model {
+    terms: Option<Authorisation>,
+    in_force: Vec<Id>,
+    given: Vec<Authorisation>,
+}
+
+impl Model {
+    /// Whether `a` should be permitted: its id names it alone, and only while it is in force; a new id under other
+    /// terms than those in force only from the customer.
+    fn permits(&self, a: &Authorisation) -> bool {
+        if let Some(given) = self
+            .given
+            .iter()
+            .find(|g| g.authorisation == a.authorisation)
+        {
+            return given == a && self.in_force.contains(&a.authorisation);
+        }
+        match &self.terms {
+            None => true,
+            Some(terms) => same_terms(terms, a) || a.given_by.role == Role::Customer,
+        }
+    }
+
+    fn permit(&mut self, a: &Authorisation) {
+        if !self.given.contains(a) {
+            self.given.push(a.clone());
+        }
+        match &self.terms {
+            Some(terms) if same_terms(terms, a) => {
+                if !self.in_force.contains(&a.authorisation) {
+                    self.in_force.push(a.authorisation.clone());
+                }
+            }
+            _ => {
+                self.terms = Some(a.clone());
+                self.in_force = vec![a.authorisation.clone()];
+            }
+        }
+    }
+
+    /// Whether a move of `order` under `id`, on `route`, should be permitted: `id` in force for the order, the route
+    /// inside the terms in force.
+    fn permits_move(&self, order: &Id, id: &Id, route: &RouteEnd) -> bool {
+        let Some(terms) = &self.terms else {
+            return false;
+        };
+        &terms.order == order
+            && self.in_force.contains(id)
+            && route.destination == terms.destination
+            && route.to_asset == terms.to_asset
+            && terms
+                .floor
+                .as_ref()
+                .is_none_or(|f| &route.delivers >= f.amount())
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
-    /// Over one authorisation and every run of recalculations under it, each recalculated route's moves are
-    /// permitted exactly where the route ends at the authorisation's destination (reserve, node and account), in its
-    /// to asset, for its order, delivering at least its floor: so no move permitted under it goes to another
-    /// destination or delivers another asset, and each move that keeps inside it is still permitted.
+    /// Over runs of one order's authorisations (a first, a restatement, a replacement, a return to earlier terms,
+    /// an id given again, each by the customer, its agent, the operator or the origin reserve), of moves on routes
+    /// recalculated around the terms they name, and of restarts, every move permitted goes to the destination, and
+    /// delivers the to asset, of the authorisation it acts under, for its order, at least its floor; and each answer,
+    /// to an authorisation and to a move, is the one the order's register should give, read from the log alone
+    /// across every restart.
     // verifies: REQ-AUZ-3, INV-10
     #[test]
     fn no_recalculation_changes_destination_or_to_asset_under_one_authorisation(
-        authorised in an_authorisation(),
-        recalculations in prop::collection::vec(a_recalculation(), 1..12),
+        base in an_authorisation(),
+        other in an_authorisation(),
+        steps in prop::collection::vec(a_step(), 1..24),
     ) {
-        let mut policy = engine();
-        let decision = policy.authorise(&authorised).unwrap();
-        prop_assert_eq!(decision.outcome, Answer::Permit {});
-        let floor: i64 = authorised
-            .floor
-            .as_ref()
-            .map_or(1_000_000, |f| f.amount().as_str().parse().unwrap());
-        for (n, (recalculated, around)) in recalculations.into_iter().enumerate() {
-            let delivers = (floor + around).max(0).to_string();
-            let mut route = end_of(&authorised, &delivers);
-            let mut order = authorised.order.clone();
-            match &recalculated {
-                Recalculated::Kept => {}
-                Recalculated::Reserve(r) => route.destination.reserve = id(RESERVES[*r]),
-                Recalculated::Node(k) => route.destination.node = node(NETWORKS[*k]),
-                Recalculated::Account(a) => route.destination.account = id(ACCOUNTS[*a]),
-                Recalculated::Asset(s) => route.to_asset = asset(*s),
-                Recalculated::Order => order = id("ord-18"),
+        let mut unfloored = base.clone();
+        unfloored.floor = None;
+        let terms = [base.clone(), other, unfloored];
+        let log = Shared::default();
+        let mut policy = engine_over(&log);
+        let mut model = Model::default();
+        for (n, step) in steps.into_iter().enumerate() {
+            match step {
+                Step::Restart => policy = engine_over(&log),
+                Step::Give { terms: t, by, id: k } => {
+                    let mut given = terms[t].clone();
+                    given.authorisation = id(&format!("auth-p{k}"));
+                    given.given_by = giver(by);
+                    let should = model.permits(&given);
+                    let answer = policy.authorise(&given).unwrap().outcome;
+                    prop_assert_eq!(
+                        answer,
+                        if should { Answer::Permit {} } else { NOT_PERMITTED },
+                        "step {}: {:?}", n, given
+                    );
+                    if should {
+                        model.permit(&given);
+                    }
+                }
+                Step::Move { id: k, recalculated, around } => {
+                    let named = id(&format!("auth-p{k}"));
+                    let around_terms = model
+                        .given
+                        .iter()
+                        .find(|g| g.authorisation == named)
+                        .unwrap_or(&base)
+                        .clone();
+                    let floor: i64 = around_terms
+                        .floor
+                        .as_ref()
+                        .map_or(1_000_000, |f| f.amount().as_str().parse().unwrap());
+                    let delivers = (floor + around).max(0).to_string();
+                    let mut route = end_of(&around_terms, &delivers);
+                    let mut order = base.order.clone();
+                    match &recalculated {
+                        Recalculated::Kept => {}
+                        Recalculated::Reserve(r) => route.destination.reserve = id(RESERVES[*r]),
+                        Recalculated::Node(k) => route.destination.node = node(NETWORKS[*k]),
+                        Recalculated::Account(a) => route.destination.account = id(ACCOUNTS[*a]),
+                        Recalculated::Asset(s) => route.to_asset = asset(*s),
+                        Recalculated::Order => order = id("ord-18"),
+                    }
+                    let should = model.permits_move(&order, &named, &route);
+                    let answer = decided(&mut policy, &move_under(n, &order, &named, route.clone()));
+                    if answer == (Answer::Permit {}) {
+                        let acted_under = model.given.iter().find(|g| g.authorisation == named);
+                        prop_assert!(acted_under.is_some(), "step {}: a move under no authorisation", n);
+                        let acted_under = acted_under.unwrap();
+                        prop_assert_eq!(&route.destination, &acted_under.destination);
+                        prop_assert_eq!(&route.to_asset, &acted_under.to_asset);
+                        prop_assert_eq!(&order, &acted_under.order);
+                    }
+                    prop_assert_eq!(
+                        answer,
+                        if should { Answer::Permit {} } else { REFUSED_OUTSIDE },
+                        "step {}: {:?} under {} delivering {}", n, recalculated, named, delivers
+                    );
+                }
             }
-            let inside = order == authorised.order
-                && route.destination == authorised.destination
-                && route.to_asset == authorised.to_asset
-                && authorised.floor.as_ref().is_none_or(|f| &route.delivers >= f.amount());
-            let request = move_under(n, &order, &authorised.authorisation, route.clone());
-            let answer = decided(&mut policy, &request);
-            if answer == (Answer::Permit {}) {
-                prop_assert_eq!(&route.destination, &authorised.destination);
-                prop_assert_eq!(&route.to_asset, &authorised.to_asset);
-                prop_assert_eq!(&order, &authorised.order);
-            }
-            prop_assert_eq!(
-                answer,
-                if inside { Answer::Permit {} } else { REFUSED_OUTSIDE },
-                "{:?} delivering {}", recalculated, delivers
-            );
         }
     }
 }
@@ -428,7 +589,15 @@ fn route_outside_the_authorisation_needs_a_new_one() {
         .iter()
         .map(|a| &a.authorisation)
         .collect();
-    assert_eq!(registered, [&first.authorisation, &lower.authorisation]);
+    // The register is the log's: the first given twice, identically, is held twice, and the refused ones not at all.
+    assert_eq!(
+        registered,
+        [
+            &first.authorisation,
+            &first.authorisation,
+            &lower.authorisation
+        ]
+    );
 }
 
 // --- A failed final deposit and the customer's new destination ------------------------------------------------
@@ -438,6 +607,10 @@ fn route_outside_the_authorisation_needs_a_new_one() {
 /// agent. The operator acting for the user and the origin reserve, each of which the roles let authorise the order
 /// at its origin, give none, and nothing is kept of a refused one. Once the customer gives it, moves go to its
 /// destination alone, and the old authorisation covers nothing more. Each answer is recorded, its giver with it.
+///
+/// This is the single-part case: the order has one part, so its one authorisation, replaced, leaves no part behind.
+/// A split order whose other part still heads to the first destination waits on the authorisation naming the parts
+/// it covers (the review of `d3de45a`, finding 2).
 // verifies: REQ-ORD-43
 #[test]
 fn customers_new_destination_after_a_failed_deposit_is_authorised_anew() {
@@ -480,9 +653,7 @@ fn customers_new_destination_after_a_failed_deposit_is_authorised_anew() {
             NOT_PERMITTED,
             "{by:?}"
         );
-        let Some(Entry::Verified(entry)) = policy.log.0.last() else {
-            panic!("a verified entry");
-        };
+        let entry = last_entry(&policy);
         assert_eq!(entry.who, by, "the refusal names who asked");
     }
     assert_eq!(
@@ -507,7 +678,8 @@ fn customers_new_destination_after_a_failed_deposit_is_authorised_anew() {
         "no recalculation reaches the new destination under the old authorisation"
     );
 
-    // The customer's own choice, by its agent as by its person, is the new authorisation.
+    // The customer's own choice, by its agent as by its person, is the new authorisation. The single-part case: the
+    // authorisation replaced is the order's only one.
     let agent = actor("cust-1", "agent-7", Role::Customer, ActorKind::Agent);
     for (n, by) in [first.given_by.clone(), agent].into_iter().enumerate() {
         let mut policy = engine();
@@ -515,9 +687,7 @@ fn customers_new_destination_after_a_failed_deposit_is_authorised_anew() {
         let mut given = anew.clone();
         given.given_by = by.clone();
         assert_eq!(policy.authorise(&given).unwrap().outcome, Answer::Permit {});
-        let Some(Entry::Verified(entry)) = policy.log.0.last() else {
-            panic!("a verified entry");
-        };
+        let entry = last_entry(&policy);
         assert_eq!(entry.who, by);
         assert_eq!(entry.outcome, Outcome::Permitted {});
         assert_eq!(
@@ -546,4 +716,217 @@ fn customers_new_destination_after_a_failed_deposit_is_authorised_anew() {
             "the authorisation replaced covers nothing more"
         );
     }
+}
+
+// --- The register is the log's ----------------------------------------------------------------------------------
+
+/// The customer's first destination, its new one, and the operator's own: `auth-17` to `bank-co`, `auth-18` to
+/// `bank-mx` in another asset, both the customer's, and `auth-66`, the operator's, to a third account.
+fn the_reviewers_three() -> (Authorisation, Authorisation, Authorisation) {
+    let first = authorisation();
+    let mut anew = first.clone();
+    anew.authorisation = id("auth-18");
+    anew.destination = Destination {
+        reserve: id("bank-mx"),
+        node: node("mx-spei"),
+        account: id("acct-ref-4"),
+    };
+    anew.to_asset = asset(1);
+    anew.floor = PositiveAmount::new("100000");
+    let mut operators = first.clone();
+    operators.authorisation = id("auth-66");
+    operators.destination.account = id("acct-ref-66");
+    operators.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+    (first, anew, operators)
+}
+
+/// A restart opens a fresh engine over the same log, and the register it holds moves to is the log's: the operator's
+/// own destination is still refused, and so are moves under it; the customer's replaced authorisation given again is
+/// refused, and moves to its destination with it; the customer's new one still acts. An engine handed no read of the
+/// log refuses every authorisation and every move, its register an input it doesn't have.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn register_is_rebuilt_from_the_log_after_a_restart() {
+    let (first, anew, operators) = the_reviewers_three();
+    let order = first.order.clone();
+    let log = Shared::default();
+    let mut before = engine_over(&log);
+    assert_eq!(before.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(before.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    drop(before);
+
+    let mut after = engine_over(&log);
+    assert_eq!(after.authorise(&operators).unwrap().outcome, NOT_PERMITTED);
+    let to_operators = end_of(&operators, "2500000");
+    assert_eq!(
+        decided(
+            &mut after,
+            &move_under(0, &order, &operators.authorisation, to_operators)
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(after.authorise(&first).unwrap().outcome, NOT_PERMITTED);
+    let to_first = end_of(&first, "2500000");
+    assert_eq!(
+        decided(
+            &mut after,
+            &move_under(1, &order, &first.authorisation, to_first.clone())
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(
+        decided(
+            &mut after,
+            &move_under(2, &order, &anew.authorisation, end_of(&anew, "120000"))
+        ),
+        Answer::Permit {}
+    );
+
+    // An engine handed no read refuses, whatever the log holds.
+    let mut unread = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
+    let missing = Answer::Refuse {
+        class: RefusalClass::MissingInput,
+    };
+    assert_eq!(unread.authorise(&anew).unwrap().outcome, missing);
+    assert_eq!(
+        decided(
+            &mut unread,
+            &move_under(3, &order, &anew.authorisation, end_of(&anew, "120000"))
+        ),
+        missing
+    );
+}
+
+/// Two engines over one log hold one register: the customer's new destination given through one is in force in the
+/// other, whose next answers are held to it.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn two_engines_over_one_log_hold_one_register() {
+    let (first, anew, operators) = the_reviewers_three();
+    let order = first.order.clone();
+    let log = Shared::default();
+    let (mut one, mut two) = (engine_over(&log), engine_over(&log));
+    assert_eq!(one.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(two.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    assert_eq!(one.authorise(&operators).unwrap().outcome, NOT_PERMITTED);
+    assert_eq!(
+        decided(
+            &mut one,
+            &move_under(0, &order, &first.authorisation, end_of(&first, "2500000"))
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(
+        decided(
+            &mut one,
+            &move_under(1, &order, &anew.authorisation, end_of(&anew, "120000"))
+        ),
+        Answer::Permit {}
+    );
+}
+
+/// The floor is one of the terms: the operator acting for the user, or the origin reserve, giving the same destination
+/// and to asset with no floor is giving a new authorisation, and is refused; the customer giving it is permitted.
+// verifies: REQ-AUZ-3
+#[test]
+fn new_floor_from_anyone_but_the_customer_is_refused() {
+    let first = authorisation();
+    for by in [
+        actor("operator", "op-login-2", Role::Operator, ActorKind::Person),
+        actor("us-bank", "us-bank", Role::Provider, ActorKind::Component),
+    ] {
+        let mut policy = engine();
+        assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+        let mut unfloored = first.clone();
+        unfloored.authorisation = id("auth-17-unfloored");
+        unfloored.floor = None;
+        unfloored.given_by = by.clone();
+        assert_eq!(
+            policy.authorise(&unfloored).unwrap().outcome,
+            NOT_PERMITTED,
+            "{by:?}"
+        );
+        unfloored.given_by = first.given_by.clone();
+        assert_eq!(
+            policy.authorise(&unfloored).unwrap().outcome,
+            Answer::Permit {}
+        );
+    }
+}
+
+/// Terms given again after others replaced them come back in force under their new id alone: the id they were first
+/// given under covers nothing more.
+// verifies: REQ-AUZ-3
+#[test]
+fn earlier_terms_given_again_are_in_force_under_their_new_id_alone() {
+    let (first, anew, _) = the_reviewers_three();
+    let order = first.order.clone();
+    let mut policy = engine();
+    let mut again = first.clone();
+    again.authorisation = id("auth-19");
+    for given in [&first, &anew, &again] {
+        assert_eq!(policy.authorise(given).unwrap().outcome, Answer::Permit {});
+    }
+    let to_first = end_of(&first, "2500000");
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(0, &order, &first.authorisation, to_first.clone())
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(
+        decided(
+            &mut policy,
+            &move_under(1, &order, &again.authorisation, to_first)
+        ),
+        Answer::Permit {}
+    );
+}
+
+/// The same terms stated again under a new id, here by the operator acting for the user, keep the earlier id in force
+/// beside it: a move under either is inside.
+// verifies: REQ-AUZ-3
+#[test]
+fn restatement_keeps_the_earlier_id_in_force_beside_it() {
+    let first = authorisation();
+    let order = first.order.clone();
+    let mut policy = engine();
+    let mut restated = first.clone();
+    restated.authorisation = id("auth-17-restated");
+    restated.given_by = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(
+        policy.authorise(&restated).unwrap().outcome,
+        Answer::Permit {}
+    );
+    for (n, under) in [&first, &restated].into_iter().enumerate() {
+        assert_eq!(
+            decided(
+                &mut policy,
+                &move_under(n, &order, &under.authorisation, end_of(&first, "2500000"))
+            ),
+            Answer::Permit {},
+            "{}",
+            under.authorisation.as_str()
+        );
+    }
+}
+
+/// An authorisation replaced and then given again exactly as it was is refused, so the log never holds as permitted
+/// one the register holds as replaced.
+// verifies: REQ-AUZ-3
+#[test]
+fn replaced_authorisation_given_again_is_refused() {
+    let (first, anew, _) = the_reviewers_three();
+    let mut policy = engine();
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&anew).unwrap().outcome, Answer::Permit {});
+    assert_eq!(policy.authorise(&first).unwrap().outcome, NOT_PERMITTED);
+    assert_eq!(
+        last_entry(&policy).outcome,
+        Outcome::Refused {
+            class: RefusalClass::NotPermitted
+        }
+    );
 }

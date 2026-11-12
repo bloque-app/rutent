@@ -278,12 +278,23 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 ## T-021-04
 
 - **What it builds.** `Authorisations::authorise` on `Engine<L, P, S>` in `components/core-authz/src/funds/`,
-  decided through `consult`, recorded through `PolicyLog` before it answers, and kept, when permitted, in the
-  engine's register of authorisations (`funds::Authorised`). The unbuilt stub is gone; `authorise` moved from
-  unbuilt to built in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`. The engine edits are
-  the shared type's, made in this row's turn: one field (`authorised`), and `decide` holding a move's verdict to the
-  register. No `FIXED` entry and no `Source` variant: the rules read what the engine permitted, which a fixed rule,
-  a plain function of the request, can't.
+  decided through `consult` and recorded through `PolicyLog` before it answers. The unbuilt stub is gone; `authorise`
+  moved from unbuilt to built in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`. The engine
+  edits are the shared type's, made in this row's turn: one field (`authorised`), and `decide` holding a move's
+  verdict to the register. No `FIXED` entry and no `Source` variant: the rules read what the log holds as permitted,
+  which a fixed rule, a plain function of the request, can't.
+- **The register is the log's** (review of `d3de45a`, finding 1). It was first kept in memory, so a fresh engine, after
+  a restart or beside another over the same log, held nothing and failed open: the operator's own destination was
+  permitted, and a replaced authorisation given again. The register now holds nothing of its own. Before every
+  `authorise` and every move the engine reads, through the read the assembly hands it (`Engine::set_record`, a
+  `funds::Recorded` over the same log as its policy handle), every authorisation the log holds as permitted, in log
+  order, and decides on that alone; its own permit reaches the register only through the log. "Permitted" is defined
+  once, `funds::permitted_in`: a verified `authorise` entry whose outcome is `permitted`, which every read uses. An
+  engine handed no read has not rebuilt, and refuses every authorisation and every move `missing_input`; so does one
+  whose read fails. Defaults (reversible, on the owner's form as the coordinator put it): the read is a core-authz
+  trait the assembly implements over the log's own `entries()` (core-audit's `AuditLog` has it, so nothing was added
+  there), not a read on core-internal's `PolicyLog`, which is the contract author's to add if wanted; the whole log is
+  read each time, O(n) in its permitted authorisations, with no index kept across reads, since a v0 log is small.
 - **A move acts only inside the authorisation in force.** A `move_value` is permitted only where the authorisation
   it names is in force for its order and its route ends inside it: the destination (reserve, node and account), the
   to asset, and at least the floor. Anything else is refused `outside_authorisation`. These are the four fields the
@@ -296,69 +307,93 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   register only refuses; `funds::held` never writes a permit, so the scan's permit sites are unchanged.
 - **A new authorisation.** An order's authorisation in force is the last one permitted for it. One permitted with the
   same order, destination, to asset and floor states it again, and the moves under either stay inside. One naming
-  anything else replaces it, and only the customer gives it (role `customer`, its person or its agent, whose party
-  `T-021-03`'s rule holds to the order's requester): the customer's own choice after a failed final deposit is such
-  a new authorisation (`REQ-ORD-43`, `INV-10`). The operator acting for the user and the origin reserve authorise
-  the order at its origin where the roles let them, and change nothing of it after: refused `not_permitted`, never
-  `outside_authorisation`, which intake reads as ending the order. An authorisation's id names that authorisation
-  only: the same again, while in force, is decided again; anything else under the id, or the id once replaced, is
-  refused.
+  anything else, the floor included, replaces it, and only the customer gives it (role `customer`, its person or its
+  agent, whose party `T-021-03`'s rule holds to the order's requester): the customer's own choice after a failed
+  final deposit is such a new authorisation (`REQ-ORD-43`, `INV-10`). The operator acting for the user and the origin
+  reserve authorise the order at its origin where the roles let them, and change nothing of it after: refused
+  `not_permitted`, never `outside_authorisation`, which intake reads as ending the order. Terms given again after
+  others replaced them are in force under their new id alone. An authorisation's id names that authorisation only:
+  the same again, while in force, is decided again; anything else under the id, or the id once replaced, is refused,
+  so the log never holds as permitted one the register holds as replaced.
 - **Defaults taken** (reversible):
   - a new authorisation with the same terms (a restatement, as intake's retry would bring) is permitted to whoever
     the roles let authorise, and keeps the earlier id in force beside it;
   - a new authorisation changing only the floor is the customer's too, with no failed deposit needed, since
     `REQ-ORD-27` has the order wait for the customer past its floor and `INV-10` restricts only the destination and
     the to asset;
-  - an authorisation replaced covers no move, the in-flight ones under it included; core-orch moves only under the
-    authorisation its part carries, so a replacement is meant to follow a failed final deposit, where nothing is in
-    flight.
-- **Gap: policy doesn't see the failed final deposit.** The rule holds who gives a new destination, not when. The
-  timing is held downstream: the state machine takes `destination_changed` only from `waiting_for_customer`, the log
-  admits it only on its acceptance (`changed-destination-rests-on-its-acceptance`), a move's segment must be in a
-  plan the log holds (`move-segment-is-in-its-orders-plan`), and a recalculation keeps the part's destination
-  (`recalculation_keeps_destination`). Holding it in policy too would take a `Source` for the order's state
-  (waiting for its customer after a failed final deposit), which every assembly's sources would have to answer:
-  `T-020-13` builds that path, and `T-024-02` would answer the source. An item for the owner, default no: the
-  lead puts it on the form if it wants it decided.
+  - an authorisation replaced covers no move asked after it, the in-flight ones under it included. That holds only
+    because the state machine changes a destination solely from `waiting_for_customer`, where nothing of the part is
+    in flight: a move permitted before the replacement still holds its permit, and its effect can still land under
+    the old authorisation, which the log admits (`move-rests-on-its-authorisation` cites the authorisation the move
+    named, not the one in force);
+  - a customer's agent gives a new authorisation as its person does. Until `T-021-05` builds an agent's scope, an
+    agent of the customer can change the destination with no check of the scope its party set: a dependency on
+    `T-021-05`.
+- **Gap: policy doesn't see the failed final deposit.** The rule holds who gives a new destination, not when. It is
+  safe only while orchestration calls `authorise` with new terms only for an order in `waiting_for_customer` after a
+  failed final deposit, a condition `T-020-13` owns and must hold. Downstream, the state machine takes
+  `destination_changed` only from `waiting_for_customer`, the log admits it only on its acceptance
+  (`changed-destination-rests-on-its-acceptance`), a move's segment must be in a plan the log holds
+  (`move-segment-is-in-its-orders-plan`), and a recalculation keeps the part's destination
+  (`recalculation_keeps_destination`). Holding it in policy too would take a `Source` for the order's state, which
+  every assembly's sources would have to answer: `T-020-13` builds that path, and `T-024-02` would answer the source.
+  An item for the owner, default no.
+- **Gap: two engines in separate processes.** Reading the log before each decision closes a restart and two engines
+  in one process. Two engines in separate processes still race between the read and the append: one reads, the other
+  appends the customer's new destination, and the first permits on what it read. Closing that takes the log holding
+  the rule as an admission row of its own, `F-022`'s or the contract author's. It doesn't block while Core is one
+  process.
+- **Pending: a split order's other part** (review of `d3de45a`, finding 2). When one part's final deposit fails and the
+  customer's new authorisation replaces the order's only one, a part still heading to the first destination is
+  refused under both. The coordinator's default: an authorisation names the parts it covers, and a replacement
+  replaces the earlier one only for those parts. It waits on a `part` field in core-internal 1.0.0's authorisation,
+  the contract author's; `customers_new_destination_after_a_failed_deposit_is_authorised_anew` is marked as the
+  single-part case until then.
 - **Hand-off to the assembly (`T-024-02`).** `PolicySide::authorise` answers beside the engine and writes on
-  policy's handle outside `consult`. Since this row, the engine refuses every move whose authorisation its own
-  register doesn't hold, so with that stand-in every scenario move would be refused `outside_authorisation`.
-  Whichever of `T-021-04` and `T-024-02` merges second carries the switch: `PolicySide::authorise` becomes
-  `self.engine.borrow_mut().authorise(a)`, and the assembly's `Records` already answer what it asks
+  policy's handle outside `consult`, where the permit scan doesn't look: the scan covers Core's three crates, and the
+  stand-in is in the assembly, so a permit it writes is no finding. Since this row, the engine refuses every move and
+  every authorisation until it is handed a read, so whichever of `T-021-04` and `T-024-02` merges second carries two
+  changes: `PolicySide::authorise` becomes `self.engine.borrow_mut().authorise(a)`, and the engine is handed a read
+  over the same `CoreLog` (`engine.set_record(...)`, a `Recorded` returning `permitted_in` over its entries, owned, the
+  log's borrow dropped before the engine appends). The assembly's `Records` already answer what `authorise` asks
   (`ActsFor`, `Requester`, and for the operator or the reserve, `Permissions`, `OrderOrigin`, `Declarations`). No
-  source was added, so `Records::supply` builds unchanged.
-- **The register is in memory.** As `T-021-02`'s session register is, and as the assembly reads what survives a
-  restart (`T-024-02`: a Core opened again reads back the log and acts on nothing it had acted on), so what survives
-  a restart is the deployment's (`F-030`). Once a deployment carries orders across a restart, the register must be
-  rebuilt from the log's permitted `authorise` entries, or every move in flight is refused `outside_authorisation`.
-  That rebuild is `F-030`'s, through a constructor this module would add then.
+  source was added, so `Records::supply` builds unchanged. A Core opened again over a `durable::Disk` then rebuilds
+  its register from the log, which closes the register's part of the restart hand-off to `F-030`.
 - **The segments kit, too.** `conformance/scenarios/tests/segments_support/` seeded the order's authorisation as a
-  permitted `authorise` entry straight into the log, which the engine's register never saw, so every move of
-  `T-020-08`'s and `T-020-10`'s scenario tests was refused. The kit now gives the customer's authorisation through
-  the engine (`Policy` implements `Authorisations`), its `Register` answering `Requester` for the customer, and the
-  seeding functions take the kit's `Policy`. The entry it leaves is the engine's: by the customer, its decision id
+  permitted `authorise` entry straight into the log, so every move of `T-020-08`'s and `T-020-10`'s scenario tests was
+  refused. The kit now gives the customer's authorisation through the engine (`Policy` implements `Authorisations`),
+  hands its engine a read of its `TestLog` (`PolicyReading`), its `Register` answers `Requester` for the customer, and
+  the seeding functions take the kit's `Policy`. The entry it leaves is the engine's: by the customer, its decision id
   the authorisation's.
 - **Other rows' tests, given the authorisation.** `T-021-01`'s and `T-021-03`'s tests decide the fixtures' move
-  (`auth-17` for `ord-17`); their engines now start with that authorisation planted in the register
-  (`Authorised::plant`, test-only), so what they decide is still their own rules. The unbuilt engine's move is now
-  refused `outside_authorisation` (no authorisation was ever permitted, and a refusal beats not known), and its
-  authorisation not known (`verifier_unreachable`, the register of actors out of reach).
-- **Left as it is.** `roles/`'s doc still says the rule on an authorisation "holds from when `T-021-04` builds
-  `authorise`": it now holds. That module is `T-021-03`'s, so the line is left for its next edit.
-- **Rule-offs.** Each rule switched off once, the file restored and touched, `cargo test -p rutent-core-authz --lib`:
+  (`auth-17` for `ord-17`); their engines are handed a read of a log holding that authorisation as permitted
+  (`funds::Holding`, test-only), so what they decide is still their own rules. The unbuilt engine, handed no read,
+  refuses its move and its authorisation `missing_input`.
+- **`roles/`'s doc** said the rule on an authorisation held "from when `T-021-04` builds `authorise`"; it now says it
+  holds on every `authorise`.
+- **Rule-offs.** Each rule switched off once, the file restored and touched, `cargo test -p rutent-core-authz --lib`.
+  The tests the review added (finding 3, the three mutations) passed when written, since the rule was already there;
+  each went red under its mutation below. The tests of finding 1 went red before the read was built.
 
   | Rule switched off | Tests that went red |
   |---|---|
-  | destination held | all three of this row's |
-  | to asset held | `no recalculation changes destination or to asset under one authorisation`, `route outside the authorisation needs a new one` |
+  | destination held | the property; `route outside ...`; `customer's new destination ...` |
+  | to asset held | the property; `route outside the authorisation needs a new one` |
   | floor held | the property; `route outside the authorisation needs a new one` |
   | order held | the property; `route outside the authorisation needs a new one` |
-  | an authorisation replaced covers nothing | `route outside ...`; `customer's new destination after a failed deposit is authorised anew` |
-  | an authorisation never permitted covers nothing | all three of this row's; the unbuilt engine's test |
-  | a new destination only from the customer | `customer's new destination after a failed deposit is authorised anew` |
-  | an id names one authorisation | `route outside the authorisation needs a new one` |
-  | kept only when permitted | `route outside ...`; `customer's new destination ...` |
+  | an authorisation replaced covers nothing | the property; `route outside ...`; `customer's new destination ...`; `earlier terms given again ...`; `register is rebuilt ...`; `replaced authorisation given again ...`; `two engines ...` |
+  | an authorisation never permitted covers nothing | the property; `route outside ...`; `customer's new destination ...`; `earlier terms given again ...`; `register is rebuilt ...`; `two engines ...` |
+  | new terms only from the customer | the property; `customer's new destination ...`; `new floor from anyone but the customer ...`; `register is rebuilt ...`; `two engines ...` |
+  | an id names one authorisation | the property; `route outside ...`; `register is rebuilt ...`; `replaced authorisation given again ...` |
   | the fixed rules' refusal stands (register after `consult`) | `route outside the authorisation needs a new one` |
   | the register's refusal beats not known | `route outside ...`; the unbuilt engine's test |
-  | `decide` holds a move to the register | all three of this row's; the unbuilt engine's test |
-  | `authorise` decided through `consult` | `route outside ...`; the built and unbuilt table; the entry-point scan; the unbuilt engine's test |
+  | `decide` holds a move to the register | the property; five of this row's named tests; the unbuilt engine's test |
+  | `authorise` decided through `consult` | `route outside ...`; the built and unbuilt table; the entry-point scan |
+  | the register read before an authorisation | the property; `new floor ...`; `register is rebuilt ...`; `replaced authorisation given again ...`; `two engines ...` |
+  | the register read before a move | the property; five of this row's named tests; six of `T-021-01`'s; four of `T-021-03`'s |
+  | refused with no read | `register is rebuilt ...`; the unbuilt engine's test |
+  | only a `permitted` entry is read as permitted | the property; `route outside ...`; `customer's new destination ...`; `new floor ...`; `register is rebuilt ...`; `two engines ...` |
+  | the floor is one of the terms (finding 3) | the property; `new floor from anyone but the customer is refused`; `route outside ...` |
+  | M2: `take_while` made `filter` | the property; `earlier terms given again are in force under their new id alone` |
+  | M3: `take_while` made `take(1)` | the property; `restatement keeps the earlier id in force beside it` |
+  | M5: a same-id retry not held to being in force | the property; `register is rebuilt ...`; `replaced authorisation given again is refused` |

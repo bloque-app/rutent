@@ -373,12 +373,13 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
 }
 
 /// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`,
-/// with the fixtures' authorisation already permitted, so the fixtures' move acts inside it (`T-021-04`).
+/// with a read of a log that holds the fixtures' authorisation as permitted, so the fixtures' move acts inside it
+/// (`T-021-04`).
 fn engine(log: Kept, register: Register) -> Engine<Kept, Permits, Register> {
     let mut engine = Engine::with_policy(log, Permits::default(), register);
-    engine
-        .authorised
-        .plant(valid!("authorisation-of-one-order-with-a-floor"));
+    engine.set_record(Box::new(crate::funds::Holding(vec![valid!(
+        "authorisation-of-one-order-with-a-floor"
+    )])));
     engine
 }
 

@@ -734,12 +734,12 @@ mod tests {
         }
     }
 
-    /// `engine` with the fixtures' authorisation, `auth-17` for `ord-17`, already permitted, so the fixtures' move,
-    /// which acts inside it, is decided on the rules these tests drive (`T-021-04`).
+    /// `engine` with a read of a log that holds the fixtures' authorisation, `auth-17` for `ord-17`, as permitted, so
+    /// the fixtures' move, which acts inside it, is decided on the rules these tests drive (`T-021-04`).
     fn authorised<L, P, S>(mut engine: Engine<L, P, S>) -> Engine<L, P, S> {
-        engine
-            .authorised
-            .plant(fixture!("authorisation-of-one-order-with-a-floor"));
+        engine.set_record(Box::new(crate::funds::Holding(vec![fixture!(
+            "authorisation-of-one-order-with-a-floor"
+        )])));
         engine
     }
 
@@ -982,27 +982,19 @@ mod tests {
         let mut policy = Unbuilt::new(Taking::default());
 
         // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
-        // which no source can give, and acts under an authorisation the engine never permitted, so it is refused as
-        // outside it (`T-021-04`), a refusal beating not known.
+        // which no source can give; and the engine was handed no read of the log, so it has no register of
+        // authorisations to hold the move to, an input missing (`T-021-04`), a refusal beating not known.
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(
-            last(&mut policy),
-            refused(RefusalClass::OutsideAuthorisation)
-        );
-        // The authorisation waits on the register's word that its giver acts for the party it states (`T-021-03`).
+        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
+        // The authorisation is refused the same way, whatever the register of actors would say (`T-021-03`).
         let decision = policy
             .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(
-            last(&mut policy),
-            Outcome::NotKnown {
-                cause: NotKnownCause::VerifierUnreachable
-            }
-        );
+        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();

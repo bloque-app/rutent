@@ -424,17 +424,38 @@ pub struct Policy {
     pub asked: Vec<DecisionRequest>,
 }
 
+/// Policy's read of the log: the authorisations it holds as permitted, so the engine's register is the log's
+/// (`T-021-04`).
+pub struct PolicyReading(Rc<RefCell<TestLog>>);
+
+impl std::fmt::Debug for PolicyReading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PolicyReading")
+    }
+}
+
+impl rutent_core_authz::funds::Recorded for PolicyReading {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::funds::permitted_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
+}
+
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
         let refuse = Rc::new(Cell::new(None));
+        let mut engine = Engine::with_policy(
+            PolicyPath(Rc::clone(&log)),
+            Deployment_ {
+                refuse: Rc::clone(&refuse),
+            },
+            Register,
+        );
+        engine.set_record(Box::new(PolicyReading(log)));
         Self {
-            engine: Engine::with_policy(
-                PolicyPath(log),
-                Deployment_ {
-                    refuse: Rc::clone(&refuse),
-                },
-                Register,
-            ),
+            engine,
             refuse,
             asked: Vec::new(),
         }
