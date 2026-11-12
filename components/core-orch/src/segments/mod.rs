@@ -40,6 +40,12 @@
 //!
 //! An order's state and its age are readable by whoever policy lets read it ([`Segments::status`], `REQ-ORD-5`).
 //!
+//! **A part stuck** (`T-020-11`'s seams, additive): [`Segments::observe`] takes a part's `no_route` and
+//! `stuck_declared` too, so a stuck or waiting part reads so; [`Segments::run_part`] refuses a stuck part whole
+//! ([`SegmentsError::Stuck`]), so nothing of it is handed over or taken on again while its resolution may move its
+//! value; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what the stuck
+//! clock runs on.
+//!
 //! **A part recalculated** (`T-020-10`'s seams, the one change to this module outside its owning row): a record whose
 //! request `follows` another is a recalculation, so its part is checked by [`check_recalculated_part`], which starts
 //! it at the inner node where the value is evidenced rather than with a withdrawal; only a withdrawal's failure
@@ -251,6 +257,21 @@ pub struct Waits {
     pub left: Option<Amount>,
 }
 
+/// A settled segment's actual settlement time, as its `settlement` entry recorded it (`REQ-QTE-3`, `T-020-11`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settlement {
+    /// The order.
+    pub order: Id,
+    /// The segment.
+    pub segment: Id,
+    /// Its provider.
+    pub provider: Id,
+    /// How long it took, in seconds.
+    pub actual_seconds: u64,
+    /// The receipt of its `settlement` entry.
+    pub receipt: Receipt,
+}
+
 /// Why a segment couldn't be run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentsError {
@@ -268,6 +289,9 @@ pub enum SegmentsError {
     /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
     /// again (`INV-4`, `T-020-10`).
     Retired(Id),
+    /// The part is stuck: nothing of it is handed over or taken on again, and only its resolution under policy
+    /// moves its value (`REQ-ORD-28`, `REQ-AUZ-4`, `T-020-11`).
+    Stuck(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The segment's value couldn't be held in flight.
@@ -545,11 +569,18 @@ impl Segments {
         }
     }
 
-    /// Moves the order Core follows by `input`, a `route_recalculated` recorded outside the segments (`T-020-10`),
-    /// so the inputs the segments record next apply to its new route. Only that kind: every other input the
-    /// segments record themselves. False where it is another kind, Core follows no such order, or it moved nothing.
+    /// Moves the order Core follows by `input`, a part's input recorded outside the segments: a
+    /// `route_recalculated` (`T-020-10`), so the inputs the segments record next apply to its new route, or a
+    /// `no_route` or `stuck_declared` (`T-020-11`), so the part's state is read as stuck or waiting. Only those
+    /// kinds: every segment's input the segments record themselves. False where it is another kind, Core follows no
+    /// such order, or it moved nothing.
     pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
-        if !matches!(input.observed, Observed::RouteRecalculated { .. }) {
+        if !matches!(
+            input.observed,
+            Observed::RouteRecalculated { .. }
+                | Observed::NoRoute { .. }
+                | Observed::StuckDeclared { .. }
+        ) {
             return false;
         }
         let Some(tracked) = self.orders.get_mut(input.subject.order.as_str()) else {
@@ -562,6 +593,52 @@ impl Segments {
             tracked.since = clock.now();
         }
         applied
+    }
+
+    /// Whether `part` of `order` is stuck in the order Core follows (`T-020-11`).
+    pub fn stuck(&self, order: &Id, part: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order
+                .parts
+                .iter()
+                .any(|p| p.part_id.as_str() == part.as_str() && p.state == OrderState::Stuck)
+        })
+    }
+
+    /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
+    /// its provider, with no result that counts, an outcome unknown, or the person to act (`T-020-11`, the stuck
+    /// clock).
+    pub fn carried_since(&self, order: &Id, segment: &Id) -> Option<Reading> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .filter(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)))
+            .and_then(|f| f.started)
+    }
+
+    /// Every settled segment's actual settlement time as its `settlement` entry recorded it, with that entry's
+    /// receipt, once the log took it: the history the stuck clock's p99 is read from (`REQ-ORD-29`, `T-020-11`).
+    pub fn settlements(&self) -> Vec<Settlement> {
+        self.flights
+            .iter()
+            .filter_map(|((order, segment), flight)| {
+                let step = flight.steps.get("settlement")?;
+                let receipt = step.receipt.clone()?;
+                let Entry::Verified(VerifiedEntry {
+                    what: What::Settlement { actual_seconds, .. },
+                    ..
+                }) = step.entry.entry()
+                else {
+                    return None;
+                };
+                Some(Settlement {
+                    order: Id::new(order.as_str())?,
+                    segment: Id::new(segment.as_str())?,
+                    provider: flight.provider.clone(),
+                    actual_seconds: u64::from(*actual_seconds),
+                    receipt,
+                })
+            })
+            .collect()
     }
 
     /// Follows `chosen`, the order's `route_chosen` input as recorded, so its state and age can be read and the
@@ -650,6 +727,10 @@ impl Segments {
             .parts
             .get(live.at)
             .ok_or(SegmentsError::Plan("the chosen route has no part there"))?;
+        // A stuck part hands nothing over and takes nothing on: its value moves only on its resolution (`T-020-11`).
+        if self.stuck(live.order, live.part) {
+            return Err(SegmentsError::Stuck(live.part.clone()));
+        }
         // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
         // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
         let guard = match live.record.request.follows {

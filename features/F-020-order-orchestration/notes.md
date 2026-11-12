@@ -1040,3 +1040,127 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
   `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
   No manifest, no dependency, no `DEC-20` path.
+
+## T-020-11
+
+- **One record, `stuck::Stuck`** (`components/core-orch/src/stuck/`). Core's record of the parts it declared stuck,
+  the decisions it holds for their resolution, the moves in progress and each tuple's settlement history, which the
+  production assembly keeps durably (`F-030`), as `Segments`. What it reaches comes in `stuck::Parts` (Core's clock,
+  the log, fresh ids, `Segments`, `Exposures`); policy's `StuckOrders`, the operator's `Operator` channel and the
+  `Resolutions` that carry a resolution out are handed to the calls that use them.
+- **No route left** (`Stuck::no_route`, `REQ-ORD-28`). Only a recalculation's `NoRouteLeft`, `NoRoute` or `Rejected`
+  records the `no_route` input (`StuckError::RouteLeft` otherwise); it cites the routing's decision record, or, past
+  the bound, where nothing was routed, the order's last decision record, which the caller names
+  (`NoRouteLeft::last_record`). The state machine places the part: stuck, or waiting for the customer at a failed
+  final deposit's node (`REQ-ORD-43`; the kit's single-reserve route always ends there, so the stuck test leaves the
+  deposit never handed over, its begin refused, and the routing offering nothing from the ledger). Nothing is rolled
+  back: no reversal, no hold released or taken, nothing handed over. Built once and appended until the log takes
+  it; before it is appended the part is read again, and an input it no longer takes is dropped
+  (`StuckError::NotApplicable`). Once taken, the order Core follows takes it (`Segments::observe`), and a stuck
+  order is marked in `Exposures`. Reading, reversible.
+- **`T-020-10`'s hand-offs.** `NoRouteLeft` is recorded as above. A stuck or waiting part isn't recalculated: the
+  part's `evidenced` already refused one `Held`, and now holds, since the order Core follows takes `no_route` and
+  `stuck_declared` (the no-route test sees `NotNow(Held(Stuck))`, no one asked). A retried recalculation's append
+  re-reads the part since `T-020-10`'s review, so a part declared stuck in between reads `Held`; no test stages it,
+  since this row's declarations can't reach a part whose recalculation waits on the log (one needs the value
+  evidenced, the other a segment in flight or no route), and `dispute` is `T-020-12`'s.
+- **`T-020-08`'s hand-off: what stays in flight.** A segment carried out with no final outcome (no result that
+  counts, an outcome unknown, waiting on the person) is timed from when it was carried out
+  (`Segments::carried_since`); past its time the part is declared stuck, and only its resolution moves the value.
+- **Over time** (`Stuck::watch`, `REQ-ORD-29`). The clock runs on twice the p99 of the segment's tuple (provider,
+  from, to) once that tuple has `HISTORY` (1) settled segment, and on twice its advertised time (the router's
+  `declared_times` over the chosen record) until then; keyed by tuple, so a reserve's withdrawal history doesn't
+  time its deposit. The p99 is by nearest rank, so below a hundred samples it is the slowest. Whole seconds, Core's
+  clock; strictly longer than twice: at exactly twice it isn't stuck. An advertised time the record can't give
+  (`u64::MAX`) times nothing: no contract-valid record lacks one. The figures (`stuck_call`) are appended before the
+  `stuck_declared` (`over_time`) that rests on them, each built once. Readings, reversible.
+- **The operator's warning, a reading.** No `Raise` difference fits a stuck order and no notice row is built, so
+  the warning is the declaration handed back (`Watch::Stuck(StuckCalled)`, with its figures and both receipts), the
+  `stuck_declared` input the notices will see as a state change (`F-023`), and the order on the operator's stuck
+  view at once.
+- **A material change in a p99** (`Stuck::learn`, `REQ-ORD-6`, `THR-24`). Each settled segment's time
+  (`Segments::settlements`, in the log's order) joins its tuple's history once. The first p99 is the baseline; a p99
+  that moves by `MATERIAL_BPS` (half) of the baseline, either way, is raised (`Operator::raise`, a `settlement_time`
+  difference naming the provider, citing the settlement the baseline rests on and the one that moved it), and the
+  raise recorded `done` or `failed` as the channel answered; the new p99 is the baseline from then. A raise whose
+  entry the log can't take now is appended as built, never raised twice; one the log refuses is dropped. Detection
+  never holds up the clock: `watch` times the part whatever learning answered, and `learn` answers its failure
+  when called on its own (`REQ-ORD-9`'s "only detects"; on the advisor's review). Readings, reversible.
+- **By value and age** (`Stuck::stuck_values`, `REQ-OPS-2`, `THR-58`). A stuck part's value is what it holds in
+  flight (`Exposures::stuck`) and what rests at the node its value is evidenced at, which no hold counts once the
+  segment that took it there settled (kept at the declaration from `Segments::handed_on`). Ranked within each asset,
+  largest first, then oldest; no rate converts across assets. Age from the first declaration. Like
+  `Exposures::stuck`, the view is Core's own read, with no read check: the operator's console that shows it is a
+  later row's. Gap for `T-020-05`'s owner: the value resting at a node isn't in `Exposures`, so the ceilings in
+  flight don't count it.
+- **Visible to the customer and the provider** (`REQ-ORD-6`). The customer reads its order's state through
+  `Segments::status`; the provider reads its own segment through `stuck::seen_by_provider`, a `Reads::Segment` read
+  naming the provider as the order Core follows has it, never the reader's word. Each read is recorded either way.
+- **Resolution, in two steps** (`REQ-AUZ-4`, ADR-0011). `Stuck::decide` asks policy's `decide_stuck` only for a part
+  Core declared stuck, still stuck in the order it follows and unresolved, naming evidence, delivering to the
+  order's destination or its origin exactly (`Ends`, from Core's records), moving no more than the part holds in the
+  asset named, through a provider of the part (`THR-77`'s "to a friend"); a permit is kept for its move.
+  `Stuck::carry_out` moves only on a decision Core holds, permitted, of that order, by a mover whose party isn't the
+  decider's, whatever policy answers; then `move_stuck`, and only its permit backs the `resolve_stuck` effect, built
+  once, acted on once for its receipt, carried out by `Resolutions`, its `result` recorded. A move that stopped after
+  its effect was built goes on from there without asking policy again, and only for its own mover and order
+  (`NotTheMover`, `NoDecision`): on the advisor's review, a resume had skipped those checks. Once the value moved,
+  the part is resolved, its holds released and every other decision kept for it spent; the order's stuck mark goes
+  only once the order holds nothing more, so resolving one part of a split order leaves another part's live holds
+  and the mark, over-reporting a stuck exposure rather than dropping a live one (`REQ-ORD-8`; no split-order test).
+  Readings, reversible.
+- **Gap for `T-021-06`: policy's stuck rules are unbuilt.** The engine's `StuckOrders` is only `Unbuilt`'s, which
+  answers not known, so nothing moves through the real engine yet (the refusal test runs on it), and no fixed rule
+  compares the decider and the mover: Core holds that rule itself, and the log's
+  `stuck-move-carries-out-its-decide-step` holds it after. The tests' `PermitsEveryStep` (kit) stands where
+  `T-021-06`'s rules will, permitting every step, so Core's own rules are seen to hold where policy permits wrongly.
+  Core doesn't check the evidence digests against the store; that is policy's (`T-021-06`).
+- **Gaps for a core-internal or state-machine bump.** `stuck-decision-is-of-a-stuck-order` admits a `stuck_decide`
+  after any `no_route` of the order, one that left the part waiting included: Core refuses it (`NotStuck`), the log
+  doesn't. state-machine 2.1.0 has no input that ends a part a `deliver` resolution moved, so the part stays `stuck`
+  there and Core holds it resolved. No `Raise` difference carries a stuck warning.
+- **Gap: carrying a resolution out.** `Resolutions` is a seam; `stuck::Unbuilt` fails every resolution, so nothing
+  moves and the value stays held. The production one, which writes the move to the platform as `T-020-08`'s segments
+  do, is a later row's (`T-020-12`'s reversals or `T-020-13`'s hand-on are the nearest).
+- **Durability, `F-030`'s.** A fresh `Stuck` holds no declaration, decision or move: after a restart the order Core
+  follows is rebuilt from the log's inputs, so it still reads stuck and `run_part` still refuses it, but the kept
+  decisions, the resolved mark and the timings' baselines come only from the durable copy.
+- **Seams in `T-020-08`'s module** (`segments/mod.rs`, additive; the coordinator's word not asked, reversible):
+  `observe` takes a part's `no_route` and `stuck_declared` as well as `route_recalculated`, never a segment's input;
+  `run_part` refuses a stuck part whole (`SegmentsError::Stuck`), so nothing of it is handed over or taken on again
+  while its resolution may move its value; `stuck`, `carried_since` and `settlements` (`Settlement`) read what the
+  stuck clock runs on. `T-020-12` and `T-020-13` share the wave and may touch the same file: each seam is its own
+  function or one guard.
+- **The kit** (`conformance/scenarios/tests/segments_support/`, additive, for `T-024-02` to fold): `On::Stuck`,
+  `On::Raise` and `Fault::Refuse`;
+  the register answers `SegmentProvider` (every kit segment is the reserve's) and lists `provider_desk` and
+  `other_provider_desk`; `rerouting.rs` runs a recalculation of the kit's order (the rounds' ports `T-020-10`'s
+  `tests/recalc.rs` still keeps its own copy of, left for `T-024-02` so as not to touch that file in parallel);
+  `resolving.rs` holds `staff`, `destination`, `origin`, `Raises`, `Moves`, `PermitsEveryStep`, `on_parts` and
+  `watch`.
+- **Tests.** Eleven on the running platform in `conformance/scenarios/tests/stuck.rs`, the timing ones moving the kit's
+  clock: the row's no-route, twice-the-p99, no-history, figures, material-change and move-step tests, and
+  `no_route_at_a_failed_final_deposit_waits_for_the_customer`, `stuck_state_is_visible_to_the_customer_and_the_provider`,
+  `resolution_is_moved_once_by_another_party_on_its_decision` and
+  `resolution_elsewhere_or_beyond_the_stuck_value_is_refused` and `raise_the_log_refuses_holds_up_no_stuck_call`;
+  each replays the log through `attribute` and
+  `admit_entry`. Five unit tests in the module: `one_large_stuck_order_is_seen_among_many_small` and four over the
+  clock's figures (the p99, the basis, the boundary both ways, the materiality bound).
+- **Rule-off, each red.** The code came first, so each rule was switched off once by a scratch script, its tests
+  run, the file restored and touched: strictly over twice (the boundary unit test and the twice-the-p99 test); the
+  p99 once a tuple has history (the twice-the-p99 test); history keyed by tuple (the no-history test); the figures
+  before the declaration (the figures test); a material change raised, and recorded as delivered or not (the
+  material-change test); the resting value kept at the declaration (the no-route test) and counted in the view (the
+  large-among-small test); only a no-route answer recording `no_route` (the no-route test); `observe` taking
+  `no_route` and `stuck_declared` (the no-route and visibility tests); a stuck part handing nothing over (the
+  no-route and twice-the-p99 tests); the mover of another party, and a move only on a decision Core holds (the
+  move-step test); delivering only to the order's ends, no more than the part holds through its provider, and the
+  evidence named (the elsewhere test); carried out once with its outcome kept, and resolved once (the moved-once
+  test); on the advisor's review, a resumed move only by its own mover and only for its own order (the moved-once
+  test), learning never holding up the clock and a refused raise dropped (the refused-raise test). A decision only
+  of a stuck part is held twice, by Core's declaration and by the order it follows: each
+  switched off alone stays green, both together go red (the waiting test). Acting once on an effect's receipt is
+  defence in depth behind the kept outcome, which no test reaches alone; so is reading the part again before a kept
+  declaration is appended.
+- **Touches**: `components/core-orch/src/stuck/`, the seams above, `conformance/scenarios/tests/stuck.rs` and the
+  kit's additions. No manifest, no dependency, no lock or `licences/RECORD` line, no `DEC-20` path.
