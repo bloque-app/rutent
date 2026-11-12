@@ -67,54 +67,73 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
 ### Whose keys: the register
 
-- **What the log reads keys from.** Its own records and the deployment's settings (`log::Settings`), never
-  orchestration. The operator signs as `Settings::operator` with the deployment's `operator_key`, and states for
-  `Settings::operator_party`. A provider's grant is in force from an admitted `change_catalogue` effect of `grant`
-  for one of its tuples until one of `revoke_grant` for it, each at its effect's own time. A provider's advertisement
-  is a stated entry of the advertisement's shape whose bytes the evidence store keeps, held to provider-role's rules
-  and to the catalogue's (`F-012`) rules on keys and publishers: this deployment and protocol version,
-  `validate_statement`, every listed key a key to accept, a way to follow an outcome (`NoTracking`), dated no more
-  than the skew ahead of its `received_at`, a grant in force then, the signature strict, a successor naming the
-  same publisher (`ProviderChangedPublisher`), each private node it declares on record for no other publisher
-  (`NodeDeclaredByAnotherPublisher`), no dropped `statements` key listed again, and no key across purposes for any
-  provider. The catalogue's other rules on an advertisement are not the register's, since they bear on routing, not
-  on whose key signs: its declarations' record (`REQ-CAT-6`), a private node the operator lists as public
-  (`REQ-CAT-22`, whose list the log isn't given) and a provider the operator publishes (`REQ-MDL-1`, whose
-  statements the log verifies under no advertisement).
-- **First trust (a default, and an item).** `core-internal`'s `change_catalogue` action names a provider and a tuple
-  but no key, so a grant's effect can't say which advertising key the operator trusts. Taking the first
-  advertisement recorded after a grant would be trust on first use: orchestration could append a self-signed
-  advertisement for a granted provider, make its own key that provider's `statements` key, and then log a verified
-  yes the provider never gave, the attack this row's amendment closes. The default: a provider's first
-  advertisement is accepted only where it is signed with an advertising key the deployment's settings trust for it,
-  and every advertising key it lists is one (`Settings::first_trust`, as the catalogue's grant names keys under
-  `trust_advertising_key`); every later one only as `validate_successor` of the one accepted last. Reversible: a
-  later `F-020` row may add the trusted key, or the advertisement's commitment, to the grant's action (a
-  `core-internal` bump), and the log would read it from the effect instead. Recovery after a provider loses every
-  advertising key is then a new trusted key in the settings, and isn't built here.
+- **What the log reads keys from.** Its own records and the deployment's settings (`log::Settings`: the deployment,
+  its operator and the log's own clock), never orchestration. A catalogue change counts only once the log holds a
+  `done` result for its effect, as `core-internal` reads it. The operator signs as `Settings::operator` with the
+  deployment's `operator_key`, and states for `Settings::operator_party`. A provider's grant is in force from a done
+  `change_catalogue` effect of `grant` for one of its tuples until a done one of `revoke_grant` for it, each at its
+  effect's own time. A provider's advertisement is a stated entry of the advertisement's shape whose bytes the
+  evidence store keeps, received within the skew of the log's clock, held to provider-role's rules and to the
+  catalogue's (`F-012`) rules on keys and publishers: this deployment and protocol version, `validate_statement`,
+  every listed key a key to accept, a way to follow an outcome (`NoTracking`), dated no more than the skew ahead of
+  its `received_at`, a grant in force then, the signature strict, a successor naming the same publisher
+  (`ProviderChangedPublisher`), each private node it declares on record for no other publisher
+  (`NodeDeclaredByAnotherPublisher`), no module the operator publishes (`ProviderIsTheOperators`), no dropped
+  `statements` key listed again, and no key across purposes for any provider. The catalogue's other rules on an
+  advertisement are not the register's, since they bear on routing, not on whose key signs: its declarations'
+  record (`REQ-CAT-6`) and a private node the operator lists as public (`REQ-CAT-22`, whose list the log isn't
+  given).
+- **First trust is the grant's** (`core-internal`'s should-fix 5, after review; it replaced the deployment setting
+  `Settings::first_trust` this row first took, which a checker outside the operator couldn't recompute). A `grant`
+  names the provider's advertising keys, and `granted_advertising_keys` reads those of its latest grant in force.
+  A provider's first advertisement, or one after a grant made since its last accepted (how a provider that lost its
+  key gets back in, by a fresh grant naming a new one), is accepted only where it is signed with one of those keys,
+  every advertising key it lists is one, and it is made after that grant's effect, by the effect's time, which the
+  log held to its own clock (a hand-off from the contract review): no advertisement backdated before its grant rides
+  on it. Every other one only as `validate_successor` of the one accepted last, and every one newer than that. The
+  signer being a granted key is implied by `validate_statement` (an advertisement is signed with a key it lists for
+  advertising) and the listed-keys rule together, so switching that one check off alone fails no test.
 - **When a key signs.** A key signs a provider's statement where a grant of it is in force at the statement's
   `made_at`, and both the advertisement accepted last and the one in force at `made_at` list it for `statements`:
   the catalogue's own rule (`verify_statement`), stricter than `StatementKeys::signs_for`'s minimum, so a retired key
   can't sign a statement backdated to before its retirement. What the log recorded earlier stays as recorded.
 - **An advertisement stays unverified as an entry.** It is signed with an advertising key, which `signs_for` never
   answers for, so its stated entry is recorded unverified; the register reads its bytes, not its attribution.
-- **A grant's effect counts once admitted.** The register reads the `effect` entry, which `admit_entry` admits only
-  on an unused permit of a permitting `decide` of the same action; it doesn't wait for the effect's `result`.
+- **A change counts once done.** The register takes a grant, a revocation or a release's acceptance in only on the
+  `done` result of its effect, which `admit_entry` admits only on an unused permit of a permitting `decide` of the
+  same action, as `granted_advertising_keys` and `release_statement_keys` do; a change whose effect failed or went
+  unanswered changes nothing. The ordering rule below reads every admitted grant and revocation, done or not.
 - **Whose clock a grant runs on** (the coordinator's ruling, after review). A grant's and a revocation's times are
   their effects' `when.at`, which orchestration writes, so the log holds them to its own clock: `Settings::clock`, a
   `Clock` the deployment gives it (`SystemClock` by default), which orchestration never writes. A `change_catalogue`
-  effect dated more than the skew (`Settings::clock_skew_seconds`) from the log's clock when it is appended is
-  refused (`CHANGE_OFF_THE_LOGS_CLOCK`), so a revocation can't be dated into 2100 and left with no force; and a
+  effect dated more than the skew (`Settings::clock_skew_seconds`) ahead of the log's clock when it is appended is
+  refused (`CHANGE_OFF_THE_LOGS_CLOCK`), so a revocation can't be dated into 2100 and left with no force; one dated
+  more than the skew behind it, as an append retried after the skew is, answers `Unavailable`, not a final refusal,
+  so its writer keeps it (`REQ-MDL-8`) and nothing moves on it (`INV-7`); and a
   tuple's grants and revocations must be dated in the log's order, so a re-grant backdated behind a revocation is
   refused (`CHANGE_BEFORE_ITS_TUPLES_LAST`) and the window it would reopen stays shut. Opening doesn't consult the
   clock: the records were held to it when they were appended. A revocation still holds only once orchestration
   appends its effect, which is orchestration's to do on policy's decision.
-- **When an advertisement joins.** At its stated entry's `received_at`, the time Core
-  stamps; a grant must be in force then.
-- **Modules the operator publishes** (`REQ-CAT-23`) have no advertisement, and an `accept_module` effect names a
-  version, not the release's `statement_key`, so the log knows no key that signs for them: their statements are
-  recorded unverified, attributed to no one. A residual for `T-025-05`, and an item for an `F-020` row to name the
-  key in the effect. `StatementKeys::publisher` answers the operator's party for the operator alone.
+- **When an advertisement joins.** At its stated entry's `received_at`, the time Core stamps, which the log holds
+  to its own clock as it holds a catalogue change's (refused ahead of it, `ADVERTISEMENT_OFF_THE_LOGS_CLOCK`;
+  unavailable behind it); a grant must be in force then.
+- **Modules the operator publishes** (`REQ-CAT-23`) are verified by their releases: `attribute` holds a maker that
+  states for the operator's party, other than the operator, to the statement key of a release of it the log
+  accepted (`release_statement_keys`, with the statement's transaction, so a revoked release still signs for a
+  segment that began or ran on it, and an exploited one signs nothing). `StatementKeys::publisher` answers from the
+  log alone: a provider's publisher by the advertisement accepted last, and the operator's party for the operator
+  and for a module the log holds a done `accept_module` of and no advertisement. No advertisement is accepted for
+  such a module, so none can turn it into a provider's.
+- **Which module is the operator's** (a residual for `T-025-05`). The log knows a module the operator publishes only
+  as one with an accepted release and no advertisement, since no entry says whose a module is. A provider's release
+  accepted before the log recorded its advertisement would be read as the operator's until then; prov's admission
+  takes a provider's release only against its accepted advertisement, so this needs policy to accept a release out
+  of that order.
+- **A failed sync can lose data** (a residual for `T-025-05`). On Linux, a write whose `fsync` failed may have had
+  its dirty pages dropped, so a later `sync_all` can succeed with the data gone. `FileStore` syncs before every
+  read-back and answers the failed append `Unavailable`, and the read-back takes only what the file holds, so a
+  record lost that way is appended again by its writer; but a record the store did answer after an earlier failed
+  sync is not re-checked against the disk.
 
 ### Tests
 
@@ -129,9 +148,12 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   failed: the `check`, `attribute`, `admit_entry`, the retry rule, the read-back after a failed write, writing
   before taking an entry in, the canonical form on opening, the read-back failing as unavailable, the read-back
   keeping what the log answered, an advertisement kept on reopening, kept bytes bearing out their commitment on
-  reopening and on append, first trust, the successor rule, the advertisement's signature, its context,
-  `validate_statement`, its listed keys, the skew, the grant at the advertisement and at the statement, the
-  revocation, the log's clock, a tuple's changes in order, the publisher kept, tracking, a private node's publisher,
-  the key in force at `made_at` and in the advertisement accepted last, the dropped and the crossed key, the
-  operator's key, the publisher, the strict verifier and the file's lock. The path check before the retry rule
-  can't be reached past the handles' types, and the sync before a read-back can't be made to fail in a test.
+  reopening and on append, first trust's made-after-the-grant, listed-keys, grant-since-the-last-accepted and
+  newer rules, the successor rule, the advertisement's signature, its context, `validate_statement`, its listed
+  keys, the skew, the grant at the advertisement and at the statement, the revocation, a change counting once done,
+  no advertisement for a released module, a released module stating for the operator's party, the log's clock for
+  a change and for an advertisement, behind the clock answering unavailable, a tuple's changes in order, the
+  publisher kept, tracking, a private node's publisher, the key in force at `made_at` and in the advertisement
+  accepted last, the dropped and the crossed key, the operator's key, the publisher, the strict verifier and the
+  file's lock. The path check before the retry rule can't be reached past the handles' types, the signer being a
+  granted key is implied by two other rules, and the sync before a read-back can't be made to fail in a test.

@@ -29,7 +29,9 @@ use rutent_core_audit::log::merkle::{leaf_hash, sha256, verify_inclusion};
 use rutent_core_audit::log::{
     ADVERTISEMENT_NOT_KEPT, AuditLog, Clock, FileStore, General, KEPT_BYTES_DIFFER, KeptInMemory,
     MemoryStore, Policy, Settings, Store, StoreError, digest,
-    keys::{CHANGE_BEFORE_ITS_TUPLES_LAST, CHANGE_OFF_THE_LOGS_CLOCK},
+    keys::{
+        ADVERTISEMENT_OFF_THE_LOGS_CLOCK, CHANGE_BEFORE_ITS_TUPLES_LAST, CHANGE_OFF_THE_LOGS_CLOCK,
+    },
     record,
 };
 use serde_json::{Value, json};
@@ -52,14 +54,18 @@ fn id(text: &str) -> Id {
     Id::new(text).unwrap()
 }
 
-/// The RFC 3339 UTC time `nanos` after the epoch, to the second, for times on 2026-11-06.
+/// The RFC 3339 UTC time `nanos` after the epoch, to the second, for times in November 2026.
 fn rfc3339(nanos: i128) -> String {
-    let day = Timestamp::new("2026-11-06T00:00:00Z").unwrap().unix_nanos();
-    let seconds = (nanos - day) / 1_000_000_000;
-    assert!((0..86_400).contains(&seconds), "a time on 2026-11-06");
+    let month = Timestamp::new("2026-11-01T00:00:00Z").unwrap().unix_nanos();
+    let seconds = (nanos - month) / 1_000_000_000;
+    assert!(
+        (0..30 * 86_400).contains(&seconds),
+        "a time in November 2026"
+    );
     format!(
-        "2026-11-06T{:02}:{:02}:{:02}Z",
-        seconds / 3600,
+        "2026-11-{:02}T{:02}:{:02}:{:02}Z",
+        seconds / 86_400 + 1,
+        seconds / 3600 % 24,
         seconds / 60 % 60,
         seconds % 60
     )
@@ -98,8 +104,7 @@ fn deployment() -> Deployment {
     }
 }
 
-/// The deployment's settings: the operator, and each provider's advertising key trusted for its first
-/// advertisement, on the test's clock.
+/// The deployment's settings: its operator, on the test's clock. First trust in a provider is its grant's.
 fn settings() -> Settings {
     trusted().on(Rc::new(TestClock))
 }
@@ -126,10 +131,7 @@ impl Clock for TestClock {
 }
 
 fn trusted() -> Settings {
-    PROVIDERS.iter().fold(
-        Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR)),
-        |s, p| s.trusting(id(p), public_key(&advertising_key(p))),
-    )
+    Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR))
 }
 
 fn actor(party: &str, acts: &str, role: &str, kind: &str) -> Value {
@@ -287,33 +289,68 @@ impl<S: Store> Run<S> {
         e
     }
 
-    /// Grants `name` a tuple: policy's permitting decision, through policy's handle, and its effect.
+    /// Grants `name` a tuple, naming its advertising key: policy's permitting decision, through policy's handle, its
+    /// effect and its `done` result, on the log's clock at `at`.
     fn grant(&mut self, name: &str, at: &str) -> Receipt {
-        self.change_catalogue(name, "grant", at)
+        self.grant_keys(name, &[advertising_key(name)], at)
+    }
+
+    /// Grants `name` a tuple naming `keys` its advertising keys.
+    fn grant_keys(&mut self, name: &str, keys: &[Ed25519Key], at: &str) -> Receipt {
+        let keys: Vec<String> = keys
+            .iter()
+            .map(|k| public_key(k).as_str().to_owned())
+            .collect();
+        self.carry_out(json!({"kind": "change_catalogue", "change": "grant", "provider": name, "tuple": format!("tuple-{name}"), "advertising_keys": keys}), at)
     }
 
     /// Revokes the tuple [`Run::grant`] granted `name`.
     fn revoke(&mut self, name: &str, at: &str) -> Receipt {
-        self.change_catalogue(name, "revoke_grant", at)
+        self.carry_out(json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "tuple": format!("tuple-{name}")}), at)
     }
 
-    fn change_catalogue(&mut self, name: &str, change: &str, at: &str) -> Receipt {
+    /// Carries `action` out at `at`, on the log's clock then: its decision, its effect and its `done` result.
+    fn carry_out(&mut self, action: Value, at: &str) -> Receipt {
         set_now(at);
-        self.try_change_catalogue(name, change, at).unwrap()
+        let effect = self.try_change(action, at).unwrap();
+        self.end(&effect, "done", at);
+        effect
     }
 
-    /// Changes the catalogue for `name`'s tuple: policy's permitting decision, and its effect dated `at`, whose
-    /// append is answered.
+    /// Appends the result of `effect`, with its outcome `status`.
+    fn end(&mut self, effect: &Receipt, status: &str, at: &str) -> Receipt {
+        self.append(json!({
+            "kind": "verified",
+            "who": actor("rutent", "core-orch", "core", "component"),
+            "what": {"call": "result", "effect": effect},
+            "when": {"at": at, "source": "core_clock"},
+            "outcome": {"status": status},
+        }))
+        .unwrap()
+    }
+
+    /// Changes the catalogue for `name`'s tuple, its grant naming `name`'s advertising key: policy's permitting
+    /// decision, and its effect dated `at`, whose append is answered.
     fn try_change_catalogue(
         &mut self,
         name: &str,
         change: &str,
         at: &str,
     ) -> Result<Receipt, AppendFailure> {
-        let action = json!({"kind": "change_catalogue", "change": change, "provider": name, "tuple": format!("tuple-{name}")});
+        let mut action = json!({"kind": "change_catalogue", "change": change, "provider": name, "tuple": format!("tuple-{name}")});
+        if change == "grant" {
+            action["advertising_keys"] = json!([public_key(&advertising_key(name)).as_str()]);
+        }
+        self.try_change(action, at)
+    }
+
+    /// Policy's permitting decision on `action`, and its effect dated `at`, whose append is answered.
+    fn try_change(&mut self, action: Value, at: &str) -> Result<Receipt, AppendFailure> {
+        let change = action["change"].as_str().unwrap().to_owned();
+        let name = action["provider"].as_str().unwrap().to_owned();
         let (request, decision) = (
-            format!("req-{change}-{name}-{at}"),
-            format!("dec-{change}-{name}-{at}"),
+            format!("req-{change}-{name}-{at}-{}", self.log.len()),
+            format!("dec-{change}-{name}-{at}-{}", self.log.len()),
         );
         let operator = actor(OPERATOR, "op-login-2", "operator", "person");
         let decided = self
@@ -346,6 +383,17 @@ impl<S: Store> Run<S> {
     /// Appends `bytes`, an advertisement received at `received_at`, as a stated entry of its maker's, after keeping
     /// it.
     fn advertise_at(
+        &mut self,
+        maker: &str,
+        bytes: &[u8],
+        received_at: &str,
+    ) -> Result<Receipt, AppendFailure> {
+        set_now(received_at);
+        self.advertise_raw(maker, bytes, received_at)
+    }
+
+    /// Appends `bytes`, an advertisement received at `received_at`, whatever the log's clock says.
+    fn advertise_raw(
         &mut self,
         maker: &str,
         bytes: &[u8],
@@ -609,8 +657,8 @@ fn every_action_leaves_its_record() {
         assert!(!recorded["when"]["source"].is_null());
         assert!(!recorded["who"].is_null() || !recorded["attribution"].is_null());
     }
-    // Every grant, advertisement and world entry is in the log, once.
-    assert_eq!(run.log.len(), 3 * PROVIDERS.len() + world.len());
+    // Every grant (its decision, effect and result), advertisement and world entry is in the log, once.
+    assert_eq!(run.log.len(), 4 * PROVIDERS.len() + world.len());
 }
 
 /// A refused decision, a refused read, a refused order and a request left unanswered are each recorded, with their
@@ -692,7 +740,7 @@ fn failure_between_record_and_effect_leaves_no_effect() {
         let store = Faulty::default();
         let mut run = Run::new(store.clone());
         // The decision, through policy's handle.
-        let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk"});
+        let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk", "advertising_keys": [public_key(&advertising_key("fx-desk")).as_str()]});
         let mut decide = valid("verified-entry-of-a-decision");
         decide["what"]["request"]["action"] = action.clone();
         let decided = run.append(decide).unwrap();
@@ -1414,7 +1462,7 @@ fn the_operators_statements_verify_only_under_the_deployments_key() {
 #[test]
 fn an_effect_on_a_permit_this_log_holds_no_decision_for_is_refused() {
     let mut run = Run::new(MemoryStore::new());
-    let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk"});
+    let action = json!({"kind": "change_catalogue", "change": "grant", "provider": "fx-desk", "tuple": "tuple-fx-desk", "advertising_keys": [public_key(&advertising_key("fx-desk")).as_str()]});
     let mut effect = valid("verified-entry-of-an-effect");
     effect["what"]["action"] = action.clone();
     assert!(matches!(
@@ -2292,4 +2340,457 @@ fn policys_handle_writes_only_decisions() {
         serde_json::from_value(valid("verified-entry-of-a-holding-check")).unwrap();
     assert!(DecisionEntry::try_from(record).is_err());
     assert_eq!(log.borrow().len(), 1);
+}
+
+/// `maker`'s answer under a fresh question with transaction `transaction`, stating for `party`, signed by `key`:
+/// whether the log recorded it verified.
+fn answered_for<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    party: &str,
+    key: &Ed25519Key,
+    transaction: &str,
+) -> bool {
+    let question = run.claim(
+        &question_of(transaction),
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": transaction}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer(maker, transaction);
+    answer["attribution"]["who"]["party"] = party.into();
+    let answer = run.claim(
+        &answer,
+        key,
+        json!({"kind": "holding_balance", "transaction": transaction}),
+    );
+    let receipt = run.append(answer).unwrap();
+    verified_at(run, &receipt)
+}
+
+/// First trust in a provider is its grant's, never a setting: an advertisement is trusted on a grant only where
+/// it is signed with the grant's advertising keys and made after the grant's effect; a grant counts only once its
+/// effect is done, so one whose effect failed, or has no result yet, trusts nothing; and a later grant naming a new
+/// key lets a provider that lost its own back in, with an advertisement signed by the new key and made after it.
+// verifies: REQ-AUD-2, REQ-AUD-9, REQ-CAT-2, THR-4
+#[test]
+fn first_trust_is_the_grants_for_advertisements_made_after_it() {
+    let mut run = Run::new(MemoryStore::new());
+    let us_bank = |key: &Ed25519Key, made_at: &str, statements: &Ed25519Key| {
+        let mut ad: Value = serde_json::from_slice(&advertised("us-bank", key, "us-bank")).unwrap();
+        ad["made_at"] = made_at.into();
+        ad["statement"]["keys"] = json!([
+            {"scheme": "ed25519", "public_key": public_key(key).as_str(), "purpose": "advertising"},
+            {"scheme": "ed25519", "public_key": public_key(statements).as_str(), "purpose": "statements"},
+        ]);
+        sign_value(&mut ad, key);
+        serde_json::to_vec(&ad).unwrap()
+    };
+    // Granted at 2026-11-06T01:00:00Z: an advertisement made before it rides on nothing.
+    run.grant("us-bank", "2026-11-06T01:00:00Z");
+    let early = us_bank(
+        &advertising_key("us-bank"),
+        "2026-11-06T00:59:59Z",
+        &statements_key("us-bank"),
+    );
+    run.advertise_at("us-bank", &early, "2026-11-06T01:00:01Z")
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-f-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    let made = us_bank(
+        &advertising_key("us-bank"),
+        "2026-11-06T01:00:02Z",
+        &statements_key("us-bank"),
+    );
+    run.advertise("us-bank", &made).unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-f-2",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // us-bank loses its advertising key: a grant naming a new one lets it back in, for an advertisement made
+    // after that grant and signed by the new key, though no successor of the old.
+    let new_key = signing_key("us-bank's new advertising key", 12);
+    let new_statements = signing_key("us-bank's new statements key", 13);
+    run.grant_keys(
+        "us-bank",
+        std::slice::from_ref(&new_key),
+        "2026-11-06T03:00:00Z",
+    );
+    let before = us_bank(&new_key, "2026-11-06T02:59:59Z", &new_statements);
+    run.advertise_at("us-bank", &before, "2026-11-06T03:00:01Z")
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &new_statements,
+        "tx-f-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    let after = us_bank(&new_key, "2026-11-06T03:00:02Z", &new_statements);
+    run.advertise("us-bank", &after).unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &new_statements,
+        "tx-f-4",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // fx-desk's grant counts only once its effect is done.
+    set_now(GRANTED_AT);
+    let pending = run
+        .try_change_catalogue("fx-desk", "grant", GRANTED_AT)
+        .unwrap();
+    let fx = |made_at: &str| {
+        let mut ad: Value = serde_json::from_slice(&advertised(
+            "fx-desk",
+            &advertising_key("fx-desk"),
+            "fx-desk",
+        ))
+        .unwrap();
+        ad["made_at"] = made_at.into();
+        sign_value(&mut ad, &advertising_key("fx-desk"));
+        serde_json::to_vec(&ad).unwrap()
+    };
+    run.advertise("fx-desk", &fx("2026-11-06T00:00:00Z"))
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-f-5",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.end(&pending, "failed", GRANTED_AT);
+    run.advertise("fx-desk", &fx("2026-11-06T00:01:00Z"))
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-f-6",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.grant("fx-desk", "2026-11-05T01:00:00Z");
+    run.advertise("fx-desk", &fx("2026-11-06T00:02:00Z"))
+        .unwrap();
+    assert!(answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-f-7",
+        "2026-11-06T15:04:05Z"
+    ));
+}
+
+/// A module the operator publishes states for the operator's party and signs with the statement key of a release of
+/// it the log accepted, once the acceptance is done: its statements verify under that key alone, stating for the
+/// operator's party alone. No advertisement can make it a provider's: one for a module the log holds an accepted
+/// release of, and no advertisement, changes nothing.
+// verifies: REQ-AUD-2, REQ-CAT-23, REQ-MDL-1, REQ-AUD-15
+#[test]
+fn a_module_the_operator_publishes_signs_with_its_accepted_releases_key() {
+    const MODULE: &str = "public-node-holding";
+    let release = signing_key("the public node's holding module, 1.0.0", 14);
+    let mut run = Run::new(MemoryStore::new());
+    // Before any release is accepted, nothing signs for it.
+    assert!(!answered_for(
+        &mut run, MODULE, OPERATOR, &release, "tx-m-1"
+    ));
+    let accept = json!({"kind": "change_catalogue", "change": "accept_module", "provider": MODULE, "version": "1.0.0", "statement_key": public_key(&release).as_str()});
+    set_now("2026-11-06T00:00:00Z");
+    let effect = run.try_change(accept, "2026-11-06T00:00:00Z").unwrap();
+    // Accepted but not yet done: still nothing.
+    assert!(!answered_for(
+        &mut run, MODULE, OPERATOR, &release, "tx-m-2"
+    ));
+    run.end(&effect, "done", "2026-11-06T00:00:00Z");
+    assert!(answered_for(&mut run, MODULE, OPERATOR, &release, "tx-m-3"));
+    assert!(!answered_for(
+        &mut run,
+        MODULE,
+        OPERATOR,
+        &another_key(),
+        "tx-m-4"
+    ));
+    assert!(!answered_for(&mut run, MODULE, MODULE, &release, "tx-m-5"));
+    // A grant and an advertisement for it, as if a provider's: changes nothing.
+    run.grant(MODULE, GRANTED_AT);
+    run.advertise(
+        MODULE,
+        &advertised(MODULE, &advertising_key(MODULE), MODULE),
+    )
+    .unwrap();
+    assert!(!answered_for(
+        &mut run,
+        MODULE,
+        MODULE,
+        &statements_key(MODULE),
+        "tx-m-6"
+    ));
+    assert!(answered_for(&mut run, MODULE, OPERATOR, &release, "tx-m-7"));
+}
+
+/// The log takes an advertisement only as received within the skew of its own clock, and a catalogue change's
+/// effect only as dated within it: dated ahead of the clock, each is refused; behind it, as an append retried
+/// after the skew is, each is unavailable, so its writer keeps it rather than drop it as broken.
+// verifies: REQ-AUD-2, REQ-MDL-8, INV-7
+#[test]
+fn an_advertisement_or_a_catalogue_change_off_the_logs_clock_is_not_taken() {
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("us-bank", GRANTED_AT);
+    let ad = advertised("us-bank", &advertising_key("us-bank"), "us-bank");
+    set_now("2026-11-06T00:00:01Z");
+    assert_eq!(
+        run.advertise_raw("us-bank", &ad, "2026-11-06T01:00:01Z"),
+        Err(AppendFailure::Refused(Violation(
+            ADVERTISEMENT_OFF_THE_LOGS_CLOCK
+        )))
+    );
+    set_now("2026-11-06T02:00:00Z");
+    assert_eq!(
+        run.advertise_raw("us-bank", &ad, "2026-11-06T00:00:01Z"),
+        Err(AppendFailure::Unavailable)
+    );
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-k-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    // A revocation retried an hour after its time.
+    set_now("2026-11-07T01:00:00Z");
+    assert_eq!(
+        run.try_change_catalogue("us-bank", "revoke_grant", "2026-11-07T00:00:00Z"),
+        Err(AppendFailure::Unavailable)
+    );
+    run.advertise("us-bank", &ad).unwrap();
+    assert!(answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-k-2",
+        "2026-11-06T15:04:05Z"
+    ));
+}
+
+/// `provider`'s advertisement made at `made_at`, listing `keys`, signed with `signer`.
+fn ad_of(provider: &str, signer: &Ed25519Key, made_at: &str, keys: Value) -> Vec<u8> {
+    let mut ad: Value = serde_json::from_slice(&advertised(provider, signer, provider)).unwrap();
+    ad["made_at"] = made_at.into();
+    ad["statement"]["keys"] = keys;
+    sign_value(&mut ad, signer);
+    serde_json::to_vec(&ad).unwrap()
+}
+
+fn listed(key: &Ed25519Key, purpose: &str) -> Value {
+    json!({"scheme": "ed25519", "public_key": public_key(key).as_str(), "purpose": purpose})
+}
+
+/// A grant trusts only the keys it names, only for what follows it, and only once done: a first advertisement
+/// listing an advertising key the grant doesn't name is refused, so that key signs in no successor; a granted key
+/// the accepted advertisement no longer lists signs in nothing on the old grant; an advertisement on a new grant
+/// is still no older than the one accepted last; a revocation whose effect failed takes nothing back; and an
+/// advertisement received while the grant is revoked signs nothing in.
+// verifies: REQ-AUD-2, REQ-CAT-2, THR-4
+#[test]
+fn a_grant_trusts_only_the_keys_it_names_once_done() {
+    let mut run = Run::new(MemoryStore::new());
+    // us-bank's first, signed with its granted key, but listing another advertising key besides.
+    run.grant("us-bank", GRANTED_AT);
+    let extra = signing_key("an advertising key no grant names", 15);
+    let extra_statements = signing_key("statements under the ungranted key", 16);
+    let first = ad_of(
+        "us-bank",
+        &advertising_key("us-bank"),
+        ADVERTISED_AT,
+        json!([
+            listed(&advertising_key("us-bank"), "advertising"),
+            listed(&extra, "advertising"),
+            listed(&statements_key("us-bank"), "statements")
+        ]),
+    );
+    run.advertise("us-bank", &first).unwrap();
+    let next = ad_of(
+        "us-bank",
+        &extra,
+        "2026-11-06T01:00:00Z",
+        json!([
+            listed(&extra, "advertising"),
+            listed(&extra_statements, "statements")
+        ]),
+    );
+    run.advertise("us-bank", &next).unwrap();
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &statements_key("us-bank"),
+        "tx-g2-1",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(!answered(
+        &mut run,
+        "us-bank",
+        &extra_statements,
+        "tx-g2-2",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // fx-desk's grant names two keys; its accepted advertisement lists one, so the other signs in nothing.
+    let second = signing_key("fx-desk's second granted key", 17);
+    let second_statements = signing_key("statements under fx-desk's second key", 18);
+    run.grant_keys(
+        "fx-desk",
+        &[advertising_key("fx-desk"), second.clone()],
+        GRANTED_AT,
+    );
+    run.advertise(
+        "fx-desk",
+        &ad_of(
+            "fx-desk",
+            &advertising_key("fx-desk"),
+            ADVERTISED_AT,
+            json!([
+                listed(&advertising_key("fx-desk"), "advertising"),
+                listed(&statements_key("fx-desk"), "statements")
+            ]),
+        ),
+    )
+    .unwrap();
+    run.advertise(
+        "fx-desk",
+        &ad_of(
+            "fx-desk",
+            &second,
+            "2026-11-06T01:00:00Z",
+            json!([
+                listed(&second, "advertising"),
+                listed(&second_statements, "statements")
+            ]),
+        ),
+    )
+    .unwrap();
+    assert!(!answered(
+        &mut run,
+        "fx-desk",
+        &second_statements,
+        "tx-g2-3",
+        "2026-11-06T15:04:05Z"
+    ));
+    assert!(answered(
+        &mut run,
+        "fx-desk",
+        &statements_key("fx-desk"),
+        "tx-g2-4",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // bank-co's first is dated four minutes ahead of its receipt; a new grant comes in between, and an
+    // advertisement on it made before the accepted one is no newer.
+    run.grant("bank-co", "2026-11-06T00:00:00Z");
+    run.advertise_at(
+        "bank-co",
+        &ad_of(
+            "bank-co",
+            &advertising_key("bank-co"),
+            "2026-11-06T01:04:00Z",
+            json!([
+                listed(&advertising_key("bank-co"), "advertising"),
+                listed(&statements_key("bank-co"), "statements")
+            ]),
+        ),
+        "2026-11-06T01:00:00Z",
+    )
+    .unwrap();
+    let renewed = signing_key("bank-co's renewed key", 19);
+    let renewed_statements = signing_key("bank-co's renewed statements key", 20);
+    run.grant_keys(
+        "bank-co",
+        std::slice::from_ref(&renewed),
+        "2026-11-06T01:01:00Z",
+    );
+    let renewed_ad = |made_at: &str| {
+        ad_of(
+            "bank-co",
+            &renewed,
+            made_at,
+            json!([
+                listed(&renewed, "advertising"),
+                listed(&renewed_statements, "statements")
+            ]),
+        )
+    };
+    run.advertise("bank-co", &renewed_ad("2026-11-06T01:02:00Z"))
+        .unwrap();
+    assert!(!answered(
+        &mut run,
+        "bank-co",
+        &renewed_statements,
+        "tx-g2-5",
+        "2026-11-06T15:04:05Z"
+    ));
+    run.advertise("bank-co", &renewed_ad("2026-11-06T01:05:00Z"))
+        .unwrap();
+    assert!(answered(
+        &mut run,
+        "bank-co",
+        &renewed_statements,
+        "tx-g2-6",
+        "2026-11-06T15:04:05Z"
+    ));
+
+    // kyc-check's revocation fails: it takes nothing back.
+    run.grant("kyc-check", GRANTED_AT);
+    run.advertise(
+        "kyc-check",
+        &advertised("kyc-check", &advertising_key("kyc-check"), "kyc-check"),
+    )
+    .unwrap();
+    set_now("2026-11-07T00:00:00Z");
+    let revoked = run
+        .try_change_catalogue("kyc-check", "revoke_grant", "2026-11-07T00:00:00Z")
+        .unwrap();
+    run.end(&revoked, "failed", "2026-11-07T00:00:00Z");
+    assert!(answered(
+        &mut run,
+        "kyc-check",
+        &statements_key("kyc-check"),
+        "tx-g2-7",
+        "2026-11-07T00:00:01Z"
+    ));
+
+    // A successor received while kyc-check's grant is revoked signs nothing in, even once it is granted again.
+    run.revoke("kyc-check", "2026-11-07T00:00:02Z");
+    let later = signing_key("kyc-check's key while revoked", 21);
+    run.advertise(
+        "kyc-check",
+        &ad_of(
+            "kyc-check",
+            &advertising_key("kyc-check"),
+            "2026-11-07T01:00:00Z",
+            json!([
+                listed(&advertising_key("kyc-check"), "advertising"),
+                listed(&later, "statements")
+            ]),
+        ),
+    )
+    .unwrap();
+    run.grant("kyc-check", "2026-11-08T00:00:00Z");
+    assert!(!answered(
+        &mut run,
+        "kyc-check",
+        &later,
+        "tx-g2-8",
+        "2026-11-08T00:00:01Z"
+    ));
 }

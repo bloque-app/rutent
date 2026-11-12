@@ -147,7 +147,8 @@ impl State {
             index: SafeInteger::try_from(index as u64).expect("a log of fewer than 2^53 entries"),
             entry: digest(&hash),
         };
-        self.register.record(settings, &entry, advertisement);
+        self.register
+            .record(settings, &self.history, &entry, advertisement);
         self.leaves.push(merkle::leaf_hash(bytes));
         self.recorded.insert(hash, index);
         self.history.push((receipt.clone(), entry));
@@ -263,7 +264,13 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                     settings: &self.settings,
                     register: &self.state.register,
                 };
-                let recorded = attribute(claim, &mut self.kept, &mut keys, &Ed25519Strict)?;
+                let recorded = attribute(
+                    claim,
+                    &self.state.history,
+                    &mut self.kept,
+                    &mut keys,
+                    &Ed25519Strict,
+                )?;
                 (
                     Entry::Stated(recorded),
                     bytes.filter(|_| is_advertisement(entry)),
@@ -282,10 +289,7 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
             &self.settings.operator,
         )
         .map_err(AppendFailure::Refused)?;
-        self.state
-            .register
-            .admits(&self.settings, &entry)
-            .map_err(AppendFailure::Refused)?;
+        self.state.register.admits(&self.settings, &entry)?;
         if self.store.append(&bytes).is_err() {
             self.stale = true;
             return Err(AppendFailure::Unavailable);
