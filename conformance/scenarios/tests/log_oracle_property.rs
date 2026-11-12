@@ -91,7 +91,13 @@ fn the_log_takes_exactly_the_inputs_the_state_machine_takes() {
             {
                 continue;
             }
-            let machine = machine_takes(&step.prev, input);
+            // The host's exactly-once: a record id the log holds names one content.
+            let reused = history.iter().any(|(_, e)| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what,
+                    rutent_contracts::core_internal::What::Input { input: earlier }
+                        if earlier.record_id == input.record_id && earlier != input))
+            });
+            let machine = !reused && machine_takes(&step.prev, input);
             let log = state_machine_takes(&history, input);
             compared += 1;
             if machine {
@@ -116,4 +122,23 @@ fn the_log_takes_exactly_the_inputs_the_state_machine_takes() {
     );
     failures.truncate(20);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// verifies: REQ-STM-4, INV-8
+#[test]
+fn the_log_refuses_another_input_under_a_record_id_it_holds_as_the_host_does() {
+    let trace = &traces(SEEDS)[0];
+    let opening = &trace.steps[0].input;
+    let history = vec![(receipt(0), entry_of(opening))];
+    assert!(
+        state_machine_takes(&history, opening),
+        "the same input again"
+    );
+    let mut other = opening.clone();
+    other.recorded_at =
+        rutent_contracts::state_machine::Timestamp::new("2026-11-06T10:00:09Z").unwrap();
+    assert!(
+        !state_machine_takes(&history, &other),
+        "another input under its record id"
+    );
 }

@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 122 valid fixtures and 119 invalid ones, each
-  breaking one rule, and 371 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 372 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 71 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -291,6 +291,10 @@
   reserve's; `one-order-per-deposit` refuses a second arrival naming an order on the same notice, a second order
   or a second filing with other figures, the same arrival sent again aside. 371 admission cases, 71 relations.
   (DEC-4, DEC-20, REQ-ORD-14, REQ-ORD-23, INV-8, T-020-01, T-020-04)
+- Folded into 1.0.0 before its release: one record id names one content in the whole log (the round-4 review's
+  medium). The state machine's guard reads only the last record id; the log now refuses an input under any record id
+  an earlier input holds, unless it is that input again, as the host's exactly-once (`RecordIdReused`) does. Both
+  oracles hold the host's rule too. 372 admission cases. (DEC-4, DEC-20, REQ-STM-4, INV-8, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

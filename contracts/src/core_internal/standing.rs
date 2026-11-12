@@ -180,6 +180,19 @@ fn order_after(order: &str, history: &History) -> Option<Order> {
 /// does (`input-is-one-the-state-machine-takes`). An input before its order's route is recorded with no state, as
 /// the host contract records it, and taken; a `route_chosen` is taken where it opens a valid order.
 pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
+    // One record id names one content, in the whole log (the host contract's exactly-once, `RecordIdReused`): an
+    // input under a record id an earlier input holds is that input sent again, or refused.
+    let earlier = history
+        .iter()
+        .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::Input { input: earlier }) if earlier.record_id == input.record_id => {
+                Some(earlier)
+            }
+            _ => None,
+        });
+    if let Some(earlier) = earlier {
+        return earlier == input;
+    }
     match order_after(input.subject.order.as_str(), history) {
         None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),
         Some(order) => match step(&order, input).last_input.outcome {

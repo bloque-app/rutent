@@ -23,11 +23,26 @@ fn admission_dir() -> PathBuf {
         .join("../../contracts/core-internal/fixtures/admission")
 }
 
-/// What the state machine does with a log's inputs, in order: `Applied`, `Late` or `Repeat` is a taking; anything
+/// What the host and the state machine do with a log's inputs, in order: an input under a record id an earlier one
+/// holds is that one again, or the host's refusal; otherwise `Applied`, `Late` or `Repeat` is a taking, anything
 /// else a refusal, named with its record id.
 pub fn replay(inputs: &[RecordedInput]) -> Result<(), String> {
     let mut orders: BTreeMap<String, Order> = BTreeMap::new();
+    let mut recorded: BTreeMap<String, &RecordedInput> = BTreeMap::new();
     for input in inputs {
+        // The host's exactly-once: one record id names one content (`RecordIdReused`).
+        match recorded.get(input.record_id.as_str()) {
+            Some(earlier) if *earlier != input => {
+                return Err(format!(
+                    "{} names two inputs, refused by the host",
+                    input.record_id.as_str()
+                ));
+            }
+            Some(_) => continue,
+            None => {
+                recorded.insert(input.record_id.as_str().to_owned(), input);
+            }
+        }
         let order = input.subject.order.as_str().to_owned();
         match orders.get(&order) {
             None => {
