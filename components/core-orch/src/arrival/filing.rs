@@ -867,6 +867,8 @@ fn not_offered(routed: &Routed, why: &NotOffered) -> OrderRefusalClass {
         NotOffered::NoReservesYes | NotOffered::NotEligible { .. } => {
             OrderRefusalClass::NoRouteRightNow
         }
+        NotOffered::ChargeRefused { .. } => OrderRefusalClass::RefusedByPolicy,
+        NotOffered::ChargeNotKnown { .. } => OrderRefusalClass::NoRouteRightNow,
     }
 }
 

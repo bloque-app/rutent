@@ -59,6 +59,10 @@ pub(super) fn not_offered(routed: &Routed, why: &NotOffered) -> OrderRefusalClas
         NotOffered::NoReservesYes => OrderRefusalClass::NoRouteRightNow,
         // A judgement the route needs isn't cited; a verifier silent now may answer later.
         NotOffered::NotEligible { .. } => OrderRefusalClass::NoRouteRightNow,
+        // Policy refused the caller's charge for its work (T-021-05): a refusal by policy, never a bound passed.
+        NotOffered::ChargeRefused { .. } => OrderRefusalClass::RefusedByPolicy,
+        // Policy couldn't decide the charge: nothing was asked, and the same request may get an answer later.
+        NotOffered::ChargeNotKnown { .. } => OrderRefusalClass::NoRouteRightNow,
     }
 }
 
