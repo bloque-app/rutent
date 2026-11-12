@@ -978,6 +978,8 @@ fn each_scope_permits_its_own_call_alone() {
         order: calls.move_stuck.order.clone(),
         carries_out: calls.move_stuck.carries_out.clone(),
         resolution: calls.decide_stuck.resolution.clone(),
+        // A transaction no other request of this test names.
+        transaction: id("txn-t-021-05-scope-resolve-stuck"),
     };
     let charge_of = |work| {
         let mut c = calls.charge.clone();
