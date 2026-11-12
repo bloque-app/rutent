@@ -383,6 +383,8 @@ pub struct Engine<L, P, S> {
     pub(crate) sources: S,
     /// The sessions opened and the read permissions granted and revoked (`T-021-02`).
     pub(crate) register: crate::session::Register,
+    /// The authorisations to move funds permitted (`T-021-04`).
+    pub(crate) authorised: crate::funds::Authorised,
 }
 
 /// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
@@ -411,6 +413,7 @@ impl<L, P, S> Engine<L, P, S> {
             policy: (Fixed::default(), policy),
             sources,
             register: crate::session::Register::default(),
+            authorised: crate::funds::Authorised::default(),
         }
     }
 
@@ -422,6 +425,7 @@ impl<L, P, S> Engine<L, P, S> {
             policy: (Fixed { rules: fixed }, policy),
             sources,
             register: crate::session::Register::default(),
+            authorised: crate::funds::Authorised::default(),
         }
     }
 
@@ -581,10 +585,16 @@ pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
-impl<L: PolicyLog, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
+impl<L: PolicyLog + crate::funds::Recorded, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
-        let answer = self.consult(Asked::Decide(request));
+        // A move acts only inside the authorisation in force for its order, as the log policy appends to holds it
+        // (`T-021-04`), held after the consultation so its fixed rules' refusals stand.
+        let consulted = self.consult(Asked::Decide(request));
+        let answer = crate::funds::held(
+            consulted,
+            self.authorised.refuses_move(&mut self.log, &request.action),
+        );
         let what = |decision| What::Decide {
             request: request.clone(),
             decision,
@@ -611,6 +621,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::funds::{ReadFailure, Recorded};
     use rutent_contracts::core_internal::calls::{
         Authorisations, Charges, GeneralEntry, Log, PersonQuestions, Reads, Sessions, StuckOrders,
     };
@@ -631,12 +642,24 @@ mod tests {
         }
     }
 
+    impl Recorded for Taking {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Ok(held_and(&self.0))
+        }
+    }
+
     /// A log that takes nothing.
     struct Refusing;
 
     impl PolicyLog for Refusing {
         fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl Recorded for Refusing {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
         }
     }
 
@@ -649,6 +672,12 @@ mod tests {
     impl PolicyLog for Guarded {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.admit(Entry::Verified(entry.entry().clone()), Through::Policy)
+        }
+    }
+
+    impl Recorded for Guarded {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Ok(held_and(self.0.iter().map(|(_, e)| e)))
         }
     }
 
@@ -723,6 +752,15 @@ mod tests {
             });
             self.append(&GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?)
         }
+    }
+
+    /// What a test's log reads as permitted (`T-021-04`): the fixtures' authorisation, `auth-17` for `ord-17`, which
+    /// the log held before the test began, so the fixtures' move, which acts inside it, is decided on the rules these
+    /// tests drive; then each authorisation the log took as permitted.
+    fn held_and<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Authorisation> {
+        let mut held = vec![fixture!("authorisation-of-one-order-with-a-floor")];
+        held.extend(crate::funds::permitted_in(entries));
+        held
     }
 
     /// A permit for `decision`, built by hand whatever it answered: what a path around policy would hold.
@@ -964,22 +1002,22 @@ mod tests {
         let mut policy = Unbuilt::new(Taking::default());
 
         // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
-        // which no source can give.
+        // which no source can give; the move is inside the authorisation the log holds (`T-021-04`).
         let decision = policy
             .decide(&fixture!("decision-request-to-move-value"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(
-            last(&mut policy),
-            Outcome::NotKnown {
-                cause: NotKnownCause::VerifierUnreachable
-            }
-        );
+        let unreachable = Outcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable,
+        };
+        assert_eq!(last(&mut policy), unreachable);
+        // The authorisation, the one the log holds given again, waits on the register's word that its giver acts for
+        // the party it states (`T-021-03`).
         let decision = policy
             .authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), not_known);
+        assert_eq!(last(&mut policy), unreachable);
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
@@ -1688,6 +1726,12 @@ mod tests {
         }
     }
 
+    impl Recorded for Seen {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            self.log.permitted()
+        }
+    }
+
     /// The policy call a decision entry records.
     fn call_of(what: &What) -> &'static str {
         match what {
@@ -1730,14 +1774,19 @@ mod tests {
                 }),
             ),
             (
+                // The customer's own, which needs only the order's record to say its party requested the order.
                 "authorise",
-                Call::Unbuilt {
-                    row: "T-021-04",
-                    call: |e| {
-                        e.authorise(&fixture!("authorisation-of-one-order-with-a-floor"))
-                            .is_ok_and(|d| d.permit().is_some())
-                    },
-                },
+                Call::Built(|e| {
+                    let authorisation: Authorisation =
+                        fixture!("authorisation-of-one-order-with-a-floor");
+                    let requested = Need {
+                        input: authorisation.given_by.party.clone(),
+                        from: Source::Requester(authorisation.order.clone()),
+                    };
+                    e.sources.says.push((requested, Reply::Given(Said::Yes)));
+                    e.authorise(&authorisation)
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
             ),
             (
                 "decide_stuck",
@@ -1976,7 +2025,7 @@ mod tests {
             }
         }
         unbuilt.dedup();
-        assert_eq!(unbuilt, ["T-021-04", "T-021-06", "T-021-05", "T-021-07"]);
+        assert_eq!(unbuilt, ["T-021-06", "T-021-05", "T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.
@@ -1987,6 +2036,17 @@ mod tests {
         fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             self.0.push(entry.clone());
             Ok(fixture!("receipt-of-an-appended-entry"))
+        }
+    }
+
+    impl Recorded for PolicysHandleOnly {
+        fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            let entries: Vec<Entry> = self
+                .0
+                .iter()
+                .map(|d| Entry::Verified(d.entry().clone()))
+                .collect();
+            Ok(held_and(&entries))
         }
     }
 

@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 123 valid fixtures and 119 invalid ones, each
-  breaking one rule, and 388 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 75 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 129 valid fixtures and 125 invalid ones, each
+  breaking one rule, and 403 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 78 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -318,7 +318,35 @@
   records that a bound's window reads the log's append clock or a per-engine forward-only `counted_at` (`T-021-05`,
   `T-022-01`). 388 admission cases, 75 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-15, REQ-ORD-42, T-020-01,
   T-020-03, T-020-04)
+- Merged with `T-020-09`'s closing (m3 at 31c3772): its `closing` rows, `replay` entry and fixtures stand beside
+  these. Its final-deposit cases settled p1-s3 on a history where p1's earlier segments never started, which the
+  state machine refuses (`input-is-one-the-state-machine-takes`); their histories now bind and settle p1-s1 and
+  p1-s2 and bind p1-s3 first. `T-020-09`'s fixture generator needs the same steps. 129 valid fixtures, 125 invalid,
+  403 admission cases, 78 relations with the closing table's three. (DEC-4, DEC-20, T-020-01, T-020-09)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
   permissions takes in (`REQ-MDL-4`, ADR-0014). One valid fixture added: 110 valid. (DEC-4, DEC-20, REQ-AUZ-6, T-021-03)
+- Folded into 1.0.0 before its release: a home for a private node's replay. `What::Replay { order, segment, nodes,
+  found }` records where the value left one or more private nodes onto a public node, the nodes replayed in route
+  order, and what `CMP-EVIDENCE` found: `consistent_with_the_exit` (consistency, never proof, `THR-131`), each
+  `mismatch` with the node it is against, or a node that recorded `nothing_recorded`. Before it, `T-020-09` had no
+  record for `REQ-ORD-41`'s replay. It cites nothing earlier and is admitted on its own checks. Three valid
+  fixtures and four invalid: 119 valid, 119 invalid. (DEC-4, DEC-20, DEC-24, REQ-ORD-41, T-020-09)
+- Folded into 1.0.0 before its release: closing rests on what the log can check (review of `T-020-09`). `evidence`
+  names the public movement it relied on (`movement`: network, id, and `node`, the private node it moved value into or
+  out of where it evidences that node's segments), only as a public record; `replay` rests on its exit's result (`rests_on`) and names the movement
+  out, and `nothing_recorded` names every silent node; `fee.billed_separately` is what the provider stated, absent
+  where it said nothing. Three rows, kept in their own module (`relations/closing.rs`):
+  `final-deposit-closes-on-a-public-record` (a part's final deposit settles only on grade-1 evidence naming a movement
+  on its authorised destination's network, resting on its reserve's verified statement, never a statement alone),
+  `movement-evidences-one-segment` (no second segment, of any order, relies on the same movement) and
+  `replay-rests-on-its-exit`. 121 valid fixtures, 122 invalid, 293 admission cases. (DEC-4, DEC-20, DEC-24,
+  REQ-ORD-33, REQ-ORD-38, REQ-ORD-41, REQ-AUD-11, T-020-09)
+- Folded into 1.0.0 before its release: what Core took, the log takes (re-review of `T-020-09`). `evidence` names the
+  movement Core checked at whatever grade it earned, so `movement-evidences-one-segment` holds every movement Core
+  relied on, and a node's movements in and out are reused only within its one order; a final deposit into a private
+  rail names that rail, the authorised destination's network, as the movement's `node`
+  (`final-deposit-closes-on-a-public-record--conflict-naming-another-node`). One invalid fixture is valid now
+  (`verified-entry-of-signed-evidence-naming-the-movement-core-checked`). (DEC-4, DEC-20, REQ-ORD-33, REQ-ORD-38,
+  T-020-09)

@@ -15,6 +15,9 @@ use crate::provider_role::EvidenceGrade;
 use crate::router_api::Id;
 use crate::state_machine::Observed;
 
+mod closing;
+pub use closing::CLOSING_RELATIONS;
+
 /// Whether a row asks for an earlier entry that answers it, or for none that does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quantifier {
@@ -3689,7 +3692,8 @@ pub fn admit_entry(
                 entry: entry.clone(),
                 operator: operator.clone(),
             };
-            admit_under(&RELATIONS, &citing, history)
+            admit_under(&RELATIONS, &citing, history)?;
+            admit_under(&CLOSING_RELATIONS, &citing, history)
         }
         Entry::Stated(entry) => {
             let citing = StatedCiting {

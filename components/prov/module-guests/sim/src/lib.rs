@@ -60,13 +60,7 @@ mod sandboxed {
                 .ok()
                 .and_then(|v| v["provider"].as_str().map(str::to_owned))
                 .unwrap_or_default();
-            PROVIDER.with(|cell| {
-                let mut held = cell.borrow_mut();
-                let sim = held.get_or_insert_with(|| {
-                    Simulated::new(Spec::of(ROLE, &provider), &SuiteContext::default())
-                });
-                serve(sim, &statement)
-            })
+            PROVIDER.with(|cell| serve(&mut cell.borrow_mut(), &provider, &statement))
         }
     }
 
@@ -82,19 +76,46 @@ mod sandboxed {
         (response["outcome"]["status"] == "completed").then(|| response["outcome"]["body"].clone())
     }
 
-    fn serve(sim: &mut Simulated, operation: &Statement<Operation>) -> Vec<u8> {
+    /// The provider, built the first time it is needed, in the deployment the world names (`deployment`, the
+    /// state key `DEPLOYMENT_KEY` the outside part reads back with the script), or the suite's default where it
+    /// names none: it holds every operation to that deployment.
+    fn provider<'a>(
+        held: &'a mut Option<Simulated>,
+        provider: &str,
+        deployment: Option<&Value>,
+    ) -> &'a mut Simulated {
+        held.get_or_insert_with(|| {
+            let mut context = SuiteContext::default();
+            if let Some(deployment) = deployment
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str(text).ok())
+            {
+                context.deployment = deployment;
+            }
+            Simulated::new(Spec::of(ROLE, provider), &context)
+        })
+    }
+
+    fn serve(
+        held: &mut Option<Simulated>,
+        provider: &str,
+        operation: &Statement<Operation>,
+    ) -> Vec<u8> {
         let Some(transaction) = transaction_of(&operation.statement).filter(|_| ROLE.moves_value())
         else {
             // A verifier, and anything with no transaction to ask under, answers as its role asks.
-            return sim.answer(operation, &Behaviour::default()).body;
+            return self::provider(held, provider, None)
+                .answer(operation, &Behaviour::default())
+                .body;
         };
-        let provider = sim.spec().provider.clone();
         let (kind, dry_run) = kind_of(&operation.statement);
         let begun = ask(
             &transaction,
             BEGIN,
             json!({ "kind": kind, "dry_run": dry_run }),
         );
+        let sim = self::provider(held, provider, begun.as_ref().map(|b| &b["deployment"]));
+        let provider = sim.spec().provider.clone();
         let behaviour = begun
             .as_ref()
             .and_then(|b| b["script"].as_str())
@@ -162,7 +183,8 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, SETTLE, chain_host, rail_host, script_key,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, DEPLOYMENT_KEY, SETTLE, chain_host,
+        rail_host, script_key,
     };
     use serde_json::{Value, json};
 
@@ -194,6 +216,7 @@ mod outside {
                         "book_length": state::read(BOOK_LENGTH_KEY)
                             .and_then(|n| n.parse::<u64>().ok())
                             .unwrap_or(0),
+                        "deployment": state::read(DEPLOYMENT_KEY),
                     })
                 }
                 BOOK => json!({ "book": state::read(BOOK_KEY) }),

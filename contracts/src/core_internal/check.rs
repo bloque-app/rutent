@@ -329,6 +329,7 @@ impl What {
             | What::Settlement { .. }
             | What::Evidence { .. }
             | What::Fee { .. }
+            | What::Replay { .. }
             | What::StuckCall { .. }
             | What::Afterwards { .. }
             | What::Reliance { .. }
@@ -423,6 +424,41 @@ impl What {
             } => Err(Violation(
                 "an arrival naming an order names the notice of the deposit it is of",
             )),
+            What::Replay { nodes, found, .. } => {
+                listed(
+                    nodes,
+                    "a replay names the nodes it replayed, at least one, each once",
+                )?;
+                match found {
+                    ReplayFound::Mismatch { mismatches } => {
+                        listed(
+                            mismatches,
+                            "a mismatch names how the records disagree, at least one way, each once",
+                        )?;
+                        if mismatches.iter().all(|m| nodes.contains(&m.node)) {
+                            Ok(())
+                        } else {
+                            Err(Violation(
+                                "a replay's mismatch is against a node it replayed",
+                            ))
+                        }
+                    }
+                    ReplayFound::NothingRecorded { nodes: silent } => {
+                        listed(
+                            silent,
+                            "a replay names the nodes that recorded nothing, at least one, each once",
+                        )?;
+                        if silent.iter().all(|n| nodes.contains(n)) {
+                            Ok(())
+                        } else {
+                            Err(Violation(
+                                "a replay's node that recorded nothing is one it replayed",
+                            ))
+                        }
+                    }
+                    ReplayFound::ConsistentWithTheExit {} => Ok(()),
+                }
+            }
             What::Authorise { authorisation, .. } => authorisation.check(),
             What::Result { .. }
             | What::StuckMove { .. }

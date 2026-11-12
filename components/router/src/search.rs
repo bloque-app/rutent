@@ -295,6 +295,7 @@ impl<'a> Search<'a> {
         let fee_of = |amount: String| Fee {
             asset: segment.from.asset.id.clone(),
             amount,
+            billed_separately: None,
         };
         let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, segment.price) {
             // An operation cites one price: with none, it can't be stated, whatever answers there are.
