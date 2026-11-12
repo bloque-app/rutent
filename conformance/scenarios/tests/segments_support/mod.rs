@@ -384,7 +384,8 @@ impl authz::Policy for Deployment_ {
 
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
-/// authorisation onward, the operator's login promotes a staged release), and whose order this is.
+/// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), and
+/// whose order this is.
 pub struct Register;
 
 impl authz::Sources for Register {
@@ -400,7 +401,9 @@ impl authz::Sources for Register {
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
-                Permission::Change(CatalogueChange::Promote) => need.input == operator().acts,
+                Permission::Change(CatalogueChange::Promote) | Permission::ReadOrderState => {
+                    need.input == operator().acts
+                }
                 _ => false,
             }),
             authz::Source::OrderParties(order) => {

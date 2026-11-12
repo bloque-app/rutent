@@ -162,3 +162,161 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   accepted last, the dropped and the crossed key, the operator's key, the publisher, the strict verifier and the
   file's lock. The path check before the retry rule can't be reached past the handles' types, the signer being a
   granted key is implied by two other rules, and the sync before a read-back can't be made to fail in a test.
+
+## T-022-03
+
+- **What the store is.** `receipts::EvidenceStore` in `components/core-audit/src/receipts/store.rs`. It keeps each
+  statement's bytes as received beside a fresh 32-byte salt from the operating system (`getrandom`), under the
+  commitment SHA-256 of the salt followed by the bytes, and answers `Evidence::keep` only once the bytes are durable.
+  A salt that can't be drawn answers `Unavailable`; the caller never gives one. It replaces `log::KeptInMemory`
+  through `KeptStatements`, with no change to the log; the stand-in stays, since `T-022-01`'s tests run on it.
+- **Two handles, one call each, then bound once.** The unbound store, `EvidenceStore`, implements none of
+  `core-internal`'s calls. It hands the log `LogsRead`, which implements `KeptStatements` alone (no read check:
+  nothing it answers leaves Core's audit part), and orchestration and the parties `Keeper`, which implements
+  `Evidence` alone and holds policy's read check (`calls::Reads`). Then `EvidenceStore::bind(log)` consumes it and
+  answers a `BoundStore`, tied to the one log it serves, which alone erases (the review of `746e398`, B1: erasure
+  first took any log per call, so a scratch log could authorise one). Only the assembly (`T-024-02`) calls
+  `for_the_log` and `keeper`, once each, before binding; after it, no `LogsRead` can be made. A test holds that no
+  handle, nor either store, implements another's call. The log is taken at `bind`, not when the store is made,
+  since the log is opened with the store's `LogsRead`, so the store comes first. Binding once is held by consuming
+  the store; binding the right log, the one opened with this store's read, rests on the assembly, since the log's
+  evidence read is private to `log/` and `bind` can't compare it.
+- **Where the bytes live.** A `Shelf`: `MemoryShelf`, or `DirectoryShelf`, a directory of the store's own apart from
+  the log's file, locked for one store while it lives. Each statement is `kept/<commitment>.json`, written to a
+  `.part` file, synced and renamed, the directory synced after; a `.part` left by a crash was never answered and is
+  dropped on opening. Opening refuses a statement that doesn't bear out its commitment, or is filed under another's
+  name (`NOT_A_KEPT_STATEMENT`). A deployment's store is `F-030`'s (`M4`); the trait lets it plug in.
+- **The log reopens with it.** `AuditLog::open(settings, store, evidence.for_the_log())` reads every advertisement's
+  bytes back from the directory, as `T-022-01`'s rule needs; with an empty store in its place, the log refuses to
+  open (`ADVERTISEMENT_NOT_KEPT`), which a test holds.
+- **The restatement index** files each statement by SHA-256 of its signed content (provider-role's `signing_input`),
+  or of its bytes where they have none, and `keep` answers the earliest commitment still kept with the same
+  content. It is rebuilt from the kept bytes on opening and written nowhere, so no file holds it, none of it enters
+  the log, and an erasure leaves none of it behind. A consequence: a statement kept again after its erasure
+  restates nothing.
+- **What `keep` takes.** Any bytes but none (`NOTHING_TO_KEEP`). It doesn't refuse bytes that aren't an envelope,
+  since orchestration keeps a refused statement's bytes as received (`T-020-05`'s `record_refused`), which may be
+  malformed. A `holding_balance` result's bytes are kept here, and only here, as the form's default for
+  `holding-balance-evidence` has it.
+- **`fetch` asks policy first**, before anything is looked up, every time, so a refused reader can't tell kept,
+  erased and never kept apart; its refusal is `Fetched::Refused`. After an allowed read: an erased statement answers
+  `Erased`, a kept one `Kept`, and one never kept `Refused(NOT_KEPT)`, never `Erased`. A read of anything but
+  `reads: evidence` is refused before policy is asked (`FETCH_READS_EVIDENCE`), and an answer naming another request
+  is refused (`ANSWER_OF_ANOTHER_READ`). No borrow of the store is held while policy answers, since policy records
+  the read in the log, which reads the store.
+- **Whose a statement is** (`core-authz`'s `Source::Statement`). The store keeps bytes and nothing about who they
+  concern; whose they are, the maker's party or the one told about its own part, is the log's stated entry naming
+  the commitment, which the assembly reads to answer policy (`T-024-02`).
+- **Erasure records first, the operator's, on the bound log.** `BoundStore::erase(at)` carries an erasure out only
+  on its own log's record: a verified `erasure` entry at the receipt `at`, whose outcome is `done`, made by an actor
+  in the operator's role for the operator's party (`ERASURE_BY_THE_OPERATOR`; the review of `746e398`, B1: a
+  provider's erasure was carried out). So the reference that stays is recorded before anything goes (`INV-7`).
+  `BoundStore::erasable(commitment)` runs the store's checks beforehand, so orchestration appends no erasure the
+  store would refuse. An erasure names a kept statement, and the log refuses one no stated entry holds
+  (`erasure-names-a-kept-statement`). It removes the bytes and the salt, and the index's place for them, and leaves a
+  mark, `erased/<commitment>`, so a read answers `Erased`. Erasing one erased already is `Ok`.
+- **A crash anywhere in an erasure** (the review of `746e398`, S1). An erasure has three steps: the log's entry,
+  the shelf's mark, the removal of the bytes. A failure answered `Unavailable` after the entry is carried out by
+  calling `erase` again. After a crash, binding reconciles the store with the log: it carries out every done
+  erasure of the operator's whose statement is still kept, where `erasable` allows it (a crash after the entry,
+  before the mark); the shelf's opening removes bytes left behind their mark (a crash between the mark and the
+  removal); a mark no done erasure of the operator's in the log records refuses the binding
+  (`MARK_WITHOUT_ITS_ERASURE`: bytes went with no record); and every stated entry whose bytes are neither kept nor
+  marked erased is reported, by receipt, in `BoundStore::missing`, a finding for the outside checker (`T-022-04`).
+  Every done erasure the log records that the store refuses on binding, by anyone but the operator, of an
+  advertisement, or of what an entry rests on, is reported beside it, by receipt and why, in
+  `BoundStore::refused_erasures` (the review of `c74610d`: it was skipped silently).
+- **No erasure reaches what an entry rests on** (the review of `746e398`, S3, the coordinator's cautious default
+  until the owner rules). `erasable` refuses a statement any verified entry of the log cites: by the receipt of a
+  stated entry naming its commitment (a report pair, an arrival, graded evidence, a reliance, an acceptance, a
+  measure, a raise, anything else), or by the commitment itself (a stuck order's decision names its evidence so)
+  (`EVIDENCE_RESTED_ON`). The citation is found by searching each entry's `what` for either value, so a kind added
+  later is held too. Stated entries, erasures and reads (a read check of a statement, and a permission over one)
+  rest on nothing they name.
+- **No erasure reaches an advertisement** (the coordinator's ruling in `T-022-01`'s notes): neither bytes whose shape
+  is an advertisement's, nor bytes any stated entry of the log labels one, since the log reads back, on opening, the
+  bytes of every entry labelled so (`ADVERTISEMENT_NEVER_ERASED`). A test holds that the log still opens after
+  both were tried.
+- **Who may erase** (an item for `F-020`, the contract author's; the coordinator's default is a decided action).
+  core-internal's `erasure` is a verified entry with no decision behind it, and no row ties it to a permit. Until
+  the contract makes it one (a policy permit, then an effect and its result), the store erases on the bound log's
+  done erasure by the operator. Once it lands, the store erases only on the `done` result of a permitted erase
+  effect.
+- **Retention is the operator's** (`REQ-AUD-13`): the store erases nothing on its own, on no schedule.
+- **A party's receipt** (`receipts::receipt`). In the style of RFC 9943's receipts: the log's signed word that an
+  entry, by its record's digest, sits at its index in a tree of a given size whose RFC 9162 root it names, with the
+  inclusion proof, the log's name and when it was issued (`PartyReceipt`, shape `urn:rutent:core-audit:party-receipt`).
+  It is signed as provider-role signs a statement, Ed25519 over the canonical JSON without `signature.value`, and
+  checked by the catalogue's strict verifier (`check_receipt`, which also holds it to the log it names).
+  `holds_against` trusts the receipt it is given, so it is run only on one `check_receipt` answered; it checks it against whatever history
+  the operator shows: the entry at its index, under the root at its size. The operator can't sign anew a receipt the
+  party holds, so a rewrite or a removal before that size shows (`REQ-AUD-5`, ADR-0005).
+- **The log's own key signs receipts**, never the deployment's `operator_key`, which signs the operator's statements:
+  `Issuer::new` refuses it (`KEY_ACROSS_PURPOSES`). The issuer is bound once to its log and to policy's read check,
+  as `Keeper` is, and only the assembly makes it. It takes the secret as an `ed25519_dalek::SigningKey` by value,
+  which zeroises itself on drop (the crate's `zeroize` feature, on for `core-audit`). The deployment publishes its
+  public key to parties and the checker; how is `F-030`'s and `F-033`'s. Whether `T-022-04`'s checkpoints sign with
+  the same key is `T-022-04`'s to say.
+- **Receipts only on an allowed read.** `Issuer::issue` asks policy first, with no borrow of the log held, then
+  issues only for an entry the read covers: for `reads: evidence`, the stated entry holding that commitment (what the
+  party stated, and what Core told it, its questions being the operator's statements); for an order or a segment, an
+  entry naming it, a stated one by its `about` and a verified one by its `what`'s own `order` and `segment`; for the
+  trail, any entry; for a resource, none (`NOT_COVERED`). A verified entry whose order sits elsewhere in its `what` is
+  not covered by an order read: a reading, reversible by a later row naming each kind's order.
+- **A read of an order's state covers no entry** (core-internal's fold `01e`, `Reads::OrderState`). It reads the
+  order's recorded state and age alone, which is the state machine's reading of the order, not any one entry of
+  the log; the inputs that make it say more (a route chosen, its decision record, a segment's evidence). So a
+  receipt is issued under such a read for no entry (`NOT_COVERED`): the reading taken, reversible were an entry to
+  record an order's state as such.
+- **No contract shape for receipts** (a hand-off to `F-020`). The receipt is `core-audit`'s own JSON, a library
+  type; a party reading it outside rutent's crates would want it under `contracts/`, which this row doesn't edit.
+- **The router record's bytes** (core-internal's hand-off to `T-022-03`). The store keeps them through `keep` like
+  any bytes, but the contract has no call to read them back by the `decision_record`'s unsalted `record` digest. An
+  item for `F-020`.
+- **Residuals for `T-025-05`.**
+  - A receipt names the log's size when it was issued, so a party asking for receipts at two times learns how much
+    the log grew between them: activity, which `REQ-AUD-14` keeps out of checkpoints. This is `THR-130`, on the
+    form as accepted for v0.
+  - A receipt's inclusion proof holds its neighbours' leaf hashes, SHA-256 of `0x00` and an entry's unsalted
+    canonical JSON, so a party can confirm a guess of an adjacent entry, one about someone else's order among them.
+    No entry holds a balance, so this is linkage, not `REQ-AUD-6`'s balance.
+  - An erased file's blocks may stay on the disk; the store removes the file and syncs, and secure deletion is the
+    deployment's storage (`F-030`).
+  - A retried append of a stated entry whose bytes were erased since answers `Refused`, not its earlier receipt:
+    the log attributes before its retry rule (`T-022-01`'s).
+  - Cited after its erasure: the log still admits a later entry citing an erased statement's receipt, since
+    `admit_entry` checks that the cited entry exists, not that its bytes do; so "refused while cited" holds at the
+    erasure only. Refusing later citations needs a contract relation, an item for `F-020`.
+  - Orphan bytes: a statement kept whose stated entry is never appended stays kept, named by no entry, and so no
+    erasure can reach it (the review of `746e398`, S2). Orchestration keeps before it checks
+    (`T-020-05`'s `record_refused`), which the coordinator routes apart.
+- **A place per write** (the review of `746e398`, S2). A statement's place, the order restatements are found by,
+  is taken before its write, whatever the write answers, so a write that reached the shelf before failing (its
+  directory's sync after the rename, say) shares its place with no later statement.
+
+### Tests
+
+- `tests/receipts.rs` runs the log in its file and the evidence store in its directory, side by side under one temp
+  directory, with a stand-in for policy's read check that allows or refuses every read, counts what it was asked,
+  and can answer another request.
+- Every rule was switched off in turn, and its test failed: the fresh salt, the commitment over the salt and the
+  bytes, opening on statements that bear out their commitments and are filed under their own, the restatement index
+  and its filing by signed content, an erasure dropping its place in the index, `fetch` handing nothing over on
+  policy's refusal, asking policy first, reading evidence only and taking only the answer to its own read, an
+  erasure only on the log's own entry at its receipt and only a `done` one, no erasure of an advertisement by its
+  label or by its bytes, the shelf removing the bytes, opening removing bytes left behind their mark, an erased statement
+  answering erased, a keep writing the shelf before answering, a failed write keeping nothing, a failed erasure
+  erasing nothing, the directory's lock, the receipt's signature, its entry digest with its inclusion proof, a
+  history holding a receipt only under its root, the issuer refusing the operator's key, taking policy's refusal
+  and only the answer to its own read, issuing only for an entry the read covers, and a segment read naming its
+  segment, and a kept statement checking against its entry by its commitment, its key and its signature.
+- After the review of `746e398`, each new rule was switched off in turn too, and its test failed: an erasure only by
+  the operator's role and only for its party, refusing a statement an entry rests on, by a stated entry's receipt and
+  by its commitment alone, a read resting on nothing,
+  binding carrying out a recorded erasure, refusing a mark with no erasure and reporting bytes gone with none, a
+  failed write keeping its place, and a receipt checked against the log it names. After fold `01e`: a read of an
+  order's state covering no entry, and a refused recorded erasure being reported, whoever recorded it.
+- Some checks are implied by others, so switching one off alone fails no test: a receipt's key being the log's (the
+  signature is verified under the log's key), its shape (only the issuer signs, and it signs that shape), its entry
+  digest and its inclusion proof (each implies the other for a receipt the log signed; off together, they fail), and
+  `holds_against` comparing the entry at its index (implied by the root).

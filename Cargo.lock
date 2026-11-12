@@ -1488,12 +1488,15 @@ dependencies = [
 name = "rutent-core-audit"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.4",
  "rutent-conformance",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde",
  "serde_json",
  "sha2",
 ]

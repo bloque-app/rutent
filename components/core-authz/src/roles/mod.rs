@@ -87,6 +87,9 @@ pub enum Permission {
     /// An operator's login acting for a user: moving value or giving an authorisation, at a reserve that declared
     /// it (`REQ-AUZ-9`, `REQ-ORD-13`).
     ActForUser,
+    /// An operator's login reading an order's recorded state and age, and nothing else of it, without a read
+    /// permission (`REQ-ORD-5`). Asked by `T-021-02`'s read rule.
+    ReadOrderState,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't

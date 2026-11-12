@@ -535,8 +535,9 @@ impl Segments {
     }
 
     /// An order's state and age, for `reader`, once policy allows the read; the check is recorded either way
-    /// (`REQ-ORD-5`, `REQ-AUZ-7`). A reader that reads by an identified permission names it: the operator does, since
-    /// policy lets only an order's own parties read it without one (`T-021-02`).
+    /// (`REQ-ORD-5`, `REQ-AUZ-7`). The read is of the order's state and age alone (`Reads::OrderState`), which the
+    /// order's customer and the operator's listed login read without a permission (`T-021-02`); a reader that reads
+    /// by an identified permission names it.
     pub fn status(
         &self,
         reads: &mut dyn Reads,
@@ -557,7 +558,7 @@ impl Segments {
             .check_read(&ReadCheck {
                 request: fresh.id(),
                 reader: reader.clone(),
-                reads: rutent_contracts::core_internal::Reads::Order {
+                reads: rutent_contracts::core_internal::Reads::OrderState {
                     order: order.clone(),
                 },
                 permission: permission.cloned(),
