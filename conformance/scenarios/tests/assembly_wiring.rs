@@ -504,7 +504,7 @@ fn reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties() {
 
 // verifies: DEC-18
 #[test]
-fn silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it() {
+fn silent_provider_records_its_deposit_failed_and_moves_nothing_for_it() {
     use rutent_contracts::core_internal::{Action, Outcome};
     use rutent_scenarios::harness::Fault;
     let run = Scenario::new(
