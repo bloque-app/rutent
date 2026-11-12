@@ -297,6 +297,15 @@ impl Recalculations {
             });
     }
 
+    /// Has `order`'s next recalculation follow the choice round of request `follows`, the one that chose the route
+    /// the customer resumed a waiting part on (`T-020-13`), so each round chains to the one before (`REQ-AUD-4`).
+    /// The customer's choice isn't a recalculation: the count stays.
+    pub fn followed_by(&mut self, order: &Id, follows: &Id) {
+        if let Some(followed) = self.orders.get_mut(order.as_str()) {
+            followed.follows = follows.clone();
+        }
+    }
+
     /// [`Recalculations::follow`], its count rebuilt from `inputs`, the order's recorded inputs as the log holds
     /// them, so a restart keeps the bound (`REQ-ORD-4`, `F-030`).
     pub fn follow_recorded(&mut self, order: &Id, follows: &Id, inputs: &[RecordedInput]) {

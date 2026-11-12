@@ -75,6 +75,11 @@
 //! [`Segments::confirmed_failed`] records its final `failed` result and the segment's `segment_failed`, the segments
 //! staying the one writer of a segment's results. [`Segments::observe`] takes a part's `stuck_resolved`, and a part
 //! its resolution ended is never handed over again.
+//!
+//! **Reversals and ending** (`T-020-12`'s seams): [`Segments::observe`] takes a segment's `reversal_completed` and an
+//! order's `end_requested`, which `crate::reversal` records; [`Segments::sent`] reads what a segment moved, which its
+//! reversal returns in full; [`Segments::answered`] whether its answer was taken, after which a report is late; and a part that has ended hands no segment over for the first time
+//! ([`SegmentsError::Ended`]).
 
 mod drain;
 mod journal;
@@ -310,10 +315,16 @@ pub enum SegmentsError {
     /// to record: nothing of it is handed over or carried out again, and only its resolution under policy moves its
     /// value (`REQ-ORD-28`, `REQ-AUZ-4`, `T-020-11`).
     Stuck(Id),
+    /// The part has ended, on request or otherwise, and none of its segments not yet handed over is handed over
+    /// (`REQ-ORD-12`, `REQ-STM-6`, `T-020-12`).
+    Ended(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The segment's value couldn't be held in flight.
     Hold(HoldError),
+    /// The order is a route handed on whose start no holding account's record proves yet: nothing of it is handed
+    /// over until one does (`REQ-ORD-40`, `T-020-13`).
+    StartUnproven(Id),
     /// A drain names something the contract can't carry; it is kept whole, not dropped.
     Uncarried(Uncarried),
 }
@@ -518,6 +529,8 @@ pub struct Segments {
     /// The refusal each part's guard recorded before a segment's first hand-over, by order and part: recorded once,
     /// and answered as recorded while the guard refuses for the same reason (`T-020-09`).
     refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
+    /// The routes handed on whose start the holding account's own record proved, by order (`T-020-13`).
+    proven: BTreeSet<String>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -812,8 +825,11 @@ impl Segments {
     /// Moves the order Core follows by `input`, a part's input recorded outside the segments: a
     /// `route_recalculated` (`T-020-10`), so the inputs the segments record next apply to its new route, a
     /// `no_route` or `stuck_declared` (`T-020-11`), so the part's state is read as stuck or waiting, or a
-    /// `stuck_resolved` (`T-020-11`), so a resolved part reads as ended where its resolution sent it. Only those
-    /// kinds: every segment's input the segments record themselves. False where it is another kind, Core follows no
+    /// `stuck_resolved` (`T-020-11`), so a resolved part reads as ended where its resolution sent it, or a
+    /// `reversal_completed` or `end_requested` (`T-020-12`), so a reversed segment reads as reversed and an order
+    /// ended on request as ended, or a `destination_changed` or `handed_on` (`T-020-13`), the customer's choice for
+    /// a waiting part. Only those kinds: every other segment's input the segments record themselves. False where it
+    /// is another kind, Core follows no
     /// such order, or it moved nothing.
     pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
         if !matches!(
@@ -822,6 +838,10 @@ impl Segments {
                 | Observed::NoRoute { .. }
                 | Observed::StuckDeclared { .. }
                 | Observed::StuckResolved { .. }
+                | Observed::ReversalCompleted { .. }
+                | Observed::EndRequested {}
+                | Observed::DestinationChanged { .. }
+                | Observed::HandedOn { .. }
         ) {
             return false;
         }
@@ -847,6 +867,39 @@ impl Segments {
         applied
     }
 
+    /// Marks `order`, a route handed on, as started: the holding account's own record proved its withdrawal, so its
+    /// segments may be handed over (`REQ-ORD-40`, `T-020-13`).
+    pub(crate) fn prove_start(&mut self, order: &Id) {
+        self.proven.insert(order.as_str().to_owned());
+    }
+
+    /// The transaction `segment` of `order` ran under and the operation Core signed for it, once it was handed over:
+    /// what it moved, in which asset and from where, which a reversal returns in full (`REQ-ORD-3`, `T-020-12`).
+    pub fn sent(&self, order: &Id, segment: &Id) -> Option<(&Id, &ProviderOperation)> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|f| (&f.transaction, &f.statement.statement))
+    }
+
+    /// Whether the answer of `segment` of `order` was taken: its operation carried out and something given back, the
+    /// platform's refusal included. Only after it can something come late (`T-020-12`).
+    pub fn answered(&self, order: &Id, segment: &Id) -> bool {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .is_some_and(|f| f.answered.is_some())
+    }
+
+    /// Whether `part` of `order` has ended in the order Core follows: complete, failed, handed on, or ended without
+    /// completing (`REQ-STM-6`, `T-020-12`).
+    fn ended(&self, order: &Id, part: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order
+                .parts
+                .iter()
+                .any(|p| p.part_id.as_str() == part.as_str() && stm::rules::is_ended(p.state))
+        })
+    }
+
     /// Marks `part` of `order` resolved: its stuck resolution moved all its value, so a settlement recorded for it
     /// later takes no rest hold, though the state machine still reads it stuck (`T-020-11`).
     pub(crate) fn mark_resolved(&mut self, order: &Id, part: &Id) {
@@ -855,16 +908,17 @@ impl Segments {
     }
 
     /// Whether `part` of `order` was ended by its stuck resolution: Core holds it resolved, or the order Core follows
-    /// took its `stuck_resolved`. Such a part is never handed over again, though what a segment of it carried out
+    /// took its `stuck_resolved`, or the part was handed on to a linked order (`T-020-13`). Such a part is never
+    /// handed over again, though what a segment of it carried out
     /// already gave back is still recorded (`REQ-STM-6`, `T-020-11`).
     fn ended_by_resolution(&self, order: &Id, part: &Id) -> bool {
         self.resolved
             .contains(&(order.as_str().to_owned(), part.as_str().to_owned()))
             || self.orders.get(order.as_str()).is_some_and(|t| {
-                t.order
-                    .parts
-                    .iter()
-                    .any(|p| p.part_id.as_str() == part.as_str() && p.resolved_to.is_some())
+                t.order.parts.iter().any(|p| {
+                    p.part_id.as_str() == part.as_str()
+                        && (p.resolved_to.is_some() || p.state == OrderState::HandedOn)
+                })
             })
     }
 
@@ -1125,8 +1179,24 @@ impl Segments {
         }
         // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
         // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
+        // A route handed on (`REQ-ORD-43`, `T-020-13`) starts at the inner node where the first order's value sat,
+        // by no withdrawal, and only once the holding account's own record proves the value left it (`REQ-ORD-40`).
+        // An order Core doesn't follow (after a restart, say) may be a route handed on whose proof it doesn't hold:
+        // a route starting at an inner node is refused for it, failing closed, until Core follows the order again.
+        let handed_on = self
+            .orders
+            .get(live.order.as_str())
+            .is_none_or(|t| t.order.handed_on_from.is_some())
+            && matches!(
+                part.operations.first().from.node,
+                rutent_contracts::provider_role::NodeRef::Inner(_)
+            );
+        if handed_on && !self.proven.contains(live.order.as_str()) {
+            return Err(SegmentsError::StartUnproven(live.order.clone()));
+        }
         let guard = match live.record.request.follows {
             Some(_) => check_recalculated_part(part),
+            None if handed_on => check_recalculated_part(part),
             None => check_part(part),
         };
         if let Err(refused) = guard {
@@ -1182,6 +1252,11 @@ impl Segments {
                         live.order.as_str().to_owned(),
                         live.segments[place].as_str().to_owned(),
                     );
+                    // A part that ended, on request among them, hands no segment over for the first time: an order
+                    // ended before its first segment settled moves nothing (`REQ-ORD-12`, `REQ-STM-6`, `T-020-12`).
+                    if !self.flights.contains_key(&key) && self.ended(live.order, live.part) {
+                        return Err(SegmentsError::Ended(live.part.clone()));
+                    }
                     let ending = part.operations.len() - 1;
                     let closable = || {
                         let deposit = &part.operations[ending];

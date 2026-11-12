@@ -157,6 +157,10 @@ pub enum On {
     Evidence,
     /// A segment's fee record (`T-020-09`).
     Fee,
+    /// An order's `route_chosen` (`T-020-13`).
+    Chosen,
+    /// A part's `handed_on` (`T-020-13`).
+    Handed,
 }
 
 impl On {
@@ -197,6 +201,10 @@ impl On {
                     Observed::StuckDeclared { .. } | Observed::NoRoute { .. })),
             (On::Evidence, Entry::Verified(v)) => matches!(v.what, What::Evidence { .. }),
             (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
+            (On::Handed, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
+            (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })),
             _ => false,
         }
     }
@@ -938,6 +946,27 @@ pub fn results_after_the_move(
     transaction: &str,
 ) -> (Receipt, Receipt) {
     let order = id(&core.named.order);
+    let receipts = stated_results(
+        core,
+        &order,
+        segment,
+        transaction,
+        &[RESERVE, OTHER_RESERVE],
+    );
+    (receipts[0].clone(), receipts[1].clone())
+}
+
+/// Each of `makers`' results about `order` through `transaction`, and about `segment` where one is named, signed
+/// with its statements key, made at Core's clock now and appended to the log now, after the operator's question
+/// under that transaction where no segment is named. Their receipts, in `makers`' order.
+fn stated_results(
+    core: &mut Core,
+    order: &Id,
+    segment: Option<&str>,
+    transaction: &str,
+    makers: &[&str],
+) -> Vec<Receipt> {
+    let order = order.clone();
     let made_at = core.clock.now().timestamp().unwrap();
     let body = json!({ "kind": "balance_verification", "transaction": transaction });
     let mut result = |maker: &str| {
@@ -978,7 +1007,7 @@ pub fn results_after_the_move(
             verified => verified,
         }
     };
-    let (first, second) = (result(RESERVE), result(OTHER_RESERVE));
+    let results: Vec<Entry> = makers.iter().map(|m| result(m)).collect();
     // A stuck resolution's transaction has no question under it yet: the move under it, which the production
     // resolutions would hand the provider (unbuilt), is asked here as the operator's operation about the order,
     // naming no segment, so the providers' results answer it (`answer-follows-its-question`).
@@ -1009,9 +1038,15 @@ pub fn results_after_the_move(
     if let Some(question) = question {
         log.take(&question, Through::General).unwrap();
     }
-    let first = log.take(&first, Through::General).unwrap();
-    let second = log.take(&second, Through::General).unwrap();
-    (first, second)
+    results
+        .iter()
+        .map(|r| log.take(r, Through::General).unwrap())
+        .collect()
+}
+
+/// Appends `entry` through `through`, as the log would take it: for a test that writes what Core never would.
+pub fn append_entry(core: &Core, entry: &Entry, through: Through) -> Receipt {
+    core.log.borrow_mut().take(entry, through).unwrap()
 }
 
 /// The deposit's arrival at the origin reserve, on the reserve's report to the operator's question: one deposit, and
@@ -1242,6 +1277,206 @@ fn seed_chosen(
     .unwrap();
     log.take(
         &entry(What::Input { input: chosen }, Outcome::Observed {}),
+        Through::General,
+    )
+    .unwrap();
+}
+
+/// Appends what the log holds of `named`, an order the kit's order's value is handed on to (`T-020-13`), before its
+/// route is chosen: the customer's authorisation through policy, the session `requester` opened, the quote shown,
+/// the reserve's signed yes for its one part from the reserve's ledger, the acceptance `requester` gave, and its
+/// decision record, under `decision_record`. Its `route_chosen`, naming `handed_on_from`, is the hand-on's to record.
+pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_record: &Id) {
+    let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
+    let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
+    let until = Timestamp::new(Instant(START + 86_400).rfc3339().unwrap()).unwrap();
+    let verified = |who: Actor, what: What, outcome: Outcome| {
+        Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who,
+            what,
+            when: When {
+                at: at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome,
+        })
+    };
+    let authorised = core
+        .policy
+        .authorise(&authorisation_of(named, None))
+        .unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let session = id(&format!("sess-{}", named.order));
+    let quote = digest(&"ac".repeat(32));
+    let transaction = format!("tx-yes-{}", named.order);
+    let yes = stated_results(core, &order, None, &transaction, &[RESERVE]).remove(0);
+    let mut log = core.log.borrow_mut();
+    log.take(
+        &verified(
+            requester.clone(),
+            What::OpenSession {
+                request: rutent_contracts::core_internal::SessionRequest {
+                    request: id(&format!("req-sess-{}", named.order)),
+                    account: id("acct-ref-1"),
+                    holder: requester.party.clone(),
+                    requester: requester.clone(),
+                    until: until.clone(),
+                    at: at.clone(),
+                },
+                opened: Some(rutent_contracts::core_internal::Opened {
+                    session: session.clone(),
+                    expires_at: until,
+                }),
+            },
+            Outcome::Permitted {},
+        ),
+        Through::Policy,
+    )
+    .unwrap();
+    log.take(
+        &verified(
+            self::core(),
+            What::Shown {
+                order: order.clone(),
+                shown: quote.clone(),
+                shown_as: rutent_contracts::core_internal::ShownAs::Quote,
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+    log.take(
+        &verified(
+            requester.clone(),
+            What::Acceptance {
+                acceptance: id(&format!("acc-{}", named.order)),
+                order: order.clone(),
+                request: id(&format!("req-{}", named.order)),
+                quote,
+                authorisation,
+                basis: AcceptanceBasis::Given,
+                parties: Parties {
+                    requester: requester.party.clone(),
+                    beneficiary: requester.party.clone(),
+                    settlement_account_at: None,
+                    payer: requester.party.clone(),
+                },
+                origin_reserve: id(RESERVE),
+                yeses: vec![rutent_contracts::core_internal::PartYes {
+                    part: id(PART),
+                    origin_reserve: id(RESERVE),
+                    reserve_yes: yes,
+                }],
+                session: Some(session),
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+    log.take(
+        &verified(
+            self::core(),
+            What::DecisionRecord {
+                decision_record: decision_record.clone(),
+                order,
+                round: RoutingRound::Choice,
+                record: digest(&"ce".repeat(32)),
+                previous: None,
+                shortlisted: None,
+                verifiers: Vec::new(),
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+}
+
+/// [`seed_linked`], the linked order accepted on an automatic deposit's arrival, not by the customer: the
+/// acceptance a customer's hand-on refuses (`REQ-ORD-43`).
+pub fn seed_linked_on_a_deposit(
+    core: &mut Core,
+    named: &Named,
+    requester: &Id,
+    decision_record: &Id,
+) {
+    let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
+    let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
+    let entry = |what: What, outcome: Outcome| {
+        Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: self::core(),
+            what,
+            when: When {
+                at: at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome,
+        })
+    };
+    let authorised = core
+        .policy
+        .authorise(&authorisation_of(named, None))
+        .unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let operator = core.operator.clone();
+    let chosen = route_chosen_of(&core.record, named);
+    let mut log = core.log.borrow_mut();
+    seed_arrival(
+        &mut log,
+        &mut core.store,
+        &core.record,
+        named,
+        &operator,
+        &chosen,
+        &entry,
+    );
+    log.take(
+        &entry(
+            What::Acceptance {
+                acceptance: id(&format!("acc-{}", named.order)),
+                order: order.clone(),
+                request: id(&format!("req-{}", named.order)),
+                quote: digest(&"ab".repeat(32)),
+                authorisation,
+                basis: AcceptanceBasis::AutomaticDeposit,
+                parties: Parties {
+                    requester: requester.clone(),
+                    beneficiary: requester.clone(),
+                    settlement_account_at: None,
+                    payer: requester.clone(),
+                },
+                origin_reserve: id(RESERVE),
+                yeses: Vec::new(),
+                session: None,
+            },
+            Outcome::Observed {},
+        ),
+        Through::General,
+    )
+    .unwrap();
+    log.take(
+        &entry(
+            What::DecisionRecord {
+                decision_record: decision_record.clone(),
+                order,
+                round: RoutingRound::Choice,
+                record: digest(&"ce".repeat(32)),
+                previous: None,
+                shortlisted: None,
+                verifiers: Vec::new(),
+            },
+            Outcome::Observed {},
+        ),
         Through::General,
     )
     .unwrap();
@@ -2042,5 +2277,6 @@ pub fn release_change(
 
 // Stuck orders and recalculation, for `T-020-11` --------------------------------------------------------------------
 
+pub mod handing;
 pub mod rerouting;
 pub mod resolving;
