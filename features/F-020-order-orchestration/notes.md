@@ -923,19 +923,18 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **The floor** (`REQ-ORD-27`, `AC-42`, `REQ-ORD-4`). At a recalculation, the request carries the authorisation's
   floor, the router drops what falls below it, and a routing whose every candidate was dropped `below_floor` makes
   the part wait (`Recalculation::WaitsForCustomer`), the routing's decision record showing why. At each settled
-  segment of any part, `Recalculations::run_part` runs it through `Segments::run_part_held` with a gate:
-  `recalc::left_after` projects what the quotes still ahead leave the customer after the operator's fee, from what
+  segment of any part, `Segments::run_part` checks the floor `Live::floor` carries (since the review: the one way a
+  part runs, so the check can't be skipped): `recalc::left_after` projects what the quotes still ahead leave the customer after the operator's fee, from what
   the settled segment handed on (an operation keeping its asset and unit takes off what its quote charged; one
   converting or counting in another unit gives out in its quote's proportion, rounded down; the operator's fee by
   `quote::received_after_operator_fee`, the router's own), and below the floor nothing more is handed over and the
-  part waits. A projection Core can't count holds no floor. Readings, reversible.
-- **Hand-off to the assembly (`T-024-02`): every part runs through `Recalculations::run_part`.** The floor is
-  checked only there: `Segments::run_part` called directly skips it, and hands a waiting part's next segment over,
-  and the log can't catch it, since a chosen route's `Live::route.delivers` is its quote.
+  part waits (`Segments::waiting`), however often it is run. A projection Core can't count holds no floor.
+  Readings, reversible. The assembly (`T-024-02`) fills `Live::floor` from the order's authorisation; the log can't
+  hold the floor between segments, since a chosen route's `Live::route.delivers` is its quote.
 - **Gap: waiting past the floor has no state-machine input.** state-machine 2.1.0 puts a part in
   `waiting_for_customer` only by `no_route` at a failed final deposit's node (`after_no_route`). A part held past
   the floor stays `first_segment_settled` (or `not_past_first_segment`) in the order Core follows, and
-  `Recalculations::waiting` is the only place it shows; `AC-12`'s "visible to them with its age" needs a new
+  `Segments::waiting` (or `Recalculations::waiting`, at a routing) is the only place it shows; `AC-12`'s "visible to them with its age" needs a new
   `F-020` row with a state-machine and core-internal bump (an input that makes the part wait for the customer). The
   decision record (at recalculation) and the settled segment's evidence with the chosen record (between segments)
   are what the log holds of it.
@@ -959,28 +958,36 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
     by no withdrawal", and a refusal `NotFromAnInnerNode`. Every other rule is the same function's.
   - `segments/mod.rs` (`T-020-08`): `run_part` checks a part whose record's request `follows` another with
     `check_recalculated_part`; only a withdrawal's failure cancels a part (`place == 0` was taken as the withdrawal,
-    so a recalculated deposit's failure would have cancelled it); `run_part_held`, the gate; `observe` (a
-    `route_recalculated` only: every other input the segments record themselves), `order` and `handed_on`.
+    so a recalculated deposit's failure would have cancelled it); the floor checked in `run_part` from
+    `Live::floor`, and `waiting`; a segment the followed order retired never handed over or taken on again
+    (`SegmentsError::Retired`); `observe` (a `route_recalculated` only: every other input the segments record
+    themselves), `order`, `handed_on`, `handed_over` and `retired`. `Live` gained `floor`, so `T-020-08`'s own test
+    and the kit set it.
     `T-020-09`, in the same wave, works in the segments' grading path: the lead sequences the two (`PLAN.md`
     §4.4).
   - `rounds/mod.rs` (`T-020-06`): a part of a routing that `follows` another and starts with no withdrawal asks no
     yes (otherwise every user-present recalculation was `NoReservesYes`); `History::recorded`, an order's history
     as the log holds it, so a recalculation chains to the order's last decision record (`REQ-AUD-4`).
-- **Tests.** Four property tests in `components/core-orch/tests/recalc.rs`, over every sequence of reports a part
+  - `intake/mod.rs` (`T-020-03`), on the review: a request whose route `follows` another routing is refused as
+    `malformed_request` before an order exists. Only Core sets `follows`; from a customer it would have run the
+    recalculated route's guard, from an inner node, past the withdrawal and its yes. Test
+    `request_claiming_to_follow_another_routing_is_refused`, in intake's test file.
+- **Tests.** Three property tests in `components/core-orch/tests/recalc.rs`, over every sequence of reports a part
   can get: `silence_never_releases_a_route` (256 cases; only evidence releases the value, never silence, a bound
   provider or an unknown outcome), `late_delivery_after_a_recalculation_moves_nothing_twice` (a report about a
   retired segment is late or after the end, moving nothing; never two segments started at once, nor one twice) and
-  `no_recalculation_changes_destination_or_to_asset` (Core's check, `route_end` and the state machine's), and four
+  `no_recalculation_changes_destination_or_to_asset` (Core's check, `route_end` and the state machine's), and five
   unit tests (passed again from the inputs, the floor in a route, the recalculated guard, the quotes still ahead
-  with a charge and an exchange). Nine on the running platform in `conformance/scenarios/tests/recalc.rs`, on `T-020-08`'s kit with policy's engine
+  with a charge and an exchange). Fourteen on the running platform in `conformance/scenarios/tests/recalc.rs`, on `T-020-08`'s kit with policy's engine
   deciding each move and the log replayed through `attribute` and `admit_entry`, the routing through the rounds and
   `RouteFinder` with the user present: the failed provider paying only the return, a late report after a
   recalculation, silence (silent, unknown, too late, the grant revoked, the version marked stale), the bound, a
   provider passed again, the floor at a settled segment and at a recalculation, an append retried, and a routing
-  that offered no route not asked again. The paying test runs the recalculation under an operator's fee of 10 000:
+  that offered no route not asked again, and the review's five below. The paying test runs the recalculation under an operator's fee of 10 000:
   the new route moves all 1 000 000 and delivers 990 000. The kit
-  gained `Core::under`, `seed_order_under`, `authorisation_of`, `TestLog::receipt_at`, `On::Recalculated` and a
-  public `price`, all additive.
+  gained `Core::under`, `Core::split` with `route_chosen_split` and the second part's ids, `Core::floor`,
+  `seed_order_under`, `authorisation_of`, `TestLog::receipt_at`, `On::Recalculated` and a public `price`, all
+  additive.
 - **Not the real `AuditLog`.** The brief asked for the real log in the platform tests "as `T-020-08`'s kit does",
   but the kit's log is its own `TestLog`, replayed through core-internal's `attribute` and `admit_entry`
   (`Core::admitted`). Moving the kit onto `AuditLog` needs its register seeded from recorded grants and
@@ -1001,9 +1008,35 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   `NoReservesYes`), and the guard's inner start (its unit test). After the advisor's review: the part held after no
   route (its test), `observe` taking a recalculation only (the late-report test's `provider_bound`), and the route's
   ends read from the route (the `INV-10` property).
-- **Silence is guarded inside Core.** With Core's evidence rule off, the rounds ask the providers before the state
-  machine's start rule rejects the route; the log would have admitted the input, since a settled segment ends where
-  the route starts. So the asking is stopped by Core alone, and the record by Core and the state machine.
+- **Gap: silence is guarded only inside Core, not by the log.** With Core's evidence rule off, the rounds ask the
+  providers before the state machine's start rule rejects the route; the log would have admitted the input, since a
+  settled segment ends where the route starts, whatever came after it. The contract half is for core-internal's
+  author (`T-020-01`, a bump): `recalculation-starts-from-evidenced-value` should also refuse a recalculation while a
+  later segment of the part has a move (an `effect` of `move_value`) with no final `result`, and the log should
+  refuse any further move on a segment a recalculation retired. Until then the log doesn't hold `INV-4` across a
+  recalculation; Core and the state machine do.
+- **The review of `3a95a8e`** (merged `m3` at `2233f33` first). Each test below was written first and seen red,
+  then fixed:
+  - **B1, the same value moved twice.** A deposit whose effect the log took but whose answers were lost stayed
+    `pending` in the state machine, so a recalculation went around it, and running the old route again carried the
+    retired deposit out: the platform handled two deposits and the log admitted both. Now a segment handed over
+    with no final outcome counts as in flight (`NotRecalculable::HandedOver`, from `Segments::handed_over`), and
+    `Segments` refuses to hand over or take on a segment the followed order retired (`SegmentsError::Retired`).
+    Tests `deposit_whose_effect_may_be_recorded_is_not_recalculated_around` (the reviewer's probe) and
+    `retired_segment_is_never_handed_over`.
+  - **The bound, with parts and an outage.** Recalculations waiting on the log count against the bound, the count
+    moves by one when one is recorded, and `Recalculations::follow_recorded` rebuilds it from the log's inputs.
+    Test `recalculations_of_a_split_order_waiting_on_the_log_count_against_its_bound`, a split order seeded by the
+    kit (`Core::split`; the router never splits).
+  - **A retried append checks the part again.** Before a recalculation waiting on the log is appended, the part is
+    read again: evidenced, nothing handed over, the state machine taking the input; otherwise it is dropped and
+    answered `NotNow`. If the followed order still doesn't take it once recorded, `Recalculation::NotFollowed`:
+    no hold released, nothing counted. Test `recalculation_retried_after_its_part_moved_on_is_not_recorded`.
+  - **The floor can't be skipped.** See the floor above. Test `part_run_through_the_segments_alone_waits_at_its_floor`.
+  - **`follows` from a customer**, refused at intake (above).
+  - Each new rule was then switched off once and its test seen red: the handed-over check, the retired check, the
+    intake refusal, the pending count, the count rebuilt, the re-check, the floor in `run_part` (both floor tests) and
+    the waiting part held.
 - **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
   `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
   No manifest, no dependency, no `DEC-20` path.

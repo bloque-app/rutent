@@ -128,6 +128,16 @@ impl Recalc {
         core: &mut Core,
         world: &mut World,
     ) -> Result<Recalculation, RecalcError> {
+        self.try_recalculate_part(core, world, PART)
+    }
+
+    /// [`Recalc::try_recalculate`], of `part`.
+    fn try_recalculate_part(
+        &mut self,
+        core: &mut Core,
+        world: &mut World,
+        part: &str,
+    ) -> Result<Recalculation, RecalcError> {
         let context = world.context();
         let order = rounds::Order {
             order: id(ORDER),
@@ -173,7 +183,7 @@ impl Recalc {
             &mut parts,
             Ask {
                 order: &order,
-                part: &id(PART),
+                part: &id(part),
                 authorisation: &authorisation,
                 objective: &Objective::LowestTotalCost {},
                 bounds: &bounds,
@@ -189,10 +199,31 @@ impl Recalc {
 
     /// Runs the part's recalculated route on the world's platform, its floor checked at each settled segment.
     fn run(&mut self, core: &mut Core, world: &mut World, recalculated: &Recalculated) -> Ran {
+        self.run_route(
+            core,
+            world,
+            PART,
+            &recalculated.segments,
+            &recalculated.record,
+            &recalculated.route,
+        )
+        .expect("the recalculated part runs")
+    }
+
+    /// Runs `part` over `segments` of `record`'s chosen route, ending at `end`, on the world's platform.
+    fn run_route(
+        &mut self,
+        core: &mut Core,
+        world: &mut World,
+        part: &str,
+        segments: &[Id],
+        record: &rutent_contracts::router_api::DecisionRecord,
+        end: &rutent_contracts::core_internal::RouteEnd,
+    ) -> Result<Ran, rutent_core_orch::segments::SegmentsError> {
         let context = world.context();
         let (order, part, auth, origin) = (
             id(ORDER),
-            id(PART),
+            id(part),
             id(&core.named.authorisation()),
             id(RESERVE),
         );
@@ -205,17 +236,18 @@ impl Recalc {
         let live = Live {
             order: &order,
             part: &part,
-            segments: &recalculated.segments,
-            record: &recalculated.record,
+            segments,
+            record,
             at: 0,
             authorisation: &auth,
             origin_reserve: &origin,
-            route: &recalculated.route,
+            route: end,
             caller: &caller,
             core: &core_actor,
             operator: &operator,
             session: Some(&session),
             inputs: &core.inputs,
+            floor: self.floor.as_ref(),
         };
         let mut general = General(Rc::clone(&core.log));
         let mut parts = Parts {
@@ -232,10 +264,7 @@ impl Recalc {
             issued: &core.issued,
             exposures: &mut core.exposures,
         };
-        self.recalculations
-            .run_part(&mut core.segments, &mut parts, &live, self.floor.as_ref())
-            .expect("the recalculated part runs")
-            .ran
+        core.segments.run_part(&mut parts, &live)
     }
 }
 
@@ -723,7 +752,7 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             "withdrawal",
             Behaviour::delivering(Delivery::Short { bps: 100 }),
         );
-        let mut recalc = Recalc::of(&core, Some(floor));
+        let recalc = Recalc::of(&core, Some(floor));
         let (order, part, auth, origin, end) = (
             id(ORDER),
             id(PART),
@@ -754,6 +783,7 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             operator: &operator,
             session: Some(&session),
             inputs: &inputs,
+            floor: recalc.floor.as_ref(),
         };
         let mut general = General(Rc::clone(&core.log));
         let mut parts = Parts {
@@ -770,24 +800,22 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             issued: &core.issued,
             exposures: &mut core.exposures,
         };
-        let run = recalc
-            .recalculations
-            .run_part(&mut core.segments, &mut parts, &live, recalc.floor.as_ref())
+        let ran = core
+            .segments
+            .run_part(&mut parts, &live)
             .expect("the part runs");
-        (world, core, recalc, run)
+        let waits = core.segments.waiting(&order, &part).cloned();
+        (world, core, recalc, (ran, waits))
     };
 
     let (mut world, mut core, mut recalc, run) = run_under("995000");
-    let done = segments(&run.ran);
+    let done = segments(&run.0);
     assert_eq!(done.len(), 1, "the deposit is not handed over: {done:?}");
-    let waits = run.waits.expect("the order waits for the customer");
+    let waits = run.1.expect("the order waits for the customer");
     assert_eq!(waits.after.as_str(), WITHDRAWAL);
     assert_eq!(waits.evidenced.amount().as_str(), "990000");
     assert_eq!(waits.left.as_ref().map(|l| l.as_str()), Some("990000"));
-    assert_eq!(
-        recalc.recalculations.waiting(&id(ORDER), &id(PART)),
-        Some(&waits)
-    );
+    assert_eq!(core.segments.waiting(&id(ORDER), &id(PART)), Some(&waits));
     assert_eq!(moves(&core), vec![WITHDRAWAL.to_owned()]);
     let entries = core.log.borrow().entries.len();
     assert_eq!(
@@ -800,8 +828,8 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
         .expect("the log admits every entry");
 
     let (_, core, _, run) = run_under("985000");
-    assert!(run.waits.is_none());
-    assert_eq!(segments(&run.ran).len(), 2);
+    assert!(run.1.is_none());
+    assert_eq!(segments(&run.0).len(), 2);
     assert_eq!(part(&core).state, OrderState::Complete);
 }
 
@@ -918,4 +946,262 @@ fn routing_that_offered_no_route_is_not_asked_again() {
     assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+/// The deposit's effect is recorded but the log's answers are lost, so the deposit is still `pending` in the order
+/// Core follows, its value about to move. No recalculation goes around it: it counts as in flight. Resumed, the
+/// deposit moves once, and the value is moved from one place only.
+// verifies: INV-4, REQ-ORD-2
+#[test]
+fn deposit_whose_effect_may_be_recorded_is_not_recalculated_around() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::EffectOf(DEPOSIT), Fault::LostAnswer));
+    }
+    let session = world.context().session;
+    let stopped = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    assert_eq!(
+        stopped,
+        Err(rutent_core_orch::segments::SegmentsError::Append(
+            AppendFailure::Unavailable
+        ))
+    );
+    let deposit = part(&core)
+        .segments
+        .into_iter()
+        .find(|s| s.segment_id.as_str() == DEPOSIT)
+        .unwrap();
+    assert_eq!(
+        deposit.state,
+        SegmentState::Pending,
+        "its provider not yet bound"
+    );
+    let mut recalc = Recalc::of(&core, None);
+    let entries = core.log.borrow().entries.len();
+    let done = recalc.recalculate(&mut core, &mut world);
+    assert!(
+        matches!(&done, Recalculation::NotNow(NotRecalculable::HandedOver { segment }) if segment.as_str() == DEPOSIT),
+        "{done:?}"
+    );
+    assert_eq!(recalc.asked, 0, "no one is asked");
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+    // Resumed, the deposit moves once.
+    let before = handled(&world);
+    let ran = core.run(&mut world);
+    assert!(matches!(
+        segments(&ran)[1].outcome,
+        SegmentOutcome::Settled { .. }
+    ));
+    assert_eq!(handled(&world) - before, 1, "one deposit");
+    assert_eq!(part(&core).state, OrderState::Complete);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A segment the order Core follows has retired, its route recalculated, is never handed over or taken on again,
+/// whatever it kept: the value moves only on the route that replaced it.
+// verifies: INV-4
+#[test]
+fn retired_segment_is_never_handed_over() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::EffectOf(DEPOSIT), Fault::LostAnswer));
+    }
+    let session = world.context().session;
+    let _ = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    // A route recalculated from the ledger, recorded elsewhere, retires the deposit in the order Core follows.
+    let plan = &route_chosen(&core.record);
+    let Observed::RouteChosen { parts, .. } = &plan.observed else {
+        unreachable!();
+    };
+    let mut again = parts[0].segments[1].clone();
+    again.segment_id = stm::Id::new("p1-s2-again").unwrap();
+    let recalculated = rutent_contracts::state_machine::RecordedInput {
+        record_id: stm::RecordId::new("rec-again").unwrap(),
+        subject: stm::Subject {
+            order: stm::Id::new(ORDER).unwrap(),
+            part: Some(stm::Id::new(PART).unwrap()),
+            segment: None,
+        },
+        observed: Observed::RouteRecalculated {
+            decision_record: stm::Id::new(core.record.record_id().as_str()).unwrap(),
+            segments: vec![again],
+        },
+        ..plan.clone()
+    };
+    assert!(core.segments.observe(&*core.clock, &recalculated));
+    assert_eq!(
+        part(&core).retired_segments,
+        vec![stm::Id::new(DEPOSIT).unwrap()]
+    );
+    let before = handled(&world);
+    let resumed = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    assert_eq!(
+        resumed,
+        Err(rutent_core_orch::segments::SegmentsError::Retired(id(
+            DEPOSIT
+        )))
+    );
+    assert_eq!(handled(&world), before, "the retired deposit moved nothing");
+}
+
+/// A split order, both parts' deposits refused at the ledger. The order's recalculations are bounded together, a
+/// recalculation waiting on the log counted among them: with two recorded and one waiting, the other part is told
+/// there is no route left, and the log never holds more than the bound.
+// verifies: REQ-ORD-4
+#[test]
+fn recalculations_of_a_split_order_waiting_on_the_log_count_against_its_bound() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::split(&mut world);
+    let first = route_end();
+    let record = core.record.clone();
+    let mut recalc = Recalc::of(&core, None);
+    for (part, ids) in [
+        (PART, [WITHDRAWAL, DEPOSIT]),
+        (SECOND_PART, [SECOND_WITHDRAWAL, SECOND_DEPOSIT]),
+    ] {
+        world
+            .fleet
+            .world()
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        let ran = recalc
+            .run_route(&mut core, &mut world, part, &ids.map(id), &record, &first)
+            .expect("the part runs");
+        assert!(failed(&segments(&ran)[1].outcome), "{ran:?}");
+    }
+    // Two recalculations recorded, each run and refused again.
+    for _ in 0..2 {
+        world
+            .fleet
+            .world()
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        let done = recalculated(recalc.recalculate(&mut core, &mut world));
+        let ran = recalc.run(&mut core, &mut world, &done);
+        assert!(failed(&segments(&ran)[0].outcome));
+    }
+    assert_eq!(recalc::RECALCULATIONS, 3);
+    // The third waits on the log.
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Recalculated, Fault::Unavailable));
+    }
+    assert!(recalc.try_recalculate(&mut core, &mut world).is_err());
+    // The other part is past the bound.
+    let other = recalc
+        .try_recalculate_part(&mut core, &mut world, SECOND_PART)
+        .unwrap();
+    assert_eq!(other, Recalculation::NoRouteLeft { recalculated: 2 });
+    let waiting = recalculated(recalc.recalculate(&mut core, &mut world));
+    assert_eq!(waiting.recalculated, 3);
+    let recorded = core
+        .log
+        .borrow()
+        .inputs()
+        .iter()
+        .filter(|i| matches!(i.observed, Observed::RouteRecalculated { .. }))
+        .count();
+    assert_eq!(recorded, recalc::RECALCULATIONS);
+    // Rebuilt from the log, the count is the same.
+    let inputs: Vec<_> = core.log.borrow().inputs().into_iter().cloned().collect();
+    let mut rebuilt = Recalculations::new();
+    rebuilt.follow_recorded(&id(ORDER), &core.record.request.request_id, &inputs);
+    assert_eq!(rebuilt.recalculated(&id(ORDER)), recalc::RECALCULATIONS);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A recalculation waits on the log while the part is recalculated elsewhere and completes. When the log can take
+/// it again, Core checks the part first: its route is no longer the part's to replace, so nothing is recorded, no
+/// hold is released and nothing is counted.
+// verifies: INV-4, INV-8
+#[test]
+fn recalculation_retried_after_its_part_moved_on_is_not_recorded() {
+    let (mut world, mut core, mut recalc) = deposit_failed(None);
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Recalculated, Fault::Unavailable));
+    }
+    assert!(recalc.try_recalculate(&mut core, &mut world).is_err());
+    // Recalculated elsewhere, and run to the end.
+    let mut elsewhere = Recalc::of(&core, None);
+    let done = recalculated(elsewhere.recalculate(&mut core, &mut world));
+    let ran = elsewhere.run(&mut core, &mut world, &done);
+    assert!(matches!(
+        segments(&ran)[0].outcome,
+        SegmentOutcome::Settled { .. }
+    ));
+    assert_eq!(part(&core).state, OrderState::Complete);
+    let entries = core.log.borrow().entries.len();
+    let retried = recalc.recalculate(&mut core, &mut world);
+    assert_eq!(
+        retried,
+        Recalculation::NotNow(NotRecalculable::Ended(OrderState::Complete))
+    );
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+    assert_eq!(recalc.recalculations.recalculated(&id(ORDER)), 0);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The floor can't be skipped: a part run through the segments themselves, as any caller runs one, waits at its
+/// floor all the same, and running it again hands nothing more over.
+// verifies: REQ-ORD-27
+#[test]
+fn part_run_through_the_segments_alone_waits_at_its_floor() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(PositiveAmount::new("995000").unwrap()));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    let ran = core.run(&mut world);
+    assert_eq!(segments(&ran).len(), 1, "the deposit is not handed over");
+    let waits = core
+        .segments
+        .waiting(&id(ORDER), &id(PART))
+        .cloned()
+        .expect("the part waits");
+    assert_eq!(waits.after.as_str(), WITHDRAWAL);
+    assert_eq!(waits.evidenced.amount().as_str(), "990000");
+    let before = handled(&world);
+    let again = core.run(&mut world);
+    assert_eq!(segments(&again).len(), 1);
+    assert_eq!(handled(&world), before, "nothing more is handed over");
+    assert_eq!(moves(&core), vec![WITHDRAWAL.to_owned()]);
+    let mut recalc = Recalc::of(&core, Some(PositiveAmount::new("995000").unwrap()));
+    assert_eq!(
+        recalc.recalculate(&mut core, &mut world),
+        Recalculation::NotNow(NotRecalculable::Held(OrderState::WaitingForCustomer))
+    );
 }

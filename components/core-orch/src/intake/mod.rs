@@ -924,6 +924,10 @@ fn well_formed(mut request: OrderRequest) -> Option<OrderRequest> {
     if !is_requester(&request, &request.caller) {
         return None;
     }
+    // Only Core recalculates: a request's route never follows another routing (`REQ-ORD-2`, `T-020-10`).
+    if request.route.follows.is_some() {
+        return None;
+    }
     if request.route.to.node != NodeRef::Outer(request.destination.node.clone()) {
         return None;
     }

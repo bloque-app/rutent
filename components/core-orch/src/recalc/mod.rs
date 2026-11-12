@@ -30,9 +30,9 @@
 //!    routing that offered no route, or one Core refused, the part is routed no more until `T-020-11` resolves it.
 //! 5. **Past the floor, the order waits for the customer** (`REQ-ORD-27`). A routing whose every candidate was
 //!    dropped as below the floor makes the part wait ([`Recalculation::WaitsForCustomer`]), its decision record
-//!    showing why. And [`Recalculations::run_part`] runs a part with the floor checked at each settled segment,
-//!    against what is evidenced there and the quotes still ahead ([`left_after`], `AC-42`): past it, nothing more
-//!    is handed over, and the part waits.
+//!    showing why. And [`Segments::run_part`], the one way a part runs, checks the floor its [`Live`](crate::segments::Live) carries at
+//!    each settled segment, against what is evidenced there and the quotes still ahead ([`left_after`], `AC-42`):
+//!    past it, nothing more is handed over, and the part waits ([`Segments::waiting`]).
 //! 6. **Recorded once.** The `route_recalculated` input, citing the choice round's decision record, is built once
 //!    and appended until the log takes it; the log admits it only on a `segment_settled` of that part ending where
 //!    the route starts (`recalculation-starts-from-evidenced-value`). Only then does the order Core follows move to
@@ -41,7 +41,7 @@
 //!
 //! **Gap: no state-machine input for waiting past the floor.** state-machine 2.1.0 puts a part in
 //! `waiting_for_customer` only by `no_route` at a failed final deposit's node. A part held at a settled segment past
-//! the floor stays `first_segment_settled` there; Core holds it ([`Recalculations::waiting`]) and hands nothing more
+//! the floor stays `first_segment_settled` there; Core holds it ([`Segments::waiting`]) and hands nothing more
 //! over. A new `F-020` row with a state-machine bump would let the customer see it as waiting (`AC-12`).
 
 mod rule;
@@ -70,7 +70,8 @@ use crate::rounds::{
     self, Fresh, History, Issued, Offer, OperatorKey, Providers, Recorded, Routed, Routing,
     RoutingError,
 };
-use crate::segments::{self, Live, Ran, Segments, SegmentsError};
+use crate::segments::Segments;
+pub use crate::segments::Waits;
 use crate::snapshot::{Clock, Exposures, OrchestrationLog, Price, Releases};
 
 pub use rule::{
@@ -198,6 +199,12 @@ pub enum Recalculation {
     },
     /// The part's route was recalculated.
     Recalculated(Box<Recalculated>),
+    /// The input was recorded, but the order Core follows didn't take it: no hold was released and nothing was
+    /// counted. The log holds it; the order's state is the one to settle (`T-020-11`).
+    NotFollowed {
+        /// The receipt of its entry.
+        receipt: Receipt,
+    },
 }
 
 /// Why a recalculation couldn't be tried.
@@ -224,27 +231,6 @@ impl From<AppendFailure> for RecalcError {
     fn from(failure: AppendFailure) -> Self {
         RecalcError::Append(failure)
     }
-}
-
-/// Where a part waits for the customer past its floor (`REQ-ORD-27`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Waits {
-    /// The settled segment it waits after, where its value is evidenced.
-    pub after: Id,
-    /// What is evidenced there.
-    pub evidenced: PositiveAmount,
-    /// What the quotes still ahead would leave the customer after the operator's fee; `None` where Core couldn't
-    /// count it, which holds no floor.
-    pub left: Option<rutent_contracts::router_api::Amount>,
-}
-
-/// What running a part with its floor checked did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Run {
-    /// The segments, as [`Segments::run_part_held`] ran them.
-    pub ran: Ran,
-    /// Where the part waits for the customer past its floor, if it does.
-    pub waits: Option<Waits>,
 }
 
 /// A recalculation built, kept until the log takes its input.
@@ -311,6 +297,22 @@ impl Recalculations {
             });
     }
 
+    /// [`Recalculations::follow`], its count rebuilt from `inputs`, the order's recorded inputs as the log holds
+    /// them, so a restart keeps the bound (`REQ-ORD-4`, `F-030`).
+    pub fn follow_recorded(&mut self, order: &Id, follows: &Id, inputs: &[RecordedInput]) {
+        self.follow(order, follows);
+        let recorded = inputs
+            .iter()
+            .filter(|i| {
+                i.subject.order.as_str() == order.as_str()
+                    && matches!(i.observed, Observed::RouteRecalculated { .. })
+            })
+            .count();
+        if let Some(followed) = self.orders.get_mut(order.as_str()) {
+            followed.recalculated = followed.recalculated.max(recorded);
+        }
+    }
+
     /// How many times `order`'s routes have been recalculated.
     pub fn recalculated(&self, order: &Id) -> usize {
         self.orders
@@ -318,7 +320,9 @@ impl Recalculations {
             .map_or(0, |f| f.recalculated)
     }
 
-    /// Where `part` of `order` waits for the customer past its floor, if it does (`REQ-ORD-27`).
+    /// Where `part` of `order` waits for the customer because the routing that would have recalculated it left the
+    /// customer below its floor, if it does (`REQ-ORD-27`); a part held at a settled segment is
+    /// [`Segments::waiting`]'s.
     pub fn waiting(&self, order: &Id, part: &Id) -> Option<&Waits> {
         self.orders
             .get(order.as_str())
@@ -349,7 +353,9 @@ impl Recalculations {
                 recalculated: followed.recalculated,
             });
         }
-        if followed.waiting.contains_key(ask.part.as_str()) {
+        if followed.waiting.contains_key(ask.part.as_str())
+            || parts.segments.waiting(order_id, ask.part).is_some()
+        {
             return Ok(Recalculation::NotNow(NotRecalculable::Held(
                 stm::OrderState::WaitingForCustomer,
             )));
@@ -369,6 +375,11 @@ impl Recalculations {
             Ok(evidenced) => evidenced,
             Err(why) => return Ok(Recalculation::NotNow(why)),
         };
+        // A segment handed over with no final outcome may have its effect in the log, though the state machine
+        // still has it pending: no route goes around it (`INV-4`).
+        if let Some(why) = handed_over(parts.segments, order_id, part) {
+            return Ok(Recalculation::NotNow(why));
+        }
         let settled_id =
             Id::new(settled.segment_id.as_str()).ok_or(RecalcError::Id("a segment id"))?;
         let Some(amount) = parts
@@ -379,7 +390,8 @@ impl Recalculations {
             return Ok(Recalculation::NotNow(NotRecalculable::NoSettledEnd));
         };
         // Bounded in count (`REQ-ORD-4`).
-        if followed.recalculated >= RECALCULATIONS {
+        // Those waiting on the log count too, so a split order's parts can't pass the bound together.
+        if followed.recalculated + followed.pending.len() >= RECALCULATIONS {
             return Ok(Recalculation::NoRouteLeft {
                 recalculated: followed.recalculated,
             });
@@ -597,7 +609,7 @@ impl Recalculations {
                 from: at.clone(),
                 amount,
                 passed_again: passed,
-                recalculated: followed.recalculated + 1,
+                recalculated: 0,
             },
             retired,
             tried: newly_tried,
@@ -616,6 +628,35 @@ impl Recalculations {
         part: &Id,
         pending: Pending,
     ) -> Result<Recalculation, RecalcError> {
+        // The part is read again first: a recalculation built before it moved on is no recalculation now.
+        let order = Id::new(pending.recalculated.input.subject.order.as_str())
+            .ok_or(RecalcError::Id("an order id"))?;
+        let stale = match parts.segments.order(&order) {
+            None => Some(Recalculation::NotNow(NotRecalculable::Unknown)),
+            Some(followed_order) => {
+                let now = followed_order
+                    .parts
+                    .iter()
+                    .find(|p| p.part_id.as_str() == part.as_str());
+                match now.map(|p| (evidenced(p), p)) {
+                    None => Some(Recalculation::NotNow(NotRecalculable::Unknown)),
+                    Some((Err(why), _)) => Some(Recalculation::NotNow(why)),
+                    Some((Ok(_), p)) => match handed_over(parts.segments, &order, p) {
+                        Some(why) => Some(Recalculation::NotNow(why)),
+                        None => {
+                            let after =
+                                Stm::transition(followed_order, &pending.recalculated.input);
+                            (after.last_input.outcome != (stm::Outcome::Applied {}))
+                                .then_some(Recalculation::NotNow(NotRecalculable::NoSettledEnd))
+                        }
+                    },
+                }
+            }
+        };
+        if let Some(stale) = stale {
+            followed.pending.remove(part.as_str());
+            return Ok(stale);
+        }
         // Only a log that can't take it now leaves it kept: one the log refuses is no recalculation.
         let receipt = match append(parts.log, &pending.entry) {
             Ok(receipt) => receipt,
@@ -628,61 +669,22 @@ impl Recalculations {
         followed.pending.remove(part.as_str());
         let mut recalculated = pending.recalculated;
         recalculated.receipt = receipt;
-        parts.segments.observe(parts.clock, &recalculated.input);
+        if !parts.segments.observe(parts.clock, &recalculated.input) {
+            // Recorded, but the order Core follows didn't take it: no hold is released and nothing is counted.
+            return Ok(Recalculation::NotFollowed {
+                receipt: recalculated.receipt,
+            });
+        }
         for segment in &pending.retired {
             parts
                 .exposures
                 .release(&recalculated.record_order(), segment);
         }
-        followed.recalculated = recalculated.recalculated;
+        followed.recalculated += 1;
+        recalculated.recalculated = followed.recalculated;
         followed.follows = recalculated.record.request.request_id.clone();
         followed.tried.extend(pending.tried);
         Ok(Recalculation::Recalculated(Box::new(recalculated)))
-    }
-
-    /// Runs one part of an order, chosen or recalculated, with its floor checked at each settled segment against
-    /// what is evidenced there and the quotes still ahead (`REQ-ORD-27`, `AC-42`): past it, nothing more is handed
-    /// over and the part waits for the customer. The floor is checked only here: the assembly runs every part
-    /// through it, never through [`Segments::run_part`] alone, which knows no floor.
-    pub fn run_part(
-        &mut self,
-        segments: &mut Segments,
-        parts: &mut segments::Parts<'_>,
-        live: &Live<'_>,
-        floor: Option<&PositiveAmount>,
-    ) -> Result<Run, SegmentsError> {
-        let mut waits = None;
-        let ran = segments.run_part_held(parts, live, &mut |place, arrived| {
-            let left = live
-                .record
-                .chosen()
-                .and_then(|c| c.parts.get(live.at))
-                .and_then(|p| {
-                    left_after(
-                        p.operations.as_slice(),
-                        &live.record.bounds.operator_fee,
-                        place,
-                        arrived,
-                    )
-                });
-            if holds_floor(left.as_ref(), floor) {
-                return true;
-            }
-            waits = live.segments.get(place).map(|after| Waits {
-                after: after.clone(),
-                evidenced: arrived.clone(),
-                left,
-            });
-            false
-        })?;
-        if let Some(waits) = &waits
-            && let Some(followed) = self.orders.get_mut(live.order.as_str())
-        {
-            followed
-                .waiting
-                .insert(live.part.as_str().to_owned(), waits.clone());
-        }
-        Ok(Run { ran, waits })
     }
 }
 
@@ -691,6 +693,18 @@ impl Recalculated {
     fn record_order(&self) -> Id {
         Id::new(self.input.subject.order.as_str()).expect("an order id is an id")
     }
+}
+
+/// The first segment of `part` that hasn't settled and that `segments` handed over with no final outcome, as why
+/// the part isn't recalculated.
+fn handed_over(segments: &Segments, order: &Id, part: &stm::Part) -> Option<NotRecalculable> {
+    part.segments
+        .iter()
+        .filter(|s| s.state != SegmentState::Settled)
+        .find(|s| Id::new(s.segment_id.as_str()).is_some_and(|id| segments.handed_over(order, &id)))
+        .map(|s| NotRecalculable::HandedOver {
+            segment: s.segment_id.clone(),
+        })
 }
 
 /// Whether the record considered a candidate and dropped every one as below the floor (`REQ-ORD-27`).

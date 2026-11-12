@@ -33,6 +33,12 @@ pub enum NotRecalculable {
         /// Its state.
         state: SegmentState,
     },
+    /// A segment of the part was handed over and has no final outcome: its effect may be in the log, its value
+    /// about to move, though the state machine still has it `pending` (`INV-4`).
+    HandedOver {
+        /// The segment.
+        segment: stm::Id,
+    },
     /// The value sits at a node no settled segment of the part ends at, so nothing evidences it there
     /// (`recalculation-starts-from-evidenced-value`).
     NoSettledEnd,
