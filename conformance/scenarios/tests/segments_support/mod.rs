@@ -1380,8 +1380,16 @@ impl Core {
                 }
                 verified => verified.clone(),
             };
-            admit_entry(&history, &entry, *through, &operator().acts)
-                .map_err(|v| (i, v.0.to_owned()))?;
+            admit_entry(
+                &history,
+                &entry,
+                *through,
+                &rutent_contracts::core_internal::DeploymentOperator {
+                    maker: operator().acts,
+                    party: operator().party,
+                },
+            )
+            .map_err(|v| (i, v.0.to_owned()))?;
             // The receipt the writer was handed: this log answers before it attributes.
             history.push((receipt(i, appended), entry));
         }
