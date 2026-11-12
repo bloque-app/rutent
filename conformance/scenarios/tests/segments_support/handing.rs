@@ -171,7 +171,10 @@ pub fn route_from_the_ledger(
         &choice.snapshot,
         &bounds,
     );
-    assert!(record.chosen().is_some(), "the router chose the linked route");
+    assert!(
+        record.chosen().is_some(),
+        "the router chose the linked route"
+    );
     assert_eq!(record.record_id(), &record_id);
     record
 }

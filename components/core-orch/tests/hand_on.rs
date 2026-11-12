@@ -6,9 +6,7 @@
 mod common;
 
 use common::*;
-use rutent_contracts::core_internal::{
-    Actor, ActorKind, Authorisation, Destination, Role,
-};
+use rutent_contracts::core_internal::{Actor, ActorKind, Authorisation, Destination, Role};
 use rutent_contracts::provider_role::{Denomination, OuterNode};
 use rutent_contracts::router_api::Timestamp;
 use rutent_contracts::state_machine::{
@@ -117,7 +115,9 @@ fn customers_new_destination_starts_from_where_the_value_sits() {
     assert!(!recalculation_keeps_destination(&part, &new));
     let recalculation = run.input(Some("p1"), None, recalculated(new.clone()));
     assert_ne!(
-        Stm::transition(run.order(), &recalculation).last_input.outcome,
+        Stm::transition(run.order(), &recalculation)
+            .last_input
+            .outcome,
         Outcome::Applied {}
     );
     assert_eq!(
@@ -167,7 +167,10 @@ fn new_terms_are_asked_only_for_a_part_waiting_for_the_customer() {
     let customer = rid("cust-1");
     let waiting = waiting();
     let order = waiting.order();
-    assert_eq!(new_terms(order, &in_force(), &to_another(), &customer), Ok(()));
+    assert_eq!(
+        new_terms(order, &in_force(), &to_another(), &customer),
+        Ok(())
+    );
 
     let mut operator = to_another();
     operator.given_by.role = Role::Operator;

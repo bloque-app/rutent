@@ -175,6 +175,9 @@ fn hand_on_to(
     })
 }
 
+/// A change that makes a holding account's record wrong, and why it then proves nothing.
+type Wrong = (fn(&mut WithdrawalRecord), Unproven);
+
 /// The holding account's record of its withdrawal for the kit's linked order: the reserve's, at its ledger, of the
 /// kit's order's whole value. The kit's ledger is a private node, so the record is the reserve's word as its
 /// publisher (`REQ-ORD-40`).
@@ -199,7 +202,11 @@ fn withdrawal_record() -> WithdrawalRecord {
 fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
     let (mut world, mut core) = deposit_refused();
     let part = part_of(&core, ORDER);
-    assert_eq!(part.state, OrderState::FirstSegmentSettled, "not rolled back");
+    assert_eq!(
+        part.state,
+        OrderState::FirstSegmentSettled,
+        "not rolled back"
+    );
     assert_eq!(part.segments[0].state, SegmentState::Settled);
     assert!(hand_on::after_failed_final_deposit(&part));
     assert_eq!(count(&core, is_reversal), 0, "no reversal is asked");
@@ -215,7 +222,9 @@ fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
             &new_destination(customer()),
             &customer().party,
         ),
-        Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(PART))))
+        Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
+            PART
+        ))))
     );
     seed_linked(
         &mut core,
@@ -238,7 +247,11 @@ fn failed_final_deposit_is_recalculated_to_the_same_destination_first() {
             OrderState::FirstSegmentSettled
         )))
     );
-    assert_eq!(count(&core, is_authorise), authorised + 1, "policy asked only for the linked order's");
+    assert_eq!(
+        count(&core, is_authorise),
+        authorised + 1,
+        "policy asked only for the linked order's"
+    );
     assert_eq!(entries(&core), seeded, "nothing recorded");
     assert!(seeded > before);
 
@@ -280,7 +293,11 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
     let part = part_of(&core, ORDER);
     assert_eq!(part.state, OrderState::WaitingForCustomer);
     assert!(part.waiting_since.is_some(), "visible with its age");
-    assert_eq!(part.segments[0].state, SegmentState::Settled, "not rolled back");
+    assert_eq!(
+        part.segments[0].state,
+        SegmentState::Settled,
+        "not rolled back"
+    );
     assert_eq!(
         part.destination.provider.as_str(),
         RESERVE,
@@ -316,7 +333,9 @@ fn with_no_route_to_it_the_order_waits_for_the_customer() {
             &whole_order,
             &customer().party,
         ),
-        Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id("p9"))))
+        Err(HandOnError::Refused(Refused::CoversAPartThatGoesOn(id(
+            "p9"
+        ))))
     );
     assert_eq!(count(&core, is_authorise), authorised, "policy not asked");
 
@@ -353,7 +372,9 @@ fn handed_on_route_starting_away_from_the_value_is_refused() {
     let away = linked_plan(&core, ledger(OTHER_RESERVE), "p1-s1-of-2");
     assert_eq!(
         hand_on_to(&mut core, &mut hand_on, "ord-2", &away, "acc-ord-2"),
-        Err(HandOnError::StartRule(HandOnRefusal::StartsAwayFromTheValue))
+        Err(HandOnError::StartRule(
+            HandOnRefusal::StartsAwayFromTheValue
+        ))
     );
     let withdrawing = vec![plan_of(&core.record, &Named::another(2))];
     assert_eq!(
@@ -415,9 +436,15 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
     );
 
     let (linked, reserve) = (id("ord-2"), id(RESERVE));
-    let wrong: [(fn(&mut WithdrawalRecord), Unproven); 5] = [
-        (|r| r.by = OTHER_RESERVE.into(), Unproven::NotTheStartingReserves),
-        (|r| r.node = format!("{OTHER_RESERVE}-ledger"), Unproven::AnotherNode),
+    let wrong: [Wrong; 5] = [
+        (
+            |r| r.by = OTHER_RESERVE.into(),
+            Unproven::NotTheStartingReserves,
+        ),
+        (
+            |r| r.node = format!("{OTHER_RESERVE}-ledger"),
+            Unproven::AnotherNode,
+        ),
         (|r| r.asset = "USD".into(), Unproven::AnotherAsset),
         (|r| r.order = "ord-7".into(), Unproven::AnotherOrdersValue),
         (|r| r.amount -= 1, Unproven::AnotherAmount),
@@ -581,9 +608,18 @@ fn handed_on_route_keeps_the_original_customer_as_requester() {
     );
     let first = part_of(&core, ORDER);
     assert_eq!(first.state, OrderState::HandedOn);
-    assert_eq!(first.linked_order.as_ref().map(|l| l.as_str()), Some("ord-2"));
-    let linked = core.segments.order(&id("ord-2")).expect("the linked order is followed");
-    assert_eq!(linked.handed_on_from.as_ref().map(|f| f.as_str()), Some(ORDER));
+    assert_eq!(
+        first.linked_order.as_ref().map(|l| l.as_str()),
+        Some("ord-2")
+    );
+    let linked = core
+        .segments
+        .order(&id("ord-2"))
+        .expect("the linked order is followed");
+    assert_eq!(
+        linked.handed_on_from.as_ref().map(|f| f.as_str()),
+        Some(ORDER)
+    );
     // The requester the log holds for both orders is the original customer.
     let entries_now = recorded(&core);
     assert_eq!(
@@ -605,7 +641,9 @@ fn handed_on_route_keeps_the_original_customer_as_requester() {
             &plan_p1_s1_of_2,
             "acc-ord-2"
         ),
-        Err(HandOnError::Refused(Refused::NotWaiting(OrderState::HandedOn)))
+        Err(HandOnError::Refused(Refused::NotWaiting(
+            OrderState::HandedOn
+        )))
     ));
     assert_eq!(entries(&core), again);
     core.admitted(&world.catalogue)
@@ -777,7 +815,10 @@ fn operators_hand_on_follows_its_done_resolution() {
     };
     let handed = operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob)
         .expect("handed on after its done resolution");
-    assert_eq!(handed.handed_on.source.kind, rutent_contracts::state_machine::SourceKind::Operator);
+    assert_eq!(
+        handed.handed_on.source.kind,
+        rutent_contracts::state_machine::SourceKind::Operator
+    );
     assert_eq!(part_of(&core, ORDER).state, OrderState::HandedOn);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
@@ -837,7 +878,11 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
     );
     let _ = core.run(&mut world);
     let part = part_of(&core, ORDER);
-    assert_eq!(part.state, OrderState::WaitingForCustomer, "waits at its floor");
+    assert_eq!(
+        part.state,
+        OrderState::WaitingForCustomer,
+        "waits at its floor"
+    );
 
     let current = authorisation_of(&Named::first(), Some(floor));
     let mut lower = current.clone();
@@ -910,9 +955,16 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
         &lower.authorisation,
     );
     let resumed = resume(&mut core, "acc-ord-1-lower-floor").expect("resumed");
-    assert!(matches!(resumed.input.observed, Observed::RouteRecalculated { .. }));
+    assert!(matches!(
+        resumed.input.observed,
+        Observed::RouteRecalculated { .. }
+    ));
     let part = part_of(&core, ORDER);
-    assert_eq!(part.state, OrderState::FirstSegmentSettled, "it waits no more");
+    assert_eq!(
+        part.state,
+        OrderState::FirstSegmentSettled,
+        "it waits no more"
+    );
     assert!(part.waiting_since.is_none());
 
     let session = id(&world.context().session);
@@ -954,7 +1006,10 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
         issued: &core.issued,
         exposures: &mut core.exposures,
     };
-    let ran = core.segments.run_part(&mut parts, &live).expect("the resumed part runs");
+    let ran = core
+        .segments
+        .run_part(&mut parts, &live)
+        .expect("the resumed part runs");
     assert!(
         matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
         "{ran:?}"

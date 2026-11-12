@@ -876,13 +876,10 @@ impl Segments {
         self.resolved
             .contains(&(order.as_str().to_owned(), part.as_str().to_owned()))
             || self.orders.get(order.as_str()).is_some_and(|t| {
-                t.order
-                    .parts
-                    .iter()
-                    .any(|p| {
-                        p.part_id.as_str() == part.as_str()
-                            && (p.resolved_to.is_some() || p.state == OrderState::HandedOn)
-                    })
+                t.order.parts.iter().any(|p| {
+                    p.part_id.as_str() == part.as_str()
+                        && (p.resolved_to.is_some() || p.state == OrderState::HandedOn)
+                })
             })
     }
 

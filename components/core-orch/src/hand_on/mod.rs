@@ -67,8 +67,8 @@ use crate::snapshot::{Clock, Exposures, OrchestrationLog};
 use crate::stuck::is_receipt_of;
 
 pub use rule::{
-    Accepted, Refused, Unproven, acceptance_of, after_failed_final_deposit, destination_change, new_terms,
-    proves_start, requester_of,
+    Accepted, Refused, Unproven, acceptance_of, after_failed_final_deposit, destination_change,
+    new_terms, proves_start, requester_of,
 };
 
 /// How many times in all an append the log can't take now is tried.
@@ -405,10 +405,10 @@ impl HandOn {
             return Err(Refused::NotWaiting(part.state).into());
         }
         let authorisation = change.authorisation;
-        let speaks_for = authorisation.parts.as_ref().is_none_or(|ps| {
-            ps.iter()
-                .any(|p| p.as_str() == change.part.as_str())
-        });
+        let speaks_for = authorisation
+            .parts
+            .as_ref()
+            .is_none_or(|ps| ps.iter().any(|p| p.as_str() == change.part.as_str()));
         if authorisation.order != *change.order || !speaks_for {
             return Err(HandOnError::NotItsAuthorisation);
         }
@@ -473,7 +473,11 @@ impl HandOn {
     /// state machine's rules, as a `route_recalculated`, citing the choice round's decision record. It changes no
     /// destination (`INV-10`). Built once and appended until the log takes it; the order Core follows then takes
     /// it, and the next recalculation follows that round ([`Recalculations::followed_by`](crate::recalc::Recalculations::followed_by)).
-    pub fn resume(&mut self, parts: &mut Parts<'_>, resume: Resume<'_>) -> Result<Resumed, HandOnError> {
+    pub fn resume(
+        &mut self,
+        parts: &mut Parts<'_>,
+        resume: Resume<'_>,
+    ) -> Result<Resumed, HandOnError> {
         let at = key(resume.order, resume.part);
         if !self.resumes.contains_key(&at) {
             let built = Self::build_resume(parts, &resume)?;
@@ -499,7 +503,10 @@ impl HandOn {
         Ok(resumed)
     }
 
-    fn build_resume(parts: &mut Parts<'_>, resume: &Resume<'_>) -> Result<PendingResume, HandOnError> {
+    fn build_resume(
+        parts: &mut Parts<'_>,
+        resume: &Resume<'_>,
+    ) -> Result<PendingResume, HandOnError> {
         let order = parts
             .segments
             .order(resume.order)
@@ -522,7 +529,14 @@ impl HandOn {
             return Err(HandOnError::NotItsAuthorisation);
         }
         let (from, settled, amount) = at_rest(parts.segments, resume.order, part)?;
-        let (plan, ids, route) = plan_route(parts.fresh, &order, resume.record, &from, &amount, authorisation)?;
+        let (plan, ids, route) = plan_route(
+            parts.fresh,
+            &order,
+            resume.record,
+            &from,
+            &amount,
+            authorisation,
+        )?;
         if !stm::recalculation_keeps_destination(part, &plan) {
             return Err(HandOnError::Rejected(Rejected::ChangesDestination));
         }

@@ -1240,12 +1240,7 @@ fn seed_chosen(
 /// acceptance, by `requester`, and its decision record, under `decision_record`. Its `route_chosen`, naming
 /// `handed_on_from`, is the hand-on's to record. The acceptance is the kit's automatic deposit, which needs no
 /// yes: a customer's given acceptance names the origin reserve's signed yes, which the kit doesn't make.
-pub fn seed_linked(
-    core: &mut Core,
-    named: &Named,
-    requester: &Id,
-    decision_record: &Id,
-) {
+pub fn seed_linked(core: &mut Core, named: &Named, requester: &Id, decision_record: &Id) {
     let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
     let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
     let entry = |what: What, outcome: Outcome| {
@@ -1264,7 +1259,10 @@ pub fn seed_linked(
         .policy
         .authorise(&authorisation_of(named, None))
         .unwrap();
-    assert!(authorised.permit().is_some(), "the linked order is authorised");
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
     let operator = core.operator.clone();
     let chosen = route_chosen_of(&core.record, named);
     let mut log = core.log.borrow_mut();
