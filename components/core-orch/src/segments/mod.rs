@@ -450,6 +450,9 @@ pub struct Segments {
     orders: BTreeMap<String, Tracked>,
     /// The parts that wait for the customer past their floor, by order and part.
     waiting: BTreeMap<(String, String), Waits>,
+    /// The stuck parts whose resolution moved all their value, by order and part: they hold nothing, and take no
+    /// rest hold (`T-020-11`).
+    resolved: BTreeSet<(String, String)>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -633,6 +636,13 @@ impl Segments {
         applied
     }
 
+    /// Marks `part` of `order` resolved: its stuck resolution moved all its value, so a settlement recorded for it
+    /// later takes no rest hold, though the state machine still reads it stuck (`T-020-11`).
+    pub fn mark_resolved(&mut self, order: &Id, part: &Id) {
+        self.resolved
+            .insert((order.as_str().to_owned(), part.as_str().to_owned()));
+    }
+
     /// Whether `part` of `order` is stuck in the order Core follows (`T-020-11`).
     pub fn stuck(&self, order: &Id, part: &Id) -> bool {
         self.orders.get(order.as_str()).is_some_and(|t| {
@@ -802,6 +812,10 @@ impl Segments {
                 // and the part's resolution still count it (`REQ-ORD-8`, `T-020-11`).
                 if let SegmentOutcome::Settled { amount_out, .. } = &done.outcome
                     && self.stuck(live.order, live.part)
+                    && !self.resolved.contains(&(
+                        live.order.as_str().to_owned(),
+                        live.part.as_str().to_owned(),
+                    ))
                     && matches!(
                         operation.to.node,
                         rutent_contracts::provider_role::NodeRef::Inner(_)

@@ -236,6 +236,19 @@ pub struct Deciding<'a> {
     pub evidence: &'a [Digest],
 }
 
+/// A reported failure to confirm (`REQ-AUZ-4`).
+#[derive(Debug, Clone, Copy)]
+pub struct Confirming<'a> {
+    /// The stuck order.
+    pub order: &'a Id,
+    /// The decide step's decision the move carried out.
+    pub carries_out: &'a Decided,
+    /// Who confirms the failure: of another party and login than the mover.
+    pub confirmer: &'a Actor,
+    /// Core, which writes the result.
+    pub core: &'a Actor,
+}
+
 /// A move step to carry out (`REQ-AUZ-4`).
 #[derive(Debug, Clone, Copy)]
 pub struct Moving<'a> {
@@ -313,6 +326,9 @@ pub enum Resolved {
 pub enum Moved {
     /// Policy didn't permit it: nothing was recorded as an effect, and nothing moved.
     NotPermitted(Answer),
+    /// Its mover reported a move of unknown outcome failed: nothing is recorded and the part stays held until an
+    /// actor of another party and login confirms it ([`Stuck::confirm_failed`]).
+    AwaitsConfirmation,
     /// The effect was recorded and carried out.
     CarriedOut {
         /// The receipt of the `resolve_stuck` effect's entry.
@@ -422,8 +438,19 @@ impl Ends {
             && segments
                 .sent(order, &self.withdrawal)
                 .and_then(withdrawal_inputs)
-                .is_some_and(|inputs| inputs.values().any(|a| a == to.account.as_str()))
+                .is_some_and(|inputs| names_the_payer(inputs, to.account.as_str()))
     }
+}
+
+/// The input a withdrawal names the payer's account by, the account the value came from: the name provider-role's
+/// fixtures and the simulated providers use. provider-role names no input itself (a tuple's terms list the ones
+/// its operations require), so a contract-named key for it would be a provider-role item.
+pub const PAYER_ACCOUNT: &str = "payer.bank_account";
+
+/// Whether `account` is the payer's account a withdrawal's `inputs` name: only that input, never another account
+/// the withdrawal carries, a beneficiary's say.
+fn names_the_payer(inputs: &std::collections::BTreeMap<String, String>, account: &str) -> bool {
+    inputs.get(PAYER_ACCOUNT).is_some_and(|a| a == account)
 }
 
 /// The inputs a withdrawal Core signed carries; any other operation names no origin account.
@@ -443,6 +470,12 @@ struct InMotion {
     part: Id,
     /// Who moves it: only that mover takes the move on again.
     mover: Actor,
+    /// Its mover reported it failed, after its outcome was unknown: it is recorded so, and the part freed, only once
+    /// another actor confirms it.
+    reported_failed: bool,
+    /// Why the move was dropped before it acted, its effect recorded: its result is recorded `failed`, since it
+    /// never took effect, and then the move answers this.
+    dropped: Option<ResolveError>,
     effect: Step,
     action: Action,
     permit: Permit,
@@ -784,9 +817,14 @@ impl Stuck {
     /// permitted authorisation in `recorded`, the log's entries as the log holds them (the `authorise` entries
     /// `T-021-04`'s engine reads), held to the destination of every part of the order Core follows. The origin is the
     /// reserve and outer node the order's withdrawal took the value from, held to that authorisation's origin
-    /// reserve; its account is checked at each decision against the accounts the withdrawal Core signed named
-    /// (`Segments::sent`), since the log holds the operation only by its commitment. The ends first followed
-    /// stand: following again with others is refused ([`StuckError::NotItsAuthorisation`]).
+    /// reserve; its account is checked at each decision against the payer's account the withdrawal Core signed
+    /// named ([`PAYER_ACCOUNT`], `Segments::sent`), since the log holds the operation only by its commitment. The
+    /// ends first followed stand: following again with others is refused ([`StuckError::NotItsAuthorisation`]).
+    ///
+    /// `recorded` is taken as the log's: this holds only where the assembly passes the log's own entries, never a
+    /// caller's, until Core reads authorisations from policy's register (`T-021-04`). One authorisation per order,
+    /// its latest, with one destination for every part, is this row's reading; a per-part authorisation
+    /// (`T-020-01f`) is work for its merge.
     pub fn follow(
         &mut self,
         segments: &Segments,
@@ -981,6 +1019,8 @@ impl Stuck {
                 order: moving.order.clone(),
                 part: kept.part,
                 mover: moving.mover.clone(),
+                reported_failed: false,
+                dropped: None,
                 effect: Step::new(entry),
                 action,
                 permit,
@@ -993,8 +1033,11 @@ impl Stuck {
 
     /// Records the outcome, now known, of a move whose outcome was unknown: done or failed, as its own mover reports
     /// it for its own order, once, as the effect's result. Done counts what moved, and the part resolves once all of
-    /// it moved; failed frees the part for a new decision. Nothing is carried out again. Who learns the outcome, from
-    /// the provider's later word, is the production [`Resolutions`]'s.
+    /// it moved. Failed would free the part for a new decision, so that the value could move again on the mover's
+    /// word alone: it is only reported ([`Moved::AwaitsConfirmation`]), and recorded once another actor confirms it
+    /// ([`Stuck::confirm_failed`]). Nothing is carried out again. Who learns the outcome, from the provider's later
+    /// word, is the production [`Resolutions`]'s; the provider's stated result for the effect's transaction, as
+    /// evidence, is the real answer, and that row's or `T-020-12`'s.
     pub fn known_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1013,6 +1056,10 @@ impl Stuck {
         if outcome == Resolved::Unknown {
             return Err(ResolveError::OutcomeUnknown);
         }
+        if outcome == Resolved::Failed {
+            motion.reported_failed = true;
+            return Ok(Moved::AwaitsConfirmation);
+        }
         motion.resolved = Some(outcome);
         if outcome == Resolved::Done
             && let Some((asset, amount)) = moved_by(&motion.action)
@@ -1021,6 +1068,34 @@ impl Stuck {
             add_moved(&mut declared.moved, &asset, &amount);
         }
         self.advance(parts, &mut Unbuilt, moving.core, &at)
+    }
+
+    /// Confirms the failure a move's mover reported ([`Stuck::known_outcome`]): only by an actor of another party
+    /// and another login than the mover, as a decision and its move are (`REQ-AUZ-4`). Once confirmed, the failure is
+    /// recorded as the effect's result, once, and the part freed for a new decision.
+    pub fn confirm_failed(
+        &mut self,
+        parts: &mut Parts<'_>,
+        confirming: Confirming<'_>,
+    ) -> Result<Moved, ResolveError> {
+        let at = confirming.carries_out.request.as_str().to_owned();
+        let motion = self
+            .moving
+            .get_mut(&at)
+            .filter(|m| {
+                m.order == *confirming.order
+                    && m.resolved == Some(Resolved::Unknown)
+                    && m.reported_failed
+            })
+            .ok_or(ResolveError::NoDecision)?;
+        if motion.mover.party == confirming.confirmer.party {
+            return Err(ResolveError::SameParty);
+        }
+        if motion.mover.acts == confirming.confirmer.acts {
+            return Err(ResolveError::SameLogin);
+        }
+        motion.resolved = Some(Resolved::Failed);
+        self.advance(parts, &mut Unbuilt, confirming.core, &at)
     }
 
     /// Takes a move on from where it stopped: its effect appended, acted on once, its result recorded, and the
@@ -1056,7 +1131,8 @@ impl Stuck {
             None => {
                 // The part is read again before anything moves: one that left `stuck` while the move stalled
                 // (resolved, or completed by a result recorded since), or holds less than the move names now, is
-                // moved no more. The move is dropped and its decision spent (`INV-4`).
+                // moved no more. The move is dropped and its decision spent (`INV-4`); its effect, recorded already,
+                // gets its `failed` result, so no effect is left open.
                 let (order, part_id) = (motion.order.clone(), motion.part.clone());
                 let resolution = match &motion.action {
                     Action::ResolveStuck { resolution, .. } => resolution.clone(),
@@ -1066,42 +1142,39 @@ impl Stuck {
                     .unresolved(parts.segments, &order, &part_id)
                     .and_then(|declared| within(parts.exposures, &order, declared, &resolution));
                 if let Err(why) = still {
-                    if let Some(decided) = self
-                        .moving
-                        .remove(at)
-                        .and_then(|m| carried_out_of(&m.action))
-                    {
+                    let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
+                    if let Some(decided) = carried_out_of(&motion.action) {
                         self.kept.remove(decided.request.as_str());
                     }
-                    if let Some(declared) = self.declared.get_mut(&part) {
-                        declared.in_motion = None;
+                    motion.resolved = Some(Resolved::Failed);
+                    motion.dropped = Some(why);
+                    Resolved::Failed
+                } else {
+                    // One register of effects acted on, the segments' and the resolutions' (`INV-8`).
+                    if !parts.segments.act_on(&receipt) {
+                        return Err(ResolveError::AlreadyActed(receipt));
                     }
-                    return Err(why);
+                    let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
+                    let effect = effect_of(
+                        motion.action.clone(),
+                        motion.permit.clone(),
+                        receipt.clone(),
+                    );
+                    let resolved = resolutions.resolve(&effect);
+                    motion.resolved = Some(resolved);
+                    // Its decision is spent, whatever came of it: a new move needs a new decision.
+                    let decided = carried_out_of(&motion.action);
+                    if let Some(decided) = decided {
+                        self.kept.remove(decided.request.as_str());
+                    }
+                    if resolved == Resolved::Done
+                        && let Some((asset, amount)) = moved_by(&self.moving[at].action)
+                        && let Some(declared) = self.declared.get_mut(&part)
+                    {
+                        add_moved(&mut declared.moved, &asset, &amount);
+                    }
+                    resolved
                 }
-                // One register of effects acted on, the segments' and the resolutions' (`INV-8`).
-                if !parts.segments.act_on(&receipt) {
-                    return Err(ResolveError::AlreadyActed(receipt));
-                }
-                let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
-                let effect = effect_of(
-                    motion.action.clone(),
-                    motion.permit.clone(),
-                    receipt.clone(),
-                );
-                let resolved = resolutions.resolve(&effect);
-                motion.resolved = Some(resolved);
-                // Its decision is spent, whatever came of it: a new move needs a new decision.
-                let decided = carried_out_of(&motion.action);
-                if let Some(decided) = decided {
-                    self.kept.remove(decided.request.as_str());
-                }
-                if resolved == Resolved::Done
-                    && let Some((asset, amount)) = moved_by(&self.moving[at].action)
-                    && let Some(declared) = self.declared.get_mut(&part)
-                {
-                    add_moved(&mut declared.moved, &asset, &amount);
-                }
-                resolved
             }
         };
         let outcome = match resolved {
@@ -1138,6 +1211,9 @@ impl Stuck {
         if let Some(declared) = self.declared.get_mut(&part) {
             declared.in_motion = None;
         }
+        if let Some(why) = motion.dropped {
+            return Err(why);
+        }
         if resolved == Resolved::Done {
             let order = motion.order.clone();
             let all_moved = self
@@ -1145,7 +1221,7 @@ impl Stuck {
                 .get(&part)
                 .is_some_and(|d| remaining(parts.exposures, &order, d).is_empty());
             if all_moved {
-                self.release_part(parts.exposures, &order, &motion.part);
+                self.release_part(parts.exposures, parts.segments, &order, &motion.part);
             }
         }
         Ok(Moved::CarriedOut {
@@ -1159,8 +1235,17 @@ impl Stuck {
     /// it that never acted dropped, and the order's stuck mark released once the order holds nothing more. Another
     /// part, stuck or still in flight, keeps its holds and the mark, which over-reports a stuck exposure rather than
     /// drop a live one (`REQ-ORD-8`).
-    fn release_part(&mut self, exposures: &mut Exposures, order: &Id, part: &Id) {
+    fn release_part(
+        &mut self,
+        exposures: &mut Exposures,
+        segments: &mut Segments,
+        order: &Id,
+        part: &Id,
+    ) {
         let at = key(order, part);
+        // The segments take no rest hold for it any more: it holds nothing, though the state machine still reads it
+        // stuck until its resolution's input lands (`T-020-01f`).
+        segments.mark_resolved(order, part);
         if let Some(declared) = self.declared.get_mut(&at) {
             declared.resolved = true;
             declared.in_motion = None;
@@ -1699,7 +1784,12 @@ mod tests {
                 &Amount::new("400").unwrap(),
             )
             .unwrap();
-        stuck.release_part(&mut exposures, &id("split"), &id("p1"));
+        stuck.release_part(
+            &mut exposures,
+            &mut Segments::new(),
+            &id("split"),
+            &id("p1"),
+        );
         let left: Vec<_> = exposures
             .held()
             .map(|h| (h.segment.as_str().to_owned(), h.amount.clone()))
@@ -1710,5 +1800,22 @@ mod tests {
         );
         assert_eq!(exposures.stuck().len(), 1, "the order's stuck mark stays");
         assert!(stuck.stuck_values(&exposures, &At(10)).is_empty());
+    }
+
+    /// A withdrawal whose tuple's terms carry the beneficiary's account beside the payer's: only the payer's is the
+    /// origin a resolution may return the value to.
+    // verifies: REQ-AUZ-4
+    #[test]
+    fn only_the_payers_account_is_the_origins() {
+        let inputs = std::collections::BTreeMap::from([
+            (PAYER_ACCOUNT.to_owned(), "acct-1".to_owned()),
+            ("beneficiary.bank_account".to_owned(), "acct-2".to_owned()),
+        ]);
+        assert!(names_the_payer(&inputs, "acct-1"));
+        assert!(!names_the_payer(&inputs, "acct-2"));
+        assert!(!names_the_payer(
+            &std::collections::BTreeMap::new(),
+            "acct-1"
+        ));
     }
 }

@@ -22,8 +22,8 @@ use rutent_core_orch::segments::{
     Accounted, NoProxy, ProvidersWord, Ran, SegmentOutcome, SegmentsError, StatusError,
 };
 use rutent_core_orch::stuck::{
-    Deciding, HISTORY, Moved, Moving, NoRouteLeft, ResolveError, Resolved, Stuck, StuckError,
-    StuckValue, Watch, seen_by_provider,
+    Confirming, Deciding, HISTORY, Moved, Moving, NoRouteLeft, ResolveError, Resolved, Stuck,
+    StuckError, StuckValue, Watch, seen_by_provider,
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
@@ -2138,6 +2138,11 @@ fn stalled_move_pays_nothing_once_its_part_completed() {
     );
     assert!(moves.0.is_empty(), "nothing is paid twice");
     assert_eq!(
+        open_effects(&core),
+        0,
+        "the dropped move's effect has its result"
+    );
+    assert_eq!(
         moves_once(
             &mut core,
             &mut stuck,
@@ -2233,9 +2238,32 @@ fn known_outcome(
     })
 }
 
+/// Confirms, as `confirmer`, the failure `decision`'s mover reported.
+fn confirm_failed(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    order: &str,
+    decision: &rutent_contracts::core_internal::Decision,
+    confirmer: &rutent_contracts::core_internal::Actor,
+) -> Result<Moved, ResolveError> {
+    let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
+    on_parts(core, |parts| {
+        stuck.confirm_failed(
+            parts,
+            Confirming {
+                order: &order,
+                carries_out: &carries_out,
+                confirmer,
+                core: &actor,
+            },
+        )
+    })
+}
+
 /// A move whose outcome was unknown gets its known outcome later, from its own mover for its own order, recorded
-/// once as its result. Failed, the part is free for a new decision; done, what moved counts and the part resolves
-/// once all of it moved. Nothing is carried out again either way.
+/// once as its result. Done, what moved counts and the part resolves once all of it moved. Failed frees the part,
+/// so on the mover's word alone it could make the value move twice: it is only reported, and recorded and the part
+/// freed once an actor of another party and login confirms it. Nothing is carried out again either way.
 // verifies: REQ-AUZ-4, REQ-ORD-1, INV-8
 #[test]
 fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
@@ -2284,14 +2312,47 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
         ),
         Err(ResolveError::OutcomeUnknown)
     );
-    assert!(matches!(
+    assert_eq!(
         known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Failed),
+        Ok(Moved::AwaitsConfirmation),
+        "a failure frees the part only once another actor confirms it"
+    );
+    assert_eq!(
+        decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &alice,
+            &back_to_origin(AMOUNT),
+            &evidence()
+        )
+        .map(|_| ()),
+        Err(ResolveError::OutcomeUnknown),
+        "the mover alone can't free the part"
+    );
+    for (confirmer, refused) in [
+        (bob.clone(), ResolveError::SameParty),
+        (staff("desk-b", "bob-second-login"), ResolveError::SameParty),
+        (staff("desk-c", "bob"), ResolveError::SameLogin),
+    ] {
+        assert_eq!(
+            confirm_failed(&mut core, &mut stuck, ORDER, &first, &confirmer),
+            Err(refused)
+        );
+    }
+    assert!(matches!(
+        confirm_failed(&mut core, &mut stuck, ORDER, &first, &alice),
         Ok(Moved::CarriedOut {
             resolved: Resolved::Failed,
             result: Some(_),
             ..
         })
     ));
+    assert_eq!(
+        confirm_failed(&mut core, &mut stuck, ORDER, &first, &alice),
+        Err(ResolveError::NoDecision),
+        "recorded once"
+    );
     assert_eq!(
         known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Done),
         Err(ResolveError::NoDecision),
@@ -2392,6 +2453,93 @@ fn segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit() {
     assert_eq!(
         stuck.stuck_values(&core.exposures, &*core.clock)[0].amount,
         Amount::new(AMOUNT).unwrap()
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// How many `resolve_stuck` effects the log holds with no result.
+fn open_effects(core: &Core) -> usize {
+    let log = core.log.borrow();
+    let receipts: Vec<_> = (0..log.entries.len())
+        .filter(|&i| {
+            matches!(&log.entries[i].0,
+            rutent_contracts::core_internal::Entry::Verified(v) if is_resolve_stuck(&v.what))
+        })
+        .map(|i| log.receipt_at(i))
+        .collect();
+    receipts
+        .iter()
+        .filter(|r| {
+            !log.verified()
+                .iter()
+                .any(|v| matches!(&v.what, What::Result { effect } if effect == *r))
+        })
+        .count()
+}
+
+/// The re-review's sequence: the withdrawal settles at its provider but the log can't take its result; the part is
+/// declared stuck, and its whole value is returned to its origin, resolving it. Run again, the part records the
+/// withdrawal's settlement, and takes no rest hold back: a resolved part holds nothing, so nothing of it counts
+/// against the ceilings for ever.
+// verifies: REQ-ORD-8, REQ-AUZ-4
+#[test]
+fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut stuck = Stuck::new();
+    follow(&core, &mut stuck).expect("followed at take-up");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedResultOf(WITHDRAWAL), Fault::Unavailable));
+    }
+    assert!(try_run(&mut core, &mut world).is_err());
+    let since = carried_since(&core, WITHDRAWAL);
+    let mut raises = Raises::default();
+    core.clock.set(since + 2 * DECLARED + 1);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Stuck(_))
+    ));
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let decision = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &staff("desk-a", "alice"),
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &staff("desk-b", "bob")
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    assert_eq!(
+        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        Amount::zero()
+    );
+    let ran = try_run(&mut core, &mut world).expect("the withdrawal's result recorded");
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "{ran:?}"
+    );
+    assert_eq!(
+        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        Amount::zero(),
+        "a resolved part takes no rest hold"
     );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");

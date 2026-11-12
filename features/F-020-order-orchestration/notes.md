@@ -1129,12 +1129,16 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   other decision for it spent, only once all of it moved. `failed` records its result and leaves the part held for a
   new decision. `unknown` records no result yet, and holds the part: nothing more is decided or moved for it until
   its outcome is known, which its own mover records once for its own order (`Stuck::known_outcome`): done counts
-  what moved, failed frees the part. Learning that outcome from the provider is the production `Resolutions`'s. The order's stuck mark goes only once the order holds nothing more, so resolving one part of
+  what moved and frees nothing; failed would free the part, so on the mover's word alone it is only reported, and
+  is recorded and the part freed once an actor of another party and login confirms it (`Stuck::confirm_failed`).
+  The real answer is evidence, the provider's stated result for the effect's transaction, which the production
+  `Resolutions` mover row (the coordinator's) or `T-020-12` owns. The order's stuck mark goes only once the order holds nothing more, so resolving one part of
   a split order keeps another part's live holds and the mark. Readings, reversible.
-- **Hand-off to `T-021-04`: the order's authorisation.** `Stuck::follow` takes the authorisation and the payer's
-  account from the assembly, which has them from intake's records; once policy registers authorisations, Core reads
-  them there. The rule on the assembly until then: it calls `follow` with the order's own authorisation as recorded,
-  never one a caller hands in.
+- **Hand-off to `T-021-04`: the order's authorisation.** `Stuck::follow` reads the order's permitted `authorise`
+  entry from the entries it is handed, and takes them as the log's: that holds only where the assembly passes the
+  log's own entries, never a caller's. Once policy registers authorisations, Core reads them from there. The rule
+  on the assembly until then: it calls `follow` with the log's entries as the log holds them, when it takes the
+  order up.
 - **Gap for `T-021-06`: policy's stuck rules are unbuilt.** The engine's `StuckOrders` is only `Unbuilt`'s, which
   answers not known, so nothing moves through the real engine yet (the refusal test runs on it), and no fixed rule
   compares the decider and the mover: Core holds that rule itself, party and login, and the log's
@@ -1179,7 +1183,7 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   not to touch that file in parallel);
   `resolving.rs` holds `staff`, `destination`, `origin`, `Raises`, `Moves` (with scripted outcomes),
   `PermitsEveryStep` (which can answer another request), `on_parts`, `watch` and `follow`.
-- **Tests.** Twenty-seven in `conformance/scenarios/tests/stuck.rs`; all but
+- **Tests.** Twenty-eight in `conformance/scenarios/tests/stuck.rs`; all but
   `real_logs_receipt_passes_the_receipt_rule` run on the platform with the simulated providers and replay the log
   through `attribute` and `admit_entry`, the timing ones moving the kit's clock.
   - The row's: the no-route, twice-the-p99, no-history, figures, material-change and move-step tests.
@@ -1195,8 +1199,11 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   - The re-review's: `stalled_move_pays_nothing_once_its_part_completed`,
     `settlement_recorded_late_keeps_a_stuck_parts_value_held`, `unknown_move_takes_its_known_outcome_once_from_its_mover`,
     `segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit`; and the ends test, extended.
-  - Eight unit tests in the module: `one_large_stuck_order_is_seen_among_many_small`,
-    `resolving_one_part_keeps_another_parts_live_hold`, and six over the clock's figures and history.
+  - Round 3's: `resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late`; the known-outcome and
+    stalled-move tests, extended.
+  - Nine unit tests in the module: `one_large_stuck_order_is_seen_among_many_small`,
+    `resolving_one_part_keeps_another_parts_live_hold`, `only_the_payers_account_is_the_origins`, and six over the
+    clock's figures and history.
 - **Rule-off, each red.** The code came first, so each rule was switched off once by a scratch script, its tests
   run, the file restored and touched: strictly over twice (the boundary unit test and the twice-the-p99 test); the
   p99 once a tuple has history (the twice-the-p99 test); history keyed by tuple (the no-history test); the figures
@@ -1289,4 +1296,30 @@ switched off once more after its fix.
   already doesn't produce the histories the new rows refuse (a resolution of a part not declared stuck or waiting,
   one resolved twice, another move on a held part, a second move on one segment); each is to be checked against
   the rows once they land.
+
+### T-020-11, round 3 answers (of `f073a51`)
+
+N1 to N3 held; two mediums and two lows remained. Each test was written first and seen red for the right reason
+(R2 and R4b by not compiling against the old API), then each rule switched off once more after its fix.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| R1 | Medium: a resolved part took a rest hold back, never released | Resolving a part marks it resolved in `Segments` (`mark_resolved`), and a stuck part's late settlement takes a rest hold only for a part not so marked: the state machine still reads it stuck until `stuck_resolved` lands. Red first: 1 000 000 held after resolution | `resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late` (a settled withdrawal, not `Act::Unknown`) |
+| R2 | Medium: the mover alone could make a part pay twice | The coordinator's default, reversible: a known `failed` is only reported (`Moved::AwaitsConfirmation`), and recorded, the part freed, once an actor of another party and login confirms it (`Stuck::confirm_failed`, `SameParty`, `SameLogin`); a known `done` from the mover alone stays, since it frees nothing. The real fix is evidence, above | in `unknown_move_takes_its_known_outcome_once_from_its_mover`: the mover alone can't free the part, a same-party or same-login confirmer is refused |
+| R3 | Low: a dropped move left an effect with no result | A move dropped before it acts, its effect recorded, gets its `failed` result: it never took effect. Red first: one effect left open | in `stalled_move_pays_nothing_once_its_part_completed` (no `to_take_effect` left open) |
+| R4a | Low: `follow` trusts the slice it is handed | Stated in its docs and in the `T-021-04` hand-off above: it holds only where the assembly passes the log's own entries | — |
+| R4b | Low: any account the withdrawal named passed as the origin's | Only the payer's input (`PAYER_ACCOUNT`, `payer.bank_account`, the name provider-role's fixtures and the simulated providers use; provider-role names no input itself, so a contract-named key is a provider-role item) | `only_the_payers_account_is_the_origins` (a withdrawal carrying the beneficiary's account too) |
+| R4c | Low: per-part authorisation is coming (`T-020-01f`, `parts: Option<Vec<PartId>>`) | Work for its merge, each rule named below; it fails closed today | — |
+
+- **Work for the per-part authorisation's merge**, each a rule of `Stuck::follow` that a per-part authorisation
+  breaks: (1) the latest permitted authorisation is chosen per order, where it must be per part; (2) one destination
+  is held to every part, where each part has its own; (3) the ends first followed stand per order, where they stand
+  per part, and a new authorisation for one part (`REQ-ORD-43`'s new destination) must not be refused for the
+  others; (4) the origin is read from the first part's first segment only, where each part has its own withdrawal
+  and payer. Until then a split order whose parts are authorised apart fails closed: `follow` refuses it
+  (`NotItsAuthorisation`), and nothing is decided for it.
+- **Rule-off, each red:** a resolved part taking no rest hold (the late-settlement test; the first rule-off kept the
+  check by mistake and stayed green, and the corrected one, inverting the guard, went red); a failure only reported
+  until confirmed, a confirmer of another party, and of another login (the known-outcome test); a dropped move's
+  effect getting its result (the stalled-move test); only the payer's account being the origin's (its unit test).
 
