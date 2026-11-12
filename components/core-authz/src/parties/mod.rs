@@ -386,7 +386,7 @@ pub struct Counted {
 /// The charges `entries` hold as permitted, in their order, each with the moment the engine counted it: each
 /// verified `charge` entry whose outcome is `permitted`, at its entry's own time, which the engine takes from Core's
 /// clock ([`Charged::counted_at`]), never from the charge's `at`. The one definition every
-/// [`Recorded`](crate::funds::Recorded) reads charges by.
+/// [`crate::funds::Recorded`] reads charges by.
 pub fn charged_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Counted> {
     entries
         .into_iter()
