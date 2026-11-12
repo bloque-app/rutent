@@ -114,17 +114,25 @@ impl Providers for Reserve {
     }
 }
 
-/// The reserve's notice that `units` arrived at [`ACCOUNT`], signed, naming no transaction.
+/// The shape the tests' reserve gives its notices: provider-role names none for a notice of value arriving.
+const NOTICE_SHAPE: &str = "urn:rutent:test:arrival-notice";
+
+/// The transaction the reserve gives the `n`th credit.
+fn credit(n: u32) -> String {
+    format!("credit-{n}")
+}
+
+/// The reserve's notice that `units` arrived at [`ACCOUNT`], signed, naming the transaction it gave the credit.
 fn notice(units: u64, n: u32) -> Vec<u8> {
     let body = json!({
         "kind": "arrival",
+        "transaction": credit(n),
         "node": "polygon",
         "asset": "USDC",
         "amount": units.to_string(),
         "account": ACCOUNT,
-        "reference": format!("credit-{n}"),
     });
-    let value = envelope(&deployment(), RESULT_SHAPE, RESERVE, START, body);
+    let value = envelope(&deployment(), NOTICE_SHAPE, RESERVE, START, body);
     sign(value, &statements_key(RESERVE, 1))
 }
 
@@ -162,6 +170,7 @@ fn open_order(order: &Id) -> OpenOrder {
         holder: customer().party,
         amount: amount(1000),
         session: id(SESSION),
+        part: None,
     }
 }
 
@@ -455,7 +464,9 @@ proptest! {
             prop_assert_eq!(*matched, ArrivalMatch::NoOrder);
             // The report is the reserve's notice, about nothing.
             let notice = at(&env, report);
-            prop_assert!(stated(&notice).about.is_none());
+            let about = stated(&notice).about.clone().expect("about the deposit's transaction");
+            prop_assert!(about.order.is_none());
+            prop_assert!(about.transaction.is_some());
         }
         // A notice and its arrival each, and nothing else: no order, no question to anyone.
         prop_assert_eq!(env.len() - before, 2 * units.len());
@@ -599,8 +610,8 @@ fn arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question(
     let notice = entries(&env)
         .into_iter()
         .position(|e| {
-            matches!(&e, Entry::Stated(s) if s.about.is_none()
-                && s.what.statement.as_str() == RESULT_SHAPE)
+            matches!(&e, Entry::Stated(s) if s.what.statement.as_str() == NOTICE_SHAPE
+                && s.about.as_ref().is_some_and(|a| a.order.is_none()))
         })
         .expect("the notice is recorded");
     assert_ne!(cited.index.get() as usize, notice);
@@ -1612,28 +1623,39 @@ fn one_notice_is_one_arrival_whatever_figures_it_comes_with() {
     );
     assert_eq!(env.len(), len);
     assert_eq!(arrivals_recorded(&env).len(), 1);
-    // Another reserve's notice, or one naming a transaction, reported as this reserve's.
+    // Another reserve's notice, one naming no transaction, or a result (which answers a question Core asked), reported
+    // as this reserve's.
     let elsewhere = sign(
         envelope(
             &deployment(),
-            RESULT_SHAPE,
+            NOTICE_SHAPE,
             "another-reserve",
+            START,
+            json!({ "kind": "arrival", "transaction": "credit-elsewhere", "amount": "5" }),
+        ),
+        &statements_key(RESERVE, 1),
+    );
+    let unbound = sign(
+        envelope(
+            &deployment(),
+            NOTICE_SHAPE,
+            RESERVE,
             START,
             json!({ "kind": "arrival", "amount": "5" }),
         ),
         &statements_key(RESERVE, 1),
     );
-    let bound = sign(
+    let result = sign(
         envelope(
             &deployment(),
             RESULT_SHAPE,
             RESERVE,
             START,
-            json!({ "kind": "arrival", "transaction": "tx-1" }),
+            json!({ "kind": "arrival", "transaction": "credit-result" }),
         ),
         &statements_key(RESERVE, 1),
     );
-    for notice in [elsewhere, bound] {
+    for notice in [elsewhere, unbound, result] {
         let kept = env.store.borrow().kept.len();
         let reported = Report {
             notice,
@@ -2630,11 +2652,12 @@ fn logins_policy_permitted_carry_a_filing_on_without_asking_again() {
 
 // Round 5 --------------------------------------------------------------------------------------------------------
 
-/// An acceptance the log refused on its first append was never written: its filing ends, but the deposit stays free
-/// for another filing (round 5).
-// verifies: REQ-ORD-15, REQ-ORD-13
+/// One deposit opens one order (`one-order-per-deposit`): once a filing held the deposit against its order, whatever
+/// comes of that order, even an acceptance the log refused on its first append, the deposit is filed on no more
+/// (integration with the contract head; supersedes round 5's free deposit).
+// verifies: REQ-ORD-23, REQ-ORD-14, INV-8
 #[test]
-fn an_acceptance_refused_on_its_first_append_leaves_the_deposit_free() {
+fn one_deposit_opens_one_order_whatever_comes_of_it() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
@@ -2651,12 +2674,18 @@ fn an_acceptance_refused_on_its_first_append_leaves_the_deposit_free() {
         matches!(filed, Filed::CantProceed { order: Some(_), .. }),
         "{filed:?}"
     );
-    assert!(env.acceptances().is_empty(), "nothing written");
+    assert!(env.acceptances().is_empty(), "no acceptance written");
     let mut theirs = filing(reserve_filer(), &deposited);
     theirs.request = id("deposit-reserve");
-    let filed = file(&mut env, &mut providers, &mut arrivals, &theirs).unwrap();
-    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
-    assert_eq!(env.acceptances().len(), 1);
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &theirs),
+        Err(ArrivalError::NotFileable)
+    );
+    let held: Vec<_> = arrivals_recorded(&env)
+        .into_iter()
+        .filter(|(o, _, _)| o.is_some())
+        .collect();
+    assert_eq!(held.len(), 1, "one arrival names an order");
     assert_admitted(&env);
 }
 
@@ -2686,5 +2715,167 @@ fn an_acceptance_whose_answer_was_lost_spends_the_deposit_if_its_filing_ends() {
         Err(ArrivalError::NotFileable)
     );
     assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+}
+
+// The contract head's arrival rows --------------------------------------------------------------------------------
+
+/// The notice an arrival names, by its commitment.
+fn notice_of(env: &Env, receipt: &Receipt) -> Option<rutent_contracts::module_interface::Digest> {
+    match at(env, receipt) {
+        Entry::Verified(v) => match v.what {
+            What::Arrival { notice, .. } => notice,
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A deposit is known by the transaction its reserve's notice signs, whatever bytes carry it, and every arrival of it
+/// names that notice, so the log holds one order per deposit (`arrival-names-its-notice`, `one-order-per-deposit`).
+// verifies: REQ-ORD-23, REQ-ORD-14, INV-8
+#[test]
+fn a_deposit_is_known_by_its_transaction_and_every_arrival_names_its_notice() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let reported = report(1000, 0);
+    let first = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &reported,
+    )
+    .unwrap();
+    let Arrived::NoOrder { arrival } = first.clone() else {
+        panic!("{first:?}");
+    };
+    // The notice is about the deposit's transaction alone, and the arrival names it by its commitment.
+    let stated_notice = entries(&env)
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Stated(s) if s.what.statement.as_str() == NOTICE_SHAPE => Some(s),
+            _ => None,
+        })
+        .expect("the notice is recorded");
+    let about = stated_notice.about.clone().unwrap();
+    assert_eq!(about.transaction, Some(id(&credit(0))));
+    assert_eq!(about.order, None);
+    assert_eq!(
+        notice_of(&env, &arrival),
+        Some(stated_notice.commitment.clone())
+    );
+    // The same deposit in other bytes is the same arrival, nothing kept or recorded again; with other figures it is
+    // refused.
+    let value: Value = serde_json::from_slice(&reported.notice).unwrap();
+    let reencoded = Report {
+        notice: serde_json::to_vec_pretty(&value).unwrap(),
+        ..reported.clone()
+    };
+    let (kept, len) = (env.store.borrow().kept.len(), env.len());
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &reencoded
+        ),
+        Ok(first)
+    );
+    assert_eq!((env.store.borrow().kept.len(), env.len()), (kept, len));
+    let other = Report {
+        amount: amount(999),
+        ..reencoded
+    };
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &other
+        ),
+        Err(ArrivalError::OtherFigures)
+    );
+    // The order filed on it names the same notice; so does an arrival held at once against an open order.
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &arrival),
+    )
+    .unwrap();
+    let Filed::Started {
+        order: automatic, ..
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let (_, _, _) = arrivals_recorded(&env)
+        .into_iter()
+        .find(|(o, _, _)| o.as_ref() == Some(&automatic))
+        .unwrap();
+    let named: Vec<_> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Arrival { order, notice, .. } => Some((order.clone(), notice.clone())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        named
+            .iter()
+            .all(|(_, n)| n.as_ref() == Some(&stated_notice.commitment))
+    );
+    let explicit = explicit_order(&mut env, &mut providers);
+    let held = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&explicit)]),
+        &report(600, 1),
+    )
+    .unwrap();
+    let Arrived::Held { arrival: held, .. } = held else {
+        panic!("{held:?}");
+    };
+    assert!(notice_of(&env, &held).is_some());
+    assert_ne!(notice_of(&env, &held), Some(stated_notice.commitment));
+    assert_admitted(&env);
+}
+
+/// An arrival held against a part of a split order names the part (`split-deposit-arrival-names-its-part`).
+// verifies: REQ-ORD-15, REQ-ORD-23
+#[test]
+fn an_arrival_held_against_a_part_names_the_part() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut part = open_order(&order);
+    part.part = Some(id("part-2"));
+    let held = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![part]),
+        &report(600, 0),
+    )
+    .unwrap();
+    let Arrived::Held { arrival, .. } = held else {
+        panic!("{held:?}");
+    };
+    let Entry::Verified(v) = at(&env, &arrival) else {
+        panic!("an arrival is verified");
+    };
+    let What::Arrival { part, .. } = v.what else {
+        unreachable!()
+    };
+    assert_eq!(part, Some(id("part-2")));
     assert_admitted(&env);
 }
