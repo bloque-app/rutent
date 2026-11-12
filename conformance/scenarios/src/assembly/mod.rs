@@ -19,6 +19,11 @@
 //! - **Intake and the segments.** An order's segments follow only its start as intake answers it
 //!   (`Intake::start`), never an acceptance, and the rounds' transactions (`Issued`) are kept across routings so no
 //!   segment runs under one.
+//! - **Arrivals** (`T-020-04`, `arrivals.rs`). `Arrivals` is held beside intake, on the same desk; the orders open at a
+//!   reserve are intake's started orders whose first segment hasn't settled; each order a filing opens is put into
+//!   policy's order records before policy is asked about it, and dropped where none opens (`FiledOrders`); an order
+//!   started on an automatic deposit is followed from its start as arrivals answers it (`Arrivals::start`); and the
+//!   operator's login holds `ActForUser`, to file for a reserve that declared it.
 //! - **The providers in the log.** Each simulated provider is granted by a decided catalogue change, its effect
 //!   and its result, and its advertisement appended as its stated entry, before any order: the log verifies their
 //!   statements by the keys it holds that way, and by no setting.
@@ -37,6 +42,7 @@
 //!   again on a [`durable::Disk`] reads back the log and the evidence store, and nothing of what it had acted on
 //!   (`F-030`).
 
+mod arrivals;
 pub mod durable;
 mod grading;
 pub mod machine;
@@ -178,6 +184,15 @@ pub enum AssemblyError {
     Listing(String),
     /// The state machine's host failed.
     Host(rutent_contracts::state_machine::host::HostError),
+}
+
+/// What an order's start takes from its intake or its filing: its origin reserve, the session its withdrawal goes in,
+/// the inputs its tuples need, and what its route delivers before the operator's fee.
+struct Begun {
+    origin: Id,
+    session: Option<Id>,
+    inputs: BTreeMap<String, String>,
+    delivers: rutent_contracts::router_api::Amount,
 }
 
 /// What an order needs to run once it started.
@@ -433,6 +448,10 @@ pub struct Core {
     /// Core's catalogue.
     pub(crate) catalogue: Catalogue,
     intake: Intake,
+    /// Arrivals and the orders filed on automatic deposits (`T-020-04`), held beside intake.
+    arrivals: rutent_core_orch::arrival::Arrivals,
+    /// Each filing on an automatic deposit Core was handed, by the order it opened: what its start takes.
+    filings: BTreeMap<String, rutent_core_orch::arrival::Filing>,
     segments: Segments,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
@@ -472,8 +491,16 @@ pub enum StepError {
     Session(SessionOutcome),
     /// The state machine's host failed.
     Host(rutent_contracts::state_machine::host::HostError),
+    /// Arrivals refused or stopped (`T-020-04`).
+    Arrival(rutent_core_orch::arrival::ArrivalError),
     /// The order is in no state that step can take.
     NotNow(&'static str),
+}
+
+impl From<rutent_core_orch::arrival::ArrivalError> for StepError {
+    fn from(e: rutent_core_orch::arrival::ArrivalError) -> Self {
+        StepError::Arrival(e)
+    }
 }
 
 impl From<AppendFailure> for StepError {
@@ -608,6 +635,9 @@ impl Core {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
             r.permit(&kit::operator_login(), Permission::ReadOrderState);
+            // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
+            // `T-020-04`).
+            r.permit(&kit::operator_login(), Permission::ActForUser);
             r.accounts.insert(
                 context.account.clone(),
                 kit::customer().party.as_str().to_owned(),
@@ -677,6 +707,8 @@ impl Core {
             installed,
             catalogue,
             intake: Intake::new(),
+            arrivals: rutent_core_orch::arrival::Arrivals::new(),
+            filings: BTreeMap::new(),
             segments: Segments::new(),
             closing: rutent_core_orch::closing::Closing::new(),
             readings: grading::Readings::default(),
@@ -1208,18 +1240,48 @@ impl Core {
             DESTINATION_INPUT.to_owned(),
             request.destination.account.as_str().to_owned(),
         );
+        let begun = Begun {
+            origin: request.origin_reserve.clone(),
+            session: Some(request.session.clone()),
+            inputs,
+            delivers: quote.delivers.clone(),
+        };
+        self.follow_on(
+            order,
+            start,
+            record,
+            parts.clone(),
+            authorisation,
+            authorised,
+            begun,
+        )
+    }
+
+    /// Follows `order` from `start`, its route `record` and `plan`, under `authorisation` as the log holds it
+    /// (`authorised`), with what its intake or its filing gave (`begun`).
+    #[allow(clippy::too_many_arguments)]
+    fn follow_on(
+        &mut self,
+        order: &Id,
+        start: &RecordedInput,
+        record: DecisionRecord,
+        plan: Vec<PartPlan>,
+        authorisation: Id,
+        authorised: rutent_contracts::core_internal::Authorisation,
+        begun: Begun,
+    ) -> Result<(), StepError> {
         let started = Started {
             record,
-            plan: parts.clone(),
+            plan,
             authorisation,
-            origin: request.origin_reserve.clone(),
+            origin: begun.origin,
             route: RouteEnd {
                 destination: authorised.destination.clone(),
                 to_asset: authorised.to_asset.clone(),
-                delivers: quote.delivers.clone(),
+                delivers: begun.delivers,
             },
-            session: Some(request.session.clone()),
-            inputs,
+            session: begun.session,
+            inputs: begun.inputs,
             floor: authorised.floor.clone(),
         };
         if !self.segments.follow(&self.clock, start) {

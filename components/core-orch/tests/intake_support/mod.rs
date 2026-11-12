@@ -65,6 +65,9 @@ pub struct Book {
     pub lose_next: Option<&'static str>,
     /// The call whose next append on orchestration's handle the log refuses, once, with nothing appended.
     pub refuse_next: Option<&'static str>,
+    /// Whether the next stated entry appended on orchestration's handle fails, once, with nothing appended
+    /// (`T-020-04`). Off unless a test sets it.
+    pub fail_stated_next: bool,
 }
 
 fn log_receipt(index: usize) -> Receipt {
@@ -143,6 +146,10 @@ impl Log for General {
             Entry::Verified(v) => Some(call_of(&v.what)),
             Entry::Stated(_) => None,
         };
+        if call.is_none() && book.fail_stated_next {
+            book.fail_stated_next = false;
+            return Err(AppendFailure::Unavailable);
+        }
         if call.is_some() && book.fail_next == call {
             book.fail_next = None;
             return Err(AppendFailure::Unavailable);
@@ -304,6 +311,12 @@ impl Evidence for SharedStore {
 #[derive(Debug, Default)]
 pub struct Store {
     pub kept: Vec<Vec<u8>>,
+    /// How many more statements it keeps before it fails to keep one, once, keeping nothing (`T-020-04`). Off unless
+    /// a test sets it.
+    pub fail_after: Option<usize>,
+    /// The place of a statement kept before that the next statement kept restates, once (`T-020-04`). Off unless a
+    /// test sets it.
+    pub restates_next: Option<usize>,
 }
 
 fn commitment(place: usize) -> Digest {
@@ -313,10 +326,18 @@ fn commitment(place: usize) -> Digest {
 
 impl Evidence for Store {
     fn keep(&mut self, received: &[u8]) -> Result<Kept, AppendFailure> {
+        match self.fail_after {
+            Some(0) => {
+                self.fail_after = None;
+                return Err(AppendFailure::Unavailable);
+            }
+            Some(n) => self.fail_after = Some(n - 1),
+            None => {}
+        }
         self.kept.push(received.to_vec());
         Ok(Kept {
             commitment: commitment(self.kept.len() - 1),
-            restates: None,
+            restates: self.restates_next.take().map(commitment),
         })
     }
 
@@ -374,6 +395,7 @@ impl Env {
             fail_next: None,
             lose_next: None,
             refuse_next: None,
+            fail_stated_next: false,
         }));
         let actors = Rc::new(RefCell::new(ActorRegister::default()));
         actors.borrow_mut().list(&customer());
