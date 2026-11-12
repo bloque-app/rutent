@@ -411,6 +411,18 @@ impl rutent_core_authz::funds::Recorded for PolicyPath {
     }
 }
 
+/// Policy's read of a stuck order's steps, each entry with the receipt the log gave it (`T-021-06`).
+impl rutent_core_authz::stuck::Receipted for PolicyPath {
+    fn receipted(
+        &mut self,
+    ) -> Result<Vec<(Receipt, Entry)>, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok((0..log.entries.len())
+            .map(|i| (log.receipt_at(i), log.entries[i].0.clone()))
+            .collect())
+    }
+}
+
 /// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
 pub struct Deployment_ {
     pub refuse: Rc<Cell<Option<RefusalClass>>>,

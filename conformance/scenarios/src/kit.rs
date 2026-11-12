@@ -56,10 +56,14 @@ pub fn customer() -> Actor {
     }
 }
 
+/// Core's own accountable party, apart from the deployment operator's (`T-021-06`): only Core's own components act
+/// for it, so Core is never the operator's, and never decides a stuck order or moves its value.
+pub const CORE_PARTY: &str = "rutent";
+
 /// Core, acting on its own account, and carrying the user's authorisation onward.
 pub fn core() -> Actor {
     Actor {
-        party: id("operator"),
+        party: id(CORE_PARTY),
         acts: id("rutent-core"),
         role: Role::Core,
         kind: ActorKind::Component,

@@ -92,6 +92,15 @@ pub enum Permission {
     /// An operator's login reading an order's recorded state and age, and nothing else of it, without a read
     /// permission (`REQ-ORD-5`). Asked by `T-021-02`'s read rule.
     ReadOrderState,
+    /// An operator's login deciding a stuck order's outcome, delivered or handed on, naming its evidence: the decide
+    /// step, a permission apart from the move's (`REQ-AUZ-4`, ADR-0011, `DEC-14`). Asked by `T-021-06`'s rule.
+    DecideStuck,
+    /// An operator's login moving the value a stuck order's decision named: the move step, apart from the decide
+    /// step's (`REQ-AUZ-4`, ADR-0011, `DEC-14`). Asked by `T-021-06`'s rule.
+    MoveStuck,
+    /// An actor confirming a move's outcome, once unknown, that its mover reported: the second actor's word
+    /// (`REQ-AUZ-4`, ADR-0011). Asked by `T-021-06`'s rule.
+    ConfirmOutcome,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't

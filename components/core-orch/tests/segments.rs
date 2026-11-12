@@ -314,7 +314,7 @@ fn admitting() -> Catalogue {
 
 fn core() -> Actor {
     Actor {
-        party: id("operator"),
+        party: id("rutent"),
         acts: id("rutent-core"),
         role: Role::Core,
         kind: ActorKind::Component,

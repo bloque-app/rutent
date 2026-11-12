@@ -41,9 +41,14 @@ fn read(path: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// An actor in `role`: Core's own components act for Core's party, apart from the operator's (`T-021-06`).
 fn actor(acts: &str, role: Role) -> Actor {
     Actor {
-        party: id("operator"),
+        party: id(if role == Role::Core {
+            "rutent"
+        } else {
+            "operator"
+        }),
         acts: id(acts),
         role,
         kind: ActorKind::Component,
@@ -332,7 +337,7 @@ impl Log {
     fn verified(what: Value) -> Entry {
         serde_json::from_value(json!({
             "kind": "verified",
-            "who": { "party": "operator", "acts": "rutent-core", "role": "core", "kind": "component" },
+            "who": { "party": "rutent", "acts": "rutent-core", "role": "core", "kind": "component" },
             "what": what,
             "when": { "at": "2026-11-10T09:00:00Z", "source": "core_clock" },
             "outcome": { "status": if what["call"] == "effect" { "to_take_effect" } else { "observed" } },
