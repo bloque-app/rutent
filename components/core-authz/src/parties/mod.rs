@@ -48,8 +48,9 @@
 //! hands others. The counter is the log's: before every charge the engine reads the
 //! log's permitted `charge` entries through policy's handle ([`Recorded::charged`], [`charged_in`]) and rebuilds it
 //! from them ([`Charged::rebuild`]), so an engine opened again after a restart, or beside another, holds what the log
-//! holds. Each charge's entry is recorded at the moment Core's clock counted it ([`Charged::counted_at`]), never at the
-//! time the charge states, so the rebuild finds it in the window it was counted in. A log that can't be read leaves
+//! holds. Each charge counted says in its entry when Core's clock counted it (`counted_at`, [`Charged::counted_at`]),
+//! beside the entry's own time, the charge's as every call's is, so the rebuild finds it in the window it was counted
+//! in, whatever moment the charge states. A log that can't be read leaves
 //! the counter an input the decision doesn't have, and the charge is refused.
 //!
 //! # Who answers for an actor
@@ -103,6 +104,10 @@ pub enum Scope {
     DecideStuck,
     /// A stuck order's move step (`move_stuck`, and `resolve_stuck`, which travels only as one).
     MoveStuck,
+    /// Reporting a move's outcome, once unknown (`report_outcome`).
+    ReportOutcome,
+    /// Confirming a move's outcome reported by another (`confirm_outcome`).
+    ConfirmOutcome,
     /// Opening a session (`open_session`).
     OpenSession,
     /// Reading (`check_read`).
@@ -131,6 +136,8 @@ impl Scope {
             Asked::Authorise(_) => Scope::Authorise,
             Asked::DecideStuck(_) => Scope::DecideStuck,
             Asked::MoveStuck(_) => Scope::MoveStuck,
+            Asked::ReportOutcome(_) => Scope::ReportOutcome,
+            Asked::ConfirmOutcome(_) => Scope::ConfirmOutcome,
             Asked::OpenSession(_) => Scope::OpenSession,
             Asked::CheckRead(_) => Scope::CheckRead,
             Asked::GrantPermission(_) => Scope::GrantPermission,
@@ -374,7 +381,7 @@ impl Charged {
 }
 
 /// A charge counted within its bound, with the moment it was counted at by Core's clock ([`Charged::counted_at`]), to
-/// the second: what each of the log's permitted `charge` entries holds, at its entry's own time.
+/// the second: what each of the log's permitted `charge` entries holds, as its `counted_at`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Counted {
     /// The charge.
@@ -384,22 +391,25 @@ pub struct Counted {
 }
 
 /// The charges `entries` hold as permitted, in their order, each with the moment the engine counted it: each
-/// verified `charge` entry whose outcome is `permitted`, at its entry's own time, which the engine takes from Core's
-/// clock ([`Charged::counted_at`]), never from the charge's `at`. The one definition every
+/// verified `charge` entry whose outcome is `permitted`, at its `counted_at`, which the engine takes from Core's clock
+/// ([`Charged::counted_at`]), never from the charge's `at` or the entry's time. The one definition every
 /// [`Recorded`](crate::funds::Recorded) reads charges by.
 pub fn charged_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<Counted> {
     entries
         .into_iter()
         .filter_map(|entry| match entry {
             Entry::Verified(VerifiedEntry {
-                what: What::Charge { charge },
+                what:
+                    What::Charge {
+                        charge,
+                        counted_at: Some(counted_at),
+                    },
                 outcome: Outcome::Permitted {},
-                when,
                 ..
             }) => Some(Counted {
                 charge: charge.clone(),
                 at: Duration::from_nanos(
-                    u64::try_from(when.at.unix_nanos().max(0)).unwrap_or(u64::MAX),
+                    u64::try_from(counted_at.unix_nanos().max(0)).unwrap_or(u64::MAX),
                 ),
             }),
             _ => None,
@@ -514,18 +524,25 @@ impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Charges for Engine<L, P, S>
         };
         let outcome = charge_outcome(answer, self.charged.standing(charge));
         // Counted at Core's clock, to the second, as its entry holds it; a moment no entry can hold is refused.
+        // A charge counted says when Core's clock counted it, to the second (`counted_at`), beside its entry's time,
+        // the charge's own as every call's is; a moment no entry can hold is refused, never the charge's own taken.
+        let within = matches!(outcome, ChargeOutcome::Within { .. });
         let counted_at = Duration::from_secs(self.charged.counted_at(now).as_secs());
-        let at = timestamp(counted_at).ok_or(AppendFailure::Refused(
-            rutent_contracts::core_internal::Violation(
-                "Core's clock gives no time a charge's entry can hold",
-            ),
-        ))?;
+        let stamped = if within {
+            Some(timestamp(counted_at).ok_or(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation(
+                    "Core's clock gives no time a charge's entry can hold",
+                ),
+            ))?)
+        } else {
+            None
+        };
         let what = What::Charge {
             charge: charge.clone(),
-            counted_at: None,
+            counted_at: stamped,
         };
-        let receipt = self.record(&charge.caller, what, &at, outcome.outcome())?;
-        if matches!(outcome, ChargeOutcome::Within { .. }) {
+        let receipt = self.record(&charge.caller, what, &charge.at, outcome.outcome())?;
+        if within {
             self.charged.counted(Counted {
                 charge: charge.clone(),
                 at: counted_at,
