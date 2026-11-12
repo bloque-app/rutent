@@ -1483,11 +1483,12 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
 /// The terms the authorisation `authorisation` of `order` acts under, as the policy engine's register reads the log
 /// (`T-021-04`): an `authorise` of that authorisation and that order whose outcome is permitted, as
 /// `move-rests-on-its-authorisation` holds a move to, and in force, not replaced since. A refusal under the same id,
-/// the same id for another order, or one replaced, is no authorisation this order starts under. The engine holds each
-/// of the order's moves to the same view.
+/// the same id for another order, or one replaced, is no authorisation this order starts under. An order starts as a
+/// whole, before any part's own authorisation, so it is read for the order as a whole. The engine holds each of the
+/// order's moves to the same view, for the move's own part.
 fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
     rutent_core_authz::funds::Authorised::of(rutent_core_authz::funds::permitted_in(entries))
-        .in_force_as(order, authorisation)
+        .in_force_as(order, None, authorisation)
         .cloned()
 }
 
