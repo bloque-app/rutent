@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 461 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 463 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 85 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -453,6 +453,14 @@
 - Folded into 1.0.0 before its release: the README hands `T-022-01` the check on a statement's own time: its log
   refuses a stated entry whose `made_at` runs ahead of its append clock beyond a tolerance, since an outcome's
   evidence is held to no earlier than its move by that `made_at`. (DEC-4, REQ-AUD-2, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a stuck resolution doesn't take over another question's transaction (round 9
+  of `T-020-01`'s review). `stuck-resolution-transaction-is-its-own` counted only statements binding the transaction
+  to a segment, so a resolution could be decided under the transaction of an order-level question already asked and
+  answered, whose answers would then settle it. Any statement naming the transaction before the resolution's own
+  decision is now a use; after it, only Core's question and the answers to it are its own. Refused: the reviewer's
+  probe, a question and its answer under `tx-z` before `p3`'s hand-on decision under `tx-z`. Admitted: the hand-on's
+  own question and answer under `tx-h3`, after its decision. 463 admission cases. (DEC-4, DEC-20, REQ-AUZ-4,
+  REQ-ORD-38, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
