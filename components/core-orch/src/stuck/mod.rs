@@ -37,10 +37,10 @@
 //!    Core holds both rules itself whatever policy answers: it carries out a move only for a decision it holds,
 //!    permitted and answering its own request, of a part it declared stuck and that is still unresolved, and only
 //!    where the mover is neither of the decider's party nor its login. A resolution moves no more than the part
-//!    still holds, through a provider of the part, to the order's destination or back to its origin, both read
-//!    from Core's records ([`Stuck::follow`]), never from the caller. One move of a part at a time: while one is in
-//!    progress, or its outcome unknown, nothing more is decided or moved for the part, and a move is finished only
-//!    by its own mover. Each decision is spent by the move that carried it out, whatever its outcome. The effect is
+//!    still holds, through a provider of the part, to the part's destination or back to its origin, both read
+//!    from Core's records ([`Stuck::follow`]) at the decision and again at the move, never from the caller. One
+//!    move of a part at a time: while one is in progress, or its outcome unknown, nothing more is decided or moved
+//!    for the part, and a move is finished only by its own mover. Each decision is spent by the move that carried it out, whatever its outcome. The effect is
 //!    acted on once for its receipt, in the one register the segments keep too (`INV-8`), and only on a receipt
 //!    that is its own; the part is resolved once all its value moved.
 //!
@@ -505,7 +505,6 @@ struct Kept {
     decision: Id,
 }
 
-/// An order's two ends, from Core's records: the destination its authorisation names, and the origin its
 /// A part's two ends, from Core's records: the destination the authorisation in force for it names, and its origin,
 /// the account that authorisation names at its origin reserve, at the outer node the part's withdrawal took the value
 /// from. As the log reads them (`delivery-goes-to-the-parts-ends`).
@@ -1149,6 +1148,18 @@ impl Stuck {
             declared,
             &kept.request.resolution,
         )?;
+        // And where it delivers, to the part's ends as they stand now: a decision made before the customer replaced
+        // the part's terms ([`Stuck::follow`]) would deliver where the authorisation in force no longer names, and is
+        // refused before policy is asked (`REQ-AUZ-3`, `THR-77`).
+        if let Resolution::Deliver { to, .. } = &kept.request.resolution {
+            let ends = self
+                .ends
+                .get(&key(moving.order, &kept.part))
+                .ok_or(ResolveError::NoEnds)?;
+            if !ends.takes(to) {
+                return Err(ResolveError::ElsewhereThanItsEnds);
+            }
+        }
         let request = StuckMove {
             request: parts.fresh.id(),
             order: moving.order.clone(),

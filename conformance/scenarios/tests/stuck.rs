@@ -3301,3 +3301,79 @@ fn a_parts_new_destination_replaces_its_ends_and_keeps_the_others() {
         Some((at("acct-new"), Some(origin())))
     );
 }
+
+/// A decision made before its part's terms were replaced is carried out no more: the part's destination changes after
+/// the decision to deliver there, the customer authorising the part alone to another account, and following the order
+/// again takes the new ends. Moving the old decision is refused before policy is asked, with no effect recorded and
+/// nothing moved: it would deliver where the authorisation in force no longer names (`REQ-AUZ-3`, `THR-77`). A
+/// decision to the part's origin, which the new authorisation leaves as it was, still moves.
+// verifies: REQ-AUZ-4, REQ-AUZ-3
+#[test]
+fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves::default();
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let delivery = to_destination(&core, AMOUNT);
+    let to_the_old_destination = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &delivery,
+        &evidence(),
+    )
+    .expect("decided while the destination stood");
+    let mut changed = recorded(&core);
+    changed.push(authorised_anew(
+        &core,
+        "auth-p1-new",
+        Some(vec![id(PART)]),
+        rutent_scenarios::kit::customer(),
+        "acct-new",
+        "acct-1",
+    ));
+    stuck
+        .follow(&core.segments, &changed, &id(ORDER))
+        .expect("the part's new destination replaces its ends");
+    let asked = policy.asked;
+    assert_eq!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &to_the_old_destination,
+            &bob
+        ),
+        Err(ResolveError::ElsewhereThanItsEnds)
+    );
+    assert_eq!(policy.asked, asked, "policy isn't asked");
+    assert!(moves.0.is_empty(), "nothing moves");
+    assert_eq!(count(&core, is_resolve_stuck), 0, "no effect is recorded");
+    let to_its_origin = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .expect("its origin stands");
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &to_its_origin,
+            &bob
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
