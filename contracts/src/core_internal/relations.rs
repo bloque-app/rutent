@@ -899,10 +899,11 @@ pub static RELATIONS: [Relation; 80] = [
         name: "stuck-resolution-transaction-is-its-own",
         spec: &["REQ-AUZ-4", "REQ-ORD-38"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a stuck resolution's transaction is its own: no other resolution, move, yes or deposit notice uses it",
+        refusal: "a stuck resolution's transaction is its own: no other resolution, statement, move, yes or deposit notice uses it",
         fields: &[],
         // Its outcome's evidence binds through it, so a transaction another entry of the log already uses would let
-        // that entry's statements settle this resolution. Its own decide step and effect, and either retried, aside.
+        // that entry's statements settle this resolution. Its own decide step and effect, and either retried, aside,
+        // and, after its decision, its own question and the answers to it.
         cites: |e, _| match resolution_transaction(e) {
             Some(_) => by_fields(0),
             None => none(),
@@ -912,9 +913,17 @@ pub static RELATIONS: [Relation; 80] = [
                 return Match::NotTarget;
             };
             let uses = match t {
-                // A move's: a statement binding it to a segment.
+                // A statement naming it: any, before the resolution's own decision, which then takes over another
+                // question's transaction; after it, only the resolution's own, Core's question and the answers to it,
+                // never one binding it to a segment (a move's).
                 Entry::Stated(s) => s.about.as_ref().is_some_and(|a| {
-                    a.transaction.as_ref() == Some(transaction) && a.segment.is_some()
+                    a.transaction.as_ref() == Some(transaction)
+                        && (position(t, h) < decided_at(decided, h)
+                            || a.segment.is_some()
+                            || !(s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE
+                                || (s.what.statement.as_str()
+                                    == crate::provider_role::OPERATION_SHAPE
+                                    && maker_provider(s) == &e.operator.maker)))
                 }),
                 Entry::Verified(v) => match &v.what {
                     What::Acceptance { yeses, .. } => yeses.iter().any(|y| {
@@ -3574,6 +3583,22 @@ fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
         })?;
         s.about.as_ref()?.transaction.as_ref()
     })
+}
+
+/// Where in `history` the permitted `stuck_decide` with `decided`'s request and decision sits, or past its end where
+/// none does yet (the decision being admitted).
+fn decided_at(decided: (&Id, &Id), history: &History) -> Option<usize> {
+    Some(
+        history
+            .iter()
+            .position(|(_, x)| {
+                permitted(x).is_some_and(|v| {
+                    matches!(&v.what, What::StuckDecide { request, decision }
+                        if (&request.request, decision) == decided)
+                })
+            })
+            .unwrap_or(history.len()),
+    )
 }
 
 /// A stuck resolution's order, transaction and decision, where `entry` is one: a `stuck_decide`, or a
