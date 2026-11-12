@@ -44,6 +44,8 @@ field by field in Rust is checked only when `check` is called; a `StateMachine` 
 | A part has a `deposit_failed_at` only where a final deposit failed: its last segment, or one a recalculation retired | can't be stated | `Order::check` |
 | The destination reserve is a provider-role identifier | `identifier` | `Order::check`, with the router's own `Id` |
 | `deposit_failed_at` is overwritten by each failed final deposit, cleared by `destination_changed`, kept by a recalculation | can't be stated: a transition | `deposit_failed_at_after`, applied by `CMP-STM` with every input |
+| A part resolved to its destination is complete, or failed after; one resolved to its origin ended without completing | `if`/`then` | `Order::check` |
+| A stuck part's resolution ends it: complete at its destination, ended without completing at its origin; a part that isn't stuck doesn't change (`REQ-AUZ-4`, `REQ-STM-6`) | can't be stated: a transition | `after_stuck_resolved`, applied by `CMP-STM` to a `stuck_resolved` input, else `not_applicable` / `not_from_this_state` |
 | `waiting_since`, when present, is an RFC 3339 date-time, never `null` | `format` and `pattern` | `Timestamp`, `deserialize_with` |
 | A part has `waiting_since` exactly while it waits for the customer | `if`/`then`/`else` | `Order::check` |
 | `waiting_since` is the `recorded_at` of the input that made the part wait, kept while it goes on waiting, dropped when it stops | can't be stated: a transition | `waiting_since_after`, applied by `CMP-STM` with every input that changes a part |
@@ -95,6 +97,23 @@ a clock shows the age as its now less `waiting_since`; the state machine reads n
 
 No provider starts on a waiting part. The customer's choice resolves it: a `route_recalculated` within a new
 authorisation (a lower floor, say), a `destination_changed`, or a `handed_on`, each as for any waiting part.
+
+## A stuck part's resolution
+
+A stuck part is resolved in two steps under policy (`REQ-AUZ-4`, ADR-0011): one party decides the outcome, naming
+the evidence, and another moves the value. core-internal's `deliver` resolution sends the value to the order's own
+destination or back to its origin; once the move's result is done, Core records `stuck_resolved`, with `to` naming
+which, and the evidence it arrived on. ADR-0011 and `REQ-AUZ-4` don't name the outcomes; the names are core-internal's.
+A published rule, `after_stuck_resolved`, ends the part:
+
+- delivered to the **destination**, the part is **complete**;
+- returned to the **origin**, the part **ended without completing**;
+- a part that isn't stuck doesn't change; the input is `not_applicable` / `not_from_this_state`.
+
+The value may have been in flight when the part was declared stuck, so the rule doesn't ask where it sits, and the
+part's segments may not show it delivered: the part keeps `resolved_to`, which says so. Having ended, the part takes
+no later report (`REQ-STM-6`): a late delivery on its segment moves nothing twice (`AC-5`). A resolution handing the
+value on to a linked order is `handed_on`, as for a waiting part.
 
 ## The destination
 

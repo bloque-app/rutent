@@ -28,9 +28,9 @@ use alloc::{collections::BTreeSet, vec::Vec};
 use rutent_contracts::state_machine::{
     Destination, Id, LastInput, NotApplicableReason, Observed, OperationKind, Order, OrderState,
     Outcome, Part, RecordedInput, Scope, Segment, SegmentPlan, SegmentState, StateMachine,
-    after_no_route, after_waiting_at_floor, deposit_failed_at_after, destination_change_applies,
-    recalculation_keeps_destination, recalculation_starts_where_value_sits, value_at,
-    waiting_since_after,
+    after_no_route, after_stuck_resolved, after_waiting_at_floor, deposit_failed_at_after,
+    destination_change_applies, recalculation_keeps_destination,
+    recalculation_starts_where_value_sits, value_at, waiting_since_after,
 };
 
 use crate::parts::{is_ended, order_state_of};
@@ -75,6 +75,7 @@ impl StateMachine for Stm {
                     destination: Destination::of(&p.segments)?,
                     deposit_failed_at: None,
                     waiting_since: None,
+                    resolved_to: None,
                 })
             })
             .collect::<Option<Vec<Part>>>()?;
@@ -273,6 +274,14 @@ fn apply_to_part(
         Observed::WaitingAtFloor {} => match after_waiting_at_floor(part) {
             Some(state) => {
                 part.state = state;
+                Outcome::Applied {}
+            }
+            None => not_from_this_state(),
+        },
+        Observed::StuckResolved { to, .. } => match after_stuck_resolved(part, *to) {
+            Some(state) => {
+                part.state = state;
+                part.resolved_to = Some(*to);
                 Outcome::Applied {}
             }
             None => not_from_this_state(),

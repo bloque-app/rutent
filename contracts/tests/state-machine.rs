@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use jsonschema::{Registry, Validator};
 use rutent_contracts::state_machine::{
     Destination, Id, NodeId, NodeRef, NotApplicableReason, Observed, Order, OrderState, Outcome,
-    Part, RecordedInput, Segment, SegmentPlan, SegmentState, Timestamp, VERSION, after_no_route,
-    after_waiting_at_floor, deposit_failed_at_after, destination_change_applies,
-    recalculation_keeps_destination, recalculation_starts_where_value_sits, value_at,
-    waiting_since_after,
+    Part, RecordedInput, ResolvedTo, Segment, SegmentPlan, SegmentState, Timestamp, VERSION,
+    after_no_route, after_stuck_resolved, after_waiting_at_floor, deposit_failed_at_after,
+    destination_change_applies, recalculation_keeps_destination,
+    recalculation_starts_where_value_sits, value_at, waiting_since_after,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1001,4 +1001,34 @@ fn waiting_since_is_when_the_part_began_waiting_kept_while_it_waits_and_dropped_
         "dropped when it stops"
     );
     assert_eq!(waiting_since_after(&part, OrderState::Stuck, &floor), None);
+}
+
+// verifies: REQ-AUZ-4, REQ-STM-6, AC-5
+#[test]
+fn a_stuck_part_s_resolution_ends_it_where_its_value_went_and_nothing_else_is_resolved() {
+    let mut stuck = before_the_floor();
+    stuck.state = OrderState::Stuck;
+    stuck.segments[1].state = SegmentState::Started;
+    assert_eq!(
+        after_stuck_resolved(&stuck, ResolvedTo::Destination),
+        Some(OrderState::Complete),
+        "delivered with its exchange still in flight"
+    );
+    assert_eq!(
+        after_stuck_resolved(&stuck, ResolvedTo::Origin),
+        Some(OrderState::EndedWithoutCompleting)
+    );
+    for state in [
+        OrderState::WaitingForCustomer,
+        OrderState::FirstSegmentSettled,
+        OrderState::Complete,
+    ] {
+        let mut other = stuck.clone();
+        other.state = state;
+        assert_eq!(
+            after_stuck_resolved(&other, ResolvedTo::Destination),
+            None,
+            "{state:?}"
+        );
+    }
 }

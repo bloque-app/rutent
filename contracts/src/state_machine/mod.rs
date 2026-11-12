@@ -4,8 +4,8 @@
 //! This is a library API (`DEC-4`): these types are the API, and they serialise to the schemas under
 //! `contracts/state-machine/schemas/`. `CMP-STM` implements [`StateMachine`]; this module holds no transition
 //! rules of its own but a few, published so that every implementation applies them the same way: what a part
-//! becomes when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`) or when it waits past
-//! its floor ([`after_waiting_at_floor`]), how `deposit_failed_at` and `waiting_since` are kept
+//! becomes when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`), when it waits past
+//! its floor ([`after_waiting_at_floor`]) and when a stuck part's resolution delivers it ([`after_stuck_resolved`]), how `deposit_failed_at` and `waiting_since` are kept
 //! ([`deposit_failed_at_after`], [`waiting_since_after`]), and whether a new route keeps the destination and
 //! starts where the value sits ([`recalculation_keeps_destination`], [`destination_change_applies`],
 //! [`recalculation_starts_where_value_sits`]).
@@ -34,6 +34,14 @@
 //! `waiting_since`, the `recorded_at` of the input that made it wait, while it waits, so the order shows its age
 //! to a reader with a clock ([`waiting_since_after`]). No provider starts on a waiting part; the customer's
 //! choice resolves it: a recalculation within a new authorisation, a change of destination, or handing it on.
+//!
+//! # A stuck part's resolution
+//!
+//! A stuck part is resolved in two steps under policy (`REQ-AUZ-4`, ADR-0011): one party decides the outcome and
+//! another moves the value. Once the move's result is done, Core records `stuck_resolved`, naming where the value
+//! went: the order's destination, and the part is complete, or back to its origin, and the part ended without
+//! completing ([`after_stuck_resolved`]). The part keeps [`Part::resolved_to`], since its segments may not show it.
+//! A resolution handing the value on to a linked order is `handed_on`.
 //!
 //! # The destination
 //!
@@ -551,6 +559,18 @@ pub enum StuckReason {
     Dispute,
 }
 
+/// Where a stuck part's resolution delivered its value (`REQ-AUZ-4`, ADR-0011): core-internal's `deliver`
+/// resolution names the order's own destination or its origin. A resolution handing the value on to a linked order is
+/// [`Observed::HandedOn`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedTo {
+    /// The order's own destination: the part is complete.
+    Destination,
+    /// Back to the order's origin: the part ended without completing.
+    Origin,
+}
+
 /// What an observed kind is about, which decides what its [`Subject`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -634,6 +654,15 @@ pub enum Observed {
         /// Why.
         reason: StuckReason,
     },
+    /// A stuck part's resolution delivered its value, to the order's destination or back to its origin
+    /// (`REQ-AUZ-4`, ADR-0011): the decide step named it, another party moved it, and its result is done. The part
+    /// ends ([`after_stuck_resolved`]).
+    StuckResolved {
+        /// Where the value went.
+        to: ResolvedTo,
+        /// The evidence the value arrived on, by id.
+        evidence: Id,
+    },
     /// The part's value is handed on to a new, linked order (`REQ-ORD-43`). Never without the customer's
     /// acceptance (`REQ-ORD-34`, `REQ-AUZ-3`).
     HandedOn {
@@ -655,6 +684,7 @@ impl Observed {
             | Observed::WithdrawalCancelled {}
             | Observed::WaitingAtFloor {}
             | Observed::StuckDeclared { .. }
+            | Observed::StuckResolved { .. }
             | Observed::HandedOn { .. } => Scope::Part,
             Observed::ProviderBound {}
             | Observed::SegmentSettled { .. }
@@ -851,6 +881,21 @@ pub struct Part {
         skip_serializing_if = "Option::is_none"
     )]
     pub waiting_since: Option<Timestamp>,
+    /// Where a stuck part's resolution delivered its value, when the part ended so ([`after_stuck_resolved`]):
+    /// present only on a part that ended by its resolution, so a part complete with segments not settled, or ended
+    /// after its withdrawal settled, says why.
+    #[serde(
+        default,
+        deserialize_with = "some_resolved",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved_to: Option<ResolvedTo>,
+}
+
+fn some_resolved<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ResolvedTo>, D::Error> {
+    ResolvedTo::deserialize(deserializer).map(Some)
 }
 
 fn some_time<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Timestamp>, D::Error> {
@@ -945,6 +990,23 @@ pub fn after_waiting_at_floor(part: &Part) -> Option<OrderState> {
         OrderState::WaitingForCustomer | OrderState::Stuck
     );
     (!held && value_at(part).is_some()).then_some(OrderState::WaitingForCustomer)
+}
+
+/// The published rule for a `stuck_resolved` input on a part (`REQ-AUZ-4`, ADR-0011): the state the part goes to,
+/// or `None` when the input is not applicable from this state.
+///
+/// - A stuck part whose value reached the order's destination is complete; one whose value went back to the origin
+///   ended without completing. Either way the part has ended, and a late report about a segment changes nothing
+///   (`REQ-STM-6`): the value moved once (`AC-5`).
+/// - A part that isn't stuck doesn't change: only a stuck part is resolved, and one waiting for the customer is the
+///   customer's.
+///
+/// The value may have been in flight when the part was declared stuck: the rule doesn't ask where it sits.
+pub fn after_stuck_resolved(part: &Part, to: ResolvedTo) -> Option<OrderState> {
+    (part.state == OrderState::Stuck).then_some(match to {
+        ResolvedTo::Destination => OrderState::Complete,
+        ResolvedTo::Origin => OrderState::EndedWithoutCompleting,
+    })
 }
 
 /// The published update rule for [`Part::waiting_since`], applied with every input that changes the part: the
@@ -1045,12 +1107,14 @@ pub struct Order {
 }
 
 impl Order {
-    /// Checks the rules a field type can't carry. The schema states the first four; the last two only Rust
+    /// Checks the rules a field type can't carry. The schema states the first five; the last two only Rust
     /// can check.
     ///
     /// - The order has at least one part, and each part at least one segment.
     /// - A handed-on part names its linked order, and only a handed-on part does.
     /// - A waiting part has `waiting_since`, and only a waiting part does.
+    /// - A part resolved to its destination is complete (or failed after); one resolved to its origin ended without
+    ///   completing.
     /// - A handed-on order has a handed-on part.
     /// - Part ids, and segment ids current or retired, are unique within the order.
     /// - An `applied` last input is the input that reached the state.
@@ -1109,6 +1173,16 @@ impl Order {
                 return Err(Violation(
                     "a part has waiting_since exactly while it waits for the customer",
                 ));
+            }
+            match (part.resolved_to, part.state) {
+                (None, _)
+                | (Some(ResolvedTo::Destination), OrderState::Complete | OrderState::Failed)
+                | (Some(ResolvedTo::Origin), OrderState::EndedWithoutCompleting) => {}
+                _ => {
+                    return Err(Violation(
+                        "a part resolved to its destination is complete, or failed after; one resolved to its origin ended without completing",
+                    ));
+                }
             }
             if (part.state == OrderState::HandedOn) != part.linked_order.is_some() {
                 return Err(Violation(

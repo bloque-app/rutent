@@ -14,6 +14,16 @@
   the input, an order waiting at its floor, and four refusals (a waiting order without `waiting_since`, one that
   has it while not waiting, the input naming a segment, the input carrying an amount). (DEC-4, DEC-20,
   T-020-01, T-020-10)
+- Breaking, in the same major: a stuck part's resolution ends it (`REQ-AUZ-4`, ADR-0011). A new observed kind
+  about one part, `stuck_resolved { to, evidence }`, records that the resolution's move delivered the value, `to`
+  the order's `destination` or back to its `origin`; the names are core-internal's `deliver` resolution's, since
+  ADR-0011 and `REQ-AUZ-4` name none. The published rule `after_stuck_resolved` makes a stuck part complete, or
+  ended without completing, and leaves any other part as it is. A part ended so carries `resolved_to`, since its
+  segments may not show the delivery. Before it, no input ended a resolved part, which stayed stuck. New fixtures:
+  the input both ways, an order delivered and one returned by their resolutions, and five refusals. (DEC-4,
+  DEC-20, T-020-01, T-020-11)
+- The schemas also follow router-api 4.0.0: a segment plan is router-api's typed operation, by reference, so its
+  4.0.0 shapes are the state machine's from this version. (DEC-4, DEC-20, T-020-01)
 
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/state_machine`) is `no_std` with `alloc`:

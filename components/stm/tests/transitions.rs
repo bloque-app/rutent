@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use rutent_contracts::state_machine::{
-    NotApplicableReason as Why, Observed, Order, OrderState, Outcome, SegmentState, StateMachine,
-    StuckReason,
+    NotApplicableReason as Why, Observed, Order, OrderState, Outcome, ResolvedTo, SegmentState,
+    StateMachine, StuckReason,
 };
 use rutent_stm::{
     HandOnRefusal, Stm, handed_on_route_starts_where_value_sits, is_ended, order_state_of,
@@ -877,4 +877,70 @@ fn a_part_waiting_at_its_floor_is_handed_on_or_sent_to_another_destination_by_th
     );
     assert_eq!(other.part("p1").waiting_since, None);
     other.order().check().expect("the order stays valid");
+}
+
+/// An order whose exchange is in flight when its part is declared stuck over time.
+fn stuck_in_flight(order: &str) -> Run {
+    let mut run = Run::opened(order);
+    run.run_segments("p1", 1, 1);
+    assert_eq!(run.bind("p1", "p1-s2"), Outcome::Applied {});
+    let over = Observed::StuckDeclared {
+        reason: StuckReason::OverTime,
+    };
+    assert_eq!(run.about_part("p1", over), Outcome::Applied {});
+    run
+}
+
+fn resolved(to: ResolvedTo) -> Observed {
+    Observed::StuckResolved {
+        to,
+        evidence: id("ev-resolved"),
+    }
+}
+
+// verifies: REQ-AUZ-4, REQ-STM-6, AC-5, AC-6
+#[test]
+fn a_stuck_part_s_resolution_ends_it_and_a_late_delivery_moves_nothing() {
+    let mut run = stuck_in_flight("ord-resolved");
+    assert_eq!(
+        run.about_part("p1", resolved(ResolvedTo::Destination)),
+        Outcome::Applied {}
+    );
+    assert_eq!(run.part_state("p1"), OrderState::Complete);
+    assert_eq!(run.order().state, OrderState::Complete);
+    assert_eq!(run.part("p1").resolved_to, Some(ResolvedTo::Destination));
+    run.order().check().expect("the order stays valid");
+    // The exchange reports late: the part has ended, and nothing moves twice.
+    assert_eq!(run.settle("p1", "p1-s2"), na(Why::Ended));
+    assert_eq!(
+        run.about_part("p1", resolved(ResolvedTo::Origin)),
+        na(Why::Ended)
+    );
+
+    let mut back = stuck_in_flight("ord-returned");
+    assert_eq!(
+        back.about_part("p1", resolved(ResolvedTo::Origin)),
+        Outcome::Applied {}
+    );
+    assert_eq!(back.part_state("p1"), OrderState::EndedWithoutCompleting);
+    assert_eq!(back.part("p1").resolved_to, Some(ResolvedTo::Origin));
+    back.order().check().expect("the order stays valid");
+}
+
+// verifies: REQ-AUZ-4, REQ-ORD-43
+#[test]
+fn only_a_stuck_part_is_resolved() {
+    let mut open = Run::opened("ord-open");
+    open.run_segments("p1", 1, 1);
+    assert_eq!(
+        open.about_part("p1", resolved(ResolvedTo::Destination)),
+        na(Why::NotFromThisState)
+    );
+    // A part waiting for the customer is the customer's.
+    let mut wait = waiting("ord-wait-resolved");
+    assert_eq!(
+        wait.about_part("p1", resolved(ResolvedTo::Destination)),
+        na(Why::NotFromThisState)
+    );
+    assert_eq!(wait.part_state("p1"), OrderState::WaitingForCustomer);
 }
