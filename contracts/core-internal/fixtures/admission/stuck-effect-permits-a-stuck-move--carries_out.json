@@ -3427,6 +3427,7 @@
               },
               "amount": "2500000"
             },
+            "transaction": "tx-d3",
             "evidence": [
               {
                 "algorithm": "sha-256",
@@ -3523,7 +3524,8 @@
             "decimals": 2
           },
           "amount": "2500000"
-        }
+        },
+        "transaction": "tx-d3"
       },
       "decision": {
         "request": "req-201",

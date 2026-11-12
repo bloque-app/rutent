@@ -3426,6 +3426,7 @@
               },
               "amount": "2500000"
             },
+            "transaction": "tx-d3",
             "evidence": [
               {
                 "algorithm": "sha-256",
@@ -3530,7 +3531,8 @@
                 "decimals": 2
               },
               "amount": "2500000"
-            }
+            },
+            "transaction": "tx-d3"
           },
           "decision": {
             "request": "req-201",
@@ -3727,8 +3729,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -3756,10 +3757,10 @@
           "statement": "urn:rutent:provider-role:result"
         },
         "when": {
-          "at": "2026-11-06T15:04:05Z",
+          "at": "2026-11-10T09:00:05Z",
           "source": "party_stated"
         },
-        "received_at": "2026-11-06T15:04:06Z",
+        "received_at": "2026-11-10T09:00:05Z",
         "outcome": {
           "status": "stated"
         },
@@ -3773,8 +3774,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -3802,10 +3802,10 @@
           "statement": "urn:rutent:provider-role:result"
         },
         "when": {
-          "at": "2026-11-06T15:04:05Z",
+          "at": "2026-11-10T09:00:05Z",
           "source": "party_stated"
         },
-        "received_at": "2026-11-06T15:04:06Z",
+        "received_at": "2026-11-10T09:00:05Z",
         "outcome": {
           "status": "stated"
         },
@@ -3819,8 +3819,7 @@
         },
         "about": {
           "order": "ord-1",
-          "transaction": "tx-d3",
-          "segment": "p3-s1"
+          "transaction": "tx-d3"
         }
       }
     },
@@ -4025,6 +4024,7 @@
               },
               "amount": "1000000000"
             },
+            "transaction": "tx-h3",
             "evidence": [
               {
                 "algorithm": "sha-256",
@@ -4123,7 +4123,8 @@
                 "decimals": 6
               },
               "amount": "1000000000"
-            }
+            },
+            "transaction": "tx-h3"
           },
           "decision": {
             "request": "req-211",
