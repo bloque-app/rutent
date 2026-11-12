@@ -137,6 +137,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `revocation-revokes-a-grant` | `revoke_permission`, `permitted`: its `permission` (a refused one cites nothing) | a `grant_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`, `--refused`; refused: `--missing` |
 | `permitted-read-rests-on-its-grant` | `check_read`, `permitted`, naming a `permission` | a `grant_permission`, `permitted`, of that permission | grantee (the reader's party), scope (covers what it reads) | `REQ-AUZ-7`, `REQ-AUD-12` | admitted: `world--*`; refused: `--missing`, `--grantee`, `--scope`, `--order-state-under-the-trail`, `--order-state-under-its-order`; refused also: `--order-state-under-another-order` |
 | `permitted-read-is-not-revoked` | `check_read`, `permitted`, naming a `permission` | none other: no `revoke_permission`, `permitted`, of that permission | — | `REQ-AUZ-7` | admitted: `world--*`; refused: `--conflict` |
+| `own-evidence-read-is-of-the-readers-statement` | `check_read`, `permitted`, of `evidence`, naming no `permission`: its `commitment` | a stated entry holding that commitment | maker (the statement's `acts` is the reader's) | `REQ-AUD-5`, `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--maker` |
 | `customer-read-is-of-its-own-order` | `check_read`, `permitted`, by a customer, of an order, its state or a segment: its order | an `acceptance` of that order | party (the reader is its requester, beneficiary or payer), segment (a segment read's segment is one its order's plan lists) | `REQ-AUZ-7` | admitted: `world--*`, `--segment-of-its-order`; refused: `--missing`, `--party`, `--beneficiary`, `--segment`, `--order-state-of-its-order`; refused also: `--order-state-of-another-order`, `--order-state-of-an-order-not-its-own` |
 | `provider-read-is-of-its-own-segment` | `check_read`, `permitted`, by a provider, of a segment: its order and segment | an `effect` of `move_value` on that segment of that order | provider (the reader, as the effect and the read name it) | `REQ-AUZ-7` | admitted: `world--*`; refused: `--missing`, `--provider`, `--as` |
 | `segment-belongs-to-one-order` | `effect` of `move_value`: its segment | none other: no `effect` of `move_value` on that segment under another order | — | `REQ-ORD-38` | admitted: `world--*`; refused: `--conflict` |
@@ -351,7 +352,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `VerifiedEntry` of a `command` | its `who` is the operator |
 | `GeneralEntry` | it holds no decision kind (`calls::is_decision`), and no stated entry attributed `verified`, however it is built or read |
 | `DecisionEntry` | it holds a decision kind and nothing else, however it is built or read |
-| `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order, its state or the trail; a customer's is never of the trail; the operator's without a permission is of an order's state or its own evidence |
+| `VerifiedEntry` of a permitted `check_read` | a regulator's or a checker's names its permission; a provider's is of a segment, never an order, its state or the trail; a customer's is never of the trail; the operator's without a permission is of an order's state or its own evidence, which `own-evidence-read-is-of-the-readers-statement` holds to a statement it made |
 | `PersonQuestion` | on a shortlisted route, it asks only the shortlisted providers and the verifiers its tuples need, which receive the subject |
 | `PermissionChange` | its grantee is a regulator or a checker, and `by` is the operator |
 | `What::Acceptance` | it names each part's yes, each part once and each with a receipt of its own, and the session exactly when its basis is given |
@@ -444,6 +445,10 @@ These are defaults taken where the row left a choice open. Each is reversible by
   recorded state and age and nothing else: the operator reads it without a permission, its customer reads its own,
   and no provider reads it. A permission over the trail or over the order covers it. `T-021-02`'s policy allows
   the operator's and the customer's `order_state` reads; `T-020-08` serves them.
+- **Its own evidence** (`REQ-AUD-5`). A permitted evidence read that names no permission, the operator's, a
+  customer's or a provider's, is of a statement this log holds whose maker (`acts`) is the reader; any other
+  party's kept bytes, a holding account's balance among them, are read only under a permission whose scope covers
+  them.
 - **Refusal classes for orders** are the eight `order_refusal` names; one `REQ-ORD-18` needs beyond them is a bump.
   A change of the destination's owner is `destination_owner_changed`: the order waits for the customer, told so by
   its own class, and the refusal rests on the `destination_check` that found `owner_changed`

@@ -2623,6 +2623,52 @@
       "entry": {
         "kind": "verified",
         "who": {
+          "party": "bridge-pay",
+          "acts": "bridge-pay",
+          "role": "provider",
+          "kind": "component"
+        },
+        "what": {
+          "call": "check_read",
+          "check": {
+            "request": "req-406",
+            "reader": {
+              "party": "bridge-pay",
+              "acts": "bridge-pay",
+              "role": "provider",
+              "kind": "component"
+            },
+            "reads": {
+              "kind": "evidence",
+              "commitment": {
+                "algorithm": "sha-256",
+                "value": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+              }
+            },
+            "at": "2026-11-10T09:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 151,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "3434343434343434343434343434343434343434343434343434343434343434"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
           "party": "operator",
           "acts": "op-login-2",
           "role": "operator",

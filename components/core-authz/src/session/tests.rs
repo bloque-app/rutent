@@ -964,9 +964,9 @@ fn roles_the_read_rule_does_not_list_read_nothing_without_a_permission() {
     }
 }
 
-/// A kept statement is read by a party as its own, as the evidence store's record says, or by a checker by a
-/// permission over it: another party is refused it, the operator too, and a checker without that permission, each
-/// recorded.
+/// A kept statement is read by a party as its own, as the evidence store's record says and the log holds it
+/// (`bridge-pay`'s sent report, `d1`), or by a checker by a permission over it: another party is refused it, the
+/// operator too, and a checker without that permission, each recorded.
 // verifies: REQ-AUZ-7, REQ-AUD-5, REQ-AUD-10
 #[test]
 fn party_reads_only_its_own_evidence_and_a_checker_by_its_permission() {
@@ -974,34 +974,34 @@ fn party_reads_only_its_own_evidence_and_a_checker_by_its_permission() {
         Kept::world(),
         Rules::permitting(),
         Says::of(vec![
-            (own_statement("bridge-pay", "86"), Reply::Given(Said::Yes)),
-            (own_statement("fx-desk", "86"), Reply::Given(Said::No)),
-            (own_statement("operator", "86"), Reply::Given(Said::No)),
+            (own_statement("bridge-pay", "d1"), Reply::Given(Said::Yes)),
+            (own_statement("fx-desk", "d1"), Reply::Given(Said::No)),
+            (own_statement("operator", "d1"), Reply::Given(Said::No)),
         ]),
     );
     let evidence = |byte: &str| json!({"kind": "evidence", "commitment": commitment(byte)});
     let provider = |party: &str| actor(party, party, Role::Provider);
 
-    let own = read("req-480", provider("bridge-pay"), evidence("86"), None);
+    let own = read("req-480", provider("bridge-pay"), evidence("d1"), None);
     assert_eq!(read_recorded(&mut engine, &own), ReadOutcome::Allowed {});
-    let another = read("req-481", provider("fx-desk"), evidence("86"), None);
+    let another = read("req-481", provider("fx-desk"), evidence("d1"), None);
     assert_eq!(read_recorded(&mut engine, &another), refused());
     let operator = read(
         "req-482",
         actor("operator", "op-login-2", Role::Operator),
-        evidence("86"),
+        evidence("d1"),
         None,
     );
     assert_eq!(read_recorded(&mut engine, &operator), refused());
 
     let checker = actor("audit-firm", "checker-7", Role::Checker);
-    let without = read("req-483", checker.clone(), evidence("86"), None);
+    let without = read("req-483", checker.clone(), evidence("d1"), None);
     assert_eq!(read_recorded(&mut engine, &without), refused());
     let mut over_it: PermissionChange = valid!("permission-change-granting-a-regulator-the-trail");
     over_it.request = id("req-g3");
     over_it.permission = id("perm-chk-ev");
     over_it.grantee = checker.clone();
-    over_it.scope = serde_json::from_value(evidence("86")).unwrap();
+    over_it.scope = serde_json::from_value(evidence("d1")).unwrap();
     assert!(
         engine
             .grant_permission(&over_it)
@@ -1012,7 +1012,7 @@ fn party_reads_only_its_own_evidence_and_a_checker_by_its_permission() {
     let by_permission = read(
         "req-484",
         checker.clone(),
-        evidence("86"),
+        evidence("d1"),
         Some("perm-chk-ev"),
     );
     assert_eq!(

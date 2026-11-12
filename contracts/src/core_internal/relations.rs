@@ -255,7 +255,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 51] = [
+pub static RELATIONS: [Relation; 52] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1610,6 +1610,49 @@ pub static RELATIONS: [Relation; 51] = [
                 judge(Some(&change.permission) == check.permission.as_ref(), &[])
             }
             _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "own-evidence-read-is-of-the-readers-statement",
+        spec: &["REQ-AUD-5", "REQ-AUZ-7"],
+        quantifier: Quantifier::Exists,
+        refusal: "a permitted evidence read without a permission is of a statement this log holds",
+        fields: &[(
+            "maker",
+            "a permitted evidence read without a permission is of a statement its reader made",
+        )],
+        // A party reads its own evidence without a permission (`REQ-AUD-5`); any other's rests on a permission,
+        // whose scope `covers` the read.
+        cites: |e, _| match &e.what {
+            What::CheckRead {
+                check:
+                    ReadCheck {
+                        reads: Reads::Evidence { .. },
+                        permission: None,
+                        ..
+                    },
+            } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::CheckRead {
+                    check:
+                        ReadCheck {
+                            reader,
+                            reads: Reads::Evidence { commitment },
+                            ..
+                        },
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                &s.commitment == commitment,
+                &[maker_provider(s) == &reader.acts],
+            )
         },
     },
     Relation {
