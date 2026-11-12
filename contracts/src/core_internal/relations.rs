@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 78] = [
+pub static RELATIONS: [Relation; 80] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -894,6 +894,60 @@ pub static RELATIONS: [Relation; 78] = [
                 _ => Match::NotTarget,
             }
         },
+    },
+    Relation {
+        name: "stuck-resolution-transaction-is-its-own",
+        spec: &["REQ-AUZ-4", "REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a stuck resolution's transaction is its own: no other resolution, move, yes or deposit notice uses it",
+        fields: &[],
+        // Its outcome's evidence binds through it, so a transaction another entry of the log already uses would let
+        // that entry's statements settle this resolution. Its own decide step and effect, and either retried, aside.
+        cites: |e, _| match resolution_transaction(e) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some((_, transaction, decided)) = resolution_transaction(e) else {
+                return Match::NotTarget;
+            };
+            let uses = match t {
+                // A move's: a statement binding it to a segment.
+                Entry::Stated(s) => s.about.as_ref().is_some_and(|a| {
+                    a.transaction.as_ref() == Some(transaction) && a.segment.is_some()
+                }),
+                Entry::Verified(v) => match &v.what {
+                    What::Acceptance { yeses, .. } => yeses.iter().any(|y| {
+                        entry_at(&y.reserve_yes, h)
+                            .and_then(stated)
+                            .and_then(|s| s.about.as_ref())
+                            .and_then(|a| a.transaction.as_ref())
+                            == Some(transaction)
+                    }),
+                    What::Arrival { .. } => deposit_of(&v.what, h) == Some(transaction),
+                    _ => resolution_transaction(v)
+                        .is_some_and(|(_, other, by)| other == transaction && by != decided),
+                },
+            };
+            judge(uses, &[])
+        },
+    },
+    Relation {
+        name: "stuck-resolution-transaction-is-unbound-or-its-orders",
+        spec: &["REQ-AUZ-4", "REQ-ORD-38"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck resolution's transaction is unbound, or bound at order level to its own order",
+        fields: &[],
+        // None to point to: the first statement naming the transaction (`binding_of`), where there is one, names
+        // this order and no segment.
+        cites: |e, h| match resolution_transaction(e) {
+            Some((order, transaction, _)) => match binding_of(transaction, h) {
+                Some(bound) if bound != (order, None) => by_fields(0),
+                _ => none(),
+            },
+            None => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
         name: "hand-on-rests-on-the-linked-orders-acceptance",
@@ -3520,6 +3574,33 @@ fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
         })?;
         s.about.as_ref()?.transaction.as_ref()
     })
+}
+
+/// A stuck resolution's order, transaction and decision, where `entry` is one: a `stuck_decide`, or a
+/// `resolve_stuck` effect, by the decision it carries out.
+fn resolution_transaction(entry: &VerifiedEntry) -> Option<(&Id, &Id, (&Id, &Id))> {
+    match &entry.what {
+        What::StuckDecide { request, decision } => Some((
+            &request.order,
+            &request.transaction,
+            (&request.request, decision),
+        )),
+        What::Effect {
+            action:
+                Action::ResolveStuck {
+                    order,
+                    carries_out,
+                    transaction,
+                    ..
+                },
+            ..
+        } => Some((
+            order,
+            transaction,
+            (&carries_out.request, &carries_out.decision),
+        )),
+        _ => None,
+    }
 }
 
 /// The entry of `history` at `receipt`, where one is.

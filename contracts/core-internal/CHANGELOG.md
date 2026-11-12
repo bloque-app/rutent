@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 455 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 83 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 461 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 85 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -437,6 +437,14 @@
   `stuck-effect-moves-the-decided-resolution` holds the effect to it (field `transaction`). The world's delivery is
   decided under `tx-d3` and its hand-on under `tx-h3`. Refused: a hand-on effect under another transaction than its
   decide step's. 455 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a stuck resolution's transaction is its own (round 8 of `T-020-01`'s
+  review). Nothing checked it, so the world's hand-on was admitted under the delivery's `tx-d3`, `p3`'s yes
+  `tx-yes-1c` and `tx-f1`, which `p1-s1`'s move binds, and its outcome's evidence could then rest on those entries'
+  statements. `stuck-resolution-transaction-is-its-own` refuses a decide step or effect under a transaction another
+  stuck resolution, a move, a yes or a deposit's notice uses, its own decide step and effect and retries aside;
+  `stuck-resolution-transaction-is-unbound-or-its-orders` refuses one first bound elsewhere than at order level to
+  its own order. Refused: the three probe transactions, a deposit's notice's, a decide step under the delivery's,
+  and one bound to another order. 461 admission cases, 85 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-38, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
