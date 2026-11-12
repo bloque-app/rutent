@@ -538,7 +538,11 @@ fn outcome_unknown_is_left_only_on_stated_evidence() {
             Observed::SegmentOutcomeUnknown {}
         ]
     );
-    assert_eq!(core.log.borrow().count(is_result), 0, "no final result yet");
+    assert_eq!(
+        result_outcomes(&core),
+        vec![Outcome::Unanswered {}],
+        "its one result is unanswered: no final result yet"
+    );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 
@@ -581,6 +585,7 @@ fn outcome_unknown_is_left_only_on_stated_evidence() {
         "what it passed out is in the log"
     );
     drop(log);
+    assert_eq!(result_outcomes(&core), vec![Outcome::Unanswered {}]);
     assert!(
         !core
             .segments
@@ -1505,8 +1510,8 @@ fn part_resumes_after_its_first_segment_settled() {
     }
 }
 
-/// The platform won't begin the deposit, and the log can't take its `unanswered` result. Run again with the platform
-/// willing: the deposit is finished as it was, refused, its result `unanswered`; it is never begun or carried out
+/// The platform won't begin the deposit, and the log can't take its `failed` result. Run again with the platform
+/// willing: the deposit is finished as it was, refused, its result `failed`; it is never begun or carried out
 /// under a result that says it wasn't.
 // verifies: REQ-ORD-1, INV-7
 #[test]
@@ -1560,7 +1565,7 @@ fn segment_the_platform_wouldnt_begin_is_finished_as_refused() {
         .filter(|v| is_result(&v.what))
         .map(|v| v.outcome)
         .collect();
-    assert_eq!(results, vec![Outcome::Done {}, Outcome::Unanswered {}]);
+    assert_eq!(results, vec![Outcome::Done {}, Outcome::Failed {}]);
     drop(log);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
@@ -1697,4 +1702,15 @@ fn refusal_owed_after_a_settled_segment_is_recorded_on_resume() {
     );
     let _ = core.run_over(&world.catalogue, &mut world.fleet.platform);
     assert_eq!(refusals(&core), 1, "and once");
+}
+
+/// The outcome of each `result` in the log, in order.
+fn result_outcomes(core: &Core) -> Vec<Outcome> {
+    core.log
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter(|v| is_result(&v.what))
+        .map(|v| v.outcome)
+        .collect()
 }

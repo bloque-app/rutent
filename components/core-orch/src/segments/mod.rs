@@ -1,7 +1,8 @@
 //! Handing segments to the platform and taking their results: each segment begun and ended on the platform, its calls
 //! named, and the platform's events, the proxy's uses and each segment record handed to the log.
 //!
-//! Declared by `T-020-01`; `T-020-08` owns it, and only its owning row edits it (`PLAN.md` §4.4).
+//! Declared by `T-020-01`; `T-020-08` owns it, and only its owning row edits it (`PLAN.md` §4.4); during
+//! `T-020-01f`'s integration, `T-020-11`'s int-stuck holds it.
 //!
 //! [`Segments::run_part`] runs one part of an order's chosen route, segment after segment:
 //!
@@ -65,6 +66,15 @@
 //! the holding account at the node it leaves the value at are held to the catalogue as it stands
 //! (`crate::closing::admits`, `REQ-ORD-39`, `INV-5`), and a part whose final deposit could never close isn't routed
 //! (`Grading::can_close`, `REQ-ORD-33`); a refusal there is recorded once per part while its reason stands.
+//!
+//! **Against the contract at `T-020-01f`** (`T-020-11`'s int-stuck): a segment the platform refused before its
+//! module passed anything out has its effect's result `failed`, never `unanswered`, so its value isn't in motion
+//! (`part-waits-for-value-in-motion`); a segment whose outcome is unknown, on the platform's record or the
+//! provider's word, has its result `unanswered`, the first of its two; [`Segments::unknown_move`] reads such a move's
+//! effect, transaction and mover, for its report and confirmation under policy (`AC-6`); and once both are permitted,
+//! [`Segments::confirmed_failed`] records its final `failed` result and the segment's `segment_failed`, the segments
+//! staying the one writer of a segment's results. [`Segments::observe`] takes a part's `stuck_resolved`, and a part
+//! its resolution ended is never handed over again.
 
 mod drain;
 mod journal;
@@ -305,9 +315,9 @@ pub enum SegmentsError {
     /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
     /// again (`INV-4`, `T-020-10`).
     Retired(Id),
-    /// The part is stuck, and no segment of it was carried out with something still to record: nothing of it is
-    /// handed over or carried out again, and only its resolution under policy moves its value (`REQ-ORD-28`,
-    /// `REQ-AUZ-4`, `T-020-11`).
+    /// The part is stuck, or its stuck resolution ended it, and no segment of it was carried out with something still
+    /// to record: nothing of it is handed over or carried out again, and only its resolution under policy moves its
+    /// value (`REQ-ORD-28`, `REQ-AUZ-4`, `T-020-11`).
     Stuck(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
@@ -327,6 +337,39 @@ impl From<AppendFailure> for SegmentsError {
     fn from(failure: AppendFailure) -> Self {
         SegmentsError::Append(failure)
     }
+}
+
+/// A segment's move whose outcome is unknown, its `unanswered` result recorded ([`Segments::unknown_move`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownMove {
+    /// The receipt of its `move_value` effect.
+    pub effect: Receipt,
+    /// The receipt of its `unanswered` result.
+    pub unanswered: Receipt,
+    /// The transaction it ran under, first bound to the segment: what the evidence of its outcome is about.
+    pub transaction: Id,
+    /// Its provider.
+    pub provider: Id,
+    /// Its mover: the actor whose request policy permitted, who alone reports its outcome.
+    pub mover: Actor,
+}
+
+/// A segment's unknown outcome confirmed failed, to record ([`Segments::confirmed_failed`]).
+pub struct Confirmed<'a> {
+    /// Orchestration's handle on the log.
+    pub log: &'a mut dyn Log,
+    /// Core's clock.
+    pub clock: &'a dyn Clock,
+    /// Fresh identifiers: the input's record id.
+    pub fresh: &'a mut dyn Fresh,
+    /// Core, which writes the result and the input.
+    pub core: &'a Actor,
+    /// The order.
+    pub order: &'a Id,
+    /// The segment's part.
+    pub part: &'a Id,
+    /// The segment.
+    pub segment: &'a Id,
 }
 
 /// An order's state and its age, as a reader policy allowed reads it (`REQ-ORD-5`).
@@ -408,6 +451,9 @@ struct InFlight {
     place: usize,
     transaction: Id,
     provider: Id,
+    /// Who asked policy for the move: its mover, who alone reports its outcome once unknown
+    /// (`outcome-report-rests-on-its-move`).
+    caller: Actor,
     statement: Statement<ProviderOperation>,
     effect: Option<Effect>,
     begun: bool,
@@ -629,8 +675,9 @@ impl Segments {
     }
 
     /// Moves the order Core follows by `input`, a part's input recorded outside the segments: a
-    /// `route_recalculated` (`T-020-10`), so the inputs the segments record next apply to its new route, or a
-    /// `no_route` or `stuck_declared` (`T-020-11`), so the part's state is read as stuck or waiting. Only those
+    /// `route_recalculated` (`T-020-10`), so the inputs the segments record next apply to its new route, a
+    /// `no_route` or `stuck_declared` (`T-020-11`), so the part's state is read as stuck or waiting, or a
+    /// `stuck_resolved` (`T-020-11`), so a resolved part reads as ended where its resolution sent it. Only those
     /// kinds: every segment's input the segments record themselves. False where it is another kind, Core follows no
     /// such order, or it moved nothing.
     pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
@@ -639,6 +686,7 @@ impl Segments {
             Observed::RouteRecalculated { .. }
                 | Observed::NoRoute { .. }
                 | Observed::StuckDeclared { .. }
+                | Observed::StuckResolved { .. }
         ) {
             return false;
         }
@@ -661,6 +709,85 @@ impl Segments {
             .insert((order.as_str().to_owned(), part.as_str().to_owned()));
     }
 
+    /// Whether `part` of `order` was ended by its stuck resolution: Core holds it resolved, or the order Core follows
+    /// took its `stuck_resolved`. Such a part is never handed over again, though what a segment of it carried out
+    /// already gave back is still recorded (`REQ-STM-6`, `T-020-11`).
+    fn ended_by_resolution(&self, order: &Id, part: &Id) -> bool {
+        self.resolved
+            .contains(&(order.as_str().to_owned(), part.as_str().to_owned()))
+            || self.orders.get(order.as_str()).is_some_and(|t| {
+                t.order
+                    .parts
+                    .iter()
+                    .any(|p| p.part_id.as_str() == part.as_str() && p.resolved_to.is_some())
+            })
+    }
+
+    /// The move of `segment` of `order` whose outcome is unknown, once its `unanswered` result is recorded: its
+    /// effect, that result, the transaction it ran under, its provider and its mover, the actor whose request policy
+    /// permitted. Only such a move is reported and confirmed (`outcome-report-rests-on-its-move`, `AC-6`,
+    /// `T-020-11`).
+    pub fn unknown_move(&self, order: &Id, segment: &Id) -> Option<UnknownMove> {
+        let flight = self
+            .flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?;
+        if !matches!(flight.outcome, Some(SegmentOutcome::Unknown(_))) {
+            return None;
+        }
+        Some(UnknownMove {
+            effect: flight.effect.as_ref()?.receipt.clone(),
+            unanswered: flight.steps.get("result: unanswered")?.receipt.clone()?,
+            transaction: flight.transaction.clone(),
+            provider: flight.provider.clone(),
+            mover: flight.caller.clone(),
+        })
+    }
+
+    /// Records the outcome of the move of `segment` of `order`, unknown until now, as failed, once its report and a
+    /// confirmation of it by another actor were permitted (the stuck orders', `T-020-11`): the effect's final
+    /// `result`, `failed`, after its `unanswered` one, then the segment's `segment_failed`, each the segment's own
+    /// step, built once and appended until the log takes it. Its value stays held, for the reversal or the stuck
+    /// part's resolution, and the segment's outcome is final: it is no longer in motion
+    /// (`unknown-outcome-settles-on-its-confirmation`, `part-waits-for-value-in-motion`, `AC-6`). The segments are
+    /// the one writer of a segment's results. A move confirmed done isn't taken here: it would settle the segment
+    /// with no graded evidence for its `segment_settled`.
+    pub fn confirmed_failed(&mut self, confirmed: Confirmed<'_>) -> Result<Receipt, SegmentsError> {
+        let at = (
+            confirmed.order.as_str().to_owned(),
+            confirmed.segment.as_str().to_owned(),
+        );
+        if self
+            .unknown_move(confirmed.order, confirmed.segment)
+            .is_none()
+        {
+            return Err(SegmentsError::Plan(
+                "only a move whose outcome is unknown, its result unanswered, is confirmed",
+            ));
+        }
+        let Confirmed {
+            log,
+            clock,
+            fresh,
+            core,
+            order,
+            part,
+            segment,
+        } = confirmed;
+        let result = self.result_by(log, clock, core, &at, Outcome::Failed {})?;
+        self.input_by(
+            log,
+            clock,
+            fresh,
+            (core, order, part),
+            &at,
+            "failed",
+            Some(segment),
+            Observed::SegmentFailed {},
+        )?;
+        self.finish(&at, &SegmentOutcome::Failed)?;
+        Ok(result)
+    }
+
     /// Whether `part` of `order` is stuck in the order Core follows (`T-020-11`).
     pub fn stuck(&self, order: &Id, part: &Id) -> bool {
         self.orders.get(order.as_str()).is_some_and(|t| {
@@ -669,14 +796,6 @@ impl Segments {
                 .iter()
                 .any(|p| p.part_id.as_str() == part.as_str() && p.state == OrderState::Stuck)
         })
-    }
-
-    /// The operation Core signed and handed over for `segment` of `order`, as it was appended to the log: what it
-    /// named, the user's accounts among its inputs (`T-020-11`, a resolution's origin).
-    pub fn sent(&self, order: &Id, segment: &Id) -> Option<&ProviderOperation> {
-        self.flights
-            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
-            .map(|f| &f.statement.statement)
     }
 
     /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
@@ -810,7 +929,7 @@ impl Segments {
         // A stuck part hands nothing over and carries nothing out: its value moves only on its resolution. What a
         // segment carried out already gave back is still recorded, each step as it was built, so nothing it kept
         // is lost; nothing is asked of its module again (`T-020-11`).
-        if self.stuck(live.order, live.part) {
+        if self.stuck(live.order, live.part) || self.ended_by_resolution(live.order, live.part) {
             let mut taken = Vec::new();
             for (place, segment) in live.segments.iter().enumerate() {
                 let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
@@ -1164,6 +1283,7 @@ impl Segments {
                 place,
                 transaction,
                 provider: operation.provider.clone(),
+                caller: live.caller.clone(),
                 statement,
                 effect: None,
                 begun: false,
@@ -1255,7 +1375,9 @@ impl Segments {
         };
 
         // A segment the platform wouldn't begin stays refused: its outcome is kept before its result is appended, so
-        // a run that stopped there finishes it so, and never begins it under a result that says it wasn't.
+        // a run that stopped there finishes it so, and never begins it under a result that says it wasn't. Nothing
+        // passed out, so its effect failed: its result is `failed`, never `unanswered`, and its value isn't in motion
+        // (`part-waits-for-value-in-motion`).
         let refused = match flight.begin_refused {
             Some(refusal) => Some(refusal),
             None if !flight.begun => parts.modules.begin_segment(&provider, &identifier).err(),
@@ -1264,7 +1386,7 @@ impl Segments {
         if let Some(refusal) = refused {
             self.flight_mut(at)?.begin_refused = Some(refusal);
             let outcome = SegmentOutcome::NotHandedOver(refusal);
-            self.result(parts, live, at, Outcome::Unanswered {})?;
+            self.result(parts, live, at, Outcome::Failed {})?;
             release(parts.exposures);
             self.finish(at, &outcome)?;
             return Ok(accounted(outcome));
@@ -1343,7 +1465,9 @@ impl Segments {
         let bytes = match answered {
             Answered::Refused(PlatformRefusal::OutcomeUnknown) => {
                 // The module passed something out, then ended with no answer: the platform's record is the
-                // evidence, handed over with it. The segment stays in flight, held.
+                // evidence, handed over with it. The segment stays in flight, held, and its effect's result is
+                // `unanswered`, the first of its two: its outcome is settled only by a report and its confirmation
+                // (`Segments::confirmed_failed`, `AC-6`).
                 self.input(
                     parts,
                     live,
@@ -1352,14 +1476,15 @@ impl Segments {
                     Some(&segment),
                     Observed::SegmentOutcomeUnknown {},
                 )?;
+                self.result(parts, live, at, Outcome::Unanswered {})?;
                 return Ok(SegmentOutcome::Unknown(UnknownBy::Platform(
                     PlatformRefusal::OutcomeUnknown,
                 )));
             }
             Answered::Refused(refusal) => {
-                // Refused before the module passed anything out: nothing moved.
+                // Refused before the module passed anything out: nothing moved, so its effect failed.
                 self.end(parts, live, at)?;
-                self.result(parts, live, at, Outcome::Unanswered {})?;
+                self.result(parts, live, at, Outcome::Failed {})?;
                 parts.exposures.release(live.order, &segment);
                 return Ok(SegmentOutcome::NotHandedOver(refusal));
             }
@@ -1554,6 +1679,7 @@ impl Segments {
                 Ok(SegmentOutcome::Refused(refusal))
             }
             Counted::Unknown => {
+                // The provider's word that the outcome is unknown: as the platform's, `unanswered` (`AC-6`).
                 self.input(
                     parts,
                     live,
@@ -1562,6 +1688,7 @@ impl Segments {
                     Some(&segment),
                     Observed::SegmentOutcomeUnknown {},
                 )?;
+                self.result(parts, live, at, Outcome::Unanswered {})?;
                 Ok(SegmentOutcome::Unknown(UnknownBy::Provider(stated)))
             }
         }
@@ -1883,13 +2010,25 @@ impl Segments {
         at: &(String, String),
         outcome: Outcome,
     ) -> Result<Receipt, SegmentsError> {
+        self.result_by(parts.log, parts.clock, live.core, at, outcome)
+    }
+
+    /// The effect's `result` entry, written by `core`: its one result, or, after an `unanswered` one, its final one.
+    fn result_by(
+        &mut self,
+        log: &mut dyn Log,
+        clock: &dyn Clock,
+        core: &Actor,
+        at: &(String, String),
+        outcome: Outcome,
+    ) -> Result<Receipt, SegmentsError> {
         let effect = self
             .flight(at)?
             .effect
             .as_ref()
             .map(|e| e.receipt.clone())
             .ok_or(SegmentsError::Plan("a result follows its effect"))?;
-        let when = now(parts.clock)?;
+        let when = now(clock)?;
         // The step is the outcome's own: an entry built for one outcome is never appended for another.
         let step = match outcome {
             Outcome::Done {} => "result: done",
@@ -1901,9 +2040,9 @@ impl Segments {
                 ));
             }
         };
-        let (receipt, _) = self.built_step(parts.log, at, step, || {
+        let (receipt, _) = self.built_step(log, at, step, || {
             Ok(journal::verified(
-                live.core,
+                core,
                 What::Result { effect },
                 &when,
                 outcome,
@@ -1962,13 +2101,38 @@ impl Segments {
         segment: Option<&Id>,
         observed: Observed,
     ) -> Result<Receipt, SegmentsError> {
-        let reading = parts.clock.now();
+        self.input_by(
+            parts.log,
+            parts.clock,
+            parts.fresh,
+            (live.core, live.order, live.part),
+            at,
+            name,
+            segment,
+            observed,
+        )
+    }
+
+    /// [`Segments::input`], written by `core` about `order`'s `part`.
+    #[allow(clippy::too_many_arguments)]
+    fn input_by(
+        &mut self,
+        log: &mut dyn Log,
+        clock: &dyn Clock,
+        fresh: &mut dyn Fresh,
+        (core, order, part): (&Actor, &Id, &Id),
+        at: &(String, String),
+        name: &'static str,
+        segment: Option<&Id>,
+        observed: Observed,
+    ) -> Result<Receipt, SegmentsError> {
+        let reading = clock.now();
         let when = reading
             .timestamp()
             .ok_or(AppendFailure::Refused(journal::NO_TIME))?;
-        let record_id = parts.fresh.id();
+        let record_id = fresh.id();
         let mut built = None;
-        let (receipt, now_appended) = self.built_step(parts.log, at, name, || {
+        let (receipt, now_appended) = self.built_step(log, at, name, || {
             let state_id = |text: &str| stm::Id::new(text).ok_or(SegmentsError::Plan("an id"));
             let standing = match observed {
                 Observed::ProviderBound {} => Standing::Verified,
@@ -1982,19 +2146,19 @@ impl Segments {
                 time_source: state_id("core_clock")?,
                 source: Source {
                     kind: SourceKind::Orchestrator,
-                    id: state_id(live.core.acts.as_str())?,
+                    id: state_id(core.acts.as_str())?,
                 },
                 standing,
                 subject: Subject {
-                    order: state_id(live.order.as_str())?,
-                    part: Some(state_id(live.part.as_str())?),
+                    order: state_id(order.as_str())?,
+                    part: Some(state_id(part.as_str())?),
                     segment: segment.map(|s| state_id(s.as_str())).transpose()?,
                 },
                 observed,
             };
             built = Some(input.clone());
             Ok(journal::verified(
-                live.core,
+                core,
                 What::Input { input },
                 &when,
                 Outcome::Observed {},
@@ -2011,7 +2175,7 @@ impl Segments {
                     _ => return Ok(receipt),
                 },
             };
-            if let Some(tracked) = self.orders.get_mut(live.order.as_str()) {
+            if let Some(tracked) = self.orders.get_mut(order.as_str()) {
                 let next = Stm::transition(&tracked.order, &input);
                 let moved = next.state != tracked.order.state
                     || next

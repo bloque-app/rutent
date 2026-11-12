@@ -894,6 +894,68 @@ fn seed_envelope(shape: &str, maker: &str, body: Value) -> Value {
     })
 }
 
+/// A second simulated reserve, of another party: installed beside [`RESERVE`] where a move's outcome is reported
+/// and confirmed, so its two results are by two makers the catalogue knows, neither the operator.
+pub const OTHER_RESERVE: &str = "sim-reserve-b";
+
+/// Two results about the current order through `transaction`, and about `segment` where one is named, made at Core's
+/// clock now and appended to the log now: [`RESERVE`]'s and [`OTHER_RESERVE`]'s, each signed with its maker's
+/// statements key, so the log verifies each. A move's outcome is reported and confirmed on two such results, which
+/// follow the move, by two providers' parties (`outcome-confirmation-cites-verified-evidence`,
+/// `outcome-confirmation-rests-on-its-report`). The world must have [`OTHER_RESERVE`] installed.
+pub fn results_after_the_move(
+    core: &mut Core,
+    segment: Option<&str>,
+    transaction: &str,
+) -> (Receipt, Receipt) {
+    let order = id(&core.named.order);
+    let made_at = core.clock.now().timestamp().unwrap();
+    let body = json!({ "kind": "balance_verification", "transaction": transaction });
+    let mut result = |maker: &str| {
+        let mut e = seed_envelope(
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            maker,
+            body.clone(),
+        );
+        e["made_at"] = made_at.as_str().into();
+        rutent_conformance::signing::sign_value(&mut e, &statements_key_of(maker));
+        let publisher = Spec::of(SimRole::Reserve, maker)
+            .make(&SuiteContext::default())
+            .advertisement()
+            .into_statement()
+            .statement
+            .publisher;
+        let actor = Actor {
+            party: id(&publisher),
+            acts: id(maker),
+            role: Role::Provider,
+            kind: ActorKind::Component,
+        };
+        match stated_seed(
+            &mut core.store,
+            serde_json::to_vec(&e).unwrap(),
+            actor,
+            &order,
+            transaction,
+        ) {
+            Entry::Stated(mut stated) => {
+                stated.about = Some(rutent_contracts::core_internal::About {
+                    order: Some(order.clone()),
+                    segment: segment.map(id),
+                    transaction: Some(id(transaction)),
+                });
+                Entry::Stated(stated)
+            }
+            verified => verified,
+        }
+    };
+    let (first, second) = (result(RESERVE), result(OTHER_RESERVE));
+    let mut log = core.log.borrow_mut();
+    let first = log.take(&first, Through::General).unwrap();
+    let second = log.take(&second, Through::General).unwrap();
+    (first, second)
+}
+
 /// Two statements about `segment` of the current order, made at Core's clock now, and appended to the log now: the
 /// operator's, signed under the deployment's placeholder key, and the reserve's result, signed with its statements
 /// key, so the log verifies each. A move's outcome is reported and confirmed on statements that follow the move

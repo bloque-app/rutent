@@ -23,8 +23,8 @@ use rutent_core_orch::segments::{
     Accounted, NoProxy, Ran, SegmentOutcome, SegmentsError, StatusError,
 };
 use rutent_core_orch::stuck::{
-    Confirming, Deciding, HISTORY, Moved, Moving, NoRouteLeft, ResolveError, Resolved, Stuck,
-    StuckError, StuckValue, Watch, seen_by_provider,
+    Confirming, ConfirmingSegment, Deciding, HISTORY, Moved, Moving, NoRouteLeft, Reporting,
+    ResolveError, Resolved, Stuck, StuckError, StuckValue, Watch, seen_by_provider,
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
@@ -136,22 +136,23 @@ fn run_with_the_deposit_refused(core: &mut Core, world: &mut World) -> Ran {
     ran
 }
 
-/// The kit's order with its withdrawal settled and its deposit never handed over (policy refused its move), then
-/// recalculated from the reserve's ledger where its value sits, and offered no route: the reserve refuses every
-/// dry run of the deposit. (A deposit the platform wouldn't begin is recorded `unanswered` by the segments, which
-/// the log reads as a move whose outcome is unknown, still in motion: that history is the segments' owner's to
-/// settle, `T-020-11`'s int-stuck notes.)
+/// The kit's order with its withdrawal settled and its deposit never begun (the platform refused to begin it, so
+/// nothing passed out and its effect's result is `failed`, its value not in motion), then recalculated from the
+/// reserve's ledger where its value sits, and offered no route: the reserve refuses every dry run of the deposit.
 fn left_no_route() -> (World, Core, Recalculation) {
     let mut world = World::of(&[RESERVE]);
     let mut core = Core::over(&mut world);
-    let ran = run_with_the_deposit_refused(&mut core, &mut world);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(1);
+    let ran = core.run_over(&world.catalogue, &mut watched);
+    drop(watched);
     let done = segments(&ran);
     assert!(
         matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
         "{done:?}"
     );
     assert!(
-        matches!(done[1].outcome, SegmentOutcome::NotPermitted(_)),
+        matches!(done[1].outcome, SegmentOutcome::NotHandedOver(_)),
         "{done:?}"
     );
     world
@@ -1147,6 +1148,17 @@ fn resolution_is_moved_once_by_another_party_on_its_decision() {
         Err(ResolveError::Resolved)
     );
     assert_eq!(moves.0.len(), 1);
+    // The order Core follows took the `stuck_resolved`: the part ended where its resolution sent it, and running it
+    // again hands nothing of it over (`REQ-STM-6`).
+    let followed = core.segments.order(&id(ORDER)).expect("followed");
+    assert_eq!(followed.parts[0].state, OrderState::EndedWithoutCompleting);
+    let mut world = world;
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    assert_eq!(
+        try_run(&mut core, &mut world).map(|_| ()),
+        Err(SegmentsError::Stuck(id(PART)))
+    );
+    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
@@ -2880,6 +2892,236 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
         "nothing pending to confirm"
     );
     assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// Reports, as `reporter`, through `policy`, the outcome of the current order's `segment`'s move, unknown until now,
+/// naming `evidence`.
+fn report_segment(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    policy: &mut PermitsEveryStep,
+    segment: &str,
+    reporter: &rutent_contracts::core_internal::Actor,
+    outcome: Resolved,
+    evidence: &Receipt,
+) -> Result<Moved, ResolveError> {
+    let (order, part, segment) = (id(ORDER), id(PART), id(segment));
+    on_parts(core, |parts| {
+        stuck.report_segment_outcome(
+            parts,
+            policy,
+            Reporting {
+                order: &order,
+                part: &part,
+                segment: &segment,
+                reporter,
+            },
+            outcome,
+            evidence,
+        )
+    })
+}
+
+/// Confirms, as `confirmer`, through `policy`, naming `evidence`, the report of `segment`'s move, its outcome and
+/// evidence as the confirmer read them.
+#[allow(clippy::too_many_arguments)]
+fn confirm_segment(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    policy: &mut PermitsEveryStep,
+    segment: &str,
+    confirmer: &rutent_contracts::core_internal::Actor,
+    report: (Resolved, &Receipt),
+    evidence: &Receipt,
+) -> Result<Moved, ResolveError> {
+    let (order, part, segment, actor) =
+        (id(ORDER), id(PART), id(segment), segments_support::core());
+    on_parts(core, |parts| {
+        stuck.confirm_segment_outcome(
+            parts,
+            policy,
+            ConfirmingSegment {
+                order: &order,
+                part: &part,
+                segment: &segment,
+                confirmer,
+                outcome: report.0,
+                reported_with: report.1,
+                evidence,
+                core: &actor,
+            },
+        )
+    })
+}
+
+/// `AC-6`: a silent `move_value` on a stuck part. The withdrawal's outcome is unknown, so its result is `unanswered`
+/// and the part, declared stuck over time, is decided nothing while its value may still move. Its mover, and only
+/// its mover, reports it failed, naming one provider's result about the segment's transaction made after the move;
+/// another actor, of another party and login, confirms it on another provider's result. Each is decided by policy,
+/// and a report settles nothing alone. Once confirmed, the segments record the move's final result, `failed`, and
+/// the segment's `segment_failed`; the segment is no longer in motion, its value still held, and the part is decided
+/// and resolved, ending where its resolution sent it. A move reported done is refused, failing closed, since nothing
+/// graded would settle it; a second report is refused.
+// verifies: REQ-AUZ-4, REQ-ORD-1, REQ-ORD-2, INV-4
+#[test]
+fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
+    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut core = Core::over(&mut world);
+    world
+        .fleet
+        .world()
+        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+    let _ = core.run(&mut world);
+    let since = carried_since(&core, WITHDRAWAL);
+    let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
+    follow(&core, &mut stuck).expect("its ends are Core's");
+    core.clock.set(since + 2 * DECLARED + 1);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::Stuck(_))
+    ));
+    let unknown = core
+        .segments
+        .unknown_move(&id(ORDER), &id(WITHDRAWAL))
+        .expect("the withdrawal's move is of unknown outcome");
+    assert_eq!(
+        results_of(&core, &unknown.effect),
+        vec![Outcome::Unanswered {}]
+    );
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let in_motion = |core: &mut Core, stuck: &mut Stuck, policy: &mut PermitsEveryStep| {
+        decide(
+            core,
+            stuck,
+            policy,
+            &alice,
+            &back_to_origin(AMOUNT),
+            &evidence(),
+        )
+        .map(|_| ())
+    };
+    assert_eq!(
+        in_motion(&mut core, &mut stuck, &mut policy),
+        Err(ResolveError::ValueInMotion(id(WITHDRAWAL)))
+    );
+    let (reported, confirmed) =
+        results_after_the_move(&mut core, Some(WITHDRAWAL), unknown.transaction.as_str());
+    let mover = unknown.mover.clone();
+    let report = |core: &mut Core,
+                  stuck: &mut Stuck,
+                  policy: &mut PermitsEveryStep,
+                  who: &rutent_contracts::core_internal::Actor,
+                  outcome: Resolved| {
+        report_segment(core, stuck, policy, WITHDRAWAL, who, outcome, &reported)
+    };
+    assert_eq!(
+        report(&mut core, &mut stuck, &mut policy, &alice, Resolved::Failed),
+        Err(ResolveError::NotTheMover),
+        "only its mover reports it"
+    );
+    assert_eq!(
+        report(&mut core, &mut stuck, &mut policy, &mover, Resolved::Done),
+        Err(ResolveError::DoneNeedsEvidence),
+        "done would settle it on nothing graded"
+    );
+    assert_eq!(
+        report(&mut core, &mut stuck, &mut policy, &mover, Resolved::Failed),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    assert_eq!(
+        report(&mut core, &mut stuck, &mut policy, &mover, Resolved::Failed),
+        Err(ResolveError::AlreadyReported)
+    );
+    assert_eq!(
+        in_motion(&mut core, &mut stuck, &mut policy),
+        Err(ResolveError::ValueInMotion(id(WITHDRAWAL))),
+        "a report alone settles nothing"
+    );
+    assert_eq!(
+        confirm_segment(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            WITHDRAWAL,
+            &mover,
+            (Resolved::Failed, &reported),
+            &confirmed
+        ),
+        Err(ResolveError::SameParty)
+    );
+    assert_eq!(
+        confirm_segment(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            WITHDRAWAL,
+            &alice,
+            (Resolved::Failed, &reported),
+            &reported
+        ),
+        Err(ResolveError::NoEvidence),
+        "the confirmation rests on its own statement"
+    );
+    assert!(matches!(
+        confirm_segment(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            WITHDRAWAL,
+            &alice,
+            (Resolved::Failed, &reported),
+            &confirmed
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            result: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        results_of(&core, &unknown.effect),
+        vec![Outcome::Unanswered {}, Outcome::Failed {}]
+    );
+    assert_eq!(outcome_decisions(&core), (1, 1));
+    assert!(!core.segments.handed_over(&id(ORDER), &id(WITHDRAWAL)));
+    assert_eq!(
+        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        Amount::new(AMOUNT).unwrap(),
+        "its value stays held, for the part's resolution"
+    );
+    let decision = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .expect("decided once nothing of the part is in motion");
+    let mut moves = Moves::default();
+    assert!(matches!(
+        moves_once(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &mut moves,
+            &decision,
+            &bob
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    let followed = core.segments.order(&id(ORDER)).expect("followed");
+    assert_eq!(followed.parts[0].state, OrderState::EndedWithoutCompleting);
+    assert!(matches!(
+        watch(&mut core, &mut stuck, &mut raises),
+        Ok(Watch::AlreadyStuck)
+    ));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
