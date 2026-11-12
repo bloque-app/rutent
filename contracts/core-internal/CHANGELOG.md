@@ -450,6 +450,9 @@
   yes's or an arrival's transaction, a route round 6 opened for a part with no segment to name. Every resolution now
   names its transaction, decided, so that route goes: the planless cases through the order's entry are refused, and
   the one through the resolution's own transaction is admitted. (DEC-4, DEC-20, REQ-AUZ-4, T-020-01)
+- Folded into 1.0.0 before its release: the README hands `T-022-01` the check on a statement's own time: its log
+  refuses a stated entry whose `made_at` runs ahead of its append clock beyond a tolerance, since an outcome's
+  evidence is held to no earlier than its move by that `made_at`. (DEC-4, REQ-AUD-2, T-020-01, T-022-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

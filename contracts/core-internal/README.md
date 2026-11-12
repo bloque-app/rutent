@@ -219,6 +219,11 @@ the two together.
   accountable party. Policy can, and that check is `T-021-06`'s: policy's answer to `confirm_outcome` refuses where
   the confirmer's and the reporter's `ActsFor` chains reach a common accountable party (`REQ-AUZ-4`, ADR-0011,
   `THR-70`).
+- **A statement's own time is its maker's word.** A stated entry's `when.at` is its envelope's `made_at`, which
+  `outcome-confirmation-cites-verified-evidence` reads to hold an outcome's evidence to no earlier than its move. A
+  maker could date a statement ahead, past the move it reports, so the log's append is the check: `T-022-01`'s log
+  refuses a stated entry whose `made_at` runs ahead of its own append clock beyond a tolerance the deployment sets.
+  The contract's rows read only what the log holds, and the log's append clock isn't in an entry, so no row can.
 - **Detection only reaches the operator.** The checks answer orchestration with a receipt and nothing else, so
   nothing orchestration holds can act on what a comparison found. A difference goes to `Operator::raise`, which
   answers only whether it was delivered; the raise's entry records that (`done` or `failed`). A `Raise` holds its id,
@@ -368,6 +373,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-021-07` | questions about people, the set asked; a reserve's proof; presence; a payer's reference | `ask_about_person`; stated entries; `acceptance.parties.payer` |
 | `T-021-07` | whose judgement was relied on, and by whom | `reliance` |
 | `T-022-01` | every action, refusal and unanswered request | the entries above; `result` with `unanswered` |
+| `T-022-01` | a stated entry's `made_at` held to no further ahead of the log's append clock than a tolerance, so a maker can't date its evidence past the move it reports | stated entries (`when.at`) |
 | `T-022-02` | statements apart from what rutent verified; an operator command naming its operator | stated entries; `command` with the operator in `who` |
 | `T-022-03` | evidence apart from the log, by reference; a party's or checker's copy; an erasure | `Evidence::keep`; `Evidence::fetch` and `check_read` of `reads: evidence`; `erasure` |
 | `T-022-04` | checkpoints | outside the log, in `CMP-CORE-AUDIT`'s own store (ADR-0005) |
