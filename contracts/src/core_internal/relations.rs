@@ -355,7 +355,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 76] = [
+pub static RELATIONS: [Relation; 77] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1011,6 +1011,10 @@ pub static RELATIONS: [Relation; 76] = [
                 "an outcome is reported only where its move's result is unanswered",
             ),
             (
+                "open",
+                "an outcome is reported only while its move is unsettled: no final result and no confirmation",
+            ),
+            (
                 "mover",
                 "a move's outcome is reported by its own mover: a move_value's decided-for actor or its accountable party, a stuck resolution's mover",
             ),
@@ -1028,8 +1032,36 @@ pub static RELATIONS: [Relation; 76] = [
             };
             judge(
                 order == &request.order,
-                &[unanswered(entry, h), moved_by(t, &request.reporter, h)],
+                &[
+                    unanswered(entry, h),
+                    !settled(entry, h),
+                    moved_by(t, &request.reporter, h),
+                ],
             )
+        },
+    },
+    Relation {
+        name: "one-report-per-effect",
+        spec: &["REQ-AUZ-4", "ADR-0011"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a move's outcome is reported once: no other permitted report of its effect",
+        fields: &[],
+        // An identical retry aside, a second report, of the same outcome or the other, is refused: the confirmer
+        // confirms the one report there is.
+        cites: |e, _| match &e.what {
+            What::ReportOutcome { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
+            (
+                What::ReportOutcome { request, .. },
+                Some(
+                    other @ What::ReportOutcome {
+                        request: earlier, ..
+                    },
+                ),
+            ) => judge(earlier.effect == request.effect && other != &e.what, &[]),
+            _ => Match::NotTarget,
         },
     },
     Relation {
@@ -3451,6 +3483,21 @@ fn unanswered(entry: &Entry, history: &History) -> bool {
                     && r.outcome == (Outcome::Unanswered {})
             })
         })
+    })
+}
+
+/// Whether the effect `entry` of `history` is settled: it has a final result, `done` or `failed`, or a permitted
+/// confirmation of its outcome.
+fn settled(entry: &Entry, history: &History) -> bool {
+    position(entry, history).is_some_and(|at| {
+        let at = &history[at].0;
+        confirmation_of(at, history).is_some()
+            || history.iter().any(|(_, x)| {
+                verified(x).is_some_and(|r| {
+                    matches!(&r.what, What::Result { effect } if effect == at)
+                        && matches!(r.outcome, Outcome::Done {} | Outcome::Failed {})
+                })
+            })
     })
 }
 
