@@ -5,7 +5,8 @@
 //!
 //! # An authorisation
 //!
-//! An authorisation names one order, its destination, its to asset and any floor the customer set (`REQ-AUZ-3`).
+//! An authorisation names one order, its destination, its to asset and any floor the customer set (`REQ-AUZ-3`), and
+//! the parts of the order it covers: those it names, or every part where it names none (`parts`).
 //! [`Authorisations::authorise`] decides it through the engine's one consultation, as every policy call is decided:
 //! the fixed rules first, every actor acting for the party it states (`REQ-AUZ-8`) and who may authorise at the
 //! origin (`REQ-AUZ-9`, `T-021-03`), then the deployment's policy. Its answer is recorded before it is given.
@@ -23,17 +24,23 @@
 //! # A move acts only inside the authorisation in force
 //!
 //! A move names the authorisation it acts under and the end of the route it belongs to as that route stands now,
-//! recalculated or not. It is permitted only where that authorisation is in force for the move's order and the route
-//! ends inside it: at its destination, the reserve, the node and the account, in its to asset, delivering at least
-//! its floor. Anything else is refused as outside the authorisation, and needs a new one (`REQ-AUZ-3`, `INV-10`).
-//! These are the four the log holds a move's effect to (`move-rests-on-its-authorisation`); the register adds what
-//! the log can't see, that an authorisation replaced covers nothing more.
+//! recalculated or not. It is permitted only where that authorisation is in force for the move's own part, the part
+//! its segment belongs to by the plans the log holds ([`Recorded::part_of`]), and the route ends inside it: at its
+//! destination, the reserve, the node and the account, in its to asset, delivering at least its floor. Anything else
+//! is refused as outside the authorisation, and needs a new one (`REQ-AUZ-3`, `INV-10`). A move whose segment no plan
+//! lists is in no part, and refused so, as the log admits no such move (`move-segment-is-in-its-orders-plan`). These
+//! are what the
+//! log holds a move's effect to (`move-rests-on-its-authorisation`: the order, the four ends, the part, in force for
+//! it); the register is stricter than the log in one way, that an id replaced covers nothing more even once its
+//! terms are given again under another.
 //!
 //! # A new authorisation
 //!
-//! An order's terms in force are set by its first permitted authorisation. Another permitted with the same order,
-//! destination, to asset and floor states them again, and the moves under either stay inside. One that names anything
-//! else, the floor included, is a new authorisation: it replaces the terms in force, whose ids then cover no move, and
+//! Each part's terms in force are set by the first permitted authorisation that speaks for it. Another with the same
+//! order, destination, to asset, floor and origin reserve (the terms the log compares) states them again, and the
+//! moves under either stay inside. One that names anything else is a new authorisation: for each part it speaks for,
+//! it replaces the terms in force, whose ids then cover no move of that part; a part it doesn't name goes on under
+//! its own (`REQ-ORD-43`: one part's new destination strands no other), and
 //! terms given again after others replaced them are in force under their new id alone. Only the customer gives a
 //! new one, its person or its agent, whose party the roles hold to the order's requester: the customer's own choice
 //! after a failed final deposit is such a new authorisation (`REQ-ORD-43`), and nobody else's choice is
@@ -58,6 +65,8 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::router_api::Id;
 
+use rutent_contracts::state_machine::Observed;
+
 use crate::engine::{Asked, Engine, Policy, Sources};
 
 /// Why the log couldn't be read.
@@ -76,7 +85,8 @@ pub enum ReadFailure {
 /// catches one frozen before it, or of another log, once the engine has appended. Nothing else of a partial, stale or
 /// misdirected read is caught: a first read, or one frozen after the engine's last append, that is of another log or
 /// misses what another engine appended, passes both checks. That the read is of the very log the handle appends to,
-/// whole and current, is the assembly's word.
+/// whole and current, is the assembly's word, and so is the part it gives a segment: no check of the engine's holds
+/// [`Recorded::part_of`] to the plans the log really holds.
 pub trait Recorded {
     /// Every authorisation the log holds as permitted, in log order: [`permitted_in`] over its entries. The read
     /// returns owned values and holds nothing of the log once it answers.
@@ -86,6 +96,52 @@ pub trait Recorded {
     /// [`crate::parties::charged_in`] over its entries. The counter a charge is held to is rebuilt from it before
     /// every charge, so it is the log's across a restart and across engines (`T-021-05`).
     fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure>;
+
+    /// The part of `order` that `segment` belongs to, by the plans the log holds: [`part_in`] over its entries; none
+    /// where no plan lists the segment. A move is held to the authorisation in force for its own part, which the move
+    /// doesn't name (`T-021-04`).
+    fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure>;
+}
+
+/// The part of `order` that `segment` belongs to, by the plans `entries` hold: a `route_chosen` part listing it, or
+/// the part a `route_recalculated` or `destination_changed` gave it to. The one definition every [`Recorded`] reads
+/// by, and core-internal's own reading of a segment's part, the private `part_of_segment` its relations hold a move
+/// to (`move-rests-on-its-authorisation`, `contracts/src/core_internal/relations.rs`).
+pub fn part_in<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+    order: &Id,
+    segment: &Id,
+) -> Option<Id> {
+    entries.into_iter().find_map(|entry| {
+        let Entry::Verified(VerifiedEntry {
+            what: What::Input { input },
+            ..
+        }) = entry
+        else {
+            return None;
+        };
+        if input.subject.order.as_str() != order.as_str() {
+            return None;
+        }
+        match &input.observed {
+            Observed::RouteChosen { parts, .. } => parts
+                .iter()
+                .find(|p| {
+                    p.segments
+                        .iter()
+                        .any(|s| s.segment_id.as_str() == segment.as_str())
+                })
+                .and_then(|p| Id::new(p.part_id.as_str())),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments
+                .iter()
+                .any(|s| s.segment_id.as_str() == segment.as_str())
+                .then_some(input.subject.part.as_ref())
+                .flatten()
+                .and_then(|p| Id::new(p.as_str())),
+            _ => None,
+        }
+    })
 }
 
 /// The authorisations `entries` hold as permitted, in their order: each verified `authorise` entry whose outcome is
@@ -120,6 +176,18 @@ fn same_terms(a: &Authorisation, b: &Authorisation) -> bool {
         && a.destination == b.destination
         && a.to_asset == b.to_asset
         && a.floor == b.floor
+        && a.origin_reserve == b.origin_reserve
+}
+
+/// Whether `a` speaks for `part` of its order: a part it names, or any part where it names none. For no part, the
+/// order as a whole, which only an authorisation naming no part speaks for: the order's start, before any part has one
+/// of its own. No move is held to it: a move is of a part, or refused.
+fn speaks_for(a: &Authorisation, part: Option<&Id>) -> bool {
+    match (part, &a.parts) {
+        (_, None) => true,
+        (Some(p), Some(parts)) => parts.contains(p),
+        (None, Some(_)) => false,
+    }
 }
 
 impl Authorised {
@@ -128,15 +196,19 @@ impl Authorised {
         &self.permitted
     }
 
-    /// The terms in force for `order`, and the ids in force under them, folding the order's permitted authorisations in
-    /// log order. The first sets the terms. After it, one with the terms in force joins them; one with other terms
-    /// replaces them, and the ids under them, only where the customer gave it. Another's authorisation of other terms,
-    /// which the engine refuses and only engines racing over one log can leave there, never sets the terms: it is in
-    /// force under none.
-    fn standing(&self, order: &Id) -> Option<(&Authorisation, Vec<&Id>)> {
+    /// The terms in force for `part` of `order`, and the ids in force under them, folding the permitted authorisations
+    /// that speak for it in log order. The first sets the terms. After it, one with the terms in force joins them; one
+    /// with other terms replaces them, and the ids under them, only where the customer gave it. Another's authorisation
+    /// of other terms, which the engine refuses and only engines racing over one log can leave there, never sets the
+    /// terms: it is in force under none. A replacement naming one part replaces nothing for another.
+    fn standing(&self, order: &Id, part: Option<&Id>) -> Option<(&Authorisation, Vec<&Id>)> {
         let mut terms: Option<&Authorisation> = None;
         let mut ids: Vec<&Id> = Vec::new();
-        for a in self.permitted.iter().filter(|a| &a.order == order) {
+        for a in self
+            .permitted
+            .iter()
+            .filter(|a| &a.order == order && speaks_for(a, part))
+        {
             match terms {
                 Some(t) if same_terms(t, a) => {
                     if !ids.contains(&&a.authorisation) {
@@ -153,9 +225,30 @@ impl Authorised {
         terms.map(|t| (t, ids))
     }
 
-    /// The terms in force for `order`.
-    pub fn in_force(&self, order: &Id) -> Option<&Authorisation> {
-        self.standing(order).map(|(terms, _)| terms)
+    /// The terms in force for `part` of `order`, or for the order as a whole where `part` is none.
+    pub fn in_force(&self, order: &Id, part: Option<&Id>) -> Option<&Authorisation> {
+        self.standing(order, part).map(|(terms, _)| terms)
+    }
+
+    /// The parts `a` is held to: those it names; or, naming none, the order as a whole and every part an authorisation
+    /// of the order names, each of which it speaks for too.
+    fn held<'a>(&'a self, a: &'a Authorisation) -> Vec<Option<&'a Id>> {
+        if let Some(parts) = &a.parts {
+            return parts.iter().map(Some).collect();
+        }
+        let mut held = vec![None];
+        let named = self
+            .permitted
+            .iter()
+            .filter(|p| p.order == a.order)
+            .filter_map(|p| p.parts.as_ref())
+            .flatten();
+        for part in named {
+            if !held.contains(&Some(part)) {
+                held.push(Some(part));
+            }
+        }
+        held
     }
 
     /// The register of `permitted`, the authorisations a log holds as permitted, in its order ([`permitted_in`]): for
@@ -168,10 +261,16 @@ impl Authorised {
         }
     }
 
-    /// The terms `authorisation` acts under, where it is in force for `order`: permitted for it, and one of the ids in
-    /// force under the terms in force. The engine holds a move to exactly this.
-    pub fn in_force_as(&self, order: &Id, authorisation: &Id) -> Option<&Authorisation> {
-        self.standing(order)
+    /// The terms `authorisation` acts under, where it is in force for `part` of `order` (the order as a whole where
+    /// `part` is none): permitted for it, and one of the ids in force under the part's terms in force. The engine
+    /// holds a move to exactly this, for the move's own part.
+    pub fn in_force_as(
+        &self,
+        order: &Id,
+        part: Option<&Id>,
+        authorisation: &Id,
+    ) -> Option<&Authorisation> {
+        self.standing(order, part)
             .filter(|(_, ids)| ids.contains(&authorisation))
             .map(|(terms, _)| terms)
     }
@@ -191,8 +290,9 @@ impl Authorised {
     }
 
     /// Why `action` is refused, where it is a move that doesn't act inside the authorisation it names: one in force
-    /// for its order, by the log as read now, its route ending at its destination, in its to asset, delivering at
-    /// least its floor.
+    /// for the move's own part, by the log as read now, its route ending at its destination, in its to asset,
+    /// delivering at least its floor. A part that can't be read is an input missing, and a segment no plan lists is in
+    /// no part, so outside every authorisation.
     pub(crate) fn refuses_move(
         &mut self,
         log: &mut impl Recorded,
@@ -200,6 +300,7 @@ impl Authorised {
     ) -> Option<RefusalClass> {
         let Action::MoveValue {
             order,
+            segment,
             authorisation,
             route,
             ..
@@ -210,19 +311,29 @@ impl Authorised {
         if let Err(class) = self.read(log) {
             return Some(class);
         }
-        let inside = self.in_force_as(order, authorisation).is_some_and(|a| {
-            a.destination == route.destination
-                && a.to_asset == route.to_asset
-                && a.floor
-                    .as_ref()
-                    .is_none_or(|floor| &route.delivers >= floor.amount())
-        });
+        let Ok(part) = log.part_of(order, segment) else {
+            return Some(RefusalClass::MissingInput);
+        };
+        // A segment no plan of the order lists is in no part, and moves under no authorisation, as the log admits no
+        // such move (`move-segment-is-in-its-orders-plan`).
+        let Some(part) = part else {
+            return Some(RefusalClass::OutsideAuthorisation);
+        };
+        let inside = self
+            .in_force_as(order, Some(&part), authorisation)
+            .is_some_and(|a| {
+                a.destination == route.destination
+                    && a.to_asset == route.to_asset
+                    && a.floor
+                        .as_ref()
+                        .is_none_or(|floor| &route.delivers >= floor.amount())
+            });
         (!inside).then_some(RefusalClass::OutsideAuthorisation)
     }
 
     /// Why `a` is refused, where it is, by the log as read now: its id names another authorisation, or one no longer
-    /// in force; or it is a new authorisation for an order with one in force, naming anything else, given by anyone
-    /// but the customer.
+    /// in force for every part it is held to; or it is a new authorisation naming anything else than the terms in
+    /// force for any part it is held to, given by anyone but the customer.
     fn refuses(&mut self, log: &mut impl Recorded, a: &Authorisation) -> Option<RefusalClass> {
         if let Err(class) = self.read(log) {
             return Some(class);
@@ -232,13 +343,35 @@ impl Authorised {
             .iter()
             .find(|p| p.authorisation == a.authorisation)
         {
-            let again = given == a && self.in_force_as(&a.order, &a.authorisation).is_some();
+            let again = given == a
+                && self
+                    .held(a)
+                    .into_iter()
+                    .all(|part| self.in_force_as(&a.order, part, &a.authorisation).is_some());
             return (!again).then_some(RefusalClass::NotPermitted);
         }
-        let current = self.in_force(&a.order)?;
-        let anew = !same_terms(current, a);
+        let anew = self.held(a).into_iter().any(|part| {
+            self.in_force(&a.order, part)
+                .is_some_and(|current| !same_terms(current, a))
+        });
         (anew && a.given_by.role != Role::Customer).then_some(RefusalClass::NotPermitted)
     }
+}
+
+/// The plan of the fixtures' order, `ord-17`, as a log would hold it: a `route_chosen` placing the fixtures' move's
+/// segment, `seg-2`, in part `p1`. For other rows' test logs, whose moves are of it, since a move of a segment no plan
+/// lists is refused (`T-021-04`).
+#[cfg(test)]
+pub(crate) fn plan_of_the_fixtures_move() -> Entry {
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/valid/verified-entry-of-a-recorded-input-route-chosen-three-parts.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    plan["what"]["input"]["subject"]["order"] = "ord-17".into();
+    plan["what"]["input"]["observed"]["parts"][0]["segments"][1]["segment_id"] = "seg-2".into();
+    serde_json::from_value(plan).unwrap()
 }
 
 /// The consultation's `answer`, held to the register's `refusal`: a refusal stands, and otherwise the register's

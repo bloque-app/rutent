@@ -1483,11 +1483,12 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
 /// The terms the authorisation `authorisation` of `order` acts under, as the policy engine's register reads the log
 /// (`T-021-04`): an `authorise` of that authorisation and that order whose outcome is permitted, as
 /// `move-rests-on-its-authorisation` holds a move to, and in force, not replaced since. A refusal under the same id,
-/// the same id for another order, or one replaced, is no authorisation this order starts under. The engine holds each
-/// of the order's moves to the same view.
+/// the same id for another order, or one replaced, is no authorisation this order starts under. An order starts as a
+/// whole, before any part's own authorisation, so it is read for the order as a whole. The engine holds each of the
+/// order's moves to the same view, for the move's own part.
 fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
     rutent_core_authz::funds::Authorised::of(rutent_core_authz::funds::permitted_in(entries))
-        .in_force_as(order, authorisation)
+        .in_force_as(order, None, authorisation)
         .cloned()
 }
 
@@ -1684,11 +1685,23 @@ mod tests {
         assert_eq!(moves, 1, "the deposit is not handed over");
         let started = &core.started[order.as_str()];
         let part = kit::id(started.plan[0].part_id.as_str());
-        let waits = core
+        let since = core
             .segments
             .waiting(&order, &part)
+            .cloned()
             .expect("the part waits at its floor");
-        assert_eq!(waits.evidenced.amount().as_str(), "990000");
+        // The wait is a recorded state-machine input, the part waiting since it was recorded (`T-020-10b`).
+        let waits = core
+            .verified_whats()
+            .into_iter()
+            .filter_map(|w| match w {
+                What::Input { input } if input.observed == Observed::WaitingAtFloor {} => {
+                    Some(input.recorded_at.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(waits, vec![since]);
     }
 
     // verifies: DEC-18
