@@ -1059,13 +1059,40 @@
           "description": "The order's origin reserve: the one whose yes it rests on, or whose automatic deposit started it.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
-        "reserve_yes": {
-          "description": "The receipt of the origin reserve's stated yes to the route: present exactly when its basis is given (REQ-ORD-32), which the Rust types check.",
-          "$ref": "urn:rutent:core-internal:receipt"
+        "yeses": {
+          "description": "Each part's yes, keyed by part: its origin reserve and the receipt of that reserve's stated yes to the part's route, each part once, which the Rust types check. Present exactly when the basis is given (REQ-ORD-32).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/part_yes"
+          }
         },
         "session": {
           "description": "The user's session it was asked in: present exactly when its basis is given (REQ-ORD-32).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "part_yes": {
+      "description": "One part's yes on an acceptance (REQ-ORD-32).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part",
+        "origin_reserve",
+        "reserve_yes"
+      ],
+      "properties": {
+        "part": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "origin_reserve": {
+          "description": "The part's origin reserve: the provider of its first withdrawal.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reserve_yes": {
+          "description": "The receipt of that reserve's stated yes.",
+          "$ref": "urn:rutent:core-internal:receipt"
         }
       }
     },
@@ -1098,7 +1125,8 @@
             "destination_refused",
             "refused_by_policy",
             "over_bound",
-            "malformed_request"
+            "malformed_request",
+            "destination_owner_changed"
           ]
         }
       }

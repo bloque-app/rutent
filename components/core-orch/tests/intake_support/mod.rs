@@ -63,6 +63,8 @@ pub struct Book {
     pub fail_next: Option<&'static str>,
     /// The call whose next append on orchestration's handle is written, but its answer lost, once.
     pub lose_next: Option<&'static str>,
+    /// The call whose next append on orchestration's handle the log refuses, once, with nothing appended.
+    pub refuse_next: Option<&'static str>,
 }
 
 fn log_receipt(index: usize) -> Receipt {
@@ -144,6 +146,12 @@ impl Log for General {
         if call.is_some() && book.fail_next == call {
             book.fail_next = None;
             return Err(AppendFailure::Unavailable);
+        }
+        if call.is_some() && book.refuse_next == call {
+            book.refuse_next = None;
+            return Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("refused on demand"),
+            ));
         }
         let receipt = book.push(Through::General, entry.entry().clone())?;
         if call.is_some() && book.lose_next == call {
@@ -357,6 +365,7 @@ impl Env {
             clock: clock.clone(),
             fail_next: None,
             lose_next: None,
+            refuse_next: None,
         }));
         let actors = Rc::new(RefCell::new(ActorRegister::default()));
         actors.borrow_mut().list(&customer());

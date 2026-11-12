@@ -84,12 +84,39 @@ fn world() -> Vec<(Value, Value)> {
     entries
 }
 
+/// The world's place of its `nth` entry (from 0) whose call is `call`, so a test names an entry by what it is
+/// rather than by a place the contract's fixture may move.
+fn place_of(call: &str, nth: usize) -> usize {
+    world()
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, e))| e["what"]["call"] == call)
+        .nth(nth)
+        .map(|(place, _)| place)
+        .unwrap_or_else(|| panic!("the world has no {call} {nth}"))
+}
+
+/// The world's place of the reserve's yes the acceptance rests on: its first stated result.
+fn first_yes() -> usize {
+    world()
+        .iter()
+        .position(|(_, e)| e["what"]["statement"] == "urn:rutent:provider-role:result")
+        .unwrap()
+}
+
 // --- The deployment, its operator and its providers --------------------------------------------------------------
 
 const LOG: &str = "log-main";
 const OPERATOR: &str = "operator";
 /// The world's providers, each of which states for itself.
-const PROVIDERS: [&str; 5] = ["us-bank", "bridge-pay", "fx-desk", "bank-co", "kyc-check"];
+const PROVIDERS: [&str; 6] = [
+    "us-bank",
+    "eu-bank",
+    "bridge-pay",
+    "fx-desk",
+    "bank-co",
+    "kyc-check",
+];
 /// When each provider is granted, before its advertisement.
 const GRANTED_AT: &str = "2026-11-05T00:00:00Z";
 
@@ -668,8 +695,8 @@ fn every_action_leaves_its_record() {
 fn refusal_and_unanswered_request_each_leave_a_record() {
     let mut run = Run::new(MemoryStore::new());
     let answers = run.world(&[]);
-    // The world's second effect (its place 26) has no result yet: its request goes unanswered.
-    let effect = answers[26].1.clone().unwrap();
+    // The world's second effect has no result yet: its request goes unanswered.
+    let effect = answers[place_of("effect", 1)].1.clone().unwrap();
     let mut unanswered = valid("verified-entry-of-a-result-unanswered");
     unanswered["what"]["effect"] = serde_json::to_value(&effect).unwrap();
     let mut refused_decide = valid("verified-entry-of-a-decision");
@@ -1104,11 +1131,12 @@ fn handed_over_events_survive_a_failed_append_that_is_retried() {
 // verifies: REQ-AUD-2, REQ-ORD-32
 #[test]
 fn a_stated_entry_claiming_a_verified_signature_it_doesnt_have_is_recorded_unverified() {
-    // The reserve's yes (the world's place 2) signed with a key no one publishes: unverified, and the acceptance
-    // (place 15) that rests on it is refused.
+    // The reserve's yes signed with a key no one publishes: unverified, and the acceptance that rests on it is
+    // refused.
+    let (yes_at, acceptance_at) = (first_yes(), place_of("acceptance", 0));
     let mut forged = Run::new(MemoryStore::new());
-    let answers = forged.world(&[2]);
-    let yes = answers[2].1.clone().unwrap();
+    let answers = forged.world(&[yes_at]);
+    let yes = answers[yes_at].1.clone().unwrap();
     assert!(!verified_at(&forged, &yes));
     assert!(matches!(
         forged.at(&yes),
@@ -1117,16 +1145,19 @@ fn a_stated_entry_claiming_a_verified_signature_it_doesnt_have_is_recorded_unver
             ..
         })
     ));
-    let Err(AppendFailure::Refused(Violation(why))) = &answers[15].1 else {
-        panic!("the acceptance on a forged yes: {:?}", answers[15].1);
+    let Err(AppendFailure::Refused(Violation(why))) = &answers[acceptance_at].1 else {
+        panic!(
+            "the acceptance on a forged yes: {:?}",
+            answers[acceptance_at].1
+        );
     };
     assert!(why.contains("verified"), "{why}");
 
     // The same world signed by its makers: every statement verified, the acceptance admitted.
     let mut genuine = Run::new(MemoryStore::new());
     let answers = genuine.world(&[]);
-    assert!(verified_at(&genuine, answers[2].1.as_ref().unwrap()));
-    assert!(answers[15].1.is_ok());
+    assert!(verified_at(&genuine, answers[yes_at].1.as_ref().unwrap()));
+    assert!(answers[acceptance_at].1.is_ok());
 
     // Bytes that name the provider's own statements key, signed by another: the signature fails, so unverified.
     let mut run = Run::new(MemoryStore::new());

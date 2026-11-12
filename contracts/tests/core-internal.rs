@@ -73,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 33] = [
+const RUST_RULES: [(&str, &str); 37] = [
     (
         "permission-change-by-a-provider",
         "a read permission is granted or revoked by the operator",
@@ -112,7 +112,15 @@ const RUST_RULES: [(&str, &str); 33] = [
     ),
     (
         "verified-entry-of-a-providers-permitted-read-of-an-order",
-        "a provider's permitted read is of a segment, never an order or the trail",
+        "a provider's permitted read is of a segment, never an order, its state or the trail",
+    ),
+    (
+        "verified-entry-of-a-providers-permitted-read-of-an-orders-state",
+        "a provider's permitted read is of a segment, never an order, its state or the trail",
+    ),
+    (
+        "verified-entry-of-the-operators-permitted-read-of-an-order-without-a-permission",
+        "an operator's permitted read without a permission is of an order's state or its own evidence",
     ),
     (
         "verified-entry-of-a-regulators-read-without-its-permission",
@@ -121,6 +129,14 @@ const RUST_RULES: [(&str, &str); 33] = [
     (
         "verified-entry-of-a-shortlist-record-without-its-providers",
         "a decision record names shortlisted providers exactly when it is a shortlist's",
+    ),
+    (
+        "verified-entry-of-an-acceptance-citing-one-yes-for-two-parts",
+        "an acceptance cites a yes of its own for each part",
+    ),
+    (
+        "verified-entry-of-an-acceptance-naming-a-part-twice",
+        "an acceptance names each part's yes once",
     ),
     (
         "verified-entry-of-an-acceptance-given-without-the-reserves-yes",
@@ -1459,15 +1475,13 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
         .collect();
     let acceptance: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
     let Entry::Verified(VerifiedEntry {
-        what: What::Acceptance {
-            reserve_yes: Some(at),
-            ..
-        },
+        what: What::Acceptance { yeses, .. },
         ..
     }) = &acceptance
     else {
         panic!("an acceptance resting on a yes");
     };
+    let at = &yeses[0].reserve_yes;
     let slot = history.iter().position(|(r, _)| r == at).unwrap();
     let Entry::Stated(yes) = history[slot].1.clone() else {
         panic!("the yes is a stated entry");
@@ -1614,17 +1628,13 @@ fn a_reserves_yes_is_bound_to_its_order_through_its_signed_transaction() {
         .collect();
     let acceptance: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
     let Entry::Verified(VerifiedEntry {
-        what:
-            What::Acceptance {
-                reserve_yes: Some(at),
-                order,
-                ..
-            },
+        what: What::Acceptance { yeses, order, .. },
         ..
     }) = &acceptance
     else {
         panic!("an acceptance resting on a yes");
     };
+    let at = &yeses[0].reserve_yes;
     // The genuine yes admits its own acceptance.
     assert_eq!(
         admit_entry(&history, &acceptance, Through::General, &operator()),
