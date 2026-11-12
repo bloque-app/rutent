@@ -2551,3 +2551,23 @@ masked are shown by the rule-off below. Then each new rule was switched off once
 
   `NoPublisher` wasn't switched off: no maker the catalogue verifies lacks a publisher.
 
+
+### T-020-12, round 2 answer (of `f4a232f`)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Low: an accepted fault could still end disputed. A dispute the log couldn't take now leaves `Stuck::dispute`'s built `stuck_declared { dispute }` kept, and a later watch or dispute appends it, so the part would go stuck over a fault the customer accepted since | A dispute answered `Unavailable` marks the showing pending: `accept_fault` is refused (`DisputePending`), and so is a new showing, until the dispute is retried to completion, after which the dispute stands. A dispute the log refused keeps nothing in the stuck orders, so the showing stays open | the dispute test: the reviewer's sequence (log down for the dispute, acceptance refused, the dispute retried, the part stuck), and a refused dispute after which the customer still accepts |
+| nit | `fault_shown` took any result | Only a `failed` result shows a fault | the dispute test: a succeeded result naming a fault shows none |
+
+- **Red first:** the tests were written before either fix and run: the succeeded result was taken as a showing; with
+  that fixed alone, the acceptance after the kept dispute went through (`Ok(Customer)`). Then each fix, and each
+  rule switched off once (`t-020-12-ruleoff3.py`, outside the tree):
+
+  | Rule switched off | Red |
+  |---|---|
+  | no acceptance while a dispute is kept | the dispute test |
+  | a dispute answered `Unavailable` kept as pending | the dispute test |
+  | a refused dispute keeps nothing | the dispute test |
+  | only a failed result shows a fault | the dispute test |
+
+  A new showing refused while a dispute is kept is defence beside the refused acceptance; no test reaches it alone.

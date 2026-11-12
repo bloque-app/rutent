@@ -268,6 +268,9 @@ pub enum ReversalError {
     NoFaultShown,
     /// A showing of fault was accepted already: the carrier stands.
     FaultSettled,
+    /// A dispute of the showing waits on the log, kept by the stuck orders to append: the showing is answered by it
+    /// once it is retried to completion, and accepted by no one before.
+    DisputePending,
     /// The segment's answer wasn't taken yet: nothing it gives back is late.
     NotAnswered,
     /// The statement's signature doesn't verify under a key its maker published for statements.
@@ -323,6 +326,10 @@ struct Completion {
 struct Showing {
     fault: Fault,
     disputed: bool,
+    /// A dispute of it the log couldn't take now, kept by the stuck orders to append: until it is retried to
+    /// completion, no one accepts the showing, or the kept declaration would make the part stuck over a fault
+    /// accepted.
+    pending: bool,
 }
 
 /// One reversal: owed, or of an undone start.
@@ -598,6 +605,9 @@ impl Reversals {
         {
             return Err(ReversalError::FaultSettled);
         }
+        if reversal.showing.as_ref().is_some_and(|s| s.pending) {
+            return Err(ReversalError::DisputePending);
+        }
         parts
             .catalogue
             .verify_statement(bytes, parts.clock.now().floor())
@@ -632,6 +642,7 @@ impl Reversals {
         reversal.showing = Some(Showing {
             fault,
             disputed: false,
+            pending: false,
         });
         Ok(receipt)
     }
@@ -649,6 +660,9 @@ impl Reversals {
             .as_ref()
             .filter(|s| !s.disputed)
             .ok_or(ReversalError::NoShowing)?;
+        if showing.pending {
+            return Err(ReversalError::DisputePending);
+        }
         let carrier = party_of(showing.fault, by)?;
         reversal.carrier = carrier.clone();
         reversal.showing = None;
@@ -682,17 +696,24 @@ impl Reversals {
             segments: &mut *parts.segments,
             exposures: &mut *parts.exposures,
         };
-        let declared = stuck
-            .dispute(&mut stuck_parts, at.order, at.part, parts.core)
-            .map_err(ReversalError::Stuck)?;
+        let declared = stuck.dispute(&mut stuck_parts, at.order, at.part, parts.core);
         if let Some(showing) = self
             .reversals
             .get_mut(&key(at.order, at.segment))
             .and_then(|r| r.showing.as_mut())
         {
-            showing.disputed = true;
+            match &declared {
+                Ok(_) => {
+                    showing.disputed = true;
+                    showing.pending = false;
+                }
+                // Kept by the stuck orders, to append as built: the dispute stands, waiting on the log.
+                Err(StuckError::Append(AppendFailure::Unavailable)) => showing.pending = true,
+                // Refused, nothing kept: the showing stays open.
+                Err(_) => showing.pending = false,
+            }
         }
-        Ok(declared.receipt)
+        Ok(declared.map_err(ReversalError::Stuck)?.receipt)
     }
 
     /// Ends `order` without completing, on its customer's request (see the module's docs): only while a part of it
@@ -1297,12 +1318,14 @@ fn moved(operation: &ProviderOperation) -> Option<(&str, &str, &str)> {
 /// provider-role's author).
 pub const FAULT_REFERENCE: &str = "fault:";
 
-/// The fault `bytes`, a provider's result for `transaction`, show: the one party its evidence names at
-/// [`FAULT_REFERENCE`]; none where it names none, or both, or the result is of another transaction.
+/// The fault `bytes`, a provider's failed result for `transaction`, show: the one party its evidence names at
+/// [`FAULT_REFERENCE`]; none where it names none, or both, or the result is of another transaction or didn't fail.
 fn fault_shown(bytes: &[u8], transaction: &Id) -> Option<Fault> {
     let result: Statement<ResultBody> = serde_json::from_slice(bytes).ok()?;
     let body = serde_json::to_value(&result.statement).ok()?;
-    if body["transaction"].as_str() != Some(transaction.as_str()) {
+    if body["transaction"].as_str() != Some(transaction.as_str())
+        || body["outcome"]["status"].as_str() != Some("failed")
+    {
         return None;
     }
     let mut faults = body["outcome"]["evidence"]

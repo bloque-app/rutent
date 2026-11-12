@@ -38,7 +38,7 @@ use rutent_core_orch::segments::{
     Segments, SegmentsError, ToGrade,
 };
 use rutent_core_orch::snapshot::{Clock, Exposures, Reading};
-use rutent_core_orch::stuck::Stuck;
+use rutent_core_orch::stuck::{Stuck, StuckError};
 use rutent_prov::catalogue::{Catalogue, Endpoint, Instant, Observation, Publisher, TupleKey};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
 use rutent_prov::module::types::Events;
@@ -167,13 +167,18 @@ fn receipt_of(index: usize, entry: &Entry) -> Receipt {
 
 #[derive(Default)]
 /// A log that keeps every entry as handed in, answering the receipt rule's receipt; while it is down (the second
-/// field), it can't take any.
-struct KeptLog(Vec<Entry>, bool);
+/// field), it can't take any, and while it refuses (the third), it refuses each.
+struct KeptLog(Vec<Entry>, bool, bool);
 
 impl Log for KeptLog {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         if self.1 {
             return Err(AppendFailure::Unavailable);
+        }
+        if self.2 {
+            return Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("the log refuses it"),
+            ));
         }
         let entry = entry.entry().clone();
         let receipt = receipt_of(self.0.len(), &entry);
@@ -1291,6 +1296,19 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         world.with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &no_fault)),
         Err(ReversalError::NoFaultShown)
     );
+    // Only a failed result shows a fault: one that says it succeeded shows none, whatever its evidence names.
+    let succeeded = result(
+        EXCHANGE,
+        "conversion",
+        &tx,
+        json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+            "fee": { "asset": "COP", "amount": "0" },
+            "evidence": [{ "grade": 3, "reference": "fault:customer", "by": EXCHANGE }] }),
+    );
+    assert_eq!(
+        world.with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &succeeded)),
+        Err(ReversalError::NoFaultShown)
+    );
     world
         .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &showing(EXCHANGE, "customer")))
         .unwrap();
@@ -1374,23 +1392,64 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         OrderState::FirstSegmentSettled
     );
 
-    // A dispute the log couldn't take leaves the showing open: the customer may still accept it.
+    // The reviewer's sequence: the customer disputes while the log is down, so the stuck orders keep the built
+    // declaration, to append when the part is next watched or disputed. Accepting the fault now would leave that
+    // declaration to make the part stuck over an accepted fault: it is refused until the dispute is retried to
+    // completion, and then the dispute stands.
     let mut world = exchange_failed();
     world
         .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &showing(EXCHANGE, "customer")))
         .unwrap();
     world.log.1 = true;
+    assert_eq!(
+        world.with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer())),
+        Err(ReversalError::Stuck(StuckError::Append(
+            AppendFailure::Unavailable
+        )))
+    );
+    world.log.1 = false;
+    assert_eq!(
+        world
+            .reversals
+            .accept_fault(at(&order, &part, &s2), &customer()),
+        Err(ReversalError::DisputePending)
+    );
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Provider(id(EXCHANGE)))
+    );
+    world
+        .with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer()))
+        .unwrap();
+    assert_eq!(world.followed().parts[0].state, OrderState::Stuck);
+    assert!(
+        world
+            .reversals
+            .accept_fault(at(&order, &part, &s2), &customer())
+            .is_err(),
+        "a disputed fault isn't accepted"
+    );
+
+    // A dispute the log refused keeps nothing: the showing stays open, and the customer may still accept it.
+    let mut world = exchange_failed();
+    world
+        .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &showing(EXCHANGE, "customer")))
+        .unwrap();
+    world.log.2 = true;
     assert!(matches!(
         world.with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer())),
-        Err(ReversalError::Stuck(_))
+        Err(ReversalError::Stuck(StuckError::Append(
+            AppendFailure::Refused(_)
+        )))
     ));
-    world.log.1 = false;
+    world.log.2 = false;
     assert_eq!(
         world
             .reversals
             .accept_fault(at(&order, &part, &s2), &customer()),
         Ok(Carrier::Customer)
     );
+    assert_ne!(world.followed().parts[0].state, OrderState::Stuck);
 }
 
 /// The exchange's failure puts its reversal on the catalogue's list, owed by the exchange, in COP, for what it took
