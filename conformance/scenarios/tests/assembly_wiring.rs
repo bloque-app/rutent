@@ -253,6 +253,154 @@ fn policys_sources_answer_from_the_records() {
     let publisher = format!("{RESERVE}-publisher");
     assert_eq!(sources.supply(&need(&publisher, statement.clone())), yes());
     assert_eq!(sources.supply(&need(party, statement)), no());
+    // The evidence store's statements, by the commitment the log names each by, about their order (`T-021-06`).
+    let kept = Source::Kept(commitment_at(&core, result));
+    assert_eq!(sources.supply(&need(order.as_str(), kept.clone())), yes());
+    assert_eq!(sources.supply(&need("another-order", kept)), no());
+    let unkept: Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::Kept(unkept))),
+        no()
+    );
+    // The stated entry's own order, as the decision's evidence about the order itself must be.
+    let about = Source::KeptAbout(commitment_at(&core, result));
+    assert_eq!(sources.supply(&need(order.as_str(), about.clone())), yes());
+    assert_eq!(sources.supply(&need("another-order", about)), no());
+    // A statement about no order in particular is kept, but not about the order itself.
+    let unbound = core
+        .log()
+        .entries()
+        .iter()
+        .position(|(_, e)| {
+            matches!(e, Entry::Stated(s) if s.about.as_ref().and_then(|a| a.order.as_ref()).is_none())
+        })
+        .expect("a statement about no order");
+    let unbound = commitment_at(&core, unbound);
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::Kept(unbound.clone()))),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need(order.as_str(), Source::KeptAbout(unbound))),
+        no()
+    );
+    // The register's `ActsFor` chains (`T-021-06`): two desks acting for the operator, one's person, and the
+    // operator's own. A chain reaches what lies up it; two desks' chains meet at the operator and reach neither desk.
+    let listed = |acts: &str, party: &str| rutent_contracts::core_internal::Actor {
+        acts: id(acts),
+        party: id(party),
+        ..customer.clone()
+    };
+    for (acts, party) in [
+        ("desk-b", "operator"),
+        ("desk-c", "operator"),
+        ("bob", "desk-b"),
+        ("carol", "desk-c"),
+    ] {
+        core.registers().list(&listed(acts, party));
+    }
+    let reaches = |from: &str, to: &str| Source::Reaches {
+        from: id(from),
+        to: id(to),
+    };
+    assert_eq!(
+        sources.supply(&need("bob", reaches("bob", "desk-b"))),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need("bob", reaches("bob", "operator"))),
+        yes()
+    );
+    assert_eq!(sources.supply(&need("bob", reaches("bob", "desk-c"))), no());
+    assert_eq!(
+        sources.supply(&need("carol", reaches("carol", "desk-b"))),
+        no()
+    );
+    assert_eq!(sources.supply(&need("bob", reaches("bob", party))), no());
+    // The deployment's operator: its people along their chains, and no one else; Core, with a party of its own, isn't.
+    assert_eq!(sources.supply(&need("bob", Source::OfOperator)), yes());
+    assert_eq!(sources.supply(&need("user-1", Source::OfOperator)), no());
+    let core_actor = kit::core();
+    assert_ne!(
+        core_actor.party,
+        kit::operator().party,
+        "Core's party is its own"
+    );
+    assert_eq!(
+        sources.supply(&need(core_actor.acts.as_str(), Source::OfOperator)),
+        no()
+    );
+    // Chains meeting below the operator (`T-021-06`, round 2): two desks under one division meet there; two desks
+    // directly under the operator meet nowhere below it.
+    for (acts, party) in [
+        ("division-1", "operator"),
+        ("desk-1", "division-1"),
+        ("desk-2", "division-1"),
+        ("dan", "desk-1"),
+        ("erin", "desk-2"),
+    ] {
+        core.registers().list(&listed(acts, party));
+    }
+    let meets = |from: &str, with: &str| Source::MeetsBelowOperator {
+        from: id(from),
+        with: id(with),
+    };
+    assert_eq!(sources.supply(&need("dan", meets("dan", "erin"))), yes());
+    assert_eq!(sources.supply(&need("bob", meets("bob", "carol"))), no());
+    assert_eq!(sources.supply(&need("bob", meets("bob", "dan"))), no());
+    // Nothing but Core's own components is listed under Core's party, or reaches it: anyone else listed there acts for
+    // no one.
+    let acts_as = |acts: &str, party: &Id, kind| Source::ActsFor {
+        acts: id(acts),
+        party: party.clone(),
+        kind,
+    };
+    use rutent_contracts::core_internal::ActorKind;
+    assert_eq!(
+        sources.supply(&need(
+            core_actor.acts.as_str(),
+            acts_as(core_actor.acts.as_str(), &core_actor.party, core_actor.kind)
+        )),
+        yes()
+    );
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("intruder"),
+            party: core_actor.party.clone(),
+            kind: ActorKind::Person,
+            ..customer.clone()
+        });
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("helper"),
+            party: core_actor.party.clone(),
+            kind: ActorKind::Component,
+            ..customer.clone()
+        });
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("helper-bot"),
+            party: id("helper"),
+            kind: ActorKind::Component,
+            ..customer.clone()
+        });
+    assert_eq!(
+        sources.supply(&need(
+            "intruder",
+            acts_as("intruder", &core_actor.party, ActorKind::Person)
+        )),
+        no()
+    );
+    assert_eq!(
+        sources.supply(&need(
+            "helper-bot",
+            acts_as("helper-bot", &id("helper"), ActorKind::Component)
+        )),
+        no()
+    );
     // The reserve's declarations, from its advertisement as listed in the log.
     let declaration = core.installed[0]
         .advertisement

@@ -92,10 +92,51 @@ impl Registers {
 
     /// Whether `acts` acts for `party` as the kind of actor `kind`, where the register lists it at all: policy's
     /// word (`Source::ActsFor`), which binds the kind too, so an agent's login can't state itself a person.
+    /// Nothing but Core's own components acts for Core's party, or for a party that reaches it (`T-021-06`): any other
+    /// listed there acts for no one.
     pub fn acts_as(&self, acts: &Id, party: &Id, kind: ActorKind) -> Option<bool> {
-        self.actors
-            .get(acts.as_str())
-            .map(|(p, k)| p.as_str() == party.as_str() && *k == kind)
+        let core = crate::kit::CORE_PARTY;
+        self.actors.get(acts.as_str()).map(|(p, k)| {
+            let reaches_core = self
+                .chain(&Id::new(p).expect("a listed party"))
+                .iter()
+                .any(|c| c == core);
+            let cores_own = p.as_str() == core && *k == ActorKind::Component;
+            p.as_str() == party.as_str() && *k == kind && (!reaches_core || cores_own)
+        })
+    }
+
+    /// Everything `start`, a login or a party, reaches along the register's `ActsFor` links: itself, the party it is
+    /// listed as acting for, and that party's own in turn, each once (`T-021-06`).
+    pub fn chain(&self, start: &Id) -> Vec<String> {
+        let mut reached = vec![start.as_str().to_owned()];
+        while let Some((party, _)) = reached.last().and_then(|at| self.actors.get(at)) {
+            if reached.contains(party) {
+                break;
+            }
+            reached.push(party.clone());
+        }
+        reached
+    }
+
+    /// Whether the chains of `a` and `b`, each a login, meet below the party `root`: each cut where it reaches `root`,
+    /// which isn't compared, nor anything above it. Policy's word (`Source::MeetsBelowOperator`), `root` the
+    /// deployment operator's party.
+    pub fn meet_below(&self, a: &Id, b: &Id, root: &Id) -> bool {
+        let below = |start: &Id| -> Vec<String> {
+            self.chain(start)
+                .into_iter()
+                .take_while(|p| p.as_str() != root.as_str())
+                .collect()
+        };
+        let theirs = below(b);
+        below(a).iter().any(|p| theirs.contains(p))
+    }
+
+    /// Whether `from`, a login or a party, reaches the party `to` along its chain: policy's word (`Source::Reaches`) on
+    /// two actors, an actor and the order's customer, or an actor and the provider holding the funds (`T-021-06`).
+    pub fn reaches(&self, from: &Id, to: &Id) -> bool {
+        self.chain(from).iter().any(|p| p.as_str() == to.as_str())
     }
 
     /// Whether the agent `agent` may make the call `scope` for `party`, where its party set it a scope at all.
@@ -217,6 +258,27 @@ impl Records {
         }
     }
 
+    /// Whether the evidence store keeps a statement under `commitment`, about `order`, or, unless `itself`, about no
+    /// order: the log's stated entries name each statement Core kept by its commitment (`Evidence::keep`, `T-022-03`).
+    fn kept(
+        &self,
+        commitment: &rutent_contracts::module_interface::Digest,
+        order: &Id,
+        itself: bool,
+    ) -> Reply<Said> {
+        said(self.log.borrow().entries().iter().any(|(_, e)| match e {
+            Entry::Stated(s) => {
+                let about = s.about.as_ref().and_then(|a| a.order.as_ref());
+                &s.commitment == commitment
+                    && match about {
+                        Some(o) => o == order,
+                        None => !itself,
+                    }
+            }
+            Entry::Verified(_) => false,
+        }))
+    }
+
     fn declared(&self, reserve: &Id, declaration: &Id) -> Reply<Said> {
         let declarations = self.declarations.borrow();
         let Some(d) = declarations.get(reserve.as_str()) else {
@@ -271,6 +333,14 @@ impl authz::Sources for Records {
             }
             Source::Statement(commitment) => self.statement(commitment, input),
             Source::Declarations(reserve) => self.declared(reserve, input),
+            Source::Kept(commitment) => self.kept(commitment, input, false),
+            Source::KeptAbout(commitment) => self.kept(commitment, input, true),
+            Source::Reaches { from, to } => said(registers.reaches(from, to)),
+            Source::MeetsBelowOperator { from, with } => {
+                said(registers.meet_below(from, with, &crate::kit::operator().party))
+            }
+            // The deployment's operator is the kit's: Core signs in its name.
+            Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
             // No verifier's judgement or provider's answer is a source in M3's assembly yet.
             Source::Verifier(_) | Source::Provider(_) => Reply::Missing,
         }
@@ -302,10 +372,9 @@ impl authz::Policy for Deployment {
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
 /// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions,
-/// reads and charges) and for a stuck order's steps and a move's outcome, which it answers not known until `T-021-06`
-/// builds them, and,
-/// beside it, on policy's handle, the calls whose rows haven't built them on the engine yet. Each of those is decided
-/// as the engine decides a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
+/// reads, charges, and a stuck order's steps and a move's outcome, `T-021-06`'s), and, beside it, on policy's
+/// handle, the calls whose rows haven't built them on the engine yet. Each of those is decided as the engine decides
+/// a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
 /// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
 ///
 /// - **Questions about people (`T-021-07`).** Refused where the consultation refuses; otherwise not known, since no
@@ -458,7 +527,7 @@ impl Charges for PolicySide {
 }
 
 /// The engine's own: a stuck order's two steps, and a move's outcome reported and confirmed, each recorded through
-/// policy's handle and answered as the engine answers it, not known until `T-021-06` builds them.
+/// policy's handle and answered as the engine answers it, on `T-021-06`'s rules.
 impl StuckOrders for PolicySide {
     fn decide_stuck(
         &mut self,

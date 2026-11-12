@@ -70,11 +70,7 @@ fn built_wallet() -> PathBuf {
     // The module guests' tool componentizes the wallet; this makes sure it is built.
     let standins = crate::common::standins();
     let exe = std::env::current_exe().expect("the test's own path");
-    let target = exe
-        .ancestors()
-        .nth(3)
-        .expect("a build directory")
-        .to_path_buf();
+    let target = build_directory(&exe);
     let out = target.join("rutent-plain-wallet");
     let built = out.join("built");
     let sources = [
@@ -227,3 +223,20 @@ pub fn covers(s: &mut Signed, provider: &str, asset: &str, account: &str, amount
 
 /// The second wallet the operator publishes, for a second node.
 pub const ETHEREUM_WALLET: &str = "plain-wallet-ethereum";
+
+/// The build directory `exe`, a test's executable, was built in: the grandparent of the nearest `deps` or `build`
+/// directory above it. Cargo places a test's executable at `<target>/<profile>/deps/<test>` in its old layout, and
+/// at `<target>/<profile>/build/<package>/<hash>/out/<test>` in its new build-directory layout, the default from Rust
+/// 1.100 (`-Zbuild-dir-new-layout` before it).
+fn build_directory(exe: &Path) -> PathBuf {
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("a build directory above the test's executable")
+        .to_path_buf()
+}

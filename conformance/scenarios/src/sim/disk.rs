@@ -15,14 +15,24 @@ use rutent_prov::module::children::Paths;
 /// The build directory the running executable is in, and the profile's directory in it.
 fn build_directories() -> (PathBuf, PathBuf) {
     let exe = std::env::current_exe().expect("the running executable's path");
-    // target/<profile>/deps/<executable>
-    let profile = exe
-        .ancestors()
-        .nth(2)
-        .expect("a profile directory")
-        .to_path_buf();
+    let profile = profile_of(&exe).expect("a profile directory above the running executable");
     let target = profile.parent().expect("a build directory").to_path_buf();
     (target, profile)
+}
+
+/// The profile's directory `exe`, a test's executable, was built under: the parent of the nearest `deps` or `build`
+/// directory above it. Cargo places a test's executable at `<target>/<profile>/deps/<exe>` in its old layout, and at
+/// `<target>/<profile>/build/<package>/<hash>/out/<exe>` in its new build-directory layout, the default from Rust
+/// 1.100 (`-Zbuild-dir-new-layout` before it).
+pub(crate) fn profile_of(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }
 
 /// The repository's root, from this package's manifest.
@@ -138,4 +148,35 @@ fn built_guests() -> PathBuf {
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::profile_of;
+
+    /// The profile is found under both of cargo's layouts, whatever the directories above the build directory are
+    /// called.
+    // verifies: DEC-18
+    #[test]
+    fn profile_is_found_under_both_of_cargos_layouts() {
+        for exe in [
+            "/work/build/rutent/target/debug/deps/rutent_scenarios-1ae828f0fa3ad402",
+            "/work/build/rutent/target/debug/build/rutent-scenarios/1ae828f0fa3ad402/out/rutent_scenarios-1ae828f0fa3ad402",
+        ] {
+            assert_eq!(
+                profile_of(Path::new(exe)).as_deref(),
+                Some(Path::new("/work/build/rutent/target/debug")),
+                "{exe}"
+            );
+        }
+        assert_eq!(
+            profile_of(Path::new(
+                "/work/target/x86_64-unknown-linux-gnu/release/build/p/h/out/e"
+            ))
+            .as_deref(),
+            Some(Path::new("/work/target/x86_64-unknown-linux-gnu/release"))
+        );
+    }
 }
