@@ -439,6 +439,15 @@ pub enum Action {
         )]
         statement_key: Option<PublicKey>,
     },
+    /// Erasing a kept statement's bytes from the evidence store, a decided action like any other (`REQ-AUD-13`): the
+    /// operator asks it of policy, the log admits its effect on the permit, and the store erases only on the effect's
+    /// `done` result, which the `erasure` entry then records. The commitment stays in the log.
+    EraseStatement {
+        /// The commitment the bytes are kept under.
+        commitment: Digest,
+        /// Why, as a token: a label to read, which no decision branches on.
+        reason: Token,
+    },
     /// Moving a stuck order's value as its decide step named, outside the order's authorisation, which a
     /// resolution back to the origin needn't keep to (`REQ-AUZ-4`, ADR-0011). It travels only as an effect on a
     /// `stuck_move` permit: a [`DecisionRequest`] never carries it.

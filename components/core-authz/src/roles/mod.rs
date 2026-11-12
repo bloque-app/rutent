@@ -142,6 +142,9 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 },
                 // A request carrying it fails its check before it is consulted (`REQ-AUZ-4`).
                 Action::ResolveStuck { .. } => None,
+                // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
+                // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
+                Action::EraseStatement { .. } => None,
             }
         }
         Asked::Authorise(a) => {

@@ -233,7 +233,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 77] = [
+const SCHEMA_RULES: [SchemaRule; 78] = [
     (
         "permission-change-without-its-grantee",
         &[("", "required")],
@@ -293,6 +293,11 @@ const SCHEMA_RULES: [SchemaRule; 77] = [
         "decision-request-moving-value-without-the-origin-reserve",
         &[("/action", "required")],
         "missing field `origin_reserve`",
+    ),
+    (
+        "decision-request-to-erase-without-its-reason",
+        &[("/action", "required")],
+        "missing field `reason`",
     ),
     (
         "decision-request-moving-value-without-the-segments-provider",

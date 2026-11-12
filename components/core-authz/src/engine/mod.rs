@@ -935,6 +935,9 @@ mod tests {
                 Action::MoveValue { .. }
                 | Action::PostRoute { .. }
                 | Action::ChangeCatalogue { .. } => {}
+                // A decided action too (`REQ-AUD-13`), which policy's role table answers no rule for yet: it joins
+                // this list when policy's rows add the operator's permission to erase (core-internal's README).
+                Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }
