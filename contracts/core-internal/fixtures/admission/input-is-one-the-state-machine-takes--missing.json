@@ -4706,8 +4706,8 @@
               "from": {
                 "node": "ledger-in",
                 "asset": {
-                  "id": "COP",
-                  "decimals": 2
+                  "id": "USDC",
+                  "decimals": 6
                 }
               },
               "to": {

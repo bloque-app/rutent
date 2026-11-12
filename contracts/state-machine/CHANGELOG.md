@@ -1,6 +1,13 @@
 # state-machine changelog
 
 ## 3.0.0
+- Folded into 3.0.0 before its release: only the customer's own choice after a failed final deposit changes a
+  destination or hands a waiting part on (`INV-10`, `T-020-01`'s reviews since landing). `after_restart` took a
+  `destination_changed` for any part waiting or stuck, and `after_handed_on` a `handed_on` for any waiting part, so a
+  part waiting at its floor could be sent elsewhere before its final deposit was tried. A destination change now
+  needs the part held with `deposit_failed_at` set, and a waiting part's hand-on the same; a stuck part's hand-on,
+  the operator's resolution, is unchanged. `CMP-STM`'s floor test now refuses both, and its generator steers a part
+  waiting after a failed deposit toward the customer's choice.
 - Breaking: a part waiting past its floor is a recorded state (`REQ-ORD-27`, `AC-12`, `AC-42`). A new observed kind,
   `waiting_at_floor {}`, about one part, records Core's judgement that the part is past the customer's floor; it
   carries no amount, since no transition reads one. The state is the existing `waiting_for_customer`, which fits:

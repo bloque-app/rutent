@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 482 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 491 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 89 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -502,6 +502,13 @@
   segment that delivered value there, or the withdrawal's own. The world's reversal of p1-s2 now rests on us-bank's
   statement, whose withdrawal put the value at ledger-in. Refused: us-bank named over fx-desk's statement; eu-bank's
   word. 482 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01)
+- Folded into 1.0.0 before its release: the log takes a new destination, or a waiting part's hand-on, only after a
+  failed final deposit (`INV-10`, the reviews since `T-020-01` landed), as the state machine's rules now do. The
+  world's p1 runs its recalculated route to its final deposit, which fails: p1-s6's exchange settles at ledger-in on
+  exchange-c's evidence, p1-s7's deposit fails, and with no route left p1 waits, so the customer's new destination
+  now starts from USDC at ledger-in. Refused: p1 waiting at its floor, p1-s6 settled and its final deposit not tried,
+  sent to a new destination or handed on to ord-41. 491 admission cases. (DEC-4, DEC-20, INV-10, REQ-ORD-43,
+  T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

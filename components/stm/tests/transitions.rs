@@ -854,29 +854,31 @@ fn a_part_waits_at_its_floor_only_while_its_value_sits_at_a_node() {
     );
 }
 
-// verifies: REQ-ORD-27, REQ-ORD-43
+// verifies: REQ-ORD-27, REQ-ORD-43, INV-10
 #[test]
-fn a_part_waiting_at_its_floor_is_handed_on_or_sent_to_another_destination_by_the_customer() {
+fn a_part_waiting_at_its_floor_is_neither_handed_on_nor_sent_to_another_destination_by_the_customer()
+ {
+    // Only the customer's own choice after a failed final deposit hands a waiting part on or changes its
+    // destination (`INV-10`): one waiting at its floor, its final deposit not yet tried, takes neither.
     let mut hand = at_its_floor("ord-floor-hand");
     let handed = Observed::HandedOn {
         linked_order: id("ord-floor-next"),
         acceptance: id("acc-floor"),
     };
-    assert_eq!(hand.about_part("p1", handed), Outcome::Applied {});
-    assert_eq!(hand.order().state, OrderState::HandedOn);
-    assert_eq!(hand.part("p1").waiting_since, None);
-    hand.order().check().expect("the order stays valid");
+    let before = hand.order().clone();
+    assert_eq!(hand.about_part("p1", handed), na(Why::NotFromThisState));
+    assert!(same_but_last_input(&before, hand.order()));
 
     let mut other = at_its_floor("ord-floor-other");
+    let before = other.order().clone();
     assert_eq!(
         other.about_part(
             "p1",
             destination_changed(route_to_another_destination("d1"))
         ),
-        Outcome::Applied {}
+        na(Why::NotFromThisState)
     );
-    assert_eq!(other.part("p1").waiting_since, None);
-    other.order().check().expect("the order stays valid");
+    assert!(same_but_last_input(&before, other.order()));
 }
 
 /// An order whose exchange is in flight when its part is declared stuck over time.

@@ -4673,52 +4673,6 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 192,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-in_wait",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "orchestrator",
-              "id": "core-orch"
-            },
-            "standing": "verified",
-            "subject": {
-              "order": "ord-1",
-              "part": "p1"
-            },
-            "observed": {
-              "kind": "waiting_at_floor"
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
         "index": 80,
         "entry": {
           "algorithm": "sha-256",

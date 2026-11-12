@@ -4820,16 +4820,17 @@
             "recorded_at": "2026-11-06T10:00:00Z",
             "time_source": "core-orch clock",
             "source": {
-              "kind": "orchestrator",
-              "id": "core-orch"
+              "kind": "router",
+              "id": "router"
             },
-            "standing": "verified",
+            "standing": "stated",
             "subject": {
               "order": "ord-1",
               "part": "p1"
             },
             "observed": {
-              "kind": "waiting_at_floor"
+              "kind": "no_route",
+              "decision_record": "dr-0010"
             }
           }
         },
@@ -4878,8 +4879,8 @@
               "from": {
                 "node": "ledger-in",
                 "asset": {
-                  "id": "COP",
-                  "decimals": 2
+                  "id": "USDC",
+                  "decimals": 6
                 }
               },
               "to": {

@@ -326,10 +326,10 @@ pub fn after_withdrawal_cancelled(part: &mut Part) -> Outcome {
 /// `handed_on`: a part waiting or stuck, whose value sits at a node, is handed on to another order
 /// (`REQ-ORD-43`).
 pub fn after_handed_on(part: &mut Part, order_id: &Id, linked_order: &Id) -> Outcome {
-    let held = matches!(
-        part.state,
-        OrderState::WaitingForCustomer | OrderState::Stuck
-    );
+    // A stuck part is handed on on the operator's resolution; a waiting one only by the customer's own choice after a
+    // failed final deposit (`INV-10`, `REQ-ORD-43`).
+    let held = part.state == OrderState::Stuck
+        || (part.state == OrderState::WaitingForCustomer && part.deposit_failed_at.is_some());
     if held && linked_order != order_id && value_at(part).is_some() {
         part.state = OrderState::HandedOn;
         part.linked_order = Some(linked_order.clone());
@@ -412,13 +412,13 @@ pub fn after_restart(
     changes_destination: bool,
 ) -> Outcome {
     if changes_destination
-        && !matches!(
+        && !(matches!(
             part.state,
             OrderState::WaitingForCustomer | OrderState::Stuck
-        )
+        ) && part.deposit_failed_at.is_some())
     {
-        // The customer's choice follows a failed final deposit with no route left; the operator may process a
-        // stuck part the same way.
+        // Only the customer's own choice after a failed final deposit changes a destination (`INV-10`): the part
+        // waits, or the operator holds it stuck, with its value where the deposit failed.
         return not_from_this_state();
     }
     if changes_destination {
