@@ -61,8 +61,8 @@ use std::marker::PhantomData;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Charges, Evidence, PersonQuestions};
 use rutent_contracts::core_internal::{
-    About, Actor, ActorKind, Authority, Charge, ChargeOutcome, Count, PersonOutcome,
-    PersonQuestion, Receipt, Role, RoutingRound, Work,
+    About, Actor, ActorKind, Authority, Charge, ChargeOutcome, Count, NotKnownCause, PersonOutcome,
+    PersonQuestion, Receipt, RefusalClass, Role, RoutingRound, Work,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -308,6 +308,18 @@ pub enum NotOffered {
         /// The tuple.
         tuple: TupleKey,
     },
+    /// Policy refused the caller's charge for its work, for this class: an agent outside its party's scope, an actor
+    /// acting for no accountable party, a counter it couldn't read. The questions weren't sent (`REQ-AUZ-8`).
+    ChargeRefused {
+        /// Policy's class.
+        class: RefusalClass,
+    },
+    /// Policy couldn't decide the caller's charge: the questions weren't sent, and nothing was refused
+    /// (`REQ-AUZ-5`).
+    ChargeNotKnown {
+        /// Why.
+        cause: NotKnownCause,
+    },
 }
 
 /// What a routing offers.
@@ -489,13 +501,8 @@ impl<R: Router> Rounds<R> {
                 over => over,
             },
         };
-        if let Some(bound) = over {
-            return Ok(finish(
-                run,
-                shortlist,
-                choices,
-                Offer::NotOffered(NotOffered::OverBound { bound }),
-            ));
+        if let Some(why) = over {
+            return Ok(finish(run, shortlist, choices, Offer::NotOffered(why)));
         }
         for need in &needs {
             if !run.ask_about_person(need, &shortlist.digest, &shortlisted, &verifiers, history)? {
@@ -529,8 +536,8 @@ impl<R: Router> Rounds<R> {
             if chosen || batch > LATER_ROUNDS || again.is_empty() {
                 break;
             }
-            if let Some(bound) = run.charge(Work::FanOut, again.len())? {
-                over = Some(bound);
+            if let Some(why) = run.charge(Work::FanOut, again.len())? {
+                over = Some(why);
                 break;
             }
             let last = &choices.last().expect("a choice round").record;
@@ -539,7 +546,7 @@ impl<R: Router> Rounds<R> {
             }
         }
         let offer = match over {
-            Some(bound) => Offer::NotOffered(NotOffered::OverBound { bound }),
+            Some(why) => Offer::NotOffered(why),
             None => run.offer(&choices.last().expect("a choice round").record, &needs),
         };
         Ok(finish(run, shortlist, choices, offer))
@@ -705,9 +712,10 @@ impl Run<'_, '_> {
         Ok(id)
     }
 
-    /// Charges `count` questions of `work` to the caller's accountable party; `Some(bound)` where it is over its
-    /// bound. A count a charge can't hold is refused, never taken as within.
-    fn charge(&mut self, work: Work, count: usize) -> Result<Option<SafeInteger>, RoutingError> {
+    /// Charges `count` questions of `work` to the caller's accountable party; `Some(why)` where policy didn't let the
+    /// work go on: over the bound, refused, or not known. A count a charge can't hold is refused, never taken as
+    /// within.
+    fn charge(&mut self, work: Work, count: usize) -> Result<Option<NotOffered>, RoutingError> {
         let count = u64::try_from(count)
             .ok()
             .and_then(Count::new)
@@ -722,13 +730,13 @@ impl Run<'_, '_> {
             order: Some(self.routing.order.order.clone()),
             at: self.now()?,
         };
+        // Within: the work goes on. Otherwise none is done, and the routing says policy's own answer: over the bound,
+        // refused for its class, or not known, never one taken for another.
         Ok(match self.parts.charges.charge(&charge)?.outcome {
             ChargeOutcome::Within { .. } => None,
-            ChargeOutcome::Over { bound } => Some(bound),
-            // Refused or not known: no work is done, as over a bound of nothing; the log keeps the real answer.
-            ChargeOutcome::Refused { .. } | ChargeOutcome::NotKnown { .. } => {
-                Some(SafeInteger::try_from(0u64).expect("0 is a safe integer"))
-            }
+            ChargeOutcome::Over { bound } => Some(NotOffered::OverBound { bound }),
+            ChargeOutcome::Refused { class } => Some(NotOffered::ChargeRefused { class }),
+            ChargeOutcome::NotKnown { cause } => Some(NotOffered::ChargeNotKnown { cause }),
         })
     }
 

@@ -102,6 +102,8 @@ pub struct Bound {
     pub bound: u64,
     pub used: BTreeMap<String, u64>,
     pub charges: Vec<Charge>,
+    /// Policy's answer to every charge in place of the bound's, where a test sets one: a refusal or not known.
+    pub answers: Option<ChargeOutcome>,
 }
 
 impl Bound {
@@ -110,6 +112,7 @@ impl Bound {
             bound,
             used: BTreeMap::new(),
             charges: Vec::new(),
+            answers: None,
         }
     }
 }
@@ -118,6 +121,13 @@ impl Charges for Bound {
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
         charge.check().map_err(AppendFailure::Refused)?;
         self.charges.push(charge.clone());
+        if let Some(outcome) = self.answers {
+            return Ok(ChargeAnswer {
+                request: charge.request.clone(),
+                outcome,
+                receipt: receipt(self.charges.len()),
+            });
+        }
         let used = self
             .used
             .entry(charge.party.as_str().to_owned())
