@@ -930,3 +930,40 @@ fn replaced_authorisation_given_again_is_refused() {
         }
     );
 }
+
+/// A read of a [`Shared`] log that fails once its switch is thrown, as a log out of reach would.
+#[derive(Debug)]
+struct Failing(Rc<RefCell<Vec<Entry>>>, Rc<std::cell::Cell<bool>>);
+
+impl Recorded for Failing {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, AppendFailure> {
+        if self.1.get() {
+            return Err(AppendFailure::Unavailable);
+        }
+        Ok(permitted_in(self.0.borrow().iter()))
+    }
+}
+
+/// An engine whose read of the log fails holds no register, neither an empty one nor the one it read last: it
+/// refuses every authorisation and every move, the register an input it doesn't have.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn register_that_cannot_be_read_refuses_every_authorisation_and_move() {
+    let (first, _, operators) = the_reviewers_three();
+    let order = first.order.clone();
+    let log = Shared::default();
+    let fails = Rc::new(std::cell::Cell::new(false));
+    let mut policy = Engine::with_policy(log.clone(), Deployment::default(), Sayings::default());
+    policy.set_record(Box::new(Failing(Rc::clone(&log.0), Rc::clone(&fails))));
+    assert_eq!(policy.authorise(&first).unwrap().outcome, Answer::Permit {});
+    let inside = move_under(0, &order, &first.authorisation, end_of(&first, "2500000"));
+    assert_eq!(decided(&mut policy, &inside), Answer::Permit {});
+
+    fails.set(true);
+    let missing = Answer::Refuse {
+        class: RefusalClass::MissingInput,
+    };
+    assert_eq!(policy.authorise(&operators).unwrap().outcome, missing);
+    let inside = move_under(1, &order, &first.authorisation, end_of(&first, "2500000"));
+    assert_eq!(decided(&mut policy, &inside), missing);
+}

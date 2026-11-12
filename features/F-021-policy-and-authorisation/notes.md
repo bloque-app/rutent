@@ -291,10 +291,13 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   order, and decides on that alone; its own permit reaches the register only through the log. "Permitted" is defined
   once, `funds::permitted_in`: a verified `authorise` entry whose outcome is `permitted`, which every read uses. An
   engine handed no read has not rebuilt, and refuses every authorisation and every move `missing_input`; so does one
-  whose read fails. Defaults (reversible, on the owner's form as the coordinator put it): the read is a core-authz
+  whose read fails, holding neither an empty register nor the one it read last. The coordinator's default, on the
+  owner's form: the register rebuilt from the log's permitted `authorise` entries, and an engine that hasn't rebuilt
+  refusing. This row reads it before every call rather than once when the engine opens, since one rebuild leaves two
+  engines over one log apart. This row's own defaults, reversible and not on the form: the read is a core-authz
   trait the assembly implements over the log's own `entries()` (core-audit's `AuditLog` has it, so nothing was added
-  there), not a read on core-internal's `PolicyLog`, which is the contract author's to add if wanted; the whole log is
-  read each time, O(n) in its permitted authorisations, with no index kept across reads, since a v0 log is small.
+  there), not a read on core-internal's `PolicyLog`, which is the contract author's to add if wanted; and the whole
+  log is read each time, O(n) in its entries, with no index kept across reads, since a v0 log is small.
 - **A move acts only inside the authorisation in force.** A `move_value` is permitted only where the authorisation
   it names is in force for its order and its route ends inside it: the destination (reserve, node and account), the
   to asset, and at least the floor. Anything else is refused `outside_authorisation`. These are the four fields the
@@ -392,6 +395,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | the register read before an authorisation | the property; `new floor ...`; `register is rebuilt ...`; `replaced authorisation given again ...`; `two engines ...` |
   | the register read before a move | the property; five of this row's named tests; six of `T-021-01`'s; four of `T-021-03`'s |
   | refused with no read | `register is rebuilt ...`; the unbuilt engine's test |
+  | refused when the read fails: an empty register in its place | `register that cannot be read refuses every authorisation and move` |
+  | refused when the read fails: the last register kept | `register that cannot be read refuses every authorisation and move` |
   | only a `permitted` entry is read as permitted | the property; `route outside ...`; `customer's new destination ...`; `new floor ...`; `register is rebuilt ...`; `two engines ...` |
   | the floor is one of the terms (finding 3) | the property; `new floor from anyone but the customer is refused`; `route outside ...` |
   | M2: `take_while` made `filter` | the property; `earlier terms given again are in force under their new id alone` |
