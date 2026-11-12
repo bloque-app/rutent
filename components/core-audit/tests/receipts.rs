@@ -1408,7 +1408,9 @@ fn an_erasure_another_log_decided_is_refused() {
 
 /// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
 /// on is erased; a read of a statement rests on nothing. The log refuses the erasure's decision too, so it records
-/// no erasure the store must refuse (core-internal's `erasure-waits-while-anything-rests-on-the-statement`).
+/// no erasure the store must refuse (core-internal's `erasure-waits-while-anything-rests-on-the-statement`). A stuck
+/// order's decision resting on a statement is `log.rs`'s `no_erasure_reaches_a_statement_a_stuck_decision_relies_on`,
+/// on an order built in full.
 // verifies: REQ-AUD-13, REQ-AUD-2
 #[test]
 fn no_erasure_reaches_a_statement_an_entry_rests_on() {
@@ -1433,35 +1435,6 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
     ));
-    // A stuck order's decision names its evidence by commitment: what it relies on is not erased either.
-    let (relied, _) = run.state(
-        &judgement("bank-co", json!({"kind": "judgement", "n": 3})),
-        None,
-    );
-    run.append(
-        &serde_json::from_value(json!({
-            "kind": "verified",
-            "who": actor("rutent", "core-orch", "core", "component"),
-            "what": {"call": "input", "input": {
-                "record_id": "rec-0003", "recorded_at": "2026-11-06T10:00:00Z", "time_source": "core-orch clock",
-                "source": {"kind": "orchestrator", "id": "core-orch"}, "standing": "stated",
-                "subject": {"order": "ord-21", "part": "p3"},
-                "observed": {"kind": "stuck_declared", "reason": "over_time"},
-            }},
-            "when": {"at": NOW, "source": "core_clock"},
-            "outcome": {"status": "observed"},
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let mut decided = valid("verified-entry-of-a-stuck-decision");
-    decided["what"]["request"]["evidence"] = json!([relied]);
-    let decided: VerifiedEntry = serde_json::from_value(decided).unwrap();
-    run.log
-        .borrow_mut()
-        .append_decision(&DecisionEntry::try_from(decided).unwrap())
-        .unwrap();
-    assert_eq!(run.store.erasable(&relied), refused);
     // A read of the other, recorded by policy, rests on nothing.
     let mut read = valid("verified-entry-of-a-refused-read");
     read["what"]["check"]["reads"] = json!({"kind": "evidence", "commitment": free});
