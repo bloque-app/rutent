@@ -28,6 +28,8 @@
 | `src/` | The program: one actor holding the journal and `Stm` (`lib.rs`), and its entry (`main.rs`), for VOS's guest target (`riscv64em-vos`, toolchain `nightly-2026-03-20`). Its feature `probe-machine` builds it with the host-contract suite's probe instead, for the suite (below) |
 | `probe-nostd/`, `probe-nostd.patch`, `nostd.sh`, `SEPARATE` | The generated no_std copy of the suite's probe, the patch that makes it, the script that generates it and checks it (`nostd.sh check` runs in `build.sh` and CI), and the files beside it |
 | `client/` | `rutent-stm-vos`: the `Host` client (`host.rs`), the node processes of one node or three (`cluster.rs`), the platform assertion (`platform.rs`), and the retry of an open refused while the platform spawns children (`retry.rs`, over `rutent_stm::open_retry`); toolchain `nightly-2025-07-14` |
+| `scenarios/`, `scenarios.sh` | `rutent-scenarios-vos` (`T-024-02`), a member of the client's workspace: the assembled Core's scenarios (`rutent-scenarios`'s checks) with the state machine on three replicas, through the host server. The module platform the assembled Core runs needs rustc 1.95 or later (wasmtime's crates), which VOS's workspace toolchain isn't, and VOS's crates don't build on a newer one, so the scenarios build with the guest toolchain (`scenarios/rust-toolchain.toml`), link nothing of VOS and are MIT; `scenarios.sh` builds the server with the client's toolchain and runs them |
+| `scenarios/serve/` | `rutent-stm-vos-serve` (`T-024-02`), a member of the client's workspace: the host server, one host on a cluster served over a JSON-lines wire on standard input and output, and the wire as its library; AGPL-3.0-or-later, its server behind its `vos` feature |
 | `client/tests/` | `vos_node.rs`: the host-contract suite on one node and on three, the program's states against `Stm`'s, and the leader killed mid-submit (they need the VOS toolchain); `retry.rs`: the open retry, which needs no node |
 | `host-check.sh`, `RECOVERY.md` | The production-host check (`T-010-08`, `G-37`): kernel 6.7 or later, userfaultfd write-protect, the JIT's perf map; the total-loss recovery runbook, with its drill |
 | `sources` | The list of sources, `G-48`: each source's name, SHA, upstream URL and fetch URL |
@@ -60,6 +62,9 @@ cannot be cloned anonymously.
 VOS_DIR=<dir> ./build.sh <build dir>                       # STEP=guest builds only the agent and the program
 VOS_DIR=<dir> ./test.sh <build dir>                        # the client's tests, against what build.sh made
 ```
+
+`VOS_DIR=<dir> ./scenarios.sh <build dir>` runs `rutent-scenarios-vos`'s tests against what `build.sh` made: the
+assembled Core's scenarios on three replicas (`T-024-02`).
 
 `PORTABLE=1 STEP=node ./build.sh <dir>` builds only the node, without native codegen (VOS pins `target-cpu=native` for
 x86_64 Linux; the build replaces it with the baseline and fails if rustc still ran with it), and CI runs the
