@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 131 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 508 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 94 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
+  breaking one rule, and 519 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 97 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -530,6 +530,17 @@
   statement, and refuses a label naming another publisher (field `publisher`). Admitted: p1-s2's reversal on
   fx-desk's word, fx-group's module, labelled fx-group; refused: labelled another group. 508 admission cases. (DEC-4,
   DEC-20, REQ-ORD-3, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: who carries a reversal, and asking for one (`REQ-ORD-11`, `REQ-ORD-3`, the
+  reviews since `T-020-01` landed). Nothing recorded who carries a failed segment's reversal, nor a provider's
+  showing of fault and its acceptance, and Core couldn't ask a failed provider to reverse. A new entry kind,
+  `reversal_carrier {order, segment, carrier, showing, accepted_by}`, records the carrier: the provider, or the
+  customer or the operator at fault by the provider's showing, accepted (a carrier other than the provider names
+  both, the provider neither). `reversal-carrier-rests-on-its-showing` holds the showing to the failed provider's
+  verified statement about the segment, and `reversal-carrier-is-accepted-by-the-party-at-fault` the acceptance to
+  that party. A new decided action, `ask_reversal {order, segment, provider}`, and
+  `reversal-is-asked-of-its-failed-provider` hold it to a segment owing its reversal and the provider that failed
+  it. Two valid fixtures, 519 admission cases, 97 relations. (DEC-4, DEC-20, REQ-ORD-3, REQ-ORD-11, T-020-01,
+  T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

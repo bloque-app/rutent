@@ -439,6 +439,16 @@ pub enum Action {
         )]
         statement_key: Option<PublicKey>,
     },
+    /// Asking the provider of a failed segment to reverse it, a decided action like any other (`REQ-ORD-3`,
+    /// `REQ-ORD-11`): the segment owes its reversal, and the provider is the one that failed it.
+    AskReversal {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// The provider that failed it, asked to reverse.
+        provider: Id,
+    },
     /// Erasing a kept statement's bytes from the evidence store, a decided action like any other (`REQ-AUD-13`): the
     /// operator asks it of policy, the log admits its effect on the permit, and the store erases only on the effect's
     /// `done` result, which the `erasure` entry then records. The commitment stays in the log.
@@ -2253,6 +2263,31 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// Who carries a failed segment's reversal (`REQ-ORD-11`): its provider, or the party at fault its provider
+    /// showed, once that party accepted the showing.
+    ReversalCarrier {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// Who carries the reversal.
+        carrier: Carrier,
+        /// The receipt of the provider's showing of fault, its verified stated entry: present exactly where the
+        /// carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        showing: Option<Receipt>,
+        /// Who accepted the showing for the party at fault: present exactly where the carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        accepted_by: Option<Actor>,
+    },
     /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
     /// start proof, which settles the linked order's first segment. The linked order's first move rests on it
     /// (`handed-on-route-starts-on-its-holding-record`).
@@ -2352,6 +2387,18 @@ pub struct OutcomeConfirmation {
     pub confirmed_with: Receipt,
     /// When, by Core's clock.
     pub at: Timestamp,
+}
+
+/// Who carries a failed segment's reversal (`REQ-ORD-11`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Carrier {
+    /// The provider that failed it: until a showing of another's fault is accepted.
+    Provider,
+    /// The customer, at fault by the provider's showing, accepted.
+    Customer,
+    /// The operator, at fault by the provider's showing, accepted.
+    Operator,
 }
 
 /// What a move whose outcome was unknown came to.

@@ -336,6 +336,7 @@ impl What {
             | What::Reliance { .. }
             | What::Refiling { .. }
             | What::HoldingWithdrawal { .. }
+            | What::ReversalCarrier { .. }
             | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
@@ -481,6 +482,19 @@ impl What {
             | What::ConfirmOutcome { .. }
             | What::HoldingWithdrawal { .. }
             | What::InputNotTaken { .. } => Ok(()),
+            What::ReversalCarrier {
+                carrier,
+                showing,
+                accepted_by,
+                ..
+            } => {
+                if (*carrier == Carrier::Provider) != (showing.is_none() && accepted_by.is_none()) {
+                    return Err(Violation(
+                        "a reversal's carrier other than its provider rests on a showing and its acceptance, and the provider on neither",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }

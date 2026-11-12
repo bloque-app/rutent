@@ -139,6 +139,7 @@
             "erasure",
             "report_outcome",
             "confirm_outcome",
+            "reversal_carrier",
             "holding_withdrawal",
             "input_not_taken"
           ]
@@ -683,6 +684,21 @@
           },
           "then": {
             "$ref": "#/$defs/what_confirm_outcome"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "reversal_carrier"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_reversal_carrier"
           }
         },
         {
@@ -2030,6 +2046,80 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
+    },
+    "what_reversal_carrier": {
+      "description": "Who carries a failed segment's reversal (REQ-ORD-11): its provider, or the party at fault its provider showed, once that party accepted the showing. A carrier other than the provider names the showing and who accepted it; the provider names neither.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "carrier"
+      ],
+      "properties": {
+        "call": {
+          "const": "reversal_carrier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "carrier": {
+          "description": "Who carries the reversal.",
+          "enum": [
+            "provider",
+            "customer",
+            "operator"
+          ]
+        },
+        "showing": {
+          "description": "The receipt of the provider's showing of fault, its verified stated entry.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "accepted_by": {
+          "description": "Who accepted the showing for the party at fault.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "provider"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "showing"
+                  ]
+                },
+                {
+                  "required": [
+                    "accepted_by"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "showing",
+              "accepted_by"
+            ]
+          }
+        }
+      ]
     },
     "what_holding_withdrawal": {
       "description": "A holding account's own record of the withdrawal that starts a route handed on (REQ-ORD-40, INV-5): the start proof, which settles the linked order's first segment. The linked order's first move rests on it.",

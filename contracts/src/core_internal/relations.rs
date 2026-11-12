@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 88] = [
+pub static RELATIONS: [Relation; 91] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2041,6 +2041,101 @@ pub static RELATIONS: [Relation; 88] = [
             _ => none(),
         },
         answers: |e, _, t, h| reversal_answers(e, t, h),
+    },
+    Relation {
+        name: "reversal-is-asked-of-its-failed-provider",
+        spec: &["REQ-ORD-3", "REQ-ORD-11"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reversal is asked of the provider that failed a segment owing it",
+        fields: &[],
+        // None to point to: an `ask_reversal` effect is refused unless its segment owes its reversal and its
+        // provider is the one the segment's move went to.
+        cites: |e, h| match effect_action(e) {
+            Some((
+                Action::AskReversal {
+                    order,
+                    segment,
+                    provider,
+                },
+                _,
+            )) if !(segment_provider(order, segment, h) == Some(provider)
+                && part_of_segment(order.as_str(), segment.as_str(), h)
+                    .and_then(|part| standing(order.as_str(), part, h))
+                    .is_some_and(|s| s.reversal_owed(segment.as_str()))) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "reversal-carrier-rests-on-its-showing",
+        spec: &["REQ-ORD-11", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reversal carried by the party at fault rests on its provider's showing in this log",
+        fields: &[
+            (
+                "verified",
+                "a provider's showing of fault is a verified statement",
+            ),
+            (
+                "maker",
+                "a provider's showing of fault is the failed segment's provider's own statement",
+            ),
+            (
+                "about",
+                "a provider's showing of fault is about its order and segment",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            What::ReversalCarrier {
+                showing: Some(showing),
+                ..
+            } => alloc::vec![by_receipt(showing, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (&e.what, stated(t)) {
+            (What::ReversalCarrier { order, segment, .. }, Some(s)) => judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    segment_provider(order, segment, h) == Some(maker_provider(s)),
+                    s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
+                    }),
+                ],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "reversal-carrier-is-accepted-by-the-party-at-fault",
+        spec: &["REQ-ORD-11", "REQ-AUZ-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reversal carried by the party at fault is accepted by that party: the customer, or the operator",
+        fields: &[],
+        // None to point to: the customer's acceptance is one of the order's requester's party in the customer's
+        // role, the operator's one of the deployment operator's party in the operator's role.
+        cites: |e, h| match &e.what {
+            What::ReversalCarrier {
+                order,
+                carrier,
+                accepted_by: Some(by),
+                ..
+            } if !match carrier {
+                Carrier::Customer => {
+                    by.role == Role::Customer && requester_of(order.as_str(), h) == Some(&by.party)
+                }
+                Carrier::Operator => by.role == Role::Operator && by.party == e.operator.party,
+                Carrier::Provider => false,
+            } =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
         name: "decision-record-chains-to-its-orders-previous",
