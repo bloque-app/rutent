@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Destination, Entry, FeeTo, MismatchKind, PublicMovement, Receipt,
-    ReplayFound, Role, RouteEnd, Through, What, admit_entry,
+    Actor, ActorKind, DeploymentOperator, Destination, Entry, FeeTo, MismatchKind, PublicMovement,
+    Receipt, ReplayFound, Role, RouteEnd, Through, What, admit_entry,
 };
 use rutent_contracts::provider_role::{
     Advertisement, Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE, Statement,
@@ -321,8 +321,11 @@ impl Log {
     /// Admits `entry` over the history, as the log would, and appends it.
     fn admit(&self, entry: Entry) -> Result<Receipt, String> {
         let history = self.0.borrow().clone();
-        admit_entry(&history, &entry, Through::General, &id("operator"))
-            .map_err(|v| v.0.to_owned())?;
+        let operator = DeploymentOperator {
+            maker: id("operator"),
+            party: id("operator"),
+        };
+        admit_entry(&history, &entry, Through::General, &operator).map_err(|v| v.0.to_owned())?;
         Ok(self.push(entry))
     }
 
