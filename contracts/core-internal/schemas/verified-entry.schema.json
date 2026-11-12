@@ -1391,7 +1391,7 @@
           }
         },
         "movement": {
-          "description": "The public movement it relied on, where Core checked one (grade 1): one movement evidences one segment of one order (REQ-ORD-38).",
+          "description": "The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment of one order (REQ-ORD-38).",
           "$ref": "#/$defs/public_movement"
         }
       }

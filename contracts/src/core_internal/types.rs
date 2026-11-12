@@ -2060,8 +2060,8 @@ pub enum What {
         whose: Id,
         /// The receipts of the stated entries it rests on, at least one, each once.
         rests_on: Vec<Receipt>,
-        /// The public movement it relied on, where Core checked one (grade 1): one movement evidences one segment of
-        /// one order (`REQ-ORD-38`, `movement-evidences-one-segment`).
+        /// The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment
+        /// of one order (`REQ-ORD-38`, `movement-evidences-one-segment`).
         #[serde(
             default,
             deserialize_with = "some",

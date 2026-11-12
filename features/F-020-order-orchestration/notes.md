@@ -1265,3 +1265,36 @@ rule was switched off once, its test seen red, the file restored and touched.
   the contract's test), fixtures, README and CHANGELOG. provider-role 3.1.0 (released, minor, authorised by the
   coordinator): an optional `fee.billed_separately`, a valid and an invalid fixture; every `Fee` literal in the
   workspace and the plain-wallet guest gained `billed_separately: None`.
+
+### T-020-09, re-review answers (of `bc99b4f`)
+
+| Finding | Answer | Test |
+|---|---|---|
+| 1, high: a deposit into a private rail from another private node closed on the customer's payment into the first node | the coordinator's default, on the owner's form: a private rail closes only on the deposit's own movement, which only a deposit from a public node has; otherwise it waits, and `Grading::can_close` refuses a part ending in a deposit from a private node into a private rail, so it isn't routed | `deposit_into_a_private_rail_from_a_private_node_does_not_close` (the reviewer's route) |
+| 2a, restart: `Closing::recorded` rebuilt only grade-1 movements | `evidence.movement` names every movement Core checked, at whatever grade it earned, and `Closing::recorded` takes every movement the log names, its own and a node's | `movements_core_checked_are_taken_live_and_after_a_restart` (restart half) |
+| 2b, live: node-level movements never entered Core's record | Core takes every movement it checked, its own and each node's in and out, keyed by order and segment, a node's reused within its order (`Closing::free_for`), exactly as the log's row does | the same test (live half): order B, tied to order A's movements, is graded off them and waits on the deposit, with nothing refused |
+| 3, reading 2 too wide | the row requires the `node` a final deposit names to be its authorised destination's network; whether the rail is declared private stays a residual for `T-025-05` | refused case `final-deposit-closes-on-a-public-record--conflict-naming-another-node` |
+| 4, router-api's operation fee changed with no record | a line under router-api 4.0.0 (unreleased, no bump): its `fee` is provider-role's by reference and may carry `billed_separately`, which the router never sets | the guard |
+| 5, 3.0.0 statements | provider-role 3.1.0's changelog says statements made under 3.0.0 are refused under 3.1.0 by `check_context` and must be re-signed | — |
+| 6, the movement id's encoding | `PublicRecords`' docs: one label per chain and one canonical spelling per movement id, the matching `F-031`'s; grade-2 evidence a public-record check backs names and takes its movement, as every grade does now | covered by 2 |
+| 7, README | the movement row names a node's reuse within its one order | — |
+
+- **Rule-off, each red:**
+
+  | Rule switched off | Red |
+  |---|---|
+  | a private rail closes on no earlier movement (the old reach back restored) | `deposit_into_a_private_rail_from_a_private_node_does_not_close` |
+  | `can_close` refuses a private rail from a private node | the same |
+  | every movement Core checked named in its evidence | `movements_core_checked_are_taken_live_and_after_a_restart` |
+  | every movement Core checked taken live, its own and the node's | the same (switching off either alone stays green: each node's movements in and out are also the own movements of the segments that entered and left it, so either take covers the other) |
+  | `Closing::recorded` takes every movement the log names | the same |
+  | the movement row at any grade | the same (its forgetful-Core half) |
+  | the rail a final deposit names is its authorised network | the contract's citation test |
+
+  The filter that a private rail's own movement be from a public node, switched off alone, stays green: a deposit from
+  a private node into a private rail has no public end, so it checks no movement of its own; the filter stays as
+  defence in depth.
+- **Contracts.** core-internal 1.0.0, folded: the movement row at any grade, a node's reuse within its order, the rail
+  named as the authorised network; the invalid fixture `verified-entry-of-signed-evidence-naming-a-public-movement` is
+  valid now, renamed `verified-entry-of-signed-evidence-naming-the-movement-core-checked`; README and CHANGELOG.
+  router-api 4.0.0 and provider-role 3.1.0 changelog lines. `DEC-20` path: `contracts/`.

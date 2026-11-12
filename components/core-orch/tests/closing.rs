@@ -760,8 +760,9 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
             "p1-s1".into(),
             EvidenceGrade::SignedByProvider,
             "reserve-bank-co".into(),
-            None
-        )]
+            moved("co-ach", "ach-77", None)
+        )],
+        "the reserve's signed word, naming the movement Core checked"
     );
     let (_, x) = settles(g(
         &nets,
@@ -1317,6 +1318,279 @@ fn one_payment_closes_one_order_across_a_restart() {
                 .to_owned()
         )
     );
+}
+
+/// A deposit into a private rail from another private node: the only public movement is the customer's payment into
+/// the first node, which is no movement into the rail. The part doesn't close on it, and a part ending so isn't
+/// routed: nothing could close it (`REQ-ORD-33`, "a reserve that can't give them MUST NOT end a route").
+// verifies: REQ-ORD-33
+#[test]
+fn deposit_into_a_private_rail_from_a_private_node_does_not_close() {
+    let usdc = json!({ "id": "USDC", "decimals": 6 });
+    let route = route(Some(json!([
+        { "kind": "withdrawal", "provider": "reserve-bank-co", "from": { "node": { "network": "co-ach" }, "asset": usdc },
+          "to": { "node": "ledger-in", "asset": usdc }, "amount_in": "1000", "fee": { "asset": "USDC", "amount": "0" },
+          "amount_out": "1000", "figures": ["f-1"] },
+        { "kind": "deposit", "provider": "reserve-wallet", "from": { "node": "ledger-in", "asset": usdc },
+          "to": { "node": { "network": "bank-rail" }, "asset": usdc }, "amount_in": "1000",
+          "fee": { "asset": "USDC", "amount": "0" }, "amount_out": "1000", "figures": ["f-2"] },
+    ])));
+    let catalogue = catalogue(&[
+        ("reserve-bank-co", "bank-co", 3, &["ledger-in"]),
+        ("reserve-wallet", "wallet-co", 3, &["bank-rail"]),
+    ]);
+    let mut nets = Networks::default();
+    nets.moved(
+        "co-ach",
+        "tx-w",
+        "ach-1",
+        "ledger-in-holding",
+        "USDC",
+        "1000",
+    );
+    let books = Kept::default();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("bank-rail", "acct-9", ("USDC", 6), "1000"),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let bytes = |kind, provider, tx| {
+        result(
+            kind,
+            provider,
+            tx,
+            ("1000", "1000"),
+            ("USDC", "0"),
+            json!([piece(3, "book", provider)]),
+        )
+    };
+    settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &bytes("withdrawal", "reserve-bank-co", "tx-w"),
+        "1000",
+    ));
+    let deposit = part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        1,
+        "reserve-wallet",
+        "tx-d",
+        &bytes("deposit", "reserve-wallet", "tx-d"),
+        "1000",
+    );
+    assert!(
+        matches!(deposit, Graded::Waits(Short::NoPublicRecord(_))),
+        "the customer's payment into the first node is no movement into the rail: {deposit:?}"
+    );
+    assert!(
+        !grading(&catalogue, &nets, &books, &mut closing).can_close(&route[1]),
+        "a part ending so isn't routed"
+    );
+    // From a public node, the deposit's own movement is the one into the rail: that part can close.
+    let mut from_public = route[1].clone();
+    from_public.from.node = rutent_contracts::provider_role::NodeRef::Inner("polygon".into());
+    assert!(grading(&catalogue, &nets, &books, &mut closing).can_close(&from_public));
+}
+
+/// Every movement Core checked is taken, live and after a restart, as the log takes it: order A's withdrawal on
+/// `ach-77` (its reserve's signed word, grade 3) and its deposit on `poly-55`, and its exchange inside the node on
+/// both. Order B's withdrawal, tied by its reserve to `ach-77`, isn't graded on it, even claiming it as a public record,
+/// and its deposit, tied to `poly-55`, waits: so the log admits everything, and nothing loops on a refusal. A Core
+/// rebuilt from the log after a restart takes the same movements.
+// verifies: REQ-ORD-38
+#[test]
+fn movements_core_checked_are_taken_live_and_after_a_restart() {
+    let route = route(None);
+    let (_, mut nets, books) = fixture_world();
+    // The withdrawal's reserve declares public records: order B's claims one.
+    let catalogue = catalogue(&[
+        ("reserve-bank-co", "bank-co", 1, &["ledger-in"]),
+        ("exchange-a", "exchange-co", 3, &[]),
+        ("reserve-wallet", "wallet-co", 1, &[]),
+    ]);
+    nets.moved("polygon", "tx-d", "poly-55", "acct-9", "USDC", D.1);
+    nets.moved("co-ach", "tx-wb", "ach-77", "ledger-in-holding", "COP", W.1);
+    nets.moved("polygon", "tx-db", "poly-55", "acct-9", "USDC", D.1);
+    let log = Log::default();
+    let a = Part::new(
+        "ord-a",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let b = Part::new(
+        "ord-b",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut live = Closing::new();
+    let exchange = result(
+        "conversion",
+        "exchange-a",
+        "tx-x",
+        X,
+        ("COP", "199800"),
+        json!([piece(3, "book-x", "exchange-a")]),
+    );
+    for (place, provider, tx, bytes, out) in [
+        (
+            0,
+            "reserve-bank-co",
+            "tx-w",
+            withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")])),
+            W.1,
+        ),
+        (1, "exchange-a", "tx-x", exchange, X.1),
+        (
+            2,
+            "reserve-wallet",
+            "tx-d",
+            deposit("tx-d", json!([piece(3, "book-d", "reserve-wallet")])),
+            D.1,
+        ),
+    ] {
+        settles(a.grade(
+            &mut grading(&catalogue, &nets, &books, &mut live),
+            place,
+            provider,
+            tx,
+            &bytes,
+            out,
+        ));
+    }
+    let a_withdrawal = named(&settles_of(&log, "ord-a", "p1-s1"));
+    assert_eq!(
+        a_withdrawal[0].4,
+        moved("co-ach", "ach-77", None),
+        "the reserve's signed word names the movement Core checked, so the log holds it"
+    );
+    let b_withdrawal = withdrawal("tx-wb", json!([piece(1, "ach-77", "co-ach")]));
+    let b_deposit = deposit("tx-db", json!([piece(1, "poly-55", "polygon")]));
+    let after = |closing: &mut Closing, log: &Log| {
+        let b = Part::new(
+            "ord-b",
+            &route,
+            end("polygon", "acct-9", ("USDC", 6), D.1),
+            log,
+        );
+        let (_, w) = settles(b.grade(
+            &mut grading(&catalogue, &nets, &books, closing),
+            0,
+            "reserve-bank-co",
+            "tx-wb",
+            &b_withdrawal,
+            W.1,
+        ));
+        let d = b.grade(
+            &mut grading(&catalogue, &nets, &books, closing),
+            2,
+            "reserve-wallet",
+            "tx-db",
+            &b_deposit,
+            D.1,
+        );
+        (named(&w), d)
+    };
+    let _ = b;
+    // Live.
+    let (w, d) = after(&mut live, &log);
+    assert_eq!(
+        w,
+        [(
+            "ev-ord-b-0".into(),
+            "p1-s1".into(),
+            EvidenceGrade::Statement,
+            "reserve-bank-co".into(),
+            None
+        )],
+        "order A's movement backs nothing of order B's"
+    );
+    assert_eq!(d, Graded::Waits(Short::MovementShared));
+    // After a restart, from a log that holds A's part alone.
+    let restarted = Log::default();
+    for entry in log
+        .entries()
+        .into_iter()
+        .filter(|(_, e)| !about(e, "ord-b"))
+    {
+        restarted.push(entry.1);
+    }
+    let mut rebuilt = Closing::recorded(&restarted.entries());
+    let (w, d) = after(&mut rebuilt, &restarted);
+    assert_eq!(
+        w,
+        [(
+            "ev-ord-b-0".into(),
+            "p1-s1".into(),
+            EvidenceGrade::Statement,
+            "reserve-bank-co".into(),
+            None
+        )]
+    );
+    assert_eq!(d, Graded::Waits(Short::MovementShared));
+    // A Core that forgot A's part entirely: B's withdrawal would claim `ach-77`, and the log refuses it, since A's
+    // signed word, grade 3, named it already (the exchange's records of the node's movements left out, so it is the
+    // signed word alone that the log holds to it).
+    let forgot_log = Log::default();
+    for entry in log.entries().into_iter().filter(|(_, e)| {
+        !about(e, "ord-b") && !about(e, "ev-ord-a-2.in.1") && !about(e, "ev-ord-a-2.out.1")
+    }) {
+        forgot_log.push(entry.1);
+    }
+    let b = Part::new(
+        "ord-b",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &forgot_log,
+    );
+    let mut forgot = Closing::new();
+    let (graded, admitted) = b.try_grade(
+        &mut grading(&catalogue, &nets, &books, &mut forgot),
+        0,
+        "reserve-bank-co",
+        "tx-wb",
+        &b_withdrawal,
+        W.1,
+    );
+    assert!(matches!(graded, Graded::Settles { .. }));
+    assert_eq!(
+        admitted,
+        Err(
+            "one public movement evidences one segment of one order: another relied on it already"
+                .to_owned()
+        )
+    );
+}
+
+/// The entries settling `segment` of `order`: its evidence and what came with it.
+fn settles_of(log: &Log, order: &str, segment: &str) -> Vec<What> {
+    log.entries()
+        .into_iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Evidence {
+                    order: o,
+                    segment: s,
+                    ..
+                } if o.as_str() == order && s.as_str() == segment => Some(v.what.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect()
+}
+
+/// Whether `entry` is about `order`.
+fn about(entry: &Entry, order: &str) -> bool {
+    serde_json::to_string(entry)
+        .unwrap()
+        .contains(&format!("\"{order}\""))
 }
 
 /// A route to a rail declared private, from a public node: the deposit's movement on `polygon` is the movement into

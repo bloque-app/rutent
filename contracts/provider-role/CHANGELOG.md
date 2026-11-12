@@ -4,8 +4,9 @@
 - A fee may say whether its provider bills it separately, outside the amounts it reports: an optional
   `billed_separately` on the result's `fee`. Absent means the provider doesn't say. Before it, no shape carried it, so
   a fee record (`REQ-AUD-11`) had to state what no provider said. Minor: an optional field, absent on the wire where
-  not given, so a 3.0.0 statement reads the same. A valid and an invalid fixture. (DEC-4, DEC-20, REQ-AUD-11,
-  T-020-09)
+  not given, so a 3.0.0 statement reads the same. A valid and an invalid fixture. The protocol version moves with
+  it, and `check_context` matches it exactly, so a statement made under 3.0.0 is refused under 3.1.0: a provider
+  re-signs its statements, its advertisement among them, under 3.1.0. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)
 
 ## 3.0.0
 - Breaking: a holding account's balance gets its own operation and result, `holding_balance`, so `CMP-CORE-AUDIT`

@@ -67,11 +67,10 @@ fn settled(entry: &VerifiedEntry) -> Option<Settled<'_>> {
     }
 }
 
-/// The public movement graded evidence relied on as a public record, with its order and segment.
+/// The public movement graded evidence names, at whatever grade, with its order and segment.
 fn relied_on(entry: &VerifiedEntry) -> Option<(&PublicMovement, &Id, &Id)> {
     match &entry.what {
         What::Evidence {
-            grade: crate::provider_role::EvidenceGrade::PublicRecord,
             movement: Some(movement),
             order,
             segment,
@@ -89,7 +88,7 @@ pub static CLOSING_RELATIONS: [Relation; 3] = [
         // None other: the evidence a part's final deposit settles on is found by `settlement-rests-on-its-evidence`
         // first, so this row refuses where it is found and falls short of a close.
         quantifier: Quantifier::NoneOther,
-        refusal: "a part's final deposit settles only on a public record of a movement on its authorised destination's network, naming the movement, resting on its reserve's verified statement: never a statement alone",
+        refusal: "a part's final deposit settles only on a public record of a movement on its authorised destination's network, or into it where it is a private rail, naming the movement, resting on its reserve's verified statement: never a statement alone",
         fields: &[],
         cites: |e, h| match settled(e) {
             Some((_, order, segment)) if final_deposit(order.as_str(), segment.as_str(), h) => {
@@ -119,10 +118,13 @@ pub static CLOSING_RELATIONS: [Relation; 3] = [
             {
                 return Match::NotTarget;
             }
-            // A deposit to a rail declared private closes on the movement into the private node, which names it:
-            // the log can't tell a node declared private, a residual for `T-025-05`.
-            let network = movement.as_ref().is_some_and(|m| {
-                m.node.is_some() || authorised_network(o, s, h) == Some(m.network.as_str())
+            // A deposit to a rail declared private closes on the movement into it, which names the rail as its
+            // `node`: the log can't tell the rail is declared private, a residual for `T-025-05`.
+            // Into a rail declared private, the movement names the rail, which is the destination's network.
+            let authorised = authorised_network(o, s, h);
+            let network = movement.as_ref().is_some_and(|m| match &m.node {
+                Some(node) => authorised == Some(node.as_str()),
+                None => authorised == Some(m.network.as_str()),
             });
             let provider = segment_provider(o, s, h);
             let reserve = rests_on.iter().any(|r| {

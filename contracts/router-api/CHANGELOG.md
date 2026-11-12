@@ -1,6 +1,9 @@
 # router-api changelog
 
 ## 4.0.0
+- An operation's `fee` is provider-role's fee by reference, so with provider-role 3.1.0 it may carry the optional
+  `billed_separately`, what the provider stated of billing it separately. The router never sets it. Folded into this
+  unreleased major. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)
 - Judgements agree by tuple, subject and class: two of one subject for one tuple, one yes and one no, are refused
   only where they judge one class. A tuple whose provider's rules need two classes may hold a yes for one and a no
   for the other, so the no reaches the record and drops its candidate as `ineligible` (`REQ-AUD-4`, `REQ-CPL-6`).

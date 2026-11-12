@@ -9,7 +9,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Violation;
 use super::types::*;
-use crate::provider_role::EvidenceGrade;
 
 /// True when no item of `items` repeats.
 fn distinct<T: PartialEq>(items: &[T]) -> bool {
@@ -399,22 +398,10 @@ impl What {
                     "a decision record names shortlisted providers exactly when it is a shortlist's",
                 )),
             },
-            What::Evidence {
+            What::Evidence { rests_on, .. } => listed(
                 rests_on,
-                grade,
-                movement,
-                ..
-            } => {
-                if movement.is_some() && *grade != EvidenceGrade::PublicRecord {
-                    return Err(Violation(
-                        "graded evidence names a public movement only as a public record",
-                    ));
-                }
-                listed(
-                    rests_on,
-                    "graded evidence rests on stated entries, at least one, each once",
-                )
-            }
+                "graded evidence rests on stated entries, at least one, each once",
+            ),
             What::Replay { nodes, found, .. } => {
                 listed(
                     nodes,

@@ -73,14 +73,10 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 40] = [
+const RUST_RULES: [(&str, &str); 39] = [
     (
         "verified-entry-of-a-replay-of-a-silent-node-not-replayed",
         "a replay's node that recorded nothing is one it replayed",
-    ),
-    (
-        "verified-entry-of-signed-evidence-naming-a-public-movement",
-        "graded evidence names a public movement only as a public record",
     ),
     (
         "verified-entry-of-a-replay-mismatch-against-a-node-not-replayed",

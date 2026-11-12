@@ -181,3 +181,10 @@
   `movement-evidences-one-segment` (no second segment, of any order, relies on the same movement) and
   `replay-rests-on-its-exit`. 121 valid fixtures, 122 invalid, 293 admission cases. (DEC-4, DEC-20, DEC-24,
   REQ-ORD-33, REQ-ORD-38, REQ-ORD-41, REQ-AUD-11, T-020-09)
+- Folded into 1.0.0 before its release: what Core took, the log takes (re-review of `T-020-09`). `evidence` names the
+  movement Core checked at whatever grade it earned, so `movement-evidences-one-segment` holds every movement Core
+  relied on, and a node's movements in and out are reused only within its one order; a final deposit into a private
+  rail names that rail, the authorised destination's network, as the movement's `node`
+  (`final-deposit-closes-on-a-public-record--conflict-naming-another-node`). One invalid fixture is valid now
+  (`verified-entry-of-signed-evidence-naming-the-movement-core-checked`). (DEC-4, DEC-20, REQ-ORD-33, REQ-ORD-38,
+  T-020-09)

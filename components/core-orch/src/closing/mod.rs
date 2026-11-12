@@ -87,6 +87,11 @@ pub struct Moved {
 /// The public networks Core reads, and how each ties a movement to a segment: each network's finality, reorg rule and
 /// movement-to-segment matching are its own task when it joins the catalogue (`DEC-13`, `F-031`). Core holds a
 /// final deposit's movement to the route's one destination whatever the matching says.
+///
+/// What Core records of a movement, and what "one movement, one segment" compares, is the network's label and the
+/// movement's id as given here, so an implementation gives one label per chain, whatever node names it, and one
+/// canonical spelling of each movement's id (a transaction hash in one case, with or without its prefix, never both):
+/// two spellings of one movement would be two movements to the log (`movement-evidences-one-segment`).
 pub trait PublicRecords {
     /// The finality and reorg rules of the public network named `network`; `None` for one Core reads no record of.
     fn rules(&self, network: &str) -> Option<NetworkRules>;
@@ -146,12 +151,23 @@ struct Seen {
     movement: Option<(String, MovementId)>,
 }
 
-/// Core's record of the evidence it relied on, across orders: which segment each public movement evidences, and what
-/// each settled segment's grading found. The production assembly keeps it as durably as `Segments` (`F-030`); after
-/// a restart [`Closing::recorded`] rebuilds it from the log, which names each movement relied on.
+/// A segment that took a public movement: its order and segment, and whether it took it as a private node's
+/// movement in or out, which each segment inside the node takes alike, of its one order (`REQ-ORD-33`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Taker {
+    order: String,
+    segment: String,
+    node: bool,
+}
+
+/// Core's record of the evidence it relied on, across orders: every public movement Core checked and which segments
+/// took it, and what each settled segment's grading found. It takes a movement exactly as the log does
+/// (`movement-evidences-one-segment`): a segment of another order never takes one taken, and one of the same order
+/// only as a node's movement in or out. The production assembly keeps it as durably as `Segments` (`F-030`); after a
+/// restart [`Closing::recorded`] rebuilds it from the log, which names every movement Core checked.
 #[derive(Debug, Clone, Default)]
 pub struct Closing {
-    relied: BTreeMap<(String, String), (String, String)>,
+    relied: BTreeMap<(String, String), Vec<Taker>>,
     seen: BTreeMap<(String, String), Seen>,
 }
 
@@ -161,9 +177,9 @@ impl Closing {
         Self::default()
     }
 
-    /// Core's record rebuilt from the log's `history`, as after a restart: each movement an `evidence` entry relied on
-    /// for its segment alone, and each settled segment's transaction, result and own movement, read from the evidence
-    /// `segment_settled` cites and the result's stated entry it rests on.
+    /// Core's record rebuilt from the log's `history`, as after a restart: every movement an `evidence` entry names,
+    /// with the segment that took it, and each settled segment's transaction, result and own movement, read from the
+    /// evidence `segment_settled` cites and the result's stated entry it rests on.
     pub fn recorded(history: &[(Receipt, Entry)]) -> Self {
         let mut closing = Self::new();
         let verified = |e: &Entry| match e {
@@ -195,13 +211,10 @@ impl Closing {
                 continue;
             };
             let key = (order.as_str().to_owned(), segment.as_str().to_owned());
-            let own = movement.filter(|m| m.node.is_none());
-            if let Some(m) = &own {
-                closing.relied.insert(
-                    (m.network.as_str().to_owned(), m.id.as_str().to_owned()),
-                    key.clone(),
-                );
+            if let Some(m) = &movement {
+                closing.take(m.network.as_str(), m.id.as_str(), &key, m.node.is_some());
             }
+            let own = movement.filter(|m| m.node.is_none());
             if !cited.contains(&evidence.as_str().to_owned()) {
                 continue;
             }
@@ -230,11 +243,39 @@ impl Closing {
         closing
     }
 
-    /// The order and segment the public movement `movement` on `network` evidences, if one does.
+    /// The order and segment that first took the public movement `movement` on `network`, if one did.
     pub fn evidences(&self, network: &str, movement: &str) -> Option<(&str, &str)> {
         self.relied
             .get(&(network.to_owned(), movement.to_owned()))
-            .map(|(o, s)| (o.as_str(), s.as_str()))
+            .and_then(|takers| takers.first())
+            .map(|t| (t.order.as_str(), t.segment.as_str()))
+    }
+
+    /// Whether the segment `key` may take the movement, as its own (`node` false) or as a node's movement in or out:
+    /// no other order took it, and no other segment of its order took it as its own where this one would too.
+    fn free_for(&self, network: &str, movement: &str, key: &(String, String), node: bool) -> bool {
+        self.relied
+            .get(&(network.to_owned(), movement.to_owned()))
+            .is_none_or(|takers| {
+                takers
+                    .iter()
+                    .all(|t| t.order == key.0 && (t.segment == key.1 || t.node || node))
+            })
+    }
+
+    fn take(&mut self, network: &str, movement: &str, key: &(String, String), node: bool) {
+        let takers = self
+            .relied
+            .entry((network.to_owned(), movement.to_owned()))
+            .or_default();
+        let taker = Taker {
+            order: key.0.clone(),
+            segment: key.1.clone(),
+            node,
+        };
+        if !takers.contains(&taker) {
+            takers.push(taker);
+        }
     }
 }
 
@@ -382,9 +423,9 @@ impl Grading for Evidenced<'_> {
 
     fn can_close(&self, deposit: &Operation) -> bool {
         match &deposit.to.node {
-            NodeRef::Outer(outer) => {
-                self.private(&deposit.to.node) || self.records.rules(&outer.network).is_some()
-            }
+            // A private rail closes on the public movement into it, which only a deposit from a public node makes.
+            NodeRef::Outer(_) if self.private(&deposit.to.node) => self.public(&deposit.from.node),
+            NodeRef::Outer(outer) => self.records.rules(&outer.network).is_some(),
             NodeRef::Inner(_) => false,
         }
     }
@@ -548,12 +589,11 @@ impl Evidenced<'_> {
                 (Some(_), None) => why = Some(Unmatched::UnknownMovement),
             }
         }
-        // One movement evidences one segment: one another order's segment relies on backs nothing here.
+        // One movement evidences one segment: one another segment took backs nothing here.
         let shared = movement.as_ref().is_some_and(|(network, id, _)| {
-            self.closing
-                .relied
-                .get(&(network.clone(), id.as_str().to_owned()))
-                .is_some_and(|by| *by != key)
+            !self
+                .closing
+                .free_for(network, id.as_str(), &key, into_private_rail)
         });
         if shared {
             movement = None;
@@ -617,10 +657,16 @@ impl Evidenced<'_> {
             // The part closes here: on the public record and the reserve's signed statement, or, at a private rail,
             // on the public movement into the private node and the reserve's statement (`REQ-ORD-33`).
             let closing = if into_private_rail {
-                let (network, id_) = self
-                    .movement_into(settled, operations, movement.as_ref())
+                // Only the deposit's own movement, from a public node, is the movement into the rail: a payment into
+                // an earlier private node is no movement into this one.
+                if shared {
+                    return Err(Short::MovementShared);
+                }
+                let own = movement
+                    .as_ref()
+                    .filter(|_| self.public(&operation.from.node))
                     .ok_or(Short::NoPublicRecord(why))?;
-                public_movement(&network, &id_, Some(node_name(&operation.to.node)))?
+                public_movement(&own.0, &own.1, Some(node_name(&operation.to.node)))?
             } else if shared {
                 return Err(Short::MovementShared);
             } else {
@@ -653,11 +699,15 @@ impl Evidenced<'_> {
                 None,
             ));
         } else {
-            let (whose, named) = match (&movement, relies) {
-                (Some((network, id_, _)), true) => {
-                    (id(network)?, Some(public_movement(network, id_, None)?))
-                }
-                _ => (settled.provider.clone(), None),
+            // Every movement Core checked is named, whatever the grade, so the log holds what Core took; a public
+            // record is the network's, anything else its provider's.
+            let named = movement
+                .as_ref()
+                .map(|(network, id_, _)| public_movement(network, id_, None))
+                .transpose()?;
+            let whose = match (&movement, relies) {
+                (Some((network, _, _)), true) => id(network)?,
+                _ => settled.provider.clone(),
             };
             entries.push(evidence(
                 cites.clone(),
@@ -675,13 +725,14 @@ impl Evidenced<'_> {
         let exits = self.private(&operation.from.node)
             && !self.private(&operation.to.node)
             && side.is_some();
+        let mut node_takes = Vec::new();
         if exits {
             let (replay, consistent) = self.replayed(settled, operations, movement.as_ref())?;
             entries.extend(replay);
             if let (true, Some((out, out_id, _)), Some((into, into_id))) = (
                 consistent,
                 movement.as_ref(),
-                self.movement_into(settled, operations, None),
+                self.movement_into(settled, operations),
             ) {
                 let start = self.run_start(operations, settled.place);
                 for (place, op) in operations
@@ -699,7 +750,16 @@ impl Evidenced<'_> {
                     };
                     let result = seen.result.clone();
                     let node = node_name(&op.from.node);
+                    let inner = (
+                        settled.order.as_str().to_owned(),
+                        segment.as_str().to_owned(),
+                    );
                     for (end, network, moved) in [("in", &into, &into_id), ("out", out, out_id)] {
+                        node_takes.push((
+                            network.clone(),
+                            moved.as_str().to_owned(),
+                            inner.clone(),
+                        ));
                         entries.push(evidence(
                             id(&format!("{}.{end}.{place}", cites.as_str()))?,
                             segment,
@@ -713,14 +773,13 @@ impl Evidenced<'_> {
             }
         }
 
-        // What it relied on, kept only now that it settles: the movement its own record names.
-        if let Some((network, movement, _)) = movement
-            .as_ref()
-            .filter(|_| (relies || last) && !into_private_rail)
-        {
+        // What it took, kept only now that it settles: every movement its records name, as the log takes them.
+        if let Some((network, movement, _)) = &movement {
             self.closing
-                .relied
-                .insert((network.clone(), movement.as_str().to_owned()), key.clone());
+                .take(network, movement.as_str(), &key, into_private_rail);
+        }
+        for (network, movement, inner) in &node_takes {
+            self.closing.take(network, movement, inner, true);
         }
         self.closing.seen.insert(
             key,
@@ -750,22 +809,19 @@ impl Evidenced<'_> {
         start
     }
 
-    /// The public movement that brought the value into the private nodes the segment leaves or enters: that of the
-    /// segment which took it from a public node into a private one, where a final public record evidences it. Where
-    /// that segment is this one, a deposit from a public node into a private rail, it is its own movement, `own`.
+    /// The public movement that brought the value into the private nodes the segment leaves: that of the segment
+    /// which took it from a public node into a private one, where a final public record evidences it.
     fn movement_into(
         &self,
         settled: &ToGrade<'_>,
         operations: &[Operation],
-        own: Option<&Checked>,
     ) -> Option<(String, MovementId)> {
         let start = self.run_start(operations, settled.place);
         let entering = &operations[start];
-        if !(self.public(&entering.from.node) && self.private(&entering.to.node)) {
+        if start == settled.place
+            || !(self.public(&entering.from.node) && self.private(&entering.to.node))
+        {
             return None;
-        }
-        if start == settled.place {
-            return own.map(|(n, id, _)| (n.clone(), id.clone()));
         }
         self.seen(settled, &settled.segments[start])?
             .movement
