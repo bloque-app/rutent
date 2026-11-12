@@ -78,7 +78,7 @@
 //!
 //! **Reversals and ending** (`T-020-12`'s seams): [`Segments::observe`] takes a segment's `reversal_completed` and an
 //! order's `end_requested`, which `crate::reversal` records; [`Segments::sent`] reads what a segment moved, which its
-//! reversal returns in full; and a part that has ended hands no segment over for the first time
+//! reversal returns in full; [`Segments::answered`] whether its answer was taken, after which a report is late; and a part that has ended hands no segment over for the first time
 //! ([`SegmentsError::Ended`]).
 
 mod drain;
@@ -864,6 +864,14 @@ impl Segments {
         self.flights
             .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
             .map(|f| (&f.transaction, &f.statement.statement))
+    }
+
+    /// Whether the answer of `segment` of `order` was taken: its operation carried out and something given back, the
+    /// platform's refusal included. Only after it can something come late (`T-020-12`).
+    pub fn answered(&self, order: &Id, segment: &Id) -> bool {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .is_some_and(|f| f.answered.is_some())
     }
 
     /// Whether `part` of `order` has ended in the order Core follows: complete, failed, handed on, or ended without

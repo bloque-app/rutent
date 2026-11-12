@@ -49,8 +49,9 @@
 //! **Gaps.** core-internal has no record of who carries a reversal, nor of a provider's showing of fault or its
 //! acceptance: Core keeps them ([`Reversals::carrier`]). Core can't ask a failed provider to reverse: core-internal
 //! has no action for it to decide. The state machine takes an undone start only of a complete part, so the start of a
-//! part still open can't be marked undone. Inside a private node, the publisher's word labelled as such
-//! (`REQ-ORD-3`'s third sentence) isn't taken. Each is named in `F-020`'s notes with its owner.
+//! part still open can't be marked undone. Inside its own private node, the publisher's word counts labelled as such
+//! (`REQ-ORD-3`'s third sentence, [`Word::Publishers`]), but the log has no field for the label yet: Core holds it.
+//! Each is named in `F-020`'s notes with its owner.
 
 mod journal;
 mod judge;
@@ -176,10 +177,21 @@ pub struct Completed {
     pub whose: Id,
     /// Its grade.
     pub grade: EvidenceGrade,
+    /// Whose word it is labelled: the reserve's, or its publisher's inside the publisher's own private node.
+    pub word: Word,
     /// The receipt of the statement it rests on.
     pub statement: Receipt,
     /// The receipt of the `reversal_completed` input.
     pub input: Receipt,
+}
+
+/// Whose word a completed reversal rests on (`REQ-ORD-3`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Word {
+    /// The origin reserve's own.
+    Reserves,
+    /// The publisher's, inside its own private node: the origin reserve and the failed provider are both of it.
+    Publishers(Id),
 }
 
 /// How Core's question about a reversal came out.
@@ -252,6 +264,12 @@ pub enum ReversalError {
     NotTheParty,
     /// No showing of fault waits for an answer.
     NoShowing,
+    /// The statement shows no fault: none of its evidence names the customer's or the operator's.
+    NoFaultShown,
+    /// A showing of fault was accepted already: the carrier stands.
+    FaultSettled,
+    /// The segment's answer wasn't taken yet: nothing it gives back is late.
+    NotAnswered,
     /// The statement's signature doesn't verify under a key its maker published for statements.
     Unattributable,
     /// The statement can't be kept: it names no shape, maker or time a stated entry can carry.
@@ -317,6 +335,8 @@ struct Reversal {
     completed: Option<Completed>,
     /// The statements kept as they arrived, each once, by their bytes.
     reports: Statements,
+    /// The failed provider's showings of fault, each once, by their bytes.
+    showings: Statements,
     showing: Option<Showing>,
 }
 
@@ -465,13 +485,18 @@ impl Reversals {
                 segment: Some(at.segment.clone()),
                 transaction: Some(question.transaction.clone()),
             };
-            question.answer_step = Some(Step::new(journal::stated(
-                parts.evidence,
-                parts.clock,
-                &answer,
-                maker,
-                about,
-            )?));
+            match journal::stated(parts.evidence, parts.clock, &answer, maker, about) {
+                Ok(entry) => question.answer_step = Some(Step::new(entry)),
+                Err(ReversalError::Unrecordable) => {
+                    // Nothing can be kept of it: the question is spent, and the next call asks again.
+                    reversal.question = None;
+                    return Ok(Confirmation::NotCompleted {
+                        statement: None,
+                        why: NotCounted::Unreadable,
+                    });
+                }
+                Err(other) => return Err(other),
+            }
         }
         let statement = question
             .answer_step
@@ -554,17 +579,25 @@ impl Reversals {
         Ok(Reported { statement, why })
     }
 
-    /// Keeps the failed provider's showing that the failure of `at` was the customer's or the operator's: its
-    /// statement, verified as the provider's, appended as its stated entry about the order and segment. Until the
-    /// party it names accepts it, the provider carries the reversal (`REQ-ORD-11`).
+    /// Keeps the failed provider's showing that the failure of `at` was the customer's or the operator's: its signed
+    /// result for the segment's own transaction, verified as the provider's, whose evidence names the fault at
+    /// [`FAULT_REFERENCE`], read from those bytes and never from the caller, appended as its stated entry about the
+    /// order, the segment and that transaction. Until the party it names accepts it, the provider carries the
+    /// reversal (`REQ-ORD-11`). A later showing replaces one not yet answered; once one is accepted or disputed, the
+    /// carrier stands and no other is taken (`FaultSettled`).
     pub fn show_fault(
         &mut self,
         parts: &mut Parts<'_>,
         at: At<'_>,
-        fault: Fault,
         bytes: &[u8],
     ) -> Result<Receipt, ReversalError> {
         let owing = self.owe(parts, at)?;
+        let reversal = self.reversal(at, &owing.provider);
+        if !matches!(reversal.carrier, Carrier::Provider(_))
+            || reversal.showing.as_ref().is_some_and(|s| s.disputed)
+        {
+            return Err(ReversalError::FaultSettled);
+        }
         parts
             .catalogue
             .verify_statement(bytes, parts.clock.now().floor())
@@ -572,12 +605,35 @@ impl Reversals {
         if journal::maker_named(bytes).as_ref() != Some(&owing.provider) {
             return Err(ReversalError::NotTheProvider);
         }
-        let reported = self.report(parts, at, bytes)?;
-        self.reversal(at, &owing.provider).showing = Some(Showing {
+        let fault = fault_shown(bytes, &owing.transaction).ok_or(ReversalError::NoFaultShown)?;
+        let about = About {
+            order: Some(at.order.clone()),
+            segment: Some(at.segment.clone()),
+            transaction: Some(owing.transaction.clone()),
+        };
+        let claimed = journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
+        let reversal = self.reversal(at, &owing.provider);
+        if !reversal.showings.iter().any(|(kept, _)| kept == bytes) {
+            let step = Step::new(journal::stated(
+                parts.evidence,
+                parts.clock,
+                bytes,
+                claimed,
+                about,
+            )?);
+            reversal.showings.push((bytes.to_vec(), step));
+        }
+        let (_, step) = reversal
+            .showings
+            .iter_mut()
+            .find(|(kept, _)| kept == bytes)
+            .ok_or(ReversalError::Unknown)?;
+        let receipt = step.append(parts.log)?;
+        reversal.showing = Some(Showing {
             fault,
             disputed: false,
         });
-        Ok(reported.statement)
+        Ok(receipt)
     }
 
     /// The party the provider's showing names, accepting it: it carries the reversal from then (`REQ-ORD-11`). `by`
@@ -613,9 +669,11 @@ impl Reversals {
             .reversals
             .get_mut(&key(at.order, at.segment))
             .ok_or(ReversalError::NoShowing)?;
-        let showing = reversal.showing.as_mut().ok_or(ReversalError::NoShowing)?;
+        let showing = reversal.showing.as_ref().ok_or(ReversalError::NoShowing)?;
+        if showing.disputed {
+            return Err(ReversalError::FaultSettled);
+        }
         party_of(showing.fault, by)?;
-        showing.disputed = true;
         let mut stuck_parts = stuck::Parts {
             clock: parts.clock,
             log: &mut *parts.log,
@@ -627,6 +685,13 @@ impl Reversals {
         let declared = stuck
             .dispute(&mut stuck_parts, at.order, at.part, parts.core)
             .map_err(ReversalError::Stuck)?;
+        if let Some(showing) = self
+            .reversals
+            .get_mut(&key(at.order, at.segment))
+            .and_then(|r| r.showing.as_mut())
+        {
+            showing.disputed = true;
+        }
         Ok(declared.receipt)
     }
 
@@ -635,20 +700,9 @@ impl Reversals {
     /// built once and appended until the log takes it; then the order Core follows takes it, and no segment of an
     /// ended part is handed over ([`crate::segments::SegmentsError::Ended`]).
     pub fn end(&mut self, parts: &mut Parts<'_>, order: &Id) -> Result<Receipt, ReversalError> {
-        let followed = parts.segments.order(order).ok_or(ReversalError::Unknown)?;
         if !self.ends.contains_key(order.as_str()) {
-            for part in followed
-                .parts
-                .iter()
-                .filter(|p| p.state == OrderState::NotPastFirstSegment)
-            {
-                for segment in &part.segments {
-                    let segment = Id::new(segment.segment_id.as_str())
-                        .ok_or(ReversalError::Id("a segment"))?;
-                    if parts.segments.handed_over(order, &segment) {
-                        return Err(ReversalError::InMotion(segment));
-                    }
-                }
+            if let Some(moving) = in_motion(parts.segments, order)? {
+                return Err(ReversalError::InMotion(moving));
             }
             let input = input(parts, order, None, None, Observed::EndRequested {})?;
             let entry = journal::verified(
@@ -779,6 +833,9 @@ impl Reversals {
             .sent(at.order, at.segment)
             .ok_or(ReversalError::Unknown)?;
         let transaction = transaction.clone();
+        if !parts.segments.answered(at.order, at.segment) {
+            return Err(ReversalError::NotAnswered);
+        }
         let kept = self.later.entry(key(at.order, at.segment)).or_default();
         if !kept.iter().any(|(b, _)| b == bytes) {
             let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
@@ -821,6 +878,7 @@ impl Reversals {
                 completion: None,
                 completed: None,
                 reports: Vec::new(),
+                showings: Vec::new(),
                 showing: None,
             })
     }
@@ -842,6 +900,7 @@ impl Reversals {
             segment.state == SegmentState::FailedReversalOwed,
         );
         let provider = Id::new(segment.provider.as_str()).ok_or(ReversalError::Id("a provider"))?;
+        let node = inner_node(segment);
         let at_node = part
             .segments
             .first()
@@ -854,6 +913,7 @@ impl Reversals {
             let (_, asset, amount) = moved(operation).ok_or(ReversalError::NotOwed)?;
             let target = Target {
                 provider: provider.clone(),
+                node: inner_node(segment),
                 origin,
                 transaction: transaction.clone(),
                 asset: asset.to_owned(),
@@ -883,6 +943,7 @@ impl Reversals {
         };
         Ok(Target {
             provider: owing.provider,
+            node,
             origin,
             transaction: owing.transaction,
             asset: owing.asset,
@@ -1004,6 +1065,7 @@ impl Reversals {
             evidence: completion.evidence_id.clone(),
             whose: completion.whose.maker.clone(),
             grade: completion.whose.grade,
+            word: completion.whose.word.clone(),
             statement: completion.statement.clone(),
             input,
         };
@@ -1030,6 +1092,12 @@ impl Reversals {
             .get_mut(order.as_str())
             .ok_or(ReversalError::Unknown)?;
         if step.receipt.is_none() {
+            // Read again before every append, a retry's included: a withdrawal handed over since the request was
+            // kept is in motion now, and the request is dropped.
+            if let Some(moving) = in_motion(parts.segments, order)? {
+                self.ends.remove(order.as_str());
+                return Err(ReversalError::InMotion(moving));
+            }
             let followed = parts.segments.order(order).ok_or(ReversalError::Unknown)?;
             let after = Stm::transition(followed, recorded);
             if after.last_input.outcome != (stm::Outcome::Applied {}) {
@@ -1130,6 +1198,8 @@ impl Reversals {
 #[derive(Debug, Clone)]
 struct Target {
     provider: Id,
+    /// The inner node the segment starts at, where the value is to be back.
+    node: Option<String>,
     origin: Id,
     transaction: Id,
     asset: String,
@@ -1140,12 +1210,33 @@ impl Target {
     fn reversed(&self) -> Reversed<'_> {
         Reversed {
             provider: &self.provider,
+            node: self.node.as_deref(),
             origin: &self.origin,
             transaction: &self.transaction,
             asset: &self.asset,
             amount: &self.amount,
         }
     }
+}
+
+/// The first segment of `order` that moves value, of a part that hasn't passed its first segment: handed over with no
+/// final outcome. Such a part doesn't end while it does.
+fn in_motion(segments: &Segments, order: &Id) -> Result<Option<Id>, ReversalError> {
+    let followed = segments.order(order).ok_or(ReversalError::Unknown)?;
+    for part in followed
+        .parts
+        .iter()
+        .filter(|p| p.state == OrderState::NotPastFirstSegment)
+    {
+        for segment in &part.segments {
+            let segment =
+                Id::new(segment.segment_id.as_str()).ok_or(ReversalError::Id("a segment"))?;
+            if segments.handed_over(order, &segment) {
+                return Ok(Some(segment));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The part and segment `at` names in the order Core follows.
@@ -1172,6 +1263,14 @@ fn starts_where_withdrawn(withdrawal: &stm::Segment, segment: &stm::Segment) -> 
     withdrawal.kind == OperationKind::Withdrawal && withdrawal.to == segment.from
 }
 
+/// The inner node `segment` starts at, if it starts at one.
+fn inner_node(segment: &stm::Segment) -> Option<String> {
+    match &segment.from.node {
+        rutent_contracts::provider_role::NodeRef::Inner(node) => Some(node.as_str().to_owned()),
+        rutent_contracts::provider_role::NodeRef::Outer(_) => None,
+    }
+}
+
 /// A part's origin reserve: the provider of its withdrawal, its first segment.
 fn origin_of(part: &stm::Part) -> Result<Id, ReversalError> {
     part.segments
@@ -1189,6 +1288,36 @@ fn moved(operation: &ProviderOperation) -> Option<(&str, &str, &str)> {
         ProviderOperation::Deposit(o) => Some((&o.provider, &o.asset, &o.amount)),
         ProviderOperation::Transfer(o) => Some((&o.provider, &o.asset, &o.amount)),
         ProviderOperation::Conversion(o) => Some((&o.provider, &o.from, &o.amount)),
+        _ => None,
+    }
+}
+
+/// What an evidence piece's `reference` begins with where it names whose fault a failure was: `fault:customer` or
+/// `fault:operator`. provider-role names no field for it, so this is the name Core reads until it does (an item for
+/// provider-role's author).
+pub const FAULT_REFERENCE: &str = "fault:";
+
+/// The fault `bytes`, a provider's result for `transaction`, show: the one party its evidence names at
+/// [`FAULT_REFERENCE`]; none where it names none, or both, or the result is of another transaction.
+fn fault_shown(bytes: &[u8], transaction: &Id) -> Option<Fault> {
+    let result: Statement<ResultBody> = serde_json::from_slice(bytes).ok()?;
+    let body = serde_json::to_value(&result.statement).ok()?;
+    if body["transaction"].as_str() != Some(transaction.as_str()) {
+        return None;
+    }
+    let mut faults = body["outcome"]["evidence"]
+        .as_array()?
+        .iter()
+        .filter_map(|piece| piece["reference"].as_str()?.strip_prefix(FAULT_REFERENCE))
+        .map(|named| match named {
+            "customer" => Some(Fault::Customer),
+            "operator" => Some(Fault::Operator),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    faults.dedup();
+    match faults.as_slice() {
+        [fault] => Some(*fault),
         _ => None,
     }
 }

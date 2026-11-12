@@ -2379,10 +2379,9 @@ rule was switched off once, its test seen red, the file restored and touched.
   origin reserve too, so it wouldn't catch it.
 - **Defaults taken** (reversible, each for the form):
   - The **publisher half** (core-internal's README, "A reversal's evidence and the failed provider's publisher",
-    left to `T-020-12`) is held strictly: a reserve sharing the failed provider's publisher completes nothing, and
-    `Publisher::Operator` counts as one publisher. So while every provider is the operator's own (`DEC-11`), only a
-    reserve's word about its own segment completes a reversal, and any other reversal stays owed and held, failing
-    closed, for the stuck orders.
+    left to `T-020-12`): the coordinator's ruling after the review, replacing the strict default (see the review
+    answers). A reserve of the failed provider's publisher completes nothing, except inside that publisher's own
+    private node, where its word counts, labelled as the publisher's (`REQ-ORD-3`'s third sentence).
   - **ADR-0008's origin reserve is the only confirming party**: any other party's statement is kept and completes
     nothing (`NotTheOriginReserve`).
   - **The grade** of the reserve's signed confirmation of another provider's reversal: 3 (signed by its maker).
@@ -2398,12 +2397,13 @@ rule was switched off once, its test seen red, the file restored and touched.
   `NotInFull`, or `Unasked` where it would count). The log verifies a statement whose body names a transaction only
   under that transaction, which Core didn't ask, so it is unverified there and nothing rests on it.
 - **Who carries it** (`REQ-ORD-11`). `Reversals::carrier`: the failed provider by default; `show_fault` keeps the
-  provider's verified statement that the fault was the customer's or the operator's; `accept_fault` by that party's
-  role makes it the carrier; `dispute` by it declares the part stuck through `Stuck::dispute` (`stuck_declared`,
-  `dispute`), so the stuck orders hold the declaration; the provider carries it meanwhile. The failed segment's
-  value stays in motion until it is reversed (`part-waits-for-value-in-motion`), so the stuck orders decide a
-  disputed part only once its reversal completed, which `confirm` still does on a stuck part (asserted in the
-  dispute test); until then it is held, failing closed. An undone start's carrier is the origin reserve (`REQ-ORD-30`).
+  provider's showing that the fault was the customer's or the operator's, the kind read from its signed bytes (see
+  the review answers); `accept_fault` by that party's role makes it the carrier, after which no other showing is
+  taken; `dispute` by it declares the part stuck through `Stuck::dispute` (`stuck_declared`, `dispute`), so the stuck
+  orders hold the declaration; the provider carries it meanwhile. `confirm` still completes the reversal on a stuck
+  part (asserted in the dispute test). Today the stuck orders' `decide` takes a disputed part while its reversal is
+  still owed: that rule is `T-020-11`'s, and the coordinator routes it (the log's `part-waits-for-value-in-motion`
+  is the contract half). An undone start's carrier is the origin reserve (`REQ-ORD-30`).
 - **Ending** (`Reversals::end`, `REQ-ORD-12`): `end_requested` once the state machine takes it (a part not past its
   first segment) and nothing of such a part is in motion; then no segment of an ended part is handed over
   (`SegmentsError::Ended`). After the first segment settles the state machine takes no end, and Core records none. A
@@ -2437,8 +2437,9 @@ rule was switched off once, its test seen red, the file restored and touched.
   - state-machine 2.1.0 takes an undone start only of a complete part (`undoes_a_complete_part`), so `REQ-ORD-12`'s
     undone start of a part still open can't be recorded: `confirm` refuses it (`NotOwed`) and pieces are kept. A
     state-machine bump for `F-005`'s owner with core-internal's.
-  - `REQ-ORD-3`'s third sentence (inside a private node, the publisher's word, labelled as such) isn't taken: no
-    entry names a node's publisher. Item for core-internal's author.
+  - `REQ-ORD-3`'s third sentence (inside a private node, the publisher's word, labelled as such): Core takes it and
+    holds the label (`Word::Publishers`); the log's `evidence` has no field for it yet, so the label waits on the
+    contract round (core-internal's author, the coordinator's).
   - A multi-reserve node (ADR-0008's own open point) has no settlement path: the origin reserve asked is the
     withdrawal's.
   - A failed segment starting at an inner node after the first (a route through two inner nodes) has no party to
@@ -2508,3 +2509,45 @@ rule was switched off once, its test seen red, the file restored and touched.
   two-place check. Not switched off: the answer's signature (`Unattributable`), behind which the log's attribution
   refuses an unverified answer as evidence; `Unasked` in `judge`, since `report` never completes whatever `judge`
   answers; the question appended before it is sent; and `seen`'s read check, which its test counts.
+
+### T-020-12, review answers (of `20d3105`)
+
+The review found 2 high and 3 medium. Each test was written first and seen red for the reason it was written, the
+module's API stubbed so it compiled: the malformed answer (`Err(Unrecordable)`), the reviewer's end sequence (the
+kept end appended while the withdrawal moved), a showing naming no fault (taken), a late report before the answer
+(kept), and an inner confirmation of another shape (completed). Assertions further down a test that a first one
+masked are shown by the rule-off below. Then each new rule was switched off once.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | High: `end_requested` recorded while the withdrawal moves | `record_end` reads the order's segments again before every append, a retry's included (`in_motion`), and drops a kept end that finds one in motion | the end test, the reviewer's sequence: the log down for the first `end`, the withdrawal handed over with its outcome unknown, the second `end` refused `InMotion` and nothing recorded |
+| 2 | Medium: a malformed answer wedged its question | An answer nothing can be kept of drops the question, as silence does, answered `Unreadable` | `malformed_answer_drops_its_question_and_is_asked_again` |
+| 3 | Medium: the notes and a test comment said a disputed part waits for its reversal | Corrected: today the stuck orders decide it while its reversal is owed; that rule is `T-020-11`'s, routed by the coordinator | — |
+| 4 | Low-medium: the fault came from the caller, and a carrier could change again | The fault is read from the signed bytes: the failed provider's result for the segment's own transaction, an evidence piece's `reference` naming `fault:customer` or `fault:operator`, exactly one (`NoFaultShown` otherwise). provider-role names no field for it, so `FAULT_REFERENCE` is Core's name until it does: an item for provider-role's author. The showing is kept about the segment's transaction, so the log can verify it. Once a showing is accepted or disputed, no other is taken (`FaultSettled`) | the dispute test |
+| 5 | Low: `dispute` marked the showing before the stuck orders recorded it | Marked only once `Stuck::dispute` succeeds | the dispute test: the log down for the dispute, the customer still accepts |
+| 6 | Low: nothing killed disabling `AnotherQuestion` | An answer to an earlier question, replayed under a fresh one, completes nothing | in the failed provider's test |
+| 7 | The publisher default | The coordinator's ruling: inside the failed segment's private start node, the publisher holding it (`register_private_holding`, `HoldingSource::Publisher`) being the publisher of both the origin reserve and the failed provider, the reserve's word counts, labelled the publisher's (`Completed::word`, `Word::Publishers`). The log's label waits on the contract round; until it lands the `evidence` says whose it is, the reserve, and Core holds the label. Correction: advertised providers, Bloque's included, are `Publisher::Party`, their advertisement's publisher; `Publisher::Operator` is for a module with no advertisement, such as a public node's holding account. The earlier note's "every provider is the operator's own, so no middle reversal completes in v0" was wrong on that reading too | in the failed provider's test: one publisher outside its node refused, inside its node counted as its word |
+| nit | No publisher for the maker | Refused, `NoPublisher` | defence: a maker the catalogue verifies has one, so no test reaches it alone |
+| nit | The inner statement's shape | Held to `reversal-confirmation`'s shape | in the failed provider's test |
+| nit | `later` before the answer was taken | Refused, `NotAnswered`, read by a new `Segments::answered` | the late-delivery test |
+| nit | A grade-4 own-word assertion | The undone start's `evidence` in the log: grade 4, whose the reserve, `Word::Reserves` | the undone-start test |
+
+- **Seam**: `Segments::answered` (`segments/mod.rs`, read only), and its line in the header paragraph.
+- **Rule-off, each new rule once** (`t-020-12-ruleoff2.py`, outside the tree; each file restored and touched):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the end read again before every append | the end test |
+  | a malformed answer drops its question | the malformed-answer test |
+  | the fault read from the signed bytes | the dispute test |
+  | an accepted or disputed showing stands | the dispute test |
+  | a showing disputed only once the stuck orders recorded it | the dispute test |
+  | an answer only to Core's own question (`AnotherQuestion`) | the failed provider's test |
+  | the publisher's word inside its own node counted | the failed provider's test |
+  | only inside its own node | the failed provider's test |
+  | the inner statement's shape | the failed provider's test |
+  | a late report only once the answer was taken | the late-delivery test |
+  | a showing kept about its segment's transaction | the dispute test |
+
+  `NoPublisher` wasn't switched off: no maker the catalogue verifies lacks a publisher.
+

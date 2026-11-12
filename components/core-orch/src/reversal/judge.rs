@@ -7,23 +7,27 @@
 //!    node the value is back at, whose own statement counts, labelled its word.
 //! 3. **The origin reserve's**: ADR-0008 takes the origin node's own reserve as the party other than the failed
 //!    provider; any other maker's statement is kept and completes nothing.
-//! 4. **Not its publisher's**: the origin reserve published by the failed provider's publisher is that publisher's
-//!    word about its own provider's work (`THR-13`, `THR-124`). A default, reversible: two providers the operator
-//!    publishes share the operator as publisher, so while every provider is the operator's own (`DEC-11`) only a
-//!    reserve's word about its own segment completes a reversal.
+//! 4. **Not its publisher's, outside its own node**: a maker the catalogue names no publisher for is refused; the
+//!    origin reserve published by the failed provider's publisher is that publisher's word about its own provider's
+//!    work (`THR-13`, `THR-124`), and counts only inside that publisher's own private node, the segment's start, whose
+//!    holding account it gave (`register_private_holding`): labelled the publisher's word (`REQ-ORD-3`'s third
+//!    sentence).
 //! 5. **This question's, about this credit**: the reserve's confirmation answers Core's question, names the reversed
 //!    segment's transaction, and says the credit arrived, signed by the reserve itself, in full (the amount the
-//!    segment took in) and in the asset it left in. No credit, a refusal, another segment, another asset or a short
+//!    segment took in) and in the asset it left in, the confirmation inside of its own shape. No credit, a refusal, another segment, another asset or a short
 //!    or larger credit completes nothing.
 //!
 //! What counts is graded: the reserve's own word about its own segment as a statement (4), its signed confirmation of
 //! another provider's reversal as signed by its maker (3); the evidence says whose it is.
 
 use rutent_contracts::provider_role::{
-    EvidenceGrade, RESULT_SHAPE, ResultBody, ReversalConfirmationOutcome, Statement,
+    EvidenceGrade, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ResultBody,
+    ReversalConfirmationOutcome, Statement,
 };
 use rutent_contracts::router_api::Id;
-use rutent_prov::catalogue::{Catalogue, Instant};
+use rutent_prov::catalogue::{Catalogue, HoldingSource, Instant, Publisher};
+
+use super::Word;
 
 /// Why a statement doesn't complete a reversal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,8 +40,10 @@ pub enum NotCounted {
     FailedProvidersOwn,
     /// Its maker isn't the origin reserve, the one party ADR-0008 takes as confirming a reversal.
     NotTheOriginReserve,
-    /// Its maker shares the failed provider's publisher (`REQ-ORD-3`).
+    /// Its maker shares the failed provider's publisher (`REQ-ORD-3`), outside that publisher's own private node.
     SamePublisher,
+    /// The catalogue names no publisher for its maker.
+    NoPublisher,
     /// It answers another question than Core's.
     AnotherQuestion,
     /// The reserve says no credit matching the segment, amount and asset has arrived.
@@ -67,6 +73,8 @@ pub enum NotCounted {
 pub(super) struct Reversed<'a> {
     /// The segment's provider: the one that failed, or, for an undone start, the origin reserve.
     pub provider: &'a Id,
+    /// The inner node the segment starts at, if it starts at one: where the value is to be back.
+    pub node: Option<&'a str>,
     /// The origin reserve: the provider of the part's withdrawal.
     pub origin: &'a Id,
     /// The transaction the segment ran under.
@@ -82,6 +90,7 @@ pub(super) struct Reversed<'a> {
 pub(super) struct Whose {
     pub maker: Id,
     pub grade: EvidenceGrade,
+    pub word: Word,
 }
 
 /// Judges `received` about `reversed`, as the answer to Core's question under `question` where Core asked one.
@@ -113,9 +122,28 @@ pub(super) fn judge(
         publishers.publisher(maker.as_str()),
         publishers.publisher(reversed.provider.as_str()),
     );
-    if !own && theirs.is_some() && theirs == failed {
-        return Err(NotCounted::SamePublisher);
-    }
+    let Some(theirs) = theirs else {
+        return Err(NotCounted::NoPublisher);
+    };
+    // Of the failed provider's publisher, the reserve's word is that publisher's own: it counts only inside the
+    // publisher's own private node, labelled as the publisher's (`REQ-ORD-3`'s third sentence).
+    let word = if !own && failed.as_ref() == Some(&theirs) {
+        let holder = reversed
+            .node
+            .and_then(|node| catalogue.nodes().holding(node))
+            .and_then(|h| match &h.source {
+                HoldingSource::Publisher(publisher) => Some(publisher.as_str()),
+                HoldingSource::Operator => None,
+            });
+        match (&theirs, holder) {
+            (Publisher::Party(publisher), Some(holder)) if publisher == holder => {
+                Word::Publishers(Id::new(publisher.as_str()).ok_or(NotCounted::NoPublisher)?)
+            }
+            _ => return Err(NotCounted::SamePublisher),
+        }
+    } else {
+        Word::Reserves
+    };
     let ResultBody::ReversalConfirmation(answer) = &result.statement else {
         return Err(NotCounted::Unreadable);
     };
@@ -128,7 +156,10 @@ pub(super) fn judge(
         return Err(NotCounted::AnotherQuestion);
     }
     let inner = serde_json::to_vec(&**confirmed).map_err(|_| NotCounted::Unreadable)?;
-    if confirmed.maker != result.maker || catalogue.verify_statement(&inner, at).is_err() {
+    if confirmed.maker != result.maker
+        || confirmed.shape != REVERSAL_CONFIRMATION_SHAPE
+        || catalogue.verify_statement(&inner, at).is_err()
+    {
         return Err(NotCounted::NotItsOwn);
     }
     let credit = &confirmed.statement;
@@ -151,5 +182,5 @@ pub(super) fn judge(
     } else {
         EvidenceGrade::SignedByProvider
     };
-    Ok(Whose { maker, grade })
+    Ok(Whose { maker, grade, word })
 }
