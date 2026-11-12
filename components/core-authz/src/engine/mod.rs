@@ -751,8 +751,12 @@ mod tests {
             if let Some((receipt, _)) = self.0.iter().find(|(_, e)| e == entry) {
                 return Ok(receipt.clone());
             }
-            // The operator party Core's questions are verified to, as the log's `StatementKeys::operator` answers.
-            let operator = Id::new("operator").unwrap();
+            // The deployment's operator, as the log's settings name it: the maker its own statements are signed as,
+            // Core's questions among them, and the party its people act for, both `operator` in the fixtures.
+            let operator = rutent_contracts::core_internal::DeploymentOperator {
+                maker: Id::new("operator").unwrap(),
+                party: Id::new("operator").unwrap(),
+            };
             admit_entry(&self.0, entry, through, &operator).map_err(AppendFailure::Refused)?;
             let index = self.0.len();
             let receipt: Receipt = serde_json::from_value(json!({

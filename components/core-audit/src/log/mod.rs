@@ -282,13 +282,13 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
         if let Some(&index) = self.state.recorded.get(&merkle::sha256(&bytes)) {
             return Ok(self.state.history[index].0.clone());
         }
-        admit_entry(
-            &self.state.history,
-            &entry,
-            through,
-            &self.settings.operator,
-        )
-        .map_err(AppendFailure::Refused)?;
+        // The deployment's operator as the rows read it: the maker it signs its own statements as, and its party.
+        let operator = rutent_contracts::core_internal::DeploymentOperator {
+            maker: self.settings.operator.clone(),
+            party: self.settings.operator_party.clone(),
+        };
+        admit_entry(&self.state.history, &entry, through, &operator)
+            .map_err(AppendFailure::Refused)?;
         self.state.register.admits(&self.settings, &entry)?;
         if self.store.append(&bytes).is_err() {
             self.stale = true;

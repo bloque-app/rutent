@@ -1,9 +1,10 @@
 //! The policy calls answered beside the engine (`T-024-02`) are decided by the engine's own fixed rules and the
 //! deployment's policy, over the same records: nothing the engine would refuse is permitted beside it.
 
-use rutent_contracts::core_internal::calls::{Authorisations, Charges};
+use rutent_contracts::core_internal::calls::{Authorisations, Charges, StuckOrders};
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, ChargeOutcome, RefusalClass, Role, What,
+    Actor, ActorKind, Answer, ChargeOutcome, Entry, Outcome, RefusalClass, Role, VerifiedEntry,
+    What,
 };
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
@@ -77,19 +78,105 @@ fn authorisation_given_in_a_role_the_fixed_rule_refuses_is_refused_beside_the_en
     );
 }
 
-// verifies: DEC-18
+/// The last verified entry the log took.
+fn last(core: &Core) -> VerifiedEntry {
+    core.log()
+        .entries()
+        .iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => Some(v.clone()),
+            Entry::Stated(_) => None,
+        })
+        .expect("a verified entry")
+}
+
+// verifies: DEC-18, REQ-AUZ-8
 #[test]
-fn charge_to_an_actor_the_register_doesnt_list_is_over_its_bound() {
+fn charge_to_an_actor_the_register_doesnt_list_is_refused_for_its_missing_input() {
     let core = accepted();
     let mut c = charge(&core);
     c.request = id("charge-of-a-stranger");
     c.caller.acts = id("someone-else");
     let answer = core.policy().charge(&c).unwrap();
+    let missing = RefusalClass::MissingInput;
+    assert_eq!(answer.outcome, ChargeOutcome::Refused { class: missing });
+    // The log holds policy's own answer, never a bound passed.
+    assert_eq!(last(&core).outcome, Outcome::Refused { class: missing });
+    // The register listing the login for another party: no accountable party, on the record too.
+    let mut elsewhere = Actor {
+        party: id("other-party"),
+        ..c.caller.clone()
+    };
+    core.registers().list(&elsewhere);
+    elsewhere.party = c.caller.party.clone();
+    c.request = id("charge-of-another-partys-login");
+    c.caller = elsewhere;
+    let answer = core.policy().charge(&c).unwrap();
+    let none = RefusalClass::NoAccountableParty;
+    assert_eq!(answer.outcome, ChargeOutcome::Refused { class: none });
+    assert_eq!(last(&core).outcome, Outcome::Refused { class: none });
+}
+
+// verifies: DEC-18, REQ-OPS-1
+#[test]
+fn routings_charge_says_when_core_counted_it() {
+    let core = accepted();
+    let counted: Vec<_> = core
+        .log()
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(VerifiedEntry {
+                what: What::Charge { counted_at, .. },
+                outcome,
+                ..
+            }) => Some((counted_at.is_some(), *outcome)),
+            _ => None,
+        })
+        .collect();
+    assert!(!counted.is_empty(), "the routing charged its questions");
     assert!(
-        matches!(answer.outcome, ChargeOutcome::Over { .. }),
-        "{:?}",
-        answer.outcome
+        counted
+            .iter()
+            .all(|(at, outcome)| *at == (*outcome == Outcome::Permitted {})),
+        "{counted:?}"
     );
+    assert!(counted.iter().any(|(at, _)| *at), "{counted:?}");
+}
+
+/// A move's outcome reported or confirmed through the assembly's policy reaches the engine, which appends its entry
+/// before it answers: here the log refuses it, as it must, since this order has no move whose outcome is unknown
+/// (`outcome-report-rests-on-its-move`, `unknown-outcome-settles-on-its-confirmation`), so nothing is answered and
+/// nothing recorded. A report of a real unknown outcome is `T-021-06`'s and the stuck scenarios' to drive.
+// verifies: DEC-18, REQ-AUZ-4
+#[test]
+fn a_moves_outcome_reported_or_confirmed_reaches_the_engine_and_its_log() {
+    use rutent_contracts::core_internal::calls::AppendFailure;
+    let core = accepted();
+    let request_of = |entry: &str| {
+        let path = format!(
+            "{}/../../contracts/core-internal/fixtures/valid/{entry}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let entry: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        entry["what"]["request"].clone()
+    };
+    let report: rutent_contracts::core_internal::OutcomeReport =
+        serde_json::from_value(request_of("verified-entry-of-an-outcome-reported")).unwrap();
+    let confirmation: rutent_contracts::core_internal::OutcomeConfirmation =
+        serde_json::from_value(request_of("verified-entry-of-an-outcome-confirmed")).unwrap();
+    let before = core.log().entries().len();
+    assert!(matches!(
+        core.policy().report_outcome(&report),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert!(matches!(
+        core.policy().confirm_outcome(&confirmation),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert_eq!(core.log().entries().len(), before, "nothing recorded");
 }
 
 // verifies: DEC-18
@@ -107,8 +194,10 @@ fn deployment_refusing_reaches_the_calls_answered_beside_the_engine() {
     );
     let mut c = charge(&core);
     c.request = id("charge-refused");
-    assert!(matches!(
+    let refused = RefusalClass::NotPermitted;
+    assert_eq!(
         core.policy().charge(&c).unwrap().outcome,
-        ChargeOutcome::Over { .. }
-    ));
+        ChargeOutcome::Refused { class: refused }
+    );
+    assert_eq!(last(&core).outcome, Outcome::Refused { class: refused });
 }

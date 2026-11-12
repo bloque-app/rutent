@@ -550,7 +550,11 @@ impl Env {
                 }
                 verified => verified.clone(),
             };
-            admit_entry(&history, &entry, Through::General, &operator().acts)
+            let deployment_operator = rutent_contracts::core_internal::DeploymentOperator {
+                maker: operator().acts,
+                party: operator().party,
+            };
+            admit_entry(&history, &entry, Through::General, &deployment_operator)
                 .map_err(|v| (i, v.0.to_owned()))?;
             history.push((log_receipt(i), entry));
         }
