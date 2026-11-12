@@ -85,6 +85,9 @@ pub use sign::Unwritten;
 /// How many fresh identifiers are drawn for a transaction before the source is taken as broken.
 const DRAWS: usize = 4;
 
+/// Why a part with nothing arrived for its next segment can't go on.
+const NOTHING_TO_MOVE: &str = "nothing arrived at the node for the next segment to move";
+
 /// What the segments reach. The assembly builds it; Core's clock, catalogue and exposures are those the snapshots are
 /// formed from.
 pub struct Parts<'a> {
@@ -177,7 +180,8 @@ pub enum SegmentOutcome {
     NotHandedOver(PlatformRefusal),
     /// It settled, on the evidence its `segment_settled` cites; what it gave out is what the next segment moves.
     Settled {
-        /// What it gave out at its destination.
+        /// What arrived at its destination net of its charge, as its tuple's terms report it: what the next segment
+        /// moves.
         amount_out: Amount,
         /// The evidence it settled on.
         evidence: Id,
@@ -350,6 +354,10 @@ struct InFlight {
     evidence: Option<(Id, Timestamp)>,
     ended: bool,
     outcome: Option<SegmentOutcome>,
+    /// The platform's refusal to begin it, kept before its result is appended.
+    begin_refused: Option<PlatformRefusal>,
+    /// The first verdict on what it gave back, kept: a later try reads the same, whatever changed since.
+    verdict: Option<Result<Counted, NotCounted>>,
     /// The drains taken for it, by id: their errors are its own.
     drains: Vec<Id>,
     /// The drain of its record, which reaches the log before its result.
@@ -567,12 +575,17 @@ impl Segments {
         let mut amount = part.operations[0].amount_in.clone();
         let mut accounted = Vec::new();
         for place in 0..part.operations.len() {
-            let done = self.hand_over(parts, live, place, &amount)?;
+            // A segment whose outcome is final stands as it is: a run that stopped after it goes on from the next
+            // one, with what it gave out.
+            let (done, standing) = match self.standing(live, place) {
+                Some(done) => (done, true),
+                None => (self.hand_over(parts, live, place, &amount)?, false),
+            };
             let next = match &done.outcome {
                 SegmentOutcome::Settled { amount_out, .. } => {
                     match PositiveAmount::new(amount_out.clone()) {
                         Some(next) => Some(next),
-                        None if place + 1 < part.operations.len() => {
+                        None if place + 1 < part.operations.len() && !standing => {
                             // Nothing arrived to move on: the part can't go on, and the order is told so.
                             record_route_refusal(
                                 parts.log,
@@ -581,7 +594,10 @@ impl Segments {
                                 live.record.record_id(),
                                 Some(live.order),
                                 &RouteRefused {
-                                    reason: RouteRefusal::NotAList,
+                                    reason: RouteRefusal::Malformed(
+                                        place + 1,
+                                        rutent_contracts::router_api::Violation(NOTHING_TO_MOVE),
+                                    ),
                                     class: OrderRefusalClass::NoRouteForAmount,
                                 },
                             )?;
@@ -600,6 +616,21 @@ impl Segments {
             }
         }
         Ok(Ran::Segments(accounted))
+    }
+
+    /// The segment at `place` of the part, as it stands, where its outcome is final.
+    fn standing(&self, live: &Live<'_>, place: usize) -> Option<Accounted> {
+        let segment = live.segments.get(place)?;
+        let flight = self
+            .flights
+            .get(&(live.order.as_str().to_owned(), segment.as_str().to_owned()))?;
+        let outcome = flight.outcome.clone().filter(is_final)?;
+        Some(Accounted {
+            segment: segment.clone(),
+            transaction: Some(flight.transaction.clone()),
+            effect: flight.effect.as_ref().map(|e| e.receipt.clone()),
+            outcome,
+        })
     }
 
     /// Hands over the part's segment at `place`, moving `amount`, or resumes it where it stopped, and accounts for it.
@@ -742,6 +773,8 @@ impl Segments {
                 evidence: None,
                 ended: false,
                 outcome: None,
+                begin_refused: None,
+                verdict: None,
                 drains: Vec::new(),
                 record: None,
             },
@@ -812,14 +845,22 @@ impl Segments {
             outcome,
         };
 
-        if !flight.begun {
-            if let Err(refusal) = parts.modules.begin_segment(&provider, &identifier) {
-                let outcome = SegmentOutcome::NotHandedOver(refusal);
-                self.result(parts, live, at, Outcome::Unanswered {})?;
-                release(parts.exposures);
-                self.finish(at, &outcome)?;
-                return Ok(accounted(outcome));
-            }
+        // A segment the platform wouldn't begin stays refused: its outcome is kept before its result is appended, so
+        // a run that stopped there finishes it so, and never begins it under a result that says it wasn't.
+        let refused = match flight.begin_refused {
+            Some(refusal) => Some(refusal),
+            None if !flight.begun => parts.modules.begin_segment(&provider, &identifier).err(),
+            None => None,
+        };
+        if let Some(refusal) = refused {
+            self.flight_mut(at)?.begin_refused = Some(refusal);
+            let outcome = SegmentOutcome::NotHandedOver(refusal);
+            self.result(parts, live, at, Outcome::Unanswered {})?;
+            release(parts.exposures);
+            self.finish(at, &outcome)?;
+            return Ok(accounted(outcome));
+        }
+        if !self.flight(at)?.begun {
             self.flight_mut(at)?.begun = true;
             // The live segment's calls, from the chosen record: a call it doesn't name is refused (`REQ-MDL-21`). A
             // record that can't name them names none, which fails closed.
@@ -844,11 +885,11 @@ impl Segments {
         if !self.flight(at)?.carried {
             // Acted on once for its receipt, whatever retries its append had, and whichever segment it came back
             // for (`INV-8`).
+            let started = parts.clock.now();
+            let drained_at = now(parts.clock)?;
             if !self.acted.insert(key(&effect.receipt)) {
                 return Err(SegmentsError::AlreadyActed(effect.receipt.clone()));
             }
-            let started = parts.clock.now();
-            let drained_at = now(parts.clock)?;
             let statement = self.flight(at)?.statement.clone();
             let answered = parts.modules.carry_out(&effect, &provider, &statement);
             // Everything that came back is kept before any step that can fail.
@@ -923,15 +964,23 @@ impl Segments {
         let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
         ))?;
-        let counted = judge(
-            parts.catalogue,
-            parts.clock.now().floor(),
-            &provider,
-            &self.flight(at)?.statement.statement,
-            cited.terms,
-            cited.quoted.as_ref(),
-            &bytes,
-        );
+        // Judged once: a later try reads the first verdict, so a key retired since can't undo a settled segment.
+        let counted = match &self.flight(at)?.verdict {
+            Some(verdict) => verdict.clone(),
+            None => {
+                let verdict = judge(
+                    parts.catalogue,
+                    parts.clock.now().floor(),
+                    &provider,
+                    &self.flight(at)?.statement.statement,
+                    cited.terms,
+                    cited.quoted.as_ref(),
+                    &bytes,
+                );
+                self.flight_mut(at)?.verdict = Some(verdict.clone());
+                verdict
+            }
+        };
         let first = place == 0;
         // A final outcome ends the segment and hands its record over before its result is appended, so the log
         // knows which release it ran on when it attributes the result: a release revoked mid-flight keeps its key
@@ -958,7 +1007,8 @@ impl Segments {
             Err(why) => return Ok(SegmentOutcome::NoResult(why)),
         };
         match counted {
-            Counted::Succeeded { amount_out, .. } => {
+            Counted::Succeeded { handed_on, .. } => {
+                let amount_out = handed_on;
                 let amount_out = Amount::new(amount_out)
                     .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
                 let flight = self.flight_mut(at)?;
@@ -1362,7 +1412,18 @@ impl Segments {
             .map(|e| e.receipt.clone())
             .ok_or(SegmentsError::Plan("a result follows its effect"))?;
         let when = now(parts.clock)?;
-        let (receipt, _) = self.built_step(parts.log, at, "result", || {
+        // The step is the outcome's own: an entry built for one outcome is never appended for another.
+        let step = match outcome {
+            Outcome::Done {} => "result: done",
+            Outcome::Failed {} => "result: failed",
+            Outcome::Unanswered {} => "result: unanswered",
+            _ => {
+                return Err(SegmentsError::Plan(
+                    "an effect's result is done, failed or unanswered",
+                ));
+            }
+        };
+        let (receipt, _) = self.built_step(parts.log, at, step, || {
             Ok(journal::verified(
                 live.core,
                 What::Result { effect },

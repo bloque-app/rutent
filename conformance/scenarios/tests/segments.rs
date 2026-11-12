@@ -720,14 +720,8 @@ fn segments_actual_settlement_time_is_recorded_beside_the_declared_one() {
     );
 }
 
-/// The withdrawal settled and the deposit waits on the person: the order waits between segments. Its customer
-/// reads its state and age; every read goes to the policy engine and is recorded. Under `T-021-02`'s default the
-/// operator reads an order only by a permission policy holds for it, and core-internal lets a permission be granted
-/// only to a regulator or a checker, so the operator's read is refused, recorded, until the owner's form rules
-/// otherwise; the read itself is the same call.
-// verifies: REQ-ORD-5
-#[test]
-fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
+/// An order whose withdrawal settled and whose deposit waits on the person, its clock moved on 120 seconds.
+fn order_waiting_between_segments() -> (World, Core) {
     let mut world = World::of(&[RESERVE]);
     let mut core = Core::over(&mut world);
     world.fleet.world().script_for(
@@ -741,18 +735,27 @@ fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
         SegmentOutcome::WaitingOnThePerson(_)
     ));
     core.clock.advance(120);
+    (world, core)
+}
+
+/// The order waits between segments. Its customer reads its state and how long it has been in it, after a read
+/// check the policy engine allows and records; another customer's read is refused, and recorded too.
+// verifies: REQ-ORD-5, REQ-AUZ-7
+#[test]
+fn orders_state_and_age_are_readable_by_its_customer() {
+    let (_world, mut core) = order_waiting_between_segments();
     let mut reads = Policy::new(std::rc::Rc::clone(&core.log));
-    let read = |core: &mut Core, reads: &mut Policy, reader, permission| {
-        core.segments.status(
-            reads,
+    let status = core
+        .segments
+        .status(
+            &mut reads,
             &*core.clock,
             &mut core.ids,
-            &reader,
-            permission,
+            &customer(),
+            None,
             &id(ORDER),
         )
-    };
-    let status = read(&mut core, &mut reads, customer(), None).expect("the customer reads it");
+        .expect("the customer reads it");
     assert_eq!(status.state, OrderState::FirstSegmentSettled);
     assert_eq!(
         status.parts,
@@ -762,28 +765,97 @@ fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
         status.age_seconds, 120,
         "the time it has waited in its state"
     );
-    let by_permission = id("perm-operations");
-    assert!(
-        matches!(
-            read(&mut core, &mut reads, operator(), Some(&by_permission)),
-            Err(StatusError::Refused(_))
-        ),
-        "the operator reads by policy, which holds no permission of its yet"
-    );
     let stranger = rutent_contracts::core_internal::Actor {
         party: id("another-customer"),
         ..customer()
     };
     assert!(matches!(
-        read(&mut core, &mut reads, stranger, None),
+        core.segments.status(
+            &mut reads,
+            &*core.clock,
+            &mut core.ids,
+            &stranger,
+            None,
+            &id(ORDER)
+        ),
         Err(StatusError::Refused(_))
     ));
-    // Each read is recorded, allowed or refused.
     assert_eq!(
         core.log
             .borrow()
             .count(|w| matches!(w, What::CheckRead { .. })),
-        3
+        2,
+        "each read is recorded, allowed or refused"
+    );
+}
+
+/// The operator's read of the same order is the same call, decided and recorded by the policy engine. Today it is
+/// refused: `T-021-02` lets the operator read an order only by a permission, which core-internal grants only to a
+/// regulator or a checker.
+// T-021-02b: once policy has a read kind for an order's state that the operator holds, this asserts the read is
+// allowed and folds back into `orders_state_and_age_are_readable_by_its_customer`, as the row's one test.
+// verifies: REQ-ORD-5, REQ-AUZ-7
+#[test]
+fn operators_read_of_state_and_age_waits_on_its_read_kind() {
+    let (_world, mut core) = order_waiting_between_segments();
+    let mut reads = Policy::new(std::rc::Rc::clone(&core.log));
+    let by_permission = id("perm-operations");
+    for permission in [None, Some(&by_permission)] {
+        assert!(
+            matches!(
+                core.segments.status(
+                    &mut reads,
+                    &*core.clock,
+                    &mut core.ids,
+                    &operator(),
+                    permission,
+                    &id(ORDER)
+                ),
+                Err(StatusError::Refused(_))
+            ),
+            "{permission:?}"
+        );
+    }
+    assert_eq!(
+        core.log
+            .borrow()
+            .count(|w| matches!(w, What::CheckRead { .. })),
+        2,
+        "each refusal is recorded"
+    );
+}
+
+/// The withdrawal's result is judged and counts, then the log can't take its stated entry. Between the tries the
+/// catalogue no longer knows the reserve's key. The run that goes on reads the first verdict: the withdrawal settles
+/// on the result that counted when it came.
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedResult, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    let stopped = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut ProvidersWord,
+        &session,
+    );
+    assert!(stopped.is_err(), "{stopped:?}");
+    let mut retired = rutent_prov::catalogue::Catalogue::new();
+    let context = world.context();
+    retired.set_context(context.deployment.clone(), &context.protocol_version);
+    let ran = core.run_over(&retired, &mut world.fleet.platform);
+    let done = segments(&ran);
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
     );
 }
 
@@ -815,7 +887,7 @@ fn retried_effect_append_is_acted_on_once() {
     assert!(core.segments.acted_on(&receipt));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
-    // The same segment handed over again is refused before anything is asked or moved.
+    // The part run again stands as it is: nothing is asked or moved.
     let asked = core.policy.asked.len();
     let session = world.context().session;
     let again = core.try_run_with(
@@ -825,7 +897,7 @@ fn retried_effect_append_is_acted_on_once() {
         &mut ProvidersWord,
         &session,
     );
-    assert_eq!(again, Err(SegmentsError::AlreadyHandedOver(id(WITHDRAWAL))));
+    assert_eq!(again, Ok(Ran::Segments(done.clone())));
     assert_eq!(core.policy.asked.len(), asked);
     assert_eq!(handled(&world) - before, 2);
 
@@ -1407,5 +1479,183 @@ fn drain_the_log_cant_take_holds_up_no_other_segment() {
     assert!(
         records[0] < results[0] && records[1] < results[1],
         "each record before its result"
+    );
+}
+
+/// The deposit stops after the withdrawal settled: first its effect can't be appended, then its result can't. Running
+/// the part again takes the settled withdrawal as it stands, hands the deposit what it gave out, and settles it,
+/// moving nothing twice.
+// verifies: INV-7, INV-8, REQ-ORD-21
+#[test]
+fn part_resumes_after_its_first_segment_settled() {
+    for on in [On::EffectOf(DEPOSIT), On::LaterResult] {
+        let mut world = World::of(&[RESERVE]);
+        let mut core = Core::over(&mut world);
+        for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+            core.log
+                .borrow_mut()
+                .faults
+                .push_back((on, Fault::Unavailable));
+        }
+        let before = handled(&world);
+        let session = world.context().session;
+        let stopped = core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut ProvidersWord,
+            &session,
+        );
+        assert!(stopped.is_err(), "{on:?}: {stopped:?}");
+        let ran = core.run(&mut world);
+        let done = segments(&ran);
+        assert_eq!(done.len(), 2, "{on:?}: {done:?}");
+        assert!(
+            done.iter()
+                .all(|d| matches!(d.outcome, SegmentOutcome::Settled { .. })),
+            "{on:?}: {done:?}"
+        );
+        assert_eq!(handled(&world) - before, 2, "{on:?}: each operation once");
+        assert_eq!(core.log.borrow().count(is_result), 2, "{on:?}");
+        core.admitted(&world.catalogue)
+            .unwrap_or_else(|e| panic!("{on:?}: {e:?}"));
+        // Run again once all is final: the outcomes as they stand, and nothing asked or moved.
+        let asked = core.policy.asked.len();
+        let again = core.run(&mut world);
+        assert_eq!(segments(&again), done, "{on:?}");
+        assert_eq!(core.policy.asked.len(), asked, "{on:?}");
+        assert_eq!(handled(&world) - before, 2, "{on:?}");
+    }
+}
+
+/// The platform won't begin the deposit, and the log can't take its `unanswered` result. Run again with the platform
+/// willing: the deposit is finished as it was, refused, its result `unanswered`; it is never begun or carried out
+/// under a result that says it wasn't.
+// verifies: REQ-ORD-1, INV-7
+#[test]
+fn segment_the_platform_wouldnt_begin_is_finished_as_refused() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::LaterResult, Fault::Unavailable));
+    }
+    let before = handled(&world);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let session = SuiteContext::default().session;
+    {
+        let mut watched = Watched::new(&mut world.fleet.platform);
+        watched.refuse_begin = Some(1);
+        let stopped = core.try_run_with(
+            &catalogue,
+            &mut watched,
+            &mut NoProxy,
+            &mut ProvidersWord,
+            &session,
+        );
+        assert!(stopped.is_err(), "{stopped:?}");
+    }
+    let ran = core.run_over(&catalogue, &mut world.fleet.platform);
+    world.catalogue = catalogue;
+    let done = segments(&ran);
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    assert!(
+        matches!(done[1].outcome, SegmentOutcome::NotHandedOver(_)),
+        "{done:?}"
+    );
+    assert_eq!(
+        handled(&world) - before,
+        1,
+        "the deposit was never carried out"
+    );
+    let log = core.log.borrow();
+    let results: Vec<_> = log
+        .verified()
+        .into_iter()
+        .filter(|v| is_result(&v.what))
+        .map(|v| v.outcome)
+        .collect();
+    assert_eq!(results, vec![Outcome::Done {}, Outcome::Unanswered {}]);
+    drop(log);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The withdrawal charges 1 000. Under its tuple's `net` reporting, what it gave out and its charge are within what
+/// it took in, and the deposit is handed what it gave out; a result whose output and charge together come to more
+/// than it took in doesn't count. Under `gross`, its output includes its charge, and the deposit is handed what it
+/// gave out less the charge.
+// verifies: REQ-ORD-21, INV-1
+#[test]
+fn next_segment_is_handed_what_arrived_net_of_the_charge_as_the_tuple_reports_it() {
+    let run = |gross: bool, out: &'static str| {
+        let mut world = World::of(&[RESERVE]);
+        let mut core = Core::over(&mut world);
+        if gross {
+            let mut record = serde_json::to_value(&core.record).unwrap();
+            for figure in record["snapshot"]["figures"].as_array_mut().unwrap() {
+                if figure["value"]["kind"] == "reserve_tuple" {
+                    figure["value"]["tuple"]["terms"]["reporting"] = "gross".into();
+                }
+            }
+            core.record = serde_json::from_value(record).expect("the record takes gross terms");
+        }
+        let key = statements_key_of(RESERVE);
+        let catalogue = std::mem::replace(
+            &mut world.catalogue,
+            rutent_prov::catalogue::Catalogue::new(),
+        );
+        let mut watched = Watched::new(&mut world.fleet.platform);
+        watched.alter = Some((
+            0,
+            Box::new(move |bytes| {
+                resigned(&bytes, &key, |v| {
+                    v["statement"]["outcome"]["fee"]["amount"] = "1000".into();
+                    v["statement"]["outcome"]["amount_out"] = out.into();
+                })
+            }),
+        ));
+        let ran = core.run_over(&catalogue, &mut watched);
+        let amounts = watched.amounts();
+        drop(watched);
+        (segments(&ran).to_vec(), amounts)
+    };
+    let (done, amounts) = run(false, "999000");
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    assert_eq!(
+        amounts,
+        vec![AMOUNT.to_owned(), "999000".to_owned()],
+        "net: what it gave out"
+    );
+    let (done, amounts) = run(false, "999500");
+    assert_eq!(
+        done[0].outcome,
+        SegmentOutcome::NoResult(NotCounted::GivesOutMore)
+    );
+    assert_eq!(
+        amounts.len(),
+        1,
+        "net: out and charge beyond what came in hands nothing on"
+    );
+    let (done, amounts) = run(true, "1000000");
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    assert_eq!(
+        amounts,
+        vec![AMOUNT.to_owned(), "999000".to_owned()],
+        "gross: what it gave out less its charge"
     );
 }

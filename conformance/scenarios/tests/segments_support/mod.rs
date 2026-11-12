@@ -166,6 +166,8 @@ pub enum On {
     StatedResult,
     /// The input that binds a segment's provider.
     Bound,
+    /// A result, once the log holds one already.
+    LaterResult,
 }
 
 impl On {
@@ -204,7 +206,21 @@ pub struct TestLog {
 impl TestLog {
     fn take(&mut self, entry: &Entry, through: Through) -> Result<Receipt, AppendFailure> {
         entry.check().map_err(AppendFailure::Refused)?;
+        let results = self
+            .entries
+            .iter()
+            .filter(
+                |(e, _)| matches!(e, Entry::Verified(v) if matches!(v.what, What::Result { .. })),
+            )
+            .count();
+        let later_result = matches!(entry, Entry::Verified(v) if matches!(v.what, What::Result { .. }))
+            && results > 0;
         let fault = match self.faults.front() {
+            Some((On::LaterResult, fault)) if later_result => {
+                let fault = *fault;
+                self.faults.pop_front();
+                Some(fault)
+            }
             Some((on, fault)) if on.matches(entry) => {
                 let fault = *fault;
                 self.faults.pop_front();
@@ -1284,6 +1300,9 @@ pub struct Watched<'a> {
     pub transactions: Rc<RefCell<Vec<String>>>,
     /// Each drain of events holds, besides, a state read the contract can't carry: one of no transaction.
     pub spoil: bool,
+    /// The platform refuses to begin the segment at this place in the calls to begin, once.
+    pub refuse_begin: Option<usize>,
+    begun: usize,
 }
 
 impl<'a> Watched<'a> {
@@ -1297,6 +1316,8 @@ impl<'a> Watched<'a> {
             takes: None,
             transactions: Rc::new(RefCell::new(Vec::new())),
             spoil: false,
+            refuse_begin: None,
+            begun: 0,
         }
     }
 
@@ -1320,6 +1341,12 @@ impl Modules for Watched<'_> {
         provider: &Id,
         transaction: &Identifier,
     ) -> Result<String, PlatformRefusal> {
+        let place = self.begun;
+        self.begun += 1;
+        if self.refuse_begin == Some(place) {
+            self.refuse_begin = None;
+            return Err(PlatformRefusal::Unavailable);
+        }
         Modules::begin_segment(&mut *self.platform, provider, transaction)
     }
 

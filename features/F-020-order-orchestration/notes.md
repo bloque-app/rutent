@@ -597,3 +597,45 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   only by a permission, which core-internal grants only to regulators and checkers (the owner's form); Core's
   `judge` counting a result from a module the operator publishes, which has no advertisement (first needed by
   `T-020-13`'s hand-on).
+
+### T-020-08, review answers on 00f4599
+
+- **N1, a part resumes past a settled segment.** `run_part` takes a segment whose outcome is final as it stands
+  (`Segments::standing`) and goes on from the next with what it gave out, so a run that stopped on the deposit, at
+  its effect or its result, resumes there. A part run again once all is final answers its outcomes as they stand,
+  asking and moving nothing, rather than refusing the first segment as handed over; `hand_over` still refuses one
+  that is, should anything reach it so. The zero-amount refusal is recorded only when the settlement is fresh. Test
+  `part_resumes_after_its_first_segment_settled`, over a fault on the deposit's effect and on its result, written
+  first and seen red (`AlreadyHandedOver("p1-s1")`).
+- **N2, a refused begin stays refused.** The platform's refusal to begin a segment is kept with the segment before
+  its `unanswered` result is appended, so a run that stopped there finishes it as refused, never begins it again,
+  and never settles it under a result built as `unanswered`. Each result step is keyed to its outcome
+  (`result: done`, `result: failed`, `result: unanswered`), so an entry built for one outcome is never appended for
+  another. Test `segment_the_platform_wouldnt_begin_is_finished_as_refused`, a platform refusing the deposit's begin
+  once and the log refusing its result every try; written first, seen red.
+- **The first verdict stands.** The verdict on what a segment's operation gave back is kept with the segment, so a
+  later try reads it, not a new judgement at a later clock under keys that may have changed. Test
+  `first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries`.
+- **The charge as the tuple reports it** (`REQ-CAT-11`). For a segment that keeps its asset, `judge::handed_on`
+  reads the tuple's `reporting`: under `net`, what it gave out and its charge together are at most what it took in,
+  and what it gave out is handed on; under `gross`, what it gave out is at most what it took in, and what it gave out
+  less its charge is handed on. `Counted::Succeeded` carries both, and `Settled::amount_out` is what is handed on. A
+  conversion's charge is in the asset it takes in, so its output is handed on as it is. Tests:
+  `judge`'s unit test, and `next_segment_is_handed_what_arrived_net_of_the_charge_as_the_tuple_reports_it`, with a
+  charge of 1 000 under each reporting. **Hand-off to `T-020-07`:** the router doesn't read `reporting` either, so
+  what a route prices for the next segment under `gross` terms includes the charge; pricing should take it off.
+- **`REQ-ORD-5`, split until `T-021-02b`.** `orders_state_and_age_are_readable_by_its_customer` asserts the
+  customer's read; `operators_read_of_state_and_age_waits_on_its_read_kind` asserts today's refusal of the
+  operator's, recorded, with a `// T-021-02b:` note to fold it back once policy has a read kind the operator holds.
+- **Nits.** The zero-amount refusal's reason names the next segment's place and that nothing arrived for it to move
+  (`RouteRefusal::Malformed`, which carries a place and a reason; the log records the class alone). The effect is
+  marked acted on after Core's clock is read, so a clock that can't be read leaves it unacted.
+- **The README exception.** `PLAN.md` §4.4 gives `contracts/` to `T-020-01` and `T-020-02` alone in `M3`. The
+  hand-off line in `contracts/core-internal/README.md` (an operation that ended with no answer has no `HandedOver`
+  item) is this row's one exception, made on the coordinator's word because the gap is this row's to report and
+  the contract's hand-offs are where a later row reads it; it changes no type, schema or fixture, and the item itself
+  is a new `F-020` row with a core-internal bump.
+- **Rule-off, each red:** the standing segments skipped (the resume test); the begin refusal kept (the refused-begin
+  test); the first verdict kept (the verdict test); `net`'s charge counted within what came in, and `gross`'s
+  charge taken off what is handed on (the reporting test). Keying each result step to its outcome is defence in
+  depth behind the kept begin refusal, which no test reaches alone.

@@ -20,7 +20,7 @@
 //! A result that doesn't count is no result: the segment waits for one that does, and no outcome is recorded on it.
 
 use rutent_contracts::provider_role::{
-    AmountMismatch, ConversionOutcome, Operation, RESULT_SHAPE, Refusal, Remainder,
+    AmountMismatch, ConversionOutcome, Operation, RESULT_SHAPE, Refusal, Remainder, Reporting,
     ReserveMovementOutcome, ResultBody, Statement, Terms, TransferOutcome,
 };
 use rutent_contracts::router_api::Id;
@@ -88,8 +88,11 @@ pub enum Counted {
     Succeeded {
         /// What left the origin, the charge included.
         amount_in: String,
-        /// What it gave out at its destination: the amount the next segment is handed (`REQ-ORD-21`).
+        /// What it says it gave out at its destination, as its tuple's terms report it.
         amount_out: String,
+        /// What arrived net of its charge: the amount the next segment is handed (`REQ-ORD-21`). Under `net`
+        /// reporting, `amount_out`; under `gross`, `amount_out` less the charge.
+        handed_on: String,
         /// What stayed at the origin, where the operation fixed what it takes in.
         remainder: Option<Remainder>,
     },
@@ -135,34 +138,43 @@ pub fn judge(
                     NotCounted::Amounts(broken)
                 }
             })?;
-    let settled = |amount_in: &str, amount_out: &str| Counted::Succeeded {
+    let settled = |amount_in: &str, amount_out: &str, handed_on: String| Counted::Succeeded {
         amount_in: amount_in.to_owned(),
         amount_out: amount_out.to_owned(),
+        handed_on,
         remainder: remainder.clone(),
     };
-    // Same asset: no more out than in.
-    let kept = |amount_in: &str, amount_out: &str| match (whole(amount_in), whole(amount_out)) {
-        (Some(i), Some(o)) if o <= i => Ok(settled(amount_in, amount_out)),
-        _ => Err(NotCounted::GivesOutMore),
+    // Same asset: no more out than in, the charge counted as the tuple's terms report it.
+    let kept = |amount_in: &str, amount_out: &str, fee: &str| match handed_on(
+        terms.reporting,
+        amount_in,
+        amount_out,
+        fee,
+    ) {
+        Some(handed) => Ok(settled(amount_in, amount_out, handed)),
+        None => Err(NotCounted::GivesOutMore),
     };
-    // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most.
+    // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most. Its charge
+    // is in the asset it takes in, so what it gives out is handed on as it is.
     let converted = |amount_in: &str, amount_out: &str| {
         if converts_within(amount_in, amount_out, quoted) {
-            Ok(settled(amount_in, amount_out))
+            Ok(settled(amount_in, amount_out, amount_out.to_owned()))
         } else {
             Err(NotCounted::GivesOutMore)
         }
     };
     match &result.statement {
         ResultBody::Withdrawal(r) | ResultBody::Deposit(r) => match &r.outcome {
-            ReserveMovementOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out),
+            ReserveMovementOutcome::Succeeded(s) => {
+                kept(&s.amount_in, &s.amount_out, &s.fee.amount)
+            }
             ReserveMovementOutcome::Failed(_) => Ok(Counted::Failed),
             ReserveMovementOutcome::Unknown(_) => Ok(Counted::Unknown),
             ReserveMovementOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
             ReserveMovementOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         ResultBody::Transfer(r) => match &r.outcome {
-            TransferOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out),
+            TransferOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out, &s.fee.amount),
             TransferOutcome::Failed(_) => Ok(Counted::Failed),
             TransferOutcome::Unknown(_) => Ok(Counted::Unknown),
             TransferOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
@@ -176,6 +188,22 @@ pub fn judge(
             ConversionOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         _ => Err(NotCounted::AnotherOperation),
+    }
+}
+
+/// What a segment that keeps its asset hands on, by how its tuple reports its charge (`REQ-CAT-11`): under `net`,
+/// what it gave out, which with its charge is at most what it took in; under `gross`, what it gave out, at most what
+/// it took in, less its charge, which it includes. `None` where the amounts break that, or can't be read.
+pub fn handed_on(
+    reporting: Reporting,
+    amount_in: &str,
+    amount_out: &str,
+    fee: &str,
+) -> Option<String> {
+    let (taken, out, fee) = (whole(amount_in)?, whole(amount_out)?, whole(fee)?);
+    match reporting {
+        Reporting::Net => (out.checked_add(fee)? <= taken).then(|| out.to_string()),
+        Reporting::Gross => (out <= taken).then_some(out.checked_sub(fee)?.to_string()),
     }
 }
 
@@ -209,7 +237,34 @@ fn transaction_named(result: &ResultBody) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quoted, conversion_bound, converts_within};
+    use super::{Quoted, conversion_bound, converts_within, handed_on};
+    use rutent_contracts::provider_role::Reporting;
+
+    /// What a segment that keeps its asset hands on, with a charge: under `net`, what it gave out, its charge on top
+    /// within what it took in; under `gross`, what it gave out less the charge it includes.
+    // verifies: REQ-ORD-21, INV-1
+    #[test]
+    fn what_a_segment_hands_on_follows_how_its_tuple_reports_its_charge() {
+        // Net: 999 000 out with a charge of 1 000 from 1 000 000 in.
+        assert_eq!(
+            handed_on(Reporting::Net, "1000000", "999000", "1000"),
+            Some("999000".into())
+        );
+        // Net: out and charge together more than came in.
+        assert_eq!(handed_on(Reporting::Net, "1000000", "999500", "1000"), None);
+        // Gross: 1 000 000 out, the charge of 1 000 within it, so 999 000 is handed on.
+        assert_eq!(
+            handed_on(Reporting::Gross, "1000000", "1000000", "1000"),
+            Some("999000".into())
+        );
+        // Gross: more out than in.
+        assert_eq!(
+            handed_on(Reporting::Gross, "1000000", "1000001", "1000"),
+            None
+        );
+        // Gross: a charge above what it gave out.
+        assert_eq!(handed_on(Reporting::Gross, "1000", "500", "1000"), None);
+    }
 
     fn quoted(slippage_bps: Option<u16>) -> Quoted {
         Quoted {
