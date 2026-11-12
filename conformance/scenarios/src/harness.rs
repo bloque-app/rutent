@@ -109,6 +109,9 @@ pub enum Fault {
         /// The operation's kind, such as `deposit`.
         kind: String,
     },
+    /// From now on, the destination's network ties each deposit to the first movement to its account of its amount:
+    /// a reserve paying two orders with one payment (`T-020-09`, `REQ-ORD-38`).
+    OnePaymentForTwo,
 }
 
 /// One step of a scenario's when.
@@ -132,6 +135,9 @@ pub enum Step {
     Advance(u64),
     /// The state machine moves to the swap environment, now.
     Swap,
+    /// Core, stopped by a planted crash or not, is opened again on its disk and goes on: the providers, their networks
+    /// and the state machine's host as they stand ([`Core::reopened`]). Orders it was running stay where they stopped.
+    Restart,
 }
 
 /// One named check of a scenario's then.
@@ -281,8 +287,26 @@ impl Scenario {
         let mut ran: Vec<Id> = Vec::new();
         let mut session: Option<Id> = None;
         let mut crashed = false;
+        let mut down = false;
         let mut stopped = Vec::new();
         for step in &self.when {
+            if *step == Step::Restart {
+                let swap_to = core.swap_to.take();
+                core = core.reopened(&config, environment).unwrap_or_else(|e| {
+                    panic!(
+                        "scenario `{}`, seed {seed}: Core wasn't opened again: {e:?}",
+                        self.name
+                    )
+                });
+                core.swap_to = swap_to;
+                // The reopened Core's policy opens its own sessions.
+                session = None;
+                down = false;
+                continue;
+            }
+            if down {
+                continue;
+            }
             let done = catch_unwind(AssertUnwindSafe(|| {
                 take(
                     &mut core,
@@ -307,14 +331,16 @@ impl Scenario {
                     "scenario `{}`, seed {seed}: step {step:?} failed: {e:?}",
                     self.name
                 ),
+                // Core stopped: the steps after it wait for a restart, if one comes.
                 Err(panic) if is_crash(&*panic) => {
                     crashed = true;
-                    break;
+                    down = true;
                 }
                 Err(panic) => std::panic::resume_unwind(panic),
             }
         }
-        let mut run = Run::read(self, seed, core, orders, crashed);
+        let mut run = Run::read(self, seed, core, orders, down);
+        run.crashed = crashed;
         run.stopped = stopped;
         run
     }
@@ -434,6 +460,7 @@ fn take(
                     .world()
                     .script_for(provider, kind, Behaviour::silent());
             }
+            Fault::OnePaymentForTwo => core.tie_payments_by_destination(),
         },
         Step::Advance(seconds) => core.clock.advance(*seconds),
         Step::Swap => {
@@ -442,6 +469,8 @@ fn take(
                 core.feed.swap(to)?;
             }
         }
+        // `Scenario::play` opens Core again, holding what it needs to.
+        Step::Restart => {}
     }
     Ok(())
 }

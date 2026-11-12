@@ -20,6 +20,11 @@ use crate::sim::{Installed, SimWorld};
 struct Read {
     networks: BTreeMap<String, SimulatedNetwork>,
     books: BTreeMap<String, Vec<BookEntry>>,
+    /// Every movement recorded on each network, in the order first read, with where it went and how much: what a
+    /// network that ties a deposit by its destination and amount reads.
+    seen: BTreeMap<String, Vec<(MovementId, String, String)>>,
+    /// The planted fault: a deposit tied to the first movement to its destination of its amount.
+    ties: bool,
 }
 
 /// The simulated networks and the reserves' books, as Core last read them.
@@ -57,6 +62,17 @@ impl Readings {
         }
     }
 
+    /// From now on, a movement is tied to a segment by its destination and amount, the first such movement on the
+    /// network, rather than by its transaction: as a reserve paying two orders with one payment would have it.
+    pub(crate) fn tie_by_destination(&self) {
+        self.read.borrow_mut().ties = true;
+    }
+
+    /// Whether the planted fault ties movements by destination and amount.
+    pub(crate) fn ties(&self) -> bool {
+        self.read.borrow().ties
+    }
+
     /// Reads `world` again: every network and book as it stands now.
     pub(crate) fn refresh(&self, world: &SimWorld) {
         let mut read = self.read.borrow_mut();
@@ -65,10 +81,32 @@ impl Readings {
                 read.networks.insert(network.clone(), net.clone());
             }
         }
+        let recorded: Vec<rutent_conformance::sim::Movement> = world
+            .delivered()
+            .iter()
+            .filter_map(|d| serde_json::from_str(&d.body).ok())
+            .collect();
+        for m in recorded {
+            let Some(id) = MovementId::new(m.id.clone()) else {
+                continue;
+            };
+            let seen = read.seen.entry(m.network.clone()).or_default();
+            if !seen.iter().any(|(i, ..)| *i == id) {
+                seen.push((id, m.destination, m.amount));
+            }
+        }
         for reserve in self.reserves.iter() {
             read.books
                 .insert(reserve.clone(), world.journal(reserve).to_vec());
         }
+    }
+}
+
+impl Readings {
+    fn status_of(&self, read: &Read, network: &str, id: &MovementId) -> Status {
+        read.networks
+            .get(network)
+            .map_or(Status::Unknown, |net| net.status(id))
     }
 }
 
@@ -84,15 +122,26 @@ impl PublicRecords for Readings {
     }
 
     fn status(&self, network: &str, id: &MovementId) -> Status {
-        self.read
-            .borrow()
-            .networks
-            .get(network)
-            .map_or(Status::Unknown, |net| net.status(id))
+        self.status_of(&self.read.borrow(), network, id)
     }
 
     fn movement(&self, network: &str, transaction: &Id) -> Option<Moved> {
         let id = MovementId::new(transaction.as_str())?;
+        let tied = {
+            let read = self.read.borrow();
+            match (read.ties, self.status_of(&read, network, &id)) {
+                (true, Status::Pending(m) | Status::Final(m)) => read
+                    .seen
+                    .get(network)
+                    .and_then(|seen| {
+                        seen.iter()
+                            .find(|(_, to, amount)| *to == m.destination && *amount == m.amount)
+                    })
+                    .map(|(first, ..)| first.clone()),
+                _ => None,
+            }
+        };
+        let id = tied.unwrap_or(id);
         match self.status(network, &id) {
             Status::Pending(m) | Status::Final(m) => Some(Moved {
                 id,

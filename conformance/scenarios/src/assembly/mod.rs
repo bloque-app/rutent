@@ -404,6 +404,16 @@ impl Destinations for Owners {
     }
 }
 
+/// What goes on across a restart of Core: what is outside it, and the source of its fresh identifiers.
+struct Carried {
+    fleet: Fleet,
+    installed: Vec<Installed>,
+    clock: SharedClock,
+    feed: Feed,
+    fresh: Seeded,
+    ties: bool,
+}
+
 /// Core, put together.
 pub struct Core {
     /// Core's one clock.
@@ -505,27 +515,78 @@ impl Core {
         environment: &mut dyn Environment,
         disk: Disk,
     ) -> Result<Self, AssemblyError> {
-        let context = context();
-        // The platform and the simulated providers, staging set explicitly.
-        let mut fleet = Fleet::with_context(config.deadline, context.clone());
-        let installed: Vec<Installed> = config
-            .providers
-            .iter()
-            .map(|spec| fleet.install(spec.clone()))
-            .collect();
-        fleet.platform.set_staging(config.staging.policy());
+        Self::assemble_with(config, environment, disk, None)
+    }
 
-        // First trust in a provider is its grant's, and an advertisement made before its grant rides on none: Core's
-        // clock starts before the earliest advertisement was made, for the grants.
-        let earliest = installed
-            .iter()
-            .filter_map(|one| {
-                rutent_contracts::router_api::Timestamp::new(&one.advertisement.statement().made_at)
-            })
-            .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
-            .min()
-            .unwrap_or(kit::START);
-        let clock = SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+    /// Core opened again on its disk after it stopped (`T-020-09`): what is outside Core goes on as it stands (the
+    /// platform with the providers and their networks, the state machine's host, the clock), and Core's own parts are
+    /// put together again over what the disk holds: the log and the evidence store read back, and, from the log,
+    /// what the grading took (`Closing::recorded`). The rest of Core's own record (intake's, the segments', `Issued`)
+    /// is in memory and starts empty (`F-030`); the providers are granted again on the reopened log.
+    ///
+    /// # Errors
+    ///
+    /// If Core can't be put together again.
+    pub fn reopened(
+        self,
+        config: &Config,
+        environment: &mut dyn Environment,
+    ) -> Result<Self, AssemblyError> {
+        let carried = Carried {
+            fleet: self.fleet,
+            installed: self.installed,
+            clock: self.clock,
+            feed: self.feed,
+            fresh: self.fresh,
+            ties: self.readings.ties(),
+        };
+        Self::assemble_with(config, environment, self.disk, Some(carried))
+    }
+
+    fn assemble_with(
+        config: &Config,
+        environment: &mut dyn Environment,
+        disk: Disk,
+        carried: Option<Carried>,
+    ) -> Result<Self, AssemblyError> {
+        let context = context();
+        let reopened = carried.is_some();
+        let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
+            Some(c) => (
+                c.fleet,
+                c.installed,
+                c.clock,
+                Some(c.feed),
+                Some(c.fresh),
+                c.ties,
+            ),
+            None => {
+                // The platform and the simulated providers, staging set explicitly.
+                let mut fleet = Fleet::with_context(config.deadline, context.clone());
+                let installed: Vec<Installed> = config
+                    .providers
+                    .iter()
+                    .map(|spec| fleet.install(spec.clone()))
+                    .collect();
+                fleet.platform.set_staging(config.staging.policy());
+
+                // First trust in a provider is its grant's, and an advertisement made before its grant rides on
+                // none: Core's clock starts before the earliest advertisement was made, for the grants.
+                let earliest = installed
+                    .iter()
+                    .filter_map(|one| {
+                        rutent_contracts::router_api::Timestamp::new(
+                            &one.advertisement.statement().made_at,
+                        )
+                    })
+                    .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
+                    .min()
+                    .unwrap_or(kit::START);
+                let clock =
+                    SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+                (fleet, installed, clock, None, None, false)
+            }
+        };
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
         let (store, log) = read_back(&disk, &clock).map_err(AssemblyError::Log)?;
@@ -597,8 +658,12 @@ impl Core {
             .flat_map(|s| kit::reserve_prices(&s.provider))
             .collect();
 
-        let feed =
-            Feed::new(environment, config.delivery, config.seed).map_err(AssemblyError::Host)?;
+        let feed = match carried_feed {
+            Some(feed) => feed,
+            None => {
+                Feed::new(environment, config.delivery, config.seed).map_err(AssemblyError::Host)?
+            }
+        };
         let mut core = Core {
             general: GeneralHandle(Rc::clone(&log)),
             log,
@@ -622,7 +687,7 @@ impl Core {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
             },
-            fresh: Seeded::new(config.seed),
+            fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds(&context),
             prices,
             quotes: BTreeMap::new(),
@@ -637,7 +702,15 @@ impl Core {
         // scenario's start, and each advertisement is recorded as received then.
         // What the grading reads, and what it took, rebuilt from the log the disk holds (`T-020-09`).
         core.readings = grading::Readings::of(&core.installed);
+        if ties {
+            core.readings.tie_by_destination();
+        }
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
+        if reopened {
+            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
+            core.relist();
+            return Ok(core);
+        }
         let installed = core.installed.clone();
         for one in &installed {
             core.grant(one)?;
@@ -656,6 +729,12 @@ impl Core {
             .values()
             .filter_map(|bytes| record_in(bytes))
             .collect()
+    }
+
+    /// From now on, the destination's network ties each deposit to the first movement to its account of its amount, as
+    /// a reserve paying two orders with one payment would have it: a fault the scenarios plant (`T-020-09`).
+    pub fn tie_payments_by_destination(&mut self) {
+        self.readings.tie_by_destination();
     }
 
     /// The log.
@@ -768,6 +847,85 @@ impl Core {
                 .map_err(|e| listing("the grant's result", e))?;
         }
         Ok(())
+    }
+
+    /// Core's catalogue rebuilt from its log, as after a restart: each tuple granted by a `done` grant, at its effect's
+    /// time and under its id, as [`Core::grant`] granted it, and each advertisement the log holds joined at the time
+    /// the log received it, as [`Core::advertise`] joined it.
+    fn relist(&mut self) {
+        let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let done: Vec<&Receipt> = entries
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(v) if v.outcome == (Outcome::Done {}) => match &v.what {
+                    What::Result { effect } => Some(effect),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let decider = kit::operator_login();
+        for (receipt, entry) in &entries {
+            let Entry::Verified(v) = entry else {
+                if let Entry::Stated(s) = entry
+                    && s.what.statement.as_str() == ADVERTISEMENT_SHAPE
+                    && let Some(one) = self.installed.iter().find(|one| {
+                        one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
+                    })
+                {
+                    let one = one.clone();
+                    let at = rutent_core_authz::session::instant(&s.received_at);
+                    kit::join(&mut self.catalogue, &one, at);
+                    let statement = one.advertisement.statement();
+                    if let Some(reserve) = &statement.statement.offers.reserve {
+                        self.records.declarations.borrow_mut().insert(
+                            statement.statement.provider.clone(),
+                            ReserveDeclaration::clone(&reserve.declaration),
+                        );
+                    }
+                }
+                continue;
+            };
+            let What::Effect {
+                action:
+                    Action::ChangeCatalogue {
+                        change: CatalogueChange::Grant,
+                        provider,
+                        tuple: Some(tuple_id),
+                        ..
+                    },
+                ..
+            } = &v.what
+            else {
+                continue;
+            };
+            if !done.contains(&receipt) {
+                continue;
+            }
+            let Some(one) = self
+                .installed
+                .iter()
+                .find(|one| one.advertisement.statement().statement.provider == provider.as_str())
+                .cloned()
+            else {
+                continue;
+            };
+            let statement = one.advertisement.statement();
+            let Some(tuple) = rutent_prov::catalogue::tuples_of(&statement.statement)
+                .into_iter()
+                .find(|t| &kit::tuple_id(provider.as_str(), t) == tuple_id)
+            else {
+                continue;
+            };
+            let mut terms = kit::grant_terms(
+                &one,
+                decider.acts.as_str(),
+                rutent_core_authz::session::instant(&v.when.at),
+            );
+            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(receipt.index));
+            terms.tuples = vec![tuple];
+            kit::grant(&mut self.catalogue, &one, terms);
+        }
     }
 
     /// When the log received the stated entry at `receipt`, on the catalogue's clock.

@@ -1323,3 +1323,22 @@ rule was switched off once, its test seen red, the file restored and touched.
   the readings not refreshed after an operation (the wiring test: the deposit's movement isn't seen and it waits).
   `Closing::recorded` at assembly, switched off, stays green at this level: no assembly scenario runs a reopened Core
   on.
+- **The restart scenario (closing the gap above).** `checks::restart_keeps_what_closing_took`, run by
+  `reopened_core_keeps_what_its_grading_took` (`tests/assembly.rs`): the first order completes; Core crashes before
+  the second order's withdrawal (the crash check's fault); it is opened again on the same disk (`Step::Restart`,
+  `Core::reopened`); with the reserve now paying two orders with one payment (`Fault::OnePaymentForTwo`: the network
+  ties a movement by its destination and amount), a third order to the same account for the same amount is tied to
+  the first order's movements. Checked: Core stopped mid-order, the first order completed, nothing stopped on a
+  refusal of the log, the third order's withdrawal settles off the movement and its deposit waits, and no movement
+  evidences two orders. Switched off, `Closing::recorded` at assembly turns it red: the reopened Core takes the first
+  order's movements afresh and the log refuses it (`movement-evidences-one-segment`), so the third order stops; and
+  without the planted tie the third order closes on its own payment.
+- **What `Core::reopened` keeps and rebuilds.** What is outside Core goes on as it stands: the platform with the
+  providers and their networks, the state machine's host, the clock, and the source of fresh identifiers (so no id
+  repeats). Core's own parts are put together again over the disk: the log and the evidence store read back, the
+  grading's `Closing` rebuilt by `Closing::recorded`, and the catalogue rebuilt from the log (each `done` grant at its
+  effect's time and each advertisement at the time the log received it, `Core::relist`), since granting again on the
+  reopened log would put each grant after the advertisement it trusts. Intake's, the segments' and `Issued` start
+  empty (`F-030`), so an order Core was running when it stopped stays where it stopped. The harness's
+  `Step::Restart` reopens Core after a crash or without one; after a crash with no restart, the steps after it are
+  skipped, as before.
