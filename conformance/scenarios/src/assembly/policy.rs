@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
     AppendFailure, Authorisations, Charges, DecisionEntry, Decisions, PersonQuestions, PolicyLog,
-    Reads, Sessions,
+    Reads, Sessions, StuckOrders,
 };
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Answer, Authorisation, Charge, ChargeAnswer, Decision,
@@ -302,7 +302,8 @@ impl authz::Policy for Deployment {
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
 /// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions,
-/// reads and charges), and,
+/// reads and charges) and for a stuck order's steps and a move's outcome, which it answers not known until `T-021-06`
+/// builds them, and,
 /// beside it, on policy's handle, the calls whose rows haven't built them on the engine yet. Each of those is decided
 /// as the engine decides a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
 /// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
@@ -453,6 +454,38 @@ impl Authorisations for PolicySide {
 impl Charges for PolicySide {
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
         self.engine.borrow_mut().charge(charge)
+    }
+}
+
+/// The engine's own: a stuck order's two steps, and a move's outcome reported and confirmed, each recorded through
+/// policy's handle and answered as the engine answers it, not known until `T-021-06` builds them.
+impl StuckOrders for PolicySide {
+    fn decide_stuck(
+        &mut self,
+        request: &rutent_contracts::core_internal::StuckDecide,
+    ) -> Result<Decision, AppendFailure> {
+        self.engine.borrow_mut().decide_stuck(request)
+    }
+
+    fn move_stuck(
+        &mut self,
+        request: &rutent_contracts::core_internal::StuckMove,
+    ) -> Result<Decision, AppendFailure> {
+        self.engine.borrow_mut().move_stuck(request)
+    }
+
+    fn report_outcome(
+        &mut self,
+        request: &rutent_contracts::core_internal::OutcomeReport,
+    ) -> Result<Decision, AppendFailure> {
+        self.engine.borrow_mut().report_outcome(request)
+    }
+
+    fn confirm_outcome(
+        &mut self,
+        request: &rutent_contracts::core_internal::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure> {
+        self.engine.borrow_mut().confirm_outcome(request)
     }
 }
 

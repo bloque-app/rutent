@@ -696,3 +696,38 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   |---|---|
   | a charge far ahead still counts in the window | `clock stepping back more than a window ...`; `engines with skewed clocks ...`; `clock jumping far ahead ...` |
   | a charge far ahead chooses no window | `clock jumping far ahead freezes no window` |
+
+### T-021-05, at integration (contract head `acde1cf`)
+
+- **Finding 4 is closed.** core-internal's `ChargeOutcome` now has `refused { class }` and `not_known { cause }`.
+  `charge_outcome` answers a charge policy refuses with its own class and one it can't decide as not known, so the
+  log holds the real answer, never `over_bound` for a bound not passed. core-orch's `rounds::Run::charge` says it
+  too: `NotOffered::ChargeRefused { class }` and `NotOffered::ChargeNotKnown { cause }`, nothing sent on either.
+  Intake and arrivals map them to `RefusedByPolicy` and `NoRouteRightNow` (two arms each, added in rounds' commit
+  under the coordinator's one-off exception to file ownership).
+- **`counted_at`.** A charge counted within its bound says when Core's clock counted it in the contract's own field,
+  `What::Charge::counted_at`, present exactly where the entry is `permitted`; the entry's time is the charge's own
+  again, as every call's is. `charged_in` rebuilds by `counted_at`. This replaces the earlier default of recording the
+  counting moment as the entry's `when`.
+- **The two new decision kinds.** `report_outcome` and `confirm_outcome` are policy calls of the engine (`Asked`
+  variants, each a `Scope` of its own, held to `ActsFor` by its reporter or confirmer) and rows of the unbuilt table,
+  `T-021-06`'s to build. `StuckOrders` is implemented on every engine, not only `Engine<L, Absent, Absent>`, so the
+  assembly's `PolicySide` forwards all four of its calls to the engine, each answered not known until then.
+  core-audit's exhaustive kind list names `report_outcome`.
+- **What the log refused, classified.** One history in this row's tests: `report_outcome` and `confirm_outcome` of
+  the contract's fixture requests through the assembly, refused as "an outcome's report is of a move of this log whose
+  outcome is unknown" and its confirmation's twin. Unrealistic test history: the accepted order has no move whose
+  outcome is unknown, and the rows hold rightly. The test now asserts the refusal leaves nothing recorded; driving a
+  real unknown outcome is `T-021-06`'s and the stuck scenarios'.
+- **Rule-offs** (each switched off once, the file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a refused charge answers refused for its class | five of `parties`' tests, `agent without ...` and `stale read ...` among them |
+  | a charge not known answers not known | `the unbuilt engine permits nothing ...`; `agent outside its party's scope ...` |
+  | the rebuild reads `counted_at` | `a counted charge says when Core counted it`, and eleven others of the counter's |
+  | a charge's entry at its own time | `a counted charge says when Core counted it` |
+  | rounds: a refused charge says refused | `a charge policy refuses or cannot decide sends nothing and says why` |
+  | rounds: a charge not known says not known | `a charge policy refuses or cannot decide sends nothing and says why` |
+  | the assembly's charge is the engine's | all five of `assembly_policy` |
+  | the assembly's outcome report is the engine's | `a move's outcome reported or confirmed reaches the engine and its log` |
