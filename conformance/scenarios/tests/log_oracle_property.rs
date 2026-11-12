@@ -127,18 +127,41 @@ fn the_log_takes_exactly_the_inputs_the_state_machine_takes() {
 // verifies: REQ-STM-4, INV-8
 #[test]
 fn the_log_refuses_another_input_under_a_record_id_it_holds_as_the_host_does() {
-    let trace = &traces(SEEDS)[0];
-    let opening = &trace.steps[0].input;
-    let history = vec![(receipt(0), entry_of(opening))];
-    assert!(
-        state_machine_takes(&history, opening),
-        "the same input again"
-    );
-    let mut other = opening.clone();
-    other.recorded_at =
-        rutent_contracts::state_machine::Timestamp::new("2026-11-06T10:00:09Z").unwrap();
-    assert!(
-        !state_machine_takes(&history, &other),
-        "another input under its record id"
-    );
+    // In a run, an input the machine applies after two applied ones, sent under the first's record id: the machine
+    // alone would apply it, its guard reading only the last record id; the host refuses it, and so does the log.
+    let mut checked = 0;
+    for trace in traces(SEEDS) {
+        let mut history: Vec<(Receipt, Entry)> = Vec::new();
+        let mut applied: Vec<&RecordedInput> = Vec::new();
+        for step in &trace.steps {
+            let input = &step.input;
+            if step.answer == Answer::AlreadyRecorded
+                || input.subject.order.as_str() != trace.order_id
+            {
+                continue;
+            }
+            let took =
+                matches!(&step.next, Some(n) if n.last_input.outcome == (Outcome::Applied {}));
+            if took && applied.len() >= 2 {
+                let mut reused = input.clone();
+                reused.record_id = applied[0].record_id.clone();
+                let machine = Stm::transition(step.prev.as_ref().unwrap(), &reused);
+                if machine.last_input.outcome == (Outcome::Applied {}) {
+                    assert!(state_machine_takes(&history, input), "seed {}", trace.seed);
+                    assert!(
+                        !state_machine_takes(&history, &reused),
+                        "seed {}",
+                        trace.seed
+                    );
+                    checked += 1;
+                    break;
+                }
+            }
+            if took {
+                history.push((receipt(history.len()), entry_of(input)));
+                applied.push(input);
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} runs checked");
 }
