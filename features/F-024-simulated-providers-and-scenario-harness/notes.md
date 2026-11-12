@@ -72,16 +72,22 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   routings; the route a part runs is the decision record Core signed, read only from the bytes the log's digest
   holds (review of `712c3fb`, 6). The operator key is watched to keep each record's signed envelope, since intake
   hands none back.
-- **The providers in the log, then in the catalogue** (review of `712c3fb`, 3). Each tuple a provider advertises is
-  granted by a decided catalogue change of the operator's login, naming the tuple (`kit::tuple_id`) and the
-  advertising key, and its effect recorded; then the grant is carried out in Core's catalogue on exactly the terms
-  recorded (the tuples, the decider as `granted_by`, the first effect's time as `granted_at`, the key trusted), under
-  an id of its own (`grant-<provider>-<the first effect's index>`); then each effect's `done` result. All of it before
-  the advertisement was made (first trust is the grant's, and an advertisement made before its grant rides on none);
-  then the advertisement is kept and appended as its stated entry, claimed for its publisher, and joins the catalogue
-  at the time the log received it. Core's clock starts an hour before the earliest advertisement for the grants, then
-  moves to the scenario's start (`kit::START`). The platform's own catalogue, which admits the releases (`Fleet`), is
-  the platform's and not Core's, and is granted as `T-024-01` left it.
+- **The providers in the log, then in the catalogue** (review of `712c3fb`, 3, and of `ebd6def`). Each tuple a
+  provider advertises is granted on its own: decided as a catalogue change of the operator's login naming the tuple
+  and the advertising key, its effect recorded, then that tuple granted in Core's catalogue at the effect's own time,
+  by the decider, under the key, as `grant-<provider>-<the effect's index>`, then the effect's `done` result. So
+  nothing is granted before its record. The catalogue's grant equals the log's on what the log's grant holds: the
+  tuple, the advertising key, the decider and the effect's time. Its party, expiry, categories and reversal capacity
+  are the deployment's settings (`kit::grant_terms`), which core-internal's `change_catalogue` doesn't carry, so the
+  claim covers those four fields and no other. A tuple's id (`kit::tuple_id`) is `tuple-` and the first 32 hex
+  digits of SHA-256 over the RFC 8785 canonical JSON of its provider, category, origin, destination, asset and
+  `to_asset`, each in provider-role's own form, so an outside checker recomputes it from the advertisement (a test
+  does). All of it happens before the advertisement was made (first trust is the grant's); then the advertisement is
+  kept and appended as its stated entry, claimed for its publisher, and joins the catalogue at the time the log
+  received it. Core's clock starts an hour before the earliest advertisement for the grants, then moves to the
+  scenario's start (`kit::START`). Core's catalogue and its platform are crate-private, read through views
+  (`Core::catalogue`, `Core::fleet`), held by two more compile-fail doc tests. The platform's own catalogue, which
+  admits the releases (`Fleet`), is the platform's and not Core's, and is granted as `T-024-01` left it.
 - **The operator's key is real.** The log verifies Core's questions by the deployment's `operator_key`, which a
   placeholder can't be, so the assembly's context names a real key (`RealKey`), and `Fleet::with_context` and
   `fleet::assertion_in` take it. The simulated providers serve the deployment the world names (below).
@@ -171,6 +177,11 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 - **Promotion.** Nothing in the assembly calls `Segments::promote`, so no scenario of this row promotes a staged
   release through a decided catalogue change; the path is `T-021-03`'s rule and `T-020-08`'s call, which `T-024-07`'s
   upgrade scenario (`AC-19`) first runs here.
+- **For `T-025-05`: the stand-ins' consultation is a copy.** `PolicySide::consult` and `verdict`
+  (`assembly/policy.rs`) copy the engine's `Engine::consult` and `verdict` (`core-authz`'s `engine/mod.rs`), which
+  are crate-private there. Until each stand-in goes, they must be checked against the engine's on every change to
+  it: the order of the fixed rules and the deployment's policy, a refusal beating not known, and each reply's
+  answer.
 - **For `T-025-05`: the log's skew checks can't trip here.** The log, policy and Core read one clock, so an effect
   or an advertisement is never dated outside the log's skew of its own clock; the rows that hold those rules are
   tested in `core-audit`'s own tests, not by the assembly.

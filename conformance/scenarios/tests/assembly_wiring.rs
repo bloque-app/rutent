@@ -294,7 +294,7 @@ fn staging_is_the_one_the_scenario_sets() {
             Staged::AtOnce => None,
             Staged::Under(s) => Some(s),
         };
-        assert_eq!(core.fleet.platform.lifecycle().staging(), expected);
+        assert_eq!(core.fleet().platform.lifecycle().staging(), expected);
     }
 }
 
@@ -403,24 +403,31 @@ fn catalogues_grant_is_the_one_the_log_records() {
             deciders.push(decider.expect("the effect's decision is in the log"));
         }
     }
-    let grants = core.catalogue.grants_of_provider(RESERVE);
-    assert_eq!(grants.len(), 1, "one grant in the catalogue");
-    let terms = grants[0].terms();
-    let mut granted: Vec<String> = terms
-        .tuples
-        .iter()
-        .map(|t| kit::tuple_id(RESERVE, t).as_str().to_owned())
-        .collect();
-    let mut tuples: Vec<String> = tuples.iter().map(|t| t.as_str().to_owned()).collect();
-    granted.sort();
-    tuples.sort();
+    // One grant in Core's catalogue per tuple the log granted, each on that effect's terms: its tuple, its
+    // decider, its time, its key.
+    let grants = core.catalogue().grants_of_provider(RESERVE);
     assert_eq!(
-        granted, tuples,
-        "the catalogue grants the tuples the log records"
+        grants.len(),
+        tuples.len(),
+        "one catalogue grant per recorded grant"
     );
-    assert!(deciders.iter().all(|d| d.as_str() == terms.granted_by));
-    assert_eq!(Some(&terms.granted_at), times.iter().min());
-    assert_eq!(grants[0].advertising_keys(), keys.as_slice());
+    for ((tuple, decider), at) in tuples.iter().zip(&deciders).zip(&times) {
+        let grant = grants
+            .iter()
+            .find(|g| {
+                g.terms()
+                    .tuples
+                    .iter()
+                    .map(|t| kit::tuple_id(RESERVE, t))
+                    .collect::<Vec<_>>()
+                    == vec![tuple.clone()]
+            })
+            .unwrap_or_else(|| panic!("the catalogue grants {tuple} alone"));
+        let terms = grant.terms();
+        assert_eq!(terms.granted_by, decider.as_str());
+        assert_eq!(&terms.granted_at, at, "granted at its own effect's time");
+        assert_eq!(grant.advertising_keys(), keys.as_slice());
+    }
 }
 
 // verifies: DEC-18
@@ -499,4 +506,39 @@ fn silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it() {
         run.state_names().values().cloned().collect::<Vec<_>>(),
         vec![Some("first_segment_settled".to_owned())]
     );
+}
+
+// verifies: DEC-18
+#[test]
+fn a_tuples_id_is_the_digest_of_its_canonical_json() {
+    let (core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let ad = core.installed[0]
+        .advertisement
+        .statement()
+        .statement
+        .clone();
+    for tuple in rutent_prov::catalogue::tuples_of(&ad) {
+        // As an outside checker recomputes it: provider-role's own names for each part.
+        let node = |end: &rutent_prov::catalogue::Endpoint| match end {
+            rutent_prov::catalogue::Endpoint::Inner(n) => serde_json::json!(n),
+            rutent_prov::catalogue::Endpoint::Outer(n) => serde_json::json!({ "network": n }),
+        };
+        let mut value = serde_json::json!({
+            "provider": RESERVE,
+            "category": tuple.category,
+            "origin": node(&tuple.origin),
+            "destination": node(&tuple.destination),
+            "asset": tuple.asset,
+        });
+        if let Some(to) = &tuple.to_asset {
+            value["to_asset"] = to.clone().into();
+        }
+        let canonical = rutent_contracts::provider_role::to_canonical(&value).unwrap();
+        let digest = rutent_prov::module::wire::sha256(&canonical);
+        assert_eq!(
+            kit::tuple_id(RESERVE, &tuple).as_str(),
+            format!("tuple-{}", &digest[..32])
+        );
+    }
 }

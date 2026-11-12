@@ -409,11 +409,11 @@ pub struct Core {
     policy: PolicySide,
     records: Records,
     /// The platform with the simulated providers admitted to it.
-    pub fleet: Fleet,
+    pub(crate) fleet: Fleet,
     /// Each simulated provider, as installed.
     pub installed: Vec<Installed>,
     /// Core's catalogue.
-    pub catalogue: Catalogue,
+    pub(crate) catalogue: Catalogue,
     intake: Intake,
     segments: Segments,
     issued: Issued,
@@ -662,6 +662,16 @@ impl Core {
         &self.issued
     }
 
+    /// Core's catalogue, to read.
+    pub fn catalogue(&self) -> &Catalogue {
+        &self.catalogue
+    }
+
+    /// The platform with the simulated providers, to read.
+    pub fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
     /// Policy, as the other parts reach it: the engine's calls, and the ones answered beside it.
     pub fn policy(&self) -> PolicySide {
         self.policy.clone()
@@ -677,9 +687,14 @@ impl Core {
         self.records.registers.borrow_mut()
     }
 
-    /// Grants `installed`: each tuple it advertises decided by the operator's login as a catalogue change naming its
-    /// advertising key, and the effect recorded; then the grant carried out in Core's catalogue on exactly the terms
-    /// recorded (the tuples, the decider, the effect's time and the key); then each effect's `done` result.
+    /// Grants `installed`, tuple by tuple: each decided by the operator's login as a catalogue change naming the
+    /// tuple and the advertising key, and its effect recorded; then that tuple granted in Core's catalogue, at its
+    /// effect's time, by the decider, under the key; then the effect's `done` result. So nothing is granted before its
+    /// record.
+    ///
+    /// The catalogue's grant equals the log's on what the log's grant holds: the tuple, the advertising key, the
+    /// decider and the effect's time. Its party, expiry, categories and reversal capacity are the deployment's
+    /// settings ([`kit::grant_terms`]), which core-internal's `change_catalogue` doesn't carry.
     ///
     /// # Errors
     ///
@@ -691,8 +706,6 @@ impl Core {
         let provider = kit::id(&statement.statement.provider);
         let key = statement.signature.key.clone();
         let decider = kit::operator_login();
-        let mut effects = Vec::new();
-        let mut granted_at = None;
         for tuple in rutent_prov::catalogue::tuples_of(&statement.statement) {
             let action = Action::ChangeCatalogue {
                 change: CatalogueChange::Grant,
@@ -728,23 +741,13 @@ impl Core {
                     Outcome::ToTakeEffect {},
                 )
                 .map_err(|e| listing("the grant's effect", e))?;
-            let at = self.time_of(&effect);
-            granted_at =
-                Some(granted_at.map_or(at, |t: rutent_prov::catalogue::Instant| t.min(at)));
-            effects.push(effect);
-        }
-        let granted_at = granted_at
-            .ok_or_else(|| AssemblyError::Listing("a provider advertises no tuple".to_owned()))?;
-        // Carried out on the terms the log holds, and on no other, under an id of its own: the place of its first
-        // effect in the log, so a provider granted again is granted anew.
-        let mut terms = kit::grant_terms(installed, decider.acts.as_str(), granted_at);
-        terms.id = format!(
-            "grant-{}-{}",
-            provider.as_str(),
-            u64::from(effects[0].index)
-        );
-        kit::grant(&mut self.catalogue, installed, terms);
-        for effect in effects {
+            // Carried out on the terms the log holds, under an id of its own, the effect's place in the log, so a
+            // tuple granted again is granted anew.
+            let mut terms =
+                kit::grant_terms(installed, decider.acts.as_str(), self.time_of(&effect));
+            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(effect.index));
+            terms.tuples = vec![tuple];
+            kit::grant(&mut self.catalogue, installed, terms);
             self.verified(What::Result { effect }, Outcome::Done {})
                 .map_err(|e| listing("the grant's result", e))?;
         }

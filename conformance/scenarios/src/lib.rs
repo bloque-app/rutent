@@ -39,6 +39,17 @@
 //! fn raw(core: &rutent_scenarios::assembly::Core) { let _ = core.policy().engine(); }
 //! ```
 //!
+//! Core's catalogue and its platform are read through views ([`assembly::Core::catalogue`],
+//! [`assembly::Core::fleet`]), never changed from outside, so a test grants nothing the log didn't record:
+//!
+//! ```compile_fail
+//! fn raw(core: &mut rutent_scenarios::assembly::Core) { let _ = &mut core.catalogue; }
+//! ```
+//!
+//! ```compile_fail
+//! fn raw(core: &mut rutent_scenarios::assembly::Core) { let _ = &mut core.fleet; }
+//! ```
+//!
 //! **Who holds which handle on the log.** The assembly alone holds the log. It hands policy's handle,
 //! [`PolicyLog`], to the policy engine and to no other part, and orchestration's, [`Log`], to orchestration. A
 //! [`PolicyHandle`] can't be built outside this crate and isn't `Clone`, so the one the engine holds is the only one;

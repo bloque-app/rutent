@@ -351,7 +351,9 @@ fn categories_of(installed: &Installed) -> Vec<Category> {
 }
 
 /// The terms of `installed`'s grant: every tuple it advertises, for every category it offers, granted by
-/// `granted_by` at `granted_at`, as `grant-<provider>`, with a reversal capacity of 500 against a bond of 1 000.
+/// `granted_by` at `granted_at`, as `grant-<provider>`, with a reversal capacity of 500 against a bond of 1 000. The
+/// party, the expiry, the categories and the reversal capacity are the deployment's settings: core-internal's grant
+/// carries none of them.
 ///
 /// # Panics
 ///
@@ -438,14 +440,32 @@ pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
     join(catalogue, installed, WORLD_AT);
 }
 
-/// The identifier the log names `provider`'s catalogue tuple `tuple` by in a grant (`change_catalogue`'s `tuple`):
-/// `tuple-` and the first 16 hex digits of SHA-256 over the tuple's fields, so the log's grant and the catalogue's
-/// name one tuple alike.
+/// The identifier the log names `provider`'s catalogue tuple `tuple` by in a grant (`change_catalogue`'s `tuple`),
+/// which an outside checker recomputes from the advertisement: `tuple-` and the first 32 hex digits of SHA-256 over
+/// the RFC 8785 canonical JSON of `{"provider", "category", "origin", "destination", "asset", "to_asset"}`, each in
+/// provider-role's own form (a category by its snake-case name, an inner node by its identifier, an outer node as
+/// `{"network": ...}`), `to_asset` only where the tuple has one.
+///
+/// # Panics
+///
+/// If the JSON has no canonical form, which a tuple's never lacks.
 pub fn tuple_id(provider: &str, tuple: &rutent_prov::catalogue::TupleKey) -> Id {
-    let fields = format!(
-        "{provider}|{:?}|{:?}|{:?}|{}|{:?}",
-        tuple.category, tuple.origin, tuple.destination, tuple.asset, tuple.to_asset
-    );
-    let digest = rutent_prov::module::wire::sha256(fields.as_bytes());
-    id(&format!("tuple-{}", &digest[..16]))
+    let node = |end: &rutent_prov::catalogue::Endpoint| match end {
+        rutent_prov::catalogue::Endpoint::Inner(n) => json!(n),
+        rutent_prov::catalogue::Endpoint::Outer(n) => json!({ "network": n }),
+    };
+    let mut value = json!({
+        "provider": provider,
+        "category": tuple.category,
+        "origin": node(&tuple.origin),
+        "destination": node(&tuple.destination),
+        "asset": tuple.asset,
+    });
+    if let Some(to) = &tuple.to_asset {
+        value["to_asset"] = to.clone().into();
+    }
+    let canonical =
+        rutent_contracts::provider_role::to_canonical(&value).expect("a tuple's canonical JSON");
+    let digest = rutent_prov::module::wire::sha256(&canonical);
+    id(&format!("tuple-{}", &digest[..32]))
 }
