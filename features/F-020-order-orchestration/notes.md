@@ -280,6 +280,538 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
   before policy is asked, the authorisation's id drawn first, so an acceptance that fails its own shape costs no
   permit.
 
+## T-020-04
+
+Branch `f-020/t-020-04-arrivals`, from `m3` at `28038de`. The review of `b5142fa` changed several readings below;
+"T-020-04, review answers" says how, and where a bullet here and an answer there differ, the answer stands.
+
+- **Three calls on one `Arrivals`** (`components/core-orch/src/arrival/`). `arrive` takes value arriving at a reserve,
+  `refile` files a differing arrival anew, and `file::<R>` files an order on an automatic deposit; `start` and `record`
+  answer what the assembly reads of an order filed that way. They reach what intake reaches, through intake's `Desk`
+  (the rounds' parts, the destination register, policy's authorisations, the register of actors, policy's session
+  register, the bounds and prices, Core's and the operator's actors), and one port of their own, `OpenOrders`.
+  `Arrivals` is Core's record (each notice taken, each arrival recorded, each refiling and filing, the transactions it
+  asked under), in memory as intake's is; keeping it across a restart is `F-030`'s.
+- **What arrives, the port's word.** provider-role has no statement a reserve makes of value arriving, and no question
+  that asks it what arrived. So a `Report` carries what arrived (reserve, outer node, asset, amount, the account and
+  its holder) as the assembly read it from the reserve's module, and the reserve's notice, its signed statement as
+  received, which Core keeps and appends as the reserve's stated entry, about nothing, without reading its body. Core
+  can't hold the figures to the signed bytes. **Gap**, owner a new `F-020` row with a provider-role bump: an arrival
+  notice shape naming its node, asset, amount and account, and a question asking a reserve what arrived for an order;
+  until then the figures are the port's word, as `T-020-03`'s `Destinations` answers a destination.
+- **No order, no order** (`REQ-ORD-14`). Where no order is open at the arrival's reserve, outer node and asset for its
+  account, the arrival is recorded as an `arrival` with no order, `no_order`, citing the notice, and nothing else:
+  no order id is drawn, no one is asked anything, nothing is held, and no input is recorded, so nothing about it can
+  count against the operator as a stuck order (`T-020-11` counts orders, and there is none). An order open elsewhere,
+  at another reserve, node, asset or account, isn't this arrival's, whatever amount it states. Once an order is no
+  longer open (its first segment settled, or it ended), an arrival for it is this case, as `REQ-ORD-23` says.
+- **Held against an open order** (`REQ-ORD-23`). The port answers the orders open at the reserve for the account: an
+  order accepted and started whose first segment hasn't settled, with the amount it states and the session its
+  reserve is asked in. Of those at the arrival's node and asset, the first stating the amount that arrived is matched;
+  otherwise the first is differed from. Reading, reversible: an arrival is held against one order, and a split
+  arrival's pieces are each judged alone, never summed into a match.
+- **Bound to its order before it is answered** (`REQ-ORD-32`, `REQ-ORD-38`; the row's last clause). An arrival naming
+  an order rests on the reserve's answer to Core's own question about that order, never on its notice, which no
+  order is bound to (`about_agrees` admits a report about nothing for any order, so the log alone wouldn't catch it).
+  The question is a balance verification of the account at the amount that arrived, the nearest provider-role has
+  (`INV-9`, yes or no; a reading, reversible). Its yes says only that the account's funds cover that amount, not that
+  anything arrived: it binds the reserve's word to the order, and the figures stay the report's. It is asked under a fresh transaction, never one the rounds or arrivals asked
+  under nor naming the order, in the order's session, as a check the catalogue lets out (`begin_check`, the holder's
+  own order), signed with the operator's key and appended about the order and transaction before it is sent; the
+  answer is appended with that transaction in its `about` and read through `answer_check`. Only on its yes is the
+  `arrival` recorded; a no, a refusal, another answer or none leave the notice, the question and any answer in the log
+  and the arrival waits (`Arrived::Waiting`, not kept: the same report again asks again; review answer 3). The
+  contract's own world fixture models the same shape (`world--refiling`:
+  the operator's question, the reserve's result, the `arrival` citing it).
+- **Settles nothing by itself.** A matching or a differing arrival is a record and nothing more: no effect, no input,
+  no evidence. The order's first segment settles only on its own result, judged by `T-020-08`'s segments.
+- **Filing anew** (`REQ-ORD-23`). Only an arrival held against an order it differed from is filed anew, and only
+  against that order (`refiling-files-an-arrival-anew`); one that met no order is `REQ-ORD-14`'s, and one that matched
+  needs none. The filer is the operator, or the reserve it arrived at acting for itself (its party the reserve's id,
+  as that row and policy's authorise rule read it), and in either case an actor the register says acts for the party it
+  states, so an impostor of either files nothing. The `refiling` is recorded once, its `who` the filer, and moves
+  nothing. **Gap**: no state-machine input takes a refiling, so what an order does with an arrival filed anew is no
+  row's yet; a later `F-020` row with a state-machine bump, if it should move the order.
+- **The automatic deposit** (`REQ-ORD-13`, `REQ-ORD-15`). *Superseded in its order of steps by review answer 2: policy
+  is now asked before any order is opened, held, asked or routed.* A filing names the arrival it files on, one recorded with no
+  order, and fills out the details: the parties, the session opened for the deposit's account, the destination, the
+  route, the inputs and needs. In order, and nothing asked or recorded before each passes:
+  1. The filer is the reserve it arrived at, or the operator, acting for the party it states; anyone else files
+     nothing (`NotTheFiler`).
+  2. The reserve's latest declaration in Core's catalogue says it starts routes on automatic deposits; one that says
+     no, or never declared, starts nothing: no order, no question, no authorisation, nothing recorded beyond the
+     arrival (`NotDeclared`). Core's own gate, before policy's, which holds the same declaration.
+  3. The filing is for what arrived: from its outer node, in its asset, at its amount, for the account's holder as
+     requester ("every order MUST be initiated by a user"), with no `follows`; and its session is one policy opened
+     for that holder, still open. Otherwise an `order_refusal` naming no order, `malformed_request` or
+     `refused_by_policy`, as intake refuses a request; such a filing holds nothing against the arrival, and the same
+     filing again is told the same.
+  4. One order per arrival: the same filing again carries it on; another filing on the same arrival opens nothing
+     (`Conflicting`). The log doesn't stop two filers each opening an order on one deposit, so Core does.
+  Then the order opens under a fresh id, its destination resolved (`destination_check`; not yet waits, filed again to
+  carry on; no ends it); the deposit is held against it by its own question, as above, and recorded as an `arrival`
+  naming the order, `matches`, citing the reserve's answer (not re-citing the notice); one routing through the rounds
+  with no user present (`Presence::AutomaticDeposit`, in the filing's session, no yes asked); the quote recorded as
+  `shown`; the authorisation, given by the filer, to policy; and on its permit the `acceptance`, `basis:
+  automatic_deposit`, its `who` the filer, with no yes and no session, and the `route_chosen` input, the filer's
+  statement (source `provider` for the reserve, `operator` for the operator, standing `stated`). Both are built once and
+  appended as built; a refused one ends the order, `no_route_right_now`, as at intake. The log admits it on
+  `automatic-deposit-rests-on-its-arrival`, `order-holds-one-acceptance-basis` and
+  `chosen-route-rests-on-its-orders-acceptance`.
+- **One deposit, more than one `arrival` entry.** The deposit is first recorded as it came, with no order; each
+  permitted filing that holds it records another `arrival`, naming the order it opened, on the reserve's answer to that
+  filing's own question. A filing that ends frees the deposit (review answer 2), so the next filing records one more.
+  Nothing in the log links them: `arrival` has no field naming an earlier arrival. Reading, reversible. **Gap**, owner
+  a new `F-020` row with a core-internal bump: an `arrival` naming the earlier arrival it holds against an order, so a
+  checker sees one deposit, not several.
+- **A held arrival whose order's session has ended**: see review answer 3.
+- **Who is told what**: see review answer 9.
+- **Readings, each reversible**: the routing's classes are intake's (`no_route_for_amount` where every candidate was
+  dropped for its amount, `no_route_right_now` otherwise); a reserve that says the deposit's funds aren't there ends
+  the order `no_route_right_now`; a quote is shown for an automatic deposit though no customer sees it, so the
+  acceptance's `quote` digests a quote Core recorded. How policy's answers are taken is review answer 2.
+- **Seams not taken.** None in other rows' modules. `rounds::Issued` has no public way to add a transaction, so
+  `Arrivals` keeps its own and checks `Issued::contains` as well, as the segments do; a transaction the rounds draw
+  later isn't checked against arrivals' (fresh identifiers are drawn at random, and `transaction-belongs-to-one-order`
+  refuses one reused for another order). Hand-off to `T-020-06`, if it should: `Issued::issue`.
+- **Wiring for the assembly** (`T-024-02`):
+  - `Segments::follow` fed from `Arrivals::start`, beside `Intake::start`, for an order filed on an automatic deposit;
+  - `Arrivals::record` added to policy's order records (`Records::orders`) once a filing opens an order, or policy's
+    `OrderOrigin` and `Requester` inputs come up missing and the filer's authorisation is refused;
+  - `OpenOrders` backed from intake's records and the orders the segments follow, with each order's session and
+    account;
+  - the session opened for the deposit's account handed to the catalogue's register (`Register::open_in`), as every
+    session the engine opens is;
+  - the `Report` built from what the reserve's module reports, its notice as received;
+  - `Core::with_desk` hands its closure intake alone, so `Arrivals` is held beside it (it is `Default`, and can be
+    taken out with `mem::take` for the call);
+  - an operator filer needs `ActForUser` in the deployment's register (`Permission::ActForUser`), which the assembly
+    lists only `Change` and `ReadOrderState` for today; a reserve filer needs an actor listed for its own id.
+- **Tests** (`components/core-orch/tests/arrival.rs`, on intake's kit, unchanged, with policy's fake permitting every
+  authorisation whose giver the register lists): the row's four, and six beyond it,
+  `same_notice_again_is_recorded_once`, `arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question`,
+  `differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve`,
+  `automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived`,
+  `automatic_deposit_filing_is_carried_on_where_it_stopped_asking_no_one_twice` and
+  `automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_answer`. The first eight were written
+  first and seen red against the module's signatures with no body; the last two came after the code, on the advisor's
+  review, so their rule-offs stand in for seeing them fail first. Every log is replayed through `attribute` and `admit_entry` on
+  the path each entry came by. The real policy engine and the platform are `T-024-04`'s scenarios (`AC-10`, `AC-11`,
+  `AC-26`).
+- **Rule-off**, each rule switched off once, the file restored and touched. *Superseded by the review answers' table,
+  which reruns every rule against the final code; this one is kept as it was run on `b5142fa`.*
+
+  | Rule | Red |
+  |---|---|
+  | An open order holds an arrival only at its reserve, outer node, asset and account | `unattributed_arrival_creates_no_order` |
+  | Matched only at the amount the order states | `short_excess_and_split_arrivals_settle_no_first_segment_by_themselves`, `differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve` |
+  | A held arrival cites the reserve's answer to Core's question, not its notice | `arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question`, `short_excess_and_split_arrivals_settle_no_first_segment_by_themselves` |
+  | The question appended before it is sent | five tests: the log refuses the answer (`answer-follows-its-question`) |
+  | Held only on the reserve's yes | `arrival_held_against_an_order_rests_on_the_reserves_answer_to_cores_question` |
+  | Only a differing arrival filed anew | `differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve` |
+  | The filer is the operator or the reserve | the refiling test and the filing test |
+  | The reserve filer is the reserve itself | the refiling test and the filing test |
+  | The filer acts for the party it states | the refiling test and the filing test |
+  | One refiling per arrival | the refiling test |
+  | The declaration gate | `automatic_deposit_at_a_reserve_that_never_declared_it_starts_nothing` |
+  | The basis `automatic_deposit` | `automatic_deposit_is_recorded_as_acceptance_apart_from_an_explicit_one`, the filing test |
+  | The acceptance names its filer | `automatic_deposit_is_recorded_as_acceptance_apart_from_an_explicit_one` |
+  | The deposit held against the order before it is routed | the acceptance test and the filing test: the log refuses the acceptance (`automatic-deposit-rests-on-its-arrival`) |
+  | Filed for the amount that arrived | the filing test |
+  | The requester is the account's holder | the filing test |
+  | The filing's session is the holder's | the filing test |
+  | One order per arrival | the filing test |
+  | Filed only on an arrival that met no order | the filing test |
+  | The same notice taken once | `same_notice_again_is_recorded_once` |
+  | The start is the filer's statement | the acceptance test |
+  | The filer held before a filing on the arrival is told | the filing test |
+  | The filer held before how the arrival met its order is told | the refiling test |
+  | The acceptance and start kept across tries | `automatic_deposit_filing_is_carried_on_where_it_stopped_asking_no_one_twice` |
+  | A refused destination ends the order | `automatic_deposit_filing_ends_or_waits_as_its_destination_reserve_and_policy_answer` |
+  | A destination not yet resolved waits | the same |
+  | Only `outside_authorisation` ends the order | the same |
+  | A refusal of the filer leaves the order standing | the same |
+
+  The rule "held only on the reserve's yes" is also red in the outcomes test (the deposit not confirmed). Not switched
+  off alone: the fresh transaction's checks against `Issued`, arrivals' own and the order's name, since the tests'
+  identifier source never repeats (as `T-020-03b` found for intake's); and the question kept across tries (appended
+  once, sent once, its answer read once), since intake's kit fails only verified entries on demand, never a stated one:
+  switched off, the retry test stays green, its retries stopping after the question was answered, where the built
+  `arrival` entry is what is kept.
+- **The entry-point scan** (`T-021-01`'s) watches outer methods by name (`accept`, `grant`, `promote` and the
+  others in `CARRY_OUT`), so the filing's last step is `take_acceptance`, not `accept`: a step of that name read as
+  carrying out `change_catalogue: accept_module` without its effect.
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes. No other
+  row's module, no manifest, no contract and no `DEC-20` path.
+
+### T-020-04, review answers (of `b5142fa`)
+
+Each finding's probe was written first, against `b5142fa`, and run once: nine were red there,
+`an_actor_stating_the_operators_role_is_not_the_operator`, `a_filing_refused_or_ended_leaves_the_deposit_to_its_reserve`,
+`a_silent_reserve_or_a_refused_check_makes_an_arrival_wait`, `one_notice_is_one_arrival_whatever_figures_it_comes_with`,
+`an_arrival_is_held_against_its_holders_order_not_yet_arrived`,
+`an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused`, `a_question_retried_opens_one_check`,
+`a_stranger_is_told_nothing_of_a_receipt` and `another_login_of_the_filers_party_is_told_the_filing_as_it_stands`.
+The tenth, `a_reserve_with_no_declaration_on_record_starts_nothing`, was green there, as finding 8 expected: it is red
+under the reviewer's mutation (rule-off below). The cases added later in the same tests (a question under way taking
+its order, an unfinished filing carried on by its filer alone, the order's record handed over before policy) came with
+the code, and their rule-offs stand in.
+
+1. **The operator is the deployment's operator.** A filer in the operator's role is the operator only where its party
+   is the deployment's operator party (`Desk::operator`), and the register says it acts for it; a customer stating the
+   operator's role files nothing. The log's `refiling-files-an-arrival-anew` reads the role alone; that half's owner is
+   `T-020-01f` (the contract branch), row `refiling-files-an-arrival-anew`, and `contracts/` is untouched here.
+2. **Nothing opened before policy permits; nothing stopped holds the deposit.** A filing is now taken, before any
+   order exists, through every check that can refuse it: the filing for what arrived, the holder's session, the
+   destination (answer 6), then policy. The order is drawn, its record handed to the assembly through a new port,
+   `FiledOrders::opened`, and only then is the filer's authorisation asked, so policy's `Requester` and `OrderOrigin`
+   inputs answer for an order the assembly couldn't otherwise know yet (the real authorise rule asks `OrderOrigin`).
+   A refusal about the filer is `ArrivalError::Refused`, recording nothing of Core's; `outside_authorisation` an
+   `order_refusal` naming no order; not known `Filed::Waiting` with no order. None of them holds the deposit: another
+   filer files on it. Only a permitted filing holds it, and one that ends after (the reserve's no, no route, a refused
+   acceptance) is refused naming its order and moved out of the held runs, so the deposit is free again; the same
+   filing again is told how it ended. Arrivals takes no exposures, so ending releases nothing else. Tested with a
+   stated operator refused (`not_permitted`) and an operator without the permission to act for users
+   (`missing_input`, as policy answers one the register doesn't list for `ActForUser`), then the reserve's own
+   filing starting; and with `outside_authorisation` and the reserve's no, then the reserve's filing starting.
+3. **Silence and a check that can't go yet wait.** At an arrival, a question answered no, not at all, or not as yes or
+   no, or a check the catalogue won't let out (no session, over the bound, the reserve unusable), leaves the arrival
+   `Arrived::Waiting`, with nothing kept but its notice: the same report again reads `OpenOrders` again and asks again,
+   under a fresh transaction, each a check the catalogue logs (a reading, reversible), so once no order is open it
+   meets none (`REQ-ORD-14`), and once the reserve answers yes it is held. A question stopped where the log couldn't
+   take an entry is carried on for its own order, never re-targeted. At a filing, silence or a check that can't go
+   waits (`FiledWait::ReserveNotYetConfirmed`); the reserve's no ends the order (a reading, reversible: a definite no
+   says the deposit's funds aren't there). **Sessions:** the check goes in the session `OpenOrders` names for the
+   order, read on every call, so a held arrival whose session ended waits until the assembly names a session open for
+   the holder's account. Core can't open one itself: `Sessions::open_session` takes the holder or its delegate as
+   requester, and Core is neither. **Hand-off to `F-021`**: a session opened on the holder's behalf for an arrival's
+   check (Core as a delegate the register lists, bounded to balance verifications of that account), with a later
+   `F-020` row to ask for it when the order's session has ended.
+4. **One notice, one arrival.** Notices are kept by their bytes: the same bytes with other figures are refused
+   (`OtherFigures`), and so is a notice the evidence store finds restates one taken before (`Kept::restates`) with
+   other figures. Before anything is kept, the notice must be its reserve's (its envelope's maker the report's reserve)
+   and name no transaction in its body (`NotItsNotice`). Since the re-review, it must also be of no shape a contract
+   names for something else: a reserve's catalogue statements (its advertisement, its declarations, its reserve
+   declaration) would otherwise pass, being its own and naming no transaction, and so would an operation, a judgement,
+   a confirmation, a release assertion, a decision record or a result of a known kind. Nothing else of the body can be
+   read. **Gap, exactly**: a
+   provider-role shape for a notice of value arriving, naming its outer node, asset, amount, account and a per-credit
+   reference the reserve assigns, so Core reads the figures from the signed bytes rather than the port, and two notices
+   of one credit, signed at different times, are known as one. Owner: a new `F-020` row with a provider-role bump. A
+   balance verification's yes says only that the funds suffice (corrected above and in `confirm.rs`).
+5. **Matching.** `OpenOrder` names the account's holder, and an arrival is held only against its holder's order. An
+   order that already has its arrival (`matches`, recorded) is left out, and so is one a question under way would
+   match, so two arrivals never both match one order; with two equal orders at one account each gets one, and a
+   stranger's deposit meets none. Ambiguity is still resolved as before, first match else first open, not by holding
+   nothing.
+6. **The deposit goes to its holder.** Until the holder's own standing instruction exists (the coordinator's default,
+   on the owner's form), a filing's beneficiary and requester are the account's holder, and its destination must
+   resolve to an owner that is the beneficiary; another owner, or a refusal, is `destination_refused`, naming no order,
+   and not yet resolved waits with nothing recorded.
+7. **A check is opened only once its question is kept.** The question is signed and its bytes kept before
+   `begin_check`, and the ticket is kept with the question across tries. The kit now fails a keep, or a stated entry's
+   append, once on demand (`Store::fail_after`, `Book::fail_stated_next` in `tests/intake_support/`, both off by
+   default: a seam in `T-020-03`'s test kit, additive, intake's and the rounds' tests run unchanged). The probe fails
+   the question's keep, then its append, and counts one balance check logged.
+8. **No declaration on record.** `a_reserve_with_no_declaration_on_record_starts_nothing` files at a reserve the
+   catalogue holds no declaration of, and policy isn't asked; `.is_some_and` → `.map_or(true, …)` turns it red.
+9. **What a filer learns.** The filer is held first, before any lookup: an actor that isn't the deployment's operator
+   or a listed reserve is told `NotTheFiler` whatever the receipt. A listed reserve is told `NoSuchArrival` alike for a
+   receipt with no arrival and one with an arrival at another reserve, so it learns only that it can't file there. The
+   operator, who may file at every reserve, learns whether an arrival is recorded at a receipt. Corrected from "nothing
+   is told", which held for strangers only.
+10. **Order ids.** A new order id is held against `Issued`, arrivals' own transactions and every filing's order. Intake's
+    orders aren't reachable from the desk; in the assembly intake and arrivals draw from one `Fresh`, whose contract is
+    an identifier never drawn before, so a repeat is that source's fault, not a case to handle.
+
+- **Nits.** `open_run` returns the refusal it recorded. Refused filings are kept by the filer's party and identifier, so
+  they are bounded by the filings made. Another login of the filer's party repeating a filing is told how it stands,
+  once it started or ended. (One under way was carried on only by the filer policy permitted, `OtherFiler`; the
+  re-review's answer 1 lets any listed login of its party carry it on.)
+- **A permitted filing that waits holds the deposit** (a silent reserve, a check that can't go), but not for ever, since
+  the re-review's answer 1: it ends, recorded, and frees the deposit once its session ends (the check refused
+  `NoSession`), once its reserve is past its time to answer a question it left unanswered, or once no login of its
+  filer's party that filed or carried it on is listed; and a permit it rests on holds no longer than its session.
+- **F2's "operator without `ActForUser`"** is policy's fake answering `missing_input`; core-orch can't reach
+  core-authz (the boundary check), so the real engine's answer is `T-024-04`'s (`AC-11`).
+- **Changed meanings, deliberately.** Another reserve now gets `NoSuchArrival`, not `NotTheFiler` (answer 9); a
+  filing refused as `outside_authorisation`, or with its destination refused, names no order; not yet resolved, or
+  policy not known, waits with no order; a reserve no longer needs to act for itself (its party is held to the
+  arrival's reserve, and the register to its party), which no test could tell apart.
+- **Wiring for the assembly**, added to the list above: `Arrivals::file` takes a `FiledOrders`, which must put the
+  record into policy's order records before the authorisation it precedes, and drop it again where no order opened
+  (`Err(Refused)`, `Err(Log)`, `Filed::Waiting` or `Filed::CantProceed` with no order), since each new filing draws a
+  new id and such records would pile up; the operator's login needs `ActForUser`
+  listed, or AC-11 fails in `T-024-04` (the assembly lists only `Change` and `ReadOrderState` for it today);
+  `OpenOrder` now carries the holder.
+- **Rule-off**, every rule of the module switched off once against the final tests, the file restored and touched
+  (48 rules, each red):
+
+  | Rule | Red |
+  |---|---|
+  | Held only at its reserve, node, asset and account | `unattributed_arrival_creates_no_order` |
+  | Held only against its holder's order | `an_arrival_is_held_against_its_holders_order_not_yet_arrived` |
+  | An order with its arrival left out | the same |
+  | A question under way takes its order | the same |
+  | Matched only at the amount stated | the short, excess and split test, the bound-answer test, the refiling test, the waiting test |
+  | A held arrival cites the reserve's answer | the bound-answer test, the short, excess and split test |
+  | The question appended before it is sent | thirteen tests (the log refuses the answer) |
+  | Held only on the reserve's yes | the bound-answer test, the release test, the outcomes test |
+  | The check opened only once the question is kept | `a_question_retried_opens_one_check` |
+  | A question under way kept across tries | the same |
+  | An unanswered arrival waits, not kept | `a_silent_reserve_or_a_refused_check_makes_an_arrival_wait`, the matching test |
+  | A check that can't go waits, not kept | the waiting test |
+  | One notice, one set of figures | `one_notice_is_one_arrival_whatever_figures_it_comes_with` |
+  | The notice is its reserve's own, about nothing | the same |
+  | The same notice taken once | the same, `same_notice_again_is_recorded_once`, the matching test |
+  | The operator is the deployment's operator | `an_actor_stating_the_operators_role_is_not_the_operator` |
+  | The filer acts for its party | the stranger test, the filing test, the refiling test |
+  | A reserve files only at itself | the same three |
+  | `refile` holds the filer before the lookup | the stranger test, the refiling test |
+  | `file` holds the filer before the lookup | the stranger test, the filing test |
+  | Only a differing arrival filed anew | the refiling test |
+  | One refiling per arrival | the refiling test |
+  | No declaration on record is none (`map_or(true, …)`) | `a_reserve_with_no_declaration_on_record_starts_nothing` |
+  | The declaration gate | the same, `automatic_deposit_at_a_reserve_that_never_declared_it_starts_nothing` |
+  | Filed only on an arrival with no order | the filing test |
+  | One permitted filing per arrival | the filing test |
+  | Another login of the party told the filing | `another_login_of_the_filers_party_is_told_the_filing_as_it_stands` |
+  | An unfinished filing carried on by its filer alone | the same |
+  | A filing that ended frees the deposit | `a_filing_refused_or_ended_leaves_the_deposit_to_its_reserve` |
+  | Filed for the amount that arrived | the filing test |
+  | The requester is the holder | the filing test |
+  | The beneficiary is the holder | `an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused` |
+  | The session is the holder's | the filing test |
+  | The destination's owner is the beneficiary | the holder test |
+  | A refused destination is refused | the outcomes test |
+  | A destination not yet resolved waits | the outcomes test |
+  | The order's record handed over before policy | the acceptance test |
+  | Nothing before policy permits | the release test, the outcomes test |
+  | `outside_authorisation` refused, naming no order | the release test, the outcomes test |
+  | A refusal of the filer records nothing and holds nothing | the release test, the outcomes test |
+  | Policy not known waits | the outcomes test |
+  | The deposit held before it is routed | seven filing tests (the log refuses the acceptance) |
+  | A silent reserve makes the filing wait | the waiting test, the login test |
+  | The reserve's no ends the order | the release test, the outcomes test |
+  | The basis `automatic_deposit` | seven filing tests |
+  | The acceptance names its filer | the acceptance test |
+  | The acceptance and start kept across tries | `automatic_deposit_filing_is_carried_on_where_it_stopped_asking_no_one_twice` |
+  | The start is the filer's statement | the acceptance test |
+
+  Not switched off alone: the restatement path (`Kept::restates`; the kit's store never answers one), the fresh order
+  id's checks and the fresh transaction's (the tests' identifier source never repeats), and a colleague told a refused
+  filing as it was (the refused filings are matched by the same function as the started ones, which is switched off).
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs`,
+  `components/core-orch/tests/intake_support/mod.rs` (the two opt-in failures, answer 7) and these notes. No contract,
+  manifest or `DEC-20` path.
+
+### T-020-04, re-review answers (of `f307b2d`)
+
+Each probe was written first and run against `738cbfe` (with the one new error variant, `NotFileable`, added so they
+compile): eight red, `a_waiting_filing_whose_session_ends_ends_and_frees_the_deposit`,
+`a_waiting_filing_whose_reserve_stays_silent_past_its_time_ends`,
+`a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left`,
+`an_order_that_never_opened_is_withdrawn_from_the_assembly`, `a_deposit_its_reserve_said_no_to_is_filed_on_no_more`,
+`a_deposit_with_an_acceptance_recorded_is_filed_on_no_more`, `a_filing_carried_on_after_its_session_ended_isnt_accepted`
+and `a_reserves_advertisement_is_no_arrival_notice`. `a_restated_notice_is_the_same_arrival` was green there (the path
+existed, untested); its rule-off stands in.
+
+1. **A waiting filing ends** (the coordinator's defaults), each time recorded as an `order_refusal` naming its order,
+   `no_route_right_now`, so the log holds no permitted order in limbo, and the deposit is free again:
+   - on a check refusal that can't lift for that filing: `NoSession` (its session ended), `SessionNotForAccount` or
+     `NotACheck`. Other refusals (the account's bound, the reserve unusable, the operator's settings) wait;
+   - once a question it asked went unanswered and the catalogue now holds the reserve unavailable
+     (`reserve_eligibility`, past the operator's time to answer, `REQ-CAT-19`): it ends before asking again;
+   - once no login of the filer's party that filed or carried it on is listed. Any listed login of that party carries
+     it on (no more `OtherFiler`), and the acceptance, where not yet built, names it. *Round 3 answer 1: such a login
+     gives its own authorisation first.* Core knows a party's logins only by those that filed it, so "none left" is read from them: a
+     reading, reversible. Another filer's filing ends it then, and goes on as its own.
+2. **`FiledOrders::withdrawn`.** Called wherever `opened` was and no order opens: a policy refusal of either kind,
+   policy's not known, and an authorise the log couldn't record (`Err(Log)`). Tested with policy unreachable; the
+   `Err(Log)` path isn't switched off alone (the kit's policy can't fail its own append on demand).
+3. **No re-asking without limit.** Once the reserve said a deposit's funds aren't there, the deposit is filed on no
+   more (`ArrivalError::NotFileable`), asking no one and recording nothing; a new notice is a new arrival, and is filed
+   on. Five filings after the no ask nothing more. This changes the meaning of the release test's "no" case,
+   deliberately: the reserve's next filing on that deposit is refused, and one on a new notice starts.
+- **Nits.**
+  - The kit's store can now answer `restates` once on demand (`Store::restates_next`, off by default), and
+    `a_restated_notice_is_the_same_arrival` takes the restatement path: the same figures are the same arrival, other
+    figures are refused.
+  - **One acceptance per deposit.** Where the log took the acceptance and refused the start, the order ends and the
+    deposit is filed on no more (`NotFileable`), so no second `automatic_deposit` acceptance rests on it. Reusing the
+    first acceptance for another order would need the arrival link core-internal lacks (the gap above).
+  - **A permit doesn't expire**: `Decision` and `Permit` carry no time bound. Default, reversible: a permit holds no
+    longer than the filing's session. Before the acceptance is built, the session must still be open for the holder;
+    otherwise the order ends rather than be accepted, and a new filing, in a new session, asks policy again.
+- **Records.** The waiting passage above is rewritten; the statements that would have passed as notices are named,
+  and `its_own_notice` refuses them; the log half of finding 1 has its owner.
+- **Rule-off**, every rule switched off once against the final tests (the 47 of the review answers, one retired with
+  `OtherFiler`, and 15 new), each red. The review answers' table stands for the 47; the new:
+
+  | Rule | Red |
+  |---|---|
+  | A check that can't go for the session ends the filing | `a_waiting_filing_whose_session_ends_ends_and_frees_the_deposit` |
+  | Past the reserve's time to answer, the filing ends | `a_waiting_filing_whose_reserve_stays_silent_past_its_time_ends` |
+  | An unanswered question is remembered | the same |
+  | Any listed login of the party carries it on | `a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left`, the login test |
+  | The acceptance names the login that carried it on | `another_login_of_the_filers_party_is_told_the_filing_as_it_stands` |
+  | With no listed login left, the filing ends | the carried-on test |
+  | The logins held to the register | the carried-on test |
+  | An order never opened is withdrawn | `an_order_that_never_opened_is_withdrawn_from_the_assembly` |
+  | The reserve's no spends the deposit | `a_deposit_its_reserve_said_no_to_is_filed_on_no_more`, the release test |
+  | A spent deposit is filed on no more | the same, `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | An acceptance recorded spends the deposit | `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | The session holds the permit to the acceptance | `a_filing_carried_on_after_its_session_ended_isnt_accepted` |
+  | No catalogue statement is a notice | `a_reserves_advertisement_is_no_arrival_notice` |
+  | No result of a known kind is a notice | the same |
+  | A restated notice is the same notice | `a_restated_notice_is_the_same_arrival` |
+
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs`,
+  `components/core-orch/tests/intake_support/mod.rs` (one more opt-in knob) and these notes. No contract, manifest or
+  `DEC-20` path.
+
+### T-020-04, round 3 answers (of `be17997`)
+
+Both probes were written first and run against `be17997`, and both were red:
+`a_login_carrying_a_filing_on_gives_its_own_authorisation` (the acceptance named a login policy never authorised) and
+`a_quiet_filing_whose_session_ended_gives_way_to_another_filer` (`Conflicting`). Its second case, the reserve past its
+time, came with the code; its rule-off stands in.
+
+1. **A login carrying a filing on gives its own authorisation** (`REQ-AUZ-9`). When a login other than the one the
+   acceptance would name carries a filing on, before its acceptance is built, policy is asked again: the same
+   authorisation's terms, under a fresh id, given by that login. On a permit the login joins the filing's logins, the
+   acceptance names it, and the acceptance names that authorisation, so its `who` and the authorisation's `given_by`
+   are one login. A refusal is told as `ArrivalError::Refused`, and not known as `Filed::Waiting` with
+   `PolicyNotKnown`; either way nothing moves on that call and the filing keeps the logins it had. Only logins policy
+   permitted count towards "a listed login left". Once the acceptance is built, a login of the party carries on the
+   appends as built, asking nothing.
+2. **A quiet filing gives way.** Before another filer is told `Conflicting`, the filing holding the deposit is held to
+   its end conditions, the same as when its own filer carries it on: its session over (policy's register no longer
+   holds it open for the holder), its reserve unavailable after a question it left unanswered, or no login of its
+   party that policy permitted still listed. If one holds, it ends, recorded (`order_refusal` naming its order), and
+   the new filing goes on as its own. Read from the register and the catalogue without asking anything, so a check
+   that could never go for its session (`SessionNotForAccount`, `NotACheck`) is found only when the filing asks again;
+   its session ending is the case a quiet filing meets.
+- **Readings recorded.**
+  - **A no is for the deposit, not the credit.** After the reserve's no, the deposit is filed on no more, even if its
+    credit was still pending at the reserve when it answered: once the credit clears, the reserve's new notice is a new
+    arrival, filed on as any other. Reversible; a re-ask on the same notice would need the reserve's word that its
+    no has lifted, which provider-role's balance answer doesn't carry.
+  - **`no_route_right_now` as a final end.** Every end of a permitted filing (its session over, the reserve past its
+    time, no login left, the reserve's no, a check that can't go, a refused acceptance or start) is recorded as an
+    `order_refusal` of `no_route_right_now`, because `order_refusal`'s classes are a closed list of eight and none
+    names these causes. **Item for the contract author** (`T-020-01f`): a core-internal class for an automatic deposit
+    that couldn't be held or carried on, so a reader tells "the same request may route later" from "this filing ended".
+- **Rule-off**, the new rules switched off once against the final tests, each red; the earlier rules rerun, each red
+  (the re-review's "with no listed login left, the filing ends" now runs through answer 2's check and is switched off
+  as its last row):
+
+  | Rule | Red |
+  |---|---|
+  | A carrier asks policy for its own authorisation | `a_login_carrying_a_filing_on_gives_its_own_authorisation` |
+  | A refused carrier carries nothing on | the same |
+  | The acceptance names the carrier's authorisation | the same |
+  | The end conditions checked before `Conflicting` | `a_quiet_filing_whose_session_ended_gives_way_to_another_filer`, the carried-on test |
+  | A session over ends a quiet filing | `a_quiet_filing_whose_session_ended_gives_way_to_another_filer` |
+  | A reserve past its time ends a quiet filing | the same |
+  | No listed login left ends a quiet filing | `a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left` |
+
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
+
+### T-020-04, round 4 answers (of `4457fcf`)
+
+Both probes were written first and run red against `4457fcf`:
+`a_filing_with_its_acceptance_written_is_finished_not_ended` (the reviewer's sequence: the start's answer lost, the
+operator struck from the register, then the reserve's filing `Started`, two acceptances and two orders on one deposit,
+both admitted by the log; and the same through the session ending) and
+`logins_policy_permitted_carry_a_filing_on_without_asking_again` (policy asked four times for two logins).
+
+- **A filing whose acceptance is built is finished, never ended.** Once its acceptance and start are built they may be
+  in the log, so the filing is only finishing its last entries: its end conditions (session over, reserve past its
+  time, no login left) don't apply to it, before `Conflicting` or anywhere. Another permitted filer of the deposit
+  (the operator, or the reserve it arrived at) is told `Conflicting` naming its order, and its call first appends the
+  entries the filing has left, as built, so Core finishes it on the next call of anyone who may file there, as well as
+  on its own filer's.
+- **Backstop.** Wherever a filing ends after its acceptance was built (a refused acceptance or start among them), the
+  deposit is filed on no more (`NotFileable`), since that acceptance may be in the log. Stricter than the re-review's
+  "the acceptance was appended": a refused acceptance after an earlier try whose answer was lost may be in the log too.
+- **Every permitted login kept** (the nit). The filing keeps each login policy permitted with the authorisation it gave;
+  any of them carries it on under its own authorisation without asking policy again, the acceptance naming that
+  login and that authorisation. Only a login never permitted on it is asked about.
+- **Rule-off**, each switched off once against the final tests:
+
+  | Rule | Red |
+  |---|---|
+  | A finishing filing is finished on another filer's call, never ended | `a_filing_with_its_acceptance_written_is_finished_not_ended` |
+  | Never ended once its acceptance is built, both guards off together | the same |
+  | An acceptance built spends the deposit if the filing ends | `a_deposit_with_an_acceptance_recorded_is_filed_on_no_more` |
+  | A permitted login carries it on without asking again | `logins_policy_permitted_carry_a_filing_on_without_asking_again`, the retry test |
+  | A permitted login carries it on under its own authorisation | `logins_policy_permitted_carry_a_filing_on_without_asking_again` |
+
+  The guard inside `should_end` alone stays green: `file()` takes a finishing filing before it asks `should_end`, so
+  that guard is defence in depth, red only with the first switched off too (the second row). Every earlier rule was
+  rerun and is red, but for the re-review's "any listed login carries it on" and "an acceptance recorded spends the
+  deposit", which round 3's carrier rules and this round's backstop replaced.
+- **Touches**: `components/core-orch/src/arrival/`, `components/core-orch/tests/arrival.rs` and these notes.
+
+### T-020-04, round 5 (approved; the low before merge)
+
+- **Spent only once the acceptance may be written.** Round 4's backstop spent the deposit once the acceptance was
+  *built*, so an acceptance the log refused on its first append, never written, stranded the deposit. Now the filing
+  notes its acceptance as possibly in the log once an append of it was taken or came back with the log unavailable
+  (its answer lost); only then does ending the filing spend the deposit. A refusal on the first append leaves the
+  deposit free for another filing. The reviewer's probe, `an_acceptance_refused_on_its_first_append_leaves_the_deposit_free`
+  (`refuse_next = Some("acceptance")`, then the reserve files and starts), was written first and red on `8da7a6a`
+  (`NotFileable`). `an_acceptance_whose_answer_was_lost_spends_the_deposit_if_its_filing_ends` (written, its answer
+  lost, then refused on the retry) came with the change and was green before it, the wider rule covering it; its
+  rule-off stands in.
+- **Rule-off**, each red: a refused first append leaves the deposit free (`if true`: the first test); an acceptance
+  taken spends it (`a_deposit_with_an_acceptance_recorded_is_filed_on_no_more`); an acceptance whose answer was lost
+  spends it (the second test); the spend itself on ending (round 4's row, rerun on the new flag).
+
+### T-020-04, merged with `m3` at `8f1067e` and wired into the assembly
+
+- **Merge** (`eca97db`): no conflicts; `T-024-02`, `T-021-04`, `T-020-09` and `T-020-11` came in, and every test of
+  both sides is kept and green.
+- **Wired** (`conformance/scenarios/src/assembly/arrivals.rs`, and the assembly's `Core`): `Arrivals` held beside
+  intake and run on intake's desk (taken out for the call, since `with_desk` hands its closure intake alone);
+  `Core::arrive` and `Core::file`; `FiledOrders` on policy's order records, `opened` putting the record in and
+  `withdrawn` taking it out; `OpenOrders` from intake's started orders whose first segment hasn't settled, each with its
+  requester as the holder and the conformance account; `Segments::follow` fed from `Arrivals::start`, the filed
+  order's origin, session and inputs from its filing and what it delivers from its chosen candidate; and
+  `Permission::ActForUser` listed for the operator's login. `follow` was split so intake's orders and filed ones share
+  `follow_on`. A smoke test, `assembly_arrivals.rs`, runs on the real log: a notice signed by the simulated reserve's
+  key is verified and recorded as an arrival with no order, and the operator's filing on it is refused
+  `NotDeclared`, by Core's gate over the simulated reserve's real declaration. It came with the wiring.
+- **Merged `m3` at `ec9dbd2`** (`T-021-05`): `Actors::acts_for` now takes the actor's kind, so a filer is held to the
+  register by its login, party and kind, as intake's callers are; the arrival tests strike a login by its three
+  fields. The notes' conflict kept both sides.
+- **Left for `T-024-04`** (`AC-10`, `AC-11`, `AC-26`):
+  - a simulated reserve that declares it starts routes on automatic deposits: every simulated reserve (the stand-in's
+    declaration) says no, so no automatic deposit can start in the assembly yet (`T-024-01`'s kit);
+  - a simulated reserve that reports value arriving, with a notice, and answers a balance verification at an amount;
+    today a scenario builds the `Report` and signs its notice with the reserve's key, as the smoke test does;
+  - a reserve filer listed in the register (`Registers::list` of an actor whose party is the reserve's id), and the
+    real engine's answer on `ActForUser` and on the reserve's own authorisation (`AC-11`);
+  - filed orders in `OpenOrders`: only intake's orders are read as open, so an arrival after an automatic deposit's own
+    order started meets no order.
+
+### T-020-03, tracked from `T-021-05`: intake's status reads bypass an agent's read scope
+
+- **Open item for `T-020-03`'s owner, due before `M4`.** Intake answers an order's status (`Told`) from `open`,
+  `quote`, `accept` and `Intake::told`, and finds an order for its caller through `kept_for`, holding the caller only
+  to the register of actors (`Actors::acts_for`, which since `T-021-05` binds the login, the party and the kind). None
+  of it asks policy, so an agent its party didn't scope for `check_read` (`T-021-05`'s `Scope::CheckRead`) still learns
+  the status of its party's orders through intake. It can't move value, authorise or charge outside its scope: policy
+  decides each of those.
+- **Severity, the reviewer's call: low.** The agent's own party's orders only, and read only.
+- **Why `T-021-05` didn't route it through `check_read`.** A customer's read of an order asks the log's record of the
+  order's parties (`Source::OrderParties`), and intake answers status before the log holds the order's acceptance, so
+  every customer would be refused its own new order. The fix needs either a read of an order's status that policy
+  decides on intake's own record (a source the assembly answers from intake's `OrderRecord`), or intake answering
+  status only once the order is accepted and in the log. `F-021`'s notes, under `T-021-05`'s re-review, hold the
+  rest.
+
 ## T-020-05
 
 - **Core's clock.** `snapshot::Clock` is Core's clock, read as a `Reading` to the nanosecond; `SystemClock` reads

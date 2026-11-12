@@ -51,8 +51,8 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, Log};
 use rutent_contracts::core_internal::{
-    AcceptanceBasis, Actor, Answer, Authorisation, Destination, DestinationOutcome, Entry,
-    OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
+    AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
+    Entry, OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -92,10 +92,12 @@ pub trait Destinations {
 }
 
 /// The register of actors policy reads (`F-021`'s `ActsFor`): whether an actor, as external authentication
-/// established it, acts for the party it states. The assembly answers it from the same register policy does.
+/// established it, acts for the party it states, as the kind of actor it states. The assembly answers it from the
+/// same register policy does, which binds the kind too (`T-021-05`), so an agent's login stating itself a person is
+/// no one's here either.
 pub trait Actors {
-    /// Whether `acts` acts for `party`; no answer is no.
-    fn acts_for(&mut self, acts: &Id, party: &Id) -> bool;
+    /// Whether `acts` acts for `party` as `kind`; no answer is no.
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool;
 }
 
 /// A session as policy's register holds it (`REQ-CAT-3`).
@@ -399,7 +401,9 @@ impl Intake {
     /// What `caller` is told now about its request `request`: nothing unless the caller acts for the party it
     /// states, in the customer's role, and that party used the identifier.
     pub fn told(&self, actors: &mut dyn Actors, caller: &Actor, request: &Id) -> Option<Told> {
-        if caller.role != Role::Customer || !actors.acts_for(&caller.acts, &caller.party) {
+        if caller.role != Role::Customer
+            || !actors.acts_for(&caller.acts, &caller.party, caller.kind)
+        {
             return None;
         }
         let kept = self.requests.get(&key(&caller.party, request))?;
@@ -452,7 +456,11 @@ impl Intake {
         request: OrderRequest,
     ) -> Result<Told, IntakeError> {
         let caller = &request.caller;
-        if caller.role != Role::Customer || !desk.actors.acts_for(&caller.acts, &caller.party) {
+        if caller.role != Role::Customer
+            || !desk
+                .actors
+                .acts_for(&caller.acts, &caller.party, caller.kind)
+        {
             return Err(IntakeError::NotTheRequester);
         }
         let key = key(&caller.party, &request.request);
@@ -910,7 +918,7 @@ fn same_request(first: &OrderRequest, again: &OrderRequest) -> bool {
 /// Whether `caller` speaks for the request's requester: an actor for its party, in the customer's role, a person or
 /// an agent alike (`REQ-OPS-5`), that the register of actors says acts for that party.
 fn speaks_for(actors: &mut dyn Actors, request: &OrderRequest, caller: &Actor) -> bool {
-    is_requester(request, caller) && actors.acts_for(&caller.acts, &caller.party)
+    is_requester(request, caller) && actors.acts_for(&caller.acts, &caller.party, caller.kind)
 }
 
 /// Whether `by` acts for the order's requester, in the customer's role, a person or an agent alike (`REQ-OPS-5`).

@@ -65,6 +65,9 @@ pub struct Book {
     pub lose_next: Option<&'static str>,
     /// The call whose next append on orchestration's handle the log refuses, once, with nothing appended.
     pub refuse_next: Option<&'static str>,
+    /// Whether the next stated entry appended on orchestration's handle fails, once, with nothing appended
+    /// (`T-020-04`). Off unless a test sets it.
+    pub fail_stated_next: bool,
 }
 
 fn log_receipt(index: usize) -> Receipt {
@@ -143,6 +146,10 @@ impl Log for General {
             Entry::Verified(v) => Some(call_of(&v.what)),
             Entry::Stated(_) => None,
         };
+        if call.is_none() && book.fail_stated_next {
+            book.fail_stated_next = false;
+            return Err(AppendFailure::Unavailable);
+        }
         if call.is_some() && book.fail_next == call {
             book.fail_next = None;
             return Err(AppendFailure::Unavailable);
@@ -191,7 +198,11 @@ impl Authorisations for Policy {
         self.asked.push(authorisation.clone());
         // `ActsFor`, the first fixed rule: the giver acts for the party it states, or the answer is a refusal.
         let giver = &authorisation.given_by;
-        let answer = if self.actors.borrow().acts_for(&giver.acts, &giver.party) {
+        let answer = if self
+            .actors
+            .borrow()
+            .acts_for(&giver.acts, &giver.party, giver.kind)
+        {
             self.answer
         } else {
             refusal(RefusalClass::NoAccountableParty)
@@ -238,22 +249,26 @@ impl Destinations for Register {
     }
 }
 
-/// The register of actors: who each actor, as authenticated, acts for.
+/// The register of actors: who each actor, as authenticated, acts for, and as what kind of actor.
 #[derive(Debug, Default)]
 pub struct ActorRegister {
-    pub pairs: BTreeSet<(String, String)>,
+    pub pairs: BTreeSet<(String, String, String)>,
 }
 
 impl ActorRegister {
-    pub fn acts_for(&self, acts: &Id, party: &Id) -> bool {
-        self.pairs
-            .contains(&(acts.as_str().to_owned(), party.as_str().to_owned()))
+    pub fn acts_for(&self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+        self.pairs.contains(&(
+            acts.as_str().to_owned(),
+            party.as_str().to_owned(),
+            format!("{kind:?}"),
+        ))
     }
 
     pub fn list(&mut self, actor: &Actor) {
         self.pairs.insert((
             actor.acts.as_str().to_owned(),
             actor.party.as_str().to_owned(),
+            format!("{:?}", actor.kind),
         ));
     }
 }
@@ -262,8 +277,8 @@ impl ActorRegister {
 pub struct Acting(pub Rc<RefCell<ActorRegister>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id) -> bool {
-        self.0.borrow().acts_for(acts, party)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+        self.0.borrow().acts_for(acts, party, kind)
     }
 }
 
@@ -296,6 +311,12 @@ impl Evidence for SharedStore {
 #[derive(Debug, Default)]
 pub struct Store {
     pub kept: Vec<Vec<u8>>,
+    /// How many more statements it keeps before it fails to keep one, once, keeping nothing (`T-020-04`). Off unless
+    /// a test sets it.
+    pub fail_after: Option<usize>,
+    /// The place of a statement kept before that the next statement kept restates, once (`T-020-04`). Off unless a
+    /// test sets it.
+    pub restates_next: Option<usize>,
 }
 
 fn commitment(place: usize) -> Digest {
@@ -305,10 +326,18 @@ fn commitment(place: usize) -> Digest {
 
 impl Evidence for Store {
     fn keep(&mut self, received: &[u8]) -> Result<Kept, AppendFailure> {
+        match self.fail_after {
+            Some(0) => {
+                self.fail_after = None;
+                return Err(AppendFailure::Unavailable);
+            }
+            Some(n) => self.fail_after = Some(n - 1),
+            None => {}
+        }
         self.kept.push(received.to_vec());
         Ok(Kept {
             commitment: commitment(self.kept.len() - 1),
-            restates: None,
+            restates: self.restates_next.take().map(commitment),
         })
     }
 
@@ -366,6 +395,7 @@ impl Env {
             fail_next: None,
             lose_next: None,
             refuse_next: None,
+            fail_stated_next: false,
         }));
         let actors = Rc::new(RefCell::new(ActorRegister::default()));
         actors.borrow_mut().list(&customer());

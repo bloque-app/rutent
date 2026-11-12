@@ -168,14 +168,26 @@ pub enum Source {
     /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
     OrderOrigin(Id),
     /// The deployment's register of actors: whether the actor `acts`, as external authentication established it,
-    /// acts for the accountable party `party` its request states. External authentication says who acts and nothing
-    /// more (`REQ-AUZ-1`), so a party is only the request's word until this says yes (`REQ-AUZ-8`). It answers by
-    /// `acts`.
+    /// acts for the accountable party `party` its request states, as the kind of actor `kind` it states. External
+    /// authentication says who acts and nothing more (`REQ-AUZ-1`), so a party and a kind are only the request's word
+    /// until this says yes (`REQ-AUZ-8`): an agent's login stating itself a person would otherwise escape its scope.
+    /// It answers by `acts`, yes only where it lists that login for that party as that kind.
     ActsFor {
         /// The actor.
         acts: Id,
         /// The party its request says it acts for.
         party: Id,
+        /// The kind of actor its request says it is (`T-021-05`).
+        kind: rutent_contracts::core_internal::ActorKind,
+    },
+    /// The scope an accountable party set for its agents (`REQ-AUZ-8`): whether the agent the input names (its
+    /// `acts`), acting for `party`, may make the call `scope` names. It answers by the agent, as `Permissions` does,
+    /// and only an agent is asked it (`T-021-05`).
+    AgentScope {
+        /// The accountable party that set the scope.
+        party: Id,
+        /// The call asked about.
+        scope: crate::parties::Scope,
     },
 }
 
@@ -310,6 +322,11 @@ pub(crate) const FIXED: &[Rule] = &[
         rule: crate::roles::acts_for_rule,
     },
     Rule {
+        name: "T-021-05: an agent acts for an accountable party other than itself, within the scope that party set",
+        needs: crate::parties::needs,
+        rule: crate::parties::rule,
+    },
+    Rule {
         name: "T-021-02: a session is its holder's or its delegate's, bounded in time; a read is its reader's",
         needs: crate::session::needs,
         rule: crate::session::rule,
@@ -385,6 +402,8 @@ pub struct Engine<L, P, S> {
     pub(crate) register: crate::session::Register,
     /// The authorisations to move funds permitted (`T-021-04`).
     pub(crate) authorised: crate::funds::Authorised,
+    /// The work charged to each accountable party in the window now, and its bounds (`T-021-05`).
+    pub(crate) charged: crate::parties::Charged,
 }
 
 /// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
@@ -414,6 +433,7 @@ impl<L, P, S> Engine<L, P, S> {
             sources,
             register: crate::session::Register::default(),
             authorised: crate::funds::Authorised::default(),
+            charged: crate::parties::Charged::default(),
         }
     }
 
@@ -426,6 +446,7 @@ impl<L, P, S> Engine<L, P, S> {
             sources,
             register: crate::session::Register::default(),
             authorised: crate::funds::Authorised::default(),
+            charged: crate::parties::Charged::default(),
         }
     }
 
@@ -582,6 +603,26 @@ pub(crate) fn read_outcome(answer: Answer) -> ReadOutcome {
     }
 }
 
+/// A charge answered on the engine's verdict: within the party's bound, with `standing` what is left of it, only where
+/// the verdict permits and the work fits. A charge policy doesn't permit is over a bound of 0: core-internal's
+/// `ChargeOutcome` has no refusal and no not known, and a party policy won't let cause the work has no allowance for
+/// it. The only place in Core that writes a charge within its bound.
+pub(crate) fn charge_outcome(
+    answer: Answer,
+    standing: crate::parties::Standing,
+) -> rutent_contracts::core_internal::ChargeOutcome {
+    use crate::parties::Standing;
+    use rutent_contracts::core_internal::ChargeOutcome;
+    match (answer, standing) {
+        (Answer::Permit {}, Standing::Fits { remaining }) => ChargeOutcome::Within { remaining },
+        (Answer::Permit {}, Standing::Over { bound }) => ChargeOutcome::Over { bound },
+        (Answer::Refuse { .. } | Answer::NotKnown { .. }, _) => ChargeOutcome::Over {
+            bound: rutent_contracts::provider_role::SafeInteger::try_from(0)
+                .expect("0 is a safe integer"),
+        },
+    }
+}
+
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
@@ -646,6 +687,10 @@ mod tests {
         fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
             Ok(held_and(&self.0))
         }
+
+        fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+            Ok(crate::parties::charged_in(&self.0))
+        }
     }
 
     /// A log that takes nothing.
@@ -659,6 +704,10 @@ mod tests {
 
     impl Recorded for Refusing {
         fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
+        }
+
+        fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
             Err(ReadFailure::Unavailable)
         }
     }
@@ -678,6 +727,10 @@ mod tests {
     impl Recorded for Guarded {
         fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
             Ok(held_and(self.0.iter().map(|(_, e)| e)))
+        }
+
+        fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+            Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
         }
     }
 
@@ -840,9 +893,9 @@ mod tests {
     /// Verifiers and providers whose answers the test sets, input by input, and which keep what they were asked.
     ///
     /// The deployment's register lists Core's own actor, `core-orch`, as carrying the user's authorisation onward,
-    /// and says every actor the fixtures name acts for the party it states (`T-021-03`), so the fixtures' requests pass
-    /// the fixed rules on every engine here. Those words are the register's, answered here and kept out of `asked`,
-    /// which counts the inputs the tests set.
+    /// says every actor the fixtures name acts for the party it states (`T-021-03`), and every agent they name acts
+    /// within its party's scope (`T-021-05`), so the fixtures' requests pass the fixed rules on every engine here.
+    /// Those words are the register's, answered here and kept out of `asked`, which counts the inputs the tests set.
     #[derive(Default)]
     struct Given {
         says: Vec<(Need, Reply<Said>)>,
@@ -851,7 +904,12 @@ mod tests {
 
     impl Sources for Given {
         fn supply(&mut self, need: &Need) -> Reply<Said> {
-            if need == &core_carries_onward() || matches!(need.from, Source::ActsFor { .. }) {
+            if need == &core_carries_onward()
+                || matches!(
+                    need.from,
+                    Source::ActsFor { .. } | Source::AgentScope { .. }
+                )
+            {
                 return Reply::Given(Said::Yes);
             }
             self.asked.push(need.clone());
@@ -1730,6 +1788,10 @@ mod tests {
         fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
             self.log.permitted()
         }
+
+        fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+            self.log.charged()
+        }
     }
 
     /// The policy call a decision entry records.
@@ -1872,14 +1934,12 @@ mod tests {
                 }),
             ),
             (
+                // An agent's fan-out, within its party's bound and its scope.
                 "charge",
-                Call::Unbuilt {
-                    row: "T-021-05",
-                    call: |e| {
-                        e.charge(&fixture!("charge-of-fanned-out-work"))
-                            .is_ok_and(|a| matches!(a.outcome, ChargeOutcome::Within { .. }))
-                    },
-                },
+                Call::Built(|e| {
+                    e.charge(&fixture!("charge-of-fanned-out-work"))
+                        .is_ok_and(|a| matches!(a.outcome, ChargeOutcome::Within { .. }))
+                }),
             ),
             (
                 "ask_about_person",
@@ -2025,7 +2085,7 @@ mod tests {
             }
         }
         unbuilt.dedup();
-        assert_eq!(unbuilt, ["T-021-06", "T-021-05", "T-021-07"]);
+        assert_eq!(unbuilt, ["T-021-06", "T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.
@@ -2047,6 +2107,15 @@ mod tests {
                 .map(|d| Entry::Verified(d.entry().clone()))
                 .collect();
             Ok(held_and(&entries))
+        }
+
+        fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
+            let entries: Vec<Entry> = self
+                .0
+                .iter()
+                .map(|d| Entry::Verified(d.entry().clone()))
+                .collect();
+            Ok(crate::parties::charged_in(&entries))
         }
     }
 

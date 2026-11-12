@@ -166,4 +166,16 @@ impl<L: Entries> rutent_core_authz::funds::Recorded for PolicyHandle<L> {
             .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
         Ok(rutent_core_authz::funds::permitted_in(&entries))
     }
+
+    fn charged(
+        &mut self,
+    ) -> Result<Vec<rutent_core_authz::parties::Counted>, rutent_core_authz::funds::ReadFailure>
+    {
+        let entries = self
+            .0
+            .borrow()
+            .entries()
+            .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(rutent_core_authz::parties::charged_in(&entries))
+    }
 }

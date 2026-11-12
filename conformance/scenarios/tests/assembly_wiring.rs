@@ -122,14 +122,53 @@ fn policys_sources_answer_from_the_records() {
     let customer = kit::customer();
     let party = customer.party.as_str();
     // The deployment's registers.
-    let acts = |acts: &str, party: &str| Source::ActsFor {
+    let acts_as = |acts: &str, party: &str, kind| Source::ActsFor {
         acts: id(acts),
         party: id(party),
+        kind,
     };
+    let acts = |acts: &str, party: &str| acts_as(acts, party, customer.kind);
     assert_eq!(sources.supply(&need("x", acts("user-1", party))), yes());
     assert_eq!(sources.supply(&need("x", acts("user-1", "operator"))), no());
     assert_eq!(
         sources.supply(&need("x", acts("someone", party))),
+        Reply::Missing
+    );
+    // The register binds the kind too (`T-021-05`): the customer's login stating itself an agent is no one's.
+    assert_eq!(
+        sources.supply(&need(
+            "x",
+            acts_as(
+                "user-1",
+                party,
+                rutent_contracts::core_internal::ActorKind::Agent
+            )
+        )),
+        no()
+    );
+    // An agent's scope, as its party set it (`T-021-05`).
+    let agent = rutent_contracts::core_internal::Actor {
+        acts: id("agent-1"),
+        kind: rutent_contracts::core_internal::ActorKind::Agent,
+        ..customer.clone()
+    };
+    core.registers()
+        .scope(&agent, rutent_core_authz::parties::Scope::Authorise);
+    let scope = |scope| Source::AgentScope {
+        party: customer.party.clone(),
+        scope,
+    };
+    use rutent_core_authz::parties::Scope;
+    assert_eq!(
+        sources.supply(&need("agent-1", scope(Scope::Authorise))),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need("agent-1", scope(Scope::MoveValue))),
+        no()
+    );
+    assert_eq!(
+        sources.supply(&need("agent-2", scope(Scope::Authorise))),
         Reply::Missing
     );
     let holds = |permission| Source::Permissions {
