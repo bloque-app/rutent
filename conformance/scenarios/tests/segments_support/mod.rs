@@ -170,6 +170,8 @@ pub enum On {
     LaterResult,
     /// An order's refusal.
     Refusal,
+    /// A part's route recalculated (`T-020-10`).
+    Recalculated,
 }
 
 impl On {
@@ -191,6 +193,8 @@ impl On {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
             }
             (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
+            (On::Recalculated, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::RouteRecalculated { .. })),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
             _ => false,
@@ -254,6 +258,11 @@ impl TestLog {
             return Err(AppendFailure::Unavailable);
         }
         Ok(receipt(index, entry))
+    }
+
+    /// The receipt this log gave the entry at `index` (`T-020-10`: an order's history resumed from the log).
+    pub fn receipt_at(&self, index: usize) -> Receipt {
+        receipt(index, &self.entries[index].0)
     }
 
     /// Every verified entry's `what`, with its place.
@@ -607,7 +616,8 @@ pub fn bounds(context: &SuiteContext) -> PolicyBounds {
     .unwrap()
 }
 
-fn price(tuple: TupleKey) -> Price {
+/// Core's price for `tuple`: no fee, no rate, settling in [`DECLARED`] seconds.
+pub fn price(tuple: TupleKey) -> Price {
     Price {
         tuple,
         stated_at: Timestamp::new(WORLD_AT.rfc3339().unwrap()).unwrap(),
@@ -804,7 +814,7 @@ impl Named {
         }
     }
 
-    fn authorisation(&self) -> String {
+    pub fn authorisation(&self) -> String {
         format!("auth-{}", self.order)
     }
 }
@@ -869,8 +879,33 @@ pub fn seed(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord) {
     seed_order(log, record, &Named::first());
 }
 
+/// The authorisation the kit seeds for `named`, under `floor` (`T-020-10`).
+pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authorisation {
+    let end = route_end();
+    Authorisation {
+        authorisation: id(&named.authorisation()),
+        order: id(&named.order),
+        origin_reserve: id(RESERVE),
+        destination: end.destination,
+        to_asset: end.to_asset,
+        floor,
+        given_by: customer(),
+        at: Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap(),
+    }
+}
+
 /// [`seed`], for `named`.
 pub fn seed_order(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord, named: &Named) {
+    seed_order_under(log, record, named, None);
+}
+
+/// [`seed_order`], its authorisation naming `floor` (`T-020-10`).
+pub fn seed_order_under(
+    log: &Rc<RefCell<TestLog>>,
+    record: &DecisionRecord,
+    named: &Named,
+    floor: Option<PositiveAmount>,
+) {
     let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
     let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
     let entry = |what: What, outcome: Outcome| {
@@ -885,21 +920,11 @@ pub fn seed_order(log: &Rc<RefCell<TestLog>>, record: &DecisionRecord, named: &N
             outcome,
         })
     };
-    let end = route_end();
     let mut log = log.borrow_mut();
     log.take(
         &entry(
             What::Authorise {
-                authorisation: Authorisation {
-                    authorisation: authorisation.clone(),
-                    order: order.clone(),
-                    origin_reserve: id(RESERVE),
-                    destination: end.destination.clone(),
-                    to_asset: end.to_asset.clone(),
-                    floor: None,
-                    given_by: customer(),
-                    at: at.clone(),
-                },
+                authorisation: authorisation_of(named, floor),
                 decision: id("dec-auth"),
             },
             Outcome::Permitted {},
@@ -994,10 +1019,15 @@ pub struct Core {
 impl Core {
     /// Core with the order's route chosen over `world` and its log seeded.
     pub fn over(world: &mut World) -> Self {
+        Self::under(world, None)
+    }
+
+    /// [`Core::over`], the order's authorisation naming `floor` (`T-020-10`).
+    pub fn under(world: &mut World, floor: Option<PositiveAmount>) -> Self {
         let clock = Rc::new(TestClock::at(START));
         let record = chosen_route(world, &clock);
         let log = Rc::new(RefCell::new(TestLog::default()));
-        seed(&log, &record);
+        seed_order_under(&log, &record, &Named::first(), floor);
         let mut segments = Segments::new();
         assert!(segments.follow(&*clock, &route_chosen(&record)));
         let context = world.context();

@@ -39,6 +39,14 @@
 //!    Each settled segment's actual time is recorded beside the one its price declared (`REQ-QTE-3`).
 //!
 //! An order's state and its age are readable by whoever policy lets read it ([`Segments::status`], `REQ-ORD-5`).
+//!
+//! **A part recalculated** (`T-020-10`'s seams, the one change to this module outside its owning row): a record whose
+//! request `follows` another is a recalculation, so its part is checked by [`check_recalculated_part`], which starts
+//! it at the inner node where the value is evidenced rather than with a withdrawal; only a withdrawal's failure
+//! cancels the part, so a recalculated route's first segment fails as any later one does; a route recalculated
+//! elsewhere reaches the order Core follows through [`Segments::observe`]; [`Segments::run_part_held`] lets its caller
+//! hold the part after a settled segment, handing nothing more over (`REQ-ORD-27`); and [`Segments::order`] and
+//! [`Segments::handed_on`] read where the value is and what arrived there.
 
 mod drain;
 mod journal;
@@ -73,7 +81,7 @@ use rutent_stm::Stm;
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
     Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefused, check_part,
-    record_route_refusal,
+    check_recalculated_part, record_route_refusal,
 };
 
 pub use drain::Uncarried;
@@ -472,6 +480,44 @@ impl Segments {
         Ok(())
     }
 
+    /// The order Core follows, as the inputs recorded so far left it: where each part's value sits
+    /// (`T-020-10`).
+    pub fn order(&self, order: &Id) -> Option<&stm::Order> {
+        self.orders.get(order.as_str()).map(|t| &t.order)
+    }
+
+    /// What `segment` of `order` gave out by its result that counted, net of its charge as its tuple reports it,
+    /// once it settled: what is evidenced at its end, and what the segment after it moves (`REQ-ORD-21`,
+    /// `T-020-10`).
+    pub fn handed_on(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        let flight = self
+            .flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?;
+        match &flight.outcome {
+            Some(SegmentOutcome::Settled { amount_out, .. }) => Some(amount_out),
+            _ => None,
+        }
+    }
+
+    /// Moves the order Core follows by `input`, a `route_recalculated` recorded outside the segments (`T-020-10`),
+    /// so the inputs the segments record next apply to its new route. Only that kind: every other input the
+    /// segments record themselves. False where it is another kind, Core follows no such order, or it moved nothing.
+    pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
+        if !matches!(input.observed, Observed::RouteRecalculated { .. }) {
+            return false;
+        }
+        let Some(tracked) = self.orders.get_mut(input.subject.order.as_str()) else {
+            return false;
+        };
+        let next = Stm::transition(&tracked.order, input);
+        let applied = next.last_input.outcome == (stm::Outcome::Applied {});
+        if applied {
+            tracked.order = next;
+            tracked.since = clock.now();
+        }
+        applied
+    }
+
     /// Follows `chosen`, the order's `route_chosen` input as recorded, so its state and age can be read and the
     /// inputs the segments record move it. False if it opens no order.
     pub fn follow(&mut self, clock: &dyn Clock, chosen: &RecordedInput) -> bool {
@@ -544,6 +590,18 @@ impl Segments {
         parts: &mut Parts<'_>,
         live: &Live<'_>,
     ) -> Result<Ran, SegmentsError> {
+        self.run_part_held(parts, live, &mut |_, _| true)
+    }
+
+    /// [`Segments::run_part`], asking `go_on` after each segment that settles with a later one to hand over, given
+    /// the settled segment's place and what it gave out, whether to go on: where it answers no, the part is held
+    /// there and nothing more is handed over (`REQ-ORD-27`, `T-020-10`). It can only stop a part, never move one.
+    pub fn run_part_held(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        go_on: &mut dyn FnMut(usize, &PositiveAmount) -> bool,
+    ) -> Result<Ran, SegmentsError> {
         let chosen = live
             .record
             .chosen()
@@ -552,8 +610,13 @@ impl Segments {
             .parts
             .get(live.at)
             .ok_or(SegmentsError::Plan("the chosen route has no part there"))?;
-        // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`).
-        if let Err(refused) = check_part(part) {
+        // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
+        // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
+        let guard = match live.record.request.follows {
+            Some(_) => check_recalculated_part(part),
+            None => check_part(part),
+        };
+        if let Err(refused) = guard {
             let receipt = record_route_refusal(
                 parts.log,
                 parts.clock,
@@ -613,6 +676,7 @@ impl Segments {
             accounted.push(done);
             // What the next segment moves is what this one gave out, by its result that counted (`REQ-ORD-21`).
             match next {
+                Some(next) if place + 1 < part.operations.len() && !go_on(place, &next) => break,
                 Some(next) => amount = next,
                 None => break,
             }
@@ -983,7 +1047,9 @@ impl Segments {
                 verdict
             }
         };
-        let first = place == 0;
+        // Only a withdrawal's failure cancels the part: a recalculated route's first segment is no withdrawal.
+        let first =
+            place == 0 && operation.kind == rutent_contracts::router_api::OperationKind::Withdrawal;
         // A final outcome ends the segment and hands its record over before its result is appended, so the log
         // knows which release it ran on when it attributes the result: a release revoked mid-flight keeps its key
         // only for segments whose record shows they ran on it (`REQ-MDL-20`).

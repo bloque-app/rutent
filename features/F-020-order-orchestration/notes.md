@@ -819,3 +819,134 @@ once and its test seen red again.
   in, by its cited quote and the tighter of the quote's slippage and the operator's limit, which hold whatever the
   terms report. Refusing `gross` conversions would refuse every exchange that reports gross with nothing gained.
   Reversible.
+
+## T-020-10
+
+- **One call, `Recalculations::recalculate`** (`components/core-orch/src/recalc/`). It recalculates one part of an
+  order: where the value is evidenced, the bound, a routing through `rounds::route` with the request's `follows`
+  naming the choice round it follows, Core's check of the router's choice, and the `route_recalculated` input. What it
+  reaches comes in `recalc::Parts` (the rounds' parts, the exposures by `&mut`, and `Segments`); what it routes, in an
+  `Ask` (the order as the rounds take it, the part, the authorisation, the objective, bounds and prices, Core's and
+  the operator's actors). `Recalculations` is Core's record across orders (the choice round each order follows, its
+  count, what was handed over and never settled, a recalculation not yet appended, the parts waiting), which the
+  production assembly keeps durably (`F-030`), as `Segments`.
+- **Only from evidenced value** (`REQ-ORD-2`, `INV-4`). `recalc::evidenced` reads the order Core follows
+  (`Segments::order`): the value is evidenced at the start of the part's first segment that hasn't settled, where
+  that segment hasn't started, was reversed, or is a deposit that failed, the segment before it settled there, and
+  the state machine's `value_at` agrees. A segment started (silent, no result that counts, waiting on the person),
+  failed with its reversal owed, or of unknown outcome holds it in flight, and a stopped advertisement or a stale
+  version changes none of that, so none of them releases a route: nothing is asked and nothing recorded. The amount
+  is what the settled segment handed on (`Segments::handed_on`), all of which the new route moves. A part waiting
+  for the customer or stuck isn't recalculated: the customer or the operator resolves it. A failed middle segment is
+  recalculated only after its `reversal_completed` (`T-020-12`). Reading, reversible.
+- **The bound** (`REQ-ORD-4`). `RECALCULATIONS` (3) per order, counted on recalculations recorded. Past it,
+  `Recalculation::NoRouteLeft`, with nothing asked or recorded: core-internal's README puts the `no_route` input
+  and the stuck state under `T-020-11`, which takes this outcome. A routing that offers nothing for another reason
+  than the floor is `Recalculation::NoRoute`, for the same row, and a route Core refuses is `Rejected`; after
+  either, the part is routed no more (`NoRouteLeft`), so providers that refuse their dry runs in turn can't make
+  Core ask without end (`THR-28`; on the advisor's review). Readings, reversible.
+- **A provider passed again without progress** (`REQ-ORD-4`, `THR-28`): a provider on the new route that had a
+  segment of the part handed over (`provider_bound`) from the node the value still sits at, which never settled.
+  `Recalculated::passed_again` names it with those segments, and `recalc::passed_again` reads the same from the
+  order's recorded inputs alone (its plans, `provider_bound` and `segment_settled`), so it is visible from the log,
+  which the platform test compares. No `Raise` difference fits it and core-internal's home for it is the
+  `route_recalculated` input and the `decision_record`, so it is raised to no one: whether it should reach the
+  operator is a question for a later row.
+- **At the user's cost; the failed provider covers only the return** (`REQ-ORD-22`, `INV-2`). The new route moves
+  everything evidenced at the node, so nothing of the failed segment's value is charged to anyone but by the new
+  route's own charges, which come off what it delivers. A failed deposit leaves the value at its node; a failed
+  middle segment's return is its reversal, in full (`T-020-12`). The failed segment's hold is released once the
+  new route is recorded, so the value counts once in flight (`REQ-ORD-8`).
+- **Inside the authorisation** (`REQ-AUZ-3`, `INV-10`). `recalc::check_route` holds the router's choice against
+  the authorisation, never its own record: one part (the routing runs with `max_parts` 1), from where the value is
+  evidenced, moving all of it, ending in a deposit at the authorisation's destination reserve and node, in its to
+  asset, leaving the floor after the operator's fee. Then the state machine's own rules run on the plan, and the
+  transition is tried before anything is appended. Each move on the new route carries a `RouteEnd` read from the
+  route itself (`recalc::route_end`: its last deposit's reserve and outer node, the asset it delivers, `delivers`
+  after the operator's fee; only the account is the authorisation's, since a route names none) to policy's engine
+  (`F-021`), so the log's `move-rests-on-its-authorisation` holds the route's own ends against the authorisation, a
+  third guard (on the advisor's review: built from the authorisation, it could never refuse). The simulated
+  providers can't route to another destination, so that third guard is shown by core-internal's own fixtures
+  (`move-rests-on-its-authorisation--destination`, `--to_asset`) and the `INV-10` property's check of `route_end`,
+  not by a platform scenario. A recalculation names no new authorisation and no acceptance.
+- **The floor** (`REQ-ORD-27`, `AC-42`, `REQ-ORD-4`). At a recalculation, the request carries the authorisation's
+  floor, the router drops what falls below it, and a routing whose every candidate was dropped `below_floor` makes
+  the part wait (`Recalculation::WaitsForCustomer`), the routing's decision record showing why. At each settled
+  segment of any part, `Recalculations::run_part` runs it through `Segments::run_part_held` with a gate:
+  `recalc::left_after` projects what the quotes still ahead leave the customer after the operator's fee, from what
+  the settled segment handed on (an operation keeping its asset and unit takes off what its quote charged; one
+  converting or counting in another unit gives out in its quote's proportion, rounded down; the operator's fee by
+  `quote::received_after_operator_fee`, the router's own), and below the floor nothing more is handed over and the
+  part waits. A projection Core can't count holds no floor. Readings, reversible.
+- **Hand-off to the assembly (`T-024-02`): every part runs through `Recalculations::run_part`.** The floor is
+  checked only there: `Segments::run_part` called directly skips it, and hands a waiting part's next segment over,
+  and the log can't catch it, since a chosen route's `Live::route.delivers` is its quote.
+- **Gap: waiting past the floor has no state-machine input.** state-machine 2.1.0 puts a part in
+  `waiting_for_customer` only by `no_route` at a failed final deposit's node (`after_no_route`). A part held past
+  the floor stays `first_segment_settled` (or `not_past_first_segment`) in the order Core follows, and
+  `Recalculations::waiting` is the only place it shows; `AC-12`'s "visible to them with its age" needs a new
+  `F-020` row with a state-machine and core-internal bump (an input that makes the part wait for the customer). The
+  decision record (at recalculation) and the settled segment's evidence with the chosen record (between segments)
+  are what the log holds of it.
+- **Recorded once** (`INV-8`). The `route_recalculated` input (source `orchestrator`, Core's `acts`, standing
+  `verified`, time source `core_clock`), citing the deciding choice round's decision record, is built once and
+  appended until the log takes it; a log that can't take it now keeps it, and the next call appends it as built,
+  asking no one again. One the log refuses is dropped. A retried append doesn't read the part again: a part
+  declared stuck in between would still take it (hand-off to `T-020-11`, which declares it). Only once it is taken does the order Core follows move to the
+  new route (`Segments::observe`), the old route's holds go, and the count and the round followed move on. The log
+  admits it on `recalculation-starts-from-evidenced-value` and `input-cites-its-decision-record`; each move on the
+  new route on `move-segment-is-in-its-orders-plan`. Each new segment's plan names the provider its operation
+  runs at, so the provider field `T-020-01e` adds to that row (commit `86c499f`, not yet in `m3`) holds.
+- **Seams in other rows' modules** (the coordinator's word not asked; reversible, each named here and in the commit):
+  - `snapshot/route.rs` (`T-020-05`): `check_recalculated_part`, the route guard with the start "at an inner node,
+    by no withdrawal", and a refusal `NotFromAnInnerNode`. Every other rule is the same function's.
+  - `segments/mod.rs` (`T-020-08`): `run_part` checks a part whose record's request `follows` another with
+    `check_recalculated_part`; only a withdrawal's failure cancels a part (`place == 0` was taken as the withdrawal,
+    so a recalculated deposit's failure would have cancelled it); `run_part_held`, the gate; `observe` (a
+    `route_recalculated` only: every other input the segments record themselves), `order` and `handed_on`.
+    `T-020-09`, in the same wave, works in the segments' grading path: the lead sequences the two (`PLAN.md`
+    §4.4).
+  - `rounds/mod.rs` (`T-020-06`): a part of a routing that `follows` another and starts with no withdrawal asks no
+    yes (otherwise every user-present recalculation was `NoReservesYes`); `History::recorded`, an order's history
+    as the log holds it, so a recalculation chains to the order's last decision record (`REQ-AUD-4`).
+- **Tests.** Four property tests in `components/core-orch/tests/recalc.rs`, over every sequence of reports a part
+  can get: `silence_never_releases_a_route` (256 cases; only evidence releases the value, never silence, a bound
+  provider or an unknown outcome), `late_delivery_after_a_recalculation_moves_nothing_twice` (a report about a
+  retired segment is late or after the end, moving nothing; never two segments started at once, nor one twice) and
+  `no_recalculation_changes_destination_or_to_asset` (Core's check, `route_end` and the state machine's), and four
+  unit tests (passed again from the inputs, the floor in a route, the recalculated guard, the quotes still ahead
+  with a charge and an exchange). Nine on the running platform in `conformance/scenarios/tests/recalc.rs`, on `T-020-08`'s kit with policy's engine
+  deciding each move and the log replayed through `attribute` and `admit_entry`, the routing through the rounds and
+  `RouteFinder` with the user present: the failed provider paying only the return, a late report after a
+  recalculation, silence (silent, unknown, too late, the grant revoked, the version marked stale), the bound, a
+  provider passed again, the floor at a settled segment and at a recalculation, an append retried, and a routing
+  that offered no route not asked again. The paying test runs the recalculation under an operator's fee of 10 000:
+  the new route moves all 1 000 000 and delivers 990 000. The kit
+  gained `Core::under`, `seed_order_under`, `authorisation_of`, `TestLog::receipt_at`, `On::Recalculated` and a
+  public `price`, all additive.
+- **Not the real `AuditLog`.** The brief asked for the real log in the platform tests "as `T-020-08`'s kit does",
+  but the kit's log is its own `TestLog`, replayed through core-internal's `attribute` and `admit_entry`
+  (`Core::admitted`). Moving the kit onto `AuditLog` needs its register seeded from recorded grants and
+  advertisements, which is the kit's (`F-024`) to do for every scenario at once; these tests stay on the kit as it
+  is. The real policy engine decides every move.
+- **Rule-off, each red.** The code came first, so each rule was switched off once, its tests run, the file restored:
+  the in-flight check (the silence property and the platform silence test; the state machine's `value_at` still
+  refuses there, as `NoSettledEnd`); the in-flight check and the `value_at` agreement together (both silence tests:
+  the rounds are asked, and the state machine's start rule rejects the route, `StartsElsewhere`, before anything is
+  recorded; the log's `recalculation-starts-from-evidenced-value` would have admitted it, the withdrawal's settled end
+  being the route's start); the bound (the bound test); the destination and to-asset checks, and the whole-amount
+  check (the `INV-10` property); the floor in the route (its unit test); the floor gate at a settled segment and the
+  waiting part held (the floor test); a routing below the floor read as waiting (its test); the old route's holds
+  released (the paying test); a provider passed again (its test); a built recalculation appended as built (the
+  append test); and the seams: the recalculated guard (the paying test, refused `NoWithdrawalFirst`), only a
+  withdrawal cancelling a part (the bound test, the recalculated deposit cancelled), `observe` (the paying test, the
+  followed order left on the old route), the yes a recalculated part doesn't ask (the paying test,
+  `NoReservesYes`), and the guard's inner start (its unit test). After the advisor's review: the part held after no
+  route (its test), `observe` taking a recalculation only (the late-report test's `provider_bound`), and the route's
+  ends read from the route (the `INV-10` property).
+- **Silence is guarded inside Core.** With Core's evidence rule off, the rounds ask the providers before the state
+  machine's start rule rejects the route; the log would have admitted the input, since a settled segment ends where
+  the route starts. So the asking is stopped by Core alone, and the record by Core and the state machine.
+- **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
+  `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
+  No manifest, no dependency, no `DEC-20` path.

@@ -15,6 +15,11 @@
 //! The node rules of each kind ([`check_typed_operation`]) follow. A route handed on under `REQ-ORD-43` starts
 //! instead from the holding account where the value sits; that start is `T-020-13`'s, and this guard refuses it.
 //!
+//! A part's route recalculated from where its value is evidenced (`REQ-ORD-2`, `T-020-10`) starts at that inner node,
+//! not with a withdrawal: [`check_recalculated_part`] holds it to every rule above but the start, which it replaces
+//! with "from an inner node, by no withdrawal" (rule 3 still ends it with a deposit to an outer node). Added by
+//! `T-020-10`, the one change to this module outside its owning row.
+//!
 //! A refused route is recorded as an `order_refusal` ([`record_route_refusal`]), of the class its source gives: a
 //! route Core received breaks the deployment's rules for one (`malformed_request`); a part the router chose that
 //! Core can't run leaves the order with no route right now (`no_route_right_now`).
@@ -61,6 +66,9 @@ pub enum RouteRefusal {
     NoWithdrawalFirst,
     /// The route doesn't end with a deposit into a reserve, from an inner node to an outer one (`REQ-ORD-16`).
     NoDepositLast,
+    /// A recalculated route doesn't start at an inner node, where value is evidenced, by something other than a
+    /// withdrawal (`REQ-ORD-2`, `INV-4`).
+    NotFromAnInnerNode,
     /// The operation at this place breaks its kind's node rules.
     Malformed(usize, Violation),
 }
@@ -103,7 +111,33 @@ pub fn check_part(part: &Part) -> Result<Vec<Step>, RouteRefused> {
         })
 }
 
+/// [`check_part`] of a part recalculated from where its value sits (`T-020-10`): the same rules, but the route
+/// starts at an inner node by an operation other than a withdrawal, since its value is already in the book
+/// (`REQ-ORD-2`, `INV-4`). A refusal leaves the order with no route right now.
+pub fn check_recalculated_part(part: &Part) -> Result<Vec<Step>, RouteRefused> {
+    serde_json::to_value(part.operations.as_slice())
+        .map_err(|_| RouteRefusal::NotAList)
+        .and_then(|route| steps_from(&route, Start::Inner))
+        .map_err(|reason| RouteRefused {
+            reason,
+            class: OrderRefusalClass::NoRouteRightNow,
+        })
+}
+
+/// Where a route starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// With a withdrawal from a reserve, from an outer node into an inner one (`REQ-ORD-16`).
+    Withdrawal,
+    /// At an inner node, where the value already is, by anything but a withdrawal (`T-020-10`).
+    Inner,
+}
+
 fn steps_of(route: &Value) -> Result<Vec<Step>, RouteRefusal> {
+    steps_from(route, Start::Withdrawal)
+}
+
+fn steps_from(route: &Value, start: Start) -> Result<Vec<Step>, RouteRefusal> {
     let items = route
         .as_array()
         .filter(|i| !i.is_empty())
@@ -117,11 +151,11 @@ fn steps_of(route: &Value) -> Result<Vec<Step>, RouteRefusal> {
             to: typed.to,
         });
     }
-    check_steps(&steps)?;
+    check_steps(&steps, start)?;
     Ok(steps)
 }
 
-fn check_steps(steps: &[Step]) -> Result<(), RouteRefusal> {
+fn check_steps(steps: &[Step], start: Start) -> Result<(), RouteRefusal> {
     for (i, pair) in steps.windows(2).enumerate() {
         if pair[0].to != pair[1].from {
             return Err(RouteRefusal::OutOfOrder(i + 1));
@@ -134,9 +168,20 @@ fn check_steps(steps: &[Step]) -> Result<(), RouteRefusal> {
     }
     let outer = |node: &NodeRef| matches!(node, NodeRef::Outer(_));
     let first = steps.first().ok_or(RouteRefusal::NotAList)?;
-    if first.kind != OperationKind::Withdrawal || !outer(&first.from.node) || outer(&first.to.node)
-    {
-        return Err(RouteRefusal::NoWithdrawalFirst);
+    match start {
+        Start::Withdrawal => {
+            if first.kind != OperationKind::Withdrawal
+                || !outer(&first.from.node)
+                || outer(&first.to.node)
+            {
+                return Err(RouteRefusal::NoWithdrawalFirst);
+            }
+        }
+        Start::Inner => {
+            if first.kind == OperationKind::Withdrawal || outer(&first.from.node) {
+                return Err(RouteRefusal::NotFromAnInnerNode);
+            }
+        }
     }
     let last = steps.last().ok_or(RouteRefusal::NotAList)?;
     if last.kind != OperationKind::Deposit || outer(&last.from.node) || !outer(&last.to.node) {
