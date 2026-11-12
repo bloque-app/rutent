@@ -230,11 +230,11 @@ switched off alone and seen red:
 | the deployment's refusal beside the engine | `deployment_refusing_reaches_the_calls_answered_beside_the_engine`, against `712c3fb` |
 | the catalogue's grant on the log's terms | `catalogues_grant_is_the_one_the_log_records`, against `712c3fb` |
 | the swap imported, not opened afresh and fed again | the swap check (the new host held none of the old one's journals; each input delivered twice) |
-| the replay of whole states | the swap and replay checks (a fold that drops an order's last input) |
+| the replay of whole states | the replay check (a fold that stops after each order's third input) |
 | the register of actors, the session register, the destination's register | `request_by_an_actor_the_register_doesnt_list_is_refused`, `request_in_a_session_policy_never_opened_is_refused`, `destination_no_register_holds_is_never_quoted`, each against its adapter answering yes |
 | the record read from the digest's bytes | `route_whose_signed_record_differs_from_the_logs_digest_is_not_run` |
-| each order's journal in the log's order | the replay check (an interleave that reverses an order's own inputs) |
-| a provider's operation delivered twice | the replay check (the second delivery moving value again) |
+| each order's journal in the log's order | the replay check (an interleave that reverses every input, an order's own among them) |
+| a provider's operation delivered twice | the replay check (the second delivery never made) |
 | two seeds, two runs | the seed check (Core's identifiers drawn from a seed of 7, whatever the scenario's) |
 | a settlement account's reserve not a party | `reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties` |
 | the silence fault | `silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it` |
