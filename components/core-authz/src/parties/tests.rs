@@ -175,6 +175,8 @@ fn every_scope() -> Vec<Scope> {
         Scope::Authorise,
         Scope::DecideStuck,
         Scope::MoveStuck,
+        Scope::ReportOutcome,
+        Scope::ConfirmOutcome,
         Scope::OpenSession,
         Scope::CheckRead,
         Scope::GrantPermission,
@@ -253,6 +255,13 @@ struct Calls {
     grant: PermissionChange,
     charge: Charge,
     ask: PersonQuestion,
+    report: rutent_contracts::core_internal::OutcomeReport,
+    confirm: rutent_contracts::core_internal::OutcomeConfirmation,
+}
+
+/// The request a fixture's verified entry holds, as JSON, which the call site reads as its type.
+fn request_of(entry: &str) -> Value {
+    read_fixture(&format!("valid/{entry}"))["what"]["request"].clone()
 }
 
 impl Calls {
@@ -267,6 +276,10 @@ impl Calls {
             grant: valid!("permission-change-granting-a-regulator-the-trail"),
             charge: valid!("charge-of-fanned-out-work"),
             ask: valid!("person-question-on-the-persons-authority-first-asked"),
+            report: serde_json::from_value(request_of("verified-entry-of-an-outcome-reported"))
+                .unwrap(),
+            confirm: serde_json::from_value(request_of("verified-entry-of-an-outcome-confirmed"))
+                .unwrap(),
         };
         calls.decide.caller = caller.clone();
         calls.authorise.given_by = caller.clone();
@@ -278,6 +291,8 @@ impl Calls {
         calls.charge.caller = caller.clone();
         calls.charge.party = caller.party.clone();
         calls.ask.asker = caller.clone();
+        calls.report.reporter = caller.clone();
+        calls.confirm.confirmer = caller.clone();
         calls
     }
 
@@ -294,6 +309,8 @@ impl Calls {
             ("revoke_permission", Asked::RevokePermission(&self.grant)),
             ("charge", Asked::Charge(&self.charge)),
             ("ask_about_person", Asked::AskAboutPerson(&self.ask)),
+            ("report_outcome", Asked::ReportOutcome(&self.report)),
+            ("confirm_outcome", Asked::ConfirmOutcome(&self.confirm)),
         ]
     }
 }
@@ -327,12 +344,18 @@ fn agent_without_an_accountable_party_is_refused() {
     assert!(decision.permit().is_none());
     assert_eq!(decision.outcome, refused(RefusalClass::NoAccountableParty));
     let answer = policy.charge(&calls.charge).unwrap();
-    assert_eq!(answer.outcome, ChargeOutcome::Over { bound: safe(0) });
+    assert_eq!(
+        answer.outcome,
+        ChargeOutcome::Refused {
+            class: RefusalClass::NoAccountableParty
+        }
+    );
     assert_eq!(
         policy.log.last(),
         Outcome::Refused {
-            class: RefusalClass::OverBound
-        }
+            class: RefusalClass::NoAccountableParty
+        },
+        "the refusal's own class on the record, not a bound passed"
     );
     assert_eq!(policy.charged().used(&id("agent-7"), Limit::Work), 0);
 
@@ -359,7 +382,7 @@ fn agent_without_an_accountable_party_is_refused() {
             assert_eq!(policy.consult(asked), refused(class), "{who:?} {name}");
         }
         let answer = policy.charge(&calls.charge).unwrap();
-        assert_eq!(answer.outcome, ChargeOutcome::Over { bound: safe(0) });
+        assert_eq!(answer.outcome, ChargeOutcome::Refused { class });
     }
     assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 0);
 
@@ -594,7 +617,12 @@ fn agent_outside_its_partys_scope_is_refused() {
     let answer = policy
         .charge(&charge("fan-1", &narrow, Work::FanOut, 1))
         .unwrap();
-    assert_eq!(answer.outcome, ChargeOutcome::Over { bound: safe(0) });
+    assert_eq!(
+        answer.outcome,
+        ChargeOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        }
+    );
     let answer = policy
         .charge(&charge("req-1", &narrow, Work::Request, 1))
         .unwrap();
@@ -685,7 +713,19 @@ fn agent_outside_its_partys_scope_is_refused() {
         );
     }
     let answer = policy.charge(&calls.charge).unwrap();
-    assert_eq!(answer.outcome, ChargeOutcome::Over { bound: safe(0) });
+    assert_eq!(
+        answer.outcome,
+        ChargeOutcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        }
+    );
+    assert_eq!(
+        policy.log.last(),
+        Outcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        },
+        "not known on the record, never a refusal"
+    );
 }
 
 /// The fixture's agent authorisation with a new destination, given by `by`.
@@ -716,7 +756,9 @@ fn bound_is_held_over_core_clocks_window_and_a_charge_counts_once() {
     other.count = Count::new(1).unwrap();
     assert_eq!(
         policy.charge(&other).unwrap().outcome,
-        ChargeOutcome::Over { bound: safe(0) }
+        ChargeOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        }
     );
     assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 2);
 
@@ -978,6 +1020,16 @@ fn each_scope_permits_its_own_call_alone() {
         ),
         ("resolve_stuck", Asked::Decide(&resolved), Scope::MoveStuck),
         (
+            "report_outcome",
+            Asked::ReportOutcome(&calls.report),
+            Scope::ReportOutcome,
+        ),
+        (
+            "confirm_outcome",
+            Asked::ConfirmOutcome(&calls.confirm),
+            Scope::ConfirmOutcome,
+        ),
+        (
             "open_session",
             Asked::OpenSession(&calls.open_session),
             Scope::OpenSession,
@@ -1208,7 +1260,9 @@ fn counter_is_the_logs_across_a_restart() {
             .charge(&charge("req-4", &a, Work::Request, 1))
             .unwrap()
             .outcome,
-        ChargeOutcome::Over { bound: safe(0) }
+        ChargeOutcome::Refused {
+            class: RefusalClass::MissingInput
+        }
     );
     assert_eq!(blind.charged().used(&id("acme-treasury"), Limit::Work), 0);
 }
@@ -1221,7 +1275,9 @@ fn counter_is_the_logs_across_a_restart() {
 fn stale_read_of_the_log_starts_no_bound_again() {
     let a = agent("acme-treasury", "agent-7");
     let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
-    let refused = ChargeOutcome::Over { bound: safe(0) };
+    let refused = ChargeOutcome::Refused {
+        class: RefusalClass::MissingInput,
+    };
     let mut policy = engine(registers(), bounds(3, 1));
     let charge_of = |policy: &mut Tested, request: &str| {
         policy
@@ -1407,4 +1463,61 @@ fn charge_at_a_time_no_entry_can_hold_is_refused() {
     ));
     assert!(policy.log.entries.is_empty());
     assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 0);
+}
+
+/// A charge counted within its bound says when the engine counted it, by Core's clock (`counted_at`), beside its
+/// entry's time, which is the charge's own as every call's is; one not counted says nothing. The counter is rebuilt by
+/// `counted_at`, so a charge stating any moment counts in the window Core's clock counted it in.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn a_counted_charge_says_when_core_counted_it() {
+    let a = agent("acme-treasury", "agent-7");
+    let mut policy = engine(
+        Registers::of_the_fixtures().with(&a, Some(every_scope())),
+        bounds(3, 1),
+    );
+    policy.set_clock(Stopped::at(&at("2026-11-10T10:00:05Z")));
+    let mut stated = charge("req-1", &a, Work::Request, 2);
+    stated.at = at("2026-11-09T00:00:00Z");
+    assert!(matches!(
+        policy.charge(&stated).unwrap().outcome,
+        ChargeOutcome::Within { .. }
+    ));
+    let Some(Entry::Verified(entry)) = policy.log.entries.last() else {
+        panic!("a verified entry");
+    };
+    assert_eq!(
+        entry.when.at, stated.at,
+        "the entry's time is the charge's own"
+    );
+    assert_eq!(
+        entry.what,
+        What::Charge {
+            charge: stated.clone(),
+            counted_at: Some(at("2026-11-10T10:00:05Z")),
+        }
+    );
+    // Over the bound: counted nowhere, so it says nothing.
+    assert!(matches!(
+        policy
+            .charge(&charge("req-2", &a, Work::Request, 2))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { .. }
+    ));
+    let Some(Entry::Verified(entry)) = policy.log.entries.last() else {
+        panic!("a verified entry");
+    };
+    assert!(matches!(
+        entry.what,
+        What::Charge {
+            counted_at: None,
+            ..
+        }
+    ));
+    // Rebuilt by when it was counted, not by when it says it was asked.
+    assert_eq!(
+        charged_in(&policy.log.entries)[0].at,
+        std::time::Duration::from_secs(1_794_304_805)
+    );
 }
