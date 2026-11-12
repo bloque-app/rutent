@@ -126,6 +126,12 @@ impl<L: PolicyLog> PolicyLog for PolicyHandle<L> {
 pub trait Entries {
     /// Every entry the log holds, in order, owned.
     fn entries(&self) -> Option<Vec<Entry>>;
+
+    /// Every entry the log holds, each with the receipt it gave it, in order, owned: what policy reads a stuck
+    /// order's steps by (`T-021-06`). A log that doesn't say can't be read so, and policy refuses what it would need.
+    fn receipted(&self) -> Option<Vec<(Receipt, Entry)>> {
+        None
+    }
 }
 
 impl Entries for rutent_core_audit::log::Unbuilt {
@@ -148,6 +154,11 @@ where
                 .map(|(_, entry)| entry.clone())
                 .collect(),
         )
+    }
+
+    /// The log's entries with their receipts, as it holds them.
+    fn receipted(&self) -> Option<Vec<(Receipt, Entry)>> {
+        Some(rutent_core_audit::log::AuditLog::entries(self).to_vec())
     }
 }
 
@@ -191,5 +202,17 @@ impl<L: Entries> rutent_core_authz::funds::Recorded for PolicyHandle<L> {
             .entries()
             .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)?;
         Ok(rutent_core_authz::funds::part_in(&entries, order, segment))
+    }
+}
+
+/// Policy's read of a stuck order's steps, each entry with its receipt, on policy's handle itself (`T-021-06`).
+impl<L: Entries> rutent_core_authz::stuck::Receipted for PolicyHandle<L> {
+    fn receipted(
+        &mut self,
+    ) -> Result<Vec<(Receipt, Entry)>, rutent_core_authz::funds::ReadFailure> {
+        self.0
+            .borrow()
+            .receipted()
+            .ok_or(rutent_core_authz::funds::ReadFailure::Unavailable)
     }
 }

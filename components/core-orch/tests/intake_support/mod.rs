@@ -190,7 +190,7 @@ pub struct Policy {
 /// Policy itself, as the actor its entries name.
 pub fn policy_actor() -> Actor {
     Actor {
-        party: id("operator"),
+        party: id("rutent"),
         acts: id("rutent-policy"),
         role: Role::Core,
         kind: ActorKind::Component,
