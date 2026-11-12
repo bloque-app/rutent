@@ -1298,3 +1298,28 @@ rule was switched off once, its test seen red, the file restored and touched.
   named as the authorised network; the invalid fixture `verified-entry-of-signed-evidence-naming-a-public-movement` is
   valid now, renamed `verified-entry-of-signed-evidence-naming-the-movement-core-checked`; README and CHANGELOG.
   router-api 4.0.0 and provider-role 3.1.0 changelog lines. `DEC-20` path: `contracts/`.
+
+### T-020-09, the assembly graded through `CMP-EVIDENCE` (after `m3` at `970828a`)
+
+- **Merged `m3` at `970828a`** (`T-024-02`, the assembly and the scenario harness), a merge commit; it merged
+  cleanly, the segments kit's additions on both sides kept.
+- **The assembly's grading** (`conformance/scenarios/src/assembly/`, the grading wiring only, so `T-021-04`'s change to
+  the authorise stand-in merges beside it): each part runs under `closing::Evidenced`. `grading.rs` holds the
+  readings, a copy of the simulated networks (each reserve's bank, and `polygon` and `bsc` where an exchange or a
+  ramp is installed) and the reserves' books, refreshed at the start of each run and after each `carry_out` (the
+  operation delivered twice too), since the world lives inside the platform the segments hold as their modules. One
+  `Closing` is kept on `Core` beside `Segments`, built by `Closing::recorded` from the log whenever Core is put
+  together on a disk, so a Core opened again takes the movements its log names.
+- **Every scenario still completes its orders**: the simulated reserve records each deposit's movement on its bank
+  network (instant finality) to the destination account, so each order closes on that public record and the
+  reserve's statement. Nothing in the closing rules was loosened. The assembly's four checks pass (the swap check
+  asserts each order complete; the crash check stops Core, and nothing in the harness runs a Core on after it, so the
+  rebuild runs at every assembly and is held by `one_payment_closes_one_order_across_a_restart` and
+  `movements_core_checked_are_taken_live_and_after_a_restart` in core-orch).
+- **Test** `assembled_order_closes_on_the_public_record_and_the_reserves_statement` (`assembly_wiring.rs`): the
+  assembled order's deposit closes on grade-1 evidence of its movement on the bank network, naming it, and the
+  reserve's statement.
+- **Rule-off, each red:** `ProvidersWord` wired back (the wiring test, and the swap check's "each order completed");
+  the readings not refreshed after an operation (the wiring test: the deposit's movement isn't seen and it waits).
+  `Closing::recorded` at assembly, switched off, stays green at this level: no assembly scenario runs a reopened Core
+  on.

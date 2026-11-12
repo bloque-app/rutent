@@ -24,17 +24,21 @@
 //!   statements by the keys it holds that way, and by no setting.
 //! - **The state machine.** Every input the log takes is fed to the host, in the log's order ([`machine::Feed`]).
 //! - **Staging**, set explicitly ([`Staged`]): there is no default (`PLAN.md` §4.4, `F-030` sets the deployment's).
+//! - **Grading** (`T-020-09`): each part runs under `closing::Evidenced`, over the simulated networks and the reserves'
+//!   books as read before every grading (at the start of each run and after each operation carried out), with one
+//!   `Closing` kept beside the segments, rebuilt from the log whenever Core is put together on a disk
+//!   (`Closing::recorded`).
 //!
 //! # What isn't, and why
 //!
 //! - The credential proxy: the simulated world resolves nothing through one, so the segments take uses from
 //!   [`NoProxy`], and the proxy's `take_uses` runs only in `F-030`'s production assembly.
-//! - Grading: `T-020-09` isn't built, so a settled segment's evidence is the provider's word ([`ProvidersWord`]).
 //! - What survives a restart: Core's own records (intake's, the segments', `Issued`) are in memory. A Core opened
 //!   again on a [`durable::Disk`] reads back the log and the evidence store, and nothing of what it had acted on
 //!   (`F-030`).
 
 pub mod durable;
+mod grading;
 pub mod machine;
 pub mod policy;
 
@@ -67,8 +71,8 @@ use rutent_core_orch::intake::{
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{
-    Live, Modules, NoProxy, Parts as SegmentParts, ProvidersWord, Ran, Segments, SegmentsError,
-    Status, StatusError,
+    Live, Modules, NoProxy, Parts as SegmentParts, Ran, Segments, SegmentsError, Status,
+    StatusError,
 };
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
 use rutent_prov::catalogue::Catalogue;
@@ -265,6 +269,7 @@ struct Running<'a> {
     feed: &'a mut Feed,
     log: &'a Rc<RefCell<CoreLog>>,
     swap_to: Option<&'a mut (dyn Environment + 'static)>,
+    readings: &'a grading::Readings,
 }
 
 impl Modules for Running<'_> {
@@ -308,12 +313,15 @@ impl Modules for Running<'_> {
         }
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
+        self.readings.refresh(&self.platform.world);
         if !self.faults.deliver_twice {
             return first;
         }
         // The same operation again, under its transaction: the provider answers it as it did, and Core takes the
         // answer that came second, where one came.
-        match Modules::carry_out(self.platform, effect, provider, operation) {
+        let again = Modules::carry_out(self.platform, effect, provider, operation);
+        self.readings.refresh(&self.platform.world);
+        match again {
             again @ rutent_core_orch::segments::Answered::Bytes(_) => {
                 self.faults.delivered_twice += 1;
                 again
@@ -416,6 +424,9 @@ pub struct Core {
     pub(crate) catalogue: Catalogue,
     intake: Intake,
     segments: Segments,
+    /// What the grading took across orders, kept as long as the segments (`T-020-09`).
+    closing: rutent_core_orch::closing::Closing,
+    readings: grading::Readings,
     issued: Issued,
     exposures: Exposures,
     releases: Releases,
@@ -602,6 +613,8 @@ impl Core {
             catalogue,
             intake: Intake::new(),
             segments: Segments::new(),
+            closing: rutent_core_orch::closing::Closing::new(),
+            readings: grading::Readings::default(),
             issued: Issued::new(),
             exposures: Exposures::new(),
             releases: Releases::new(),
@@ -622,6 +635,9 @@ impl Core {
         };
         // Each provider is granted before the advertisement it sends was made; then the clock moves to the
         // scenario's start, and each advertisement is recorded as received then.
+        // What the grading reads, and what it took, rebuilt from the log the disk holds (`T-020-09`).
+        core.readings = grading::Readings::of(&core.installed);
+        core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
         let installed = core.installed.clone();
         for one in &installed {
             core.grant(one)?;
@@ -1095,6 +1111,8 @@ impl Core {
                 inputs: &started.inputs,
                 floor: started.floor.as_ref(),
             };
+            let readings = self.readings.clone();
+            readings.refresh(&self.fleet.platform.world);
             let mut running = Running {
                 platform: &mut self.fleet.platform,
                 clock: &self.clock,
@@ -1102,6 +1120,13 @@ impl Core {
                 feed: &mut self.feed,
                 log: &self.log,
                 swap_to: self.swap_to.as_deref_mut(),
+                readings: &readings,
+            };
+            let mut grading = rutent_core_orch::closing::Evidenced {
+                catalogue: &self.catalogue,
+                records: &readings,
+                books: &readings,
+                closing: &mut self.closing,
             };
             let mut decisions = self.policy.clone();
             let mut parts = SegmentParts {
@@ -1112,7 +1137,7 @@ impl Core {
                 decisions: &mut decisions,
                 modules: &mut running,
                 uses: &mut NoProxy,
-                grading: &mut ProvidersWord,
+                grading: &mut grading,
                 operator_key: &mut self.signer,
                 fresh: &mut self.fresh,
                 issued: &self.issued,
