@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 442 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 82 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
+  breaking one rule, and 463 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 85 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -400,6 +400,67 @@
   world's operator is maker and party `operator`; a case may name another pair. Admitted: the operator's login under
   a maker of another name; refused: a party named as the maker. 442 admission cases. (DEC-4, DEC-20, REQ-ORD-23,
   T-020-01)
+- Folded into 1.0.0 before its release: an outcome's evidence is a provider's result, made after the move (round 7
+  of `T-020-01`'s review). `outcome-confirmation-cites-verified-evidence` admitted Core's own `operation` question,
+  re-appended after the move, as a report's evidence, and read "after the move" by log position alone. Each evidence
+  is now a `result`-shaped statement (field `result`), not the deployment operator's own (field `maker`, against
+  `DeploymentOperator.maker`), and made no earlier than the effect's time (field `made`, its `made_at` against the
+  effect's `when.at`). Refused: Core's question re-appended, the operator's own result, a result made before the
+  effect and appended after it. The world's evidence statements are made after the moves they report. 445 admission
+  cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-AUD-2, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution names its own transaction (round 7 of `T-020-01`'s
+  review). Its outcome's evidence could be about any segment of its part, so `p3`'s delivery rested on a statement
+  about `p3-s1`'s withdrawal from before the part was stuck. `Action::ResolveStuck` gains `transaction`, the one the
+  move goes under at its provider (schema and Rust), and its evidence binds through it as a `move_value`'s binds
+  through its segment: a result about the order and that transaction, no segment, the transaction first bound to
+  the order and no segment. A planless part may still bind through its arrival or acceptance yes. The world's
+  delivery goes under `tx-d3` and its hand-on under `tx-h3`, and its report and confirmation rest on results about
+  `tx-d3`. Refused: the delivery reported on a result about `p3-s1`. Admitted: a planless part through its
+  resolution's transaction. 447 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a planless part's evidence comes through its own arrival (round 7 of
+  `T-020-01`'s review). Any arrival of the order bound a planless part's evidence, another part's included. An
+  arrival naming a part now counts for that part alone, and one naming none only where the log names no other part
+  of the order (in an input, an acceptance's yes, an arrival or an authorisation's parts). Refused: an arrival naming
+  `p9`, and an arrival naming no part of an order whose acceptance names `p4` beside `p3`. Admitted: an arrival
+  naming `p3`. 450 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-42, T-020-01)
+- Folded into 1.0.0 before its release: an operator command is the deployment operator's by party (round 7 of
+  `T-020-01`'s review). `VerifiedEntry::check` held an operator command to its actor's role alone, so any actor
+  stating the operator's role could appoint a checker. The check moves into a row,
+  `operator-command-is-the-deployment-operators`, which reads the actor's party against `DeploymentOperator.party`,
+  as a refiling's filer is read; the shape-level rule and its invalid fixture
+  (`verified-entry-of-a-command-by-a-provider`) give way to admission cases. The world appoints a checker. Refused:
+  another operator party, a provider, a party named as the operator's maker. 124 invalid fixtures, 454 admission
+  cases, 83 relations. (DEC-4, DEC-20, REQ-AUD-10, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution's transaction is decided (round 8 of `T-020-01`'s
+  review). The `resolve_stuck` effect named its transaction on its own, so the move step chose it. `StuckDecide`
+  gains `transaction` (schema and Rust), the one the resolution goes under at its provider, and
+  `stuck-effect-moves-the-decided-resolution` holds the effect to it (field `transaction`). The world's delivery is
+  decided under `tx-d3` and its hand-on under `tx-h3`. Refused: a hand-on effect under another transaction than its
+  decide step's. 455 admission cases. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-020-11)
+- Folded into 1.0.0 before its release: a stuck resolution's transaction is its own (round 8 of `T-020-01`'s
+  review). Nothing checked it, so the world's hand-on was admitted under the delivery's `tx-d3`, `p3`'s yes
+  `tx-yes-1c` and `tx-f1`, which `p1-s1`'s move binds, and its outcome's evidence could then rest on those entries'
+  statements. `stuck-resolution-transaction-is-its-own` refuses a decide step or effect under a transaction another
+  stuck resolution, a move, a yes or a deposit's notice uses, its own decide step and effect and retries aside;
+  `stuck-resolution-transaction-is-unbound-or-its-orders` refuses one first bound elsewhere than at order level to
+  its own order. Refused: the three probe transactions, a deposit's notice's, a decide step under the delivery's,
+  and one bound to another order. 461 admission cases, 85 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-38, T-020-01)
+- Folded into 1.0.0 before its release: every stuck resolution's evidence binds through its own transaction (round 8
+  of `T-020-01`'s review, the reviewer's ruling). A planless part's evidence could also bind through its acceptance
+  yes's or an arrival's transaction, a route round 6 opened for a part with no segment to name. Every resolution now
+  names its transaction, decided, so that route goes: the planless cases through the order's entry are refused, and
+  the one through the resolution's own transaction is admitted. (DEC-4, DEC-20, REQ-AUZ-4, T-020-01)
+- Folded into 1.0.0 before its release: the README hands `T-022-01` the check on a statement's own time: its log
+  refuses a stated entry whose `made_at` runs ahead of its append clock beyond a tolerance, since an outcome's
+  evidence is held to no earlier than its move by that `made_at`. (DEC-4, REQ-AUD-2, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a stuck resolution doesn't take over another question's transaction (round 9
+  of `T-020-01`'s review). `stuck-resolution-transaction-is-its-own` counted only statements binding the transaction
+  to a segment, so a resolution could be decided under the transaction of an order-level question already asked and
+  answered, whose answers would then settle it. Any statement naming the transaction before the resolution's own
+  decision is now a use; after it, only Core's question and the answers to it are its own. Refused: the reviewer's
+  probe, a question and its answer under `tx-z` before `p3`'s hand-on decision under `tx-z`. Admitted: the hand-on's
+  own question and answer under `tx-h3`, after its decision. 463 admission cases. (DEC-4, DEC-20, REQ-AUZ-4,
+  REQ-ORD-38, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

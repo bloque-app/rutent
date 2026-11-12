@@ -497,9 +497,6 @@ impl VerifiedEntry {
                 "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
             ));
         }
-        if matches!(self.what, What::Command { .. }) && self.who.role != Role::Operator {
-            return Err(Violation("an operator command is the operator's"));
-        }
         if let What::CheckRead { check } = &self.what
             && self.outcome == (Outcome::Permitted {})
             && matches!(check.reader.role, Role::Regulator | Role::Checker)

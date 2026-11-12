@@ -34,6 +34,7 @@
         },
         "amount": "2500000"
       },
+      "transaction": "tx-e21",
       "evidence": [
         {
           "algorithm": "sha-256",
