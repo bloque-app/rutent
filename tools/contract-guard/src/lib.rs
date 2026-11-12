@@ -582,28 +582,27 @@ pub fn check(
     // A referenced contract's major bump changes the shapes and the Rust API that reference it, though no path of
     // theirs changed: by a schema naming its URNs, or by the referencing module using its Rust module
     // (`crate::<module>`, a re-export included).
-    let majors =
-        |contract: &Contract| -> Result<Option<((u64, u64, u64), (u64, u64, u64))>, String> {
-            let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
-            let (Some(base), Some(head)) = (files.base(&log), files.head(&log)) else {
-                return Ok(None);
-            };
-            let top = |text: &str| {
-                sections(text)
-                    .into_iter()
-                    .next()
-                    .map(|s| (semver(&s.version), s.version))
-            };
-            match (top(&base), top(&head)) {
-                (Some((Some(b), _)), Some((Some(h), _))) => Ok(Some((b, h))),
-                (_, Some((None, label))) | (Some((None, label)), _) => Err(format!(
-                    "the first heading of {log} is not a version: {label}, so a major moved by it can't be read"
-                )),
-                _ => Err(format!(
-                    "{log} has no version heading, so a major moved by it can't be read"
-                )),
-            }
+    let majors = |contract: &Contract| -> Result<Option<(Semver, Semver)>, String> {
+        let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
+        let (Some(base), Some(head)) = (files.base(&log), files.head(&log)) else {
+            return Ok(None);
         };
+        let top = |text: &str| {
+            sections(text)
+                .into_iter()
+                .next()
+                .map(|s| (semver(&s.version), s.version))
+        };
+        match (top(&base), top(&head)) {
+            (Some((Some(b), _)), Some((Some(h), _))) => Ok(Some((b, h))),
+            (_, Some((None, label))) | (Some((None, label)), _) => Err(format!(
+                "the first heading of {log} is not a version: {label}, so a major moved by it can't be read"
+            )),
+            _ => Err(format!(
+                "{log} has no version heading, so a major moved by it can't be read"
+            )),
+        }
+    };
     let candidate_paths: BTreeSet<&String> = base_files.iter().chain(changed).collect();
     let module_paths: Vec<(usize, String)> = head_contracts
         .iter()
@@ -731,6 +730,9 @@ pub fn check(
     }
     Ok(violations)
 }
+
+/// A version as `semver` reads it: major, minor, patch.
+type Semver = (u64, u64, u64);
 
 /// Every path a Rust file names under `crate::`, braces expanded one level: `crate::a::B`, `crate::{a::B, c}`.
 fn crate_paths(text: &str) -> Vec<String> {
