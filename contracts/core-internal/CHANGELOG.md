@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 117 valid fixtures and 117 invalid ones, each
-  breaking one rule, and 341 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 68 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 345 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 67 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -244,6 +244,18 @@
   `standing` turns it red. Tension, named: `REQ-AUD-1`'s "every input leaves a trace" let a not-applicable input be
   recorded; the log now refuses it, and Core records only inputs the machine takes. 341 admission cases, 68 relations.
   (DEC-4, DEC-18, DEC-20, INV-4, REQ-STM-3, T-020-01)
+- Folded into 1.0.0 before its release: one predicate for a part's value in motion (the round-3 review's findings 1, 2
+  and 4). An effect is in motion while it may still move value: a `move_value` until its segment settles, is reversed
+  or fails as a deposit, a `resolve_stuck` of either kind until its `stuck_resolved` or `handed_on`, either until a
+  `failed` result. One row, `part-waits-for-value-in-motion`, reads it for every input and decision that would move a
+  part's value from where it sits: a recalculation, a change of destination, a floor wait, a hand-on, a stuck
+  decision and a resolution's effect; it replaces `recalculation-waits-for-moves-in-flight` and
+  `floor-wait-waits-for-moves-in-flight`, and `ended-part-takes-no-more` keeps only moves, the state machine's row
+  refusing inputs on an ended part. A stuck part's `handed_on` also follows a done `hand_on` resolution to its linked
+  order (`stuck-resolved-follows-a-done-resolution`). Refused: a stuck part resolved again while its delivery is in
+  motion, a resolution moved while another is, a route recalculated around a delivery in motion, a waiting part
+  handed on with a move in motion, a stuck part handed on before its hand-on is done. 345 admission cases, 67
+  relations. (DEC-4, DEC-20, INV-4, REQ-ORD-2, REQ-AUZ-4, T-020-01, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

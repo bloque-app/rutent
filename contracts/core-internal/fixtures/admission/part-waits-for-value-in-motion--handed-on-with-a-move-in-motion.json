@@ -1,5 +1,5 @@
 {
-  "row": "floor-wait-waits-for-moves-in-flight",
+  "row": "part-waits-for-value-in-motion",
   "breaks": "conflict",
   "history": [
     {
@@ -4276,166 +4276,6 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 184,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "5555555555555555555555555555555555555555555555555555555555555555"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-in_dest",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "customer",
-              "id": "user-42"
-            },
-            "standing": "stated",
-            "subject": {
-              "order": "ord-1",
-              "part": "p1"
-            },
-            "observed": {
-              "kind": "destination_changed",
-              "decision_record": "dr-0010",
-              "acceptance": "acc-0003",
-              "segments": [
-                {
-                  "segment_id": "p1-s4",
-                  "provider": "exchange-b",
-                  "kind": "exchange",
-                  "from": {
-                    "node": "ledger-in",
-                    "asset": {
-                      "id": "COP",
-                      "decimals": 2
-                    }
-                  },
-                  "to": {
-                    "node": "ledger-in",
-                    "asset": {
-                      "id": "EURC",
-                      "decimals": 6
-                    }
-                  }
-                },
-                {
-                  "segment_id": "p1-s5",
-                  "provider": "reserve-eu",
-                  "kind": "deposit",
-                  "from": {
-                    "node": "ledger-in",
-                    "asset": {
-                      "id": "EURC",
-                      "decimals": 6
-                    }
-                  },
-                  "to": {
-                    "node": {
-                      "network": "sepa"
-                    },
-                    "asset": {
-                      "id": "EURC",
-                      "decimals": 6
-                    }
-                  }
-                }
-              ]
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 185,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "5656565656565656565656565656565656565656565656565656565656565656"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "destination_check",
-          "order": "ord-1",
-          "destination": {
-            "reserve": "bank-co",
-            "node": {
-              "network": "co-ach"
-            },
-            "account": "acct-ref-9"
-          },
-          "outcome": "owner_changed"
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 186,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "5757575757575757575757575757575757575757575757575757575757575757"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "order_refusal",
-          "request": "client-acc-0001",
-          "order": "ord-1",
-          "class": "destination_owner_changed"
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
         "index": 80,
         "entry": {
           "algorithm": "sha-256",
@@ -4452,9 +4292,9 @@
         },
         "what": {
           "call": "decide",
-          "decision": "dec-104",
+          "decision": "dec-116",
           "request": {
-            "request": "req-104",
+            "request": "req-116",
             "caller": {
               "party": "rutent",
               "acts": "core-orch",
@@ -4464,8 +4304,8 @@
             "action": {
               "kind": "move_value",
               "order": "ord-1",
-              "segment": "p1-s4",
-              "provider": "exchange-b",
+              "segment": "p1-s6",
+              "provider": "exchange-c",
               "origin_reserve": "us-bank",
               "authorisation": "auth-1",
               "route": {
@@ -4517,8 +4357,8 @@
           "action": {
             "kind": "move_value",
             "order": "ord-1",
-            "segment": "p1-s4",
-            "provider": "exchange-b",
+            "segment": "p1-s6",
+            "provider": "exchange-c",
             "origin_reserve": "us-bank",
             "authorisation": "auth-1",
             "route": {
@@ -4537,8 +4377,8 @@
             }
           },
           "decision": {
-            "request": "req-104",
-            "decision": "dec-104",
+            "request": "req-116",
+            "decision": "dec-116",
             "answer": "permit",
             "receipt": {
               "log": "log-main",
@@ -4575,16 +4415,18 @@
         "recorded_at": "2026-11-06T10:00:00Z",
         "time_source": "core-orch clock",
         "source": {
-          "kind": "orchestrator",
-          "id": "core-orch"
+          "kind": "operator",
+          "id": "op-1"
         },
-        "standing": "verified",
+        "standing": "stated",
         "subject": {
           "order": "ord-1",
           "part": "p1"
         },
         "observed": {
-          "kind": "waiting_at_floor"
+          "kind": "handed_on",
+          "linked_order": "ord-2",
+          "acceptance": "acc-0002"
         }
       }
     },

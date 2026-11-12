@@ -3888,6 +3888,68 @@
           "status": "observed"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 80,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "decide",
+          "decision": "dec-132",
+          "request": {
+            "request": "req-132",
+            "caller": {
+              "party": "rutent",
+              "acts": "core-orch",
+              "role": "core",
+              "kind": "component"
+            },
+            "action": {
+              "kind": "move_value",
+              "order": "ord-1",
+              "segment": "p3-s2",
+              "provider": "exchange-a",
+              "origin_reserve": "us-bank",
+              "authorisation": "auth-1",
+              "route": {
+                "destination": {
+                  "reserve": "bank-co",
+                  "node": {
+                    "network": "co-ach"
+                  },
+                  "account": "acct-ref-9"
+                },
+                "to_asset": {
+                  "id": "COP",
+                  "decimals": 2
+                },
+                "delivers": "2500000"
+              }
+            },
+            "at": "2026-11-10T09:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
     }
   ],
   "entry": {
@@ -3899,23 +3961,40 @@
       "kind": "component"
     },
     "what": {
-      "call": "input",
-      "input": {
-        "record_id": "rec-x-citing",
-        "recorded_at": "2026-11-06T10:00:00Z",
-        "time_source": "core-orch clock",
-        "source": {
-          "kind": "router",
-          "id": "router"
-        },
-        "standing": "stated",
-        "subject": {
-          "order": "ord-1",
-          "part": "p3"
-        },
-        "observed": {
-          "kind": "no_route",
-          "decision_record": "dr-0001"
+      "call": "effect",
+      "action": {
+        "kind": "move_value",
+        "order": "ord-1",
+        "segment": "p3-s2",
+        "provider": "exchange-a",
+        "origin_reserve": "us-bank",
+        "authorisation": "auth-1",
+        "route": {
+          "destination": {
+            "reserve": "bank-co",
+            "node": {
+              "network": "co-ach"
+            },
+            "account": "acct-ref-9"
+          },
+          "to_asset": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "delivers": "2500000"
+        }
+      },
+      "decision": {
+        "request": "req-132",
+        "decision": "dec-132",
+        "answer": "permit",
+        "receipt": {
+          "log": "log-main",
+          "index": 80,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+          }
         }
       }
     },
@@ -3924,7 +4003,7 @@
       "source": "core_clock"
     },
     "outcome": {
-      "status": "observed"
+      "status": "to_take_effect"
     }
   }
 }

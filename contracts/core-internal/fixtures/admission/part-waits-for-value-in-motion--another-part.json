@@ -1,6 +1,6 @@
 {
-  "row": "recalculation-waits-for-moves-in-flight",
-  "breaks": "conflict",
+  "row": "part-waits-for-value-in-motion",
+  "breaks": null,
   "history": [
     {
       "receipt": {
@@ -1721,7 +1721,7 @@
           "action": {
             "kind": "move_value",
             "order": "ord-1",
-            "segment": "p1-s2",
+            "segment": "p2-s2",
             "provider": "fx-desk",
             "origin_reserve": "us-bank",
             "authorisation": "auth-1",
@@ -1928,100 +1928,6 @@
               }
             }
           ]
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 136,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "2525252525252525252525252525252525252525252525252525252525252525"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-in_bound12",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "orchestrator",
-              "id": "core-orch"
-            },
-            "standing": "stated",
-            "subject": {
-              "order": "ord-1",
-              "part": "p1",
-              "segment": "p1-s2"
-            },
-            "observed": {
-              "kind": "provider_bound"
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 137,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "2626262626262626262626262626262626262626262626262626262626262626"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-in_failed12",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "provider",
-              "id": "reserve-bank-co"
-            },
-            "standing": "stated",
-            "subject": {
-              "order": "ord-1",
-              "part": "p1",
-              "segment": "p1-s2"
-            },
-            "observed": {
-              "kind": "segment_failed"
-            }
-          }
         },
         "when": {
           "at": "2026-11-10T09:00:00Z",

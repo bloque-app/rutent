@@ -1,5 +1,5 @@
 {
-  "row": "ended-part-takes-no-more",
+  "row": "part-waits-for-value-in-motion",
   "breaks": "conflict",
   "history": [
     {
@@ -3509,493 +3509,46 @@
           "status": "to_take_effect"
         }
       }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 169,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4646464646464646464646464646464646464646464646464646464646464646"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "shown",
-          "order": "ord-2",
-          "shown": {
-            "algorithm": "sha-256",
-            "value": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
-          },
-          "shown_as": "quote"
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 170,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4747474747474747474747474747474747474747474747474747474747474747"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "cust-1",
-          "acts": "cust-1",
-          "role": "customer",
-          "kind": "person"
-        },
-        "what": {
-          "call": "acceptance",
-          "acceptance": "acc-0002",
-          "order": "ord-2",
-          "request": "client-acc-0002",
-          "quote": {
-            "algorithm": "sha-256",
-            "value": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
-          },
-          "authorisation": "auth-2",
-          "basis": "given",
-          "parties": {
-            "requester": "cust-1",
-            "beneficiary": "cust-1",
-            "payer": "cust-1"
-          },
-          "origin_reserve": "us-bank",
-          "yeses": [
-            {
-              "part": "p1",
-              "origin_reserve": "us-bank",
-              "reserve_yes": {
-                "log": "log-main",
-                "index": 108,
-                "entry": {
-                  "algorithm": "sha-256",
-                  "value": "0909090909090909090909090909090909090909090909090909090909090909"
-                }
-              }
-            }
-          ],
-          "session": "sess-1"
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 171,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4848484848484848484848484848484848484848484848484848484848484848"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "result",
-          "effect": {
-            "log": "log-main",
-            "index": 168,
-            "entry": {
-              "algorithm": "sha-256",
-              "value": "4545454545454545454545454545454545454545454545454545454545454545"
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "failed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 172,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4949494949494949494949494949494949494949494949494949494949494949"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "operator",
-          "acts": "op-login-2",
-          "role": "operator",
-          "kind": "person"
-        },
-        "what": {
-          "call": "stuck_decide",
-          "decision": "dec-210",
-          "request": {
-            "request": "req-210",
-            "order": "ord-1",
-            "part": "p3",
-            "decider": {
-              "party": "operator",
-              "acts": "op-login-2",
-              "role": "operator",
-              "kind": "person"
-            },
-            "resolution": {
-              "kind": "hand_on",
-              "by": "fx-desk",
-              "linked_order": "ord-2",
-              "asset": {
-                "id": "USDC",
-                "decimals": 6
-              },
-              "amount": "1000000000"
-            },
-            "evidence": [
-              {
-                "algorithm": "sha-256",
-                "value": "3131313131313131313131313131313131313131313131313131313131313131"
-              }
-            ],
-            "at": "2026-11-10T09:00:00Z"
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "permitted"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 173,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "operator-desk-b",
-          "acts": "op-login-5",
-          "role": "operator",
-          "kind": "person"
-        },
-        "what": {
-          "call": "stuck_move",
-          "decision": "dec-211",
-          "request": {
-            "request": "req-211",
-            "order": "ord-1",
-            "carries_out": {
-              "request": "req-210",
-              "decision": "dec-210"
-            },
-            "mover": {
-              "party": "operator-desk-b",
-              "acts": "op-login-5",
-              "role": "operator",
-              "kind": "person"
-            },
-            "at": "2026-11-10T09:00:00Z"
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "permitted"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 174,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "effect",
-          "action": {
-            "kind": "resolve_stuck",
-            "order": "ord-1",
-            "carries_out": {
-              "request": "req-210",
-              "decision": "dec-210"
-            },
-            "resolution": {
-              "kind": "hand_on",
-              "by": "fx-desk",
-              "linked_order": "ord-2",
-              "asset": {
-                "id": "USDC",
-                "decimals": 6
-              },
-              "amount": "1000000000"
-            }
-          },
-          "decision": {
-            "request": "req-211",
-            "decision": "dec-211",
-            "answer": "permit",
-            "receipt": {
-              "log": "log-main",
-              "index": 173,
-              "entry": {
-                "algorithm": "sha-256",
-                "value": "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a"
-              }
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "to_take_effect"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 175,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "result",
-          "effect": {
-            "log": "log-main",
-            "index": 174,
-            "entry": {
-              "algorithm": "sha-256",
-              "value": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b"
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "done"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 176,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-in_handed",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "operator",
-              "id": "op-1"
-            },
-            "standing": "stated",
-            "subject": {
-              "order": "ord-1",
-              "part": "p3"
-            },
-            "observed": {
-              "kind": "handed_on",
-              "linked_order": "ord-2",
-              "acceptance": "acc-0002"
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "observed"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 80,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "decide",
-          "decision": "dec-132",
-          "request": {
-            "request": "req-132",
-            "caller": {
-              "party": "rutent",
-              "acts": "core-orch",
-              "role": "core",
-              "kind": "component"
-            },
-            "action": {
-              "kind": "move_value",
-              "order": "ord-1",
-              "segment": "p3-s2",
-              "provider": "exchange-a",
-              "origin_reserve": "us-bank",
-              "authorisation": "auth-1",
-              "route": {
-                "destination": {
-                  "reserve": "bank-co",
-                  "node": {
-                    "network": "co-ach"
-                  },
-                  "account": "acct-ref-9"
-                },
-                "to_asset": {
-                  "id": "COP",
-                  "decimals": 2
-                },
-                "delivers": "2500000"
-              }
-            },
-            "at": "2026-11-10T09:00:00Z"
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "permitted"
-        }
-      }
     }
   ],
   "entry": {
     "kind": "verified",
     "who": {
-      "party": "rutent",
-      "acts": "core-orch",
-      "role": "core",
-      "kind": "component"
+      "party": "operator",
+      "acts": "op-login-2",
+      "role": "operator",
+      "kind": "person"
     },
     "what": {
-      "call": "effect",
-      "action": {
-        "kind": "move_value",
+      "call": "stuck_decide",
+      "decision": "dec-210",
+      "request": {
+        "request": "req-210",
         "order": "ord-1",
-        "segment": "p3-s2",
-        "provider": "exchange-a",
-        "origin_reserve": "us-bank",
-        "authorisation": "auth-1",
-        "route": {
-          "destination": {
-            "reserve": "bank-co",
-            "node": {
-              "network": "co-ach"
-            },
-            "account": "acct-ref-9"
+        "part": "p3",
+        "decider": {
+          "party": "operator",
+          "acts": "op-login-2",
+          "role": "operator",
+          "kind": "person"
+        },
+        "resolution": {
+          "kind": "hand_on",
+          "by": "fx-desk",
+          "linked_order": "ord-2",
+          "asset": {
+            "id": "USDC",
+            "decimals": 6
           },
-          "to_asset": {
-            "id": "COP",
-            "decimals": 2
-          },
-          "delivers": "2500000"
-        }
-      },
-      "decision": {
-        "request": "req-132",
-        "decision": "dec-132",
-        "answer": "permit",
-        "receipt": {
-          "log": "log-main",
-          "index": 80,
-          "entry": {
+          "amount": "1000000000"
+        },
+        "evidence": [
+          {
             "algorithm": "sha-256",
-            "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+            "value": "3131313131313131313131313131313131313131313131313131313131313131"
           }
-        }
+        ],
+        "at": "2026-11-10T09:00:00Z"
       }
     },
     "when": {
@@ -4003,7 +3556,7 @@
       "source": "core_clock"
     },
     "outcome": {
-      "status": "to_take_effect"
+      "status": "permitted"
     }
   }
 }

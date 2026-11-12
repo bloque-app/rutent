@@ -1,5 +1,5 @@
 {
-  "row": "recalculation-waits-for-moves-in-flight",
+  "row": "part-waits-for-value-in-motion",
   "breaks": null,
   "history": [
     {
@@ -1721,7 +1721,7 @@
           "action": {
             "kind": "move_value",
             "order": "ord-1",
-            "segment": "p2-s2",
+            "segment": "p1-s2",
             "provider": "fx-desk",
             "origin_reserve": "us-bank",
             "authorisation": "auth-1",
@@ -3899,6 +3899,43 @@
         },
         "outcome": {
           "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 99,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 131,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "2020202020202020202020202020202020202020202020202020202020202020"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "failed"
         }
       }
     }
