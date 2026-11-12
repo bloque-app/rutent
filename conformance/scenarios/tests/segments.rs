@@ -1659,3 +1659,65 @@ fn next_segment_is_handed_what_arrived_net_of_the_charge_as_the_tuple_reports_it
         "gross: what it gave out less its charge"
     );
 }
+
+/// The withdrawal settles with nothing given out, and the log can't take the part's refusal. Running the part again
+/// takes the settled withdrawal as it stands and records the refusal it still owes, once.
+// verifies: REQ-ORD-21, INV-7
+#[test]
+fn refusal_owed_after_a_settled_segment_is_recorded_on_resume() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Refusal, Fault::Unavailable));
+    }
+    let key = statements_key_of(RESERVE);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let session = SuiteContext::default().session;
+    {
+        let mut watched = Watched::new(&mut world.fleet.platform);
+        watched.alter = Some((
+            0,
+            Box::new(move |bytes| {
+                resigned(&bytes, &key, |v| {
+                    v["statement"]["outcome"]["amount_out"] = "0".into();
+                })
+            }),
+        ));
+        let stopped = core.try_run_with(
+            &catalogue,
+            &mut watched,
+            &mut NoProxy,
+            &mut ProvidersWord,
+            &session,
+        );
+        assert!(stopped.is_err(), "{stopped:?}");
+    }
+    let refusals = |core: &Core| {
+        core.log.borrow().count(|w| {
+            matches!(
+                w,
+                What::OrderRefusal {
+                    class: OrderRefusalClass::NoRouteForAmount,
+                    ..
+                }
+            )
+        })
+    };
+    assert_eq!(refusals(&core), 0);
+    let ran = core.run_over(&catalogue, &mut world.fleet.platform);
+    world.catalogue = catalogue;
+    assert_eq!(segments(&ran).len(), 1, "the part ends at the withdrawal");
+    assert_eq!(
+        refusals(&core),
+        1,
+        "the refusal it owed, recorded on resume"
+    );
+    let _ = core.run_over(&world.catalogue, &mut world.fleet.platform);
+    assert_eq!(refusals(&core), 1, "and once");
+}

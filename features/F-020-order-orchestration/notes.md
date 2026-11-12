@@ -639,3 +639,19 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   test); the first verdict kept (the verdict test); `net`'s charge counted within what came in, and `gross`'s
   charge taken off what is handed on (the reporting test). Keying each result step to its outcome is defence in
   depth behind the kept begin refusal, which no test reaches alone.
+
+### T-020-08, the reviewer's last two nits on 73ff352
+
+- **A refusal owed after a settled segment is recorded on resume.** The `no_route_for_amount` refusal a part owes
+  when a segment settles with nothing given out is now that segment's own step, built once and appended until the
+  log takes it, and a run that takes the settled segment as it stands appends it if it is still owed. Before, a
+  re-run skipped the settled segment and the refusal was never recorded. Test
+  `refusal_owed_after_a_settled_segment_is_recorded_on_resume`, the refusal's append failing every try of the first
+  run; written first, seen red. The refusal is built in this module now, not through `record_route_refusal`, so it
+  carries no `RouteRefusal` reason: the log records the class alone, as before.
+- **A conversion under `gross` hands on its output as it is: the reading kept, not a refusal.** A conversion's charge
+  is in the asset it takes in, never the one it gives out, so under `gross` or `net` alike it can't be taken off
+  what the conversion gives out, an amount in another asset. What it gives out is already limited, for what it took
+  in, by its cited quote and the tighter of the quote's slippage and the operator's limit, which hold whatever the
+  terms report. Refusing `gross` conversions would refuse every exchange that reports gross with nothing gained.
+  Reversible.

@@ -155,7 +155,9 @@ pub fn judge(
         None => Err(NotCounted::GivesOutMore),
     };
     // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most. Its charge
-    // is in the asset it takes in, so what it gives out is handed on as it is.
+    // is in the asset it takes in, never the one it gives out, so under `gross` and `net` alike what it gives out is
+    // handed on as it is: the charge can't be taken off an amount in another asset, and the quote and the slippage
+    // bound already limit what it gives out for what it took in, the charge included.
     let converted = |amount_in: &str, amount_out: &str| {
         if converts_within(amount_in, amount_out, quoted) {
             Ok(settled(amount_in, amount_out, amount_out.to_owned()))

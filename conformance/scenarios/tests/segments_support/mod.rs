@@ -168,6 +168,8 @@ pub enum On {
     Bound,
     /// A result, once the log holds one already.
     LaterResult,
+    /// An order's refusal.
+    Refusal,
 }
 
 impl On {
@@ -188,6 +190,7 @@ impl On {
             (On::StatedResult, Entry::Stated(s)) => {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
             }
+            (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
             _ => false,

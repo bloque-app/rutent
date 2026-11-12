@@ -72,7 +72,7 @@ use rutent_stm::Stm;
 
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
-    Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefusal, RouteRefused, check_part,
+    Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefused, check_part,
     record_route_refusal,
 };
 
@@ -84,9 +84,6 @@ pub use sign::Unwritten;
 
 /// How many fresh identifiers are drawn for a transaction before the source is taken as broken.
 const DRAWS: usize = 4;
-
-/// Why a part with nothing arrived for its next segment can't go on.
-const NOTHING_TO_MOVE: &str = "nothing arrived at the node for the next segment to move";
 
 /// What the segments reach. The assembly builds it; Core's clock, catalogue and exposures are those the snapshots are
 /// formed from.
@@ -577,30 +574,35 @@ impl Segments {
         for place in 0..part.operations.len() {
             // A segment whose outcome is final stands as it is: a run that stopped after it goes on from the next
             // one, with what it gave out.
-            let (done, standing) = match self.standing(live, place) {
-                Some(done) => (done, true),
-                None => (self.hand_over(parts, live, place, &amount)?, false),
+            let done = match self.standing(live, place) {
+                Some(done) => done,
+                None => self.hand_over(parts, live, place, &amount)?,
             };
             let next = match &done.outcome {
                 SegmentOutcome::Settled { amount_out, .. } => {
                     match PositiveAmount::new(amount_out.clone()) {
                         Some(next) => Some(next),
-                        None if place + 1 < part.operations.len() && !standing => {
-                            // Nothing arrived to move on: the part can't go on, and the order is told so.
-                            record_route_refusal(
-                                parts.log,
-                                parts.clock,
-                                live.core.clone(),
-                                live.record.record_id(),
-                                Some(live.order),
-                                &RouteRefused {
-                                    reason: RouteRefusal::Malformed(
-                                        place + 1,
-                                        rutent_contracts::router_api::Violation(NOTHING_TO_MOVE),
-                                    ),
-                                    class: OrderRefusalClass::NoRouteForAmount,
-                                },
-                            )?;
+                        None if place + 1 < part.operations.len() => {
+                            // Nothing arrived to move on: the part can't go on, and the order is told so. The
+                            // refusal is the settled segment's step, kept and appended once, so a run that stopped
+                            // before the log took it records it when it goes on.
+                            let at = (
+                                live.order.as_str().to_owned(),
+                                done.segment.as_str().to_owned(),
+                            );
+                            let when = now(parts.clock)?;
+                            self.built_step(parts.log, &at, "refusal", || {
+                                Ok(journal::verified(
+                                    live.core,
+                                    What::OrderRefusal {
+                                        request: live.record.record_id().clone(),
+                                        order: Some(live.order.clone()),
+                                        class: OrderRefusalClass::NoRouteForAmount,
+                                    },
+                                    &when,
+                                    Outcome::Observed {},
+                                ))
+                            })?;
                             None
                         }
                         None => None,
