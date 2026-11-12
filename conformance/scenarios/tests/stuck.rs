@@ -28,8 +28,7 @@ use rutent_core_orch::stuck::{
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
-    Moves, PermitsEveryStep, Raises, destination, follow, on_parts, origin, recorded, staff,
-    two_makers, watch,
+    Moves, PermitsEveryStep, Raises, destination, follow, on_parts, origin, recorded, staff, watch,
 };
 use segments_support::*;
 
@@ -2252,8 +2251,7 @@ fn results_of(core: &Core, effect: &Receipt) -> Vec<Outcome> {
 /// settles nothing; an actor of another party and another login confirms it, citing the report and naming another
 /// statement, by another maker; only then is the final result recorded, once. The log records the report and the
 /// confirmation, each with its actor and its evidence. Done counts what moved, and the part resolves once all of it
-/// moved. A mover that switches its report before it is confirmed leaves only its last report pending. Nothing is
-/// carried out again.
+/// moved. A move's outcome is reported once: a second report is refused. Nothing is carried out again.
 // verifies: REQ-AUZ-4, REQ-ORD-1, INV-8
 #[test]
 fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
@@ -2265,7 +2263,6 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         staff("desk-b", "bob"),
         staff("desk-c", "carol"),
     );
-    let (operation, result) = two_makers(&core, WITHDRAWAL);
     let first = decide(
         &mut core,
         &mut stuck,
@@ -2283,6 +2280,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
     else {
         panic!("unknown, recorded unanswered");
     };
+    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
     assert_eq!(results_of(&core, &effect), vec![Outcome::Unanswered {}]);
     assert_eq!(
         known_outcome(
@@ -2337,26 +2335,55 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         Err(ResolveError::NoDecision),
         "nothing to confirm before a report"
     );
-    // The mover reports failed, then done: only the last report is pending, and done alone settles nothing.
-    for (version, outcome) in [(1, Resolved::Failed), (2, Resolved::Done)] {
-        assert_eq!(
-            known_outcome(
-                &mut core,
-                &mut stuck,
-                &mut policy,
-                ORDER,
-                &first,
-                &bob,
-                outcome,
-                &result
-            ),
-            Ok(Moved::AwaitsConfirmation { report: version })
-        );
-    }
+    // A statement older than the move can't say what it came to.
+    let older = segments_support::resolving::statements_about(&core, WITHDRAWAL)[0]
+        .0
+        .clone();
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &older
+        ),
+        Err(ResolveError::NoEvidence)
+    );
+    // The mover reports done, once: a second report is refused, and done alone settles nothing.
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &result
+        ),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Failed,
+            &result
+        ),
+        Err(ResolveError::AlreadyReported),
+        "a move's outcome is reported once"
+    );
     assert_eq!(
         outcome_decisions(&core),
-        (2, 0),
-        "each report decided by policy"
+        (1, 0),
+        "the report decided by policy"
     );
     assert!(
         stuck.is_stuck(&id(ORDER), &id(PART)),
@@ -2387,7 +2414,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
                 ORDER,
                 &first,
                 &confirmer,
-                (Resolved::Done, 2, &result),
+                (Resolved::Done, 1, &result),
                 &operation
             ),
             Err(refused)
@@ -2401,7 +2428,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             ORDER,
             &first,
             &alice,
-            (Resolved::Done, 2, &result),
+            (Resolved::Done, 1, &result),
             &result
         ),
         Err(ResolveError::NoEvidence),
@@ -2415,7 +2442,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             ORDER,
             &first,
             &alice,
-            (Resolved::Done, 2, &result),
+            (Resolved::Done, 1, &result),
             &operation
         ),
         Ok(Moved::CarriedOut {
@@ -2428,7 +2455,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         results_of(&core, &effect),
         vec![Outcome::Unanswered {}, Outcome::Done {}]
     );
-    assert_eq!(outcome_decisions(&core), (2, 1));
+    assert_eq!(outcome_decisions(&core), (1, 1));
     assert!(
         !stuck.is_stuck(&id(ORDER), &id(PART)),
         "a confirmed done resolves the part"
@@ -2441,7 +2468,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             ORDER,
             &first,
             &alice,
-            (Resolved::Done, 2, &result),
+            (Resolved::Done, 1, &result),
             &operation
         ),
         Err(ResolveError::NoDecision),
@@ -2462,7 +2489,6 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
     let mut policy = PermitsEveryStep::new(&core.log);
     let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let (operation, result) = two_makers(&core, WITHDRAWAL);
     let first = decide(
         &mut core,
         &mut stuck,
@@ -2473,6 +2499,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
+    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
     assert_eq!(
         known_outcome(
             &mut core,
@@ -2695,10 +2722,10 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         .expect("the log admits every entry");
 }
 
-/// A confirmation names the report it confirms: its outcome, its version and its evidence. The mover reports failed
-/// and then done; a confirmation of the first report, as the confirmer read it, is refused and records nothing, and
-/// so is one that mixes the two. The same in reverse. Only a confirmation of the current report records it, so the
-/// mover can't choose the outcome after the second actor committed.
+/// A confirmation names the report it confirms: its outcome, its version and its evidence. A confirmation naming
+/// another outcome, another version or another evidence than the report's is refused and records nothing, so the
+/// confirmer confirms exactly what it read. The report stands: the mover can't replace it. Only a confirmation of
+/// the report records it.
 // verifies: REQ-AUZ-4, ADR-0011
 #[test]
 fn confirmation_names_the_report_it_confirms() {
@@ -2706,7 +2733,6 @@ fn confirmation_names_the_report_it_confirms() {
     let mut policy = PermitsEveryStep::new(&core.log);
     let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let (operation, result) = two_makers(&core, WITHDRAWAL);
     let first = decide(
         &mut core,
         &mut stuck,
@@ -2717,6 +2743,7 @@ fn confirmation_names_the_report_it_confirms() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
+    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
     let entries = |core: &Core| core.log.borrow().entries.len();
     let refused = |core: &mut Core,
                    stuck: &mut Stuck,
@@ -2743,6 +2770,24 @@ fn confirmation_names_the_report_it_confirms() {
         ),
         Ok(Moved::AwaitsConfirmation { report: 1 })
     );
+    refused(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        (Resolved::Done, 1, &result),
+    );
+    refused(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        (Resolved::Failed, 2, &result),
+    );
+    refused(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        (Resolved::Failed, 1, &operation),
+    );
     assert_eq!(
         known_outcome(
             &mut core,
@@ -2754,51 +2799,8 @@ fn confirmation_names_the_report_it_confirms() {
             Resolved::Done,
             &result
         ),
-        Ok(Moved::AwaitsConfirmation { report: 2 })
-    );
-    refused(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        (Resolved::Failed, 1, &result),
-    );
-    refused(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        (Resolved::Done, 1, &result),
-    );
-    refused(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        (Resolved::Done, 2, &operation),
-    );
-    refused(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        (Resolved::Failed, 2, &result),
-    );
-    // In reverse: done, then failed; a confirmation of the done is refused.
-    assert_eq!(
-        known_outcome(
-            &mut core,
-            &mut stuck,
-            &mut policy,
-            ORDER,
-            &first,
-            &bob,
-            Resolved::Failed,
-            &result
-        ),
-        Ok(Moved::AwaitsConfirmation { report: 3 })
-    );
-    refused(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        (Resolved::Done, 2, &result),
+        Err(ResolveError::AlreadyReported),
+        "the mover can't replace its report after the confirmer read it"
     );
     assert!(matches!(
         confirm_outcome(
@@ -2808,7 +2810,7 @@ fn confirmation_names_the_report_it_confirms() {
             ORDER,
             &first,
             &alice,
-            (Resolved::Failed, 3, &result),
+            (Resolved::Failed, 1, &result),
             &operation
         ),
         Ok(Moved::CarriedOut {
@@ -2817,7 +2819,7 @@ fn confirmation_names_the_report_it_confirms() {
             ..
         })
     ));
-    assert_eq!(outcome_decisions(&core), (3, 1));
+    assert_eq!(outcome_decisions(&core), (1, 1));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
@@ -2832,7 +2834,6 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     let mut policy = PermitsEveryStep::new(&core.log);
     let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let (operation, result) = two_makers(&core, WITHDRAWAL);
     let first = decide(
         &mut core,
         &mut stuck,
@@ -2843,6 +2844,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
+    let (operation, result) = statements_after_the_move(&mut core, WITHDRAWAL);
     let mut unbuilt = Unbuilt::new(PolicyPath(Rc::clone(&core.log)));
     let (order, carries_out, actor) = (id(ORDER), decided(&first), segments_support::core());
     let reported = on_parts(&mut core, |parts| {

@@ -320,6 +320,9 @@ pub enum ResolveError {
     NotTheReport,
     /// A move's reports have run out of versions: no further report is taken, so none is ever confused with another.
     ReportsExhausted,
+    /// The move's outcome was reported already: a move's outcome is reported once, and its report stands until it is
+    /// confirmed (`one-report-per-effect`).
+    AlreadyReported,
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
@@ -1100,7 +1103,8 @@ impl Stuck {
     /// decides the report (`StuckOrders::report_outcome`, `outcome-report-rests-on-its-move`), and a permitted one
     /// settles nothing: done would resolve the part and failed free it, each on the mover's word alone, which a mover
     /// colluding with the provider holding the funds could misuse (`THR-70`). It counts once another actor confirms it
-    /// ([`Stuck::confirm_outcome`]); a later report replaces it until then, one version more. Nothing is carried out
+    /// ([`Stuck::confirm_outcome`]). A move's outcome is reported once: a second report is refused
+    /// ([`ResolveError::AlreadyReported`]). Nothing is carried out
     /// again. Policy's side of reporting and confirming is `T-021-06`'s, unbuilt: until it is, the engine answers not
     /// known, and nothing settles, failing closed.
     pub fn known_outcome(
@@ -1120,6 +1124,11 @@ impl Stuck {
         if motion.mover != *moving.mover {
             return Err(ResolveError::NotTheMover);
         }
+        // A move's outcome is reported once (`one-report-per-effect`): a permitted report stands until it is
+        // confirmed, and is never replaced.
+        if motion.reported.is_some() {
+            return Err(ResolveError::AlreadyReported);
+        }
         let reported = match outcome {
             Resolved::Done => MoveOutcome::Done,
             Resolved::Failed => MoveOutcome::Failed,
@@ -1130,6 +1139,10 @@ impl Stuck {
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
+        // Evidence older than the move can't say what it came to (`outcome-confirmation-cites-verified-evidence`).
+        if !follows(evidence, &effect) {
+            return Err(ResolveError::NoEvidence);
+        }
         let version = motion
             .reports
             .checked_add(1)
@@ -1210,6 +1223,9 @@ impl Stuck {
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
+        if !follows(confirming.evidence, &effect) {
+            return Err(ResolveError::NoEvidence);
+        }
         let request = OutcomeConfirmation {
             request: parts.fresh.id(),
             order: confirming.order.clone(),
@@ -1829,6 +1845,11 @@ fn within(
         return Err(ResolveError::NotItsValue);
     }
     Ok(())
+}
+
+/// Whether `evidence` follows `effect` in the one log both receipts are of.
+fn follows(evidence: &Receipt, effect: &Receipt) -> bool {
+    evidence.log == effect.log && u64::from(evidence.index) > u64::from(effect.index)
 }
 
 /// Whether no segment of a declared part is handed over with no final outcome.
