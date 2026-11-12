@@ -1299,7 +1299,7 @@ fn clock_jumping_far_ahead_freezes_no_window() {
     let within = |n| ChargeOutcome::Within { remaining: safe(n) };
     let over = ChargeOutcome::Over { bound: safe(3) };
     let mut policy = engine(registers(), bounds(3, 1));
-    let mut charge_at = |policy: &mut Tested, moment: &str, request: &str, count| {
+    let charge_at = |policy: &mut Tested, moment: &str, request: &str, count| {
         policy.set_clock(Stopped::at(&at(moment)));
         policy
             .charge(&charge(request, &a, Work::Request, count))
