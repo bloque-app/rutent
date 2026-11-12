@@ -445,6 +445,11 @@
   `stuck-resolution-transaction-is-unbound-or-its-orders` refuses one first bound elsewhere than at order level to
   its own order. Refused: the three probe transactions, a deposit's notice's, a decide step under the delivery's,
   and one bound to another order. 461 admission cases, 85 relations. (DEC-4, DEC-20, REQ-AUZ-4, REQ-ORD-38, T-020-01)
+- Folded into 1.0.0 before its release: every stuck resolution's evidence binds through its own transaction (round 8
+  of `T-020-01`'s review, the reviewer's ruling). A planless part's evidence could also bind through its acceptance
+  yes's or an arrival's transaction, a route round 6 opened for a part with no segment to name. Every resolution now
+  names its transaction, decided, so that route goes: the planless cases through the order's entry are refused, and
+  the one through the resolution's own transaction is admitted. (DEC-4, DEC-20, REQ-AUZ-4, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
