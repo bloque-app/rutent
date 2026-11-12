@@ -4730,8 +4730,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "exchange-c",
-            "acts": "exchange-c",
+            "party": "fx-desk",
+            "acts": "fx-desk",
             "role": "provider",
             "kind": "component"
           }
@@ -4785,7 +4785,7 @@
           "order": "ord-1",
           "segment": "p1-s6",
           "grade": 2,
-          "whose": "exchange-c",
+          "whose": "fx-desk",
           "rests_on": [
             {
               "log": "log-main",

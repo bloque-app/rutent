@@ -505,7 +505,7 @@
 - Folded into 1.0.0 before its release: the log takes a new destination, or a waiting part's hand-on, only after a
   failed final deposit (`INV-10`, the reviews since `T-020-01` landed), as the state machine's rules now do. The
   world's p1 runs its recalculated route to its final deposit, which fails: p1-s6's exchange settles at ledger-in on
-  exchange-c's evidence, p1-s7's deposit fails, and with no route left p1 waits, so the customer's new destination
+  fx-desk's signed result, p1-s7's deposit fails, and with no route left p1 waits, so the customer's new destination
   now starts from USDC at ledger-in. Refused: p1 waiting at its floor, p1-s6 settled and its final deposit not tried,
   sent to a new destination or handed on to ord-41. 491 admission cases. (DEC-4, DEC-20, INV-10, REQ-ORD-43,
   T-020-01)

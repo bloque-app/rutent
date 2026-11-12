@@ -4722,8 +4722,8 @@
     "attribution": {
       "signature": "verified",
       "who": {
-        "party": "exchange-c",
-        "acts": "exchange-c",
+        "party": "fx-desk",
+        "acts": "fx-desk",
         "role": "provider",
         "kind": "component"
       }
