@@ -2879,7 +2879,7 @@
           "source": "core_clock"
         },
         "outcome": {
-          "status": "done"
+          "status": "failed"
         }
       }
     },

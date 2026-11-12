@@ -1087,8 +1087,9 @@ fn no_erasure_reaches_an_advertisement() {
 }
 
 /// An erasure is carried out only on the log's own record of it, a `done` erasure entry naming the statement: on no
-/// receipt of another entry, of a failed erasure, or of no entry of this log, so nothing is erased that the log
-/// doesn't reference first. The log itself refuses an erasure naming what no stated entry holds.
+/// receipt of another entry, or of no entry of this log, so nothing is erased that the log doesn't reference first.
+/// The log itself refuses an erasure naming what no stated entry holds, and one recorded failed after its effect's
+/// `done` result, when the bytes are already gone.
 // verifies: REQ-AUD-13, INV-7
 #[test]
 fn an_erasure_the_log_holds_no_record_of_erases_nothing() {
@@ -1099,8 +1100,10 @@ fn an_erasure_the_log_holds_no_record_of_erases_nothing() {
     let refused = Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE)));
 
     assert_eq!(run.store.erase(&stated_at), refused);
-    let failed = run.append(&erasure(&commitment, "failed")).unwrap();
-    assert_eq!(run.store.erase(&failed), refused);
+    assert!(matches!(
+        run.append(&erasure(&commitment, "failed")),
+        Err(AppendFailure::Refused(_))
+    ));
     let done = run.append(&erasure(&commitment, "done")).unwrap();
     let mut forged = done.clone();
     forged.index = SafeInteger::try_from(done.index.get() + 1).unwrap();

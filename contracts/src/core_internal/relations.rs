@@ -1467,10 +1467,16 @@ pub static RELATIONS: [Relation; 58] = [
         spec: &["REQ-AUD-13", "REQ-AUZ-1"],
         quantifier: Quantifier::Exists,
         refusal: "an erasure follows a result of an erase effect of this log for its commitment",
-        fields: &[(
-            "done",
-            "an erasure follows its erase effect's done result: the store erases only then",
-        )],
+        fields: &[
+            (
+                "done",
+                "an erasure follows its erase effect's done result: the store erases only then",
+            ),
+            (
+                "outcome",
+                "an erasure after its erase effect's done result is done: the bytes are gone",
+            ),
+        ],
         cites: |e, _| match &e.what {
             What::Erasure { .. } => by_fields(0),
             _ => none(),
@@ -1482,9 +1488,10 @@ pub static RELATIONS: [Relation; 58] = [
             let What::Result { effect } = &t.what else {
                 return Match::NotTarget;
             };
+            let done = t.outcome == (Outcome::Done {});
             judge(
                 erased_by(effect, h) == Some(evidence),
-                &[t.outcome == (Outcome::Done {})],
+                &[done, !done || e.outcome == (Outcome::Done {})],
             )
         },
     },
@@ -1521,10 +1528,16 @@ pub static RELATIONS: [Relation; 58] = [
                 none()
             }
         },
+        // The store erases on the erase effect's done result, so the statement counts as erased from there, before
+        // the erasure entry records it.
         answers: |e, _, t, h| match verified(t).map(|t| (&t.what, &t.outcome)) {
             Some((What::Erasure { evidence }, Outcome::Done {})) => {
                 judge(cites_statement(e, evidence, h), &[])
             }
+            Some((What::Result { effect }, Outcome::Done {})) => match erased_by(effect, h) {
+                Some(commitment) => judge(cites_statement(e, commitment, h), &[]),
+                None => Match::NotTarget,
+            },
             _ => Match::NotTarget,
         },
     },
