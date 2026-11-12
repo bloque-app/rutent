@@ -16,20 +16,20 @@ use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::CatalogueChange;
 use rutent_contracts::core_internal::Effect;
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DecisionEntry, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements,
-    Log, PolicyLog, Reads, Signatures, StatementKeys,
+    AppendFailure, Authorisations, DecisionEntry, Decisions, Evidence, Fetched, GeneralEntry, Kept,
+    KeptStatements, Log, PolicyLog, Reads, Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Authorisation, Decision, DecisionRequest, Destination,
-    Entry, KeptStatement, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, Receipt,
-    RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through, TimeSource, VerifiedEntry,
-    VerifiedKind, What, When, admit_entry, attribute,
+    Entry, KeptStatement, Outcome, Parties, PermissionChange, PublicMovement, ReadAnswer,
+    ReadCheck, Receipt, RefusalClass, Role, RouteEnd, RoutingRound, SignedWith, Through,
+    TimeSource, VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::module_interface::{Identifier, Name, PlatformRefusal};
 use rutent_contracts::provider_role::{
-    Denomination, Deployment, NodeRef, OuterNode, PublicKey, SafeInteger, canonicalize,
-    signing_input,
+    Denomination, Deployment, EvidenceGrade, NodeRef, OuterNode, PublicKey, SafeInteger,
+    canonicalize, signing_input,
 };
 use rutent_contracts::provider_role::{Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{
@@ -44,8 +44,8 @@ use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Rulin
 use rutent_core_authz::roles::Permission;
 use rutent_core_orch::rounds::Issued;
 use rutent_core_orch::segments::{
-    Answered, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments, SegmentsError,
-    Uses,
+    Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments,
+    SegmentsError, ToGrade, Uses,
 };
 use rutent_core_orch::snapshot::{
     Ask, Asked, Clock, Exposures, Reading, Received, Releases, Snapshots,
@@ -151,6 +151,10 @@ pub enum On {
     Stuck,
     /// A raise to the operator (`T-020-11`).
     Raise,
+    /// A segment's graded evidence (`T-020-09`).
+    Evidence,
+    /// A segment's fee record (`T-020-09`).
+    Fee,
 }
 
 impl On {
@@ -187,6 +191,8 @@ impl On {
             (On::Stuck, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed,
                     Observed::StuckDeclared { .. } | Observed::NoRoute { .. })),
+            (On::Evidence, Entry::Verified(v)) => matches!(v.what, What::Evidence { .. }),
+            (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             _ => false,
         }
     }
@@ -359,6 +365,17 @@ impl PolicyLog for PolicyPath {
     }
 }
 
+/// Policy's read of the log, on its own handle: the authorisations the log holds as permitted, so the engine's register
+/// is the log's (`T-021-04`).
+impl rutent_core_authz::funds::Recorded for PolicyPath {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::funds::permitted_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
+}
+
 /// The deployment's policy: permits whatever the fixed rules let through, or refuses everything with `refuse`.
 pub struct Deployment_ {
     pub refuse: Rc<Cell<Option<RefusalClass>>>,
@@ -380,8 +397,8 @@ impl authz::Policy for Deployment_ {
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
 /// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), whose
-/// order this is, and which provider a segment ran at: every segment the kit's routes run is the reserve's
-/// (`T-020-11`).
+/// order this is (the customer is the requester of every order the kit seeds, and its party of [`ORDER`]), and which
+/// provider a segment ran at: every segment the kit's routes run is the reserve's (`T-020-11`).
 pub struct Register;
 
 impl authz::Sources for Register {
@@ -412,6 +429,8 @@ impl authz::Sources for Register {
                 yes(order.as_str() == ORDER && need.input == customer().party)
             }
             authz::Source::SegmentProvider { .. } => yes(need.input.as_str() == RESERVE),
+            // The customer authorises each order the kit seeds through the engine (`T-021-04`).
+            authz::Source::Requester(_) => yes(need.input == customer().party),
             _ => Reply::Missing,
         }
     }
@@ -428,14 +447,15 @@ pub struct Policy {
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
         let refuse = Rc::new(Cell::new(None));
+        let engine = Engine::with_policy(
+            PolicyPath(log),
+            Deployment_ {
+                refuse: Rc::clone(&refuse),
+            },
+            Register,
+        );
         Self {
-            engine: Engine::with_policy(
-                PolicyPath(log),
-                Deployment_ {
-                    refuse: Rc::clone(&refuse),
-                },
-                Register,
-            ),
+            engine,
             refuse,
             asked: Vec::new(),
         }
@@ -451,6 +471,12 @@ impl Decisions for Policy {
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         self.asked.push(request.clone());
         self.engine.decide(request)
+    }
+}
+
+impl Authorisations for Policy {
+    fn authorise(&mut self, authorisation: &Authorisation) -> Result<Decision, AppendFailure> {
+        self.engine.authorise(authorisation)
     }
 }
 
@@ -804,14 +830,16 @@ pub fn route_chosen_split(record: &DecisionRecord, named: &Named) -> RecordedInp
 
 /// Appends what the log holds of the order before its segments run: the authorisation, the deposit's arrival at the
 /// origin reserve, on the reserve's report to the operator's question, the acceptance (an automatic deposit's, which
-/// needs no yes and rests on that arrival), the router's decision record and the route chosen.
+/// needs no yes and rests on that arrival), the router's decision record and the route chosen. The authorisation is
+/// the customer's, given through `policy`, so the engine holds the order's moves to it (`T-021-04`).
 pub fn seed(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     operator: &Actor,
 ) {
-    seed_order(log, store, record, &Named::first(), operator);
+    seed_order(log, policy, store, record, &Named::first(), operator);
 }
 
 /// A stated entry of `bytes`, kept in `store`, claimed by `maker`, unverified, about `order` and `transaction`.
@@ -950,17 +978,19 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
 /// [`seed`], for `named`.
 pub fn seed_order(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
     operator: &Actor,
 ) {
-    seed_order_under(log, store, record, named, operator, None);
+    seed_order_under(log, policy, store, record, named, operator, None);
 }
 
 /// [`seed_order`], its authorisation naming `floor` (`T-020-10`).
 pub fn seed_order_under(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
@@ -969,6 +999,7 @@ pub fn seed_order_under(
 ) {
     seed_chosen(
         log,
+        policy,
         store,
         record,
         named,
@@ -979,8 +1010,10 @@ pub fn seed_order_under(
 }
 
 /// [`seed_order_under`], the order opened by `chosen`.
+#[allow(clippy::too_many_arguments)]
 fn seed_chosen(
     log: &Rc<RefCell<TestLog>>,
+    policy: &mut Policy,
     store: &mut Store,
     record: &DecisionRecord,
     named: &Named,
@@ -1002,18 +1035,12 @@ fn seed_chosen(
             outcome,
         })
     };
+    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the customer authorises its order through policy"
+    );
     let mut log = log.borrow_mut();
-    log.take(
-        &entry(
-            What::Authorise {
-                authorisation: authorisation_of(named, floor),
-                decision: id("dec-auth"),
-            },
-            Outcome::Permitted {},
-        ),
-        Through::Policy,
-    )
-    .unwrap();
     seed_arrival(&mut log, store, record, named, operator, &entry);
     log.take(
         &entry(
@@ -1143,9 +1170,11 @@ impl Core {
         let log = Rc::new(RefCell::new(TestLog::default()));
         before(&log);
         let mut store = Store::default();
+        let mut policy = Policy::new(Rc::clone(&log));
         let chosen = open(&record, &Named::first());
         seed_chosen(
             &log,
+            &mut policy,
             &mut store,
             &record,
             &Named::first(),
@@ -1157,7 +1186,7 @@ impl Core {
         assert!(segments.follow(&*clock, &chosen));
         let context = world.context();
         Core {
-            policy: Policy::new(Rc::clone(&log)),
+            policy,
             log,
             store,
             clock,
@@ -1180,7 +1209,14 @@ impl Core {
     /// Seeds another order over the same route, follows it, and runs it from now on.
     pub fn take_up(&mut self, named: Named) {
         let operator = self.operator.clone();
-        seed_order(&self.log, &mut self.store, &self.record, &named, &operator);
+        seed_order(
+            &self.log,
+            &mut self.policy,
+            &mut self.store,
+            &self.record,
+            &named,
+            &operator,
+        );
         assert!(
             self.segments
                 .follow(&*self.clock, &route_chosen_of(&self.record, &named))
@@ -1261,7 +1297,7 @@ impl Core {
             world_catalogue,
             modules,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1273,7 +1309,7 @@ impl Core {
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         )
     }
@@ -1586,6 +1622,64 @@ impl Modules for Watched<'_> {
         at: Instant,
     ) -> Result<String, LifecycleRefusal> {
         Modules::promote(&mut *self.platform, effect, provider, by, at)
+    }
+}
+
+/// The grading the platform tests that aren't about closing run under (`T-020-09`): a segment on its provider's
+/// word, as [`ProvidersWord`] grades it, and a part's final deposit on the movement the simulated reserve records on
+/// its destination's network, which it names by the segment's transaction (`rutent_conformance::sim::movements_of`),
+/// taken as found rather than read, plus the reserve's statement. The tests of closing grade through
+/// `closing::Evidenced`, which reads the networks (`tests/closing.rs`).
+pub struct Recorded;
+
+impl Grading for Recorded {
+    fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        if !rutent_core_orch::closing::is_final_deposit(settled) {
+            return ProvidersWord.grade(settled);
+        }
+        let network = settled.end.destination.node.network.clone();
+        let evidence = |evidence: Id, grade, whose: Id, movement| {
+            Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: settled.core.clone(),
+                what: What::Evidence {
+                    evidence,
+                    order: settled.order.clone(),
+                    segment: settled.segment.clone(),
+                    grade,
+                    whose,
+                    rests_on: vec![settled.result.clone()],
+                    movement,
+                },
+                when: When {
+                    at: settled.at.clone(),
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Observed {},
+            })
+        };
+        let movement = PublicMovement {
+            network: id(&network),
+            id: settled.transaction.clone(),
+            node: None,
+        };
+        Graded::Settles {
+            cites: settled.evidence.clone(),
+            entries: vec![
+                evidence(
+                    settled.evidence.clone(),
+                    EvidenceGrade::PublicRecord,
+                    id(&network),
+                    Some(movement),
+                ),
+                evidence(
+                    id(&format!("{}.reserve", settled.evidence.as_str())),
+                    EvidenceGrade::Statement,
+                    settled.provider.clone(),
+                    None,
+                ),
+            ],
+        }
     }
 }
 

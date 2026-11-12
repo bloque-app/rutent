@@ -86,8 +86,8 @@ pub use attribution::{
     STATED_WITHOUT_ITS_KEPT_BYTES, attribute, granted_advertising_keys, release_statement_keys,
 };
 pub use relations::{
-    Answers, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation, STATED_RELATIONS,
-    StatedCiting, Through, VerifiedCiting, admit_entry, covers,
+    Answers, CLOSING_RELATIONS, Cite, Cites, History, Match, Quantifier, RELATIONS, Relation,
+    STATED_RELATIONS, StatedCiting, Through, VerifiedCiting, admit_entry, covers,
 };
 pub use types::*;
 

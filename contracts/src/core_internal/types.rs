@@ -1682,6 +1682,76 @@ pub enum FeeTo {
     Operator,
 }
 
+/// What replaying private nodes' recorded segments against the public movement out found (`REQ-ORD-41`, `DEC-24`).
+/// Schema: `urn:rutent:core-internal:verified-entry#/$defs/replay_found`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReplayFound {
+    /// The records agree with themselves, with the public movement out and with the stated outcome: consistency with
+    /// the public exit, never proof that the segments happened (`THR-131`).
+    ConsistentWithTheExit {},
+    /// Each way the records disagree, at least one, each once.
+    Mismatch {
+        /// The mismatches, in the order found.
+        mismatches: Vec<ReplayMismatch>,
+    },
+    /// Nodes' publishers recorded nothing for the segments inside them, so nothing was compared: neither a match nor
+    /// a mismatch, since recording is a SHOULD.
+    NothingRecorded {
+        /// Each node that recorded nothing, in route order, at least one, each once.
+        nodes: Vec<Id>,
+    },
+}
+
+/// A movement on a public network, as Core checked it (`REQ-ORD-33`, `REQ-ORD-38`, `DEC-13`). Schema:
+/// `urn:rutent:core-internal:verified-entry#/$defs/public_movement`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicMovement {
+    /// The public network.
+    pub network: Id,
+    /// The movement's identifier on it.
+    pub id: Id,
+    /// The private node it moved the value into or out of, where it evidences that node's segments rather than one
+    /// segment alone: a part's final deposit to a rail declared private, closing on the movement into it, or a
+    /// segment inside a private node, closing on the movements into and out of it (`REQ-ORD-33`). Absent otherwise.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub node: Option<Id>,
+}
+
+/// One way a replayed record disagrees, and the node it is against.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayMismatch {
+    /// The node: one of those replayed. Where value passes between two nodes, the one it leaves.
+    pub node: Id,
+    /// How.
+    pub kind: MismatchKind,
+}
+
+/// How a replayed record disagrees (`CMP-EVIDENCE`'s replay, `REQ-ORD-41`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MismatchKind {
+    /// An amount or a fee isn't a whole number in its canonical spelling.
+    Malformed,
+    /// A segment doesn't take in what the one before it gave out.
+    BrokenChain,
+    /// A fee is more than what went in, or, where the asset stays the same, what went in isn't what came out plus
+    /// the fee.
+    FeeMismatch,
+    /// The node doesn't hand on what the next one records taking in.
+    HandoffBroken,
+    /// The public movement out isn't a final record of the replayed value to its destination.
+    PublicExit,
+    /// The replayed value isn't the outcome the provider stated.
+    StatedOutcome,
+}
+
 /// An operator command that needs no policy decision: none moves value, posts a route, changes the catalogue or grants
 /// a permission (`REQ-AUZ-1`, `REQ-AUZ-6`, `REQ-AUZ-7`). A closed list. Filing an arrival anew is a `refiling`, and a
 /// read permission goes through policy (`Reads::grant_permission`).
@@ -1990,6 +2060,14 @@ pub enum What {
         whose: Id,
         /// The receipts of the stated entries it rests on, at least one, each once.
         rests_on: Vec<Receipt>,
+        /// The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment
+        /// of one order (`REQ-ORD-38`, `movement-evidences-one-segment`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        movement: Option<PublicMovement>,
     },
     /// The fee captured on a settled segment, attributed to a provider or the operator, with no balance kept
     /// (`REQ-AUD-11`).
@@ -2006,8 +2084,36 @@ pub enum What {
         amount: Amount,
         /// The asset.
         asset: Denomination,
-        /// Whether it was billed separately, outside the amounts reported.
-        billed_separately: bool,
+        /// Whether it was billed separately, outside the amounts reported, as its provider stated it; absent where
+        /// the provider didn't say.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        billed_separately: Option<bool>,
+    },
+    /// Private nodes' recorded segments replayed through `CMP-EVIDENCE` where the value leaves them onto a public
+    /// node, against the public movement out and the stated outcome (`REQ-ORD-41`, `DEC-24`). A match is consistency
+    /// with the public exit, not proof; a route ending inside a node has no such record.
+    Replay {
+        /// The order.
+        order: Id,
+        /// The segment the value left the private nodes by, onto the public node.
+        segment: Id,
+        /// The private nodes replayed, in route order, at least one, each once.
+        nodes: Vec<Id>,
+        /// What the replay found.
+        found: ReplayFound,
+        /// The receipt of the exit segment's result, its stated entry: what the replay was compared with.
+        rests_on: Receipt,
+        /// The public movement out it was compared with, where the network ties one to the exit.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        movement: Option<PublicMovement>,
     },
     /// The figures behind a stuck call, recorded when used (`REQ-ORD-6`, `REQ-ORD-29`).
     StuckCall {

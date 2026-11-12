@@ -1943,12 +1943,12 @@ mod tests {
     #[test]
     fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
         assert_eq!(
-            VERSION, "3.0.0",
+            VERSION, "3.1.0",
             "re-pin these values when the protocol version moves"
         );
         let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["4.0.0", "3.0.1", "2.0.0"]);
+        assert_eq!(versions, ["4.0.0", "3.1.1", "3.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),

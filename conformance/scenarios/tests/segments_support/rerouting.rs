@@ -208,7 +208,7 @@ impl Rerouting {
             decisions: &mut core.policy,
             modules,
             uses: &mut rutent_core_orch::segments::NoProxy,
-            grading: &mut rutent_core_orch::segments::ProvidersWord,
+            grading: &mut super::Recorded,
             operator_key: &mut core.key,
             fresh: &mut core.ids,
             issued: &core.issued,

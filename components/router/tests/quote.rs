@@ -603,6 +603,7 @@ fn a_price_shown_before_execution_is_a_quote_and_after_it_the_price() {
     let usdc = |amount: &str| rutent_contracts::provider_role::Fee {
         asset: "USDC".to_owned(),
         amount: amount.to_owned(),
+        billed_separately: None,
     };
     let first = Executed {
         amount_in: amount("100000000"),

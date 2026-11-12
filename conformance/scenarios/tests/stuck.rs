@@ -19,7 +19,7 @@ use rutent_contracts::state_machine::{Observed, OrderState, SegmentState};
 use rutent_core_authz::engine::Unbuilt;
 use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
 use rutent_core_orch::segments::{
-    Accounted, NoProxy, ProvidersWord, Ran, SegmentOutcome, SegmentsError, StatusError,
+    Accounted, NoProxy, Ran, SegmentOutcome, SegmentsError, StatusError,
 };
 use rutent_core_orch::stuck::{
     Confirming, Deciding, HISTORY, Moved, Moving, NoRouteLeft, ResolveError, Resolved, Stuck,
@@ -59,7 +59,7 @@ fn try_run(core: &mut Core, world: &mut World) -> Result<Ran, SegmentsError> {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     )
 }
@@ -2489,37 +2489,38 @@ struct RefusesEvidence;
 impl rutent_core_orch::segments::Grading for RefusesEvidence {
     fn grade(
         &mut self,
-        _log: &mut dyn rutent_contracts::core_internal::calls::Log,
         _settled: &rutent_core_orch::segments::ToGrade<'_>,
-    ) -> Result<Id, rutent_contracts::core_internal::calls::AppendFailure> {
-        Err(
-            rutent_contracts::core_internal::calls::AppendFailure::Refused(
-                rutent_contracts::core_internal::Violation("the evidence checker refuses it"),
-            ),
-        )
+    ) -> rutent_core_orch::segments::Graded {
+        rutent_core_orch::segments::Graded::Waits(rutent_core_orch::segments::Short::Refused(
+            rutent_evidence::Refusal::NoEvidence,
+        ))
     }
 }
 
-/// The withdrawal's provider answers it settled, and the evidence is refused: the segment waits for evidence that
-/// counts, carried out with no final outcome and its value held. Its stuck clock runs: past twice its advertised
-/// time the part is declared stuck, at what it holds. Until `T-020-09`'s closing reaches this base, a refusal is the
-/// grading seam's own; its `AwaitsEvidence(Refused)` is to be held to the same at the merge.
+/// The withdrawal's provider answers it settled, and `CMP-EVIDENCE` refuses its evidence: the segment awaits
+/// evidence (`AwaitsEvidence(Refused)`, `T-020-09`), carried out with no final outcome and its value held. Its stuck
+/// clock runs: past twice its advertised time the part is declared stuck, at what it holds.
 // verifies: REQ-ORD-29, REQ-ORD-28
 #[test]
 fn segment_awaiting_refused_evidence_is_declared_stuck_past_its_limit() {
     let mut world = World::of(&[RESERVE]);
     let mut core = Core::over(&mut world);
     let session = world.context().session;
-    assert!(
-        core.try_run_with(
+    let ran = core
+        .try_run_with(
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
             &mut RefusesEvidence,
             &session,
         )
-        .is_err(),
-        "the evidence is refused"
+        .expect("the part runs");
+    assert!(
+        matches!(
+            segments(&ran)[0].outcome,
+            SegmentOutcome::AwaitsEvidence(rutent_core_orch::segments::Short::Refused(_))
+        ),
+        "the evidence is refused: {ran:?}"
     );
     let since = carried_since(&core, WITHDRAWAL);
     let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
