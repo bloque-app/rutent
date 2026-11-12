@@ -2,8 +2,9 @@
 //! parts, and the transition function's signature (`DEC-3`, `DEC-4`, ADR-0002).
 //!
 //! This is a library API (`DEC-4`): these types are the API, and they serialise to the schemas under
-//! `contracts/state-machine/schemas/`. `CMP-STM` implements [`StateMachine`]; this module holds no transition
-//! rules of its own but a few, published so that every implementation applies them the same way: what a part
+//! `contracts/state-machine/schemas/`. `CMP-STM` implements [`StateMachine`] by the transition rules published in
+//! [`rules`], one function each, which core-internal's reading of a part's standing applies too, so the two can't
+//! drift apart; among them, published since the first versions so that every implementation applies them the same way: what a part
 //! becomes when no route is left ([`after_no_route`], the owner's ruling `spec-no-route-left`), when it waits past
 //! its floor ([`after_waiting_at_floor`]) and when a stuck part's resolution delivers it ([`after_stuck_resolved`]), how `deposit_failed_at` and `waiting_since` are kept
 //! ([`deposit_failed_at_after`], [`waiting_since_after`]), and whether a new route keeps the destination and
@@ -96,6 +97,7 @@ pub use crate::provider_role::NodeRef;
 pub use crate::router_api::{Endpoint, Id as NodeId, OperationKind};
 
 pub mod host;
+pub mod rules;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/CHANGELOG.md`.
 pub const VERSION: &str = "3.0.0";

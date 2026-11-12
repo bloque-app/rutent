@@ -22,6 +22,12 @@
   segments may not show the delivery. Before it, no input ended a resolved part, which stayed stuck. New fixtures:
   the input both ways, an order delivered and one returned by their resolutions, and five refusals. (DEC-4,
   DEC-20, T-020-01, T-020-11)
+- Every transition rule is published, in `state_machine::rules`, one function each: `open`, `guard` (another
+  order, a repeat, an ended order or part, an unknown part), `after_segment_input` (the segment table),
+  `after_restart`, `after_stuck_declared`, `after_withdrawal_cancelled`, `after_handed_on`, `after_end_requested`,
+  `finish`, with `is_ended` and `order_state_of`. `CMP-STM` dispatches each input to them, and core-internal's
+  reading of a part's standing does too, so the log and the state machine apply one set of rules. Additive: no
+  shape or behaviour changes. (DEC-4, DEC-20, T-020-01)
 - The schemas also follow router-api 4.0.0: a segment plan is router-api's typed operation, by reference, so its
   4.0.0 shapes are the state machine's from this version. (DEC-4, DEC-20, T-020-01)
 
