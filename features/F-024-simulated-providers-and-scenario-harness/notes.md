@@ -293,7 +293,7 @@ that adds blocks (for `T-024-04`'s and `T-024-05`'s scenarios).
 
 ## The toolchain is pinned (`T-020-11d`)
 
-The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.99.1 with clippy, rustfmt and the
+The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.98.0 with clippy, rustfmt and the
 `riscv32imac-unknown-none-elf` and `wasm32-unknown-unknown` targets, and CI's `ci` job installs that same version
 (`.github/workflows/ci.yml`, both `dtolnay/rust-toolchain` steps); the workflows that run cargo with no toolchain step
 of their own (`licences`, `records`, `Contract guard`) take it from the file. CI used to install the floating
@@ -301,6 +301,11 @@ of their own (`licences`, `records`, `Contract guard`) take it from the file. CI
 tests' executables (CI run 43287638222, fixed for both layouts by `T-020-11c`), and rustfmt 1.100 wraps long
 `.all(...)` chains that 1.99 leaves alone (run 43305310485, `contracts/src/core_internal/types.rs` and
 `contracts/src/module_interface/types.rs`). Reformatting for one version breaks `cargo fmt --check` on the others.
+1.98.0 is the version every local chain of `M3` ran on, and CI passed on 1.99.1 with the same formatting.
+
+**Locally**, rustup reads the file and looks for a toolchain named `1.98.0`, installing it if it can. Where the
+`stable` toolchain installed is 1.98.0 already, with both targets, `RUSTUP_TOOLCHAIN=stable` overrides the file and
+runs the same version with no download (`rustc --version` reads 1.98.0 under it).
 
 **Moving the toolchain is a deliberate change of its own**: one commit that changes `rust-toolchain.toml` and the
 two `toolchain:` inputs in `ci.yml` together (a `DEC-20` path), reformats with the new rustfmt, and runs the full
