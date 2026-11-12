@@ -352,7 +352,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 63] = [
+pub static RELATIONS: [Relation; 64] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -970,6 +970,72 @@ pub static RELATIONS: [Relation; 63] = [
                 None => (matches!(i.observed, Observed::StuckDeclared { .. }), false),
             };
             judge(true, &[stuck, !resolved])
+        },
+    },
+    Relation {
+        name: "stuck-resolved-follows-a-done-resolution",
+        spec: &["REQ-AUZ-4", "REQ-ORD-28"],
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck part is resolved on a result of this log's resolution of that part",
+        fields: &[
+            (
+                "done",
+                "a stuck part is resolved once its resolution's move is done",
+            ),
+            (
+                "to",
+                "a stuck part is resolved where its decision sent the value: the order's destination or its origin",
+            ),
+        ],
+        // The target is a result of a `resolve_stuck` effect whose decision names the part; the destination is the
+        // order's authorisation's, and the origin its origin reserve's.
+        cites: |e, _| match input(e).map(|i| &i.observed) {
+            Some(Observed::StuckResolved { .. }) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some(i) = input(e) else {
+                return Match::NotTarget;
+            };
+            let (Observed::StuckResolved { to, .. }, Some(part)) =
+                (&i.observed, i.subject.part.as_ref())
+            else {
+                return Match::NotTarget;
+            };
+            let order = i.subject.order.as_str();
+            let Some(result) = verified(t) else {
+                return Match::NotTarget;
+            };
+            let What::Result { effect } = &result.what else {
+                return Match::NotTarget;
+            };
+            let resolution = h.iter().find_map(|(r, x)| match &verified(x)?.what {
+                What::Effect {
+                    action:
+                        Action::ResolveStuck {
+                            order: o,
+                            carries_out,
+                            resolution,
+                        },
+                    ..
+                } if r == effect
+                    && o.as_str() == order
+                    && decided_part(order, carries_out, h) == Some(part.as_str()) =>
+                {
+                    Some(resolution)
+                }
+                _ => None,
+            });
+            let Some(resolution) = resolution else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    result.outcome == (Outcome::Done {}),
+                    resolved_to(order, resolution, h) == Some(*to),
+                ],
+            )
         },
     },
     Relation {
@@ -2645,6 +2711,32 @@ fn part_of_segment<'a>(order: &str, segment: &str, history: &'a History) -> Opti
                 .flatten(),
             _ => None,
         }
+    })
+}
+
+/// Where a stuck resolution sends the value of `order`, by the order's authorisation in `history`: its destination,
+/// or its origin, a destination at its origin reserve. `None` for a hand-on, or where neither holds.
+fn resolved_to(
+    order: &str,
+    resolution: &Resolution,
+    history: &History,
+) -> Option<crate::state_machine::ResolvedTo> {
+    let Resolution::Deliver { to, .. } = resolution else {
+        return None;
+    };
+    history.iter().find_map(|(_, e)| match &permitted(e)?.what {
+        What::Authorise {
+            authorisation: a, ..
+        } if a.order.as_str() == order => {
+            if &a.destination == to {
+                Some(crate::state_machine::ResolvedTo::Destination)
+            } else if to.reserve == a.origin_reserve {
+                Some(crate::state_machine::ResolvedTo::Origin)
+            } else {
+                None
+            }
+        }
+        _ => None,
     })
 }
 

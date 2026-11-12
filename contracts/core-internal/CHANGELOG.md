@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
-  breaking one rule, and 311 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 65 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 317 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 66 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -196,8 +196,13 @@
   resolution, no new route, wait, no-route or move), `held-part-takes-no-move`, and, from `T-020-11`,
   `only-a-declared-stuck-part-is-resolved`, for which a stuck decision now names its `part`. The world log's
   hand-on moves to its stuck part p3, so p1 goes on routing. `REQ-ORD-22` leaves the in-flight row's citation.
-  311 admission cases, 65 relations. (DEC-4, DEC-20, INV-4, INV-8, REQ-ORD-2, REQ-ORD-27, REQ-ORD-28, REQ-AUZ-4,
+  312 admission cases, 65 relations. (DEC-4, DEC-20, INV-4, INV-8, REQ-ORD-2, REQ-ORD-27, REQ-ORD-28, REQ-AUZ-4,
   REQ-STM-6, T-020-01, T-020-10, T-020-11)
+- Folded into 1.0.0 before its release: a stuck part is resolved on its resolution's done result. The row
+  `stuck-resolved-follows-a-done-resolution` admits the state machine's `stuck_resolved` for a part only after a
+  `done` result of a `resolve_stuck` effect whose decision names that part, and only to where the decision sent the
+  value: the order's authorised destination, or its origin reserve. 317 admission cases, 66 relations. (DEC-4,
+  DEC-20, REQ-AUZ-4, REQ-ORD-28, T-020-01, T-020-11)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
