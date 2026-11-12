@@ -92,10 +92,18 @@ impl Registers {
 
     /// Whether `acts` acts for `party` as the kind of actor `kind`, where the register lists it at all: policy's
     /// word (`Source::ActsFor`), which binds the kind too, so an agent's login can't state itself a person.
+    /// Nothing but Core's own components acts for Core's party, or for a party that reaches it (`T-021-06`): any other
+    /// listed there acts for no one.
     pub fn acts_as(&self, acts: &Id, party: &Id, kind: ActorKind) -> Option<bool> {
-        self.actors
-            .get(acts.as_str())
-            .map(|(p, k)| p.as_str() == party.as_str() && *k == kind)
+        let core = crate::kit::CORE_PARTY;
+        self.actors.get(acts.as_str()).map(|(p, k)| {
+            let reaches_core = self
+                .chain(&Id::new(p).expect("a listed party"))
+                .iter()
+                .any(|c| c == core);
+            let cores_own = p.as_str() == core && *k == ActorKind::Component;
+            p.as_str() == party.as_str() && *k == kind && (!reaches_core || cores_own)
+        })
     }
 
     /// Everything `start`, a login or a party, reaches along the register's `ActsFor` links: itself, the party it is
@@ -109,6 +117,20 @@ impl Registers {
             reached.push(party.clone());
         }
         reached
+    }
+
+    /// Whether the chains of `a` and `b`, each a login, meet below the party `root`: each cut where it reaches `root`,
+    /// which isn't compared, nor anything above it. Policy's word (`Source::MeetsBelowOperator`), `root` the
+    /// deployment operator's party.
+    pub fn meet_below(&self, a: &Id, b: &Id, root: &Id) -> bool {
+        let below = |start: &Id| -> Vec<String> {
+            self.chain(start)
+                .into_iter()
+                .take_while(|p| p.as_str() != root.as_str())
+                .collect()
+        };
+        let theirs = below(b);
+        below(a).iter().any(|p| theirs.contains(p))
     }
 
     /// Whether `from`, a login or a party, reaches the party `to` along its chain: policy's word (`Source::Reaches`) on
@@ -314,6 +336,9 @@ impl authz::Sources for Records {
             Source::Kept(commitment) => self.kept(commitment, input, false),
             Source::KeptAbout(commitment) => self.kept(commitment, input, true),
             Source::Reaches { from, to } => said(registers.reaches(from, to)),
+            Source::MeetsBelowOperator { from, with } => {
+                said(registers.meet_below(from, with, &crate::kit::operator().party))
+            }
             // The deployment's operator is the kit's: Core signs in its name.
             Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
             // No verifier's judgement or provider's answer is a source in M3's assembly yet.

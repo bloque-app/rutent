@@ -213,6 +213,17 @@ pub enum Source {
         /// The party asked about.
         to: Id,
     },
+    /// The deployment's register of actors, followed link by link: whether the chains of `from` and `with`, each a
+    /// login, meet at a party below the deployment operator's own party (`T-021-06`, the review of `fa19450`, round 2).
+    /// Each chain is cut where it reaches the operator's party, which isn't compared, nor anything above it, so two of
+    /// the operator's desks hanging directly under it meet nowhere, and two desks under one of its divisions, or two
+    /// bots under one desk, meet there. The input is `from`.
+    MeetsBelowOperator {
+        /// The first login.
+        from: Id,
+        /// The second login.
+        with: Id,
+    },
     /// The deployment's register of actors: whether the login the input names is the deployment operator's, acting
     /// for its accountable party or reaching it along its `ActsFor` chain. A role a request states is only its word,
     /// so a stuck order's decider and mover are held to this too (`T-021-06`).
@@ -1945,6 +1956,28 @@ mod tests {
         }
     }
 
+    /// The register's word that the party `from` reaches the party `to`.
+    fn reached(from: &str, to: &Id) -> Need {
+        Need {
+            input: id(from),
+            from: Source::Reaches {
+                from: id(from),
+                to: to.clone(),
+            },
+        }
+    }
+
+    /// The register's word that `a`'s and `b`'s chains meet below the deployment operator's party.
+    fn meeting(a: &Actor, b: &Actor) -> Need {
+        Need {
+            input: a.acts.clone(),
+            from: Source::MeetsBelowOperator {
+                from: a.acts.clone(),
+                with: b.acts.clone(),
+            },
+        }
+    }
+
     /// The register's word that `actor` is the deployment operator's.
     fn of_operator(actor: &Actor) -> Need {
         Need {
@@ -2061,6 +2094,8 @@ mod tests {
                         party_of(&decide.order, actor),
                         reaching(actor, "bank-co"),
                         reaching(actor, "cust-1"),
+                        reached("bank-co", &actor.party),
+                        reached("cust-1", &actor.party),
                     ];
                     say(e, yes, no);
                     e.decide_stuck(&decide).is_ok_and(|d| d.permit().is_some())
@@ -2079,6 +2114,7 @@ mod tests {
                     let no = [
                         reaching(mover, "operator"),
                         reaching(&decider, "operator-desk-b"),
+                        meeting(&decider, mover),
                         reaching(mover, "bank-co"),
                     ];
                     say(e, yes, no);
@@ -2114,8 +2150,11 @@ mod tests {
                         party_of(&confirmation.order, confirmer),
                         reaching(&reporter, "operator"),
                         reaching(confirmer, "operator-desk-b"),
+                        meeting(&reporter, confirmer),
                         reaching(confirmer, "cust-1"),
+                        reached("cust-1", &confirmer.party),
                         reaching(confirmer, "bank-co"),
+                        reached("bank-co", &confirmer.party),
                     ];
                     say(e, yes, no);
                     e.confirm_outcome(&confirmation)

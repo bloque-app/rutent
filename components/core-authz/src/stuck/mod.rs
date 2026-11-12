@@ -15,13 +15,19 @@
 //!
 //! # One accountable actor: "reaches", never "meets"
 //!
-//! Two actors count as one where they share a login, share a party, or either's `ActsFor` chain reaches the other's
-//! party (`Source::Reaches`): one login may state several parties, and a desk's bot acting for the desk is the desk.
-//! Two actors whose chains only meet at a party both reach, two desks of one operator, are distinct: ADR-0011's
-//! separate staff within one party. The rule is one, `Engine::one_actor`, for the decider against the mover and
-//! for the reporter against the confirmer. The same reading holds an actor to a party: an actor is a party's where
-//! its login or party is that party, or its chain reaches it (`Engine::of_party`): the order's customer, the
-//! provider holding the funds, the deployment's operator.
+//! Two actors count as one where they share a login, share a party, either's `ActsFor` chain reaches the other's
+//! party (`Source::Reaches`), or their chains meet anywhere below the deployment operator's own party
+//! (`Source::MeetsBelowOperator`): one login may state several parties, a desk's bot is the desk, two bots under one
+//! desk are that desk, and two desks under one of the operator's divisions are that division. Only staff whose chains
+//! meet nowhere below the operator's party, its desks directly under it, are distinct: ADR-0011's separate staff
+//! within one party. The rule is one, `Engine::one_actor`, for the decider against the mover and for the reporter
+//! against the confirmer. The same reading holds an actor to a party (`Engine::of_party`): it is the party's where
+//! its login or party is that party, or its chain reaches it. Against the order's customer and the provider holding
+//! the funds a decider and a confirmer are held both ways (`Engine::of_party_either_way`): the party's own chain
+//! reaching the actor's party counts too, as a customer's holding company is the customer's. The mover is held to the
+//! holder one way, so the operator's staff aren't the holder's where the holder acts for the operator (`REQ-CAT-20`).
+//! Only the parties a chain names count: a desk hanging under a party's parent, a sibling, is neither way that
+//! party's.
 //!
 //! # What the fixed rule holds, from the request
 //!
@@ -38,7 +44,7 @@
 //!   operator's by the register, in its party or reaching it (`Source::OfOperator`). A confirmer may act in any role
 //!   the register gives the permission to.
 //! - **The holder never decides** (`THR-70`). A decider that is, or whose chain reaches, the provider the decision
-//!   names (`resolution.by`) is refused.
+//!   names (`resolution.by`) is refused, and so is one whose party that provider's chain reaches.
 //! - **Never the order's customer, directly.** Neither the decider nor the confirmer acts for a party of the order,
 //!   its requester, beneficiary or payer (`Source::OrderParties` must say no). Asked by party, not by role.
 //! - **Evidence the store keeps, about the order.** A decision names its evidence by the commitment the evidence store
@@ -56,14 +62,15 @@
 //! the answer, since a refusal beats not known. They never permit.
 //!
 //! - **The order's customer, along its chain** (`THR-70`). A decider or a confirmer whose chain reaches any party the
-//!   log's acceptance of the order names is refused; an order the log has no acceptance of is a missing input.
+//!   log's acceptance of the order names, or whose party one of them reaches, is refused; an order the log has no
+//!   acceptance of is a missing input.
 //! - **The move.** It carries out a decision the log holds as permitted, of its order, with the request and decision
 //!   it names, or it is refused. Its mover and that decision's decider are one actor, refused as the same actor
 //!   (`REQ-AUZ-4`, `REQ-AUZ-8`), or its mover is the desk of the provider the decision names, refused.
 //! - **The confirmation.** It cites a report the log holds as permitted, of the same move, order and outcome, or it is
 //!   refused. Its confirmer and the reporter are one actor, refused as the same actor, which the log, reading no
-//!   register, can't see along the chains (core-internal's README); or its confirmer is the desk of the provider
-//!   holding the move's funds, the move's own provider for a segment's `move_value`, the resolution's for a
+//!   register, can't see along the chains (core-internal's README); or its confirmer is the provider holding the
+//!   move's funds either way, the move's own provider for a segment's `move_value`, the resolution's for a
 //!   `resolve_stuck`, refused.
 //!
 //! A log that can't be read refuses as missing an input; a register of chains out of reach leaves the answer not
@@ -177,6 +184,11 @@ fn rules_of(asked: Asked<'_>) -> Option<Rules> {
                     not_of(&r.order, &r.decider),
                     Held {
                         need: reaching(&r.decider.acts, holder),
+                        must: Said::No,
+                        or: RefusalClass::NotPermitted,
+                    },
+                    Held {
+                        need: reaching(holder, &r.decider.party),
                         must: Said::No,
                         or: RefusalClass::NotPermitted,
                     },
@@ -348,7 +360,8 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     }
 
     /// Whether `actor` is `party`'s: its party or its login is `party`, or its chain reaches it. A refusal for
-    /// `class` where it is.
+    /// `class` where it is. One way: the mover's holder check, so the operator's staff aren't the holder's where the
+    /// holder acts for the operator (`REQ-CAT-20`).
     fn of_party(&mut self, actor: &Actor, party: &Id, class: RefusalClass) -> Check {
         if is(actor, party) {
             return Check::Refuse(class);
@@ -356,8 +369,37 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         self.reaches(&actor.acts, party, class)
     }
 
-    /// Whether `a` and `b` are one accountable actor: one login, one party, or either's chain reaching the other's
-    /// party. Chains that only meet are two actors. Refused as the same actor where they are one.
+    /// Whether `actor` and `party` are one, either way: `actor` is `party`'s, or `party`'s chain reaches `actor`'s
+    /// party, as a customer's holding company is the customer's. Only the parties the chains name count: a desk that
+    /// hangs under one of `party`'s parents is neither.
+    fn of_party_either_way(&mut self, actor: &Actor, party: &Id, class: RefusalClass) -> Check {
+        first!(
+            self.of_party(actor, party, class),
+            self.reaches(party, &actor.party, class),
+        )
+    }
+
+    /// The register's word that `a`'s and `b`'s chains meet below the deployment operator's party: refused as the same
+    /// actor where they do.
+    fn meet_below_operator(&mut self, a: &Actor, b: &Actor) -> Check {
+        let need = Need {
+            input: a.acts.clone(),
+            from: Source::MeetsBelowOperator {
+                from: a.acts.clone(),
+                with: b.acts.clone(),
+            },
+        };
+        match self.sources.supply(&need) {
+            Reply::Given(Said::No) => Check::Clear,
+            Reply::Given(Said::Yes) => Check::Refuse(RefusalClass::SameActor),
+            Reply::Missing => Check::Refuse(RefusalClass::MissingInput),
+            Reply::Unreachable => Check::NotKnown(NotKnownCause::VerifierUnreachable),
+        }
+    }
+
+    /// Whether `a` and `b` are one accountable actor: one login, one party, either's chain reaching the other's party,
+    /// or their chains meeting below the deployment operator's party. Only chains that meet at the operator's party
+    /// itself, its desks directly under it, are two actors. Refused as the same actor where they are one.
     fn one_actor(&mut self, a: &Actor, b: &Actor) -> Check {
         if same_accountable_actor(a, b) {
             return Check::Refuse(RefusalClass::SameActor);
@@ -365,6 +407,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         first!(
             self.reaches(&a.acts, &b.party, RefusalClass::SameActor),
             self.reaches(&b.acts, &a.party, RefusalClass::SameActor),
+            self.meet_below_operator(a, b),
         )
     }
 
@@ -381,7 +424,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
             return Check::Refuse(RefusalClass::MissingInput);
         }
         for party in &parties {
-            let check = self.of_party(actor, party, RefusalClass::NotPermitted);
+            let check = self.of_party_either_way(actor, party, RefusalClass::NotPermitted);
             if check != Check::Clear {
                 return check;
             }
@@ -477,7 +520,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         first!(
             self.one_actor(&reporter, &request.confirmer),
             self.not_the_customer(&entries, &request.confirmer, &request.order),
-            self.of_party(&request.confirmer, &holder, RefusalClass::NotPermitted),
+            self.of_party_either_way(&request.confirmer, &holder, RefusalClass::NotPermitted),
         )
     }
 }

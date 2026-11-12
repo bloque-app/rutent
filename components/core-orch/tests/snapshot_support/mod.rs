@@ -531,7 +531,7 @@ pub fn provider_actor(provider: &str) -> Actor {
 /// Core acting on its own account.
 pub fn core_actor() -> Actor {
     Actor {
-        party: id("operator"),
+        party: id("rutent"),
         acts: id("rutent-core"),
         role: Role::Core,
         kind: ActorKind::Component,

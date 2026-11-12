@@ -239,6 +239,37 @@ impl Register {
     }
 }
 
+impl Register {
+    /// What `start` reaches below the deployment operator's party: its chain, cut where it reaches the operator.
+    fn below_operator(&self, start: &Id) -> Vec<Id> {
+        let operator = id(OPERATOR);
+        let mut reached = vec![start.clone()];
+        let mut i = 0;
+        while i < reached.len() {
+            let at = reached[i].clone();
+            let next: Vec<Id> = self
+                .acts_for
+                .iter()
+                .filter(|(a, _, _)| a == &at)
+                .map(|(_, p, _)| p.clone())
+                .chain(
+                    self.links
+                        .iter()
+                        .filter(|(from, _)| from == &at)
+                        .map(|(_, to)| to.clone()),
+                )
+                .collect();
+            for party in next {
+                if party != operator && !reached.contains(&party) {
+                    reached.push(party);
+                }
+            }
+            i += 1;
+        }
+        reached
+    }
+}
+
 impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let said = |yes: bool| Reply::Given(if yes { Said::Yes } else { Said::No });
@@ -277,6 +308,16 @@ impl Sources for Register {
                     .any(|(c, about)| c == commitment && about.as_ref() == Some(&need.input)),
             ),
             Source::OfOperator => said(self.chain(&need.input).contains(&id(OPERATOR))),
+            Source::MeetsBelowOperator { from, with } => {
+                if self.chains_unreachable {
+                    return Reply::Unreachable;
+                }
+                let theirs = self.below_operator(with);
+                said(
+                    !self.reaches_nothing
+                        && self.below_operator(from).iter().any(|p| theirs.contains(p)),
+                )
+            }
             Source::Reaches { from, to } => {
                 if self.chains_unreachable {
                     return Reply::Unreachable;
@@ -357,10 +398,42 @@ fn one_actor_attempting_both_decide_and_move_is_refused() {
     let mut register = Register::of_the_world()
         .with(&person("operator-desk-a", "alice-second"))
         .with(&person("operator-desk-c", "alice"))
-        .with(&agent("desk-a-bots", "alice-bot"));
+        .with(&agent("desk-a-bots", "alice-bot"))
+        .with(&agent("bots-d", "alice-d"))
+        .with(&agent("bots-m", "alice-m"))
+        .with(&person("desk-a1", "alice1"))
+        .with(&person("desk-a2", "alice2"));
     register.link("operator-desk-c", OPERATOR);
     register.link("desk-a-bots", "operator-desk-a");
+    // Two bot parties under one desk, and two desks under one person's division of the operator: each pair's chains
+    // meet below the operator, so each is one actor (the reviewer's round-2 probes).
+    register.link("bots-d", "operator-desk-a");
+    register.link("bots-m", "operator-desk-a");
+    register.link("desk-a1", "alice-person");
+    register.link("desk-a2", "alice-person");
+    register.link("alice-person", OPERATOR);
     let (mut policy, request) = engine("sd", register);
+    for (decider, mover) in [
+        (agent("bots-d", "alice-d"), agent("bots-m", "alice-m")),
+        (person("desk-a1", "alice1"), person("desk-a2", "alice2")),
+    ] {
+        let decided = policy
+            .decide_stuck(&decision_by(
+                &request,
+                &decider,
+                &format!("req-{}", decider.acts.as_str()),
+            ))
+            .unwrap();
+        assert!(decided.permit().is_some(), "{decided:?}");
+        let moved = policy
+            .move_stuck(&move_of(
+                &decided,
+                &format!("req-move-{}", mover.acts.as_str()),
+                &mover,
+            ))
+            .unwrap();
+        assert_eq!(moved.outcome, refuse(RefusalClass::SameActor), "{mover:?}");
+    }
     let decided = alices_decision(&mut policy, &request);
 
     for (n, mover) in [
@@ -694,6 +767,53 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
     let decide = decision_by(&request, &customer, "req-fixed-decide");
     assert_eq!(policy.consult(Asked::DecideStuck(&decide)), not_permitted);
 
+    // Both ways: a party of the order, or the holder, whose chain reaches the actor's party is the actor's too. The
+    // customer's holding company decides and confirms nothing, the holder's group confirms nothing and decides nothing,
+    // but the group's staff may move, the mover's holder check being one way (`REQ-CAT-20`).
+    let (holdco, group) = (
+        person("cust-holdco", "holdco-staff"),
+        person("bank-group", "group-staff"),
+    );
+    let upward = || {
+        let mut register = register().with(&holdco).with(&group);
+        register.link("cust-1", "cust-holdco");
+        register.link("cust-holdco", OPERATOR);
+        register.link("bank-co", "bank-group");
+        register.link("bank-group", OPERATOR);
+        register
+    };
+    let (mut policy, request) = engine("sd", upward());
+    for decider in [&holdco, &group] {
+        let decide = decision_by(
+            &request,
+            decider,
+            &format!("req-up-{}", decider.acts.as_str()),
+        );
+        assert_eq!(
+            policy.decide_stuck(&decide).unwrap().outcome,
+            not_permitted,
+            "{decider:?}"
+        );
+    }
+    let decided = alices_decision(&mut policy, &request);
+    let moved = policy
+        .move_stuck(&move_of(&decided, "req-move-by-the-group", &group))
+        .unwrap();
+    assert!(moved.permit().is_some(), "{moved:?}");
+    let (mut policy, request) = engine("settled_es", upward());
+    for confirmer in [&holdco, &group] {
+        let c = confirmation_by(
+            &request,
+            confirmer,
+            &format!("req-up-{}", confirmer.acts.as_str()),
+        );
+        assert_eq!(
+            policy.confirm_outcome(&c).unwrap().outcome,
+            not_permitted,
+            "{confirmer:?}"
+        );
+    }
+
     // The world's resolution is delivered by `bank-co`; its report is `op-login-5`'s.
     let (mut policy, request) = engine("settled_es", register());
     for confirmer in [&customer, &customers_ops, &holders, &chained] {
@@ -787,9 +907,14 @@ fn confirmer_whose_chain_reaches_the_reporters_is_refused() {
         person("operator-desk-x", "op-login-5"),
         person("desk-b-night", "night-1"),
         person(OPERATOR, "op-login-2"),
+        person("desk-b-twin", "twin-1"),
     ] {
         let mut register = Register::of_the_world().with(&confirmer);
         register.link("desk-b-night", "operator-desk-b");
+        // The reporter's desk and a twin under one division of the operator meet below it.
+        register.link("operator-desk-b", "division-b");
+        register.link("desk-b-twin", "division-b");
+        register.link("division-b", OPERATOR);
         assert_eq!(
             ask(register, &confirmer),
             refuse(RefusalClass::SameActor),
@@ -970,4 +1095,29 @@ fn outcome_report_is_decided_and_recorded() {
         })
         .unwrap();
     assert!(refused_report.permit().is_none());
+}
+
+/// Core has a party of its own, apart from the deployment operator's, so Core is never the operator's: its login never
+/// decides a stuck order or moves its value, even stating the operator's role and holding every permission.
+// verifies: REQ-AUZ-4, REQ-ORD-28
+#[test]
+fn core_never_decides_or_moves() {
+    let core = Actor {
+        party: id("rutent"),
+        acts: id("core-orch"),
+        role: Role::Operator,
+        kind: ActorKind::Component,
+    };
+    let (mut policy, request) = engine("sd", Register::of_the_world().with(&core));
+    let not_permitted = refuse(RefusalClass::NotPermitted);
+    let decide = decision_by(&request, &core, "req-by-core");
+    assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
+    let decided = alices_decision(&mut policy, &request);
+    assert_eq!(
+        policy
+            .move_stuck(&move_of(&decided, "req-move-by-core", &core))
+            .unwrap()
+            .outcome,
+        not_permitted
+    );
 }

@@ -936,13 +936,10 @@ Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's 
     chains reach none; and a confirmer that neither reaches its reporter's party nor is reached by it. For a
     `resolve_stuck`, sibling desks under `operator` (`desk-a -> operator`, `desk-b -> operator`) satisfy every one of
     these: one decides and confirms, the other moves and reports; a person listed in `operator` itself does not pair
-    with a desk under it. For a segment's silent `move_value` (`AC-6`'s other path) they don't: its reporter is Core,
-    and the kit's Core (`kit::core()`, which the segments kit uses too) acts for `operator`, so every desk under
-    `operator` reaches the reporter's party and is refused `same_actor`. Its confirmer must sit outside the
-    operator's chain, a checker or a desk not linked under `operator`, unless Core is given a party of its own.
-    Raised with the coordinator as a consequence of the ruling; no rule changed here. Options: Core a party apart from
-    the operator's in the kit and the deployment, or Core-reported moves confirmed only from outside the operator's
-    chain.
+    with a desk under it. For a segment's silent `move_value` (`AC-6`'s other path), whose reporter is Core, they
+    do too since round 2 of the review: Core acts for a party of its own (`kit::CORE_PARTY`, `rutent`), so a desk
+    under `operator` neither reaches it nor meets it below the operator. Two desks under one of the operator's
+    divisions, not directly under it, meet there and are one actor (round 2).
 - **Hand-offs left, each to its owner** (doc lines this row made stale, in files it doesn't own):
   - `T-020-11`'s `components/core-orch/src/stuck/mod.rs`: the module's **Gaps** paragraph and the doc comments of
     `known_outcome` and `confirm_outcome` still say policy's stuck rules are unbuilt and the roles `T-021-06`'s to rule.
@@ -1090,3 +1087,61 @@ The rules and the tests above describe the code after this round.
   | the assembly: kept evidence about its order | `policys sources answer from the records` |
   | the assembly: evidence about the order itself | `policys sources answer from the records` |
   | the assembly: unkept evidence says no | `policys sources answer from the records` |
+
+### T-021-06, round 2 of the review
+
+All four round-1 probes were refused; the coordinator refined the ruling, and these are its points as built
+(reversible defaults, on the owner's form). The tests were written first this round and seen red against the round-1
+rules: the three probes' tests failed (`one actor attempting both ...`, `neither the customer ...`,
+`confirmer whose chain reaches ...`) and the assembly's source test (Core's party), before any rule changed.
+
+| # | Point | Answer | Test |
+|---|---|---|---|
+| 1 | High: chains meeting below the operator were two actors (`alice1` on `desk-a1` and `alice2` on `desk-a2`, both under `alice-person` under `operator`; `alice-d` and `alice-m` in two bot parties under `operator-desk-a`) | One actor also where the two chains meet at any party below the deployment operator's own party (`Source::MeetsBelowOperator`), for decider against mover and reporter against confirmer. Only desks directly under the operator, meeting nowhere below it, are two | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+| 2 | Medium: the customer and holder checks looked one way | A decider or confirmer is refused where its chain reaches a party of the order or where that party's chain reaches its party (the customer's holding company); a confirmer the same against the holder (`bank-group` over `bank-co`); the mover's holder check stays one way (`REQ-CAT-20`) | `neither the customer nor the holders desk resolves its order` |
+| 3 | Core gets a party of its own | `kit::CORE_PARTY` (`rutent`) for `kit::core()`, and for Core's actors in core-orch's tests (`closing.rs`, `segments.rs`, `snapshot_support`, `intake_support`'s policy actor), so the decide caller and the reporter carry one party; the assembly's register lets nothing but Core's own components act for Core's party or a party reaching it; Core passes no `OfOperator`, so it never decides or moves | `core never decides or moves`; `policys sources answer from the records` |
+
+- **Reading of "below the operator".** Each chain is cut where it reaches the operator's party, which is not compared,
+  nor anything above it, so a party above the operator (its holding company) doesn't make every pair of its staff one
+  actor. Default, reversible.
+- **The holder never decides, both ways** (default, not ruled). The decider is also refused where the holder's chain
+  reaches its party, as the confirmer is, since only the mover was ruled one way (`REQ-CAT-20`). A fixed rule
+  (`Source::Reaches { from: by, to: decider's party }` must say no).
+- **Only the parties a chain names count.** Either way, an actor is a party's only along the chains: a desk hanging
+  under one of that party's parents, its sibling, is not the party's (the meeting rule is for two actors, not for an
+  actor and the customer or the holder).
+- **The contract's fixtures.** No test of this row relies on the world's actor shape: each puts the decider and the
+  confirmer on `operator-desk-a` and the world's mover and reporter on `operator-desk-b`, siblings directly under the
+  operator. The world's own pair, a decider in `operator` and a mover on `operator-desk-b`, is one actor under the
+  register these tests give it; `contracts/` is not this row's to edit, so the fixtures stay as they are and the
+  engine's table answers the world's pair on a register that links neither.
+- **Hand-offs to `F-030`** (the production registers):
+  - the register of actors and parties must be complete: `Reaches` and `MeetsBelowOperator` answer no for a link the
+    register doesn't hold, so a missing link lets two actors pass as two;
+  - a provider's desk listed under the operator rests on a `REQ-CAT-20` record that the operator and that provider
+    are one legal party;
+  - Core's own party, apart from the operator's, with nothing but Core's components acting for it or reaching it, is a
+    deployment requirement;
+  - the assembly's register maps each login and party to one parent (`Registers::actors`), a known limit: a party
+    acting for two parents is the production register's.
+
+- **Rule-offs of round 2** (core-authz's lib tests, or `rutent-scenarios`' `assembly_wiring` for the assembly's and
+  the kit's; each switched off once, the file restored and touched). The round-1 table's rules were not run again: this
+  round only added cases to their tests. The arm of `MeetsBelowOperator` out of reach is a second guard, as
+  `Reaches`' is, and no test reaches it on its own, since a confirmation asks `Reaches` first.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | one actor: chains meeting below the operator | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | chains meeting below the operator refuse | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | the holder never decides, its chain reaching the decider's party | `neither the customer nor the holders desk resolves its order` |
+  | a party of the order reaching the decider's or confirmer's party | `neither the customer nor the holders desk resolves its order` |
+  | the holder reaching the confirmer's party | `neither the customer nor the holders desk resolves its order` |
+  | either way: the party's chain reaching the actor's party | `neither the customer nor the holders desk resolves its order` |
+  | the decider the operator's by the register (Core) | `deciding moving and confirming are separate permissions`; `core never decides or moves` |
+  | the mover the operator's by the register (Core) | `deciding moving and confirming are separate permissions`; `core never decides or moves` |
+  | the assembly: chains meeting below the operator | `policys sources answer from the records` |
+  | the assembly: a chain cut at the operator's party | `policys sources answer from the records` |
+  | the assembly: none but Core's components under Core's party | `policys sources answer from the records` |
+  | the assembly: Core's own components act for it | `assembled order closes on the public record and the reserves statement`; `policy the log core and the world read one clock`; `policys sources answer from the records`; `silent provider records its deposit failed and moves nothing for it`; `rounds transactions are kept across routings and no segment runs under one` |
+  | the kit: Core's own party | `policy the log core and the world read one clock`; `policys sources answer from the records`; `assembled order closes on the public record and the reserves statement`; `rounds transactions are kept across routings and no segment runs under one`; `a tuples id is the digest of its canonical json`; `evidence store is bound to cores own log`; `reserve a settlement account is at is not one of the orders parties`; `staging is the one the scenario sets`; `silent provider records its deposit failed and moves nothing for it`; `catalogues grant is the one the log records` |

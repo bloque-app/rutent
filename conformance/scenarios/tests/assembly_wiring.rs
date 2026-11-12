@@ -320,9 +320,87 @@ fn policys_sources_answer_from_the_records() {
         no()
     );
     assert_eq!(sources.supply(&need("bob", reaches("bob", party))), no());
-    // The deployment's operator: its people along their chains, and no one else.
+    // The deployment's operator: its people along their chains, and no one else; Core, with a party of its own, isn't.
     assert_eq!(sources.supply(&need("bob", Source::OfOperator)), yes());
     assert_eq!(sources.supply(&need("user-1", Source::OfOperator)), no());
+    let core_actor = kit::core();
+    assert_ne!(
+        core_actor.party,
+        kit::operator().party,
+        "Core's party is its own"
+    );
+    assert_eq!(
+        sources.supply(&need(core_actor.acts.as_str(), Source::OfOperator)),
+        no()
+    );
+    // Chains meeting below the operator (`T-021-06`, round 2): two desks under one division meet there; two desks
+    // directly under the operator meet nowhere below it.
+    for (acts, party) in [
+        ("division-1", "operator"),
+        ("desk-1", "division-1"),
+        ("desk-2", "division-1"),
+        ("dan", "desk-1"),
+        ("erin", "desk-2"),
+    ] {
+        core.registers().list(&listed(acts, party));
+    }
+    let meets = |from: &str, with: &str| Source::MeetsBelowOperator {
+        from: id(from),
+        with: id(with),
+    };
+    assert_eq!(sources.supply(&need("dan", meets("dan", "erin"))), yes());
+    assert_eq!(sources.supply(&need("bob", meets("bob", "carol"))), no());
+    assert_eq!(sources.supply(&need("bob", meets("bob", "dan"))), no());
+    // Nothing but Core's own components is listed under Core's party, or reaches it: anyone else listed there acts for
+    // no one.
+    let acts_as = |acts: &str, party: &Id, kind| Source::ActsFor {
+        acts: id(acts),
+        party: party.clone(),
+        kind,
+    };
+    use rutent_contracts::core_internal::ActorKind;
+    assert_eq!(
+        sources.supply(&need(
+            core_actor.acts.as_str(),
+            acts_as(core_actor.acts.as_str(), &core_actor.party, core_actor.kind)
+        )),
+        yes()
+    );
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("intruder"),
+            party: core_actor.party.clone(),
+            kind: ActorKind::Person,
+            ..customer.clone()
+        });
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("helper"),
+            party: core_actor.party.clone(),
+            kind: ActorKind::Component,
+            ..customer.clone()
+        });
+    core.registers()
+        .list(&rutent_contracts::core_internal::Actor {
+            acts: id("helper-bot"),
+            party: id("helper"),
+            kind: ActorKind::Component,
+            ..customer.clone()
+        });
+    assert_eq!(
+        sources.supply(&need(
+            "intruder",
+            acts_as("intruder", &core_actor.party, ActorKind::Person)
+        )),
+        no()
+    );
+    assert_eq!(
+        sources.supply(&need(
+            "helper-bot",
+            acts_as("helper-bot", &id("helper"), ActorKind::Component)
+        )),
+        no()
+    );
     // The reserve's declarations, from its advertisement as listed in the log.
     let declaration = core.installed[0]
         .advertisement
