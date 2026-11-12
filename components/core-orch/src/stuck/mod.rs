@@ -236,15 +236,35 @@ pub struct Deciding<'a> {
     pub evidence: &'a [Digest],
 }
 
-/// A reported failure to confirm (`REQ-AUZ-4`).
+/// A move's outcome, once unknown, as reported and confirmed by two actors, each naming its evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledOutcome {
+    /// The decision the move carried out.
+    pub decision: Decided,
+    /// The outcome recorded.
+    pub outcome: Resolved,
+    /// Who reported it: the move's mover.
+    pub reported_by: Actor,
+    /// The evidence the report named.
+    pub reported_with: Id,
+    /// Who confirmed it.
+    pub confirmed_by: Actor,
+    /// The evidence the confirmation named.
+    pub confirmed_with: Id,
+}
+
+/// A reported outcome to confirm (`REQ-AUZ-4`).
 #[derive(Debug, Clone, Copy)]
 pub struct Confirming<'a> {
     /// The stuck order.
     pub order: &'a Id,
     /// The decide step's decision the move carried out.
     pub carries_out: &'a Decided,
-    /// Who confirms the failure: of another party and login than the mover.
+    /// Who confirms the outcome: of another party and login than the mover.
     pub confirmer: &'a Actor,
+    /// The evidence the confirmation relies on, by an opaque reference: the provider's stated result for the
+    /// effect's transaction, say.
+    pub evidence: &'a Id,
     /// Core, which writes the result.
     pub core: &'a Actor,
 }
@@ -326,8 +346,8 @@ pub enum Resolved {
 pub enum Moved {
     /// Policy didn't permit it: nothing was recorded as an effect, and nothing moved.
     NotPermitted(Answer),
-    /// Its mover reported a move of unknown outcome failed: nothing is recorded and the part stays held until an
-    /// actor of another party and login confirms it ([`Stuck::confirm_failed`]).
+    /// Its mover reported the outcome of a move of unknown outcome: nothing is recorded and the part stays held until
+    /// an actor of another party and login confirms it ([`Stuck::confirm_outcome`]).
     AwaitsConfirmation,
     /// The effect was recorded and carried out.
     CarriedOut {
@@ -470,9 +490,9 @@ struct InMotion {
     part: Id,
     /// Who moves it: only that mover takes the move on again.
     mover: Actor,
-    /// Its mover reported it failed, after its outcome was unknown: it is recorded so, and the part freed, only once
-    /// another actor confirms it.
-    reported_failed: bool,
+    /// The outcome its mover reported, after it was unknown, with the evidence named: recorded, the part resolved
+    /// or freed, only once another actor confirms it. A later report replaces it.
+    reported: Option<(Resolved, Id)>,
     /// Why the move was dropped before it acted, its effect recorded: its result is recorded `failed`, since it
     /// never took effect, and then the move answers this.
     dropped: Option<ResolveError>,
@@ -506,6 +526,8 @@ pub struct Stuck {
     moving: BTreeMap<String, InMotion>,
     /// Each order's destination and origin, from Core's records ([`Stuck::follow`]).
     ends: BTreeMap<String, Ends>,
+    /// Each move of unknown outcome since confirmed, by the request its decision answered.
+    outcomes: BTreeMap<String, SettledOutcome>,
 }
 
 impl Stuck {
@@ -1019,7 +1041,7 @@ impl Stuck {
                 order: moving.order.clone(),
                 part: kept.part,
                 mover: moving.mover.clone(),
-                reported_failed: false,
+                reported: None,
                 dropped: None,
                 effect: Step::new(entry),
                 action,
@@ -1031,18 +1053,18 @@ impl Stuck {
         self.advance(parts, resolutions, moving.core, &at)
     }
 
-    /// Records the outcome, now known, of a move whose outcome was unknown: done or failed, as its own mover reports
-    /// it for its own order, once, as the effect's result. Done counts what moved, and the part resolves once all of
-    /// it moved. Failed would free the part for a new decision, so that the value could move again on the mover's
-    /// word alone: it is only reported ([`Moved::AwaitsConfirmation`]), and recorded once another actor confirms it
-    /// ([`Stuck::confirm_failed`]). Nothing is carried out again. Who learns the outcome, from the provider's later
-    /// word, is the production [`Resolutions`]'s; the provider's stated result for the effect's transaction, as
-    /// evidence, is the real answer, and that row's or `T-020-12`'s.
+    /// Reports the outcome, now known, of a move whose outcome was unknown, done or failed, as its own mover for its
+    /// own order, naming the evidence it relies on by an opaque reference. A report settles nothing: done would
+    /// resolve the part and failed free it, each on the mover's word alone, which a mover colluding with the provider
+    /// holding the funds could misuse (`THR-70`). It is recorded only once another actor confirms it
+    /// ([`Stuck::confirm_outcome`]); a later report replaces it until then. Nothing is carried out again. Who learns
+    /// the outcome from the provider's later word is the production [`Resolutions`]'s; the provider's stated result
+    /// for the effect's transaction, as evidence Core checks, is the real answer, that row's or `T-020-12`'s.
     pub fn known_outcome(
         &mut self,
-        parts: &mut Parts<'_>,
         moving: Moving<'_>,
         outcome: Resolved,
+        evidence: &Id,
     ) -> Result<Moved, ResolveError> {
         let at = moving.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1056,24 +1078,18 @@ impl Stuck {
         if outcome == Resolved::Unknown {
             return Err(ResolveError::OutcomeUnknown);
         }
-        if outcome == Resolved::Failed {
-            motion.reported_failed = true;
-            return Ok(Moved::AwaitsConfirmation);
-        }
-        motion.resolved = Some(outcome);
-        if outcome == Resolved::Done
-            && let Some((asset, amount)) = moved_by(&motion.action)
-            && let Some(declared) = self.declared.get_mut(&key(&motion.order, &motion.part))
-        {
-            add_moved(&mut declared.moved, &asset, &amount);
-        }
-        self.advance(parts, &mut Unbuilt, moving.core, &at)
+        motion.reported = Some((outcome, evidence.clone()));
+        Ok(Moved::AwaitsConfirmation)
     }
 
-    /// Confirms the failure a move's mover reported ([`Stuck::known_outcome`]): only by an actor of another party
-    /// and another login than the mover, as a decision and its move are (`REQ-AUZ-4`). Once confirmed, the failure is
-    /// recorded as the effect's result, once, and the part freed for a new decision.
-    pub fn confirm_failed(
+    /// Confirms the outcome a move's mover reported ([`Stuck::known_outcome`]), naming the evidence relied on: only by
+    /// an actor of another party and another login than the mover, as a decision and its move are (`REQ-AUZ-4`,
+    /// ADR-0011; the decider may). Once confirmed, the outcome is recorded as the effect's result, once, with who
+    /// reported and confirmed it and their evidence kept ([`Stuck::outcome_of`]): done counts what moved, and the part
+    /// resolves once all of it moved; failed frees the part for a new decision. The roles a confirmer may hold (no
+    /// customer, not the desk of the provider holding the funds, `THR-70`) are `T-021-06`'s to rule; the log's record
+    /// of who reported and confirmed needs a contract kind (queued with the contract's author).
+    pub fn confirm_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         confirming: Confirming<'_>,
@@ -1082,20 +1098,44 @@ impl Stuck {
         let motion = self
             .moving
             .get_mut(&at)
-            .filter(|m| {
-                m.order == *confirming.order
-                    && m.resolved == Some(Resolved::Unknown)
-                    && m.reported_failed
-            })
+            .filter(|m| m.order == *confirming.order && m.resolved == Some(Resolved::Unknown))
             .ok_or(ResolveError::NoDecision)?;
+        let Some((outcome, reported_with)) = motion.reported.clone() else {
+            return Err(ResolveError::NoDecision);
+        };
         if motion.mover.party == confirming.confirmer.party {
             return Err(ResolveError::SameParty);
         }
         if motion.mover.acts == confirming.confirmer.acts {
             return Err(ResolveError::SameLogin);
         }
-        motion.resolved = Some(Resolved::Failed);
+        motion.resolved = Some(outcome);
+        if outcome == Resolved::Done
+            && let Some((asset, amount)) = moved_by(&motion.action)
+            && let Some(declared) = self.declared.get_mut(&key(&motion.order, &motion.part))
+        {
+            add_moved(&mut declared.moved, &asset, &amount);
+        }
+        self.outcomes.insert(
+            at.clone(),
+            SettledOutcome {
+                decision: confirming.carries_out.clone(),
+                outcome,
+                reported_by: motion.mover.clone(),
+                reported_with,
+                confirmed_by: confirming.confirmer.clone(),
+                confirmed_with: confirming.evidence.clone(),
+            },
+        );
         self.advance(parts, &mut Unbuilt, confirming.core, &at)
+    }
+
+    /// The outcome of a move whose outcome was unknown, once confirmed: who reported and who confirmed it, each with
+    /// the evidence it named.
+    pub fn outcome_of(&self, decided: &Decided) -> Option<&SettledOutcome> {
+        self.outcomes
+            .get(decided.request.as_str())
+            .filter(|o| o.decision == *decided)
     }
 
     /// Takes a move on from where it stopped: its effect appended, acted on once, its result recorded, and the

@@ -44,7 +44,7 @@
 //! `stuck_declared` too, so a stuck or waiting part reads so; [`Segments::run_part`] refuses a stuck part whole
 //! ([`SegmentsError::Stuck`]), so nothing of it is handed over or carried out again while its resolution may move
 //! its value, though what a segment carried out already gave back is still recorded, and a value it settled at an
-//! inner node while the part is stuck is held there at rest; [`Segments::act_on`] holds a
+//! inner node while the part is stuck is held there at rest; `Segments::act_on` holds a
 //! resolution's effect to the one register of effects acted on; [`Segments::follow_recorded`] rebuilds an order's
 //! state from the log; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what
 //! the stuck clock runs on.
@@ -486,7 +486,7 @@ impl Segments {
     /// Marks the effect at `receipt` acted on, in the one register every effect Core carries out is held to, a stuck
     /// order's resolution among them: false where it was acted on already, by a segment or a resolution, and so
     /// isn't acted on again (`INV-8`, `T-020-11`).
-    pub fn act_on(&mut self, receipt: &Receipt) -> bool {
+    pub(crate) fn act_on(&mut self, receipt: &Receipt) -> bool {
         self.acted.insert(key(receipt))
     }
 
@@ -638,7 +638,7 @@ impl Segments {
 
     /// Marks `part` of `order` resolved: its stuck resolution moved all its value, so a settlement recorded for it
     /// later takes no rest hold, though the state machine still reads it stuck (`T-020-11`).
-    pub fn mark_resolved(&mut self, order: &Id, part: &Id) {
+    pub(crate) fn mark_resolved(&mut self, order: &Id, part: &Id) {
         self.resolved
             .insert((order.as_str().to_owned(), part.as_str().to_owned()));
     }

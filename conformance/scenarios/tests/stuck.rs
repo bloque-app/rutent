@@ -2214,59 +2214,61 @@ fn settlement_recorded_late_keeps_a_stuck_parts_value_held() {
         .expect("the log admits every entry");
 }
 
-/// Records the known outcome of `decision`'s move, which ended unknown, as `mover` reports it.
+/// Reports, as `mover`, the known outcome of `decision`'s move, which ended unknown, naming `evidence`.
 fn known_outcome(
-    core: &mut Core,
     stuck: &mut Stuck,
     order: &str,
     decision: &rutent_contracts::core_internal::Decision,
     mover: &rutent_contracts::core_internal::Actor,
     outcome: Resolved,
+    evidence: &str,
 ) -> Result<Moved, ResolveError> {
     let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
-    on_parts(core, |parts| {
-        stuck.known_outcome(
-            parts,
-            Moving {
-                order: &order,
-                carries_out: &carries_out,
-                mover,
-                core: &actor,
-            },
-            outcome,
-        )
-    })
+    stuck.known_outcome(
+        Moving {
+            order: &order,
+            carries_out: &carries_out,
+            mover,
+            core: &actor,
+        },
+        outcome,
+        &id(evidence),
+    )
 }
 
-/// Confirms, as `confirmer`, the failure `decision`'s mover reported.
-fn confirm_failed(
+/// Confirms, as `confirmer`, naming `evidence`, the outcome `decision`'s mover reported.
+fn confirm_outcome(
     core: &mut Core,
     stuck: &mut Stuck,
     order: &str,
     decision: &rutent_contracts::core_internal::Decision,
     confirmer: &rutent_contracts::core_internal::Actor,
+    evidence: &str,
 ) -> Result<Moved, ResolveError> {
     let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
+    let evidence = id(evidence);
     on_parts(core, |parts| {
-        stuck.confirm_failed(
+        stuck.confirm_outcome(
             parts,
             Confirming {
                 order: &order,
                 carries_out: &carries_out,
                 confirmer,
+                evidence: &evidence,
                 core: &actor,
             },
         )
     })
 }
 
-/// A move whose outcome was unknown gets its known outcome later, from its own mover for its own order, recorded
-/// once as its result. Done, what moved counts and the part resolves once all of it moved. Failed frees the part,
-/// so on the mover's word alone it could make the value move twice: it is only reported, and recorded and the part
-/// freed once an actor of another party and login confirms it. Nothing is carried out again either way.
+/// A move whose outcome was unknown gets its known outcome later, on two actors' word: its own mover, for its own
+/// order, reports it naming its evidence, and settles nothing; an actor of another party and another login confirms
+/// it naming its own, and only then is it recorded, once, as the effect's result, with both kept. Failed frees the
+/// part; done counts what moved, and the part resolves once all of it moved. A mover that switches its report
+/// before it is confirmed leaves only its last report pending. Nothing is carried out again either way.
 // verifies: REQ-AUZ-4, REQ-ORD-1, INV-8
 #[test]
-fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
+fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
     let mut moves = Moves(Vec::new(), [Resolved::Unknown, Resolved::Unknown].into());
@@ -2275,16 +2277,18 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
         staff("desk-b", "bob"),
         staff("desk-c", "carol"),
     );
+    let decide_whole = |core: &mut Core, stuck: &mut Stuck, policy: &mut PermitsEveryStep| {
+        decide(
+            core,
+            stuck,
+            policy,
+            &alice,
+            &back_to_origin(AMOUNT),
+            &evidence(),
+        )
+    };
 
-    let first = decide(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        &alice,
-        &back_to_origin(AMOUNT),
-        &evidence(),
-    )
-    .unwrap();
+    let first = decide_whole(&mut core, &mut stuck, &mut policy).unwrap();
     assert!(matches!(
         moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob),
         Ok(Moved::CarriedOut {
@@ -2294,41 +2298,36 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
         })
     ));
     assert_eq!(
-        known_outcome(&mut core, &mut stuck, ORDER, &first, &carol, Resolved::Done),
+        known_outcome(&mut stuck, ORDER, &first, &carol, Resolved::Done, "res-1"),
         Err(ResolveError::NotTheMover)
     );
     assert_eq!(
-        known_outcome(&mut core, &mut stuck, "ord-9", &first, &bob, Resolved::Done),
+        known_outcome(&mut stuck, "ord-9", &first, &bob, Resolved::Done, "res-1"),
         Err(ResolveError::NoDecision)
     );
     assert_eq!(
-        known_outcome(
-            &mut core,
-            &mut stuck,
-            ORDER,
-            &first,
-            &bob,
-            Resolved::Unknown
-        ),
+        known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Unknown, "res-1"),
         Err(ResolveError::OutcomeUnknown)
     );
     assert_eq!(
-        known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Failed),
-        Ok(Moved::AwaitsConfirmation),
-        "a failure frees the part only once another actor confirms it"
+        confirm_outcome(&mut core, &mut stuck, ORDER, &first, &alice, "res-1"),
+        Err(ResolveError::NoDecision),
+        "nothing to confirm before a report"
+    );
+    // The mover reports failed, then done: only the last report is pending, and done alone settles nothing.
+    for outcome in [Resolved::Failed, Resolved::Done] {
+        assert_eq!(
+            known_outcome(&mut stuck, ORDER, &first, &bob, outcome, "res-1"),
+            Ok(Moved::AwaitsConfirmation)
+        );
+    }
+    assert!(
+        stuck.is_stuck(&id(ORDER), &id(PART)),
+        "the mover's done alone resolves nothing"
     );
     assert_eq!(
-        decide(
-            &mut core,
-            &mut stuck,
-            &mut policy,
-            &alice,
-            &back_to_origin(AMOUNT),
-            &evidence()
-        )
-        .map(|_| ()),
-        Err(ResolveError::OutcomeUnknown),
-        "the mover alone can't free the part"
+        decide_whole(&mut core, &mut stuck, &mut policy).map(|_| ()),
+        Err(ResolveError::OutcomeUnknown)
     );
     for (confirmer, refused) in [
         (bob.clone(), ResolveError::SameParty),
@@ -2336,29 +2335,90 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
         (staff("desk-c", "bob"), ResolveError::SameLogin),
     ] {
         assert_eq!(
-            confirm_failed(&mut core, &mut stuck, ORDER, &first, &confirmer),
+            confirm_outcome(&mut core, &mut stuck, ORDER, &first, &confirmer, "res-1"),
             Err(refused)
         );
     }
     assert!(matches!(
-        confirm_failed(&mut core, &mut stuck, ORDER, &first, &alice),
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &alice,
+            "res-1-checked"
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            result: Some(_),
+            ..
+        })
+    ));
+    let settled = stuck
+        .outcome_of(&decided(&first))
+        .expect("kept with its outcome");
+    assert_eq!(
+        (
+            settled.outcome,
+            settled.reported_by.acts.as_str(),
+            settled.reported_with.as_str(),
+            settled.confirmed_by.acts.as_str(),
+            settled.confirmed_with.as_str(),
+        ),
+        (Resolved::Done, "bob", "res-1", "alice", "res-1-checked")
+    );
+    assert!(
+        !stuck.is_stuck(&id(ORDER), &id(PART)),
+        "a confirmed done resolves the part"
+    );
+    assert_eq!(
+        confirm_outcome(&mut core, &mut stuck, ORDER, &first, &alice, "res-1"),
+        Err(ResolveError::NoDecision),
+        "recorded once"
+    );
+    assert_eq!(moves.0.len(), 1, "nothing carried out again");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A move of unknown outcome its mover reports failed is recorded so, and its part freed for a new decision, only
+/// once another actor confirms it.
+// verifies: REQ-AUZ-4, REQ-ORD-1
+#[test]
+fn confirmed_failure_frees_the_part_for_a_new_decision() {
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
+    assert_eq!(
+        known_outcome(&mut stuck, ORDER, &first, &bob, Resolved::Failed, "res-2"),
+        Ok(Moved::AwaitsConfirmation)
+    );
+    assert!(matches!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            ORDER,
+            &first,
+            &alice,
+            "res-2-checked"
+        ),
         Ok(Moved::CarriedOut {
             resolved: Resolved::Failed,
             result: Some(_),
             ..
         })
     ));
-    assert_eq!(
-        confirm_failed(&mut core, &mut stuck, ORDER, &first, &alice),
-        Err(ResolveError::NoDecision),
-        "recorded once"
-    );
-    assert_eq!(
-        known_outcome(&mut core, &mut stuck, ORDER, &first, &bob, Resolved::Done),
-        Err(ResolveError::NoDecision),
-        "recorded once"
-    );
-
     let second = decide(
         &mut core,
         &mut stuck,
@@ -2367,7 +2427,7 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
         &back_to_origin(AMOUNT),
         &evidence(),
     )
-    .expect("failed, the part is free for a new decision");
+    .expect("free for a new decision");
     assert!(matches!(
         moves_once(
             &mut core,
@@ -2378,24 +2438,11 @@ fn unknown_move_takes_its_known_outcome_once_from_its_mover() {
             &bob
         ),
         Ok(Moved::CarriedOut {
-            resolved: Resolved::Unknown,
-            ..
-        })
-    ));
-    assert!(matches!(
-        known_outcome(&mut core, &mut stuck, ORDER, &second, &bob, Resolved::Done),
-        Ok(Moved::CarriedOut {
             resolved: Resolved::Done,
-            result: Some(_),
             ..
         })
     ));
-    assert!(
-        !stuck.is_stuck(&id(ORDER), &id(PART)),
-        "resolved once all of it moved"
-    );
-    assert!(stuck.stuck_values(&core.exposures, &*core.clock).is_empty());
-    assert_eq!(moves.0.len(), 2, "nothing carried out again");
+    assert!(!stuck.is_stuck(&id(ORDER), &id(PART)));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
