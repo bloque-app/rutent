@@ -253,3 +253,24 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy. Since the review
   of `07c4be9`, the sources of `T-021-01`'s and `T-021-02`'s tests also answer the register's yes, for every
   actor they name, outside what they count, and the unbuilt engine's grant is not known for that input.
+
+### T-021-02, the operator's read of an order's state and age
+
+- **What it builds.** `REQ-ORD-5` makes an order's state and age visible to its customer and the operator, and
+  `T-021-02`'s refuse-by-default had left the operator only reads by a permission, which core-internal grants only to
+  a regulator or a checker. core-internal 1.0.0 now has a read of an order's state and age alone
+  (`Reads::OrderState`, `T-020-01`, folded in at `dfe8a45`). The read rule lets the operator make it without a
+  permission, through a login the deployment's register of permissions lists for it; every other operator read
+  still needs a permission. A customer's read of it asks the order's record, as a read of the order does, and a
+  provider never reads it.
+- **Through the roles register, keyed by `acts`.** The login is held to a new permission of `T-021-03`'s register,
+  `Permission::ReadOrderState`, asked by the actor's `acts` within its party (`Source::Permissions`), as every
+  operator power is: posting a route, each catalogue change, acting for a user. Reading an order's state isn't
+  acting for a user, so it doesn't ride on `ActForUser`. The variant is `T-021-03`'s type, added in this row's turn;
+  the rule that asks it is in `session/`. `T-021-03`'s rule that every actor acts for the party it states still runs
+  first.
+- **T-020-08's read asks the state.** `Segments::status` asked a full read of the order (`Reads::Order`), which the
+  operator can't make without a permission; it now asks `Reads::OrderState`, the read `REQ-ORD-5` names, for the
+  customer and the operator alike. Its scenario test,
+  `orders_state_and_age_are_readable_by_its_customer_and_the_operator`, takes back the operator's read, which waited
+  on this row, and the kit's register lists the operator's login for it.

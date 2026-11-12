@@ -42,6 +42,12 @@
 //!    `amount_changes` as `quote_voided`, citing that quote (`REQ-QTE-1`, `F-011`'s notes), and one with no answer at
 //!    its amount as `unconfirmed`; both are asked again.
 //!
+//! **A recalculation** (`T-020-10`'s seams, the one change to this module outside its owning row): a request that
+//! `follows` another routes a part from where its value is evidenced, so a part of it that starts with no withdrawal
+//! has no yes to ask: its value is in the book already, and no reserve's check is the customer's to answer
+//! (`REQ-ORD-2`, `REQ-ORD-22`). Every other part still needs its yes. [`History::recorded`] gives back an order's
+//! history as the log holds it.
+//!
 //! **Core checks the router's record against what it gave it.** A record whose request, snapshot or bounds aren't
 //! the round's own is refused before it is recorded or acted on ([`RoutingError::NotItsRecord`]).
 
@@ -154,6 +160,23 @@ impl History {
     /// An order's history before its first routing.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An order's history as the log recorded it: the receipt of its last `decision_record` entry, and the
+    /// verifiers asked about a person for it, each once. For a caller that keeps the history apart from the rounds,
+    /// across a restart (`F-030`) or a routing recorded elsewhere, so the next routing chains to it (`REQ-AUD-4`,
+    /// `T-020-10`).
+    pub fn recorded(previous: Receipt, asked_about_person: Vec<Id>) -> Self {
+        let mut asked: Vec<Id> = Vec::new();
+        for verifier in asked_about_person {
+            if !asked.contains(&verifier) {
+                asked.push(verifier);
+            }
+        }
+        History {
+            previous: Some(previous),
+            asked_about_person: asked,
+        }
     }
 
     /// The receipt of the order's last decision record entry.
@@ -954,6 +977,11 @@ impl Run<'_, '_> {
         let mut reserve_yes = Vec::new();
         for part in chosen.parts.iter() {
             let first = part.operations.first();
+            // A recalculated part's value is already in the book: one that starts with no withdrawal has no yes to
+            // ask (`T-020-10`).
+            if self.routing.request.follows.is_some() && first.kind != OperationKind::Withdrawal {
+                continue;
+            }
             let yes = self.answers.iter().find(|a| {
                 a.yes
                     && a.provider == first.provider

@@ -1136,3 +1136,141 @@ fn only_the_checkers_name_is_read_without_a_permission() {
         "only the checker's name reached the deployment"
     );
 }
+
+/// The register's word that the login `acts`, acting for the operator, may read an order's state and age.
+fn reads_state(acts: &str) -> Need {
+    Need {
+        input: id(acts),
+        from: Source::Permissions {
+            party: id("operator"),
+            permission: crate::roles::Permission::ReadOrderState,
+        },
+    }
+}
+
+/// An order's state and age, read by `reader`, with no permission.
+fn state_of(request: &str, reader: Actor, order: &str) -> ReadCheck {
+    read(
+        request,
+        reader,
+        json!({"kind": "order_state", "order": order}),
+        None,
+    )
+}
+
+/// An order waiting between segments has a state and an age that its customer and the operator read: the operator's
+/// login the register lists for it reads them without a permission, the register asked; the order's customer reads
+/// them, the order's record asked; another customer is refused. Each read is recorded, and the log admits each one
+/// allowed.
+// verifies: REQ-ORD-5
+#[test]
+fn operator_reads_an_orders_state_and_age() {
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(vec![
+            (reads_state("op-login-2"), Reply::Given(Said::Yes)),
+            (party_of("cust-1", "ord-1"), Reply::Given(Said::Yes)),
+            (party_of("cust-2", "ord-1"), Reply::Given(Said::No)),
+        ]),
+    );
+    let operator = actor("operator", "op-login-2", Role::Operator);
+    let by_operator = state_of("req-520", operator, "ord-1");
+    assert_eq!(
+        read_recorded(&mut engine, &by_operator),
+        ReadOutcome::Allowed {}
+    );
+    assert_eq!(engine.sources.asked, [reads_state("op-login-2")]);
+
+    let by_customer = state_of(
+        "req-521",
+        actor("cust-1", "cust-1", Role::Customer),
+        "ord-1",
+    );
+    assert_eq!(
+        read_recorded(&mut engine, &by_customer),
+        ReadOutcome::Allowed {}
+    );
+    let by_another = state_of(
+        "req-522",
+        actor("cust-2", "cust-2", Role::Customer),
+        "ord-1",
+    );
+    assert_eq!(read_recorded(&mut engine, &by_another), refused());
+}
+
+/// The operator's login that reads an order's state and age reads nothing else without a permission: not the order
+/// itself, its segments, the trail, or a resource other than who the checker is. Nor does a provider read an order's
+/// state.
+// verifies: REQ-ORD-5, REQ-AUZ-7
+#[test]
+fn operator_reading_an_orders_state_is_refused_other_reads_without_a_permission() {
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(vec![
+            (reads_state("op-login-2"), Reply::Given(Said::Yes)),
+            (segment_of("ord-1", "p1-s1"), Reply::Given(Said::Yes)),
+        ]),
+    );
+    let operator = || actor("operator", "op-login-2", Role::Operator);
+    let state = state_of("req-530", operator(), "ord-1");
+    assert_eq!(read_recorded(&mut engine, &state), ReadOutcome::Allowed {});
+    for (request, what) in [
+        ("req-531", json!({"kind": "order", "order": "ord-1"})),
+        (
+            "req-532",
+            json!({"kind": "segment", "order": "ord-1", "segment": "p1-s1", "provider": "bridge-pay"}),
+        ),
+        ("req-533", json!({"kind": "trail"})),
+        (
+            "req-534",
+            json!({"kind": "resource", "resource": "operator_keys"}),
+        ),
+    ] {
+        let other = read(request, operator(), what.clone(), None);
+        assert_eq!(read_recorded(&mut engine, &other), refused(), "{what}");
+    }
+    let by_provider = state_of(
+        "req-535",
+        actor("bridge-pay", "bridge-pay", Role::Provider),
+        "ord-1",
+    );
+    assert_eq!(read_recorded(&mut engine, &by_provider), refused());
+}
+
+/// Only a login the register lists for it reads an order's state as the operator: another stating the operator's
+/// role is refused, whether the register says no, says nothing, or can't be reached, and each refusal is recorded.
+// verifies: REQ-ORD-5, REQ-AUZ-7
+#[test]
+fn actor_not_listed_as_an_operator_login_is_refused_an_orders_state() {
+    let operator = |acts: &str| actor("operator", acts, Role::Operator);
+    for (n, (login, says)) in [
+        ("op-login-9", Reply::Given(Said::No)),
+        ("op-login-8", Reply::Missing),
+        ("op-login-7", Reply::Unreachable),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut engine = Engine::with_policy(
+            Kept::world(),
+            Rules::permitting(),
+            Says::of(vec![
+                (reads_state("op-login-2"), Reply::Given(Said::Yes)),
+                (reads_state(login), says),
+            ]),
+        );
+        let listed = state_of(&format!("req-54{n}"), operator("op-login-2"), "ord-1");
+        assert_eq!(read_recorded(&mut engine, &listed), ReadOutcome::Allowed {});
+        // A no or no answer at all refuses, the class saying which (`REQ-AUZ-5`); out of reach, nothing allows it.
+        let unlisted = state_of(&format!("req-55{n}"), operator(login), "ord-1");
+        assert!(
+            matches!(
+                read_recorded(&mut engine, &unlisted),
+                ReadOutcome::Refused { .. }
+            ),
+            "{login}"
+        );
+    }
+}

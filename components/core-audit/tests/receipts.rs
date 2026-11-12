@@ -34,9 +34,9 @@ use rutent_core_audit::log::{
 };
 use rutent_core_audit::receipts::receipt::{KEY_ACROSS_PURPOSES, NOT_A_RECEIPT, NOT_COVERED};
 use rutent_core_audit::receipts::store::{
-    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, ERASURE_BY_THE_OPERATOR,
-    EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE, NO_RECORDED_ERASURE,
-    NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
+    ADVERTISEMENT_NEVER_ERASED, ANSWER_OF_ANOTHER_READ, ERASED_YET_CITED, ERASURE_NOT_RECORDED,
+    EVIDENCE_RESTED_ON, FETCH_READS_EVIDENCE, MARK_WITHOUT_ITS_ERASURE, NAMED_BY_NO_ENTRY,
+    NO_DECIDED_ERASURE, NOT_A_KEPT_STATEMENT, NOT_KEPT, NOTHING_TO_KEEP,
 };
 use rutent_core_audit::receipts::{
     BoundStore, EvidenceStore, Issued, Issuer, Keeper, LogsRead, MemoryShelf, PartyReceipt, Shelf,
@@ -151,20 +151,12 @@ fn stated(bytes: &[u8], commitment: &Digest, about: Option<Value>) -> GeneralEnt
     )
 }
 
-/// The operator's erasure of what `commitment` names, with its outcome `status`.
+/// The record of an erasure of what `commitment` names, with its outcome `status`, which orchestration appends once
+/// the store has erased it on its decision.
 fn erasure(commitment: &Digest, status: &str) -> GeneralEntry {
-    erasure_by(
-        actor(OPERATOR, "op-login-2", "operator", "person"),
-        commitment,
-        status,
-    )
-}
-
-/// `who`'s erasure of what `commitment` names, with its outcome `status`.
-fn erasure_by(who: Value, commitment: &Digest, status: &str) -> GeneralEntry {
     serde_json::from_value(json!({
         "kind": "verified",
-        "who": who,
+        "who": actor("rutent", "core-orch", "core", "component"),
         "what": {"call": "erasure", "evidence": commitment},
         "when": {"at": NOW, "source": "core_clock"},
         "outcome": {"status": status},
@@ -172,13 +164,15 @@ fn erasure_by(who: Value, commitment: &Digest, status: &str) -> GeneralEntry {
     .unwrap()
 }
 
-/// The operator's permitted decision to erase what `commitment` names, its effect and its done result, in `log`:
-/// the path the log admits an erasure on. `n` tells its request and decision apart from others'.
+/// Policy's permitting decision to erase what `commitment` names, its effect and its result, with the outcome
+/// `status`, in `log`: the decided path the store erases on. `n` tells its request and decision apart from others'.
+/// The receipt of the result.
 fn decide_erasure(
     log: &mut (impl Log + PolicyLog),
     n: usize,
     commitment: &Digest,
-) -> Result<(), AppendFailure> {
+    status: &str,
+) -> Result<Receipt, AppendFailure> {
     let (request, decision) = (format!("req-erase-{n}"), format!("dec-erase-{n}"));
     let action =
         json!({"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"});
@@ -209,11 +203,10 @@ fn decide_erasure(
         "who": core,
         "what": {"call": "result", "effect": effect},
         "when": {"at": NOW, "source": "core_clock"},
-        "outcome": {"status": "done"},
+        "outcome": {"status": status},
     }))
     .unwrap();
-    log.append(&result)?;
-    Ok(())
+    log.append(&result)
 }
 
 /// A valid fixture of the contract.
@@ -397,23 +390,15 @@ impl Run {
         (kept.commitment, receipt)
     }
 
-    /// Appends `entry`; an erasure first on its decided path, as the log admits one only after the done result of
-    /// a permitted erase effect (core-internal's `erasure-is-carried-out-on-its-decision`).
     fn append(&self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
-        if let Entry::Verified(VerifiedEntry {
-            what: rutent_contracts::core_internal::What::Erasure { evidence },
-            ..
-        }) = entry.entry()
-        {
-            self.decide_erasure(evidence)?;
-        }
         self.log.borrow_mut().append(entry)
     }
 
-    /// The operator's permitted decision to erase what `commitment` names, its effect and its done result.
-    fn decide_erasure(&self, commitment: &Digest) -> Result<(), AppendFailure> {
+    /// Policy's permitting decision to erase what `commitment` names, its effect and its result, with the outcome
+    /// `status`: the receipt of the result.
+    fn decide_erasure(&self, commitment: &Digest, status: &str) -> Result<Receipt, AppendFailure> {
         let n = self.log.borrow().entries().len();
-        decide_erasure(&mut *self.log.borrow_mut(), n, commitment)
+        decide_erasure(&mut *self.log.borrow_mut(), n, commitment, status)
     }
 
     fn entries(&self) -> Vec<(Receipt, Entry)> {
@@ -438,12 +423,14 @@ impl Run {
         self.keeper.fetch(&read_of("req-fetch", reader, commitment))
     }
 
-    /// Erases what `commitment` names: the check, the erasure's entry, then the erasure.
+    /// Erases what `commitment` names on its decided path: the store's check, policy's decision, its effect and
+    /// its done result, the erasure, then its `erasure` entry. The receipt of the done result.
     fn erase(&self, commitment: &Digest) -> Result<Receipt, AppendFailure> {
         self.store.erasable(commitment)?;
-        let at = self.append(&erasure(commitment, "done"))?;
-        self.store.erase(&at)?;
-        Ok(at)
+        let done = self.decide_erasure(commitment, "done")?;
+        self.store.erase(&done)?;
+        self.append(&erasure(commitment, "done"))?;
+        Ok(done)
     }
 }
 
@@ -913,11 +900,7 @@ fn a_shelf_that_cant_write_keeps_and_erases_nothing() {
         .unwrap();
     store.erasable(&kept.commitment).unwrap();
     let n = log.borrow().entries().len();
-    decide_erasure(&mut *log.borrow_mut(), n, &kept.commitment).unwrap();
-    let at = log
-        .borrow_mut()
-        .append(&erasure(&kept.commitment, "done"))
-        .unwrap();
+    let at = decide_erasure(&mut *log.borrow_mut(), n, &kept.commitment, "done").unwrap();
     shelf.fail.set(true);
     assert_eq!(store.erase(&at), Err(AppendFailure::Unavailable));
     assert!(kept_now.kept(&kept.commitment).unwrap().is_some());
@@ -1036,8 +1019,8 @@ fn no_erasure_reaches_an_advertisement() {
     let ad = advertised("us-bank");
     let (by_bytes, _) = run.state(&ad, None);
     assert_eq!(run.erase(&by_bytes).map(|_| ()), refused);
-    // Recorded anyway, the erasure is still not carried out.
-    let at = run.append(&erasure(&by_bytes, "done")).unwrap();
+    // Decided anyway, the erasure is still not carried out.
+    let at = run.decide_erasure(&by_bytes, "done").unwrap();
     assert_eq!(run.store.erase(&at), refused);
 
     // An advertisement's bytes, labelled as another statement by the only entry naming them.
@@ -1063,12 +1046,12 @@ fn no_erasure_reaches_an_advertisement() {
     ))
     .unwrap();
     assert_eq!(run.erase(&kept.commitment).map(|_| ()), refused);
-    let at = run.append(&erasure(&kept.commitment, "done")).unwrap();
+    let at = run.decide_erasure(&kept.commitment, "done").unwrap();
     assert_eq!(run.store.erase(&at), refused);
     drop(run);
 
     let mut run = Run::open(&dir).unwrap();
-    // The erasures recorded but refused are reported when the store is bound again.
+    // The erasures decided but refused are reported when the store is bound again.
     let refused: Vec<_> = run.store.refused_erasures().to_vec();
     assert_eq!(refused.len(), 2);
     assert!(
@@ -1086,53 +1069,128 @@ fn no_erasure_reaches_an_advertisement() {
     ));
 }
 
-/// An erasure is carried out only on the log's own record of it, a `done` erasure entry naming the statement: on no
-/// receipt of another entry, or of no entry of this log, so nothing is erased that the log doesn't reference first.
-/// The log itself refuses an erasure naming what no stated entry holds, and one recorded failed after its effect's
-/// `done` result, when the bytes are already gone.
-// verifies: REQ-AUD-13, INV-7
+/// An erasure with no decision behind it is refused: on the receipt of no result, of a result of no erase effect,
+/// or of no entry of this log, the store erases nothing, and the log refuses an erase effect with no permitting
+/// decision and an `erasure` entry with no done result before it. A decided erasure of one statement erases that
+/// one only.
+// verifies: REQ-AUD-13, REQ-AUZ-1, INV-7
 #[test]
-fn an_erasure_the_log_holds_no_record_of_erases_nothing() {
-    let dir = TempDir::new("unrecorded");
+fn an_erasure_with_no_decision_behind_it_is_refused() {
+    let dir = TempDir::new("undecided");
     let mut run = Run::open(&dir).unwrap();
-    let bytes = judgement("us-bank", json!({"kind": "judgement"}));
-    let (commitment, stated_at) = run.state(&bytes, None);
-    let refused = Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE)));
+    let (commitment, stated_at) =
+        run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let (other, _) = run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
+    let refused = Err(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)));
 
     assert_eq!(run.store.erase(&stated_at), refused);
+    // The log refuses the record of an erasure nothing decided, and an erase effect on no permit.
     assert!(matches!(
-        run.append(&erasure(&commitment, "failed")),
+        run.append(&erasure(&commitment, "done")),
         Err(AppendFailure::Refused(_))
     ));
-    let done = run.append(&erasure(&commitment, "done")).unwrap();
-    let mut forged = done.clone();
-    forged.index = SafeInteger::try_from(done.index.get() + 1).unwrap();
-    assert_eq!(run.store.erase(&forged), refused);
-    let mut forged = done.clone();
-    forged.entry = digest(&[9; 32]);
-    assert_eq!(run.store.erase(&forged), refused);
+    let unpermitted: GeneralEntry = serde_json::from_value(json!({
+        "kind": "verified",
+        "who": actor("rutent", "core-orch", "core", "component"),
+        "what": {"call": "effect",
+                 "action": {"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"},
+                 "decision": {"request": "req-none", "decision": "dec-none", "answer": "permit", "receipt": stated_at}},
+        "when": {"at": NOW, "source": "core_clock"},
+        "outcome": {"status": "to_take_effect"},
+    }))
+    .unwrap();
+    assert!(matches!(
+        run.append(&unpermitted),
+        Err(AppendFailure::Refused(_))
+    ));
+    // A done result that isn't this log's, at its place or under its digest.
+    let done = run.decide_erasure(&other, "done").unwrap();
+    for forged in [
+        Receipt {
+            index: SafeInteger::try_from(done.index.get() + 1).unwrap(),
+            ..done.clone()
+        },
+        Receipt {
+            entry: digest(&[9; 32]),
+            ..done.clone()
+        },
+    ] {
+        assert_eq!(run.store.erase(&forged), refused);
+    }
+    // The decided erasure of the other erases the other alone.
+    run.store.erase(&done).unwrap();
+    assert_eq!(run.fetch("bank-co", &other).unwrap(), Fetched::Erased);
     assert!(matches!(
         run.fetch("us-bank", &commitment).unwrap(),
         Fetched::Kept(_)
     ));
+}
 
-    // Kept but named by no stated entry: the log records no erasure of it.
+/// An erasure whose decided effect failed is refused: the store erases nothing on a failed result, and the log
+/// records no erasure after one.
+// verifies: REQ-AUD-13, INV-7
+#[test]
+fn an_erasure_whose_result_failed_is_refused() {
+    let dir = TempDir::new("failed");
+    let mut run = Run::open(&dir).unwrap();
+    let (commitment, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let failed = run.decide_erasure(&commitment, "failed").unwrap();
+    assert_eq!(
+        run.store.erase(&failed),
+        Err(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)))
+    );
+    assert!(matches!(
+        run.append(&erasure(&commitment, "done")),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert!(matches!(
+        run.fetch("us-bank", &commitment).unwrap(),
+        Fetched::Kept(_)
+    ));
+    drop(run);
+    // Bound again, a failed erasure is neither carried out nor reported.
+    let mut run = Run::open(&dir).unwrap();
+    assert!(run.store.refused_erasures().is_empty());
+    assert!(matches!(
+        run.fetch("us-bank", &commitment).unwrap(),
+        Fetched::Kept(_)
+    ));
+}
+
+/// An erasure on the done result of a permitted erase effect goes through, and its `erasure` entry follows it. A
+/// statement no stated entry names is no erasure's to reach.
+// verifies: REQ-AUD-13, AC-36
+#[test]
+fn an_erasure_on_its_permitted_done_result_goes_through() {
+    let dir = TempDir::new("decided");
+    let mut run = Run::open(&dir).unwrap();
+    let (commitment, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    run.store.erasable(&commitment).unwrap();
+    let done = run.decide_erasure(&commitment, "done").unwrap();
+    run.store.erase(&done).unwrap();
+    assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
+    run.append(&erasure(&commitment, "done")).unwrap();
+    // Carried out again, it erases nothing more.
+    run.store.erase(&done).unwrap();
+
     let unnamed = run
         .keeper
         .keep(&judgement("bank-co", json!({"kind": "judgement"})))
         .unwrap();
-    assert!(matches!(
-        run.append(&erasure(&unnamed.commitment, "done")),
-        Err(AppendFailure::Refused(_))
-    ));
+    assert_eq!(
+        run.store.erasable(&unnamed.commitment),
+        Err(AppendFailure::Refused(Violation(NAMED_BY_NO_ENTRY)))
+    );
+    if let Ok(done) = run.decide_erasure(&unnamed.commitment, "done") {
+        assert_eq!(
+            run.store.erase(&done),
+            Err(AppendFailure::Refused(Violation(NAMED_BY_NO_ENTRY)))
+        );
+    }
     assert!(matches!(
         run.fetch("bank-co", &unnamed.commitment).unwrap(),
         Fetched::Kept(_)
     ));
-
-    // On its record, it is carried out.
-    run.store.erase(&done).unwrap();
-    assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
 }
 
 /// Bytes a crash left behind their mark, between the shelf's mark and its removal of them, are removed when the
@@ -1145,7 +1203,7 @@ fn bytes_left_behind_their_erasure_mark_are_removed_on_opening() {
     let bytes = judgement("us-bank", json!({"kind": "judgement"}));
     let (commitment, _) = run.state(&bytes, None);
     let kept = run.kept.kept(&commitment).unwrap().unwrap();
-    run.append(&erasure(&commitment, "done")).unwrap();
+    run.decide_erasure(&commitment, "done").unwrap();
     drop(run);
     // The crash: the mark is written, the bytes are not yet removed.
     let value = commitment.value.as_str();
@@ -1162,8 +1220,8 @@ fn bytes_left_behind_their_erasure_mark_are_removed_on_opening() {
     }
 }
 
-/// An erasure the log recorded done, cut short by a crash before the store marked it, is carried out when the
-/// store is bound to the log again.
+/// An erasure the log decided, cut short by a crash after its done result and before the store marked it, is carried
+/// out when the store is bound to the log again.
 // verifies: REQ-AUD-13, AC-36
 #[test]
 fn binding_carries_out_an_erasure_the_log_recorded_before_a_crash() {
@@ -1173,7 +1231,7 @@ fn binding_carries_out_an_erasure_the_log_recorded_before_a_crash() {
     let (commitment, _) = run.state(&bytes, None);
     let kept = run.kept.kept(&commitment).unwrap().unwrap();
     run.store.erasable(&commitment).unwrap();
-    run.append(&erasure(&commitment, "done")).unwrap();
+    run.decide_erasure(&commitment, "done").unwrap();
     drop(run);
 
     let mut run = Run::open(&dir).unwrap();
@@ -1185,8 +1243,88 @@ fn binding_carries_out_an_erasure_the_log_recorded_before_a_crash() {
     assert!(run.store.missing().is_empty());
 }
 
-/// A statement marked erased that no erasure of the operator's in the log records refuses the binding: its bytes
-/// went with no record.
+/// An erasure the store carried out on its done result, cut short by a crash before its `erasure` entry, is
+/// reported when the store is bound again; so is one whose statement an entry came to cite in that gap. Once the
+/// entry is appended, and nothing cites it, it is settled and no longer reported.
+// verifies: REQ-AUD-13, REQ-AUD-9
+#[test]
+fn a_carried_out_erasure_without_its_record_is_reported() {
+    let dir = TempDir::new("unrecorded");
+    let mut run = Run::open(&dir).unwrap();
+    let (quiet, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let (cited, cited_at) = run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
+    let quiet_done = run.decide_erasure(&quiet, "done").unwrap();
+    run.store.erase(&quiet_done).unwrap();
+    let cited_done = run.decide_erasure(&cited, "done").unwrap();
+    run.store.erase(&cited_done).unwrap();
+    // In the gap before its record, an entry cites the second.
+    let mut measure = valid("verified-entry-of-a-measure");
+    measure["what"]["record"]["cites"] = json!([cited_at]);
+    // The log admits it today: whether the statement counts as erased from its done result is the contract's.
+    let cites = run
+        .append(&serde_json::from_value(measure).unwrap())
+        .is_ok();
+    drop(run);
+    // The crash: neither erasure entry was appended.
+
+    let run = Run::open(&dir).unwrap();
+    let unrecorded = Violation(ERASURE_NOT_RECORDED);
+    let mut expected = vec![
+        (quiet_done.clone(), unrecorded.clone()),
+        (cited_done.clone(), unrecorded),
+    ];
+    if cites {
+        expected.push((cited_done.clone(), Violation(ERASED_YET_CITED)));
+    }
+    assert_eq!(run.store.unsettled_erasures(), expected);
+    assert!(run.store.missing().is_empty());
+
+    // Its record appended on the retry, the first is settled.
+    run.append(&erasure(&quiet, "done")).unwrap();
+    drop(run);
+    let run = Run::open(&dir).unwrap();
+    assert!(
+        !run.store
+            .unsettled_erasures()
+            .iter()
+            .any(|(at, _)| *at == quiet_done)
+    );
+    assert!(
+        run.store
+            .unsettled_erasures()
+            .iter()
+            .any(|(at, _)| *at == cited_done)
+    );
+}
+
+/// An erasure the store carried out can't then be recorded as `failed`: once its effect's result is `done` the
+/// bytes are gone, and the log admits only a `done` `erasure` entry (core-internal's
+/// `erasure-is-carried-out-on-its-decision`). The store still reports the erasure it carried out with no entry
+/// recording it done, so the inconsistency isn't taken as settled.
+// verifies: REQ-AUD-13, REQ-AUD-9
+#[test]
+fn an_erasure_refused_as_failed_after_its_bytes_went_is_reported_unrecorded() {
+    let dir = TempDir::new("recorded-failed");
+    let mut run = Run::open(&dir).unwrap();
+    let (commitment, _) = run.state(&judgement("us-bank", json!({"kind": "judgement"})), None);
+    let done = run.decide_erasure(&commitment, "done").unwrap();
+    run.store.erase(&done).unwrap();
+    assert!(matches!(
+        run.append(&erasure(&commitment, "failed")),
+        Err(AppendFailure::Refused(Violation(why))) if why.contains("the bytes are gone")
+    ));
+    assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert_eq!(
+        run.store.unsettled_erasures(),
+        [(done, Violation(ERASURE_NOT_RECORDED))]
+    );
+}
+
+/// A statement marked erased that no erasure the log decided accounts for refuses the binding: its bytes went with
+/// no decision behind them.
 // verifies: REQ-AUD-13, INV-7
 #[test]
 fn binding_refuses_a_statement_marked_erased_with_no_erasure_in_the_log() {
@@ -1230,32 +1368,17 @@ fn binding_reports_a_statement_whose_bytes_are_gone_with_no_erasure() {
     ));
 }
 
-/// An erasure is the operator's: one recorded by a provider, or in the operator's role for another party, is not
-/// carried out, and the store, bound to its one log, carries out none another log records, however that log holds
-/// the same commitment.
+/// The store, bound to its one log, carries out no erasure another log decided, however that log holds the same
+/// statement under the same commitment and a permitted decision to erase it.
 // verifies: REQ-AUD-13, REQ-AUZ-1
 #[test]
-fn an_erasure_by_anyone_but_the_operator_is_refused() {
-    let dir = TempDir::new("whose-erasure");
+fn an_erasure_another_log_decided_is_refused() {
+    let dir = TempDir::new("elsewhere");
     let mut run = Run::open(&dir).unwrap();
     let bytes = judgement("us-bank", json!({"kind": "judgement"}));
     let (commitment, _) = run.state(&bytes, None);
-    let refused = Err(AppendFailure::Refused(Violation(ERASURE_BY_THE_OPERATOR)));
+    run.state(&judgement("bank-co", json!({"kind": "judgement"})), None);
 
-    let by_provider = run
-        .append(&erasure_by(provider("us-bank"), &commitment, "done"))
-        .unwrap();
-    assert_eq!(run.store.erase(&by_provider), refused);
-    let by_another = run
-        .append(&erasure_by(
-            actor("us-bank", "op-login-9", "operator", "person"),
-            &commitment,
-            "done",
-        ))
-        .unwrap();
-    assert_eq!(run.store.erase(&by_another), refused);
-
-    // Another log holding the same statement, under the same commitment, and the operator's erasure of it.
     let kept = run.kept.kept(&commitment).unwrap().unwrap();
     let scratch_kept = KeptInMemory::new();
     let salt: [u8; 32] = from_base64url(kept.salt.as_str())
@@ -1266,11 +1389,10 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
     let mut scratch = AuditLog::open(settings(), MemoryStore::new(), scratch_kept).unwrap();
     scratch.append(&stated(&bytes, &commitment, None)).unwrap();
     let n = scratch.entries().len();
-    decide_erasure(&mut scratch, n, &commitment).unwrap();
-    let elsewhere = scratch.append(&erasure(&commitment, "done")).unwrap();
+    let elsewhere = decide_erasure(&mut scratch, n, &commitment, "done").unwrap();
     assert_eq!(
         run.store.erase(&elsewhere),
-        Err(AppendFailure::Refused(Violation(NO_RECORDED_ERASURE)))
+        Err(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)))
     );
     assert!(matches!(
         run.fetch("us-bank", &commitment).unwrap(),
@@ -1280,15 +1402,8 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
     run.erase(&commitment).unwrap();
     assert_eq!(run.fetch("us-bank", &commitment).unwrap(), Fetched::Erased);
     drop(run);
-    // Bound again, the two erasures recorded by others are reported as refused, and nothing else.
-    let run = Run::open(&dir).unwrap();
-    assert_eq!(
-        run.store.refused_erasures(),
-        [
-            (by_provider, Violation(ERASURE_BY_THE_OPERATOR)),
-            (by_another, Violation(ERASURE_BY_THE_OPERATOR)),
-        ]
-    );
+    // Bound again, nothing is reported refused.
+    assert!(Run::open(&dir).unwrap().store.refused_erasures().is_empty());
 }
 
 /// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
@@ -1309,7 +1424,7 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
 
     assert_eq!(run.store.erasable(&cited), refused);
     assert_eq!(
-        run.append(&erasure(&cited, "done")),
+        run.decide_erasure(&cited, "done"),
         Err(AppendFailure::Refused(Violation(
             "no statement is erased while an entry of this log rests on it"
         )))
