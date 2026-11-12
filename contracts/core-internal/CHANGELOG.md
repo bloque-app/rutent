@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 129 valid fixtures and 125 invalid ones, each
-  breaking one rule, and 403 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 78 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 125 invalid ones, each
+  breaking one rule, and 420 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 81 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -323,6 +323,21 @@
   state machine refuses (`input-is-one-the-state-machine-takes`); their histories now bind and settle p1-s1 and
   p1-s2 and bind p1-s3 first. `T-020-09`'s fixture generator needs the same steps. 129 valid fixtures, 125 invalid,
   403 admission cases, 78 relations with the closing table's three. (DEC-4, DEC-20, T-020-01, T-020-09)
+- Folded into 1.0.0 before its release: a move's unknown outcome settles on two actors' word, each their own
+  (round 5 of `T-020-01`'s review). The report was a field of the confirmer's request, so one actor wrote both words,
+  and for a `move_value` any reporter passed; its evidence could be about anything, and one receipt served twice. The
+  report is now the mover's own decision on policy's handle, `report_outcome {request: OutcomeReport, decision}`, asked
+  through `StuckOrders::report_outcome`; `confirm_outcome`'s `OutcomeConfirmation` cites it by receipt (`report`) in
+  place of `reported_by` and `reported_with`. `outcome-report-rests-on-its-move` holds the report to an unanswered move
+  and its reporter to the move's own mover: a `move_value`'s decided-for actor or one of that actor's accountable
+  party, a `resolve_stuck`'s `stuck_move` mover. `outcome-confirmation-rests-on-its-report` holds the confirmation to a
+  permitted report of the same effect, order and outcome, its confirmer to another party and login than the
+  reporter, and its evidence to another statement than the report's, by another maker.
+  `outcome-confirmation-cites-verified-evidence` holds each evidence to a verified statement about the move's order
+  and part, through the transaction it names. `one-confirmation-per-effect` refuses a second confirmation of an
+  effect, an identical retry aside. The world's delivery is reported failed by its mover and confirmed by the
+  operator on two statements about `p3`, by two makers; AC-6's silent move is reported by Core, its decide step's
+  actor. 130 valid fixtures, 420 admission cases, 81 relations. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -297,6 +297,7 @@ impl What {
             | What::Authorise { .. }
             | What::StuckDecide { .. }
             | What::StuckMove { .. }
+            | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
             | What::OpenSession { .. }
             | What::Charge { .. }
@@ -475,6 +476,7 @@ impl What {
             | What::Reliance { .. }
             | What::Command { .. }
             | What::Erasure { .. }
+            | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
             | What::InputNotTaken { .. } => Ok(()),
         }

@@ -2247,7 +2247,16 @@ pub enum What {
         reason: NotTaken,
     },
     /// A move whose outcome was unknown, a `move_value` or a stuck resolution's `resolve_stuck`, its outcome
-    /// confirmed: a decision on policy's handle, answered by policy for its confirmer (`REQ-AUZ-4`, ADR-0011).
+    /// reported by its own mover: a decision on policy's handle, answered by policy for its reporter. It settles
+    /// nothing until another actor confirms it ([`What::ConfirmOutcome`]).
+    ReportOutcome {
+        /// The request.
+        request: OutcomeReport,
+        /// The decision.
+        decision: Id,
+    },
+    /// A move whose outcome was unknown, its mover's report of it confirmed by an actor of another party and login:
+    /// a decision on policy's handle, answered by policy for its confirmer (`REQ-AUZ-4`, ADR-0011).
     ConfirmOutcome {
         /// The request.
         request: OutcomeConfirmation,
@@ -2269,10 +2278,33 @@ pub enum NotTaken {
     RecordIdReused {},
 }
 
-/// The confirmation of a move's outcome, once unknown, on two actors' word (`REQ-AUZ-4`, ADR-0011): its mover (or,
-/// for a `move_value`, whoever reported it) reports the outcome with its evidence, and an actor of another
-/// accountable party and another login confirms it with its own. Policy decides it, the way it decides a stuck
-/// order's steps. Each evidence is a verified stated entry of the log, by receipt.
+/// A move's outcome, once unknown, as its own mover reports it (`REQ-AUZ-4`, ADR-0011): for a `move_value`, the
+/// actor its `decide` step was for, or one of that actor's accountable party; for a stuck resolution's
+/// `resolve_stuck`, its `stuck_move`'s mover. Its evidence is a verified stated entry of the log about the move's
+/// order and part, by receipt. Policy decides it, the way it decides a stuck order's steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeReport {
+    /// The request's id.
+    pub request: Id,
+    /// The order.
+    pub order: Id,
+    /// The receipt of the effect whose outcome was unknown.
+    pub effect: Receipt,
+    /// What the move came to.
+    pub outcome: MoveOutcome,
+    /// Who reports it: the move's own mover.
+    pub reporter: Actor,
+    /// The report's evidence: a verified stated entry about the move's order and part, by receipt.
+    pub evidence: Receipt,
+    /// When, by Core's clock.
+    pub at: Timestamp,
+}
+
+/// The confirmation of a move's outcome, once unknown, on two actors' word (`REQ-AUZ-4`, ADR-0011): it cites its
+/// mover's permitted report by receipt, and an actor of another accountable party and another login than the
+/// reporter confirms it with its own evidence, a verified stated entry about the move's order and part, another
+/// entry than the report's, by another maker. Policy decides it, the way it decides a stuck order's steps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutcomeConfirmation {
@@ -2282,15 +2314,13 @@ pub struct OutcomeConfirmation {
     pub order: Id,
     /// The receipt of the effect whose outcome was unknown.
     pub effect: Receipt,
-    /// What the move came to.
+    /// What the move came to: the report's outcome.
     pub outcome: MoveOutcome,
-    /// Who reported it: a stuck resolution's mover.
-    pub reported_by: Actor,
-    /// The report's evidence: a verified stated entry, by receipt.
-    pub reported_with: Receipt,
+    /// The receipt of the report it confirms: a permitted `report_outcome` of the same effect and outcome.
+    pub report: Receipt,
     /// Who confirms it.
     pub confirmer: Actor,
-    /// The confirmation's evidence: a verified stated entry, by receipt.
+    /// The confirmation's evidence: a verified stated entry about the move's order and part, by receipt.
     pub confirmed_with: Receipt,
     /// When, by Core's clock.
     pub at: Timestamp,

@@ -137,6 +137,7 @@
             "reliance",
             "command",
             "erasure",
+            "report_outcome",
             "confirm_outcome",
             "input_not_taken"
           ]
@@ -651,6 +652,21 @@
           },
           "then": {
             "$ref": "#/$defs/what_erasure"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "report_outcome"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_report_outcome"
           }
         },
         {
@@ -1868,8 +1884,8 @@
         }
       }
     },
-    "what_confirm_outcome": {
-      "description": "A move whose outcome was unknown, a move_value or a stuck resolution's resolve_stuck, its outcome confirmed on two actors' word: a decision on policy's handle, answered by policy for its confirmer (REQ-AUZ-4, ADR-0011). Each evidence is a verified stated entry of the log, by receipt.",
+    "what_report_outcome": {
+      "description": "A move whose outcome was unknown, a move_value or a stuck resolution's resolve_stuck, its outcome reported by its own mover: a decision on policy's handle, answered by policy for its reporter (REQ-AUZ-4, ADR-0011). It settles nothing until another actor confirms it (confirm_outcome). Its evidence is a verified stated entry of the log about the move's order and part, by receipt.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1879,7 +1895,7 @@
       ],
       "properties": {
         "call": {
-          "const": "confirm_outcome"
+          "const": "report_outcome"
         },
         "request": {
           "type": "object",
@@ -1889,10 +1905,8 @@
             "order",
             "effect",
             "outcome",
-            "reported_by",
-            "reported_with",
-            "confirmer",
-            "confirmed_with",
+            "reporter",
+            "evidence",
             "at"
           ],
           "properties": {
@@ -1913,12 +1927,70 @@
                 "failed"
               ]
             },
-            "reported_by": {
-              "description": "Who reported it: a stuck resolution's mover.",
+            "reporter": {
+              "description": "Who reports it: the move's own mover, a move_value's decided-for actor or one of its accountable party, a stuck resolution's mover.",
               "$ref": "urn:rutent:core-internal:common#/$defs/actor"
             },
-            "reported_with": {
-              "description": "The report's evidence: a verified stated entry, by receipt.",
+            "evidence": {
+              "description": "The report's evidence: a verified stated entry about the move's order and part, by receipt.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "at": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+            }
+          }
+        },
+        "decision": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_confirm_outcome": {
+      "description": "A move whose outcome was unknown, a move_value or a stuck resolution's resolve_stuck, its mover's report of it confirmed on two actors' word: a decision on policy's handle, answered by policy for its confirmer (REQ-AUZ-4, ADR-0011). It cites the report by receipt; its evidence is a verified stated entry of the log about the move's order and part, another entry than the report's, by another maker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "confirm_outcome"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request",
+            "order",
+            "effect",
+            "outcome",
+            "report",
+            "confirmer",
+            "confirmed_with",
+            "at"
+          ],
+          "properties": {
+            "request": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "order": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "effect": {
+              "description": "The receipt of the effect whose outcome was unknown.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "outcome": {
+              "description": "What the move came to: the report's outcome.",
+              "enum": [
+                "done",
+                "failed"
+              ]
+            },
+            "report": {
+              "description": "The receipt of the report it confirms: a permitted report_outcome of the same effect and outcome.",
               "$ref": "urn:rutent:core-internal:receipt"
             },
             "confirmer": {
@@ -1926,7 +1998,7 @@
               "$ref": "urn:rutent:core-internal:common#/$defs/actor"
             },
             "confirmed_with": {
-              "description": "The confirmation's evidence: a verified stated entry, by receipt.",
+              "description": "The confirmation's evidence: a verified stated entry about the move's order and part, by receipt.",
               "$ref": "urn:rutent:core-internal:receipt"
             },
             "at": {

@@ -20,18 +20,12 @@
         }
       },
       "outcome": "failed",
-      "reported_by": {
-        "party": "operator-desk-b",
-        "acts": "op-login-5",
-        "role": "operator",
-        "kind": "person"
-      },
-      "reported_with": {
+      "report": {
         "log": "log-main",
-        "index": 115,
+        "index": 176,
         "entry": {
           "algorithm": "sha-256",
-          "value": "1010101010101010101010101010101010101010101010101010101010101010"
+          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
         }
       },
       "confirmer": {
@@ -42,10 +36,10 @@
       },
       "confirmed_with": {
         "log": "log-main",
-        "index": 113,
+        "index": 175,
         "entry": {
           "algorithm": "sha-256",
-          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
         }
       },
       "at": "2026-11-10T09:00:00Z"
