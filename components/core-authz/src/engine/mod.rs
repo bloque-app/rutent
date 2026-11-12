@@ -214,14 +214,15 @@ pub enum Source {
         to: Id,
     },
     /// The deployment's register of actors, followed link by link: whether the chains of `from` and `with`, each a
-    /// login, meet at a party below the deployment operator's own party (`T-021-06`, the review of `fa19450`, round 2).
-    /// Each chain is cut where it reaches the operator's party, which isn't compared, nor anything above it, so two of
-    /// the operator's desks hanging directly under it meet nowhere, and two desks under one of its divisions, or two
-    /// bots under one desk, meet there. The input is `from`.
+    /// login or a party, meet at a party below the deployment operator's own party (`T-021-06`, the review of
+    /// `fa19450`, rounds 2 and 3). Each chain is the parties reachable from its start without passing through the
+    /// operator's party, which isn't compared, nor anything above it, so two of the operator's desks hanging directly
+    /// under it meet nowhere, and two desks under one of its divisions, two bots under one desk, or a customer and its
+    /// sister company under one holding company, meet there. The input is `from`.
     MeetsBelowOperator {
-        /// The first login.
+        /// The first login or party.
         from: Id,
-        /// The second login.
+        /// The second login or party.
         with: Id,
     },
     /// The deployment's register of actors: whether the login the input names is the deployment operator's, acting
@@ -1978,6 +1979,17 @@ mod tests {
         }
     }
 
+    /// The register's word that `actor`'s chain and the party `with`'s meet below the deployment operator's party.
+    fn met(actor: &Actor, with: &str) -> Need {
+        Need {
+            input: actor.acts.clone(),
+            from: Source::MeetsBelowOperator {
+                from: actor.acts.clone(),
+                with: id(with),
+            },
+        }
+    }
+
     /// The register's word that `actor` is the deployment operator's.
     fn of_operator(actor: &Actor) -> Need {
         Need {
@@ -2096,6 +2108,8 @@ mod tests {
                         reaching(actor, "cust-1"),
                         reached("bank-co", &actor.party),
                         reached("cust-1", &actor.party),
+                        met(actor, "bank-co"),
+                        met(actor, "cust-1"),
                     ];
                     say(e, yes, no);
                     e.decide_stuck(&decide).is_ok_and(|d| d.permit().is_some())
@@ -2153,8 +2167,10 @@ mod tests {
                         meeting(&reporter, confirmer),
                         reaching(confirmer, "cust-1"),
                         reached("cust-1", &confirmer.party),
+                        met(confirmer, "cust-1"),
                         reaching(confirmer, "bank-co"),
                         reached("bank-co", &confirmer.party),
+                        met(confirmer, "bank-co"),
                     ];
                     say(e, yes, no);
                     e.confirm_outcome(&confirmation)

@@ -1118,6 +1118,10 @@ rules: the three probes' tests failed (`one actor attempting both ...`, `neither
 - **Hand-offs to `F-030`** (the production registers):
   - the register of actors and parties must be complete: `Reaches` and `MeetsBelowOperator` answer no for a link the
     register doesn't hold, so a missing link lets two actors pass as two;
+  - the chain `MeetsBelowOperator` compares is defined as the parties reachable from the login without passing through
+    the operator's party (round 3). A register that links a party above the operator by another path, around it,
+    makes that party part of the chains below, so every two staff reaching it meet there and are refused as one actor:
+    an over-refusal, failing closed, and the known result of such a register, not a bug;
   - a provider's desk listed under the operator rests on a `REQ-CAT-20` record that the operator and that provider
     are one legal party;
   - Core's own party, apart from the operator's, with nothing but Core's components acting for it or reaching it, is a
@@ -1145,3 +1149,23 @@ rules: the three probes' tests failed (`one actor attempting both ...`, `neither
   | the assembly: none but Core's components under Core's party | `policys sources answer from the records` |
   | the assembly: Core's own components act for it | `assembled order closes on the public record and the reserves statement`; `policy the log core and the world read one clock`; `policys sources answer from the records`; `silent provider records its deposit failed and moves nothing for it`; `rounds transactions are kept across routings and no segment runs under one` |
   | the kit: Core's own party | `policy the log core and the world read one clock`; `policys sources answer from the records`; `assembled order closes on the public record and the reserves statement`; `rounds transactions are kept across routings and no segment runs under one`; `a tuples id is the digest of its canonical json`; `evidence store is bound to cores own log`; `reserve a settlement account is at is not one of the orders parties`; `staging is the one the scenario sets`; `silent provider records its deposit failed and moves nothing for it`; `catalogues grant is the one the log records` |
+
+### T-021-06, round 3 of the review (approved)
+
+Approved, with one medium finding fixed before the merge, and two lows in these notes.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Medium: the customer's or the holder's sister company decides or confirms (`cust-1 -> cust-holdco` and `cust-sister -> cust-holdco`; `bank-co` and `bank-sister` under `bank-group`) | A decider or confirmer is also refused where its chain and the order party's, or the holder's, meet below the operator (`MeetsBelowOperator`, now over logins or parties): in `of_party_either_way`, for the customer and the confirmer's holder, and in the fixed rule, for the decider's holder. The mover's holder check stays one way: the holder's sister moves | `neither the customer nor the holders desk resolves its order` (all three probes, and the sister's move) |
+| 2 | Low: the `F-030` hand-off on chains | Sharpened above: the parties reachable without passing through the operator's party; the bypass over-refusal recorded as the known result of such a register | — |
+| 3 | Low: the contract world's `world--sd` and `world--sm` put the decider in `operator` and the mover on `operator-desk-b`, a pair refused under a realistic register | Contract item, for the contract author through the coordinator: put the world's decider on a desk, a sibling of `operator-desk-b` directly under `operator` | — |
+
+- **Test first.** The sister probes were written first and seen red against round 2's rules (the customer's sister's
+  decision was permitted), then the rule built.
+- **Rule-offs of round 3** (core-authz's lib tests; each switched off once, the file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a decider or confirmer meeting the customer or the holder below the operator | `neither the customer nor the holders desk resolves its order` |
+  | a decider meeting the holder below the operator (the fixed rule) | `neither the customer nor the holders desk resolves its order` |
+

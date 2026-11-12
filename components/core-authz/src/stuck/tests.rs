@@ -814,6 +814,55 @@ fn neither_the_customer_nor_the_holders_desk_resolves_its_order() {
         );
     }
 
+    // Sisters (the review of `fa19450`, round 3): a company under the customer's holding company, or under the
+    // holder's group, meets the customer's or the holder's chain below the operator, and decides and confirms
+    // nothing; the group's staff still move, the mover's holder check being one way.
+    let (cust_sister, bank_sister) = (
+        person("cust-sister", "cust-sister-1"),
+        person("bank-sister", "bank-sister-1"),
+    );
+    let sisters = || {
+        let mut register = upward().with(&cust_sister).with(&bank_sister);
+        register.link("cust-sister", "cust-holdco");
+        register.link("bank-sister", "bank-group");
+        register
+    };
+    let (mut policy, request) = engine("sd", sisters());
+    for decider in [&cust_sister, &bank_sister] {
+        let decide = decision_by(
+            &request,
+            decider,
+            &format!("req-sister-{}", decider.acts.as_str()),
+        );
+        assert_eq!(
+            policy.decide_stuck(&decide).unwrap().outcome,
+            not_permitted,
+            "{decider:?}"
+        );
+    }
+    let decided = alices_decision(&mut policy, &request);
+    let moved = policy
+        .move_stuck(&move_of(&decided, "req-move-by-a-sister", &bank_sister))
+        .unwrap();
+    assert!(moved.permit().is_some(), "{moved:?}");
+    let (mut policy, request) = engine("settled_es", sisters());
+    for confirmer in [&cust_sister, &bank_sister] {
+        let c = confirmation_by(
+            &request,
+            confirmer,
+            &format!("req-sister-{}", confirmer.acts.as_str()),
+        );
+        assert_eq!(
+            policy.confirm_outcome(&c).unwrap().outcome,
+            not_permitted,
+            "{confirmer:?}"
+        );
+    }
+    let confirmed = policy
+        .confirm_outcome(&confirmation_by(&request, &alice(), "req-beside-sisters"))
+        .unwrap();
+    assert!(confirmed.permit().is_some(), "{confirmed:?}");
+
     // The world's resolution is delivered by `bank-co`; its report is `op-login-5`'s.
     let (mut policy, request) = engine("settled_es", register());
     for confirmer in [&customer, &customers_ops, &holders, &chained] {

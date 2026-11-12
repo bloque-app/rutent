@@ -24,10 +24,9 @@
 //! against the confirmer. The same reading holds an actor to a party (`Engine::of_party`): it is the party's where
 //! its login or party is that party, or its chain reaches it. Against the order's customer and the provider holding
 //! the funds a decider and a confirmer are held both ways (`Engine::of_party_either_way`): the party's own chain
-//! reaching the actor's party counts too, as a customer's holding company is the customer's. The mover is held to the
+//! reaching the actor's party counts too, as a customer's holding company is the customer's, and so do the two chains
+//! meeting below the operator's party, as a sister company under that holding company does. The mover is held to the
 //! holder one way, so the operator's staff aren't the holder's where the holder acts for the operator (`REQ-CAT-20`).
-//! Only the parties a chain names count: a desk hanging under a party's parent, a sibling, is neither way that
-//! party's.
 //!
 //! # What the fixed rule holds, from the request
 //!
@@ -44,7 +43,8 @@
 //!   operator's by the register, in its party or reaching it (`Source::OfOperator`). A confirmer may act in any role
 //!   the register gives the permission to.
 //! - **The holder never decides** (`THR-70`). A decider that is, or whose chain reaches, the provider the decision
-//!   names (`resolution.by`) is refused, and so is one whose party that provider's chain reaches.
+//!   names (`resolution.by`) is refused, and so is one whose party that provider's chain reaches, or whose chain
+//!   meets the provider's below the operator.
 //! - **Never the order's customer, directly.** Neither the decider nor the confirmer acts for a party of the order,
 //!   its requester, beneficiary or payer (`Source::OrderParties` must say no). Asked by party, not by role.
 //! - **Evidence the store keeps, about the order.** A decision names its evidence by the commitment the evidence store
@@ -166,6 +166,18 @@ fn reaching(from: &Id, to: &Id) -> Need {
     }
 }
 
+/// The register's word that the chains of `from` and `with`, each a login or a party, meet below the deployment
+/// operator's party.
+fn meeting(from: &Id, with: &Id) -> Need {
+    Need {
+        input: from.clone(),
+        from: Source::MeetsBelowOperator {
+            from: from.clone(),
+            with: with.clone(),
+        },
+    }
+}
+
 /// Whether `actor` is `party` by its own fields: its party or its login.
 fn is(actor: &Actor, party: &Id) -> bool {
     &actor.party == party || &actor.acts == party
@@ -189,6 +201,11 @@ fn rules_of(asked: Asked<'_>) -> Option<Rules> {
                     },
                     Held {
                         need: reaching(holder, &r.decider.party),
+                        must: Said::No,
+                        or: RefusalClass::NotPermitted,
+                    },
+                    Held {
+                        need: meeting(&r.decider.acts, holder),
                         must: Said::No,
                         or: RefusalClass::NotPermitted,
                     },
@@ -369,29 +386,29 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         self.reaches(&actor.acts, party, class)
     }
 
-    /// Whether `actor` and `party` are one, either way: `actor` is `party`'s, or `party`'s chain reaches `actor`'s
-    /// party, as a customer's holding company is the customer's. Only the parties the chains name count: a desk that
-    /// hangs under one of `party`'s parents is neither.
+    /// Whether `actor` and `party` are one, as two actors are: `actor` is `party`'s, `party`'s chain reaches `actor`'s
+    /// party, as a customer's holding company is the customer's, or their chains meet below the deployment operator's
+    /// party, as a sister company under that holding company does (the review of `fa19450`, round 3).
     fn of_party_either_way(&mut self, actor: &Actor, party: &Id, class: RefusalClass) -> Check {
         first!(
             self.of_party(actor, party, class),
             self.reaches(party, &actor.party, class),
+            self.meet(&actor.acts, party, class),
         )
     }
 
     /// The register's word that `a`'s and `b`'s chains meet below the deployment operator's party: refused as the same
     /// actor where they do.
     fn meet_below_operator(&mut self, a: &Actor, b: &Actor) -> Check {
-        let need = Need {
-            input: a.acts.clone(),
-            from: Source::MeetsBelowOperator {
-                from: a.acts.clone(),
-                with: b.acts.clone(),
-            },
-        };
-        match self.sources.supply(&need) {
+        self.meet(&a.acts, &b.acts, RefusalClass::SameActor)
+    }
+
+    /// The register's word that the chains of `from` and `with`, each a login or a party, meet below the deployment
+    /// operator's party: a refusal for `class` where they do.
+    fn meet(&mut self, from: &Id, with: &Id, class: RefusalClass) -> Check {
+        match self.sources.supply(&meeting(from, with)) {
             Reply::Given(Said::No) => Check::Clear,
-            Reply::Given(Said::Yes) => Check::Refuse(RefusalClass::SameActor),
+            Reply::Given(Said::Yes) => Check::Refuse(class),
             Reply::Missing => Check::Refuse(RefusalClass::MissingInput),
             Reply::Unreachable => Check::NotKnown(NotKnownCause::VerifierUnreachable),
         }
