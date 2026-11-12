@@ -930,12 +930,19 @@ Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's 
     `PolicySide` through a permitted decide, move and confirm; for one to pass, the scenario must list each login
     (`Registers::list`) and give it its permission (`Registers::permit` with `DecideStuck`, `MoveStuck` or
     `ConfirmOutcome`); name decision evidence whose commitment the log holds as a stated entry about the order or
-    about no order (the kit's `"ab"`×32 digest is refused `missing_input`); use a mover whose party, login and chain
+    about no order, at least one about the order itself (the kit's `"ab"`×32 digest is refused `missing_input`); use a mover whose party, login and chain
     don't reach the resolution's `by`; a decider and a mover the register gives the operator (`Registers::list` along a
     chain to the kit's `operator` party); a decider and a confirmer that are none of the order's parties and whose
-    chains reach none; and a confirmer that neither reaches its reporter's party nor is reached by it. Sibling desks
-    under `operator` (`desk-a -> operator`, `desk-b -> operator`) satisfy every one of these: one decides and
-    confirms, the other moves and reports; a person listed in `operator` itself does not pair with a desk under it.
+    chains reach none; and a confirmer that neither reaches its reporter's party nor is reached by it. For a
+    `resolve_stuck`, sibling desks under `operator` (`desk-a -> operator`, `desk-b -> operator`) satisfy every one of
+    these: one decides and confirms, the other moves and reports; a person listed in `operator` itself does not pair
+    with a desk under it. For a segment's silent `move_value` (`AC-6`'s other path) they don't: its reporter is Core,
+    and the kit's Core (`kit::core()`, which the segments kit uses too) acts for `operator`, so every desk under
+    `operator` reaches the reporter's party and is refused `same_actor`. Its confirmer must sit outside the
+    operator's chain, a checker or a desk not linked under `operator`, unless Core is given a party of its own.
+    Raised with the coordinator as a consequence of the ruling; no rule changed here. Options: Core a party apart from
+    the operator's in the kit and the deployment, or Core-reported moves confirmed only from outside the operator's
+    chain.
 - **Hand-offs left, each to its owner** (doc lines this row made stale, in files it doesn't own):
   - `T-020-11`'s `components/core-orch/src/stuck/mod.rs`: the module's **Gaps** paragraph and the doc comments of
     `known_outcome` and `confirm_outcome` still say policy's stuck rules are unbuilt and the roles `T-021-06`'s to rule.
