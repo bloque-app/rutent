@@ -28,21 +28,19 @@
 //!    the new route goes to policy (`F-021`) with the route's own ends ([`route_end`], [`Recalculated::route`]),
 //!    and the log holds them to the authorisation (`move-rests-on-its-authorisation`), a third guard. After a
 //!    routing that offered no route, or one Core refused, the part is routed no more until `T-020-11` resolves it.
-//! 5. **Past the floor, the order waits for the customer** (`REQ-ORD-27`). A routing whose every candidate was
-//!    dropped as below the floor makes the part wait ([`Recalculation::WaitsForCustomer`]), its decision record
-//!    showing why. And [`Segments::run_part`], the one way a part runs, checks the floor its [`Live`](crate::segments::Live) carries at
-//!    each settled segment, against what is evidenced there and the quotes still ahead ([`left_after`], `AC-42`):
-//!    past it, nothing more is handed over, and the part waits ([`Segments::waiting`]).
+//! 5. **Past the floor, the order waits for the customer** (`REQ-ORD-27`, `AC-12`). A routing whose every candidate
+//!    was dropped as below the floor makes the part wait ([`Recalculation::WaitsForCustomer`]), its decision record
+//!    showing why. And [`Segments::run_part`], the one way a part runs, checks the floor its
+//!    [`Live`](crate::segments::Live) carries at each settled segment, against what is evidenced there and the quotes
+//!    still ahead ([`left_after`], `AC-42`). Either way the wait is a recorded `waiting_at_floor` input on the value
+//!    the part's last settled segment evidenced, built once and appended until the log takes it, so the order Core
+//!    follows waits for the customer with its age ([`Segments::waiting`], state-machine 3.0.0), and a waiting part
+//!    takes no move (`T-020-10b`).
 //! 6. **Recorded once.** The `route_recalculated` input, citing the choice round's decision record, is built once
 //!    and appended until the log takes it; the log admits it only on a `segment_settled` of that part ending where
 //!    the route starts (`recalculation-starts-from-evidenced-value`). Only then does the order Core follows move to
 //!    the new route ([`Segments::observe`]) and are the old route's holds released, so the value counts once
 //!    against the ceilings in flight (`REQ-ORD-8`).
-//!
-//! **Gap: no state-machine input for waiting past the floor.** state-machine 2.1.0 puts a part in
-//! `waiting_for_customer` only by `no_route` at a failed final deposit's node. A part held at a settled segment past
-//! the floor stays `first_segment_settled` there; Core holds it ([`Segments::waiting`]) and hands nothing more
-//! over. A new `F-020` row with a state-machine bump would let the customer see it as waiting (`AC-12`).
 
 mod rule;
 
@@ -71,7 +69,6 @@ use crate::rounds::{
     RoutingError,
 };
 use crate::segments::Segments;
-pub use crate::segments::Waits;
 use crate::snapshot::{Clock, Exposures, OrchestrationLog, Price, Releases};
 
 pub use rule::{
@@ -225,6 +222,8 @@ pub enum RecalcError {
     Id(&'static str),
     /// Core's clock reads no time a timestamp can hold.
     Clock,
+    /// The part's wait at its floor couldn't be recorded (`T-020-10b`).
+    Wait(crate::segments::SegmentsError),
 }
 
 impl From<AppendFailure> for RecalcError {
@@ -262,8 +261,9 @@ struct Followed {
     tried: Vec<Tried>,
     /// A recalculation built for a part, its input not yet appended.
     pending: BTreeMap<String, Pending>,
-    /// The parts that wait for the customer.
-    waiting: BTreeMap<String, Waits>,
+    /// The parts whose routing left the customer below its floor, until their `waiting_at_floor` is recorded: the
+    /// deciding round's record, so a retry records the wait without routing again (`T-020-10b`).
+    waiting: BTreeMap<String, Box<Recorded>>,
     /// The parts whose last routing offered no route, or one Core refused: no route left until `T-020-11` resolves
     /// them, so they are routed no more (`REQ-ORD-4`).
     no_route: BTreeMap<String, ()>,
@@ -320,15 +320,6 @@ impl Recalculations {
             .map_or(0, |f| f.recalculated)
     }
 
-    /// Where `part` of `order` waits for the customer because the routing that would have recalculated it left the
-    /// customer below its floor, if it does (`REQ-ORD-27`); a part held at a settled segment is
-    /// [`Segments::waiting`]'s.
-    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&Waits> {
-        self.orders
-            .get(order.as_str())
-            .and_then(|f| f.waiting.get(part.as_str()))
-    }
-
     /// Recalculates `ask.part` of its order (see the module's docs), with router `R`, chaining each routing's
     /// records to `history`.
     pub fn recalculate<R: Router>(
@@ -353,12 +344,9 @@ impl Recalculations {
                 recalculated: followed.recalculated,
             });
         }
-        if followed.waiting.contains_key(ask.part.as_str())
-            || parts.segments.waiting(order_id, ask.part).is_some()
-        {
-            return Ok(Recalculation::NotNow(NotRecalculable::Held(
-                stm::OrderState::WaitingForCustomer,
-            )));
+        // A wait at the floor built and not yet taken is recorded as built: the part is routed once.
+        if let Some(record) = followed.waiting.get(ask.part.as_str()).cloned() {
+            return Self::wait(followed, parts, ask, record);
         }
         let Some(order) = parts.segments.order(order_id).cloned() else {
             return Ok(Recalculation::NotNow(NotRecalculable::Unknown));
@@ -459,20 +447,16 @@ impl Recalculations {
         let chosen = match (&offer, deciding.record.chosen()) {
             (Offer::Offered { .. }, Some(chosen)) => chosen.clone(),
             _ => {
-                return Ok(if every_candidate_below_floor(&deciding.record) {
-                    followed.waiting.insert(
-                        ask.part.as_str().to_owned(),
-                        Waits {
-                            after: settled_id,
-                            evidenced: amount,
-                            left: None,
-                        },
-                    );
-                    Recalculation::WaitsForCustomer { record: deciding }
-                } else {
-                    followed.no_route.insert(ask.part.as_str().to_owned(), ());
-                    Recalculation::NoRoute { record: deciding }
-                });
+                if every_candidate_below_floor(&deciding.record) {
+                    // Past the floor the part waits for the customer, recorded as a state-machine input on the
+                    // value evidenced where it sits (`waiting_at_floor`, `REQ-ORD-27`, `T-020-10b`).
+                    followed
+                        .waiting
+                        .insert(ask.part.as_str().to_owned(), deciding.clone());
+                    return Self::wait(followed, parts, ask, deciding);
+                }
+                followed.no_route.insert(ask.part.as_str().to_owned(), ());
+                return Ok(Recalculation::NoRoute { record: deciding });
             }
         };
         // Inside the authorisation, read from it and never from the record (`INV-10`, `REQ-AUZ-3`).
@@ -618,6 +602,57 @@ impl Recalculations {
             .pending
             .insert(ask.part.as_str().to_owned(), pending.clone());
         Self::record(followed, parts, ask.part, pending)
+    }
+
+    /// Records the part's wait at its floor, the routing's `record` deciding it. A log that can't take it now leaves it
+    /// kept, recorded on the next call without routing again; one the log refuses, or one the order Core follows no
+    /// longer takes (the part read again moved on, or is stuck), is dropped, and the part is routed afresh next time
+    /// (`T-020-10b`).
+    fn wait(
+        followed: &mut Followed,
+        parts: &mut Parts<'_>,
+        ask: Ask<'_>,
+        record: Box<Recorded>,
+    ) -> Result<Recalculation, RecalcError> {
+        let order = &ask.order.order;
+        match parts.segments.wait_at_floor(
+            parts.log,
+            parts.clock,
+            parts.fresh,
+            ask.core,
+            order,
+            ask.part,
+        ) {
+            Ok(_) => {
+                followed.waiting.remove(ask.part.as_str());
+                Ok(Recalculation::WaitsForCustomer { record })
+            }
+            Err(crate::segments::SegmentsError::Append(AppendFailure::Unavailable)) => {
+                Err(RecalcError::Append(AppendFailure::Unavailable))
+            }
+            Err(crate::segments::SegmentsError::WaitNotTaken(_)) => {
+                followed.waiting.remove(ask.part.as_str());
+                let why = parts
+                    .segments
+                    .order(order)
+                    .and_then(|o| {
+                        o.parts
+                            .iter()
+                            .find(|p| p.part_id.as_str() == ask.part.as_str())
+                    })
+                    .and_then(|p| evidenced(p).err())
+                    .unwrap_or(NotRecalculable::NoSettledEnd);
+                Ok(Recalculation::NotNow(why))
+            }
+            Err(crate::segments::SegmentsError::Append(refused)) => {
+                followed.waiting.remove(ask.part.as_str());
+                Err(RecalcError::Append(refused))
+            }
+            Err(other) => {
+                followed.waiting.remove(ask.part.as_str());
+                Err(RecalcError::Wait(other))
+            }
+        }
     }
 
     /// Appends a recalculation's input, built once, and once the log takes it moves the order Core follows to the

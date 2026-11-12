@@ -1488,13 +1488,9 @@ both admitted by the log; and the same through the session ending) and
   part waits (`Segments::waiting`), however often it is run. A projection Core can't count holds no floor.
   Readings, reversible. The assembly (`T-024-02`) fills `Live::floor` from the order's authorisation; the log can't
   hold the floor between segments, since a chosen route's `Live::route.delivers` is its quote.
-- **Gap: waiting past the floor has no state-machine input.** state-machine 2.1.0 puts a part in
-  `waiting_for_customer` only by `no_route` at a failed final deposit's node (`after_no_route`). A part held past
-  the floor stays `first_segment_settled` (or `not_past_first_segment`) in the order Core follows, and
-  `Segments::waiting` (or `Recalculations::waiting`, at a routing) is the only place it shows; `AC-12`'s "visible to them with its age" needs a new
-  `F-020` row with a state-machine and core-internal bump (an input that makes the part wait for the customer). The
-  decision record (at recalculation) and the settled segment's evidence with the chosen record (between segments)
-  are what the log holds of it.
+- **Gap, closed by `T-020-10b` (below): waiting past the floor had no state-machine input.** At state-machine
+  2.1.0 a part held past its floor stayed `first_segment_settled` in the order Core follows, held only in Core's
+  memory. Since state-machine 3.0.0 the wait is a recorded `waiting_at_floor` input.
 - **Recorded once** (`INV-8`). The `route_recalculated` input (source `orchestrator`, Core's `acts`, standing
   `verified`, time source `core_clock`), citing the deciding choice round's decision record, is built once and
   appended until the log takes it; a log that can't take it now keeps it, and the next call appends it as built,
@@ -1597,6 +1593,94 @@ both admitted by the log; and the same through the session ending) and
 - **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
   `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
   No manifest, no dependency, no `DEC-20` path.
+
+### T-020-10b, waiting at the floor as a recorded state (state-machine 3.0.0, `m3` at `8cac73f`)
+
+- **The wait is a state-machine input.** Where Core held a part past its floor in memory (`segments::Waits`, and
+  `Recalculations`' own map), it now records `waiting_at_floor {}` about the part, through one call,
+  `Segments::wait_at_floor`: Core's input on the value the part's last settled segment evidenced at its node, that
+  segment's step, built once and appended until the log takes it, and taken by the order Core follows on append,
+  so the part is `waiting_for_customer` with its `waiting_since` (`REQ-ORD-27`, `AC-12`, `AC-42`). Both places:
+  - between segments, `Segments::run_part` records it when a settled segment's projection is below `Live::floor`,
+    and hands nothing more over;
+  - at a recalculation, a routing whose every candidate was dropped `below_floor` records it before answering
+    `Recalculation::WaitsForCustomer`; a wait the log couldn't take is kept (the deciding record and the segment it
+    rests on), and the next call records it as built, routing nothing again.
+  `segments::Waits` is gone; `Segments::waiting` answers the part's `waiting_since`, from the order Core follows, and
+  `Segments::status` shows the customer the order waiting with its age. `Recalculations::waiting` is gone.
+- **A waiting part takes no move, in Core too.** `Segments::run_part` hands no segment over while the order Core
+  follows has the part waiting for the customer, for any cause, mirroring the log's `held-part-takes-no-move`; a
+  recalculation reads the part `Held` (`evidenced`).
+- **The log's rows.** The input is admitted on `waiting-at-floor-rests-on-the-customers-floor` (the kit's
+  authorisation names the floor under `Core::under`), `part-waits-for-value-in-motion` (the wait is recorded only on
+  a settled segment, with nothing of the part in motion: the gate runs after a settlement, and a recalculation only
+  on value evidenced with nothing handed over), and `input-is-one-the-state-machine-takes` (`after_waiting_at_floor`
+  takes a part whose value is at a node). Every scenario's replayed log was admitted; no history was refused, so none
+  needed classifying.
+- **One reading corrected in a test, not in Core.** The new retry test first asserted the routing asked the reserve;
+  under the operator's fee of 10 000 the shortlist already drops every candidate below the floor, so no question is
+  sent. The test now counts the routing's decision records instead (once, not again on the retry). A test
+  artefact.
+- **Tests.** Rewritten to read the recorded state, not `Waits`: `settled_segment_that_crosses_the_floor_makes_the_order_wait`
+  (one `waiting_at_floor` about the part, the part waiting since its `recorded_at`, the customer's status
+  `waiting_for_customer` aged 3 600 seconds an hour on, what is evidenced read from `Segments::handed_on`),
+  `part_run_through_the_segments_alone_waits_at_its_floor` (the wait recorded once over two runs),
+  `recalculation_that_would_pass_the_floor_waits_for_the_customer`, and the assembly's
+  `floor_the_authorisation_names_holds_the_part_at_the_segment_that_crosses_it`. New, each written first and seen
+  red: `floor_wait_whose_append_failed_is_recorded_once` and
+  `recalculated_floor_wait_whose_append_failed_is_recorded_once`. The kit gained `On::FloorWait`.
+- **Rule-off, each red:** the wait recorded between segments (both floor tests and the retry test); the wait
+  recorded at a recalculation (its two tests); the wait kept for a retry (the recalculated retry test); a waiting
+  part handed nothing over (the two-runs test, whose last run names no floor: with Core's guard off, the log refused
+  the deposit's move on `held-part-takes-no-move`, the row behind it).
+- **Touches:** `components/core-orch/src/segments/mod.rs` (`T-020-11`'s last; `T-020-10`'s seam), `recalc/mod.rs`,
+  the recalc tests, the kit's `On`, and the assembly's floor test (`F-024`'s file). No contract, manifest or
+  `DEC-20` path.
+
+### T-020-10b, review answers (of `ddae960`)
+
+Each test was written first and seen red on `ddae960`, then fixed; each rule was then switched off once and its test
+seen red again.
+
+- **Medium, a second wait at one settled segment was swallowed.** The wait was the settled segment's step
+  `"floor"`, so a part that waited at a node, was given a new route from it, and fell below its floor there again
+  got the first wait's receipt back: `WaitsForCustomer`, nothing recorded, the part not waiting. Waits are now their
+  own record (`Segments`' `floor_waits`, per part, in order): a wait recorded while the part still waits is the
+  answer; once the part no longer waits, a new wait is built, a second input with its own record id and time. The
+  customer's new route (`T-020-13`, not built) is recorded directly in the test. Test
+  `second_wait_at_the_same_settled_segment_is_recorded_as_its_own`.
+- **Low, a refused wait was tried for ever.** A wait the log refuses is dropped, as a refused `route_recalculated`
+  is, and a recalculation drops what kept it (`Followed::waiting`), so the next try routes the part afresh. Before
+  a retry, the part is read again: where the order Core follows no longer takes `waiting_at_floor` (the part is
+  stuck, or moved on), the wait is dropped and never appended (`SegmentsError::WaitNotTaken`), and a recalculation
+  answers why (`NotNow(Held(Stuck))`). Tests `floor_wait_the_log_refuses_is_dropped` (the next run's wait is judged
+  then, its `recorded_at` the later time, not the refused one again),
+  `recalculated_floor_wait_the_log_refuses_is_routed_afresh` (written after the fix; seen red by rule-off), and
+  `floor_wait_retried_after_its_part_was_declared_stuck_is_dropped` (the dispute declaration, `T-020-12`'s, observed
+  in Core's followed order only, so the test doesn't replay the log).
+- **Low, a wait built and not recorded wasn't remembered.** `Segments::run_part` hands nothing over while the part
+  has a wait built and not yet recorded (`Segments::floor_wait_pending`), whatever `Live::floor` says now: it records
+  that wait, or drops it where it no longer applies, first. Test
+  `floor_wait_built_and_not_recorded_holds_the_part_whatever_floor_a_rerun_names`, the rerun's floor lowered to
+  985 000.
+- **Rule-off, each red:** each wait its own (the second-wait test); the refused wait dropped (both refusal tests);
+  the part read again (the stuck test); a pending wait holding the part (the rerun test); a recalculation's refusal
+  clearing what kept it (the routed-afresh test).
+
+### T-020-10b, the approval's two lows (of `539576f`)
+
+Each test was written first and seen red on `539576f`; each rule was then switched off once and its test seen red.
+
+- **A stale pending wait outlived a recalculation that found a route.** When the order Core follows takes a
+  `route_recalculated` for a part (`Segments::observe`), the part's wait built and not yet recorded is dropped: it
+  was judged on the route replaced, and the new route's floor is judged afresh. Test
+  `pending_wait_goes_when_a_recalculation_finds_a_route_that_holds_the_floor`: the wait built under a run's 995 000,
+  the log unavailable, the recalculation from the ledger under the authorisation's 985 000, and the new route's run
+  hands its deposit over with no wait recorded.
+- **A benign drop surfaced as an error.** Where `run_part` meets a pending wait the order Core follows no longer
+  takes (`WaitNotTaken`), the wait is dropped and the same run goes on: the floor it judged at the segment before
+  held. Test `pending_wait_no_longer_taken_lets_the_run_go_on`, with Core's copy of the order rebuilt from its route
+  alone so it reads no value at the ledger to wait on (the one way a test reaches the case today).
 
 ## T-020-11
 
