@@ -130,6 +130,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `measure-cites-entries-of-the-log` | `measure`: each of `cites` | an entry at that receipt | — | `REQ-AUD-2` | admitted: `world--*`; refused: `--missing` |
 | `raise-cites-entries-of-the-log` | `raise`: each of `cites` | an entry at that receipt | — | `REQ-ORD-9`, `REQ-AUD-15` | admitted: `world--*`; refused: `--missing` |
 | `erasure-is-carried-out-on-its-decision` | `erasure`: its `evidence` | a `result` of an `erase_statement` effect of that commitment, which itself rests on a permitted `decide` (`effect-permits-a-decided-action`) | done (the result is `done`: the store erases only then) | `REQ-AUD-13`, `REQ-AUZ-1` | admitted: `world--*`; refused: `--missing`, `--done` |
+| `erasure-waits-while-anything-rests-on-the-statement` | `erasure`, and the `erase_statement` `decide`: its commitment | none other: no earlier entry citing the statement, by its stated entry's receipt or its commitment (the erasure's own path and reads aside) | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--conflict`, `--decided-while-cited` |
 | `nothing-cites-an-erased-statement` | any verified entry but the erasure's own path and reads: anything it records | none other: no `erasure`, `done`, of a statement it cites, by its stated entry's receipt or its commitment | — | `REQ-AUD-13` | admitted: `--another-statement`, `--a-failed-erasure`; refused: `--conflict` |
 | `erasure-names-a-kept-statement` | `erasure`: its `evidence` | a stated entry holding that commitment | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--missing` |
 | `acceptance-is-of-the-quote-shown` | `acceptance` (`given`): its `quote` | a `shown` with that digest | order, shown_as (a quote, never a price) | `REQ-ORD-34`, `REQ-QTE-7` | admitted: `world--*`; refused: `--missing`, `--order`, `--shown_as`, `--never` |
@@ -457,7 +458,9 @@ These are defaults taken where the row left a choice open. Each is reversible by
   permit, like any decided action, and its `result`; the `erasure` entry records the erasure only after that result
   is `done` (`erasure-is-carried-out-on-its-decision`). Once an erasure is done, no new entry cites the statement,
   by its stated entry's receipt or by its commitment (`nothing-cites-an-erased-statement`), so a statement isn't
-  cited after its bytes are gone, not only at the moment of erasure.
+  cited after its bytes are gone, not only at the moment of erasure. And no statement is erased, or decided to be,
+  while an earlier entry rests on it (`erasure-waits-while-anything-rests-on-the-statement`, the owner's default
+  "refuse while cited"), so the log holds no done erasure the store must refuse.
 - **Erasure hand-offs** (`T-022-03`, `T-021-03`). The evidence store erases a statement's bytes only on the `done`
   result of a permitted `erase_statement` effect, then records the `erasure`; its check that nothing rests on a
   statement leaves out the erasure's own decided path, which names the commitment. Policy refuses `EraseStatement` until

@@ -2669,6 +2669,47 @@
         }
       },
       "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "bank-co",
+            "acts": "bank-co",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 153,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "3636363636363636363636363636363636363636363636363636363636363636"
+        }
+      },
+      "entry": {
         "kind": "verified",
         "who": {
           "party": "operator",
@@ -2691,7 +2732,7 @@
               "kind": "erase_statement",
               "commitment": {
                 "algorithm": "sha-256",
-                "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+                "value": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada"
               },
               "reason": "retention_ended"
             },
@@ -2704,56 +2745,6 @@
         },
         "outcome": {
           "status": "permitted"
-        }
-      }
-    },
-    {
-      "receipt": {
-        "log": "log-main",
-        "index": 153,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "3636363636363636363636363636363636363636363636363636363636363636"
-        }
-      },
-      "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "effect",
-          "action": {
-            "kind": "erase_statement",
-            "commitment": {
-              "algorithm": "sha-256",
-              "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
-            },
-            "reason": "retention_ended"
-          },
-          "decision": {
-            "request": "req-300",
-            "decision": "dec-300",
-            "answer": "permit",
-            "receipt": {
-              "log": "log-main",
-              "index": 152,
-              "entry": {
-                "algorithm": "sha-256",
-                "value": "3535353535353535353535353535353535353535353535353535353535353535"
-              }
-            }
-          }
-        },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
-        },
-        "outcome": {
-          "status": "to_take_effect"
         }
       }
     },
@@ -2775,13 +2766,26 @@
           "kind": "component"
         },
         "what": {
-          "call": "result",
-          "effect": {
-            "log": "log-main",
-            "index": 153,
-            "entry": {
+          "call": "effect",
+          "action": {
+            "kind": "erase_statement",
+            "commitment": {
               "algorithm": "sha-256",
-              "value": "3636363636363636363636363636363636363636363636363636363636363636"
+              "value": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada"
+            },
+            "reason": "retention_ended"
+          },
+          "decision": {
+            "request": "req-300",
+            "decision": "dec-300",
+            "answer": "permit",
+            "receipt": {
+              "log": "log-main",
+              "index": 153,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "3636363636363636363636363636363636363636363636363636363636363636"
+              }
             }
           }
         },
@@ -2790,7 +2794,7 @@
           "source": "core_clock"
         },
         "outcome": {
-          "status": "done"
+          "status": "to_take_effect"
         }
       }
     },
@@ -2806,16 +2810,20 @@
       "entry": {
         "kind": "verified",
         "who": {
-          "party": "operator",
-          "acts": "op-login-2",
-          "role": "operator",
-          "kind": "person"
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
         },
         "what": {
-          "call": "erasure",
-          "evidence": {
-            "algorithm": "sha-256",
-            "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 154,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "3737373737373737373737373737373737373737373737373737373737373737"
+            }
           }
         },
         "when": {
@@ -2834,6 +2842,39 @@
         "entry": {
           "algorithm": "sha-256",
           "value": "3939393939393939393939393939393939393939393939393939393939393939"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "operator",
+          "acts": "op-login-2",
+          "role": "operator",
+          "kind": "person"
+        },
+        "what": {
+          "call": "erasure",
+          "evidence": {
+            "algorithm": "sha-256",
+            "value": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 157,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a"
         }
       },
       "entry": {
@@ -2877,10 +2918,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 157,
+        "index": 158,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a"
+          "value": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
         }
       },
       "entry": {
@@ -2940,10 +2981,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 158,
+        "index": 159,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
+          "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
         }
       },
       "entry": {
@@ -2985,10 +3026,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 159,
+        "index": 160,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+          "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
         }
       },
       "entry": {
@@ -3031,10 +3072,10 @@
             "answer": "permit",
             "receipt": {
               "log": "log-main",
-              "index": 158,
+              "index": 159,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
+                "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
               }
             }
           }
@@ -3051,10 +3092,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 160,
+        "index": 161,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
+          "value": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e"
         }
       },
       "entry": {
@@ -3086,10 +3127,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 161,
+        "index": 162,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e"
+          "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
         }
       },
       "entry": {
@@ -3145,10 +3186,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 162,
+        "index": 163,
         "entry": {
           "algorithm": "sha-256",
-          "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+          "value": "4040404040404040404040404040404040404040404040404040404040404040"
         }
       },
       "entry": {
@@ -3202,10 +3243,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 163,
+        "index": 164,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4040404040404040404040404040404040404040404040404040404040404040"
+          "value": "4141414141414141414141414141414141414141414141414141414141414141"
         }
       },
       "entry": {
@@ -3247,10 +3288,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 164,
+        "index": 165,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4141414141414141414141414141414141414141414141414141414141414141"
+          "value": "4242424242424242424242424242424242424242424242424242424242424242"
         }
       },
       "entry": {
@@ -3287,10 +3328,10 @@
             "answer": "permit",
             "receipt": {
               "log": "log-main",
-              "index": 163,
+              "index": 164,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "4040404040404040404040404040404040404040404040404040404040404040"
+                "value": "4141414141414141414141414141414141414141414141414141414141414141"
               }
             }
           }
@@ -3307,10 +3348,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 165,
+        "index": 166,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4242424242424242424242424242424242424242424242424242424242424242"
+          "value": "4343434343434343434343434343434343434343434343434343434343434343"
         }
       },
       "entry": {
@@ -3355,10 +3396,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 166,
+        "index": 167,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4343434343434343434343434343434343434343434343434343434343434343"
+          "value": "4444444444444444444444444444444444444444444444444444444444444444"
         }
       },
       "entry": {
@@ -3391,10 +3432,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 167,
+        "index": 168,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          "value": "4545454545454545454545454545454545454545454545454545454545454545"
         }
       },
       "entry": {
@@ -3466,10 +3507,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 168,
+        "index": 169,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4545454545454545454545454545454545454545454545454545454545454545"
+          "value": "4646464646464646464646464646464646464646464646464646464646464646"
         }
       },
       "entry": {

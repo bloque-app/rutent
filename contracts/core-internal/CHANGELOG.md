@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 116 valid fixtures and 115 invalid ones, each
-  breaking one rule, and 276 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 56 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 279 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 57 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -156,6 +156,11 @@
   stated entry's receipt or its commitment (`nothing-cites-an-erased-statement`). A permission-free evidence read
   is also of a statement the log verified. 116 valid fixtures, 115 invalid, 276 admission cases. (DEC-4, DEC-20,
   REQ-AUD-13, REQ-AUZ-1, REQ-AUD-5, T-020-01)
+- Folded into 1.0.0 before its release: an erasure is refused while anything rests on the statement. The new
+  none-other row `erasure-waits-while-anything-rests-on-the-statement` refuses an `erasure` entry, and an
+  `erase_statement` decision, while an earlier entry cites the statement, so the log holds no done erasure the
+  evidence store must refuse ("refuse while cited", the owner's default). 279 admission cases. (DEC-4, DEC-20,
+  REQ-AUD-13, T-020-01)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

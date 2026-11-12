@@ -171,6 +171,18 @@ fn erased_by<'a>(
     })
 }
 
+/// The commitment `entry` erases: an `erasure` entry's, or an `erase_statement` decision's.
+fn erasing(entry: &VerifiedEntry) -> Option<&crate::module_interface::Digest> {
+    match &entry.what {
+        What::Erasure { evidence } => Some(evidence),
+        What::Decide { request, .. } => match &request.action {
+            Action::EraseStatement { commitment, .. } => Some(commitment),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether `entry` is one that can rest on a statement: anything but the erasure's own path (its decision, effect
 /// and record) and a read of a statement or a permission over one, which rest on nothing they name.
 fn rests_on_statements(entry: &VerifiedEntry) -> bool {
@@ -335,7 +347,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 54] = [
+pub static RELATIONS: [Relation; 55] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1474,6 +1486,26 @@ pub static RELATIONS: [Relation; 54] = [
                 erased_by(effect, h) == Some(evidence),
                 &[t.outcome == (Outcome::Done {})],
             )
+        },
+    },
+    Relation {
+        name: "erasure-waits-while-anything-rests-on-the-statement",
+        spec: &["REQ-AUD-13"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "no statement is erased while an entry of this log rests on it",
+        fields: &[],
+        // Refused while cited (the owner's default): its decision and its record both, so the log holds no done
+        // erasure the store must refuse.
+        cites: |e, _| match erasing(e) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| match (erasing(e), verified(t)) {
+            (Some(commitment), Some(t)) => judge(
+                rests_on_statements(t) && cites_statement(t, commitment, h),
+                &[],
+            ),
+            _ => Match::NotTarget,
         },
     },
     Relation {

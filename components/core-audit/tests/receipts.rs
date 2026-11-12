@@ -1289,7 +1289,8 @@ fn an_erasure_by_anyone_but_the_operator_is_refused() {
 }
 
 /// No erasure reaches a statement an entry of the log rests on, here a measure citing it, while one nothing rests
-/// on is erased; a read of a statement rests on nothing.
+/// on is erased; a read of a statement rests on nothing. The log refuses the erasure's decision too, so it records
+/// no erasure the store must refuse (core-internal's `erasure-waits-while-anything-rests-on-the-statement`).
 // verifies: REQ-AUD-13, REQ-AUD-2
 #[test]
 fn no_erasure_reaches_a_statement_an_entry_rests_on() {
@@ -1304,8 +1305,12 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
     let refused = Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
 
     assert_eq!(run.store.erasable(&cited), refused);
-    let recorded = run.append(&erasure(&cited, "done")).unwrap();
-    assert_eq!(run.store.erase(&recorded), refused);
+    assert_eq!(
+        run.append(&erasure(&cited, "done")),
+        Err(AppendFailure::Refused(Violation(
+            "no statement is erased while an entry of this log rests on it"
+        )))
+    );
     assert!(matches!(
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
@@ -1350,16 +1355,13 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
     run.erase(&free).unwrap();
     assert_eq!(run.fetch("bank-co", &free).unwrap(), Fetched::Erased);
     drop(run);
-    // Reopened, the refused erasure stays not carried out, and is reported.
+    // Reopened, the statement rested on is still kept, and no erasure of it was recorded to refuse.
     let mut run = Run::open(&dir).unwrap();
     assert!(matches!(
         run.fetch("fx-desk", &cited).unwrap(),
         Fetched::Kept(_)
     ));
-    assert_eq!(
-        run.store.refused_erasures(),
-        [(recorded, Violation(EVIDENCE_RESTED_ON))]
-    );
+    assert!(run.store.refused_erasures().is_empty());
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------
