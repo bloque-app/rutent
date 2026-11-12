@@ -620,7 +620,7 @@ pub struct Effect {
 /// recalculated route acts only within it, and anything else needs a new one (`REQ-AUZ-3`). Schema:
 /// `urn:rutent:core-internal:authorisation`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct Authorisation {
     /// The authorisation's id.
     pub authorisation: Id,

@@ -3092,13 +3092,17 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
 /// its own statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
 /// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
 /// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
-/// refused even where its type was got round.
+/// refused even where its type was got round. Before that, the entry is held to its own shape's rules
+/// ([`Entry::check`]): one built in memory field by field, which no deserialisation checked, is refused as one read
+/// from the wire would be.
 pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
     through: Through,
     operator: &Id,
 ) -> Result<(), Violation> {
+    // An entry built in memory is held to its shape's rules, as one read from the wire is when it deserialises.
+    entry.check()?;
     let decision = matches!(entry, Entry::Verified(v) if super::calls::is_decision(&v.what));
     match (through, decision) {
         (Through::General, true) => {

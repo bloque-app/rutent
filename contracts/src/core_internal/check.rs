@@ -94,6 +94,19 @@ impl StuckDecide {
     }
 }
 
+impl Authorisation {
+    /// Checks that the parts it names, where it names any, are at least one, each once.
+    pub fn check(&self) -> Result<(), Violation> {
+        match &self.parts {
+            Some(parts) => listed(
+                parts,
+                "an authorisation names the parts it covers, at least one, each once",
+            ),
+            None => Ok(()),
+        }
+    }
+}
+
 impl SessionRequest {
     /// Checks that the session it asks for ends after it is asked for.
     pub fn check(&self) -> Result<(), Violation> {
@@ -401,13 +414,7 @@ impl What {
                 rests_on,
                 "graded evidence rests on stated entries, at least one, each once",
             ),
-            What::Authorise { authorisation, .. } => match &authorisation.parts {
-                Some(parts) => listed(
-                    parts,
-                    "an authorisation names the parts it covers, at least one, each once",
-                ),
-                None => Ok(()),
-            },
+            What::Authorise { authorisation, .. } => authorisation.check(),
             What::Result { .. }
             | What::StuckMove { .. }
             | What::CheckRead { .. }
@@ -560,6 +567,7 @@ macro_rules! checked_serde {
 
 checked_serde!(
     Action,
+    Authorisation,
     DecisionRequest,
     PermissionChange,
     StuckDecide,

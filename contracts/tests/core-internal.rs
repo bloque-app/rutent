@@ -233,7 +233,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 78] = [
+const SCHEMA_RULES: [SchemaRule; 80] = [
     (
         "permission-change-without-its-grantee",
         &[("", "required")],
@@ -248,6 +248,16 @@ const SCHEMA_RULES: [SchemaRule; 78] = [
         "authorisation-with-a-floor-of-zero",
         &[("/floor", "pattern")],
         "a positive amount is up to 78 decimal digits with no leading zeros, above zero",
+    ),
+    (
+        "authorisation-naming-no-parts",
+        &[("/parts", "minItems")],
+        "an authorisation names the parts it covers, at least one, each once",
+    ),
+    (
+        "authorisation-naming-a-part-twice",
+        &[("/parts", "uniqueItems")],
+        "an authorisation names the parts it covers, at least one, each once",
     ),
     (
         "authorisation-without-its-origin-reserve",
@@ -2530,4 +2540,52 @@ fn every_call_between_cores_parts_can_be_held_as_a_trait_object() {
         operator.raise(&read("raise-of-a-report-difference")),
         Delivery::Undelivered
     );
+}
+
+/// The log's own check of an entry built in memory: an `authorise` entry whose authorisation names no part, or one
+/// part twice, can't be read from the wire (deserialising checks it), so it is built here from the world's, and the
+/// log refuses it before any row (`T-021-04`).
+// verifies: REQ-AUZ-3, DEC-4
+#[test]
+fn the_log_refuses_an_authorisation_naming_no_part_or_one_part_twice() {
+    let cases = admission_fixtures();
+    let (_, case) = cases
+        .iter()
+        .find(|(name, _)| name == "world--auth1")
+        .expect("the world's authorisation");
+    let history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                serde_json::from_value(item["receipt"].clone()).unwrap(),
+                serde_json::from_value(item["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    assert_eq!(
+        admit_entry(&history, &entry, through(case, &entry), &operator()),
+        Ok(()),
+        "the world's authorisation is admitted"
+    );
+    let rule = Violation("an authorisation names the parts it covers, at least one, each once");
+    for parts in [vec![], vec![Id::new("p1").unwrap(), Id::new("p1").unwrap()]] {
+        let mut built = entry.clone();
+        let Entry::Verified(v) = &mut built else {
+            panic!("a verified entry")
+        };
+        let What::Authorise { authorisation, .. } = &mut v.what else {
+            panic!("an authorise entry")
+        };
+        authorisation.parts = Some(parts.clone());
+        assert_eq!(
+            admit_entry(&history, &built, through(case, &built), &operator()),
+            Err(rule.clone()),
+            "{parts:?}"
+        );
+        // Nor does it read from the wire.
+        assert!(serde_json::from_value::<Entry>(serde_json::to_value(&built).unwrap()).is_err());
+    }
 }
