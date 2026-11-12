@@ -307,27 +307,34 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `T-021-04`'s register of authorisations in force, which runs after the consultation, where no source is asked.
   If the owner wants that, the hook is `funds::Authorised::refuses`, where `anew` is computed: a new authorisation by
   an agent would also need the party's word on a `Scope` of its own, which means asking a source there. Not built;
-  an item for whichever of the two rows merges second to raise, default no.
+  owner: `T-021-04`'s author at the merge, default no (review of `b63af67`).
 - **Limits bind at the party** (`REQ-AUZ-8`, `REQ-OPS-1`, `AC-18`). Two limits, each counted per party, never per
   actor: work (`Limit::Work`: `request` and `fan_out` together, so the requests an order fans out to providers count
   against its caller's own) and questions about people (`Limit::People`: `person_question`). A charge that fits is
   counted only after its entry is in the log; one over the bound counts nothing and its work is not done. A charge's
   id names one charge: the same charge again answers within and counts once, anything else under a counted id is
-  refused, as `T-021-02`'s session ids are. Default: the ids counted are kept for the window now only, so the same
-  charge given again in a later window counts again there. The party is the charge's own (`Charge::check` holds it to its caller's),
-  bound to the actor by `T-021-03`'s rule.
+  refused, as `T-021-02`'s session ids are. An id is its party's own: the counter keys a charge by its party and its
+  id, so two parties' charges under one id are two (review of `b63af67`). Default: the ids counted are kept for the
+  window now only, so the same charge given again in a later window counts again there. The party is the charge's
+  own (`Charge::check` holds it to its caller's), bound to the actor by `T-021-03`'s rule.
 - **The window is Core's clock's.** A fixed window, `WINDOW_SECS` (one hour), aligned to the epoch, read from the
   engine's clock (`session::Clock`, the one sessions are bounded by), never from a charge's `at`: a charge stating a
   later moment still counts in the window now (`T-021-02`'s review, S1). Defaults, reversible: one hour; 10 000
   pieces of work and 1 000 questions about people per party per window (`Uniform`), the same for every party, until
   the assembly hands the deployment's own (`Engine::set_bounds`, a `parties::Bounds` answering per party and
-  limit).
-- **The counter is in memory.** A restart, or a second engine over the same log, starts every party's count again.
-  Unlike `T-021-04`'s register, which was rebuilt from the log because an empty one let a destination change through,
-  an empty counter fails toward more work, never toward moving value: at most one window's bound more per restart or
-  per engine, and every charge is still recorded. Default: in memory, as `T-021-02`'s sessions are; rebuilding it from
-  the log's permitted `charge` entries of the window is `F-030`'s, with the restart hand-off, and needs no contract
-  change.
+  limit). The window only moves forward: Core's clock moving back keeps counting in the latest window (review of
+  `b63af67`). A fixed window lets a party spend its bound at the end of one window and again at the start of the
+  next, twice the bound in a moment; accepted, and a sliding window is the deployment's to ask for.
+- **The counter can be rebuilt; the read waits on the contract** (review of `b63af67`, finding 6). The counter held
+  in memory alone fails open after a restart. It is now a function of the charges it counted
+  (`Charged::rebuild(now, counted)`): the latest window's, each once under its party's id, what it held before
+  dropped. A charge counted while the clock stood back is counted at the latest window's start
+  (`Charged::counted_at`), so a rebuild finds it in the window it counted in. What is left is the read, in
+  `T-021-04`'s `funds::Recorded` shape: a `Charged`-side trait the assembly implements over the log's entries, a
+  `charged_in(entries)` taking each verified `charge` entry whose outcome is `permitted` with its counted time, and the
+  engine reading it before every charge, refusing (over a bound of 0) where it has no read or the read fails. It
+  needs the engine's own time on the charge entry, which core-internal doesn't carry: the coordinator has the
+  contract author adding it, with the outcomes below, and this row wires the read once it is in `m3`.
 - **A refused charge is over a bound of 0** (contract gap, not made). core-internal's `ChargeOutcome` has only
   `within` and `over`, so a charge policy refuses or can't decide is answered `over { bound: 0 }`, its entry
   `refused { class: over_bound }`, and the refusal's own class (`no_accountable_party`, `not_permitted`,
@@ -336,13 +343,17 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `ChargeOutcome` (Rust `types.rs`, and `charge-answer.schema.json`'s `outcome`), mapped by `ChargeOutcome::outcome`
   to `refused { class }` and `not_known { cause }`, as `PersonOutcome` already is, with a valid fixture of each and
   the README's "How each answer is recorded" row updated. Then `charge_outcome` gives the verdict's own answer.
-- **Gap: orchestration charges questions about people as fan-out** (`T-020-06`'s, with `T-021-07`).
-  `core-orch`'s `rounds::Run::charge` charges the providers' questions and the person questions of a round together
-  as one `fan_out`, so nothing orchestration does today reaches the party's bound on asking about people. It should
-  charge the person questions as `person_question`, apart. Not this row's file.
-- **For `T-021-06` and `T-021-07`.** `parties::accountable(&Actor)` and `parties::same_party(a, b)` are the one
-  definition of an actor's accountable party and of two actors being one there (two agents of one party, or its
-  person and its agent): `T-021-06` compares the decider's and the mover's with `same_party`. Each reads a party the
+- **Person questions are charged as such** (review of `b63af67`, finding 7). `core-orch`'s `rounds::Run::charge`
+  charged a round's providers' questions and its person questions together as one `fan_out`, so nothing reached the
+  party's limit on asking about people. It now charges the person questions as `person_question` first, then the
+  providers' as `fan_out`, each before any is asked, and over either bound none is sent (`NotOffered::OverBound`).
+  Where the first fits and the second doesn't, the first stays counted though nothing was asked: accepted, as a
+  charge that fits is work committed. The edit is to `T-020-06`'s module, merged, at the coordinator's instruction.
+- **For `T-021-06` and `T-021-07`.** `parties::accountable(&Actor)` and `parties::same_accountable_actor(a, b)` are
+  the one definition of an actor's accountable party and of two actors being one there: two agents of one party, its
+  person and its agent, or one login stating two parties, since a login may act for more than one (review of
+  `b63af67`, finding 2: `op-login-2` deciding as `operator` and moving as `operator-desk-b`). Two actors are distinct
+  only where both their parties and their logins differ. `T-021-06` compares the decider and the mover with it. Each reads a party the
   consultation bound, so only of a call the fixed rules let through. `T-021-07` bounds questions about people at the
   asker's party through `Charges::charge` with `Work::PersonQuestion` (`Limit::People`), or reuses
   `Charged::standing` and `Charged::take` inside `ask_about_person`; `REQ-CPL-5`'s bound per order is its own.
@@ -351,7 +362,9 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   as they answer `ActsFor`. `provider_posting_a_route_is_refused` named an agent `bridge-pay` acting for
   `bridge-pay`; it now names `bridge-pay-agent`, since an agent is never its own party.
 - **Hand-offs at merge.**
-  - `T-024-02`: `Records::supply` matches every `Source` with no catch-all, so it needs an `AgentScope` arm (the
+  - `T-024-02`: its `ActsFor` arm must bind the kind (`Source::ActsFor { acts, party, kind }`, yes only for the kind
+    the register lists for the login). `Records::supply` matches every `Source` with no catch-all, so it needs an
+    `AgentScope` arm too (the
     deployment's register of agents' scopes; until there is one, yes for the agents the scenarios name, or `Missing`,
     which refuses every agent's call). `PolicySide::charge` becomes `self.engine.borrow_mut().charge(c)`, and
     `CHARGE_BOUND` goes; the assembly may hand the engine its bounds (`set_bounds`).
@@ -385,4 +398,51 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   | the window from Core's clock, not the charge's `at` | `bound is held over core clock's window and a charge counts once` |
   | the window starts again | `bound is held over core clock's window and a charge counts once` |
   | counted only after the log takes it | `charge the log does not take counts nothing` |
-  | `same_party` by the party, not the actor | `actors are compared at their accountable party` |
+  | `same_party` by the party, not the actor (now `same_accountable_actor`) | `actors are compared at their accountable party` |
+
+### T-021-05, the review of `b63af67`
+
+- **The kind of actor is bound by the register** (finding 1, critical). Nothing held `Actor.kind`: `ActsFor` checked
+  the login and the party, so `agent-7`, scoped to `charge: request`, was refused `move_value` as an agent and
+  permitted it stating `kind: person`, and the rule that an agent is never its own party fell the same way.
+  `Source::ActsFor` now carries `kind`, and the register answers by the login, the party and the kind together, so a
+  login stating a kind the register doesn't list for it acts for no one (`no_accountable_party`). The edit is to
+  `T-021-03`'s rule in `roles/`, merged, kept to the one field; every test source that answers `ActsFor` was updated
+  (`roles/tests.rs` and `T-021-01`'s and `T-021-02`'s answer it whatever the kind, since no test of theirs turns on
+  it; `parties/tests.rs` and the segments kit bind it). Intake's own `Actors` register (`T-020-03`) still answers by
+  login and party: it decides only whether intake serves the caller, and every action it serves is decided by
+  policy, which now binds the kind.
+- **One login is one actor** (finding 2, high). `same_party` is now `same_accountable_actor`, true where the parties
+  or the logins are the same.
+- **The window moves forward only** (finding 3), and **a charge's id is its party's** (the nit).
+- **A refused or not-known charge is logged as `over_bound`** (finding 4, high). Waits on core-internal's
+  `ChargeOutcome` gaining `refused { class }` and `not_known { cause }`, which the contract author is adding;
+  `contracts/` is untouched here. Once it is in `m3`, `charge_outcome` gives the verdict's own answer and core-orch's
+  `rounds::Run::charge` maps the two new outcomes (each, like `over`, sends nothing).
+- **Each call's scope is pinned** (finding 5) by `each_scope_permits_its_own_call_alone`: for each scope, an agent
+  scoped to it alone is permitted its call and refused every other, the table naming each call's scope by hand.
+- **The counter can be rebuilt** (finding 6): above; its read waits on the contract's time field.
+- **Person questions are charged against the people limit** (finding 7): above.
+- **A route's suggester asks no scope** (the nit): it doesn't act in the call; the operator who posts does, and the
+  suggester is still held to `ActsFor`, kind included.
+- **Rule-offs of the fixes.** Each switched off once, the file restored and touched; core-authz's lib tests, or
+  core-orch's `rounds` for its edit. The new tests went red before the fixes (`each_scope_permits_its_own_call_alone`
+  passed, pinning a mapping that was already right; it goes red under each mapping mutation below).
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the register told the stated kind (a fixed kind sent) | `agent stating another kind acts for no one`; `agent without an accountable party ...`; `agent outside its party's scope ...`; `thousand agents ...` |
+  | one login is one actor | `actors are compared at their accountable party` |
+  | the window moves forward only | `clock moving back keeps counting in the latest window` |
+  | a charge counted back is counted at the latest window's start | `clock moving back keeps counting in the latest window` |
+  | `decide_stuck` its own scope (made `move_stuck`'s) | `each scope permits its own call alone` |
+  | `check_read` its own scope (made `move_value`'s) | `each scope permits its own call alone` |
+  | `resolve_stuck` a stuck move (made `move_value`'s) | `each scope permits its own call alone` |
+  | a catalogue change scoped by its kind | `each scope permits its own call alone` |
+  | a charge's id its party's | `charge ids are each party's own`; `counter is rebuilt from the charges counted` |
+  | rebuild: only the latest window's charges | `counter is rebuilt from the charges counted` |
+  | rebuild: the latest window, a later charge's included | `counter is rebuilt from the charges counted` |
+  | rebuild: what the counter held dropped | `counter is rebuilt from the charges counted` |
+  | person questions charged as `person_question` | `person questions are charged against the caller's people limit` |
+- **The first table, again.** Every rule-off of `T-021-05`'s first table was run again on the fixed code: each still
+  turns red, now often under more tests than listed there (the review's new tests among them).
