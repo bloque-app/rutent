@@ -58,15 +58,29 @@ pub type Cites<C = VerifiedCiting> = fn(&C, &History) -> Vec<Cite>;
 /// How `target`, an earlier entry, answers a citation `entry` makes, given the whole history.
 pub type Answers<C = VerifiedCiting> = fn(&C, &Cite, &Entry, &History) -> Match;
 
-/// A verified entry as the rows of [`RELATIONS`] read it: with the maker this deployment's operator signs its own
-/// statements as, so a row can tell the operator's own statements from a module's it publishes. It reads as the
-/// entry itself.
+/// The deployment's operator, as the log knows it: the maker it signs its own statements as
+/// ([`StatementKeys::operator`](super::calls::StatementKeys::operator)), and the accountable party it is, which that
+/// maker states for ([`StatementKeys::publisher`](super::calls::StatementKeys::publisher)). The two differ: a
+/// deployment's operator may sign as `conformance-operator` and be the party `operator`, and a row reads each where
+/// it means it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentOperator {
+    /// The maker the deployment's operator signs its statements as: a statement's `acts`.
+    pub maker: Id,
+    /// The operator's accountable party: the `party` its people act for.
+    pub party: Id,
+}
+
+/// A verified entry as the rows of [`RELATIONS`] read it: with the deployment's operator, by the maker it signs its
+/// own statements as, so a row can tell the operator's own statements from a module's it publishes, and by its
+/// party, so a row can tell the operator's people from anyone stating the operator's role. It reads as the entry
+/// itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedCiting {
     /// The verified entry.
     pub entry: VerifiedEntry,
-    /// The maker the deployment's operator signs as.
-    pub operator: Id,
+    /// The deployment's operator.
+    pub operator: DeploymentOperator,
 }
 
 impl core::ops::Deref for VerifiedCiting {
@@ -355,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 76] = [
+pub static RELATIONS: [Relation; 77] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1011,6 +1025,10 @@ pub static RELATIONS: [Relation; 76] = [
                 "an outcome is reported only where its move's result is unanswered",
             ),
             (
+                "open",
+                "an outcome is reported only while its move is unsettled: no final result and no confirmation",
+            ),
+            (
                 "mover",
                 "a move's outcome is reported by its own mover: a move_value's decided-for actor or its accountable party, a stuck resolution's mover",
             ),
@@ -1028,8 +1046,36 @@ pub static RELATIONS: [Relation; 76] = [
             };
             judge(
                 order == &request.order,
-                &[unanswered(entry, h), moved_by(t, &request.reporter, h)],
+                &[
+                    unanswered(entry, h),
+                    !settled(entry, h),
+                    moved_by(t, &request.reporter, h),
+                ],
             )
+        },
+    },
+    Relation {
+        name: "one-report-per-effect",
+        spec: &["REQ-AUZ-4", "ADR-0011"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a move's outcome is reported once: no other permitted report of its effect",
+        fields: &[],
+        // An identical retry aside, a second report, of the same outcome or the other, is refused: the confirmer
+        // confirms the one report there is.
+        cites: |e, _| match &e.what {
+            What::ReportOutcome { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, permitted(t).map(|t| &t.what)) {
+            (
+                What::ReportOutcome { request, .. },
+                Some(
+                    other @ What::ReportOutcome {
+                        request: earlier, ..
+                    },
+                ),
+            ) => judge(earlier.effect == request.effect && other != &e.what, &[]),
+            _ => Match::NotTarget,
         },
     },
     Relation {
@@ -1124,8 +1170,9 @@ pub static RELATIONS: [Relation; 76] = [
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part, through the transaction it names",
+                "an outcome's evidence is about its move's own order and part, a move_value's own segment, a planless part's arrival or acceptance, through the transaction it names",
             ),
+            ("after", "an outcome's evidence follows its move in the log"),
         ],
         cites: |e, _| match &e.what {
             What::ReportOutcome { request, .. } => alloc::vec![by_receipt(&request.evidence, 0)],
@@ -1143,15 +1190,22 @@ pub static RELATIONS: [Relation; 76] = [
             let Some(s) = stated(t) else {
                 return Match::NotTarget;
             };
-            let about = entry_at(effect, h)
+            let moved = entry_at(effect, h);
+            let about = moved
                 .and_then(verified)
-                .and_then(|m| moved_part(m, h))
-                .is_some_and(|(order, part)| {
-                    part.is_some_and(|part| about_the_part(s, order, part, h))
-                });
+                .is_some_and(|m| evidence_about(s, m, h));
+            // Evidence older than the move can't say what the move came to.
+            let after = match (moved.and_then(|m| position(m, h)), position(t, h)) {
+                (Some(m), Some(at)) => at > m,
+                _ => false,
+            };
             judge(
                 true,
-                &[matches!(s.attribution, Attribution::Verified { .. }), about],
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    about,
+                    after,
+                ],
             )
         },
     },
@@ -1862,6 +1916,7 @@ pub static RELATIONS: [Relation; 76] = [
         quantifier: Quantifier::Exists,
         refusal: "an arrival's notice is a stated entry of this log",
         fields: &[
+            ("verified", "an arrival's notice is a verified statement"),
             ("maker", "an arrival's notice is its reserve's statement"),
             (
                 "transaction",
@@ -1885,6 +1940,8 @@ pub static RELATIONS: [Relation; 76] = [
             ) => judge(
                 &s.commitment == notice,
                 &[
+                    // An unverified statement is attributed to no one, so the transaction it claims keys nothing.
+                    matches!(s.attribution, Attribution::Verified { .. }),
                     maker_provider(s) == reserve,
                     s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
                 ],
@@ -1953,7 +2010,7 @@ pub static RELATIONS: [Relation; 76] = [
                         o.as_ref() == Some(order),
                         // The deployment's operator, by the party the log knows it as, not any actor stating the
                         // operator's role; or the arrival's own reserve acting for itself.
-                        (e.who.role == Role::Operator && e.who.party == e.operator)
+                        (e.who.role == Role::Operator && e.who.party == e.operator.party)
                             || (e.who.role == Role::Provider && &e.who.party == reserve),
                     ],
                 ),
@@ -2484,7 +2541,7 @@ pub static RELATIONS: [Relation; 76] = [
             // The operator's own statements are made as the operator; a person logged in as the operator reads
             // them as its party, which policy's `ActsFor` binds the login to before any read is permitted.
             let operators_own = reader.role == Role::Operator
-                && maker_provider(s) == &e.operator
+                && maker_provider(s) == &e.operator.maker
                 && s.attribution.maker().party == reader.party;
             judge(
                 &s.commitment == commitment,
@@ -3395,8 +3452,8 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
     })
 }
 
-/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's stated entry
-/// of `history` under that commitment (`arrival-names-its-notice`).
+/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
+/// stated entry of `history` under that commitment (`arrival-names-its-notice`).
 fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
     let What::Arrival {
         notice: Some(notice),
@@ -3407,7 +3464,11 @@ fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
         return None;
     };
     history.iter().find_map(|(_, e)| {
-        let s = stated(e).filter(|s| &s.commitment == notice && maker_provider(s) == reserve)?;
+        let s = stated(e).filter(|s| {
+            matches!(s.attribution, Attribution::Verified { .. })
+                && &s.commitment == notice
+                && maker_provider(s) == reserve
+        })?;
         s.about.as_ref()?.transaction.as_ref()
     })
 }
@@ -3427,6 +3488,21 @@ fn unanswered(entry: &Entry, history: &History) -> bool {
                     && r.outcome == (Outcome::Unanswered {})
             })
         })
+    })
+}
+
+/// Whether the effect `entry` of `history` is settled: it has a final result, `done` or `failed`, or a permitted
+/// confirmation of its outcome.
+fn settled(entry: &Entry, history: &History) -> bool {
+    position(entry, history).is_some_and(|at| {
+        let at = &history[at].0;
+        confirmation_of(at, history).is_some()
+            || history.iter().any(|(_, x)| {
+                verified(x).is_some_and(|r| {
+                    matches!(&r.what, What::Result { effect } if effect == at)
+                        && matches!(r.outcome, Outcome::Done {} | Outcome::Failed {})
+                })
+            })
     })
 }
 
@@ -3471,6 +3547,101 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
         }),
         _ => false,
     }
+}
+
+/// Whether `statement` is about the move `effect` moved: a `move_value`'s segment itself, through that segment's
+/// transaction; a stuck resolution's part, through a segment of its plan, or, for a planless part, which has no segment
+/// to name, through the transaction of the order's arrival or of the part's acceptance yes, so its silent resolution
+/// can't deadlock.
+fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &History) -> bool {
+    if let Some(Action::MoveValue { order, segment, .. }) = effect_action(effect).map(|(a, _)| a) {
+        return about_the_segment(statement, order, segment, history);
+    }
+    moved_part(effect, history).is_some_and(|(order, part)| {
+        part.is_some_and(|part| {
+            if planned(order.as_str(), part, history) {
+                about_the_part(statement, order, part, history)
+            } else {
+                about_the_order_entry(statement, order, part, history)
+            }
+        })
+    })
+}
+
+/// Whether `part` of `order` has a plan in `history`: a route chosen naming it, or a recalculation or a change of
+/// destination of it.
+fn planned(order: &str, part: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|i| {
+            i.subject.order.as_str() == order
+                && match &i.observed {
+                    Observed::RouteChosen { parts, .. } => {
+                        parts.iter().any(|p| p.part_id.as_str() == part)
+                    }
+                    Observed::RouteRecalculated { .. } | Observed::DestinationChanged { .. } => {
+                        i.subject.part.as_ref().is_some_and(|p| p.as_str() == part)
+                    }
+                    _ => false,
+                }
+        })
+    })
+}
+
+/// Whether `statement` is about a planless `part` of `order` through how the order came in: it names the order and
+/// no segment, and the transaction it names is first bound to this order (`binding_of`) and is the deposit of an
+/// arrival naming the order (`deposit_of`) or the one the part's acceptance yes names.
+fn about_the_order_entry(
+    statement: &StatedEntry,
+    order: &Id,
+    part: &str,
+    history: &History,
+) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    let Some(t) = about.transaction.as_ref() else {
+        return false;
+    };
+    let arrived = history.iter().any(|(_, e)| {
+        verified(e).is_some_and(|v| {
+            matches!(&v.what, What::Arrival { order: Some(o), .. } if o == order)
+                && deposit_of(&v.what, history) == Some(t)
+        })
+    });
+    let accepted = history
+        .iter()
+        .any(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::Acceptance {
+                order: o, yeses, ..
+            }) if o == order => yeses.iter().any(|y| {
+                y.part.as_str() == part
+                    && entry_at(&y.reserve_yes, history)
+                        .and_then(stated)
+                        .and_then(|s| s.about.as_ref())
+                        .and_then(|a| a.transaction.as_ref())
+                        == Some(t)
+            }),
+            _ => false,
+        });
+    about.order.as_ref() == Some(order)
+        && about.segment.is_none()
+        && binding_of(t, history).is_some_and(|(o, _)| o == order)
+        && (arrived || accepted)
+}
+
+/// Whether `statement` is about `segment` of `order` itself: it names the order and a transaction first bound to that
+/// segment of that order (`binding_of`), and, where it names a segment, that one.
+fn about_the_segment(statement: &StatedEntry, order: &Id, segment: &Id, history: &History) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    about.order.as_ref() == Some(order)
+        && about.segment.as_ref().is_none_or(|named| named == segment)
+        && about
+            .transaction
+            .as_ref()
+            .and_then(|t| binding_of(t, history))
+            .is_some_and(|(o, s)| o == order && s == Some(segment))
 }
 
 /// Whether `statement` is about `part` of `order`: it names the order, and a segment of the part, its own or the
@@ -3858,8 +4029,8 @@ pub static STATED_RELATIONS: [Relation<StatedCiting>; 2] = [
 ///   refusal where none was even the kind asked for;
 /// - a `none other` row breaks when an entry of `history`, other than this same entry retried, answers.
 ///
-/// A stated entry is held to [`STATED_RELATIONS`] alike, with `operator`, the maker this deployment's operator signs
-/// its own statements as ([`StatementKeys::operator`](super::calls::StatementKeys::operator)). Before any row, the
+/// A verified entry is read with `operator`, the deployment's operator by its maker and its party
+/// ([`DeploymentOperator`]); a stated entry is held to [`STATED_RELATIONS`] alike, with the operator's maker. Before any row, the
 /// entry's handle is held to its kind: a decision kind ([`calls::is_decision`](super::calls::is_decision)) only on
 /// the policy path, and any other entry only on the general path, so a decision written by anyone but policy is
 /// refused even where its type was got round. Before that, the entry is held to its own shape's rules
@@ -3869,7 +4040,7 @@ pub fn admit_entry(
     history: &[(Receipt, Entry)],
     entry: &Entry,
     through: Through,
-    operator: &Id,
+    operator: &DeploymentOperator,
 ) -> Result<(), Violation> {
     // An entry built in memory is held to its shape's rules, as one read from the wire is when it deserialises.
     entry.check()?;
@@ -3895,7 +4066,7 @@ pub fn admit_entry(
         Entry::Stated(entry) => {
             let citing = StatedCiting {
                 entry: entry.clone(),
-                operator: operator.clone(),
+                operator: operator.maker.clone(),
             };
             admit_under(&STATED_RELATIONS, &citing, history)
         }

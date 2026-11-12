@@ -31,8 +31,8 @@ pub enum Recorded {
     NotTaken(RecordedInput),
 }
 
-/// What the host and the state machine do with a log's inputs, in order: an input under a record id an earlier one
-/// holds, taken or kept as refused, is that one again, or the host's refusal; otherwise `Applied`, `Late` or
+/// What the host and the state machine do with a log's inputs, in order: an input under a record id an earlier taken
+/// one holds is that one again, or the host's refusal; under a refused one's, the host's refusal; otherwise `Applied`, `Late` or
 /// `Repeat` is a taking, anything else a refusal, named with its record id.
 pub fn replay(inputs: &[Recorded]) -> Result<(), String> {
     let mut orders: BTreeMap<String, Order> = BTreeMap::new();
@@ -56,9 +56,13 @@ pub fn replay(inputs: &[Recorded]) -> Result<(), String> {
                 ));
             }
             Some((_, true)) => continue,
-            // The same input as one refused before: the machine judges it again.
+            // The same input as one refused before: the host hands back the refusal it recorded, so it is never
+            // taken.
             Some((_, false)) => {
-                recorded.insert(input.record_id.as_str().to_owned(), (input, true));
+                return Err(format!(
+                    "{} was refused, and the host hands back its refusal",
+                    input.record_id.as_str()
+                ));
             }
             None => {
                 recorded.insert(input.record_id.as_str().to_owned(), (input, true));
