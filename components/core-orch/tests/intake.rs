@@ -39,8 +39,8 @@ fn status_of(told: &Told) -> &Status {
 }
 
 /// The current quote's digest of `order`, as its caller was told.
-fn digest_of(env: &Env, request: &Id) -> Option<Digest> {
-    match env.intake.told(request)? {
+fn digest_of(env: &mut Env, request: &Id) -> Option<Digest> {
+    match env.told_customer(request.as_str())? {
         Told::Exists {
             status: Status::Quoted { digest, .. },
             ..
@@ -119,13 +119,13 @@ proptest! {
                     let request = id(&format!("client-req-{n}"));
                     let by = if by_agent { agent() } else { customer() };
                     let accepted_before = matches!(
-                        env.intake.told(&request),
+                        env.told_customer(request.as_str()),
                         Some(Told::Exists { status: Status::Accepted { .. }, .. })
                     );
-                    if !accepted_before && digest_of(&env, &request).is_none() {
+                    if !accepted_before && digest_of(&mut env, &request).is_none() {
                         let _ = env.quote(&mut sim, &order);
                     }
-                    let Some(digest) = digest_of(&env, &request).or_else(|| accepted_before.then(|| {
+                    let Some(digest) = digest_of(&mut env, &request).or_else(|| accepted_before.then(|| {
                         serde_json::from_value(serde_json::json!({
                             "algorithm": "sha-256", "value": "00".repeat(32)
                         })).unwrap()
@@ -182,7 +182,7 @@ fn caller_tells_refused_from_exists_with_outcome_to_come() {
     let before = env.len();
     assert_eq!(env.open(&mut sim, &malformed).unwrap(), told);
     assert_eq!(env.len(), before);
-    assert_eq!(env.intake.told(&id("client-req-bad")), Some(told.clone()));
+    assert_eq!(env.told_customer("client-req-bad"), Some(told.clone()));
 
     // A well-formed request exists, its outcome to come, and no refusal names it.
     let told = env
@@ -207,7 +207,7 @@ fn caller_tells_refused_from_exists_with_outcome_to_come() {
     // On the wire the two answers can't be confused.
     let wire = |t: &Told| serde_json::to_value(t).unwrap()["told"].clone();
     assert_eq!(
-        wire(&env.intake.told(&id("client-req-bad")).unwrap()),
+        wire(&env.told_customer("client-req-bad").unwrap()),
         "refused"
     );
     assert_eq!(wire(&told), "exists");
@@ -301,7 +301,8 @@ fn provider_failure_text_never_reaches_the_customer() {
     let told = quote_with(&mut env, &mut texting, &order);
     // The provider's words reached Core: its answer is kept as received.
     assert!(
-        env.evidence
+        env.store
+            .borrow()
             .kept
             .iter()
             .any(|b| String::from_utf8_lossy(b).contains("Banco Ejemplo"))
@@ -315,7 +316,7 @@ fn provider_failure_text_never_reaches_the_customer() {
     );
     let wire = serde_json::to_string(&told).unwrap();
     let debug = format!("{told:?}");
-    let told_again = format!("{:?}", env.intake.told(&id("client-req-1")));
+    let told_again = format!("{:?}", env.told_customer("client-req-1"));
     for text in PROVIDER_TEXT {
         assert!(!wire.contains(text), "{wire}");
         assert!(!debug.contains(text), "{debug}");
@@ -331,7 +332,7 @@ fn provider_failure_text_never_reaches_the_customer() {
 
 fn quote_with(env: &mut Env, providers: &mut Texting, order: &Id) -> Told {
     env.with_providers(providers, |intake, desk| {
-        intake.quote::<rutent_router::RouteFinder>(desk, order)
+        intake.quote::<rutent_router::RouteFinder>(desk, &customer(), order)
     })
     .unwrap()
 }
@@ -352,7 +353,8 @@ fn order_is_not_started_without_acceptance() {
     ));
     assert!(env.started().is_empty());
 
-    // An acceptance of another quote than the one shown, or by anyone but the requester, starts nothing.
+    // An acceptance of another quote than the one shown, or by anyone but the requester, starts nothing; to anyone
+    // but the requester the order doesn't exist.
     let other: Digest = serde_json::from_value(
         serde_json::json!({ "algorithm": "sha-256", "value": "00".repeat(32) }),
     )
@@ -365,18 +367,17 @@ fn order_is_not_started_without_acceptance() {
         party: id("stranger"),
         ..customer()
     };
-    assert_eq!(
-        env.accept(&mut sim, &order, &stranger, &digest),
-        Err(IntakeError::NotTheRequester)
-    );
     let operator = Actor {
         role: Role::Operator,
         ..customer()
     };
-    assert_eq!(
-        env.accept(&mut sim, &order, &operator, &digest),
-        Err(IntakeError::NotTheRequester)
-    );
+    for other in [stranger, operator, impostor()] {
+        assert_eq!(
+            env.accept(&mut sim, &order, &other, &digest),
+            Err(IntakeError::NoSuchOrder),
+            "{other:?}"
+        );
+    }
     assert!(env.acceptances().is_empty());
     assert!(env.started().is_empty());
 
@@ -420,11 +421,27 @@ fn order_is_not_started_without_acceptance() {
     let (_, why) = env2.admitted().expect_err("a start without its acceptance");
     assert!(why.contains("accept"), "{why}");
 
-    // A refusal by policy is the order's end, told as a class.
+    // A refusal about the caller leaves the order as it was, to accept by one policy permits; a refusal about the
+    // order itself, outside what the authorisation may name, is the order's end, told as a class.
     let mut env = Env::new();
     let mut sim = env.sim();
     let (order, digest) = env.quoted(&mut sim, &request);
     env.policy.answer = refusal(RefusalClass::NotPermitted);
+    assert_eq!(
+        env.accept(&mut sim, &order, &customer(), &digest),
+        Err(IntakeError::Refused {
+            class: OrderRefusalClass::RefusedByPolicy
+        })
+    );
+    assert!(matches!(
+        env.told_customer("client-req-1"),
+        Some(Told::Exists {
+            status: Status::Quoted { .. },
+            ..
+        })
+    ));
+    assert!(env.refusals().is_empty());
+    env.policy.answer = refusal(RefusalClass::OutsideAuthorisation);
     let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
     assert_eq!(
         status_of(&told),
@@ -451,7 +468,7 @@ fn acceptance_whose_append_failed_is_carried_on_once() {
         ));
         assert!(env.started().is_empty());
         assert!(!matches!(
-            env.intake.told(&id("client-req-1")),
+            env.told_customer("client-req-1"),
             Some(Told::Exists {
                 status: Status::Accepted { .. },
                 ..
@@ -468,6 +485,50 @@ fn acceptance_whose_append_failed_is_carried_on_once() {
         assert_eq!(env.started(), vec![order.as_str().to_owned()], "{failing}");
         assert_admitted(&env);
     }
+
+    // The append is written but its answer lost, and the clock moves on before the retry: the entry appended again
+    // is the one built first, so the log holds one acceptance and one start, and admits them.
+    for losing in ["input", "acceptance"] {
+        let mut env = Env::new();
+        let mut sim = env.sim();
+        let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+        env.book.borrow_mut().lose_next = Some(losing);
+        assert!(env.accept(&mut sim, &order, &customer(), &digest).is_err());
+        env.clock
+            .set(rutent_core_orch::snapshot::Clock::now(&*env.clock).seconds + 7);
+        let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+        assert!(
+            matches!(status_of(&told), Status::Accepted { .. }),
+            "{losing}"
+        );
+        let mut acceptances = env.acceptances();
+        acceptances.dedup();
+        assert_eq!(acceptances.len(), 1, "{losing}");
+        let mut started = env.started();
+        started.dedup();
+        assert_eq!(started, vec![order.as_str().to_owned()], "{losing}");
+        assert_eq!(env.policy.asked.len(), 1, "{losing}");
+        assert_admitted(&env);
+    }
+
+    // An append the log refuses isn't retried: the session the yes was asked in has ended, so the acceptance is
+    // refused, and the order ends with a class instead of waiting on a retry that can't succeed.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.clock.set(SESSION_ENDS + 10);
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert!(
+        matches!(status_of(&told), Status::CantProceed { .. }),
+        "{told:?}"
+    );
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    assert_eq!(
+        env.accept(&mut sim, &order, &customer(), &digest),
+        Ok(told.clone())
+    );
+    assert_eq!(env.quote(&mut sim, &order), Err(IntakeError::NotNow));
+    assert_admitted(&env);
 }
 
 // verifies: REQ-ORD-10
@@ -570,43 +631,64 @@ fn destinations_change_of_owner_makes_the_order_wait() {
         Err(IntakeError::NotNow)
     );
 
-    // Only the requester confirms the owner it now resolves to; then the quote is shown again, and accepted.
+    // The confirmation is an acceptance naming the new owner, through policy like any other. Anyone but the
+    // requester, an actor that only states its party included, isn't told the order exists; another owner than
+    // the one it now resolves to confirms nothing; a refusal of the caller leaves the order waiting.
     let stranger = Actor {
         party: id("stranger"),
         ..customer()
     };
+    for other in [stranger, impostor()] {
+        assert_eq!(
+            env.confirm(&mut sim, &order, &other, &digest, &id("owner-2")),
+            Err(IntakeError::NoSuchOrder)
+        );
+    }
     assert_eq!(
-        env.intake.confirm_owner(&order, &stranger, &id("owner-2")),
-        Err(IntakeError::NotTheRequester)
-    );
-    assert_eq!(
-        env.intake
-            .confirm_owner(&order, &customer(), &id("owner-3")),
+        env.confirm(&mut sim, &order, &customer(), &digest, &id("owner-3")),
         Err(IntakeError::NotNow)
     );
+    env.policy.answer = refusal(RefusalClass::NotPermitted);
+    assert!(matches!(
+        env.confirm(&mut sim, &order, &customer(), &digest, &id("owner-2")),
+        Err(IntakeError::Refused { .. })
+    ));
+    assert!(matches!(
+        env.told_customer("client-req-1"),
+        Some(Told::Exists {
+            status: Status::Waiting {
+                wait: Wait::OwnerChanged
+            },
+            ..
+        })
+    ));
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+
+    // Confirmed by the requester on policy's permit: accepted, the acceptance naming who confirmed, after the
+    // destination resolved to the owner confirmed.
+    env.policy.answer = Answer::Permit {};
     let told = env
-        .intake
-        .confirm_owner(&order, &customer(), &id("owner-2"))
+        .confirm(&mut sim, &order, &customer(), &digest, &id("owner-2"))
         .unwrap();
-    assert!(matches!(status_of(&told), Status::Quoted { .. }));
-    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
     assert!(matches!(status_of(&told), Status::Accepted { .. }));
+    assert_eq!(env.acceptances().pop().unwrap().who, customer());
+    assert_eq!(env.policy.asked.last().unwrap().given_by, customer());
+    let outcomes: Vec<rutent_contracts::core_internal::DestinationOutcome> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::DestinationCheck { outcome, .. } => Some(*outcome),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outcomes.last(),
+        Some(&rutent_contracts::core_internal::DestinationOutcome::Resolved)
+    );
     assert_admitted(&env);
 
-    // "Not yet" waits and differs from "no", which ends the order.
-    let mut env = Env::new();
-    let mut sim = env.sim();
-    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
-    env.register
-        .answers
-        .insert(ADDRESS.into(), Resolution::NotYet);
-    let not_yet = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
-    assert_eq!(
-        status_of(&not_yet),
-        &Status::Waiting {
-            wait: Wait::DestinationNotYetResolved
-        }
-    );
     // A late destination: once it resolves, to the owner first resolved, the waiting order is accepted.
     let mut late = Env::new();
     let mut late_sim = late.sim();
@@ -626,6 +708,20 @@ fn destinations_change_of_owner_makes_the_order_wait() {
     assert!(matches!(status_of(&told), Status::Accepted { .. }));
     assert_admitted(&late);
 
+    // "Not yet" waits and differs from "no", which ends the order.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::NotYet);
+    let not_yet = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert_eq!(
+        status_of(&not_yet),
+        &Status::Waiting {
+            wait: Wait::DestinationNotYetResolved
+        }
+    );
     env.register
         .answers
         .insert(ADDRESS.into(), Resolution::Refused);
@@ -745,4 +841,163 @@ fn human_and_agent_callers_use_the_same_contract() {
     assert_eq!(person.kind, ActorKind::Person);
     assert_eq!(agent_who.kind, ActorKind::Agent);
     assert_eq!(person.party, agent_who.party);
+}
+
+// verifies: REQ-ORD-10, REQ-AUZ-9
+#[test]
+fn acceptance_is_carried_on_only_by_the_actor_policy_permitted() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.book.borrow_mut().fail_next = Some("acceptance");
+    assert!(env.accept(&mut sim, &order, &customer(), &digest).is_err());
+
+    // An actor stating the customer's party that doesn't act for it isn't told the order exists; another actor that
+    // does act for it, whom policy never checked for this authorisation, can't carry it on.
+    assert_eq!(
+        env.accept(&mut sim, &order, &impostor(), &digest),
+        Err(IntakeError::NoSuchOrder)
+    );
+    assert_eq!(
+        env.accept(&mut sim, &order, &agent(), &digest),
+        Err(IntakeError::OtherActor)
+    );
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+
+    // The one policy permitted carries it on, and the records name it.
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert!(matches!(status_of(&told), Status::Accepted { .. }));
+    let acceptance = env.acceptances().pop().expect("an acceptance");
+    assert_eq!(acceptance.who, customer());
+    let start = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .find_map(|w| match w {
+            What::Input { input } => Some(input.source.id.as_str().to_owned()),
+            _ => None,
+        })
+        .expect("a start");
+    assert_eq!(start, customer().acts.as_str());
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-19
+#[test]
+fn request_identifier_is_the_requesters_own() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let order = order_of(
+        &env.open(&mut sim, &order_request("client-req-1", customer()))
+            .unwrap(),
+    );
+
+    // Another party under the same identifier opens its own order, and learns nothing of the first.
+    let other = Actor {
+        party: id("other-customer"),
+        acts: id("user-9"),
+        ..customer()
+    };
+    env.actors.borrow_mut().list(&other);
+    env.sessions.held.insert(
+        "session-9".into(),
+        rutent_core_orch::intake::HeldSession {
+            holder: other.party.clone(),
+            expires_at: rutent_contracts::router_api::Timestamp::new("2026-12-01T00:00:00Z")
+                .unwrap(),
+        },
+    );
+    let mut theirs = order_request("client-req-1", other.clone());
+    theirs.parties.requester = other.party.clone();
+    theirs.session = id("session-9");
+    let told = env.open(&mut sim, &theirs).unwrap();
+    assert_ne!(order_of(&told), order);
+    assert!(!format!("{told:?}").contains(order.as_str()));
+
+    // Neither another party nor an actor that only states the customer's party is told anything of it, nor can
+    // quote it.
+    assert_ne!(
+        env.told(&other, "client-req-1"),
+        env.told_customer("client-req-1")
+    );
+    assert_eq!(env.told(&impostor(), "client-req-1"), None);
+    for caller in [other, impostor()] {
+        assert_eq!(
+            env.quote_by(&mut sim, &caller, &order),
+            Err(IntakeError::NoSuchOrder)
+        );
+    }
+    // An impostor's request under the customer's identifier opens nothing and tells nothing.
+    let before = env.len();
+    assert_eq!(
+        env.open(&mut sim, &order_request("client-req-1", impostor())),
+        Err(IntakeError::NotTheRequester)
+    );
+    assert_eq!(env.len(), before);
+    // The requester itself, through its agent too, is told and quotes.
+    assert!(env.told(&agent(), "client-req-1").is_some());
+    assert!(env.quote_by(&mut sim, &agent(), &order).is_ok());
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-19
+#[test]
+fn open_whose_append_failed_keeps_its_order() {
+    // The destination's check is written, and the refusal it leads to fails to append: the same request again
+    // carries on with the same order, so every record names the one order its caller is told.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    env.register
+        .answers
+        .insert(ADDRESS.into(), Resolution::Refused);
+    let request = order_request("client-req-1", customer());
+    for failing in ["destination_check", "order_refusal"] {
+        env.book.borrow_mut().fail_next = Some(failing);
+        assert!(env.open(&mut sim, &request).is_err(), "{failing}");
+    }
+    let order = order_of(&env.open(&mut sim, &request).unwrap());
+    let named: Vec<Option<Id>> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::DestinationCheck { order, .. } => Some(Some(order.clone())),
+            What::OrderRefusal { order, .. } => Some(order.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named, vec![Some(order.clone()), Some(order)]);
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-32
+#[test]
+fn session_that_isnt_the_requesters_is_refused_before_the_reserve_is_asked() {
+    for case in ["another holder", "ended", "unknown"] {
+        let mut env = Env::new();
+        let mut sim = env.sim();
+        match case {
+            "another holder" => {
+                env.sessions.held.get_mut(SESSION).unwrap().holder = id("someone-elses-party")
+            }
+            "ended" => env.clock.set(SESSION_ENDS + 1),
+            _ => {
+                env.sessions.held.clear();
+            }
+        }
+        let told = env
+            .open(&mut sim, &order_request("client-req-1", customer()))
+            .unwrap();
+        assert_eq!(
+            told,
+            Told::Refused {
+                class: OrderRefusalClass::RefusedByPolicy
+            },
+            "{case}"
+        );
+        assert!(sim.received.is_empty(), "{case}");
+        assert_admitted(&env);
+    }
 }

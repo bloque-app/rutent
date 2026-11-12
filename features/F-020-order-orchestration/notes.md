@@ -69,8 +69,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
 - **Three calls on one `Intake`** (`components/core-orch/src/intake/`). `open` takes an `OrderRequest` under the
   caller's request identifier, `quote::<R>` runs one routing through `rounds::route` and shows its quote, and
-  `accept` takes the requester's acceptance of the quote shown. A fourth, `confirm_owner`, answers a destination
-  whose owner changed. What they reach comes in a `Desk`: the rounds' `Parts`, the destination register, policy's
+  `accept` takes the requester's acceptance of the quote shown, and confirms a destination's new owner (since the
+  review, below). What they reach comes in a `Desk`: the rounds' `Parts`, the destination register, policy's
   `Authorisations`, the bounds and prices the router runs under, and Core's and the operator's actors. Humans and
   agents call the same functions with the same types (`REQ-OPS-5`); only the `Actor`'s `kind` and `acts` differ.
 - **One order per request identifier** (`REQ-ORD-19`, `INV-8`). The same request again under its identifier is told
@@ -134,7 +134,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   kept; at acceptance it is resolved again. Not yet waits (`destination_not_yet_resolved`, accept again later; once it
   resolves, to the owner first resolved, it is accepted), no ends the order (`destination_refused`), and another owner
   makes the order wait for the customer (`destination_check` `owner_changed`, no refusal, since none of the seven
-  classes is a wait for the customer): the requester confirms that owner (`confirm_owner`) and accepts anew.
+  classes is a wait for the customer): the requester's next acceptance names that owner and goes through policy.
   Confirming it again before the last segment is `T-020-08`'s and `T-020-13`'s. Reading, reversible.
 - **The requester's address** (`REQ-ORD-35`). The destination's account is the one place the address lives: intake
   sets it as the deposit's input `beneficiary.address` (provider-role's name, `intake::DESTINATION_INPUT`), so the
@@ -168,6 +168,61 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 - **Touches**: only `components/core-orch/src/intake/`, its tests (`tests/intake.rs`, `tests/intake_support/`,
   which reuses `snapshot_support` and `rounds_support` unchanged), these notes, and `proptest` as a dev-dependency
   of core-orch, already locked, so `Cargo.lock` gains one dependency line. No `DEC-20` path.
+
+### T-020-03, review answers (of `1cc10a0`)
+
+Merged `m3` at `bd9e1d5` first (grants naming their keys; `attribute` taking the history). Each test below was
+written first and seen red on the code under review, then the fix made it green; each rule was then switched off
+once and its test seen red again.
+
+- **The test kit holds actors to the register.** The log now attributes each stated entry and admits each entry as
+  it is appended, through `attribute` (with the history) and `admit_entry` on the path it came by, as the real log
+  does, so a refused append is a refused append. It can fail an append, or write it and lose its answer, once, on
+  demand. Policy's stub answers `ActsFor` first: an authorisation whose giver doesn't act for its stated party is
+  refused `no_accountable_party`. The kit has an impostor, `someone-else` stating the customer's party, whom the
+  register lists for no one; its absence is why B1 and B2 weren't caught.
+- **B1, a carry-on recorded an actor policy never checked.** `Accepting` keeps the actor policy permitted, and only
+  it carries the acceptance on: any other, even one acting for the same party, is refused `OtherActor`. Every call
+  that reads an order (`told`, `quote`, `accept`) is held to the register of actors, through a port onto it
+  (`intake::Actors`), so an actor that only states the party is told the order doesn't exist. Test
+  `acceptance_is_carried_on_only_by_the_actor_policy_permitted`; red as reviewed, accepted as `someone-else`.
+- **B2, the owner's confirmation went round policy.** `confirm_owner` is gone. While an order waits on a new owner,
+  only an acceptance naming that owner (`accept`'s `owner`) goes on: it resolves the destination again, goes to
+  policy as an authorisation given by the confirming actor, and is recorded as the acceptance, its `who` that actor,
+  after a `destination_check` that resolved to the owner confirmed. A refusal about the caller (any class but
+  `outside_authorisation`) answers `IntakeError::Refused` and leaves the order as it stood, waiting included; only
+  `outside_authorisation`, a refusal about the order, ends it, as `refused_by_policy`. Reading, reversible: which
+  classes are about the order. Tests: `destinations_change_of_owner_makes_the_order_wait` and
+  `order_is_not_started_without_acceptance`.
+- **Should-fix 1, a retry built a new entry.** The acceptance and the start are built once, when policy permits, and
+  appended as built from `Accepting`, so a retry after a lost answer appends the same entry, which the log admits,
+  and the order isn't wedged by `order-is-opened-once`. The test moves the clock on before the retry and loses the
+  answer of each append in turn. Red as reviewed: the start refused as a second `route_chosen`.
+- **Should-fix 2, a refused append wedged the order.** Only `Unavailable` is carried on. Where the log refuses the
+  acceptance or the start (the session the yes was asked in has ended, say), the order ends, `no_route_right_now`,
+  recorded as an `order_refusal`, and is quoted and accepted no more. Reading, reversible: the class. Tested by
+  ending the session before the acceptance.
+- **Should-fix 3, the session wasn't tied to the requester before the reserve was asked.** `open` reads the session
+  from policy's register through a port (`intake::SessionRegister`): a session the register doesn't hold, or holds
+  for another party, or that has ended by Core's clock, is refused before an order exists, `refused_by_policy`, and
+  no provider is asked anything. Test `session_that_isnt_the_requesters_is_refused_before_the_reserve_is_asked`.
+- **Should-fix 4, the request register was global.** Keyed by the requester's party and the request identifier, on
+  the coordinator's ruling: another party's request under the same identifier opens its own order, and nothing
+  anyone is told names another party's order. A request from an actor that doesn't act for the party it states
+  opens nothing and records nothing (`NotTheRequester`). The party a request is kept under is its caller's, which a
+  well-formed request has as its requester, so a malformed request can't occupy another party's identifier. Test
+  `request_identifier_is_the_requesters_own`.
+- **Should-fix 5, `open` appended before it kept the order.** The request's record, its order id and the entries its
+  opening appends are kept first, and appended as built; the same request again carries them on under the same
+  order. Test `open_whose_append_failed_keeps_its_order`; red as reviewed, a second order.
+- **Should-fix 6, a split order's yes.** A `// T-020-01e:` note where the acceptance takes the first part's yes;
+  each part's is cited once core-internal's acceptance names them.
+- **Nit.** The carry-on path doesn't resolve the destination again: policy permitted on the resolution made then.
+- **Rule-off, each red:** a carry-on by any actor of the party; a stated party trusted, without `ActsFor` (on the
+  carry-on and on the confirmation); an owner change released without naming the owner; a refusal of the caller
+  ending the order; a retry rebuilding its entries; a refused append waited on; any session taken; one register for
+  every party; told to anyone stating the party; and `open` appending before it keeps the order. The earlier
+  rule-offs were run again on the new code, each red.
 
 ## T-020-05
 

@@ -1,12 +1,15 @@
 //! Shared helpers for intake's tests (`T-020-03`): one log that both orchestration's handle and policy's write to,
-//! as the assembly's log does, replayed as the log itself would admit it; policy's authorisations and the user's
-//! session, recorded on policy's path; a destination register; and one environment that opens, quotes and accepts
-//! orders. Built on `snapshot_support` (`T-020-05`) and `rounds_support` (`T-020-06`), used unchanged.
+//! as the assembly's log does, attributing each stated entry and admitting each entry over the ones before it as
+//! it is appended (`attribute`, `admit_entry`), and able to fail an append or lose its answer on demand; policy's
+//! authorisations, holding each actor to the register of actors (`ActsFor`), and the user's session, recorded on
+//! policy's path; the register of actors and policy's session register as intake reads them; a destination
+//! register; and one environment that opens, quotes and accepts orders. Built on `snapshot_support` (`T-020-05`)
+//! and `rounds_support` (`T-020-06`), used unchanged.
 
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
@@ -22,7 +25,8 @@ use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, OuterNode, SafeInteger};
 use rutent_contracts::router_api::{Id, PolicyBounds, Request, Timestamp};
 use rutent_core_orch::intake::{
-    Desk, Destinations, Intake, IntakeError, OrderRequest, Resolution, Status, Told,
+    Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRequest, Resolution,
+    SessionRegister, Status, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, Parts, Providers};
 use rutent_core_orch::snapshot::{Clock, Exposures, Price, Releases};
@@ -46,12 +50,19 @@ pub const OWNER: &str = "owner-1";
 
 // One log, two handles -----------------------------------------------------------------------------------------------
 
-/// The log's entries, each with the path it came by, in order.
-#[derive(Debug, Default)]
+/// The log: each entry as handed in, with the path it came by, in order, and each as the log recorded it, its
+/// statement attributed. An entry the log wouldn't admit is refused, with nothing appended.
 pub struct Book {
     pub entries: Vec<(Through, Entry)>,
+    history: Vec<(Receipt, Entry)>,
+    /// What the log reads to attribute a statement: the catalogue's keys as the test set them, the store, the clock.
+    catalogue: Catalogue,
+    store: Rc<RefCell<Store>>,
+    clock: Rc<TestClock>,
     /// The call whose next append on orchestration's handle fails, once, with nothing appended.
     pub fail_next: Option<&'static str>,
+    /// The call whose next append on orchestration's handle is written, but its answer lost, once.
+    pub lose_next: Option<&'static str>,
 }
 
 fn log_receipt(index: usize) -> Receipt {
@@ -66,8 +77,32 @@ fn log_receipt(index: usize) -> Receipt {
 impl Book {
     fn push(&mut self, through: Through, entry: Entry) -> Result<Receipt, AppendFailure> {
         entry.check().map_err(AppendFailure::Refused)?;
+        let recorded = match &entry {
+            Entry::Stated(claim) => {
+                let store = self.store.borrow();
+                let mut sources = Sources {
+                    catalogue: &self.catalogue,
+                    store: &store,
+                    at: self.clock.now().floor(),
+                };
+                let mut keys = Sources { ..sources };
+                let signatures = Sources { ..sources };
+                Entry::Stated(attribute(
+                    claim,
+                    &self.history,
+                    &mut sources,
+                    &mut keys,
+                    &signatures,
+                )?)
+            }
+            verified => verified.clone(),
+        };
+        admit_entry(&self.history, &recorded, through, &operator().acts)
+            .map_err(AppendFailure::Refused)?;
+        let receipt = log_receipt(self.entries.len());
         self.entries.push((through, entry));
-        Ok(log_receipt(self.entries.len() - 1))
+        self.history.push((receipt.clone(), recorded));
+        Ok(receipt)
     }
 
     /// Every entry's `what`, verified entries only, in order.
@@ -102,13 +137,20 @@ impl Log for General {
         entry: &rutent_contracts::core_internal::calls::GeneralEntry,
     ) -> Result<Receipt, AppendFailure> {
         let mut book = self.0.borrow_mut();
-        if let Entry::Verified(v) = entry.entry()
-            && book.fail_next == Some(call_of(&v.what))
-        {
+        let call = match entry.entry() {
+            Entry::Verified(v) => Some(call_of(&v.what)),
+            Entry::Stated(_) => None,
+        };
+        if call.is_some() && book.fail_next == call {
             book.fail_next = None;
             return Err(AppendFailure::Unavailable);
         }
-        book.push(Through::General, entry.entry().clone())
+        let receipt = book.push(Through::General, entry.entry().clone())?;
+        if call.is_some() && book.lose_next == call {
+            book.lose_next = None;
+            return Err(AppendFailure::Unavailable);
+        }
+        Ok(receipt)
     }
 }
 
@@ -117,6 +159,7 @@ impl Log for General {
 pub struct Policy {
     pub book: Rc<RefCell<Book>>,
     pub clock: Rc<TestClock>,
+    pub actors: Rc<RefCell<ActorRegister>>,
     pub answer: Answer,
     pub asked: Vec<Authorisation>,
 }
@@ -138,6 +181,13 @@ fn now(clock: &TestClock) -> Timestamp {
 impl Authorisations for Policy {
     fn authorise(&mut self, authorisation: &Authorisation) -> Result<Decision, AppendFailure> {
         self.asked.push(authorisation.clone());
+        // `ActsFor`, the first fixed rule: the giver acts for the party it states, or the answer is a refusal.
+        let giver = &authorisation.given_by;
+        let answer = if self.actors.borrow().acts_for(&giver.acts, &giver.party) {
+            self.answer
+        } else {
+            refusal(RefusalClass::NoAccountableParty)
+        };
         let decision = id(&format!("dec-{}", authorisation.authorisation.as_str()));
         let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,
@@ -150,13 +200,13 @@ impl Authorisations for Policy {
                 at: now(&self.clock),
                 source: TimeSource::CoreClock,
             },
-            outcome: self.answer.outcome(),
+            outcome: answer.outcome(),
         });
         let receipt = self.book.borrow_mut().push(Through::Policy, entry)?;
         Ok(Decision {
             request: authorisation.authorisation.clone(),
             decision,
-            outcome: self.answer,
+            outcome: answer,
             receipt,
         })
     }
@@ -177,6 +227,60 @@ impl Destinations for Register {
             .get(destination.account.as_str())
             .cloned()
             .unwrap_or_else(|| Resolution::Owner(id(OWNER)))
+    }
+}
+
+/// The register of actors: who each actor, as authenticated, acts for.
+#[derive(Debug, Default)]
+pub struct ActorRegister {
+    pub pairs: BTreeSet<(String, String)>,
+}
+
+impl ActorRegister {
+    pub fn acts_for(&self, acts: &Id, party: &Id) -> bool {
+        self.pairs
+            .contains(&(acts.as_str().to_owned(), party.as_str().to_owned()))
+    }
+
+    pub fn list(&mut self, actor: &Actor) {
+        self.pairs.insert((
+            actor.acts.as_str().to_owned(),
+            actor.party.as_str().to_owned(),
+        ));
+    }
+}
+
+/// The register of actors, as intake reads it.
+pub struct Acting(pub Rc<RefCell<ActorRegister>>);
+
+impl Actors for Acting {
+    fn acts_for(&mut self, acts: &Id, party: &Id) -> bool {
+        self.0.borrow().acts_for(acts, party)
+    }
+}
+
+/// Policy's session register, as intake reads it.
+#[derive(Debug, Default)]
+pub struct Sessions {
+    pub held: BTreeMap<String, HeldSession>,
+}
+
+impl SessionRegister for Sessions {
+    fn held(&mut self, session: &Id) -> Option<HeldSession> {
+        self.held.get(session.as_str()).cloned()
+    }
+}
+
+/// The store, shared with the log, which reads what it kept.
+pub struct SharedStore(pub Rc<RefCell<Store>>);
+
+impl Evidence for SharedStore {
+    fn keep(&mut self, received: &[u8]) -> Result<Kept, AppendFailure> {
+        self.0.borrow_mut().keep(received)
+    }
+
+    fn fetch(&mut self, check: &ReadCheck) -> Result<Fetched, AppendFailure> {
+        self.0.borrow_mut().fetch(check)
     }
 }
 
@@ -215,7 +319,11 @@ pub struct Env {
     pub releases: Releases,
     pub book: Rc<RefCell<Book>>,
     pub log: General,
-    pub evidence: Store,
+    pub evidence: SharedStore,
+    pub store: Rc<RefCell<Store>>,
+    pub actors: Rc<RefCell<ActorRegister>>,
+    pub acting: Acting,
+    pub sessions: Sessions,
     pub bound: Bound,
     pub people: People,
     pub key: TestKey,
@@ -240,7 +348,27 @@ impl Env {
         catalogue.set_answer_within(60);
         catalogue.open_session(SESSION, "acct-1", Instant(SESSION_ENDS));
         let clock = Rc::new(TestClock::at(START));
-        let book = Rc::new(RefCell::new(Book::default()));
+        let store = Rc::new(RefCell::new(Store::default()));
+        let book = Rc::new(RefCell::new(Book {
+            entries: Vec::new(),
+            history: Vec::new(),
+            catalogue: catalogue.clone(),
+            store: store.clone(),
+            clock: clock.clone(),
+            fail_next: None,
+            lose_next: None,
+        }));
+        let actors = Rc::new(RefCell::new(ActorRegister::default()));
+        actors.borrow_mut().list(&customer());
+        actors.borrow_mut().list(&agent());
+        let mut sessions = Sessions::default();
+        sessions.held.insert(
+            SESSION.into(),
+            HeldSession {
+                holder: customer().party,
+                expires_at: Timestamp::new(Instant(SESSION_ENDS).rfc3339().unwrap()).unwrap(),
+            },
+        );
         let env = Self {
             catalogue,
             clock: clock.clone(),
@@ -248,7 +376,11 @@ impl Env {
             releases: Releases::new(),
             book: book.clone(),
             log: General(book.clone()),
-            evidence: Store::default(),
+            evidence: SharedStore(store.clone()),
+            store,
+            actors: actors.clone(),
+            acting: Acting(actors.clone()),
+            sessions,
             bound: Bound::of(100),
             people: People::default(),
             key: TestKey(operator_key()),
@@ -257,6 +389,7 @@ impl Env {
             policy: Policy {
                 book: book.clone(),
                 clock,
+                actors,
                 answer: Answer::Permit {},
                 asked: Vec::new(),
             },
@@ -339,6 +472,8 @@ impl Env {
             parts: &mut parts,
             destinations: &mut self.register,
             authorisations: &mut self.policy,
+            actors: &mut self.acting,
+            sessions: &mut self.sessions,
             bounds: &self.bounds,
             prices: &self.prices,
             core: &core,
@@ -352,9 +487,21 @@ impl Env {
         self.with(sim, |intake, desk| intake.open(desk, request.clone()))
     }
 
-    /// Quotes `order` with `RouteFinder`.
+    /// The customer quotes `order` with `RouteFinder`.
     pub fn quote(&mut self, sim: &mut Sim, order: &Id) -> Result<Told, IntakeError> {
-        self.with(sim, |intake, desk| intake.quote::<RouteFinder>(desk, order))
+        self.quote_by(sim, &customer(), order)
+    }
+
+    /// `caller` quotes `order` with `RouteFinder`.
+    pub fn quote_by(
+        &mut self,
+        sim: &mut Sim,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<Told, IntakeError> {
+        self.with(sim, |intake, desk| {
+            intake.quote::<RouteFinder>(desk, caller, order)
+        })
     }
 
     /// `by` accepts `order`'s quote of `digest`.
@@ -365,7 +512,33 @@ impl Env {
         by: &Actor,
         digest: &Digest,
     ) -> Result<Told, IntakeError> {
-        self.with(sim, |intake, desk| intake.accept(desk, order, by, digest))
+        self.with(sim, |intake, desk| {
+            intake.accept(desk, order, by, digest, None)
+        })
+    }
+
+    /// `by` accepts `order`'s quote of `digest`, confirming its destination's owner is `owner`.
+    pub fn confirm(
+        &mut self,
+        sim: &mut Sim,
+        order: &Id,
+        by: &Actor,
+        digest: &Digest,
+        owner: &Id,
+    ) -> Result<Told, IntakeError> {
+        self.with(sim, |intake, desk| {
+            intake.accept(desk, order, by, digest, Some(owner))
+        })
+    }
+
+    /// What `caller` is told about its request `request`.
+    pub fn told(&mut self, caller: &Actor, request: &str) -> Option<Told> {
+        self.intake.told(&mut self.acting, caller, &id(request))
+    }
+
+    /// What the customer is told about its request `request`.
+    pub fn told_customer(&mut self, request: &str) -> Option<Told> {
+        self.told(&customer(), request)
     }
 
     /// Opens `request` and quotes it: its order and the quote's digest.
@@ -522,15 +695,16 @@ impl Env {
         for (i, (through, entry)) in book.entries.iter().enumerate() {
             let entry = match entry {
                 Entry::Stated(claim) => {
+                    let store = self.store.borrow();
                     let mut sources = Sources {
                         catalogue: &self.catalogue,
-                        store: &self.evidence,
+                        store: &store,
                         at: self.clock.now().floor(),
                     };
                     let mut keys = Sources { ..sources };
                     let signatures = Sources { ..sources };
                     Entry::Stated(
-                        attribute(claim, &mut sources, &mut keys, &signatures)
+                        attribute(claim, &history, &mut sources, &mut keys, &signatures)
                             .map_err(|e| (i, format!("{e:?}")))?,
                     )
                 }
@@ -590,6 +764,17 @@ pub fn order_request(request: &str, caller: Actor) -> OrderRequest {
         route: route("1000"),
         inputs: BTreeMap::new(),
         needs: Vec::new(),
+    }
+}
+
+/// An actor that states the customer's party, in the customer's role, but doesn't act for it: the register of
+/// actors lists it for no one.
+pub fn impostor() -> Actor {
+    Actor {
+        party: customer().party,
+        acts: id("someone-else"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
     }
 }
 

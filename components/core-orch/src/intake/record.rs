@@ -22,13 +22,8 @@ pub(super) fn now(clock: &dyn Clock) -> Result<Timestamp, AppendFailure> {
         )))
 }
 
-/// Appends `what`, observed by `who` at Core's clock, through orchestration's handle.
-pub(super) fn append(
-    log: &mut dyn Log,
-    clock: &dyn Clock,
-    who: &Actor,
-    what: What,
-) -> Result<Receipt, AppendFailure> {
+/// The entry of `what`, observed by `who` at Core's clock, checked.
+pub(super) fn build(clock: &dyn Clock, who: &Actor, what: What) -> Result<Entry, AppendFailure> {
     let entry = Entry::Verified(VerifiedEntry {
         kind: VerifiedKind::Verified,
         who: who.clone(),
@@ -40,6 +35,22 @@ pub(super) fn append(
         outcome: Outcome::Observed {},
     });
     entry.check().map_err(AppendFailure::Refused)?;
-    let general = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+    Ok(entry)
+}
+
+/// Appends `entry` as built, through orchestration's handle: an entry appended again after a failed append, or one
+/// whose answer was lost, is the same entry.
+pub(super) fn append_entry(log: &mut dyn Log, entry: &Entry) -> Result<Receipt, AppendFailure> {
+    let general = GeneralEntry::try_from(entry.clone()).map_err(AppendFailure::Refused)?;
     log.append(&general)
+}
+
+/// Appends `what`, observed by `who` at Core's clock, through orchestration's handle.
+pub(super) fn append(
+    log: &mut dyn Log,
+    clock: &dyn Clock,
+    who: &Actor,
+    what: What,
+) -> Result<Receipt, AppendFailure> {
+    append_entry(log, &build(clock, who, what)?)
 }
