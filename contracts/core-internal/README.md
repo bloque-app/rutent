@@ -161,7 +161,7 @@ expected refusal from `RELATIONS` itself, and checks that every row and field ha
 this table with its ids.
 
 Entries that cite nothing earlier are admitted on their own checks: `authorise`, `open_session`, `charge`,
-`hand_over`, `holding_check`, `order_refusal`, `destination_check`, `settlement`, `stuck_call`, `command`,
+`hand_over`, `holding_check`, `order_refusal`, `destination_check`, `settlement`, `replay`, `stuck_call`, `command`,
 `grant_permission`, and stated entries.
 
 - **Only a verified statement answers for its maker.** Every row that names a statement's maker requires its
@@ -309,6 +309,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-020-08` | actual settlement time beside the declared one | `settlement` |
 | `T-020-09` | graded evidence, a statement alone as a statement, whose it is | `evidence`, its `evidence` the id `segment_settled` cites |
 | `T-020-09` | a fee record per settled segment, to a provider or the operator | `fee` |
+| `T-020-09` | a private node's recorded segments replayed against the public movement out: consistency, a mismatch per node, or nothing recorded | `replay` |
 | `T-020-10` | a recalculation; a provider passed again; waiting past the floor | `input` (`route_recalculated`); `decision_record` |
 | `T-020-11` | stuck, and its processing | `input` (`stuck_declared`, `no_route`); `stuck_decide`, `stuck_move`, `effect` of `resolve_stuck` |
 | `T-020-11` | the figures behind a stuck call; a change in a provider's p99 | `stuck_call`; raise, `difference: settlement_time` |

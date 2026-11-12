@@ -165,3 +165,9 @@
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
   permissions takes in (`REQ-MDL-4`, ADR-0014). One valid fixture added: 110 valid. (DEC-4, DEC-20, REQ-AUZ-6, T-021-03)
+- Folded into 1.0.0 before its release: a home for a private node's replay. `What::Replay { order, segment, nodes,
+  found }` records where the value left one or more private nodes onto a public node, the nodes replayed in route
+  order, and what `CMP-EVIDENCE` found: `consistent_with_the_exit` (consistency, never proof, `THR-131`), each
+  `mismatch` with the node it is against, or a node that recorded `nothing_recorded`. Before it, `T-020-09` had no
+  record for `REQ-ORD-41`'s replay. It cites nothing earlier and is admitted on its own checks. Three valid
+  fixtures and four invalid: 119 valid, 119 invalid. (DEC-4, DEC-20, DEC-24, REQ-ORD-41, T-020-09)

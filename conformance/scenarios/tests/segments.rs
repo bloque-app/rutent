@@ -820,10 +820,20 @@ fn first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries() {
     let context = world.context();
     retired.set_context(context.deployment.clone(), &context.protocol_version);
     let ran = core.run_over(&retired, &mut world.fleet.platform);
-    let done = segments(&ran);
+    // The withdrawal settles on its first verdict. The deposit, never handed over, isn't under a catalogue that no
+    // longer lists its provider (`T-020-09`: a provider below its tuple's floor now is not routed through).
     assert!(
-        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
-        "{done:?}"
+        core.segments
+            .handed_on(&id(ORDER), &id(WITHDRAWAL))
+            .is_some(),
+        "{ran:?}"
+    );
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(
+        refused.reason,
+        rutent_core_orch::snapshot::RouteRefusal::BelowEvidenceFloor(1)
     );
 }
 

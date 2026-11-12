@@ -534,7 +534,7 @@ fn advertised(provider: &str, key: &Ed25519Key, publisher: &str) -> Vec<u8> {
 }
 
 /// The stand-alone records Core writes that cite nothing earlier, beside the world's.
-const STANDALONE: [&str; 9] = [
+const STANDALONE: [&str; 10] = [
     "verified-entry-of-a-charge-over-its-bound",
     "verified-entry-of-a-hand-over",
     "verified-entry-of-a-holding-check",
@@ -544,6 +544,7 @@ const STANDALONE: [&str; 9] = [
     "verified-entry-of-the-figures-behind-a-stuck-call",
     "verified-entry-of-an-operator-command",
     "verified-entry-of-a-registered-authorisation",
+    "verified-entry-of-a-replay-consistent-with-its-exit",
 ];
 
 /// Every kind of verified entry `core-internal` defines, by its `call`, and the stated kind: an exhaustive match, so
@@ -581,6 +582,7 @@ fn kind(entry: &Entry) -> &'static str {
         What::Settlement { .. } => "settlement",
         What::Evidence { .. } => "evidence",
         What::Fee { .. } => "fee",
+        What::Replay { .. } => "replay",
         What::StuckCall { .. } => "stuck_call",
         What::Afterwards { .. } => "afterwards",
         What::Reliance { .. } => "reliance",
@@ -590,7 +592,7 @@ fn kind(entry: &Entry) -> &'static str {
 }
 
 /// Every kind [`kind`] names.
-const KINDS: [&str; 34] = [
+const KINDS: [&str; 35] = [
     "decide",
     "authorise",
     "effect",
@@ -619,6 +621,7 @@ const KINDS: [&str; 34] = [
     "settlement",
     "evidence",
     "fee",
+    "replay",
     "stuck_call",
     "afterwards",
     "reliance",

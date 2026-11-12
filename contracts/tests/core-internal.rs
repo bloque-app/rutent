@@ -73,7 +73,11 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 37] = [
+const RUST_RULES: [(&str, &str); 38] = [
+    (
+        "verified-entry-of-a-replay-mismatch-against-a-node-not-replayed",
+        "a replay's mismatch is against a node it replayed",
+    ),
     (
         "permission-change-by-a-provider",
         "a read permission is granted or revoked by the operator",
@@ -233,7 +237,22 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 78] = [
+const SCHEMA_RULES: [SchemaRule; 81] = [
+    (
+        "verified-entry-of-a-replay-of-no-nodes",
+        &[("/what/nodes", "minItems")],
+        "a replay names the nodes it replayed, at least one, each once",
+    ),
+    (
+        "verified-entry-of-a-replay-mismatch-naming-no-way",
+        &[("/what/found", "oneOf")],
+        "a mismatch names how the records disagree, at least one way, each once",
+    ),
+    (
+        "verified-entry-of-a-replay-recorded-as-proof",
+        &[("/what/found", "oneOf")],
+        "unknown variant `proof`",
+    ),
     (
         "permission-change-without-its-grantee",
         &[("", "required")],

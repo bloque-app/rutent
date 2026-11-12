@@ -1,0 +1,38 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "replay",
+    "order": "ord-17",
+    "segment": "seg-4",
+    "nodes": [
+      "ledger-a",
+      "ledger-b"
+    ],
+    "found": {
+      "status": "mismatch",
+      "mismatches": [
+        {
+          "node": "ledger-b",
+          "kind": "fee_mismatch"
+        },
+        {
+          "node": "ledger-b",
+          "kind": "public_exit"
+        }
+      ]
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

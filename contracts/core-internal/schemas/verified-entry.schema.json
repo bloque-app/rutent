@@ -70,6 +70,7 @@
             "settlement",
             "evidence",
             "fee",
+            "replay",
             "stuck_call",
             "afterwards",
             "reliance",
@@ -497,6 +498,21 @@
           },
           "then": {
             "$ref": "#/$defs/what_fee"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "replay"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_replay"
           }
         },
         {
@@ -1421,6 +1437,122 @@
         "billed_separately": {
           "description": "Whether it was billed separately, outside the amounts reported.",
           "type": "boolean"
+        }
+      }
+    },
+    "what_replay": {
+      "description": "Private nodes' recorded segments replayed through CMP-EVIDENCE where the value leaves them onto a public node, against the public movement out and the stated outcome (REQ-ORD-41, DEC-24). A match is consistency with the public exit, not proof; a route ending inside a node has no such record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "nodes",
+        "found"
+      ],
+      "properties": {
+        "call": {
+          "const": "replay"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment the value left the private nodes by, onto the public node.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "nodes": {
+          "description": "The private nodes replayed, in route order, at least one, each once.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
+        },
+        "found": {
+          "$ref": "#/$defs/replay_found"
+        }
+      }
+    },
+    "replay_found": {
+      "description": "What the replay found: consistency with the public exit (never proof, THR-131), each way the records disagree, or a node that recorded nothing.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "consistent_with_the_exit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "mismatches"
+          ],
+          "properties": {
+            "status": {
+              "const": "mismatch"
+            },
+            "mismatches": {
+              "description": "Each way the records disagree, at least one, each once, each against a node replayed.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/replay_mismatch"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "node"
+          ],
+          "properties": {
+            "status": {
+              "const": "nothing_recorded"
+            },
+            "node": {
+              "description": "The node whose publisher recorded nothing: one replayed.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            }
+          }
+        }
+      ]
+    },
+    "replay_mismatch": {
+      "description": "One way a replayed record disagrees, and the node it is against: where value passes between two nodes, the one it leaves.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "kind"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "malformed",
+            "broken_chain",
+            "fee_mismatch",
+            "handoff_broken",
+            "public_exit",
+            "stated_outcome"
+          ]
         }
       }
     },

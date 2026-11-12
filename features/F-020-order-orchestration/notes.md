@@ -1040,3 +1040,140 @@ Branch `f-020/t-020-03b-per-part-yes`, from `m3` at `2219de2` with `T-020-01e`'s
 - **Touches**: `components/core-orch/src/recalc/`, the three seams above, `components/core-orch/tests/recalc.rs`,
   `conformance/scenarios/tests/recalc.rs` and the kit's additions in `conformance/scenarios/tests/segments_support/`.
   No manifest, no dependency, no `DEC-20` path.
+
+## T-020-09
+
+- **The grading, `closing::Evidenced`** (`components/core-orch/src/closing/`). It implements the segments' `Grading`
+  seam, which now answers `Graded::Settles { cites, entries }` (the entries `segment_settled` rests on, the first the
+  evidence it cites) or `Graded::Waits(Short)`, and appends nothing itself: the segments append what it answers, each
+  entry once, kept with the segment like every other step (`INV-8`). What it reads comes in the struct: the catalogue
+  (declared grades, which nodes are private or public, holding accounts), `PublicRecords` (each public network's rules
+  and movements, and the network's own tie of a movement to a segment's transaction, `DEC-13`), `Books` (each private
+  node's publisher's record of the segments inside it) and `Closing`, Core's record across orders of which segment
+  each public movement evidences and what each settled segment's grading found, which the production assembly keeps
+  durably (`F-030`), as `Segments`.
+- **Graded through `CMP-EVIDENCE`** (`REQ-ORD-39`, `DEC-13`). The result's pieces go through `grade_outcome` against
+  the grade the provider declared. A claim of grade 1 or 2 is backed only by `public_record_check` of the segment's
+  own public movement (at its public end, its destination's first), on the piece whose reference is that movement; an
+  unbacked claim is a statement. The `evidence` entry says whose: the piece's `by` where a backed proof is the best
+  piece (the network, or the receipt's maker), otherwise the provider. Reading, reversible.
+- **Closing at a part's final deposit** (`REQ-ORD-33`). Core checks the deposit's movement itself, held to the route's
+  one destination (its account, its to asset and what the deposit gave out), and records two `evidence` entries, both
+  resting on the reserve's verified result: the cited one, grade 1, whose the network; and `{cites}.reserve`, the
+  reserve's signed statement, at the grade the reserve's own pieces earn (never the network record it names), whose
+  the reserve. The result's envelope is the reserve's "signed statement
+  for its own book" (provider-role's README). Without a final public record the deposit waits
+  (`SegmentOutcome::AwaitsEvidence(Short::NoPublicRecord)`): no `segment_settled`, no `result`, the value held, the
+  segment in flight and graded again on the next run, so a movement that becomes final later closes it. Nothing is
+  recorded of a waiting deposit's grade beyond its result's stated entry (default, reversible: an evidence entry
+  built while waiting would change once the record turns final, and one id can't carry two entries). A deposit to a
+  rail declared private closes on the public movement into the private node instead, plus the reserve's statement,
+  and records no replay.
+- **Inside a private node.** A segment whose two ends are private settles on its provider's evidence (grade 3 or 4 by
+  necessity, ADR-0007). Where the value leaves the node on a final public record, each such segment gets two more
+  `evidence` entries, `{cites}.in.{place}` and `{cites}.out.{place}`, grade 1, whose the network of the movement into
+  the node and of the movement out, resting on that segment's own result. Reading, reversible.
+- **Replay** (`REQ-ORD-41`, `DEC-24`). At a segment from a private node onto a public one, the private nodes passed
+  since the value last left a public node are replayed with `replay_route` against the movement out and the stated
+  outcome (the segment's to asset and what it gave out), each node's record asked of `Books` for the transactions of
+  the segments that touched it. A new core-internal entry, `replay`, records it: `consistent_with_the_exit` (never
+  proof), each `mismatch` with its node, or `nothing_recorded`. Two private nodes with a public node between are
+  replayed in turn, each as the value leaves it; two adjacent ones together, as one hands to the other. A mismatch
+  stops nothing: it is recorded (raising it is `T-022-05`'s). An exit with no public movement to compare is a
+  `public_exit` mismatch. The replay entry cites nothing earlier (admitted on its own checks, like `holding_check`).
+- **One movement, one segment** (`REQ-ORD-38`). The first segment whose grading relies on a movement holds it in
+  `Closing`; for any other order's segment that movement backs nothing, so it is graded on its other pieces, the
+  provider's word unless they grade higher, and each order keeps its own segment and its own entry. A final deposit
+  on a movement another deposit closed on waits (`Short::MovementShared`).
+- **Before a segment is handed over** (`closing::admits`, called from `run_part`): its provider's declared grade is at
+  or above the floor the operator set on its tuple now, and a tuple with no floor or a provider with no declaration
+  is refused (`REQ-ORD-39`); a segment that isn't its part's last leaves the value at an inner node with a holding
+  account (`INV-5`, `REQ-CAT-23`). The snapshot left such providers and nodes out when the route was chosen; this
+  holds a segment to the catalogue as it stands, so a floor raised since stops it. A refusal is recorded as
+  `order_refusal` `no_route_right_now` (`RouteRefusal::BelowEvidenceFloor`, `NoHoldingAccount`) and the part answers
+  `Ran::Refused`, also where earlier segments settled (they stand). A result graded below its tuple's floor still
+  settles, recorded as graded: the floor is a routing rule. Readings, reversible.
+- **Fees** (`REQ-AUD-11`, `closing::fees`). After `segment_settled`, built once and appended as the segment's step:
+  the fee its result states, to its provider (only where the fee is in the asset the segment takes in, which `judge`
+  holds), and on a part's final deposit the operator's, `rutent_router::quote::operator_fee` over what the deposit
+  gave out, attributed to the operator's `acts`, recorded at zero too. `billed_separately` is always false: provider-role
+  has no field for a fee billed apart (gap below). Fees are recorded whatever the grading, `ProvidersWord` included.
+  Nothing sums them.
+- **Seams in other rows' files** (each named in the commit):
+  - `segments/ports.rs` and `segments/mod.rs` (`T-020-08`): `ToGrade` carries what the grading reads (the part, the
+    transaction, the result's bytes, the part's operations, the operator's fee formula, the place, the segments, the
+    route's end, what the result says it gave out, the operator); `Grading::grade` answers `Graded`; `Short`;
+    `SegmentOutcome::AwaitsEvidence`; the graded entries and the fee records kept with the segment; the guard before a
+    first hand-over. `ProvidersWord` stays, answering the same grade-4 entry as before, documented as a stand-in that
+    closes on a statement and so is no grading for an order that closes.
+  - `snapshot/route.rs` (`T-020-05`): the two `RouteRefusal` variants.
+  - `components/core-orch/tests/segments.rs` (`T-020-08`): its catalogue was empty, so the guard refused the
+    withdrawal; it now joins the withdrawal's reserve with a floor and a holding account (`admitting`).
+  - `conformance/scenarios/tests/segments.rs` (`T-020-08`): `first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries`
+    re-runs under an empty catalogue; the withdrawal still settles on its first verdict, and the deposit, never handed
+    over, is now refused as below its floor rather than run.
+  - `components/core-audit/tests/log.rs` (`T-022-01`): the new kind in its exhaustive list and its standalone fixtures.
+- **Contract: core-internal 1.0.0, folded** (unreleased, no bump). `What::Replay`, `ReplayFound`, `ReplayMismatch`,
+  `MismatchKind`, the schema's `what_replay`, three valid and four invalid fixtures, the README's home row and the
+  standalone list, the CHANGELOG line. `contracts/` is a `DEC-20` path. `PLAN.md` §4.4 gives `contracts/` to `T-020-01`
+  and `T-020-02` in `M3`; this is made on the brief's word, since `REQ-ORD-41`'s replay had no home and the home table
+  says a record not listed needs the contract changed.
+- **Tests.** On the running platform with the simulated providers (`conformance/scenarios/tests/closing.rs`, over
+  `T-020-08`'s kit, a `Recording` wrapper keeping the bank network and the reserve's book as Core reads them):
+  `statement_alone_does_not_close_an_order` (the reserve's `unrecorded` deposit; then the same route on the record,
+  closing, the ledger replayed), `provider_below_the_tuples_floor_is_not_routed_through` (the floor raised on the
+  catalogue the part runs against, on each of the two tuples), `value_between_segments_rests_only_in_a_holding_account`
+  (the same catalogue with no holding account registered) and `every_settled_segment_has_its_fee_record_and_no_balance_is_kept`
+  (two orders). With fakes in `components/core-orch/tests/closing.rs`, over the real `CMP-EVIDENCE` and
+  `SimulatedNetwork`, since no simulated route has a segment inside a private node, crosses two providers' private
+  nodes, or shares a movement: `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` (the
+  router-api fixture's route through `ledger-in`), `route_across_two_private_nodes_replays_each_on_its_way_out` (five
+  segments through `ledger-in`, the public `polygon` and `ledger-b`, matching and with a mismatch at the second node)
+  and `shared_movement_keeps_one_segment_per_order_as_the_providers_word`. The end-to-end scenarios are `T-024-04`'s
+  and `T-024-05`'s.
+- **Written after the code, then each rule switched off.** The code came first (the seam's shape decided the tests'),
+  so each rule was switched off once, its test run red, the file restored and touched (scratch helper
+  `t-020-09-ruleoff.py`, outside the tree):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a final deposit closes only on a final public record | `statement_alone_does_not_close_an_order`; `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | the tuple's floor before hand-over | `provider_below_the_tuples_floor_is_not_routed_through` |
+  | a holding account at the node between segments | `value_between_segments_rests_only_in_a_holding_account` |
+  | the guard called in `run_part` | `value_between_segments_rests_only_in_a_holding_account` |
+  | the reserve's statement graded by its own pieces | `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | the provider's fee record | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
+  | the operator's fee record on the final deposit | `every_settled_segment_has_its_fee_record_and_no_balance_is_kept` |
+  | a movement relied on by another order backs nothing | `shared_movement_keeps_one_segment_per_order_as_the_providers_word` |
+  | whose the evidence is, from the backed piece | `shared_movement_keeps_one_segment_per_order_as_the_providers_word` |
+  | the replay on the way out | `route_across_two_private_nodes_replays_each_on_its_way_out` |
+  | each node replayed in turn (the run stops at a public node) | `route_across_two_private_nodes_replays_each_on_its_way_out` |
+  | the inner segment's public movements in and out | `segment_within_a_private_node_closes_on_the_public_movements_in_and_out` |
+  | contract: a mismatch is against a node replayed | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+  | contract: a replay names its nodes | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+
+- **Hand-off to `T-024-02`** (the assembly, in review). Swap `grading: &mut ProvidersWord` for
+  `&mut closing::Evidenced { catalogue, records, books, closing }`, keeping one `Closing` beside `Segments`. In the
+  simulated world the networks and the books live inside the platform's world, which `Parts` already borrows as the
+  modules, so the assembly's `Running` wrapper should copy them after each `carry_out`, as the test's `Recording`
+  does, into what implements `PublicRecords` and `Books`. No field of `Parts` or `Live` changed.
+- **Gaps, with their owners.**
+  - The log doesn't hold a final deposit's settlement to a public record and the reserve's statement: only Core does.
+    A core-internal relation (the `segment_settled` of a part's last deposit cites grade-1 evidence and rests on the
+    reserve's verified result) would make it the log's too. `T-020-01`'s contract, foldable while 1.0.0 is
+    unreleased; not added here.
+  - A fee billed separately: provider-role 3.0.0's `Fee` has no flag, so every record says `false`. A provider-role
+    change (released): reported, not made.
+  - A private node's record of its inner segments has no provider-role shape, so `Books` is a seam the assembly fills
+    from each publisher (`F-015`'s notes): a provider-role change, for the owner.
+  - Each real network's movement-to-segment matching, finality and reorg rules (`PublicRecords`): `F-031`, one task per
+    network (`DEC-13`).
+  - A final deposit made in pieces (several movements) can't close: its one destination's movement is one. The
+    simulation's `Delivery::Pieces` makes one; the rule for pieces (`REQ-ORD-30`) is open, for the coordinator.
+  - Routing away from a reserve that can't give a public record ("A reserve that can't give them MUST NOT end a
+    route"): the router and the catalogue's (`F-011`, `F-012`); here such a deposit only waits.
+  - A replay mismatch is recorded, not raised to the operator: `T-022-05`'s raise.
+  - Evidence `CMP-EVIDENCE` refuses (a claim above the declared grade, a reused movement) leaves the segment waiting,
+    held: the stuck path (`T-020-11`) resolves it.
+- **Touches**: `components/core-orch/src/closing/`, the seams above, the two new test files, the contract's files. No
+  manifest, no dependency, no `licences/RECORD` line. `DEC-20` path: `contracts/` (core-internal).

@@ -1682,6 +1682,56 @@ pub enum FeeTo {
     Operator,
 }
 
+/// What replaying private nodes' recorded segments against the public movement out found (`REQ-ORD-41`, `DEC-24`).
+/// Schema: `urn:rutent:core-internal:verified-entry#/$defs/replay_found`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReplayFound {
+    /// The records agree with themselves, with the public movement out and with the stated outcome: consistency with
+    /// the public exit, never proof that the segments happened (`THR-131`).
+    ConsistentWithTheExit {},
+    /// Each way the records disagree, at least one, each once.
+    Mismatch {
+        /// The mismatches, in the order found.
+        mismatches: Vec<ReplayMismatch>,
+    },
+    /// A node's publisher recorded nothing for the segments inside it, so nothing was compared: neither a match nor
+    /// a mismatch, since recording is a SHOULD.
+    NothingRecorded {
+        /// The node.
+        node: Id,
+    },
+}
+
+/// One way a replayed record disagrees, and the node it is against.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayMismatch {
+    /// The node: one of those replayed. Where value passes between two nodes, the one it leaves.
+    pub node: Id,
+    /// How.
+    pub kind: MismatchKind,
+}
+
+/// How a replayed record disagrees (`CMP-EVIDENCE`'s replay, `REQ-ORD-41`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MismatchKind {
+    /// An amount or a fee isn't a whole number in its canonical spelling.
+    Malformed,
+    /// A segment doesn't take in what the one before it gave out.
+    BrokenChain,
+    /// A fee is more than what went in, or, where the asset stays the same, what went in isn't what came out plus
+    /// the fee.
+    FeeMismatch,
+    /// The node doesn't hand on what the next one records taking in.
+    HandoffBroken,
+    /// The public movement out isn't a final record of the replayed value to its destination.
+    PublicExit,
+    /// The replayed value isn't the outcome the provider stated.
+    StatedOutcome,
+}
+
 /// An operator command that needs no policy decision: none moves value, posts a route, changes the catalogue or grants
 /// a permission (`REQ-AUZ-1`, `REQ-AUZ-6`, `REQ-AUZ-7`). A closed list. Filing an arrival anew is a `refiling`, and a
 /// read permission goes through policy (`Reads::grant_permission`).
@@ -2008,6 +2058,19 @@ pub enum What {
         asset: Denomination,
         /// Whether it was billed separately, outside the amounts reported.
         billed_separately: bool,
+    },
+    /// Private nodes' recorded segments replayed through `CMP-EVIDENCE` where the value leaves them onto a public
+    /// node, against the public movement out and the stated outcome (`REQ-ORD-41`, `DEC-24`). A match is consistency
+    /// with the public exit, not proof; a route ending inside a node has no such record.
+    Replay {
+        /// The order.
+        order: Id,
+        /// The segment the value left the private nodes by, onto the public node.
+        segment: Id,
+        /// The private nodes replayed, in route order, at least one, each once.
+        nodes: Vec<Id>,
+        /// What the replay found.
+        found: ReplayFound,
     },
     /// The figures behind a stuck call, recorded when used (`REQ-ORD-6`, `REQ-ORD-29`).
     StuckCall {

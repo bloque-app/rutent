@@ -48,6 +48,13 @@
 //! (`REQ-ORD-27`); a segment the followed order retired is never handed over again; and [`Segments::order`],
 //! [`Segments::handed_on`], [`Segments::handed_over`], [`Segments::retired`] and [`Segments::waiting`] read where
 //! the value is, what arrived there and what may still move.
+//!
+//! **Evidence and closing** (`T-020-09`'s seams): a segment whose result counted settles on what [`Grading`] answers,
+//! its entries appended each once before `segment_settled`, or waits for evidence, held and in flight, graded again on
+//! the next run ([`SegmentOutcome::AwaitsEvidence`], `REQ-ORD-33`); its fee records follow its `segment_settled`
+//! (`crate::closing::fees`, `REQ-AUD-11`); and before a segment is first handed over, its tuple's evidence floor and
+//! the holding account at the node it leaves the value at are held to the catalogue as it stands
+//! (`crate::closing::admits`, `REQ-ORD-39`, `INV-5`).
 
 mod drain;
 mod journal;
@@ -89,7 +96,7 @@ use crate::snapshot::{
 pub use drain::Uncarried;
 pub use journal::{APPEND_TRIES, Unappended};
 pub use judge::{Counted, NotCounted, Quoted, judge};
-pub use ports::{Answered, Grading, Modules, NoProxy, ProvidersWord, ToGrade, Uses};
+pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
 pub use sign::Unwritten;
 
 /// How many fresh identifiers are drawn for a transaction before the source is taken as broken.
@@ -210,6 +217,9 @@ pub enum SegmentOutcome {
     WaitingOnThePerson(ProvidersStatement),
     /// Its module answered with nothing that counts: no result, and the segment waits.
     NoResult(NotCounted),
+    /// Its result counted, but its evidence doesn't settle it yet (`REQ-ORD-33`, `T-020-09`): no `segment_settled`
+    /// and no `result`, the value held and the segment in flight, graded again on the next run.
+    AwaitsEvidence(Short),
 }
 
 /// One segment, accounted for.
@@ -378,6 +388,10 @@ struct InFlight {
     unknown: Vec<UnknownOutcome>,
     steps: BTreeMap<&'static str, Step>,
     evidence: Option<(Id, Timestamp)>,
+    /// What the grading settled it on, built once: the evidence `segment_settled` cites, and its entries.
+    graded: Option<(Id, Vec<Step>)>,
+    /// Its fee records, built once, appended after `segment_settled` (`REQ-AUD-11`).
+    fees: Option<Vec<Step>>,
     ended: bool,
     outcome: Option<SegmentOutcome>,
     /// The platform's refusal to begin it, kept before its result is appended.
@@ -679,7 +693,37 @@ impl Segments {
             // one, with what it gave out.
             let done = match self.standing(live, place) {
                 Some(done) => done,
-                None => self.hand_over(parts, live, place, &amount)?,
+                None => {
+                    // Before a segment is first handed over, its provider and the node it leaves the value at are
+                    // held to the catalogue as it stands now (`T-020-09`'s seam): the evidence floor on its tuple
+                    // (`REQ-ORD-39`) and a holding account at an inner node between segments (`INV-5`).
+                    let key = (
+                        live.order.as_str().to_owned(),
+                        live.segments[place].as_str().to_owned(),
+                    );
+                    if !self.flights.contains_key(&key)
+                        && let Err(reason) = crate::closing::admits(
+                            parts.catalogue,
+                            &part.operations[place],
+                            place + 1 == part.operations.len(),
+                        )
+                    {
+                        let refused = RouteRefused {
+                            reason: reason.at(place),
+                            class: OrderRefusalClass::NoRouteRightNow,
+                        };
+                        let receipt = record_route_refusal(
+                            parts.log,
+                            parts.clock,
+                            live.core.clone(),
+                            live.record.record_id(),
+                            Some(live.order),
+                            &refused,
+                        )?;
+                        return Ok(Ran::Refused { refused, receipt });
+                    }
+                    self.hand_over(parts, live, place, &amount)?
+                }
             };
             let next = match &done.outcome {
                 SegmentOutcome::Settled { amount_out, .. } => {
@@ -905,6 +949,8 @@ impl Segments {
                 unknown: Vec::new(),
                 steps,
                 evidence: None,
+                graded: None,
+                fees: None,
                 ended: false,
                 outcome: None,
                 begin_refused: None,
@@ -1143,7 +1189,11 @@ impl Segments {
             Err(why) => return Ok(SegmentOutcome::NoResult(why)),
         };
         match counted {
-            Counted::Succeeded { handed_on, .. } => {
+            Counted::Succeeded {
+                handed_on,
+                amount_out: stated_out,
+                ..
+            } => {
                 let amount_out = handed_on;
                 let amount_out = Amount::new(amount_out)
                     .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
@@ -1156,18 +1206,43 @@ impl Segments {
                         graded
                     }
                 };
-                let evidence = parts.grading.grade(
-                    parts.log,
-                    &ToGrade {
-                        evidence: &evidence,
-                        order: live.order,
-                        segment: &segment,
-                        provider: &provider,
-                        result: &stated,
-                        core: live.core,
-                        at: &graded_at,
-                    },
-                )?;
+                let transaction = flight.transaction.clone();
+                let settled = ToGrade {
+                    evidence: &evidence,
+                    order: live.order,
+                    part: live.part,
+                    segment: &segment,
+                    provider: &provider,
+                    transaction: &transaction,
+                    result: &stated,
+                    bytes: &bytes,
+                    operations: chosen.parts[live.at].operations.as_slice(),
+                    operator_fee: &live.record.bounds.operator_fee,
+                    place,
+                    segments: live.segments,
+                    end: live.route,
+                    amount_out: &stated_out,
+                    core: live.core,
+                    operator: live.operator,
+                    at: &graded_at,
+                };
+                // Graded once it settles: what it settled on is kept and appended, each entry once (`INV-8`). One
+                // that waits is graded again next time, since what is public may have changed (`REQ-ORD-33`).
+                if self.flight(at)?.graded.is_none() {
+                    match parts.grading.grade(&settled) {
+                        Graded::Settles { cites, entries } => {
+                            let steps = entries
+                                .into_iter()
+                                .map(kept_step)
+                                .collect::<Result<Vec<_>, _>>()?;
+                            self.flight_mut(at)?.graded = Some((cites, steps));
+                        }
+                        Graded::Waits(short) => {
+                            return Ok(SegmentOutcome::AwaitsEvidence(short));
+                        }
+                    }
+                }
+                let evidence = self.append_graded(parts.log, at)?;
                 let state_evidence = stm::Id::new(evidence.as_str())
                     .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
                 self.input(
@@ -1184,6 +1259,16 @@ impl Segments {
                 if let Some(declared) = cited.declared_seconds {
                     self.settlement(parts, live, at, declared)?;
                 }
+                // The fee captured, recorded once the segment settled (`REQ-AUD-11`): attributed to its provider,
+                // and on a part's final deposit the operator's too, which that provider keeps back.
+                if self.flight(at)?.fees.is_none() {
+                    let fees = crate::closing::fees(&settled)
+                        .into_iter()
+                        .map(kept_step)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.flight_mut(at)?.fees = Some(fees);
+                }
+                self.append_fees(parts.log, at)?;
                 parts.exposures.release(live.order, &segment);
                 Ok(SegmentOutcome::Settled {
                     amount_out,
@@ -1408,6 +1493,34 @@ impl Segments {
             );
         }
         Ok((self.step(log, at, name)?, true))
+    }
+
+    /// Appends the entries the segment's grading settled it on, each once, and answers the evidence its
+    /// `segment_settled` cites.
+    fn append_graded(
+        &mut self,
+        log: &mut dyn Log,
+        at: &(String, String),
+    ) -> Result<Id, SegmentsError> {
+        let (cites, steps) = self
+            .flight_mut(at)?
+            .graded
+            .as_mut()
+            .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
+        append_all(log, steps)?;
+        Ok(cites.clone())
+    }
+
+    /// Appends the segment's fee records, each once.
+    fn append_fees(
+        &mut self,
+        log: &mut dyn Log,
+        at: &(String, String),
+    ) -> Result<(), SegmentsError> {
+        if let Some(steps) = self.flight_mut(at)?.fees.as_mut() {
+            append_all(log, steps)?;
+        }
+        Ok(())
     }
 
     /// The result's stated entry, its bytes kept once.
@@ -1771,6 +1884,26 @@ fn key(receipt: &Receipt) -> String {
 }
 
 /// Core's clock, as a timestamp.
+/// An entry checked and kept as a step, to append until the log gives its receipt.
+fn kept_step(entry: Entry) -> Result<Step, SegmentsError> {
+    entry.check().map_err(AppendFailure::Refused)?;
+    let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+    Ok(Step {
+        entry,
+        receipt: None,
+    })
+}
+
+/// Appends each step not yet appended, in order.
+fn append_all(log: &mut dyn Log, steps: &mut [Step]) -> Result<(), SegmentsError> {
+    for step in steps {
+        if step.receipt.is_none() {
+            step.receipt = Some(journal::append_general(log, &step.entry)?);
+        }
+    }
+    Ok(())
+}
+
 fn now(clock: &dyn Clock) -> Result<Timestamp, AppendFailure> {
     clock
         .now()

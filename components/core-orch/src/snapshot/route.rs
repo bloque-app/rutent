@@ -71,6 +71,12 @@ pub enum RouteRefusal {
     NotFromAnInnerNode,
     /// The operation at this place breaks its kind's node rules.
     Malformed(usize, Violation),
+    /// The operation at this place is at a provider whose declared evidence is below the floor the operator sets
+    /// on its tuple now, or on a tuple with no floor: it isn't routed through (`REQ-ORD-39`, `T-020-09`).
+    BelowEvidenceFloor(usize),
+    /// The operation at this place leaves the value at an inner node with no holding account: between segments
+    /// value rests only in a node's holding account (`INV-5`, `REQ-CAT-23`, `T-020-09`).
+    NoHoldingAccount(usize),
 }
 
 /// A refused route: why, and the class the caller is told.
