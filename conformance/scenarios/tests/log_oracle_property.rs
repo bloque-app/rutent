@@ -10,7 +10,6 @@
 //! check); it drives `CMP-STM`'s own seeded generator, by path. The fixture replay, which reads the log's fixtures as
 //! JSON, is `CMP-STM`'s `tests/log_oracle.rs`.
 
-#[allow(dead_code)]
 #[path = "../../../components/stm/tests/common/mod.rs"]
 mod common;
 
