@@ -182,7 +182,15 @@ fn order_after(order: &str, history: &History) -> Option<Order> {
 pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
     match order_after(input.subject.order.as_str(), history) {
         None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),
-        Some(order) => taken(&step(&order, input).last_input.outcome),
+        Some(order) => match step(&order, input).last_input.outcome {
+            // A repeat is the same input sent again: another input under a used record id is the host contract's
+            // refusal, never a repeat.
+            Outcome::Repeat {} => history.iter().any(|(_, e)| {
+                matches!(verified(e).map(|v| &v.what), Some(What::Input { input: earlier })
+                    if earlier.record_id == input.record_id && earlier == input)
+            }),
+            outcome => taken(&outcome),
+        },
     }
 }
 
