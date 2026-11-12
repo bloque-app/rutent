@@ -1861,7 +1861,13 @@ pub static RELATIONS: [Relation; 76] = [
         spec: &["REQ-ORD-23", "REQ-ORD-14"],
         quantifier: Quantifier::Exists,
         refusal: "an arrival's notice is a stated entry of this log",
-        fields: &[("maker", "an arrival's notice is its reserve's statement")],
+        fields: &[
+            ("maker", "an arrival's notice is its reserve's statement"),
+            (
+                "transaction",
+                "an arrival's notice names the deposit's signed transaction",
+            ),
+        ],
         cites: |e, _| match &e.what {
             What::Arrival {
                 notice: Some(_), ..
@@ -1876,7 +1882,13 @@ pub static RELATIONS: [Relation; 76] = [
                     ..
                 },
                 Some(s),
-            ) => judge(&s.commitment == notice, &[maker_provider(s) == reserve]),
+            ) => judge(
+                &s.commitment == notice,
+                &[
+                    maker_provider(s) == reserve,
+                    s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
+                ],
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -1884,10 +1896,11 @@ pub static RELATIONS: [Relation; 76] = [
         name: "one-order-per-deposit",
         spec: &["REQ-ORD-23", "REQ-ORD-14", "INV-8"],
         quantifier: Quantifier::NoneOther,
-        refusal: "one deposit opens one order: no other arrival of its notice names an order",
+        refusal: "one deposit opens one order: no other arrival of its deposit names an order",
         fields: &[],
-        // Keyed by the deposit's notice: a second order on it, or a second filing with other figures, is refused;
-        // the same arrival sent again is a retry.
+        // Keyed by the deposit's signed transaction, the one its notice names (`deposit_of`), not the notice's salted
+        // commitment, which the same bytes kept twice would change: a second order on it, or a second filing with
+        // other figures, is refused; the same arrival sent again is a retry.
         cites: |e, _| match &e.what {
             What::Arrival {
                 order: Some(_),
@@ -1896,20 +1909,15 @@ pub static RELATIONS: [Relation; 76] = [
             } => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|t| &t.what)) {
             (
-                What::Arrival {
-                    notice: Some(notice),
-                    ..
-                },
-                Some(
-                    other @ What::Arrival {
-                        order: Some(_),
-                        notice: Some(n),
-                        ..
-                    },
-                ),
-            ) => judge(n == notice && other != &e.what, &[]),
+                arrival @ What::Arrival { .. },
+                Some(other @ What::Arrival { order: Some(_), .. }),
+            ) => judge(
+                deposit_of(arrival, h).is_some_and(|d| deposit_of(other, h) == Some(d))
+                    && other != &e.what,
+                &[],
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -3384,6 +3392,23 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
     history.iter().find_map(|(_, e)| match &permitted(e)?.what {
         What::ConfirmOutcome { request, .. } if &request.effect == effect => Some(request),
         _ => None,
+    })
+}
+
+/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's stated entry
+/// of `history` under that commitment (`arrival-names-its-notice`).
+fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
+    let What::Arrival {
+        notice: Some(notice),
+        reserve,
+        ..
+    } = arrival
+    else {
+        return None;
+    };
+    history.iter().find_map(|(_, e)| {
+        let s = stated(e).filter(|s| &s.commitment == notice && maker_provider(s) == reserve)?;
+        s.about.as_ref()?.transaction.as_ref()
     })
 }
 
