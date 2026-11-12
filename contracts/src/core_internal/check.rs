@@ -33,6 +33,8 @@ impl Action {
             change,
             version,
             tuple,
+            advertising_keys,
+            statement_key,
             ..
         } = self
         {
@@ -44,6 +46,17 @@ impl Action {
             if change.is_about_a_tuple() != tuple.is_some() {
                 return Err(Violation(
                     "a catalogue change names a tuple exactly when it is about a tuple",
+                ));
+            }
+            let grant = *change == CatalogueChange::Grant;
+            if grant != !advertising_keys.is_empty() || !distinct(advertising_keys) {
+                return Err(Violation(
+                    "a catalogue change names advertising keys, at least one, each once, exactly when it is a grant",
+                ));
+            }
+            if (*change == CatalogueChange::AcceptModule) != statement_key.is_some() {
+                return Err(Violation(
+                    "a catalogue change names a statement key exactly when it accepts a module release",
                 ));
             }
         }
