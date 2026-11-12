@@ -605,7 +605,7 @@ fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_sign
         };
         let mut keys = LogSources { ..sources };
         let signatures = LogSources { ..sources };
-        attribute(claim, &mut sources, &mut keys, &signatures).unwrap()
+        attribute(claim, &[], &mut sources, &mut keys, &signatures).unwrap()
     };
     assert!(matches!(
         attributed(&stray).attribution,

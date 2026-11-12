@@ -375,6 +375,19 @@
         "tuple": {
           "description": "The tuple it is about, where it is about one.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "advertising_keys": {
+          "description": "The provider's advertising keys, at least one, each once: named exactly by a grant, which the Rust types check. The latest grant in the log replaces them, and they are the log's first trust in the provider's advertisements.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+          }
+        },
+        "statement_key": {
+          "description": "The key the release's module signs its statements with: named exactly by accept_module, which the Rust types check.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
         }
       }
     },
