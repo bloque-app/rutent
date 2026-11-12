@@ -311,7 +311,7 @@ fn key(receipt: &Receipt) -> String {
 fn listed_filer(desk: &mut Desk<'_, '_>, filer: &Actor) -> bool {
     let role = (filer.role == Role::Operator && filer.party == desk.operator.party)
         || filer.role == Role::Provider;
-    role && desk.actors.acts_for(&filer.acts, &filer.party)
+    role && desk.actors.acts_for(&filer.acts, &filer.party, filer.kind)
 }
 
 /// Whether a listed filer may file at `reserve`: the operator anywhere, a reserve only where it is the reserve.

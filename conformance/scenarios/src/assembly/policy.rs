@@ -29,15 +29,16 @@ use rutent_contracts::core_internal::calls::{
     Reads, Sessions,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, Answer, Authorisation, Charge, ChargeAnswer, ChargeOutcome, Decision,
+    Action, Actor, ActorKind, Answer, Authorisation, Charge, ChargeAnswer, Decision,
     DecisionRequest, Entry, NotKnownCause, Outcome, PermissionChange, PersonAnswer, PersonOutcome,
     PersonQuestion, ReadAnswer, ReadCheck, Receipt, RefusalClass, SessionAnswer, SessionRequest,
     TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
-use rutent_contracts::provider_role::{ReserveDeclaration, SafeInteger};
+use rutent_contracts::provider_role::ReserveDeclaration;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::Observed;
 use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Ruling, Said, Source};
+use rutent_core_authz::parties::Scope;
 use rutent_core_authz::roles::{AUTOMATIC_DEPOSIT, NO_USER_WITHDRAWAL, Permission};
 use rutent_core_orch::intake::OrderRecord;
 
@@ -48,8 +49,10 @@ use crate::PolicyHandle;
 /// actor holds which permission, and which party holds each account at its reserve.
 #[derive(Debug, Clone, Default)]
 pub struct Registers {
-    /// Each actor, by its `acts`, and the party it acts for.
-    pub actors: BTreeMap<String, String>,
+    /// Each actor, by its `acts`, the party it acts for and the kind of actor it is (`T-021-05`).
+    pub actors: BTreeMap<String, (String, ActorKind)>,
+    /// Each agent's scope, by its party and its `acts`: the calls its party lets it make (`T-021-05`).
+    pub scopes: Vec<(String, String, Scope)>,
     /// Each permission an actor holds, by its `acts`.
     pub permissions: Vec<(String, Permission)>,
     /// Each account, by reference, and the party that holds it.
@@ -57,12 +60,21 @@ pub struct Registers {
 }
 
 impl Registers {
-    /// Lists `actor` as acting for its party.
+    /// Lists `actor` as acting for its party, as the kind of actor it is.
     pub fn list(&mut self, actor: &Actor) {
         self.actors.insert(
             actor.acts.as_str().to_owned(),
-            actor.party.as_str().to_owned(),
+            (actor.party.as_str().to_owned(), actor.kind),
         );
+    }
+
+    /// Lets the agent `agent` make the call `scope` for its party.
+    pub fn scope(&mut self, agent: &Actor, scope: Scope) {
+        self.scopes.push((
+            agent.party.as_str().to_owned(),
+            agent.acts.as_str().to_owned(),
+            scope,
+        ));
     }
 
     /// Lets `actor` hold `permission`.
@@ -75,7 +87,26 @@ impl Registers {
     pub fn acts_for(&self, acts: &Id, party: &Id) -> Option<bool> {
         self.actors
             .get(acts.as_str())
-            .map(|p| p.as_str() == party.as_str())
+            .map(|(p, _)| p.as_str() == party.as_str())
+    }
+
+    /// Whether `acts` acts for `party` as the kind of actor `kind`, where the register lists it at all: policy's
+    /// word (`Source::ActsFor`), which binds the kind too, so an agent's login can't state itself a person.
+    pub fn acts_as(&self, acts: &Id, party: &Id, kind: ActorKind) -> Option<bool> {
+        self.actors
+            .get(acts.as_str())
+            .map(|(p, k)| p.as_str() == party.as_str() && *k == kind)
+    }
+
+    /// Whether the agent `agent` may make the call `scope` for `party`, where its party set it a scope at all.
+    pub fn in_scope(&self, party: &Id, agent: &Id, scope: Scope) -> Option<bool> {
+        let set: Vec<Scope> = self
+            .scopes
+            .iter()
+            .filter(|(p, a, _)| p.as_str() == party.as_str() && a.as_str() == agent.as_str())
+            .map(|(_, _, s)| *s)
+            .collect();
+        (!set.is_empty()).then(|| set.contains(&scope))
     }
 }
 
@@ -205,7 +236,11 @@ impl authz::Sources for Records {
         let input = &need.input;
         let registers = self.registers.borrow().clone();
         match &need.from {
-            Source::ActsFor { acts, party } => match registers.acts_for(acts, party) {
+            Source::ActsFor { acts, party, kind } => match registers.acts_as(acts, party, *kind) {
+                Some(yes) => said(yes),
+                None => Reply::Missing,
+            },
+            Source::AgentScope { party, scope } => match registers.in_scope(party, input, *scope) {
                 Some(yes) => said(yes),
                 None => Reply::Missing,
             },
@@ -266,14 +301,12 @@ impl authz::Policy for Deployment {
 /// The policy engine as the assembly builds it.
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
-/// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions and
-/// reads), and,
+/// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions,
+/// reads and charges), and,
 /// beside it, on policy's handle, the calls whose rows haven't built them on the engine yet. Each of those is decided
 /// as the engine decides a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
 /// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
 ///
-/// - **Charges (`T-021-05`).** Within a bound no scenario reaches where the consultation permits, over a bound of 0
-///   where it doesn't.
 /// - **Questions about people (`T-021-07`).** Refused where the consultation refuses; otherwise not known, since no
 ///   verifier is a source yet.
 ///
@@ -315,9 +348,6 @@ fn verdict(
         Reply::Unreachable => not_known(NotKnownCause::PolicyUnreachable),
     }
 }
-
-/// A bound on a party's work that no scenario reaches.
-pub const CHARGE_BOUND: u64 = 1_000_000;
 
 impl PolicySide {
     /// Policy over `engine`, answering beside it from `records` under `deployment`, the engine's own deployment
@@ -418,27 +448,11 @@ impl Authorisations for PolicySide {
     }
 }
 
+/// The engine's own, since `T-021-05` built it: decided through its one consultation, held to the party's bound in
+/// the counter it rebuilds from the log on its policy handle, and recorded there before it answers.
 impl Charges for PolicySide {
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
-        charge.check().map_err(AppendFailure::Refused)?;
-        // Over a bound of 0, as the engine's stub answers, where the consultation doesn't permit: no work is done.
-        let outcome = match self.consult(authz::Asked::Charge(charge)) {
-            Answer::Permit {} => ChargeOutcome::Within {
-                remaining: SafeInteger::try_from(CHARGE_BOUND).expect("a safe integer"),
-            },
-            _ => ChargeOutcome::Over {
-                bound: SafeInteger::try_from(0).expect("a safe integer"),
-            },
-        };
-        let what = What::Charge {
-            charge: charge.clone(),
-        };
-        let receipt = self.record(&charge.caller, what, &charge.at, outcome.outcome())?;
-        Ok(ChargeAnswer {
-            request: charge.request.clone(),
-            outcome,
-            receipt,
-        })
+        self.engine.borrow_mut().charge(charge)
     }
 }
 

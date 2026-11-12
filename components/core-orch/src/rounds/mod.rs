@@ -16,7 +16,8 @@
 //!    (`REQ-CPL-6`, `REQ-CPL-2`, `F-021`). A judgement enters only from the verifier its need names, about its
 //!    subject and class, and a tuple with needs is offered only with a judgement cited for each (`REQ-AUZ-5`).
 //!    Before any is sent, all of them are charged to the caller's accountable
-//!    party as fanned-out work, and over its bound none is (`REQ-OPS-1`). Each question is its own transaction,
+//!    party, the questions about people against its limit on asking about people and the rest as fanned-out work,
+//!    and over either bound none is sent (`REQ-OPS-1`, `REQ-AUZ-8`). Each question is its own transaction,
 //!    drawn fresh ([`Fresh`]), never one Core asked under before ([`Issued`]) and never naming the order, so
 //!    two questions share nothing a provider could link them by. Each is signed with the operator key and appended
 //!    to the log, about its order and transaction, before it is sent, through `rounds/journal.rs`, the one adapter to
@@ -478,7 +479,17 @@ impl<R: Router> Rounds<R> {
             .filter(|n| tuples.contains(&n.tuple))
             .collect();
 
-        if let Some(bound) = run.charge(questions.len() + needs.len())? {
+        // The questions about people count against the caller's party's limit on asking about people, the
+        // providers' questions against its limit on work (`REQ-AUZ-8`, `REQ-OPS-1`), each before any is asked.
+        let over = match (questions.len(), needs.len()) {
+            (sent, 0) => run.charge(Work::FanOut, sent)?,
+            (0, people) => run.charge(Work::PersonQuestion, people)?,
+            (sent, people) => match run.charge(Work::PersonQuestion, people)? {
+                None => run.charge(Work::FanOut, sent)?,
+                over => over,
+            },
+        };
+        if let Some(bound) = over {
             return Ok(finish(
                 run,
                 shortlist,
@@ -518,7 +529,7 @@ impl<R: Router> Rounds<R> {
             if chosen || batch > LATER_ROUNDS || again.is_empty() {
                 break;
             }
-            if let Some(bound) = run.charge(again.len())? {
+            if let Some(bound) = run.charge(Work::FanOut, again.len())? {
                 over = Some(bound);
                 break;
             }
@@ -694,9 +705,9 @@ impl Run<'_, '_> {
         Ok(id)
     }
 
-    /// Charges `count` questions to the caller's accountable party; `Some(bound)` where it is over its bound. A
-    /// count a charge can't hold is refused, never taken as within.
-    fn charge(&mut self, count: usize) -> Result<Option<SafeInteger>, RoutingError> {
+    /// Charges `count` questions of `work` to the caller's accountable party; `Some(bound)` where it is over its
+    /// bound. A count a charge can't hold is refused, never taken as within.
+    fn charge(&mut self, work: Work, count: usize) -> Result<Option<SafeInteger>, RoutingError> {
         let count = u64::try_from(count)
             .ok()
             .and_then(Count::new)
@@ -706,7 +717,7 @@ impl Run<'_, '_> {
             request: self.parts.fresh.id(),
             party: caller.party.clone(),
             caller: caller.clone(),
-            work: Work::FanOut,
+            work,
             count,
             order: Some(self.routing.order.order.clone()),
             at: self.now()?,

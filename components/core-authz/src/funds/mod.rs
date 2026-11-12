@@ -81,6 +81,11 @@ pub trait Recorded {
     /// Every authorisation the log holds as permitted, in log order: [`permitted_in`] over its entries. The read
     /// returns owned values and holds nothing of the log once it answers.
     fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure>;
+
+    /// Every charge the log holds as permitted, each with the moment the engine counted it, in log order:
+    /// [`crate::parties::charged_in`] over its entries. The counter a charge is held to is rebuilt from it before
+    /// every charge, so it is the log's across a restart and across engines (`T-021-05`).
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure>;
 }
 
 /// The authorisations `entries` hold as permitted, in their order: each verified `authorise` entry whose outcome is

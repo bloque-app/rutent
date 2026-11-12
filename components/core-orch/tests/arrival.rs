@@ -2124,6 +2124,7 @@ fn a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left()
     env.actors.borrow_mut().pairs.remove(&(
         operator().acts.as_str().to_owned(),
         operator().party.as_str().to_owned(),
+        format!("{:?}", operator().kind),
     ));
     providers.silent = false;
     let mut theirs = filing(reserve_filer(), &deposited);
@@ -2549,6 +2550,7 @@ fn a_filing_with_its_acceptance_written_is_finished_not_ended() {
                 env.actors.borrow_mut().pairs.remove(&(
                     operator().acts.as_str().to_owned(),
                     operator().party.as_str().to_owned(),
+                    format!("{:?}", operator().kind),
                 ));
             }
             _ => env.clock.set(START + 40),

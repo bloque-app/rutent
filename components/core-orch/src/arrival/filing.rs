@@ -429,7 +429,7 @@ impl Run {
     pub(super) fn has_a_listed_login(&self, desk: &mut Desk<'_, '_>) -> bool {
         self.logins
             .iter()
-            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party))
+            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party, l.kind))
     }
 
     /// Ends it, recorded, with no login of its party left to carry it on.

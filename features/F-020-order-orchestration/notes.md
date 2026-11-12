@@ -783,6 +783,9 @@ both admitted by the log; and the same through the session ending) and
   `follow_on`. A smoke test, `assembly_arrivals.rs`, runs on the real log: a notice signed by the simulated reserve's
   key is verified and recorded as an arrival with no order, and the operator's filing on it is refused
   `NotDeclared`, by Core's gate over the simulated reserve's real declaration. It came with the wiring.
+- **Merged `m3` at `ec9dbd2`** (`T-021-05`): `Actors::acts_for` now takes the actor's kind, so a filer is held to the
+  register by its login, party and kind, as intake's callers are; the arrival tests strike a login by its three
+  fields. The notes' conflict kept both sides.
 - **Left for `T-024-04`** (`AC-10`, `AC-11`, `AC-26`):
   - a simulated reserve that declares it starts routes on automatic deposits: every simulated reserve (the stand-in's
     declaration) says no, so no automatic deposit can start in the assembly yet (`T-024-01`'s kit);
@@ -792,6 +795,22 @@ both admitted by the log; and the same through the session ending) and
     real engine's answer on `ActForUser` and on the reserve's own authorisation (`AC-11`);
   - filed orders in `OpenOrders`: only intake's orders are read as open, so an arrival after an automatic deposit's own
     order started meets no order.
+
+### T-020-03, tracked from `T-021-05`: intake's status reads bypass an agent's read scope
+
+- **Open item for `T-020-03`'s owner, due before `M4`.** Intake answers an order's status (`Told`) from `open`,
+  `quote`, `accept` and `Intake::told`, and finds an order for its caller through `kept_for`, holding the caller only
+  to the register of actors (`Actors::acts_for`, which since `T-021-05` binds the login, the party and the kind). None
+  of it asks policy, so an agent its party didn't scope for `check_read` (`T-021-05`'s `Scope::CheckRead`) still learns
+  the status of its party's orders through intake. It can't move value, authorise or charge outside its scope: policy
+  decides each of those.
+- **Severity, the reviewer's call: low.** The agent's own party's orders only, and read only.
+- **Why `T-021-05` didn't route it through `check_read`.** A customer's read of an order asks the log's record of the
+  order's parties (`Source::OrderParties`), and intake answers status before the log holds the order's acceptance, so
+  every customer would be refused its own new order. The fix needs either a read of an order's status that policy
+  decides on intake's own record (a source the assembly answers from intake's `OrderRecord`), or intake answering
+  status only once the order is accepted and in the log. `F-021`'s notes, under `T-021-05`'s re-review, hold the
+  rest.
 
 ## T-020-05
 
