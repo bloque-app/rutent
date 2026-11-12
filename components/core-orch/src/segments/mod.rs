@@ -40,6 +40,15 @@
 //!
 //! An order's state and its age are readable by whoever policy lets read it ([`Segments::status`], `REQ-ORD-5`).
 //!
+//! **A part stuck** (`T-020-11`'s seams, additive): [`Segments::observe`] takes a part's `no_route` and
+//! `stuck_declared` too, so a stuck or waiting part reads so; [`Segments::run_part`] refuses a stuck part whole
+//! ([`SegmentsError::Stuck`]), so nothing of it is handed over or carried out again while its resolution may move
+//! its value, though what a segment carried out already gave back is still recorded, and a value it settled at an
+//! inner node while the part is stuck is held there at rest; `Segments::act_on` holds a
+//! resolution's effect to the one register of effects acted on; [`Segments::follow_recorded`] rebuilds an order's
+//! state from the log; and [`Segments::stuck`], [`Segments::carried_since`] and [`Segments::settlements`] read what
+//! the stuck clock runs on.
+//!
 //! **A part recalculated** (`T-020-10`'s seams, the one change to this module outside its owning row): a record whose
 //! request `follows` another is a recalculation, so its part is checked by [`check_recalculated_part`], which starts
 //! it at the inner node where the value is evidenced rather than with a withdrawal; only a withdrawal's failure
@@ -48,6 +57,14 @@
 //! (`REQ-ORD-27`); a segment the followed order retired is never handed over again; and [`Segments::order`],
 //! [`Segments::handed_on`], [`Segments::handed_over`], [`Segments::retired`] and [`Segments::waiting`] read where
 //! the value is, what arrived there and what may still move.
+//!
+//! **Evidence and closing** (`T-020-09`'s seams): a segment whose result counted settles on what [`Grading`] answers,
+//! its entries appended each once before `segment_settled`, or waits for evidence, held and in flight, graded again on
+//! the next run ([`SegmentOutcome::AwaitsEvidence`], `REQ-ORD-33`); its fee records follow its `segment_settled`
+//! (`crate::closing::fees`, `REQ-AUD-11`); and before a segment is first handed over, its tuple's evidence floor and
+//! the holding account at the node it leaves the value at are held to the catalogue as it stands
+//! (`crate::closing::admits`, `REQ-ORD-39`, `INV-5`), and a part whose final deposit could never close isn't routed
+//! (`Grading::can_close`, `REQ-ORD-33`); a refusal there is recorded once per part while its reason stands.
 
 mod drain;
 mod journal;
@@ -89,7 +106,7 @@ use crate::snapshot::{
 pub use drain::Uncarried;
 pub use journal::{APPEND_TRIES, Unappended};
 pub use judge::{Counted, NotCounted, Quoted, judge};
-pub use ports::{Answered, Grading, Modules, NoProxy, ProvidersWord, ToGrade, Uses};
+pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
 pub use sign::Unwritten;
 
 /// How many fresh identifiers are drawn for a transaction before the source is taken as broken.
@@ -210,6 +227,9 @@ pub enum SegmentOutcome {
     WaitingOnThePerson(ProvidersStatement),
     /// Its module answered with nothing that counts: no result, and the segment waits.
     NoResult(NotCounted),
+    /// Its result counted, but its evidence doesn't settle it yet (`REQ-ORD-33`, `T-020-09`): no `segment_settled`
+    /// and no `result`, the value held and the segment in flight, graded again on the next run.
+    AwaitsEvidence(Short),
 }
 
 /// One segment, accounted for.
@@ -251,6 +271,23 @@ pub struct Waits {
     pub left: Option<Amount>,
 }
 
+/// A settled segment's actual settlement time, as its `settlement` entry recorded it (`REQ-QTE-3`, `T-020-11`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settlement {
+    /// The order.
+    pub order: Id,
+    /// The segment.
+    pub segment: Id,
+    /// Its provider.
+    pub provider: Id,
+    /// How long it took, in seconds.
+    pub actual_seconds: u64,
+    /// The time it declared with its quote, in seconds.
+    pub declared_seconds: u64,
+    /// The receipt of its `settlement` entry.
+    pub receipt: Receipt,
+}
+
 /// Why a segment couldn't be run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentsError {
@@ -268,6 +305,10 @@ pub enum SegmentsError {
     /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
     /// again (`INV-4`, `T-020-10`).
     Retired(Id),
+    /// The part is stuck, and no segment of it was carried out with something still to record: nothing of it is
+    /// handed over or carried out again, and only its resolution under policy moves its value (`REQ-ORD-28`,
+    /// `REQ-AUZ-4`, `T-020-11`).
+    Stuck(Id),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The segment's value couldn't be held in flight.
@@ -378,6 +419,10 @@ struct InFlight {
     unknown: Vec<UnknownOutcome>,
     steps: BTreeMap<&'static str, Step>,
     evidence: Option<(Id, Timestamp)>,
+    /// What the grading settled it on, built once: the evidence `segment_settled` cites, and its entries.
+    graded: Option<(Id, Vec<Step>)>,
+    /// Its fee records, built once, appended after `segment_settled` (`REQ-AUD-11`).
+    fees: Option<Vec<Step>>,
     ended: bool,
     outcome: Option<SegmentOutcome>,
     /// The platform's refusal to begin it, kept before its result is appended.
@@ -420,6 +465,12 @@ pub struct Segments {
     orders: BTreeMap<String, Tracked>,
     /// The parts that wait for the customer past their floor, by order and part.
     waiting: BTreeMap<(String, String), Waits>,
+    /// The stuck parts whose resolution moved all their value, by order and part: they hold nothing, and take no
+    /// rest hold (`T-020-11`).
+    resolved: BTreeSet<(String, String)>,
+    /// The refusal each part's guard recorded before a segment's first hand-over, by order and part: recorded once,
+    /// and answered as recorded while the guard refuses for the same reason (`T-020-09`).
+    refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -448,6 +499,38 @@ impl Segments {
     /// Whether the effect at `receipt` was acted on.
     pub fn acted_on(&self, receipt: &Receipt) -> bool {
         self.acted.contains(&key(receipt))
+    }
+
+    /// Marks the effect at `receipt` acted on, in the one register every effect Core carries out is held to, a stuck
+    /// order's resolution among them: false where it was acted on already, by a segment or a resolution, and so
+    /// isn't acted on again (`INV-8`, `T-020-11`).
+    pub(crate) fn act_on(&mut self, receipt: &Receipt) -> bool {
+        self.acted.insert(key(receipt))
+    }
+
+    /// Follows the order `inputs` open, rebuilt from the log: its `route_chosen` and every input recorded about it
+    /// since, in order, as a restart finds them (`F-030`, `T-020-11`). The effects acted on and the segments in
+    /// flight are not rebuilt; only the order's state is. False if they open no order.
+    pub fn follow_recorded(&mut self, clock: &dyn Clock, inputs: &[RecordedInput]) -> bool {
+        let Some((first, rest)) = inputs.split_first() else {
+            return false;
+        };
+        let Some(mut order) = Stm::open(first) else {
+            return false;
+        };
+        for input in rest {
+            if input.subject.order.as_str() == order.order_id.as_str() {
+                order = Stm::transition(&order, input);
+            }
+        }
+        self.orders.insert(
+            order.order_id.as_str().to_owned(),
+            Tracked {
+                order,
+                since: clock.now(),
+            },
+        );
+        true
     }
 
     /// The transaction a segment of `order` in flight runs under, until its outcome is final.
@@ -545,11 +628,18 @@ impl Segments {
         }
     }
 
-    /// Moves the order Core follows by `input`, a `route_recalculated` recorded outside the segments (`T-020-10`),
-    /// so the inputs the segments record next apply to its new route. Only that kind: every other input the
-    /// segments record themselves. False where it is another kind, Core follows no such order, or it moved nothing.
+    /// Moves the order Core follows by `input`, a part's input recorded outside the segments: a
+    /// `route_recalculated` (`T-020-10`), so the inputs the segments record next apply to its new route, or a
+    /// `no_route` or `stuck_declared` (`T-020-11`), so the part's state is read as stuck or waiting. Only those
+    /// kinds: every segment's input the segments record themselves. False where it is another kind, Core follows no
+    /// such order, or it moved nothing.
     pub fn observe(&mut self, clock: &dyn Clock, input: &RecordedInput) -> bool {
-        if !matches!(input.observed, Observed::RouteRecalculated { .. }) {
+        if !matches!(
+            input.observed,
+            Observed::RouteRecalculated { .. }
+                | Observed::NoRoute { .. }
+                | Observed::StuckDeclared { .. }
+        ) {
             return false;
         }
         let Some(tracked) = self.orders.get_mut(input.subject.order.as_str()) else {
@@ -562,6 +652,73 @@ impl Segments {
             tracked.since = clock.now();
         }
         applied
+    }
+
+    /// Marks `part` of `order` resolved: its stuck resolution moved all its value, so a settlement recorded for it
+    /// later takes no rest hold, though the state machine still reads it stuck (`T-020-11`).
+    pub(crate) fn mark_resolved(&mut self, order: &Id, part: &Id) {
+        self.resolved
+            .insert((order.as_str().to_owned(), part.as_str().to_owned()));
+    }
+
+    /// Whether `part` of `order` is stuck in the order Core follows (`T-020-11`).
+    pub fn stuck(&self, order: &Id, part: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order
+                .parts
+                .iter()
+                .any(|p| p.part_id.as_str() == part.as_str() && p.state == OrderState::Stuck)
+        })
+    }
+
+    /// The operation Core signed and handed over for `segment` of `order`, as it was appended to the log: what it
+    /// named, the user's accounts among its inputs (`T-020-11`, a resolution's origin).
+    pub fn sent(&self, order: &Id, segment: &Id) -> Option<&ProviderOperation> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|f| &f.statement.statement)
+    }
+
+    /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
+    /// its provider, with no result that counts, an outcome unknown, or the person to act (`T-020-11`, the stuck
+    /// clock).
+    pub fn carried_since(&self, order: &Id, segment: &Id) -> Option<Reading> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .filter(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)))
+            .and_then(|f| f.started)
+    }
+
+    /// Every settled segment's actual settlement time as its `settlement` entry recorded it, with that entry's
+    /// receipt, once the log took it: the history the stuck clock's p99 is read from (`REQ-ORD-29`, `T-020-11`).
+    pub fn settlements(&self) -> Vec<Settlement> {
+        self.flights
+            .iter()
+            .filter_map(|((order, segment), flight)| {
+                let step = flight.steps.get("settlement")?;
+                let receipt = step.receipt.clone()?;
+                let Entry::Verified(VerifiedEntry {
+                    what:
+                        What::Settlement {
+                            actual_seconds,
+                            declared_seconds,
+                            ..
+                        },
+                    ..
+                }) = step.entry.entry()
+                else {
+                    return None;
+                };
+                Some(Settlement {
+                    order: Id::new(order.as_str())?,
+                    segment: Id::new(segment.as_str())?,
+                    provider: flight.provider.clone(),
+                    actual_seconds: u64::from(*actual_seconds),
+                    declared_seconds: u64::from(*declared_seconds),
+                    receipt,
+                })
+            })
+            .collect()
     }
 
     /// Follows `chosen`, the order's `route_chosen` input as recorded, so its state and age can be read and the
@@ -650,6 +807,57 @@ impl Segments {
             .parts
             .get(live.at)
             .ok_or(SegmentsError::Plan("the chosen route has no part there"))?;
+        // A stuck part hands nothing over and carries nothing out: its value moves only on its resolution. What a
+        // segment carried out already gave back is still recorded, each step as it was built, so nothing it kept
+        // is lost; nothing is asked of its module again (`T-020-11`).
+        if self.stuck(live.order, live.part) {
+            let mut taken = Vec::new();
+            for (place, segment) in live.segments.iter().enumerate() {
+                let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+                let carried = self
+                    .flights
+                    .get(&at)
+                    .is_some_and(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)));
+                if !carried {
+                    continue;
+                }
+                let operation = part.operations.get(place).ok_or(SegmentsError::Plan(
+                    "the chosen route has no operation there",
+                ))?;
+                let done = self.advance(parts, live, &at, operation, false)?;
+                // A segment that settles here released its hold, its value arrived at the node it reached. While
+                // the part is still stuck there, that value rests at the node and is held there, so the ceilings
+                // and the part's resolution still count it (`REQ-ORD-8`, `T-020-11`).
+                if let SegmentOutcome::Settled { amount_out, .. } = &done.outcome
+                    && self.stuck(live.order, live.part)
+                    && !self.resolved.contains(&(
+                        live.order.as_str().to_owned(),
+                        live.part.as_str().to_owned(),
+                    ))
+                    && matches!(
+                        operation.to.node,
+                        rutent_contracts::provider_role::NodeRef::Inner(_)
+                    )
+                    && !amount_out.is_zero()
+                {
+                    match parts.exposures.hold_resting(
+                        live.order,
+                        segment,
+                        &operation.provider,
+                        &operation.to.asset,
+                        amount_out,
+                    ) {
+                        Ok(()) | Err(HoldError::AlreadyHeld) => {}
+                        Err(other) => return Err(SegmentsError::Hold(other)),
+                    }
+                }
+                taken.push(done);
+            }
+            if taken.is_empty() {
+                return Err(SegmentsError::Stuck(live.part.clone()));
+            }
+            return Ok(Ran::Segments(taken));
+        }
         // The route guard, before any segment is handed over (`REQ-ORD-16`, `REQ-ORD-36`, `REQ-ORD-37`). A
         // recalculated part starts where its value is evidenced, at an inner node (`REQ-ORD-2`).
         let guard = match live.record.request.follows {
@@ -679,7 +887,67 @@ impl Segments {
             // one, with what it gave out.
             let done = match self.standing(live, place) {
                 Some(done) => done,
-                None => self.hand_over(parts, live, place, &amount)?,
+                None => {
+                    // Before a segment is first handed over, its provider and the node it leaves the value at are
+                    // held to the catalogue as it stands now (`T-020-09`'s seam): the evidence floor on its tuple
+                    // (`REQ-ORD-39`) and a holding account at an inner node between segments (`INV-5`).
+                    let key = (
+                        live.order.as_str().to_owned(),
+                        live.segments[place].as_str().to_owned(),
+                    );
+                    let ending = part.operations.len() - 1;
+                    let closable = || {
+                        let deposit = &part.operations[ending];
+                        if deposit.kind != rutent_contracts::router_api::OperationKind::Deposit
+                            || parts.grading.can_close(deposit)
+                        {
+                            Ok(())
+                        } else {
+                            Err(crate::closing::Unadmitted::NoPublicRecord.at(ending))
+                        }
+                    };
+                    let guarded = if self.flights.contains_key(&key) {
+                        Ok(())
+                    } else {
+                        crate::closing::admits(
+                            parts.catalogue,
+                            &part.operations[place],
+                            place == ending,
+                        )
+                        .map_err(|why| why.at(place))
+                        .and_then(|()| closable())
+                    };
+                    if let Err(reason) = guarded {
+                        let held = (
+                            live.order.as_str().to_owned(),
+                            live.part.as_str().to_owned(),
+                        );
+                        if let Some((refused, receipt)) = self.refused.get(&held)
+                            && refused.reason == reason
+                        {
+                            return Ok(Ran::Refused {
+                                refused: refused.clone(),
+                                receipt: receipt.clone(),
+                            });
+                        }
+                        let refused = RouteRefused {
+                            reason,
+                            class: OrderRefusalClass::NoRouteRightNow,
+                        };
+                        let receipt = record_route_refusal(
+                            parts.log,
+                            parts.clock,
+                            live.core.clone(),
+                            live.record.record_id(),
+                            Some(live.order),
+                            &refused,
+                        )?;
+                        self.refused
+                            .insert(held, (refused.clone(), receipt.clone()));
+                        return Ok(Ran::Refused { refused, receipt });
+                    }
+                    self.hand_over(parts, live, place, &amount)?
+                }
             };
             let next = match &done.outcome {
                 SegmentOutcome::Settled { amount_out, .. } => {
@@ -795,7 +1063,7 @@ impl Segments {
             if flight.outcome.as_ref().is_some_and(is_final) {
                 return Err(SegmentsError::AlreadyHandedOver(segment.clone()));
             }
-            return self.advance(parts, live, &at, operation);
+            return self.advance(parts, live, &at, operation, true);
         }
         let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
@@ -905,6 +1173,8 @@ impl Segments {
                 unknown: Vec::new(),
                 steps,
                 evidence: None,
+                graded: None,
+                fees: None,
                 ended: false,
                 outcome: None,
                 begin_refused: None,
@@ -913,7 +1183,7 @@ impl Segments {
                 record: None,
             },
         );
-        self.advance(parts, live, &at, operation)
+        self.advance(parts, live, &at, operation, true)
     }
 
     /// Takes a segment on from where it stopped: its question and effect appended, its value held, the segment
@@ -925,6 +1195,7 @@ impl Segments {
         live: &Live<'_>,
         at: &(String, String),
         operation: &rutent_contracts::router_api::Operation,
+        hold: bool,
     ) -> Result<Accounted, SegmentsError> {
         let flight = self.flight(at)?;
         let (segment, place) = (id_of(&at.1)?, flight.place);
@@ -934,9 +1205,13 @@ impl Segments {
         let held = held_at(operation, &moved).ok_or(SegmentsError::Plan(
             "the amount moved is one the route's operation can carry",
         ))?;
-        match parts.exposures.hold(live.order, &segment, &held) {
-            Ok(()) | Err(HoldError::AlreadyHeld) => {}
-            Err(other) => return Err(SegmentsError::Hold(other)),
+        // A stuck part's segment takes no hold: it still holds its value, or the part's resolution released it, and
+        // a hold taken back would count what it no longer holds (`T-020-11`).
+        if hold {
+            match parts.exposures.hold(live.order, &segment, &held) {
+                Ok(()) | Err(HoldError::AlreadyHeld) => {}
+                Err(other) => return Err(SegmentsError::Hold(other)),
+            }
         }
         let release = |exposures: &mut Exposures| exposures.release(live.order, &segment);
 
@@ -1143,7 +1418,11 @@ impl Segments {
             Err(why) => return Ok(SegmentOutcome::NoResult(why)),
         };
         match counted {
-            Counted::Succeeded { handed_on, .. } => {
+            Counted::Succeeded {
+                handed_on,
+                amount_out: stated_out,
+                ..
+            } => {
                 let amount_out = handed_on;
                 let amount_out = Amount::new(amount_out)
                     .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
@@ -1156,18 +1435,43 @@ impl Segments {
                         graded
                     }
                 };
-                let evidence = parts.grading.grade(
-                    parts.log,
-                    &ToGrade {
-                        evidence: &evidence,
-                        order: live.order,
-                        segment: &segment,
-                        provider: &provider,
-                        result: &stated,
-                        core: live.core,
-                        at: &graded_at,
-                    },
-                )?;
+                let transaction = flight.transaction.clone();
+                let settled = ToGrade {
+                    evidence: &evidence,
+                    order: live.order,
+                    part: live.part,
+                    segment: &segment,
+                    provider: &provider,
+                    transaction: &transaction,
+                    result: &stated,
+                    bytes: &bytes,
+                    operations: chosen.parts[live.at].operations.as_slice(),
+                    operator_fee: &live.record.bounds.operator_fee,
+                    place,
+                    segments: live.segments,
+                    end: live.route,
+                    amount_out: &stated_out,
+                    core: live.core,
+                    operator: live.operator,
+                    at: &graded_at,
+                };
+                // Graded once it settles: what it settled on is kept and appended, each entry once (`INV-8`). One
+                // that waits is graded again next time, since what is public may have changed (`REQ-ORD-33`).
+                if self.flight(at)?.graded.is_none() {
+                    match parts.grading.grade(&settled) {
+                        Graded::Settles { cites, entries } => {
+                            let steps = entries
+                                .into_iter()
+                                .map(kept_step)
+                                .collect::<Result<Vec<_>, _>>()?;
+                            self.flight_mut(at)?.graded = Some((cites, steps));
+                        }
+                        Graded::Waits(short) => {
+                            return Ok(SegmentOutcome::AwaitsEvidence(short));
+                        }
+                    }
+                }
+                let evidence = self.append_graded(parts.log, at)?;
                 let state_evidence = stm::Id::new(evidence.as_str())
                     .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
                 self.input(
@@ -1184,6 +1488,16 @@ impl Segments {
                 if let Some(declared) = cited.declared_seconds {
                     self.settlement(parts, live, at, declared)?;
                 }
+                // The fee captured, recorded once the segment settled (`REQ-AUD-11`): attributed to its provider,
+                // and on a part's final deposit the operator's too, which that provider keeps back.
+                if self.flight(at)?.fees.is_none() {
+                    let fees = crate::closing::fees(&settled)
+                        .into_iter()
+                        .map(kept_step)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.flight_mut(at)?.fees = Some(fees);
+                }
+                self.append_fees(parts.log, at)?;
                 parts.exposures.release(live.order, &segment);
                 Ok(SegmentOutcome::Settled {
                     amount_out,
@@ -1408,6 +1722,34 @@ impl Segments {
             );
         }
         Ok((self.step(log, at, name)?, true))
+    }
+
+    /// Appends the entries the segment's grading settled it on, each once, and answers the evidence its
+    /// `segment_settled` cites.
+    fn append_graded(
+        &mut self,
+        log: &mut dyn Log,
+        at: &(String, String),
+    ) -> Result<Id, SegmentsError> {
+        let (cites, steps) = self
+            .flight_mut(at)?
+            .graded
+            .as_mut()
+            .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
+        append_all(log, steps)?;
+        Ok(cites.clone())
+    }
+
+    /// Appends the segment's fee records, each once.
+    fn append_fees(
+        &mut self,
+        log: &mut dyn Log,
+        at: &(String, String),
+    ) -> Result<(), SegmentsError> {
+        if let Some(steps) = self.flight_mut(at)?.fees.as_mut() {
+            append_all(log, steps)?;
+        }
+        Ok(())
     }
 
     /// The result's stated entry, its bytes kept once.
@@ -1771,6 +2113,26 @@ fn key(receipt: &Receipt) -> String {
 }
 
 /// Core's clock, as a timestamp.
+/// An entry checked and kept as a step, to append until the log gives its receipt.
+fn kept_step(entry: Entry) -> Result<Step, SegmentsError> {
+    entry.check().map_err(AppendFailure::Refused)?;
+    let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+    Ok(Step {
+        entry,
+        receipt: None,
+    })
+}
+
+/// Appends each step not yet appended, in order.
+fn append_all(log: &mut dyn Log, steps: &mut [Step]) -> Result<(), SegmentsError> {
+    for step in steps {
+        if step.receipt.is_none() {
+            step.receipt = Some(journal::append_general(log, &step.entry)?);
+        }
+    }
+    Ok(())
+}
+
 fn now(clock: &dyn Clock) -> Result<Timestamp, AppendFailure> {
     clock
         .now()

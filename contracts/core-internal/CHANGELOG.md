@@ -165,3 +165,26 @@
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
   permissions takes in (`REQ-MDL-4`, ADR-0014). One valid fixture added: 110 valid. (DEC-4, DEC-20, REQ-AUZ-6, T-021-03)
+- Folded into 1.0.0 before its release: a home for a private node's replay. `What::Replay { order, segment, nodes,
+  found }` records where the value left one or more private nodes onto a public node, the nodes replayed in route
+  order, and what `CMP-EVIDENCE` found: `consistent_with_the_exit` (consistency, never proof, `THR-131`), each
+  `mismatch` with the node it is against, or a node that recorded `nothing_recorded`. Before it, `T-020-09` had no
+  record for `REQ-ORD-41`'s replay. It cites nothing earlier and is admitted on its own checks. Three valid
+  fixtures and four invalid: 119 valid, 119 invalid. (DEC-4, DEC-20, DEC-24, REQ-ORD-41, T-020-09)
+- Folded into 1.0.0 before its release: closing rests on what the log can check (review of `T-020-09`). `evidence`
+  names the public movement it relied on (`movement`: network, id, and `node`, the private node it moved value into or
+  out of where it evidences that node's segments), only as a public record; `replay` rests on its exit's result (`rests_on`) and names the movement
+  out, and `nothing_recorded` names every silent node; `fee.billed_separately` is what the provider stated, absent
+  where it said nothing. Three rows, kept in their own module (`relations/closing.rs`):
+  `final-deposit-closes-on-a-public-record` (a part's final deposit settles only on grade-1 evidence naming a movement
+  on its authorised destination's network, resting on its reserve's verified statement, never a statement alone),
+  `movement-evidences-one-segment` (no second segment, of any order, relies on the same movement) and
+  `replay-rests-on-its-exit`. 121 valid fixtures, 122 invalid, 293 admission cases. (DEC-4, DEC-20, DEC-24,
+  REQ-ORD-33, REQ-ORD-38, REQ-ORD-41, REQ-AUD-11, T-020-09)
+- Folded into 1.0.0 before its release: what Core took, the log takes (re-review of `T-020-09`). `evidence` names the
+  movement Core checked at whatever grade it earned, so `movement-evidences-one-segment` holds every movement Core
+  relied on, and a node's movements in and out are reused only within its one order; a final deposit into a private
+  rail names that rail, the authorised destination's network, as the movement's `node`
+  (`final-deposit-closes-on-a-public-record--conflict-naming-another-node`). One invalid fixture is valid now
+  (`verified-entry-of-signed-evidence-naming-the-movement-core-checked`). (DEC-4, DEC-20, REQ-ORD-33, REQ-ORD-38,
+  T-020-09)

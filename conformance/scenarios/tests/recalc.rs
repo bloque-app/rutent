@@ -21,9 +21,7 @@ use rutent_core_orch::recalc::{
     passed_again,
 };
 use rutent_core_orch::rounds::{self, History, Presence, Providers};
-use rutent_core_orch::segments::{
-    Accounted, Live, NoProxy, Parts, ProvidersWord, Ran, SegmentOutcome,
-};
+use rutent_core_orch::segments::{Accounted, Live, NoProxy, Parts, Ran, SegmentOutcome};
 use rutent_core_orch::snapshot::Releases;
 use rutent_prov::catalogue::Instant;
 use rutent_prov::module::lifecycle::Staging;
@@ -258,7 +256,7 @@ impl Recalc {
             decisions: &mut core.policy,
             modules: &mut world.fleet.platform,
             uses: &mut NoProxy,
-            grading: &mut ProvidersWord,
+            grading: &mut Recorded,
             operator_key: &mut core.key,
             fresh: &mut core.ids,
             issued: &core.issued,
@@ -794,7 +792,7 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             decisions: &mut core.policy,
             modules: &mut world.fleet.platform,
             uses: &mut NoProxy,
-            grading: &mut ProvidersWord,
+            grading: &mut Recorded,
             operator_key: &mut core.key,
             fresh: &mut core.ids,
             issued: &core.issued,
@@ -967,7 +965,7 @@ fn deposit_whose_effect_may_be_recorded_is_not_recalculated_around() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert_eq!(
@@ -1026,7 +1024,7 @@ fn retired_segment_is_never_handed_over() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     // A route recalculated from the ledger, recorded elsewhere, retires the deposit in the order Core follows.
@@ -1059,7 +1057,7 @@ fn retired_segment_is_never_handed_over() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert_eq!(

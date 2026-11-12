@@ -2,6 +2,8 @@
 //! withdrawal names a cross-module call, which no simulated provider's nodes admit and no simulated release declares,
 //! and a segment record's move mapped to the log's item.
 
+mod snapshot_support;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -262,6 +264,54 @@ fn fake() -> Fake {
     }
 }
 
+/// A catalogue in which the route's withdrawal may run (`T-020-09`): its reserve joined, declaring the grade of its
+/// evidence, its tuple's floor set, and its private node `ledger-in` with a holding account. The rest of the route's
+/// providers aren't in it, since no segment after the withdrawal is handed over here.
+fn admitting() -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::tuples_of;
+    let mut ad = snapshot_support::reserve("reserve-bank-co", "bank-co");
+    let mut value = serde_json::to_value(&ad).unwrap();
+    value["offers"]["reserve"]["tuples"] = json!([{
+        "origin": { "network": "co-ach" }, "destination": "ledger-in", "asset": "COP",
+        "decimals": { "origin": 2, "destination": 2 },
+        "terms": { "bands": [{ "min": "1", "max": "1000000000000" }], "reporting": "gross", "required_inputs": [] },
+    }]);
+    value["private_nodes"] = json!(["ledger-in"]);
+    ad = serde_json::from_value(value).unwrap();
+    let mut catalogue = Catalogue::new();
+    catalogue.set_context(
+        snapshot_support::deployment(),
+        rutent_contracts::provider_role::VERSION,
+    );
+    catalogue
+        .grant(snapshot_support::grant("g-0", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-0",
+            snapshot_support::public_key(&snapshot_support::advertising_key("reserve-bank-co")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "reserve-bank-co",
+        &[&snapshot_support::statements_key("reserve-bank-co", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    for key in tuples_of(&ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+    catalogue
+        .register_private_holding("ledger-in", "bank-co", "holding")
+        .unwrap();
+    catalogue
+}
+
 fn core() -> Actor {
     Actor {
         party: id("operator"),
@@ -313,7 +363,7 @@ fn record_naming_a_call() -> DecisionRecord {
 fn run(modules: &mut Fake) -> (Ran, KeptLog) {
     let record = record_naming_a_call();
     let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
-    let catalogue = Catalogue::new();
+    let catalogue = admitting();
     let mut log = KeptLog::default();
     let mut store = Store::default();
     let mut policy = Permitting(0);

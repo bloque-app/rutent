@@ -14,8 +14,8 @@ use rutent_contracts::module_interface::Identifier;
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::state_machine::{Observed, OrderState};
 use rutent_core_orch::segments::{
-    Accounted, NoProxy, NotCounted, PromoteRefused, Promotion, ProvidersWord, Ran, SegmentOutcome,
-    SegmentsError, StatusError, UnknownBy,
+    Accounted, NoProxy, NotCounted, PromoteRefused, Promotion, Ran, SegmentOutcome, SegmentsError,
+    StatusError, UnknownBy,
 };
 use rutent_prov::module::lifecycle::Staging;
 use segments_support::*;
@@ -218,13 +218,7 @@ fn every_secret_use_reaches_the_log_with_its_transaction() {
     let mut watched = Watched::new(&mut world.fleet.platform);
     let mut uses = UsesOf(std::rc::Rc::clone(&watched.transactions), 0);
     let session = SuiteContext::default().session;
-    let ran = core.run_with(
-        &catalogue,
-        &mut watched,
-        &mut uses,
-        &mut ProvidersWord,
-        &session,
-    );
+    let ran = core.run_with(&catalogue, &mut watched, &mut uses, &mut Recorded, &session);
     let transactions = watched.transactions.borrow().clone();
     drop(watched);
     world.catalogue = catalogue;
@@ -812,7 +806,7 @@ fn first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert!(stopped.is_err(), "{stopped:?}");
@@ -820,10 +814,20 @@ fn first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries() {
     let context = world.context();
     retired.set_context(context.deployment.clone(), &context.protocol_version);
     let ran = core.run_over(&retired, &mut world.fleet.platform);
-    let done = segments(&ran);
+    // The withdrawal settles on its first verdict. The deposit, never handed over, isn't under a catalogue that no
+    // longer lists its provider (`T-020-09`: a provider the catalogue doesn't list now is not routed through).
     assert!(
-        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
-        "{done:?}"
+        core.segments
+            .handed_on(&id(ORDER), &id(WITHDRAWAL))
+            .is_some(),
+        "{ran:?}"
+    );
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(
+        refused.reason,
+        rutent_core_orch::snapshot::RouteRefusal::ProviderNotListed(1)
     );
 }
 
@@ -862,7 +866,7 @@ fn retried_effect_append_is_acted_on_once() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert_eq!(again, Ok(Ran::Segments(done.clone())));
@@ -884,7 +888,7 @@ fn retried_effect_append_is_acted_on_once() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert_eq!(
@@ -1088,7 +1092,7 @@ fn what_comes_back_is_kept_when_a_later_step_fails() {
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         );
         assert_eq!(
@@ -1154,7 +1158,7 @@ fn drain_the_log_cant_take_is_kept_whole_and_answered() {
         &catalogue,
         &mut watched,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     drop(watched);
@@ -1197,7 +1201,7 @@ fn effect_whose_answers_were_lost_is_appended_again_unchanged() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert!(stopped.is_err());
@@ -1232,7 +1236,7 @@ fn effect_receipt_acted_on_before_is_not_acted_on_again() {
         &world.catalogue,
         &mut world.fleet.platform,
         &mut NoProxy,
-        &mut ProvidersWord,
+        &mut Recorded,
         &session,
     );
     assert!(
@@ -1398,7 +1402,7 @@ fn drain_the_log_cant_take_holds_up_no_other_segment() {
             &catalogue,
             &mut watched,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         );
         assert!(
@@ -1476,7 +1480,7 @@ fn part_resumes_after_its_first_segment_settled() {
             &world.catalogue,
             &mut world.fleet.platform,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         );
         assert!(stopped.is_err(), "{on:?}: {stopped:?}");
@@ -1528,7 +1532,7 @@ fn segment_the_platform_wouldnt_begin_is_finished_as_refused() {
             &catalogue,
             &mut watched,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         );
         assert!(stopped.is_err(), "{stopped:?}");
@@ -1666,7 +1670,7 @@ fn refusal_owed_after_a_settled_segment_is_recorded_on_resume() {
             &catalogue,
             &mut watched,
             &mut NoProxy,
-            &mut ProvidersWord,
+            &mut Recorded,
             &session,
         );
         assert!(stopped.is_err(), "{stopped:?}");

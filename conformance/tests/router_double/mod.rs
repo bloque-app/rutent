@@ -367,6 +367,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         let fee_of = |text: String| Fee {
             asset: hop.from.asset.id.clone(),
             amount: text,
+            billed_separately: None,
         };
         let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, hop.price) {
             // No price: never statable, whatever answers there are.
