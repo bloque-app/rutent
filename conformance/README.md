@@ -205,6 +205,36 @@ and a `Fleet` that admits them.
   (`set_output_limit(1 << 20)`). They are not defaults.
 - **What a twin is.** `Simulated` run in process answers as the module does; the role suite through the platform
   compares each answer with a twin's and the journal's replay with the twin's books.
+- **The deployment a provider serves** (`T-024-02`). The platform's world names it under the state key `deployment`,
+  which `Fleet` seeds from its context, and the module holds every operation to it; where the world names none, it
+  serves the suite's default context. `Fleet::with_context` takes the assembly's, whose operator key is a real one.
+
+## The assembly and the scenario harness (`rutent-scenarios`)
+
+`T-024-02`'s package, `conformance/scenarios/`, puts Core together from its three crates over `core-internal` and
+runs `M3`'s scenarios on it. Nothing in the workspace imports it (`DEC-2`).
+
+- **The assembly** (`assembly`). One `Core`: the evidence store and the log, each opened once on a `Disk` that
+  survives a crash, the store's read handed to the log and the store bound to that log; the policy engine, holding
+  the log's policy handle and nothing else holding one, its sources answered from the records (the table in
+  `assembly/policy.rs`); orchestration's intake, rounds and segments on the general handle; the platform with the
+  simulated providers, each granted by a decided catalogue change and its advertisement recorded before any order;
+  one clock; and the state machine on a host of the host contract, fed every input the log takes. Staging is set by
+  every scenario (`Staged`), with no default.
+- **The harness** (`harness`). A `Scenario` is given (`Given`), takes steps (`Step`) and checks (`then`), and accepts
+  one `AC-*`, which `Scenario::new` holds it to. Faults (`Fault`): a crash after the log's store took a record and
+  before it answered, or at the platform's seam before an effect is carried out; a repeated and a reordered delivery
+  to the state machine; a provider's silence; the state machine swapped to another environment mid-order. A run's
+  seed draws every identifier Core draws and every choice a seeded scenario makes; CI sets seeds through
+  `RUTENT_SCENARIO_SEEDS`, and a failure names its seed. A `Run` is compared by its projection, every digest and
+  signature replaced by the order it first appeared in, since the evidence store's salts come from the operating
+  system.
+- **The checks** (`checks`). `T-024-02`'s four, each a scenario over an environment it is handed, so the reference
+  host's run (`tests/assembly.rs`) and the run on three VOS replicas (`rutent-scenarios-vos`, in the VOS client's
+  workspace at `components/stm/vos-program/scenarios/`) are one code. The later scenario rows (`T-024-03` to
+  `T-024-08`) write their own test files over the same harness.
+- **The kit** (`kit`). What every scenario kit shares: who acts, the route, the bounds and prices, fresh identifiers
+  from a seed, the operator's key and the catalogue's listing. `T-020-08`'s segments kit is built on it.
 
 ## Host-contract suite (`host`)
 

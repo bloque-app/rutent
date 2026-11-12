@@ -33,8 +33,8 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::provider_role::{Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{
-    CatalogueSnapshot, DecisionRecord, Endpoint, FeeFormula, Id, OperationKind, PolicyBounds,
-    PositiveAmount, Request, Router, Timestamp, TupleKey,
+    CatalogueSnapshot, DecisionRecord, Endpoint, Id, OperationKind, PositiveAmount, Request,
+    Router, Timestamp,
 };
 use rutent_contracts::state_machine::{
     self as stm, Observed, PartPlan, RecordedInput, SegmentPlan, Source, SourceKind, Standing,
@@ -42,17 +42,15 @@ use rutent_contracts::state_machine::{
 };
 use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Ruling, Said};
 use rutent_core_authz::roles::Permission;
-use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
+use rutent_core_orch::rounds::Issued;
 use rutent_core_orch::segments::{
     Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, Segments,
     SegmentsError, ToGrade, Uses,
 };
 use rutent_core_orch::snapshot::{
-    Ask, Asked, Clock, Exposures, Price, Reading, Received, Releases, Snapshots,
+    Ask, Asked, Clock, Exposures, Reading, Received, Releases, Snapshots,
 };
-use rutent_prov::catalogue::{
-    Bond, Catalogue, Category, Grant, GrantTerms, Instant, Publisher, ReversalCapacity, tuples_of,
-};
+use rutent_prov::catalogue::{Catalogue, Instant, Publisher};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord, Staging};
 use rutent_prov::module::platform::Platform;
 use rutent_prov::module::types::Events;
@@ -62,11 +60,19 @@ use rutent_prov::proxy::RouteNotNamed;
 use rutent_prov::proxy::Use;
 use rutent_router::RouteFinder;
 use rutent_scenarios::sim::SimWorld;
-use rutent_scenarios::sim::{Fleet, Installed, world::WORLD_AT};
+use rutent_scenarios::sim::{Fleet, Installed};
 use serde_json::{Value, json};
 
-/// The simulated reserve every test routes through.
-pub const RESERVE: &str = "sim-reserve-a";
+// What every scenario kit shares is the assembly's kit (`T-024-02`): the route, who acts, the operator's key, fresh
+// identifiers, the bounds and the prices, and the listing of an advertisement in Core's catalogue.
+// Each test crate that mounts this kit uses its own share of these.
+use rutent_scenarios::kit::list;
+pub use rutent_scenarios::kit::price;
+#[allow(unused_imports)]
+pub use rutent_scenarios::kit::{
+    AMOUNT, Counted as Ids, DECLARED, PlaceholderKey as TestKey, RESERVE, START, bank, bounds,
+    core, customer, id, ledger, operator, tuple,
+};
 /// The order.
 pub const ORDER: &str = "ord-1";
 /// The part.
@@ -75,16 +81,6 @@ pub const PART: &str = "p1";
 pub const WITHDRAWAL: &str = "p1-s1";
 /// The deposit's segment.
 pub const DEPOSIT: &str = "p1-s2";
-/// The amount the order moves, in COP cents.
-pub const AMOUNT: &str = "1000000";
-/// Core's clock when a test starts: 2026-11-09T01:00:00Z, an hour after the time the kit's operations are made at.
-pub const START: u64 = WORLD_AT.0 + 2 * 86_400 + 3_600;
-/// Each settled segment's declared settlement time, in seconds.
-pub const DECLARED: u64 = 60;
-
-pub fn id(text: &str) -> Id {
-    Id::new(text).unwrap()
-}
 
 // Core's clock, keys and identifiers --------------------------------------------------------------------------------
 
@@ -109,31 +105,6 @@ impl TestClock {
 impl Clock for TestClock {
     fn now(&self) -> Reading {
         self.0.get()
-    }
-}
-
-/// The deployment's operator key, as the simulated providers know it: its placeholder is the deployment's
-/// `operator_key`, and the real key it stands for signs.
-pub struct TestKey(pub PublicKey);
-
-impl OperatorKey for TestKey {
-    fn key(&self) -> PublicKey {
-        self.0.clone()
-    }
-
-    fn sign(&mut self, input: &[u8]) -> Option<[u8; 64]> {
-        Some(real(self.0.as_str()).sign(input).to_bytes())
-    }
-}
-
-/// Fresh identifiers, counted.
-#[derive(Default)]
-pub struct Ids(pub u64);
-
-impl Fresh for Ids {
-    fn id(&mut self) -> Id {
-        self.0 += 1;
-        id(&format!("id-{:04}", self.0))
     }
 }
 
@@ -471,36 +442,6 @@ impl Reads for Policy {
     }
 }
 
-// Who acts ----------------------------------------------------------------------------------------------------------
-
-pub fn customer() -> Actor {
-    Actor {
-        party: id("acme-customer"),
-        acts: id("user-1"),
-        role: Role::Customer,
-        kind: ActorKind::Person,
-    }
-}
-
-pub fn core() -> Actor {
-    Actor {
-        party: id("operator"),
-        acts: id("rutent-core"),
-        role: Role::Core,
-        kind: ActorKind::Component,
-    }
-}
-
-/// The operator, in whose name Core signs: the operations' maker, the simulated providers' operator.
-pub fn operator() -> Actor {
-    Actor {
-        party: id("operator"),
-        acts: id(&SuiteContext::default().operator),
-        role: Role::Operator,
-        kind: ActorKind::Component,
-    }
-}
-
 // The fleet and its catalogue ---------------------------------------------------------------------------------------
 
 /// A deadline short enough that silence is quick.
@@ -540,104 +481,7 @@ impl World {
     }
 }
 
-/// Lists an advertisement as `Fleet::list` does: a grant for what it offers, its advertising key, the advertisement.
-fn list(catalogue: &mut Catalogue, installed: &Installed) {
-    let statement = installed.advertisement.statement();
-    let ad = &statement.statement;
-    let grant_id = format!("grant-{}", ad.provider);
-    let capacity = ReversalCapacity::check(
-        Bond {
-            asset: "USDC".into(),
-            amount: 1_000,
-            held_by: "escrow-co".into(),
-        },
-        500,
-        "ops-lead",
-        Instant(1_000),
-    )
-    .expect("a capacity");
-    let grant = Grant::new(GrantTerms {
-        id: grant_id.clone(),
-        provider: ad.provider.clone(),
-        party: format!("{} Ltd", ad.publisher),
-        granted_by: "operator-admin".into(),
-        granted_at: Instant(1_000),
-        expires_at: Instant(5_000_000_000),
-        categories: vec![Category::Reserve],
-        tuples: tuples_of(ad),
-        reversal_capacity: capacity,
-    })
-    .expect("a grant");
-    catalogue.grant(grant).expect("granted");
-    catalogue
-        .trust_advertising_key(&grant_id, statement.signature.key.clone())
-        .expect("trusted");
-    catalogue
-        .join(installed.advertisement.bytes(), WORLD_AT)
-        .expect("joined");
-    catalogue.set_module_version(
-        &ad.provider,
-        rutent_contracts::router_api::Version::new("1.0.0").unwrap(),
-    );
-    for key in tuples_of(ad) {
-        catalogue.set_evidence_floor(
-            key,
-            rutent_contracts::provider_role::EvidenceGrade::Statement,
-        );
-    }
-    for node in &ad.private_nodes {
-        let _ = catalogue.register_private_holding(node, &ad.publisher, "holding");
-    }
-}
-
 // The route --------------------------------------------------------------------------------------------------------
-
-pub fn cop() -> Value {
-    json!({ "id": "COP", "decimals": 2 })
-}
-
-pub fn bank(reserve: &str) -> Value {
-    json!({ "node": { "network": format!("{reserve}-bank") }, "asset": cop() })
-}
-
-pub fn ledger(reserve: &str) -> Value {
-    json!({ "node": format!("{reserve}-ledger"), "asset": cop() })
-}
-
-pub fn tuple(reserve: &str, from: Value, to: Value) -> TupleKey {
-    serde_json::from_value(json!({ "provider": reserve, "from": from, "to": to })).unwrap()
-}
-
-pub fn bounds(context: &SuiteContext) -> PolicyBounds {
-    serde_json::from_value(json!({
-        "deployment": context.deployment,
-        "protocol_version": context.protocol_version,
-        "policy_version": "policy-1",
-        "max_hops": 4,
-        "max_parts": 1,
-        "excluded_providers": [],
-        "excluded_tuples": [],
-        "provider_ceilings": [],
-        "publisher_ceilings": [],
-        "operator_fee": { "flat": "0", "proportional": { "numerator": "0", "denominator": "1" } },
-        "slippage_limits": [],
-    }))
-    .unwrap()
-}
-
-/// Core's price for `tuple`: no fee, no rate, settling in [`DECLARED`] seconds.
-pub fn price(tuple: TupleKey) -> Price {
-    Price {
-        tuple,
-        stated_at: Timestamp::new(WORLD_AT.rfc3339().unwrap()).unwrap(),
-        fee: serde_json::from_value::<FeeFormula>(json!({
-            "flat": "0", "proportional": { "numerator": "0", "denominator": "1" }
-        }))
-        .unwrap(),
-        rate: None,
-        settlement_seconds: SafeInteger::try_from(DECLARED).unwrap(),
-    }
-}
 
 /// The route the router chooses for [`AMOUNT`] from `reserve`'s bank network back to it, through its ledger: its
 /// withdrawal and its deposit, confirmed by the reserve's own dry runs.
