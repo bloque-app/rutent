@@ -64,6 +64,8 @@ struct Kept {
     refusing: bool,
     /// Its read fails.
     unreadable: bool,
+    /// What its read of charges answers in place of what it holds, where set: a stale, truncated or other log's.
+    read_instead: Option<Vec<Entry>>,
 }
 
 /// The log's read, on policy's handle: what it holds as permitted (`T-021-04`) and as counted.
@@ -79,7 +81,9 @@ impl crate::funds::Recorded for Kept {
         if self.unreadable {
             return Err(crate::funds::ReadFailure::Unavailable);
         }
-        Ok(charged_in(&self.entries))
+        Ok(charged_in(
+            self.read_instead.as_ref().unwrap_or(&self.entries),
+        ))
     }
 }
 
@@ -1207,4 +1211,150 @@ fn counter_is_the_logs_across_a_restart() {
         ChargeOutcome::Over { bound: safe(0) }
     );
     assert_eq!(blind.charged().used(&id("acme-treasury"), Limit::Work), 0);
+}
+
+/// A read of the log is held to the one before it: one that drops what the last read held, or lacks the engine's own
+/// last charge within its bound, is an input the decision doesn't have, and every charge on it is refused, so a stale,
+/// truncated or other log's read never starts a party's bound again. Once the read is whole again, the bound holds.
+// verifies: REQ-OPS-1, REQ-AUZ-8, REQ-AUZ-5
+#[test]
+fn stale_read_of_the_log_starts_no_bound_again() {
+    let a = agent("acme-treasury", "agent-7");
+    let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
+    let refused = ChargeOutcome::Over { bound: safe(0) };
+    let mut policy = engine(registers(), bounds(3, 1));
+    let charge_of = |policy: &mut Tested, request: &str| {
+        policy
+            .charge(&charge(request, &a, Work::Request, 3))
+            .unwrap()
+            .outcome
+    };
+    assert_eq!(
+        charge_of(&mut policy, "req-1"),
+        ChargeOutcome::Within { remaining: safe(0) }
+    );
+
+    // The reviewer's sequence: the read answers nothing.
+    policy.log.read_instead = Some(Vec::new());
+    assert_eq!(charge_of(&mut policy, "req-2"), refused);
+    assert_eq!(charge_of(&mut policy, "req-3"), refused);
+
+    // A truncated read: what the log took before the engine's own charge is dropped.
+    let mut other = engine(registers(), bounds(3, 1));
+    assert!(matches!(
+        charge_of(&mut other, "req-9"),
+        ChargeOutcome::Within { .. }
+    ));
+    let mut whole = other.log.entries.clone();
+    whole.extend(policy.log.entries.clone());
+    policy.log.read_instead = Some(whole.clone());
+    assert_eq!(
+        charge_of(&mut policy, "req-4"),
+        ChargeOutcome::Over { bound: safe(3) }
+    );
+    policy.log.read_instead = Some(whole[1..].to_vec());
+    assert_eq!(charge_of(&mut policy, "req-5"), refused, "truncated");
+
+    // Another log's read, which lacks the engine's own charge.
+    policy.log.read_instead = Some(other.log.entries.clone());
+    assert_eq!(charge_of(&mut policy, "req-6"), refused, "another log");
+
+    // Whole again: the party is still at its bound.
+    policy.log.read_instead = Some(whole);
+    assert_eq!(
+        charge_of(&mut policy, "req-7"),
+        ChargeOutcome::Over { bound: safe(3) }
+    );
+}
+
+/// A rebuild never counts a window below what this engine itself counted in it, whatever the read held.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn rebuild_counts_no_window_below_the_engines_own() {
+    let a = agent("acme-treasury", "agent-7");
+    let now = std::time::Duration::from_secs(1_794_304_800);
+    let mut counter = Charged::default();
+    counter.rebuild(now, Vec::new());
+    counter.counted(Counted {
+        charge: charge("req-1", &a, Work::Request, 2),
+        at: now,
+    });
+    counter.rebuild(now, Vec::new());
+    assert_eq!(counter.used(&id("acme-treasury"), Limit::Work), 2);
+    // Its own charge of a window gone counts nothing now.
+    let next = now + std::time::Duration::from_secs(WINDOW_SECS);
+    counter.rebuild(next, Vec::new());
+    assert_eq!(counter.used(&id("acme-treasury"), Limit::Work), 0);
+}
+
+/// Core's clock jumping far ahead, once, freezes nothing: a charge counted more than a window ahead of Core's now
+/// doesn't choose the window and isn't counted in it, and is set apart for the operator. The bound holds again once
+/// the clock is back, for this engine and for a fresh one over the same log.
+// verifies: REQ-OPS-1, REQ-AUZ-8
+#[test]
+fn clock_jumping_far_ahead_freezes_no_window() {
+    let a = agent("acme-treasury", "agent-7");
+    let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
+    let within = |n| ChargeOutcome::Within { remaining: safe(n) };
+    let mut policy = engine(registers(), bounds(3, 1));
+    policy.set_clock(Stopped::at(&at("2030-01-01T00:00:00Z")));
+    assert_eq!(
+        policy
+            .charge(&charge("req-1", &a, Work::Request, 2))
+            .unwrap()
+            .outcome,
+        within(1)
+    );
+    // Back to now: the charge of 2030 is ahead, apart, and the window is now's.
+    policy.set_clock(Stopped::at(&at(NOW)));
+    assert_eq!(
+        policy
+            .charge(&charge("req-2", &a, Work::Request, 3))
+            .unwrap()
+            .outcome,
+        within(0)
+    );
+    assert_eq!(policy.charged().ahead().len(), 1);
+    assert_eq!(policy.charged().ahead()[0].charge.request, id("req-1"));
+    assert_eq!(
+        policy
+            .charge(&charge("req-3", &a, Work::Request, 1))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { bound: safe(3) }
+    );
+    // The entry stays in the log, and a fresh engine over it isn't frozen either.
+    let mut fresh = engine(registers(), bounds(3, 1));
+    fresh.log.entries = policy.log.entries.clone();
+    fresh.set_clock(Stopped::at(&at("2026-11-10T10:00:00Z")));
+    assert_eq!(
+        fresh
+            .charge(&charge("req-4", &a, Work::Request, 3))
+            .unwrap()
+            .outcome,
+        within(0)
+    );
+    assert_eq!(fresh.charged().ahead().len(), 1);
+}
+
+/// A charge Core's clock gives no time for that an entry can hold is refused, nothing recorded and nothing counted,
+/// never recorded at the time the charge states.
+// verifies: REQ-OPS-1, INV-7
+#[test]
+fn charge_at_a_time_no_entry_can_hold_is_refused() {
+    let a = agent("acme-treasury", "agent-7");
+    let mut policy = engine(
+        Registers::of_the_fixtures().with(&a, Some(every_scope())),
+        bounds(3, 1),
+    );
+    // Past the year 9999, which no RFC 3339 time holds.
+    policy.set_clock(Box::new(Stopped(std::time::Duration::from_secs(
+        400_000 * 365 * 86_400,
+    ))));
+    assert!(matches!(
+        policy.charge(&charge("req-1", &a, Work::Request, 1)),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert!(policy.log.entries.is_empty());
+    assert_eq!(policy.charged().used(&id("acme-treasury"), Limit::Work), 0);
 }

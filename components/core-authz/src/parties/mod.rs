@@ -268,6 +268,14 @@ pub struct Charged {
     used: HashMap<(Id, Limit), u64>,
     /// The charges counted in the window now, by their party and their id.
     counted: HashMap<(Id, Id), Charge>,
+    /// The log's read the counter was last rebuilt from, whole: the next read must extend it.
+    last_read: Vec<Counted>,
+    /// The engine's own last charge counted within its bound, as its entry holds it: the next read must hold it.
+    appended: Option<Counted>,
+    /// The engine's own charges counted in the window now: no rebuild counts the window below them.
+    own: Vec<Counted>,
+    /// The charges the last read held counted more than a window ahead of Core's now, set apart for the operator.
+    ahead: Vec<Counted>,
 }
 
 impl Default for Charged {
@@ -277,11 +285,38 @@ impl Default for Charged {
             window: 0,
             used: HashMap::new(),
             counted: HashMap::new(),
+            last_read: Vec::new(),
+            appended: None,
+            own: Vec::new(),
+            ahead: Vec::new(),
         }
     }
 }
 
 impl Charged {
+    /// The charges the log's last read held counted more than a window ahead of Core's now, as after the clock
+    /// jumped forward and came back: none of them chose the window or counted in it. The operator's to look at; the
+    /// assembly can surface them, since core-internal has no raise for them.
+    pub fn ahead(&self) -> &[Counted] {
+        &self.ahead
+    }
+
+    /// Whether `read`, the log's read now, can stand for the log: it extends the read before it, so it drops and
+    /// reorders nothing that read held, and it holds the engine's own last charge counted within its bound. Like
+    /// `T-021-04`'s read, that catches a stale or truncated read, and another log's once the engine has counted; a
+    /// first read of another log, or one frozen after the engine's last charge, is the assembly's word.
+    pub(crate) fn stands(&self, read: &[Counted]) -> bool {
+        read.starts_with(&self.last_read)
+            && self.appended.as_ref().is_none_or(|own| read.contains(own))
+    }
+
+    /// Notes the engine's own charge `own`, counted within its bound, as its entry holds it.
+    pub(crate) fn counted(&mut self, own: Counted) {
+        self.take(&own.charge);
+        self.own.push(own.clone());
+        self.appended = Some(own);
+    }
+
     /// What `party` has used of `limit` in the window now.
     pub fn used(&self, party: &Id, limit: Limit) -> u64 {
         self.used.get(&(party.clone(), limit)).copied().unwrap_or(0)
@@ -336,8 +371,8 @@ impl Charged {
     }
 }
 
-/// A charge counted within its bound, with the moment it was counted at by Core's clock ([`Charged::counted_at`]):
-/// what the log's permitted `charge` entries hold, once core-internal's charge entry carries the engine's own time.
+/// A charge counted within its bound, with the moment it was counted at by Core's clock ([`Charged::counted_at`]), to
+/// the second: what each of the log's permitted `charge` entries holds, at its entry's own time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Counted {
     /// The charge.
@@ -375,20 +410,36 @@ impl Charged {
     /// the one `now` falls in or a later one any of them was counted in, each counted once under its party's id. The
     /// counter is a function of them, so an engine opened again after a restart, or beside another, holds what they
     /// hold. Its bounds stay as they are.
+    ///
+    /// A charge counted more than one window ahead of `now` neither chooses the window nor counts in it: it is set
+    /// apart ([`Charged::ahead`]), so a clock that jumped forward once and came back freezes no window, in this
+    /// engine or in a fresh one over the same log. No window is counted below this engine's own charges in it.
     pub fn rebuild(&mut self, now: Duration, counted: impl IntoIterator<Item = Counted>) {
         let counted: Vec<Counted> = counted.into_iter().collect();
         let window_of = |at: Duration| at.as_secs() / WINDOW_SECS;
-        self.window = counted
+        let reach = window_of(now).saturating_add(1);
+        let (near, ahead): (Vec<Counted>, Vec<Counted>) = counted
+            .iter()
+            .cloned()
+            .partition(|c| window_of(c.at) <= reach);
+        self.window = near
             .iter()
             .map(|c| window_of(c.at))
             .fold(window_of(now), u64::max);
         self.used.clear();
         self.counted.clear();
-        for c in counted {
+        for c in &near {
             if window_of(c.at) == self.window {
                 self.take(&c.charge);
             }
         }
+        let window = self.window;
+        self.own.retain(|c| window_of(c.at) == window);
+        for c in self.own.clone() {
+            self.take(&c.charge);
+        }
+        self.ahead = ahead;
+        self.last_read = counted;
     }
 }
 
@@ -435,13 +486,9 @@ impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Charges for Engine<L, P, S>
     fn charge(&mut self, charge: &Charge) -> Result<ChargeAnswer, AppendFailure> {
         charge.check().map_err(AppendFailure::Refused)?;
         let now = self.register.clock.now();
-        let read = self.log.charged();
-        let answer = match read {
-            Err(_) => Answer::Refuse {
-                class: RefusalClass::MissingInput,
-            },
-            Ok(counted) => {
-                self.charged.rebuild(now, counted);
+        let answer = match self.log.charged() {
+            Ok(read) if self.charged.stands(&read) => {
+                self.charged.rebuild(now, read);
                 if self.charged.reissues(charge) {
                     Answer::Refuse {
                         class: RefusalClass::NotPermitted,
@@ -450,15 +497,28 @@ impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Charges for Engine<L, P, S>
                     self.consult(Asked::Charge(charge))
                 }
             }
+            // A read that fails, or can't stand for the log: the counter is an input the decision doesn't have.
+            _ => Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            },
         };
         let outcome = charge_outcome(answer, self.charged.standing(charge));
+        // Counted at Core's clock, to the second, as its entry holds it; a moment no entry can hold is refused.
+        let counted_at = Duration::from_secs(self.charged.counted_at(now).as_secs());
+        let at = timestamp(counted_at).ok_or(AppendFailure::Refused(
+            rutent_contracts::core_internal::Violation(
+                "Core's clock gives no time a charge's entry can hold",
+            ),
+        ))?;
         let what = What::Charge {
             charge: charge.clone(),
         };
-        let at = timestamp(self.charged.counted_at(now)).unwrap_or_else(|| charge.at.clone());
         let receipt = self.record(&charge.caller, what, &at, outcome.outcome())?;
         if matches!(outcome, ChargeOutcome::Within { .. }) {
-            self.charged.take(charge);
+            self.charged.counted(Counted {
+                charge: charge.clone(),
+                at: counted_at,
+            });
         }
         Ok(ChargeAnswer {
             request: charge.request.clone(),
