@@ -147,6 +147,8 @@ pub enum On {
     Refusal,
     /// A part's route recalculated (`T-020-10`).
     Recalculated,
+    /// A part waiting at its floor (`T-020-10b`).
+    FloorWait,
     /// A part declared stuck, or left no route (`T-020-11`).
     Stuck,
     /// A raise to the operator (`T-020-11`).
@@ -185,6 +187,8 @@ impl On {
             (On::Refusal, Entry::Verified(v)) => matches!(v.what, What::OrderRefusal { .. }),
             (On::Recalculated, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteRecalculated { .. })),
+            (On::FloorWait, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if input.observed == Observed::WaitingAtFloor {}),
             (On::Bound, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if input.observed == Observed::ProviderBound {}),
             (On::Raise, Entry::Verified(v)) => matches!(v.what, What::Raise { .. }),

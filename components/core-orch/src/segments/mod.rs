@@ -269,18 +269,6 @@ pub enum Ran {
     Segments(Vec<Accounted>),
 }
 
-/// Where a part waits for the customer past its floor (`REQ-ORD-27`, `T-020-10`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Waits {
-    /// The settled segment it waits after, where its value is evidenced.
-    pub after: Id,
-    /// What is evidenced there.
-    pub evidenced: PositiveAmount,
-    /// What the quotes still ahead would leave the customer after the operator's fee; `None` where Core couldn't
-    /// count it, which holds no floor.
-    pub left: Option<Amount>,
-}
-
 /// A settled segment's actual settlement time, as its `settlement` entry recorded it (`REQ-QTE-3`, `T-020-11`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settlement {
@@ -315,6 +303,9 @@ pub enum SegmentsError {
     /// The order Core follows retired the segment, its route recalculated: it is never handed over or taken on
     /// again (`INV-4`, `T-020-10`).
     Retired(Id),
+    /// The order Core follows no longer takes a wait at the floor built before (the part moved on, or was declared
+    /// stuck): the wait was dropped, never appended (`T-020-10b`).
+    WaitNotTaken(stm::Outcome),
     /// The part is stuck, or its stuck resolution ended it, and no segment of it was carried out with something still
     /// to record: nothing of it is handed over or carried out again, and only its resolution under policy moves its
     /// value (`REQ-ORD-28`, `REQ-AUZ-4`, `T-020-11`).
@@ -439,6 +430,16 @@ impl From<AppendFailure> for PromoteRefused {
     }
 }
 
+/// A part's wait at its floor: its `waiting_at_floor` input and entry, built once and appended unchanged until the
+/// log gives its receipt (`INV-8`), or dropped where the log refuses it or the order Core follows no longer takes it
+/// (`T-020-10b`). Each wait is its own: a part that waits again at the same node records a second.
+#[derive(Debug, Clone)]
+struct FloorWait {
+    input: RecordedInput,
+    entry: GeneralEntry,
+    receipt: Option<Receipt>,
+}
+
 /// One step of a segment's record: the entry, built once and appended again unchanged until the log gives its
 /// receipt, so a retried step is one entry (`INV-8`).
 #[derive(Debug, Clone)]
@@ -512,11 +513,11 @@ pub struct Segments {
     undelivered: Vec<Drain>,
     flights: BTreeMap<(String, String), InFlight>,
     orders: BTreeMap<String, Tracked>,
-    /// The parts that wait for the customer past their floor, by order and part.
-    waiting: BTreeMap<(String, String), Waits>,
     /// The stuck parts whose resolution moved all their value, by order and part: they hold nothing, and take no
     /// rest hold (`T-020-11`).
     resolved: BTreeSet<(String, String)>,
+    /// Each part's waits at its floor, in order, by order and part (`T-020-10b`).
+    floor_waits: BTreeMap<(String, String), Vec<FloorWait>>,
     /// The refusal each part's guard recorded before a segment's first hand-over, by order and part: recorded once,
     /// and answered as recorded while the guard refuses for the same reason (`T-020-09`).
     refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
@@ -637,10 +638,144 @@ impl Segments {
         Ok(())
     }
 
-    /// Where `part` of `order` waits for the customer past its floor, if it does (`REQ-ORD-27`).
-    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&Waits> {
-        self.waiting
+    /// Since when `part` of `order` waits for the customer, as the order Core follows has it: its `waiting_since`,
+    /// from the input that made it wait, a `waiting_at_floor` past its floor among them (`REQ-ORD-27`, `AC-12`,
+    /// `T-020-10b`). `None` while it doesn't wait.
+    pub fn waiting(&self, order: &Id, part: &Id) -> Option<&stm::Timestamp> {
+        self.orders
+            .get(order.as_str())?
+            .order
+            .parts
+            .iter()
+            .find(|p| p.part_id.as_str() == part.as_str())
+            .filter(|p| p.state == OrderState::WaitingForCustomer)?
+            .waiting_since
+            .as_ref()
+    }
+
+    /// Records that `part` of `order` waits past its floor, on the value its last settled segment evidenced at its
+    /// node: a `waiting_at_floor` input by `core`, appended until the log takes it, and taken by the order Core
+    /// follows then, so the part waits for the customer with its `waiting_since` (`REQ-ORD-27`, `AC-12`,
+    /// `T-020-10b`).
+    ///
+    /// A wait built and not yet taken is the one tried, unchanged, but read again first: where the order Core follows
+    /// no longer takes it (the part moved on, or was declared stuck), it is dropped and never appended
+    /// ([`SegmentsError::WaitNotTaken`]). One the log refuses is dropped too. A wait recorded while the part still
+    /// waits is the answer; once the part no longer waits, a new wait is a wait of its own, at the same node or not.
+    pub(crate) fn wait_at_floor(
+        &mut self,
+        log: &mut dyn Log,
+        clock: &dyn Clock,
+        fresh: &mut dyn Fresh,
+        core: &Actor,
+        order: &Id,
+        part: &Id,
+    ) -> Result<Receipt, SegmentsError> {
+        let key = (order.as_str().to_owned(), part.as_str().to_owned());
+        let last = self.floor_waits.get(&key).and_then(|w| w.last());
+        match last {
+            Some(FloorWait {
+                receipt: Some(receipt),
+                ..
+            }) if self.waiting(order, part).is_some() => return Ok(receipt.clone()),
+            Some(FloorWait { receipt: None, .. }) => {}
+            _ => {
+                let reading = clock.now();
+                let when = reading
+                    .timestamp()
+                    .ok_or(AppendFailure::Refused(journal::NO_TIME))?;
+                let state_id = |text: &str| stm::Id::new(text).ok_or(SegmentsError::Plan("an id"));
+                let input = RecordedInput {
+                    record_id: stm::RecordId::new(fresh.id().as_str())
+                        .ok_or(SegmentsError::Plan("a record id"))?,
+                    recorded_at: stm::Timestamp::new(when.as_str())
+                        .ok_or(AppendFailure::Refused(journal::NO_TIME))?,
+                    time_source: state_id("core_clock")?,
+                    source: Source {
+                        kind: SourceKind::Orchestrator,
+                        id: state_id(core.acts.as_str())?,
+                    },
+                    standing: Standing::Stated,
+                    subject: Subject {
+                        order: state_id(order.as_str())?,
+                        part: Some(state_id(part.as_str())?),
+                        segment: None,
+                    },
+                    observed: Observed::WaitingAtFloor {},
+                };
+                let entry = journal::verified(
+                    core,
+                    What::Input {
+                        input: input.clone(),
+                    },
+                    &when,
+                    Outcome::Observed {},
+                );
+                entry.check().map_err(AppendFailure::Refused)?;
+                let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+                self.floor_waits
+                    .entry(key.clone())
+                    .or_default()
+                    .push(FloorWait {
+                        input,
+                        entry,
+                        receipt: None,
+                    });
+            }
+        }
+        let wait = self
+            .floor_waits
+            .get(&key)
+            .and_then(|w| w.last())
+            .cloned()
+            .ok_or(SegmentsError::Plan("a wait is built before it is appended"))?;
+        // Read the part again: a wait the order Core follows no longer takes is dropped, never appended.
+        let next = match self.orders.get(order.as_str()) {
+            Some(tracked) => {
+                let next = Stm::transition(&tracked.order, &wait.input);
+                if next.last_input.outcome != (stm::Outcome::Applied {}) {
+                    self.drop_wait(&key);
+                    return Err(SegmentsError::WaitNotTaken(next.last_input.outcome));
+                }
+                Some(next)
+            }
+            None => None,
+        };
+        let receipt = match journal::append_general(log, &wait.entry) {
+            Ok(receipt) => receipt,
+            Err(AppendFailure::Unavailable) => {
+                return Err(SegmentsError::Append(AppendFailure::Unavailable));
+            }
+            Err(refused) => {
+                self.drop_wait(&key);
+                return Err(SegmentsError::Append(refused));
+            }
+        };
+        if let Some(last) = self.floor_waits.get_mut(&key).and_then(|w| w.last_mut()) {
+            last.receipt = Some(receipt.clone());
+        }
+        if let (Some(next), Some(tracked)) = (next, self.orders.get_mut(order.as_str())) {
+            tracked.order = next;
+            tracked.since = clock.now();
+        }
+        Ok(receipt)
+    }
+
+    /// Drops `key`'s wait built and not yet taken.
+    fn drop_wait(&mut self, key: &(String, String)) {
+        if let Some(waits) = self.floor_waits.get_mut(key)
+            && waits.last().is_some_and(|w| w.receipt.is_none())
+        {
+            waits.pop();
+        }
+    }
+
+    /// Whether `part` of `order` has a wait at its floor built and not yet recorded (`T-020-10b`).
+    pub fn floor_wait_pending(&self, order: &Id, part: &Id) -> bool {
+        self.floor_waits
             .get(&(order.as_str().to_owned(), part.as_str().to_owned()))
+            .and_then(|w| w.last())
+            .is_some_and(|w| w.receipt.is_none())
     }
 
     /// Whether the order Core follows retired `segment`: a recalculation replaced it (`T-020-10`).
@@ -706,6 +841,16 @@ impl Segments {
         if applied {
             tracked.order = next;
             tracked.since = clock.now();
+            // A recalculated route replaces the one a wait built and not yet recorded was judged on: that wait goes
+            // with it, and the new route's floor is judged afresh (`T-020-10b`).
+            if let (Observed::RouteRecalculated { .. }, Some(part)) =
+                (&input.observed, &input.subject.part)
+            {
+                self.drop_wait(&(
+                    input.subject.order.as_str().to_owned(),
+                    part.as_str().to_owned(),
+                ));
+            }
         }
         applied
     }
@@ -929,8 +1074,9 @@ impl Segments {
     ///
     /// After each segment that settles with a later one to hand over, the part's floor ([`Live::floor`]) is checked
     /// against what that segment gave out and the quotes still ahead (`recalc::left_after`, `REQ-ORD-27`, `AC-42`):
-    /// below it, nothing more is handed over and the part waits for the customer ([`Segments::waiting`]), however
-    /// often it is run. Every run goes through here, so the check can't be skipped (`T-020-10`).
+    /// below it, nothing more is handed over and the part waits for the customer: a `waiting_at_floor` input is
+    /// recorded, the order Core follows takes it, and a part waiting so takes no move however often it is run
+    /// ([`Segments::waiting`]). Every run goes through here, so the check can't be skipped (`T-020-10`, `T-020-10b`).
     pub fn run_part(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1034,6 +1180,28 @@ impl Segments {
             // one, with what it gave out.
             let done = match self.standing(live, place) {
                 Some(done) => done,
+                // A part waiting for the customer takes no move, whatever its run is asked (`REQ-ORD-27`, the log's
+                // `held-part-takes-no-move`): only the customer's choice moves it on.
+                None if self.waiting(live.order, live.part).is_some() => break,
+                // A wait built and not yet recorded holds the part as a recorded one does, whatever floor this run
+                // names: it is recorded first, and the part waits. One the order Core follows no longer takes is
+                // dropped, and the run goes on: the floor this run judged at the segment before held.
+                None if self.floor_wait_pending(live.order, live.part)
+                    && match self.wait_at_floor(
+                        parts.log,
+                        parts.clock,
+                        parts.fresh,
+                        live.core,
+                        live.order,
+                        live.part,
+                    ) {
+                        Ok(_) => true,
+                        Err(SegmentsError::WaitNotTaken(_)) => false,
+                        Err(other) => return Err(other),
+                    } =>
+                {
+                    break;
+                }
                 None => {
                     // Before a segment is first handed over, its provider and the node it leaves the value at are
                     // held to the catalogue as it stands now (`T-020-09`'s seam): the evidence floor on its tuple
@@ -1139,18 +1307,16 @@ impl Segments {
                         &next,
                     );
                     if !holds_floor(left.as_ref(), live.floor) {
-                        let waits = Waits {
-                            after: live.segments[place].clone(),
-                            evidenced: next,
-                            left,
-                        };
-                        self.waiting.insert(
-                            (
-                                live.order.as_str().to_owned(),
-                                live.part.as_str().to_owned(),
-                            ),
-                            waits,
-                        );
+                        // Past the floor, the part waits for the customer, recorded as a state-machine input on
+                        // the value the settled segment evidenced at its node (`waiting_at_floor`).
+                        self.wait_at_floor(
+                            parts.log,
+                            parts.clock,
+                            parts.fresh,
+                            live.core,
+                            live.order,
+                            live.part,
+                        )?;
                         break;
                     }
                     amount = next;
