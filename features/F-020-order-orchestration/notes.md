@@ -1342,3 +1342,22 @@ rule was switched off once, its test seen red, the file restored and touched.
   empty (`F-030`), so an order Core was running when it stopped stays where it stopped. The harness's
   `Step::Restart` reopens Core after a crash or without one; after a crash with no restart, the steps after it are
   skipped, as before.
+
+### T-020-09, the approval's low items (after `m3` at `85386b8`)
+
+- **Merged `m3` at `85386b8`** (`T-021-04`: the assembly's authorise through the engine, the policy handle reading
+  `CoreLog` through `Entries`): no conflict beside this row's grading wiring; both rows' tests pass on the merged tree.
+- **`Core::relist` fails loudly** on a `done` catalogue change it doesn't replay (a revoke, a release accepted,
+  revoked or promoted): the reopening is refused (`AssemblyError::Listing`) rather than rebuild a catalogue that grants
+  what the log revoked. Test `reopened_core_refuses_a_catalogue_change_it_does_not_replay` (a promotion in the log).
+- **`Core::relist` checks the log's commitment**: an advertisement is joined only where the bytes the evidence store
+  kept under the stated entry's commitment (`bearing_out`) are the installed provider's. Test
+  `reopened_core_joins_only_the_advertisement_its_log_committed_to` (the same statement in other bytes).
+- **A restart between a grade-3 withdrawal and its deposit**: `restart_between_a_withdrawal_and_its_deposit_keeps_the_movement_into_the_node`
+  (core-orch): rebuilt from the log, Core knows the withdrawal's movement into the node from the evidence naming it,
+  and the exchange inside the node still gets its in and out records. It passed when written: the rebuild was there
+  from the re-review round; switched off below.
+- **`Readings::of`** takes the networks the fleet serves through `fleet::networks_of`; the polygon and bsc block gap
+  is in `F-024`'s notes.
+- **Rule-off, each red:** relist's refusal of a change it doesn't replay (its test); the commitment check (its test);
+  `Closing::recorded` rebuilding a settled segment's own movement (the restart-between test).

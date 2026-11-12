@@ -43,14 +43,10 @@ impl Readings {
         let mut networks = Vec::new();
         let mut reserves = Vec::new();
         for one in installed {
-            match one.spec.role {
-                Role::Reserve => {
-                    networks.push(one.spec.bank());
-                    reserves.push(one.spec.provider.clone());
-                }
-                Role::Exchange => networks.push("polygon".to_owned()),
-                Role::Ramp => networks.push("bsc".to_owned()),
-                Role::Verifier => {}
+            // The networks the fleet serves for the provider's tuples, as it serves them.
+            networks.extend(crate::sim::fleet::networks_of(&one.spec));
+            if one.spec.role == Role::Reserve {
+                reserves.push(one.spec.provider.clone());
             }
         }
         networks.sort();

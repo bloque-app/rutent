@@ -254,7 +254,7 @@ impl Scenario {
         (core, orders)
     }
 
-    fn config(&self, seed: u64) -> Config {
+    pub(crate) fn config(&self, seed: u64) -> Config {
         Config {
             seed,
             staging: self.given.staging,

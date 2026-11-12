@@ -708,7 +708,7 @@ impl Core {
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
         if reopened {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
-            core.relist();
+            core.relist()?;
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -851,9 +851,19 @@ impl Core {
 
     /// Core's catalogue rebuilt from its log, as after a restart: each tuple granted by a `done` grant, at its effect's
     /// time and under its id, as [`Core::grant`] granted it, and each advertisement the log holds joined at the time
-    /// the log received it, as [`Core::advertise`] joined it.
-    fn relist(&mut self) {
+    /// the log received it, as [`Core::advertise`] joined it, once the bytes the evidence store kept under the log's
+    /// commitment are the installed provider's advertisement. A `done` catalogue change of any other kind (a revoke, a
+    /// release accepted, revoked or promoted) refuses the reopening: it isn't replayed, and a catalogue rebuilt
+    /// without it would grant what the log revoked.
+    ///
+    /// # Errors
+    ///
+    /// On a catalogue change it doesn't replay, or an advertisement whose kept bytes aren't the installed one's.
+    fn relist(&mut self) -> Result<(), AssemblyError> {
         let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let kept = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
+            .map_err(|e| AssemblyError::Listing(format!("the evidence store's shelf: {e:?}")))?
+            .kept;
         let done: Vec<&Receipt> = entries
             .iter()
             .filter_map(|(_, e)| match e {
@@ -874,6 +884,16 @@ impl Core {
                     })
                 {
                     let one = one.clone();
+                    let bytes = kept
+                        .iter()
+                        .find(|k| k.kept.commitment == s.commitment)
+                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
+                    if bytes.as_deref() != Some(one.advertisement.bytes()) {
+                        return Err(AssemblyError::Listing(format!(
+                            "the advertisement the log holds for {} isn't the installed one: its commitment's bytes differ",
+                            s.attribution.maker().acts.as_str()
+                        )));
+                    }
                     let at = rutent_core_authz::session::instant(&s.received_at);
                     kit::join(&mut self.catalogue, &one, at);
                     let statement = one.advertisement.statement();
@@ -889,9 +909,9 @@ impl Core {
             let What::Effect {
                 action:
                     Action::ChangeCatalogue {
-                        change: CatalogueChange::Grant,
+                        change,
                         provider,
-                        tuple: Some(tuple_id),
+                        tuple,
                         ..
                     },
                 ..
@@ -902,6 +922,12 @@ impl Core {
             if !done.contains(&receipt) {
                 continue;
             }
+            let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
+                return Err(AssemblyError::Listing(format!(
+                    "the log holds a {change:?} of {} that Core::relist doesn't replay",
+                    provider.as_str()
+                )));
+            };
             let Some(one) = self
                 .installed
                 .iter()
@@ -926,6 +952,7 @@ impl Core {
             terms.tuples = vec![tuple];
             kit::grant(&mut self.catalogue, &one, terms);
         }
+        Ok(())
     }
 
     /// When the log received the stated entry at `receipt`, on the catalogue's clock.
@@ -1472,6 +1499,77 @@ mod tests {
             ))
         ));
         assert!(!core.started.contains_key(order.as_str()));
+    }
+
+    /// Core alone, put together, and the config it was put together under.
+    fn alone() -> (Core, Config) {
+        let scenario = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce));
+        let (core, _) = scenario.core(1, &mut machine::Reference);
+        (core, scenario.config(1))
+    }
+
+    /// A Core opened again rebuilds its catalogue from the grants and advertisements its log holds, and from nothing
+    /// else: a catalogue change it doesn't replay, here a promotion, refuses the reopening rather than leave the
+    /// catalogue short of it (a revoked tuple granted again, a release not in force).
+    // verifies: REQ-MDL-4, REQ-AUZ-6
+    #[test]
+    fn reopened_core_refuses_a_catalogue_change_it_does_not_replay() {
+        let (mut core, config) = alone();
+        let installed = core.installed[0].clone();
+        let provider = kit::id(&installed.advertisement.statement().statement.provider);
+        let action = Action::ChangeCatalogue {
+            change: CatalogueChange::Promote,
+            provider: provider.clone(),
+            version: Some(kit::id("1.0.0")),
+            tuple: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+        };
+        let request = DecisionRequest {
+            request: core.fresh.id(),
+            caller: kit::operator_login(),
+            action: action.clone(),
+            at: core.clock.timestamp(),
+        };
+        let decision =
+            rutent_contracts::core_internal::calls::Decisions::decide(&mut core.policy, &request)
+                .unwrap();
+        let permit = decision.permit().expect("the operator's login may promote");
+        let effect = core
+            .verified(
+                What::Effect {
+                    action,
+                    decision: permit,
+                },
+                Outcome::ToTakeEffect {},
+            )
+            .unwrap();
+        core.verified(What::Result { effect }, Outcome::Done {})
+            .unwrap();
+        let reopened = core.reopened(&config, &mut machine::Reference);
+        assert!(
+            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("doesn't replay")),
+            "{:?}",
+            reopened.err()
+        );
+    }
+
+    /// A Core opened again joins an advertisement only where the bytes the evidence store kept under the log's
+    /// commitment are the installed provider's: the same statement in other bytes refuses the reopening.
+    // verifies: REQ-AUD-2, REQ-CAT-6
+    #[test]
+    fn reopened_core_joins_only_the_advertisement_its_log_committed_to() {
+        let (mut core, config) = alone();
+        let mut bytes = core.installed[0].advertisement.bytes().to_vec();
+        bytes.push(b' ');
+        core.installed[0].advertisement =
+            rutent_conformance::role::Received::from_bytes(bytes).expect("the same statement");
+        let reopened = core.reopened(&config, &mut machine::Reference);
+        assert!(
+            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("commitment")),
+            "{:?}",
+            reopened.err()
+        );
     }
 
     /// An order of 1 000 000 whose customer takes no less than 995 000, accepted, and its withdrawal scripted to

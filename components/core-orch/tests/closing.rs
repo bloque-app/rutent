@@ -1568,6 +1568,90 @@ fn movements_core_checked_are_taken_live_and_after_a_restart() {
     );
 }
 
+/// Core restarts between a grade-3 withdrawal into `ledger-in` and the deposit out of it: rebuilt from the log, it
+/// knows the withdrawal's movement into the node from the evidence that names it, and the exchange inside the node
+/// still closes on the movements in and out when the deposit leaves on its public record.
+// verifies: REQ-ORD-33, REQ-ORD-41
+#[test]
+fn restart_between_a_withdrawal_and_its_deposit_keeps_the_movement_into_the_node() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    nets.moved("polygon", "tx-d", "poly-55", "acct-9", "USDC", D.1);
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut before = Closing::new();
+    let exchange = result(
+        "conversion",
+        "exchange-a",
+        "tx-x",
+        X,
+        ("COP", "199800"),
+        json!([piece(3, "book-x", "exchange-a")]),
+    );
+    for (place, provider, tx, bytes, out) in [
+        (
+            0,
+            "reserve-bank-co",
+            "tx-w",
+            withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")])),
+            W.1,
+        ),
+        (1, "exchange-a", "tx-x", exchange, X.1),
+    ] {
+        settles(part.grade(
+            &mut grading(&catalogue, &nets, &books, &mut before),
+            place,
+            provider,
+            tx,
+            &bytes,
+            out,
+        ));
+    }
+    // Core restarts.
+    let mut rebuilt = Closing::recorded(&log.entries());
+    let (_, d) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut rebuilt),
+        2,
+        "reserve-wallet",
+        "tx-d",
+        &deposit("tx-d", json!([piece(1, "poly-55", "polygon")])),
+        D.1,
+    ));
+    let inner: Vec<_> = named(&d).into_iter().filter(|e| e.1 == "p1-s2").collect();
+    assert_eq!(
+        inner,
+        [
+            (
+                "ev-ord-1-2.in.1".into(),
+                "p1-s2".into(),
+                EvidenceGrade::PublicRecord,
+                "co-ach".into(),
+                moved("co-ach", "ach-77", Some("ledger-in"))
+            ),
+            (
+                "ev-ord-1-2.out.1".into(),
+                "p1-s2".into(),
+                EvidenceGrade::PublicRecord,
+                "polygon".into(),
+                moved("polygon", "poly-55", Some("ledger-in"))
+            ),
+        ],
+        "the movement into the node, rebuilt from the withdrawal's signed word naming it"
+    );
+    assert_eq!(
+        replays(&d),
+        [(
+            vec!["ledger-in".to_owned()],
+            ReplayFound::ConsistentWithTheExit {}
+        )]
+    );
+}
+
 /// The entries settling `segment` of `order`: its evidence and what came with it.
 fn settles_of(log: &Log, order: &str, segment: &str) -> Vec<What> {
     log.entries()

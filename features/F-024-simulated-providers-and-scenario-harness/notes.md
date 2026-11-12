@@ -283,3 +283,10 @@ with the seeded step), `STM on VOS` run 43184990196, `Contract guard` 4318499035
 `records` 43184990233. On the branch, `STM on VOS` passed at `28b6353` (run 43176806840, the first to reach the
 twin's scenarios on three VOS replicas) and at `304fa27` (run 43178711555). Run 43165714465 at `ebd6def` failed at
 the twin's lint step before any scenario ran; `28b6353` fixed it.
+
+**Polygon and BSC never turn final on their own** (a gap, from `T-020-09`). The fleet serves `polygon` and `bsc` with
+`Confirmations(2)`, and the simulated world adds no blocks unless a scenario does (`SimWorld::network_mut`'s
+`advance`). The assembly's grading reads them as the fleet serves them (`assembly/grading.rs`, through
+`fleet::networks_of`), so a final deposit there stays pending, and its order waits for its public record, until a
+scenario advances the network. No scenario routes a final deposit to either network yet; one that does needs a step
+that adds blocks (for `T-024-04`'s and `T-024-05`'s scenarios).
