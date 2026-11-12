@@ -2,9 +2,9 @@
 //! answer per line on its standard output, carrying the host contract's calls and answers.
 //!
 //! `rutent-scenarios-vos` runs the assembled Core, whose module platform needs a newer toolchain than VOS's crates
-//! build with, so it can't link the client: it drives the client's `VosHost` on three replicas in this package's
-//! server, `rutent-stm-vos-serve` (feature `vos`), through this wire. The wire is plain serde over the contract's own
-//! types, and links nothing of VOS.
+//! build with, so it can't link the client: it drives the client's `VosHost` on three replicas in the host server,
+//! `rutent-stm-vos-serve`, a process of its own, through this wire. The wire is plain serde over the contract's own
+//! types, links nothing of VOS, and is MIT.
 
 use rutent_contracts::state_machine::host::{
     Delivery, HostError, RefusalRecord, SnapshotEntry, TransitionRecord,

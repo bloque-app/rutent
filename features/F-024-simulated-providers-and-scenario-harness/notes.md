@@ -53,7 +53,10 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   the store as a restart would (`read_back`).
 - **The log's two handles.** The engine holds the policy handle (`PolicyHandle`), and nothing else does;
   orchestration holds `GeneralHandle` alone. The calls the engine doesn't build yet are answered beside it, on the
-  engine's own handle (`PolicySide`), so its handle is still the only policy handle.
+  engine's own handle (`PolicySide`), so its handle is still the only policy handle. This is structural (review of
+  `712c3fb`, 2): the disk under the log, `read_back`, `assemble_on`, the sources' records and `PolicySide::engine`
+  are crate-private, and four compile-fail doc tests in `lib.rs` hold that a scenario test reaches the log only to
+  read it, through policy's calls or through Core's steps.
 - **Policy's sources, from the records** (the table in `assembly/policy.rs`): `ActsFor` and `Permissions` from the
   deployment's registers (Core's actor holds `CarryOnward`; the operator's login holds the grant, promotion and
   `ReadOrderState`); `Account` from the account's register; `Requester` and `OrderOrigin` from `Intake::record`,
@@ -66,13 +69,19 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   each reading, so two runs read the same times in the same order.
 - **Sessions** opened by the engine are handed to the catalogue's register (`Register::open_in`).
 - **Intake and the segments.** `Segments::follow` takes only `Intake::start`'s answer; one `Issued` is kept across
-  routings; the route a part runs is the decision record Core signed, held to the digest the log names it by. The
-  operator key is watched to keep each record Core signs, since intake hands none back.
-- **The providers in the log.** Each provider is granted by a decided catalogue change (the operator's login), its
-  effect and its `done` result, before its advertisement was made (first trust is the grant's, and an advertisement
-  made before its grant rides on none), and then its advertisement is kept and appended as its stated entry, claimed
-  for its publisher. Core's clock starts an hour before the earliest advertisement for the grants, then moves to
-  the scenario's start (`kit::START`).
+  routings; the route a part runs is the decision record Core signed, read only from the bytes the log's digest
+  holds (review of `712c3fb`, 6). The operator key is watched to keep each record's signed envelope, since intake
+  hands none back.
+- **The providers in the log, then in the catalogue** (review of `712c3fb`, 3). Each tuple a provider advertises is
+  granted by a decided catalogue change of the operator's login, naming the tuple (`kit::tuple_id`) and the
+  advertising key, and its effect recorded; then the grant is carried out in Core's catalogue on exactly the terms
+  recorded (the tuples, the decider as `granted_by`, the first effect's time as `granted_at`, the key trusted), under
+  an id of its own (`grant-<provider>-<the first effect's index>`); then each effect's `done` result. All of it before
+  the advertisement was made (first trust is the grant's, and an advertisement made before its grant rides on none);
+  then the advertisement is kept and appended as its stated entry, claimed for its publisher, and joins the catalogue
+  at the time the log received it. Core's clock starts an hour before the earliest advertisement for the grants, then
+  moves to the scenario's start (`kit::START`). The platform's own catalogue, which admits the releases (`Fleet`), is
+  the platform's and not Core's, and is granted as `T-024-01` left it.
 - **The operator's key is real.** The log verifies Core's questions by the deployment's `operator_key`, which a
   placeholder can't be, so the assembly's context names a real key (`RealKey`), and `Fleet::with_context` and
   `fleet::assertion_in` take it. The simulated providers serve the deployment the world names (below).
@@ -90,52 +99,81 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 - **Faults.** A crash after the log's store took a record and before it answered (`Fault::CrashAfterRecord`), or at
   the platform's seam right before an effect is carried out (`Fault::CrashBeforeEffect`): both between a record and
   its effect. A crash is a panic the harness catches; what survives is the disk, the providers and the state
-  machine's host, and Core is dropped before the disk is read back. A repeated and a reordered delivery are
-  deliveries to the state machine (the reading): each input twice, or held to the step's end and those of
-  different orders interleaved by the seed, each order's kept in the log's order. A provider's silence is a scripted
-  `Behaviour::silent`. The swap is the state machine halted, exported, imported into another environment and
-  resumed, at the platform's seam mid-order (`Fault::SwapBeforeEffect`) or as a step.
+  machine's host, and Core is dropped before the disk is read back. A provider's silence is a scripted
+  `Behaviour::silent`, which leaves its segment's result unanswered and moves nothing for it (its own test). The swap
+  is the state machine halted, exported, imported into another environment and resumed, at the platform's seam
+  mid-order (`Fault::SwapBeforeEffect`) or as a step; each swap keeps what both hosts held, and the check holds the
+  new host's journals to the old one's right after the import.
+- **Deliveries, both ways** (review of `712c3fb`, 7). To the state machine: each input twice (`Delivery::Repeated`),
+  recorded once; or held to a step's end and those of different orders interleaved by the seed
+  (`Delivery::Reordered`). `Stm` is per order, so the interleaving changes no order's states by itself; what the
+  check holds is that each order's journal is in the log's own order, which a delivery that broke an order's sequence
+  fails, and that the host's every state is the replay's. Between Core and a provider: every operation the segments
+  carry out delivered to its provider twice under its transaction, Core taking the second answer
+  (`Fault::DeliverTwice`), and the whole route run again (`Step::Rerun`): each transaction moves once, as many
+  movements as with one delivery, every order ends where it ends with one, and the host's states are the replay's.
+  A provider's answer reordered against Core, a result arriving before its effect's receipt or apart from the call
+  that carried it out, needs a seam Core doesn't have: `Modules::carry_out` answers in the same call, and no port
+  takes a provider's result delivered later. That port is the stuck and late-delivery path's (`T-020-11`), which
+  `T-024-06` (`AC-5`) and `T-024-08` (`INV-4`, `INV-8`) test.
 - **Seeds.** Core's identifiers are SplitMix64 over the seed (`kit::Seeded`), and the seeded scenario draws its
-  amounts, its delivery fault, a swap and a silence from it. `RUTENT_SCENARIO_SEEDS` sets them, `1,2,3` by default;
-  `ci.yml`'s seeded step runs `11` to `15`. The evidence store salts each statement from the operating system, which
+  amounts, its delivery fault, a swap and a silence from it. `RUTENT_SCENARIO_SEEDS` sets them; every check runs under
+  each (the crash, swap and replay checks `1` by default, the seed check `1,2,3`), and `ci.yml`'s seeded step runs
+  `11` to `15`. The same steps under two seeds project to two runs, so the seed reaches what Core draws (review of
+  `712c3fb`, 8). The evidence store salts each statement from the operating system, which
   no seed reaches, so a run is compared by its projection, every digest and signature replaced by the order it first
   appeared in.
 - **The crash test's claim is narrow**: the record of the effect it crashed on reads back from the disk, the
   provider moved nothing for it, the store binds with nothing missing, and every movement a provider's book holds
   has its `move_value` effect in the log. Carrying the order on after the restart is `F-030`'s (below).
-- **The swap.** The root workspace's run swaps the reference host to a fresh reference host; the twin's swaps three
-  VOS replicas out to the reference host, mid-order.
+- **The replay** compares whole `Order` values, the host's state after each record against the fold's after each
+  input, and a fresh host's journals record for record (review of `712c3fb`, 5).
+- **The swap.** The root workspace's run swaps the reference host to a fresh reference host. The twin's swap check
+  moves the state machine from one cluster of three VOS replicas to another, mid-order, so an import into VOS runs;
+  the seeded runs' planted swaps there move it out to the reference host.
 
 ### The VOS twin (`components/stm/vos-program/scenarios/`)
 
 - **Two processes, not one.** The module platform the assembled Core runs needs rustc 1.95 or later (cranelift
   0.135's `rust-version`), and VOS's crates don't build on a newer toolchain than their own nightly-2025-07-14 (the
   `stwo` fork uses `array_chunks`, gone from later nightlies). So `rutent-scenarios-vos` builds with VOS's guest
-  toolchain, nightly-2026-03-20, links nothing of VOS, and drives a host server, `rutent-stm-vos-serve`
-  (`scenarios/serve/`, built with the client's toolchain, AGPL-3.0-or-later), over a JSON-lines wire, one server per
-  cluster. Both are members of the client's workspace, under its lock; `default-members` keeps a bare command in
-  `client/` to the client. `scenarios.sh` builds the server and runs the scenarios.
-- **Licence.** `rutent-scenarios-vos` links no VOS crate, so it is MIT (`vos-licence-v0`: AGPL covers what links
-  VOS); `rutent-stm-vos-serve` links the client and is AGPL-3.0-or-later. The client lock gains Core's tree at the
-  root lock's versions, so no line of `licences/RECORD` changes; it moves `rustix` 1.1.3 to 1.1.6, `linux-raw-sys`
-  0.11.0 to 0.12.1 and `zmij` 1.0.21 to 1.0.23, the root lock's.
+  toolchain, nightly-2026-03-20, links nothing of VOS, and runs a host server, `rutent-stm-vos-serve`
+  (`scenarios/serve/`, built with the client's toolchain, AGPL-3.0-or-later), as a process of its own, one per
+  cluster, speaking to it over a JSON-lines wire (`rutent-stm-vos-wire`, `scenarios/wire/`). A call waits at most
+  ten minutes for its answer (`ANSWER_WITHIN`). All three are members of the client's workspace, under its lock;
+  `default-members` keeps a bare command in `client/` to the client. `scenarios.sh` builds the server and runs the
+  scenarios.
+- **Licence.** `rutent-scenarios-vos` links `rutent-scenarios`, the wire and rutent's crates, all MIT, and nothing
+  AGPL: it is MIT (`vos-licence-v0`: AGPL covers what links VOS). The wire is its own MIT package so the twin links
+  no AGPL library (review of `712c3fb`: the wire first sat in the server's AGPL package, and the twin linked it).
+  `rutent-stm-vos-serve` links the client and is AGPL-3.0-or-later, and nothing links it. The client lock gains Core's
+  tree at the root lock's versions, so no line of `licences/RECORD` changes; it moves `rustix` 1.1.3 to 1.1.6,
+  `linux-raw-sys` 0.11.0 to 0.12.1 and `zmij` 1.0.21 to 1.0.23, the root lock's.
 - **The simulated providers' deployment.** The guests built their stand-in in the suite's default context, whose
   operator key is a placeholder, and refused any other deployment's operation as foreign. They now read the
   deployment the platform's world names, under the state key `deployment` (`rutent_conformance::sim::DEPLOYMENT_KEY`),
   which `Fleet` seeds from its context, and serve the default where it names none. This is `T-024-01`'s code, F-024's
   own.
-- **`disk.rs`** builds prov's executables in rutent's own workspace (`--manifest-path`), whichever workspace runs the
-  test.
+- **`disk.rs`** builds prov's executables in rutent's own workspace (`--manifest-path`, `--locked`), whichever
+  workspace runs the test.
 
 ### Gaps, each named for its owner
 
-- **Policy calls answered beside the engine** (`PolicySide`): authorisations (`T-021-04`) are permitted where the
-  giver acts for the party it states and that party requested the order, and refused otherwise; charges (`T-021-05`)
-  are within a bound no scenario reaches; questions about people (`T-021-07`) are not known. Each writes a
-  permitting answer outside `consult`, which the engine's entry-point scan, over Core's three crates, can't see;
-  `T-021-03`'s fixed rule never runs on an authorisation here, and `AC-18`'s shared limit can't be shown on the charge
-  stand-in. Each is replaced through the same trait when its row builds it on the engine; `T-025-05` should review
-  them as written until then.
+- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): authorisations (`T-021-04`),
+  charges (`T-021-05`) and questions about people (`T-021-07`) are each decided as the engine decides a call: its
+  own fixed rules (`core-authz`'s `Fixed`, the register of actors and the roles' rule among them) over the same
+  records, then the deployment's policy, which `Core::refuse` reaches. The answer alone is the stand-in's: an
+  authorisation recorded as the consultation's answer; a charge within a bound no scenario reaches where permitted,
+  over a bound of 0 where not, so `AC-18`'s shared limit can't be shown on it; a question about a person refused
+  where refused and otherwise not known. Each still writes its answer outside the engine's `consult`, which the
+  entry-point scan over Core's three crates can't see, so `T-025-05` should review them until each row builds its
+  call on the engine; dropping one is deleting its `impl` and forwarding to the engine, as `Decisions` does.
+- **Promotion.** Nothing in the assembly calls `Segments::promote`, so no scenario of this row promotes a staged
+  release through a decided catalogue change; the path is `T-021-03`'s rule and `T-020-08`'s call, which `T-024-07`'s
+  upgrade scenario (`AC-19`) first runs here.
+- **For `T-025-05`: the log's skew checks can't trip here.** The log, policy and Core read one clock, so an effect
+  or an advertisement is never dated outside the log's skew of its own clock; the rows that hold those rules are
+  tested in `core-audit`'s own tests, not by the assembly.
 - **Sources not answered from a record yet.** `Verifier` and `Provider` (a judgement, a provider's answer) answer a
   missing input, so a decision that needs one is refused. `Holder` answers no: no call registers a delegation.
   `Account` and the destination's owner are the deployment's register of accounts, the nearest record to the
@@ -182,15 +220,36 @@ off alone, its test seen red for its own reason, and restored:
 | the projection normalising the salts | the seed check |
 | the advertisements recorded in the log | the swap check (results unverified, no route) |
 
+The review of `712c3fb` added tests, each written first and seen red against the code it reviewed, and rules, each
+switched off alone and seen red:
+
+| Test or rule | Red |
+|---|---|
+| a stand-in's authorisation in a role the fixed rule refuses | `authorisation_given_in_a_role_the_fixed_rule_refuses_is_refused_beside_the_engine`, against `712c3fb`'s stand-in |
+| a charge to an actor no register lists | `charge_to_an_actor_the_register_doesnt_list_is_over_its_bound`, against `712c3fb` |
+| the deployment's refusal beside the engine | `deployment_refusing_reaches_the_calls_answered_beside_the_engine`, against `712c3fb` |
+| the catalogue's grant on the log's terms | `catalogues_grant_is_the_one_the_log_records`, against `712c3fb` |
+| the swap imported, not opened afresh and fed again | the swap check (the new host held none of the old one's journals; each input delivered twice) |
+| the replay of whole states | the swap and replay checks (a fold that drops an order's last input) |
+| the register of actors, the session register, the destination's register | `request_by_an_actor_the_register_doesnt_list_is_refused`, `request_in_a_session_policy_never_opened_is_refused`, `destination_no_register_holds_is_never_quoted`, each against its adapter answering yes |
+| the record read from the digest's bytes | `route_whose_signed_record_differs_from_the_logs_digest_is_not_run` |
+| each order's journal in the log's order | the replay check (an interleave that reverses an order's own inputs) |
+| a provider's operation delivered twice | the replay check (the second delivery moving value again) |
+| two seeds, two runs | the seed check (Core's identifiers drawn from a seed of 7, whatever the scenario's) |
+| a settlement account's reserve not a party | `reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties` |
+| the silence fault | `silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it` |
+| the crate's hold on the log | the compile-fail doc tests (Core's disk made public again) |
+
 Tests: `conformance/scenarios/tests/assembly.rs`, the row's four, on the reference host:
 `crash_between_record_and_effect_leaves_no_effect_in_the_assembled_core` [`NFR-5`, `INV-7`],
 `execution_environment_swapped_mid_order_loses_no_order` [`NFR-6`, `REQ-OPS-3`],
 `replaying_a_scenarios_recorded_inputs_reaches_the_same_states` [`NFR-4`] and
-`scenario_run_twice_with_one_seed_gives_one_run` [`DEC-18`]; `tests/assembly_wiring.rs`, five tests of the wiring,
-tagged with the assembly's own identifiers (`DEC-2`, `DEC-18`, `INV-7`) and not the rows' whose rules they reach, so
-the evidence table counts none of those (`REQ-CAT-5` stays partly met); and, in the twin,
+`scenario_run_twice_with_one_seed_gives_one_run` [`DEC-18`]; `tests/assembly_wiring.rs` (eight),
+`tests/assembly_policy.rs` (three), `tests/assembly_intake.rs` (three) and one unit test in `assembly/mod.rs`, tests
+of the assembly, each tagged `DEC-18`, the row's, and none with the rows' whose rules they reach, so the evidence
+table counts none of those (`REQ-CAT-5` stays partly met); and, in the twin,
 `components/stm/vos-program/scenarios/tests/scenarios.rs`, the four on three VOS replicas, and `tests/wire.rs`, the
-host server's wire.
+host server's wire (two).
 
 **Checks, run locally one at a time** (`CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=4`, the worktree's own build
 directory): the documentation check with `-D warnings`; `cargo test --workspace`; clippy `-D warnings` with and

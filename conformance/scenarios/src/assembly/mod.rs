@@ -193,7 +193,9 @@ struct Started {
 /// kept record to before it runs the route.
 pub struct Signer {
     key: RealKey,
-    records: BTreeMap<String, (DecisionRecord, Vec<u8>)>,
+    /// Each decision record Core signed, by its id: the envelope as signed, its bytes, and nothing read from them
+    /// until they are held to the log's digest.
+    records: BTreeMap<String, Vec<u8>>,
 }
 
 impl OperatorKey for Signer {
@@ -210,7 +212,7 @@ impl OperatorKey for Signer {
             value["signature"]["value"] = rutent_conformance::signing::base64url(&signature).into();
             let recorded = serde_json::to_vec(&value).unwrap_or_default();
             self.records
-                .insert(record.record_id().as_str().to_owned(), (record, recorded));
+                .insert(record.record_id().as_str().to_owned(), recorded);
         }
         Some(signature)
     }
@@ -242,6 +244,11 @@ pub struct Faults {
     /// Right before the platform carries out this effect, the state machine moves to [`Core::swap_to`]: halted,
     /// exported and imported there, mid-order (`REQ-OPS-3`).
     pub swap_before_effect: Option<usize>,
+    /// Each operation the segments carry out is delivered to its provider twice, and Core is handed the answer to
+    /// the second: a repeated delivery between Core and a provider, under one transaction.
+    pub deliver_twice: bool,
+    /// How many operations reached their provider a second time and were answered again.
+    pub delivered_twice: usize,
     /// How many effects the platform was handed so far.
     pub carried: usize,
     /// Why a planted swap failed, if it did.
@@ -298,7 +305,19 @@ impl Modules for Running<'_> {
             }
         }
         self.platform.world.set_clock(self.clock.instant());
-        Modules::carry_out(self.platform, effect, provider, operation)
+        let first = Modules::carry_out(self.platform, effect, provider, operation);
+        if !self.faults.deliver_twice {
+            return first;
+        }
+        // The same operation again, under its transaction: the provider answers it as it did, and Core takes the
+        // answer that came second, where one came.
+        match Modules::carry_out(self.platform, effect, provider, operation) {
+            again @ rutent_core_orch::segments::Answered::Bytes(_) => {
+                self.faults.delivered_twice += 1;
+                again
+            }
+            _ => first,
+        }
     }
 
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
@@ -613,8 +632,12 @@ impl Core {
     }
 
     /// Every decision record Core signed, by its id.
-    pub fn decision_records(&self) -> Vec<&DecisionRecord> {
-        self.signer.records.values().map(|(r, _)| r).collect()
+    pub fn decision_records(&self) -> Vec<DecisionRecord> {
+        self.signer
+            .records
+            .values()
+            .filter_map(|bytes| record_in(bytes))
+            .collect()
     }
 
     /// The log.
@@ -713,7 +736,11 @@ impl Core {
         // Carried out on the terms the log holds, and on no other, under an id of its own: the place of its first
         // effect in the log, so a provider granted again is granted anew.
         let mut terms = kit::grant_terms(installed, decider.acts.as_str(), granted_at);
-        terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(effects[0].index));
+        terms.id = format!(
+            "grant-{}-{}",
+            provider.as_str(),
+            u64::from(effects[0].index)
+        );
         kit::grant(&mut self.catalogue, installed, terms);
         for effect in effects {
             self.verified(What::Result { effect }, Outcome::Done {})
@@ -998,7 +1025,7 @@ impl Core {
 
     /// The decision record `id` of `order`, as Core signed it, held to the digest the log names it by.
     fn record_of(&self, order: &Id, id: &Id) -> Result<DecisionRecord, StepError> {
-        let (record, recorded) = self
+        let recorded = self
             .signer
             .records
             .get(id.as_str())
@@ -1026,7 +1053,8 @@ impl Core {
                 "the decision record is the one the log names by digest",
             ));
         }
-        Ok(record.clone())
+        // Read only from the bytes the digest holds.
+        record_in(recorded).ok_or(StepError::NotNow("a decision record in its envelope"))
     }
 
     /// Runs every part of `order`'s route, each segment after the one before settles.
@@ -1168,6 +1196,12 @@ impl Core {
     }
 }
 
+/// The decision record a signed envelope carries.
+fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
+    let value: serde_json::Value = serde_json::from_slice(recorded).ok()?;
+    serde_json::from_value(value["statement"].clone()).ok()
+}
+
 /// Every input `log` took, in its order.
 pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
     log.entries()
@@ -1192,5 +1226,51 @@ pub fn component(party: &str, acts: &str, role: Role) -> Actor {
         acts: kit::id(acts),
         role,
         kind: ActorKind::Component,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rutent_core_orch::intake::{Status, Told};
+
+    use super::*;
+    use crate::harness::{Given, Scenario, base_request};
+    use crate::kit::AMOUNT;
+
+    // verifies: DEC-18
+    #[test]
+    fn route_whose_signed_record_differs_from_the_logs_digest_is_not_run() {
+        let (mut core, _) =
+            Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+                .core(1, &mut machine::Reference);
+        let customer = kit::customer();
+        let session = core.open_session(&customer).unwrap();
+        let told = core
+            .request(base_request("req-1", AMOUNT, &session))
+            .unwrap();
+        let order = Core::order_of(&told).unwrap();
+        let Told::Exists {
+            status: Status::Quoted { quote, digest },
+            ..
+        } = core.quote(&customer, &order).unwrap()
+        else {
+            panic!("no quote")
+        };
+        // The record Core kept, changed after the log took its digest.
+        let kept = core
+            .signer
+            .records
+            .get_mut(quote.decision_record.as_str())
+            .expect("the chosen record is kept");
+        let mut value: serde_json::Value = serde_json::from_slice(kept).unwrap();
+        value["made_at"] = "2026-11-09T02:00:00Z".into();
+        *kept = serde_json::to_vec(&value).unwrap();
+        assert!(matches!(
+            core.accept(&customer, &order, &digest),
+            Err(StepError::NotNow(
+                "the decision record is the one the log names by digest"
+            ))
+        ));
+        assert!(!core.started.contains_key(order.as_str()));
     }
 }

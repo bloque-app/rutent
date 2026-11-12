@@ -3,9 +3,9 @@
 # Cargo.lock.
 #
 # It runs the assembled Core, whose module platform builds only with a newer toolchain than VOS's crates do, so it
-# links nothing of VOS: it drives the host server, `rutent-stm-vos-serve` (serve/, AGPL-3.0-or-later, built by
-# ../scenarios.sh), over that package's wire, one server per cluster. So it is MIT, like rutent, and its tests need
-# the server and the nodes, behind its `vos` feature.
+# links nothing of VOS: it runs the host server, `rutent-stm-vos-serve` (serve/, AGPL-3.0-or-later, built by
+# ../scenarios.sh), as a process of its own, one per cluster, and speaks to it over the wire (wire/, MIT). It links
+# only MIT crates, so it is MIT, like rutent; its tests need the server and the nodes, behind its `vos` feature.
 [package]
 name = "rutent-scenarios-vos"
 version = "0.0.0"
@@ -21,5 +21,10 @@ vos = []
 [dependencies]
 rutent-contracts = { path = "../../../../contracts" }
 rutent-scenarios = { path = "../../../../conformance/scenarios" }
-rutent-stm-vos-serve = { path = "serve" }
+rutent-stm-vos-wire = { path = "wire" }
 serde_json = "1"
+
+# The wire's round trip, over records a reference host makes.
+[dev-dependencies]
+rutent-conformance = { path = "../../../../conformance" }
+rutent-stm = { path = "../.." }

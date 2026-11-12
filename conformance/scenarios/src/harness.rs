@@ -27,7 +27,7 @@ use rutent_conformance::sim::{Behaviour, Role, Spec};
 use rutent_contracts::core_internal::{Destination, Entry, Parties, What};
 use rutent_contracts::provider_role::OuterNode;
 use rutent_contracts::router_api::Id;
-use rutent_contracts::state_machine::{Observed, RecordedInput, StateMachine};
+use rutent_contracts::state_machine::{Observed, Order, RecordedInput, StateMachine};
 use rutent_core_orch::intake::{OrderRequest, Status as IntakeStatus, Told};
 use rutent_stm::Stm;
 use serde_json::{Value, json};
@@ -97,6 +97,9 @@ pub enum Fault {
     CrashBeforeEffect(usize),
     /// The state machine moves to the swap environment right before the platform carries out the `nth` effect.
     SwapBeforeEffect(usize),
+    /// Every operation the segments carry out from now on reaches its provider twice, under its transaction, and Core
+    /// takes the second answer.
+    DeliverTwice,
     /// The log's inputs reach the state machine as this says from now on.
     Deliver(Delivery),
     /// `provider` stays silent on its next operation of `kind` that isn't a dry run.
@@ -121,6 +124,8 @@ pub enum Step {
     },
     /// Every order accepted and not yet run runs its route.
     Run,
+    /// Every order run already runs its route again: a step Core is asked twice.
+    Rerun,
     /// A fault is planted.
     Plant(Fault),
     /// Core's clock moves on.
@@ -409,6 +414,13 @@ fn take(
                 }
             }
         }
+        Step::Rerun => {
+            for order in ran.iter() {
+                if let Err(e) = core.run(order) {
+                    stopped.push((order.as_str().to_owned(), format!("again: {e:?}")));
+                }
+            }
+        }
         Step::Plant(fault) => match fault {
             Fault::CrashAfterRecord { call, nth } => {
                 core.disk.plant(Crash::AfterRecord { call, nth: *nth })
@@ -416,6 +428,7 @@ fn take(
             Fault::CrashBeforeEffect(n) => core.faults.crash_before_effect = Some(*n),
             Fault::SwapBeforeEffect(n) => core.faults.swap_before_effect = Some(*n),
             Fault::Deliver(delivery) => core.feed.deliver(*delivery),
+            Fault::DeliverTwice => core.faults.deliver_twice = true,
             Fault::Silence { provider, kind } => {
                 core.fleet
                     .world()
@@ -454,9 +467,9 @@ pub struct Run {
     /// Every input the log took, in its order.
     pub inputs: Vec<RecordedInput>,
     /// Each order's journal on the state machine's host, as `(sequence, record id, state after)`.
-    pub journals: BTreeMap<String, Vec<(u64, String, Option<String>)>>,
+    pub journals: BTreeMap<String, Vec<(u64, String, Option<Order>)>>,
     /// Each order's state on the host.
-    pub states: BTreeMap<String, Option<String>>,
+    pub states: BTreeMap<String, Option<Order>>,
     /// The orders the host holds.
     pub hosted: Vec<String>,
     /// Each order's state as Core follows it, read by its customer through policy; none after a crash.
@@ -469,6 +482,14 @@ pub struct Run {
     pub environments: Vec<String>,
     /// Why a planted swap failed, if it did.
     pub swap_failed: Option<String>,
+    /// How many operations reached their provider a second time and were answered again.
+    pub delivered_twice: usize,
+    /// Each swap: every order's journal on the host the state machine left, and on the one it moved to, right
+    /// after the import.
+    pub swaps: Vec<(
+        crate::assembly::machine::Journals,
+        crate::assembly::machine::Journals,
+    )>,
     /// Each order whose route stopped before its end, and why.
     pub stopped: Vec<(String, String)>,
 }
@@ -512,15 +533,12 @@ impl Run {
                         (
                             r.seq,
                             r.input.record_id.as_str().to_owned(),
-                            r.state_after.as_ref().map(state_name),
+                            r.state_after.clone(),
                         )
                     })
                     .collect(),
             );
-            states.insert(
-                order.clone(),
-                machine.state(&at).ok().flatten().as_ref().map(state_name),
-            );
+            states.insert(order.clone(), machine.state(&at).ok().flatten());
         }
         let mut followed = BTreeMap::new();
         if !crashed {
@@ -555,6 +573,8 @@ impl Run {
             .map(|(i, new)| (i.record_id.as_str().to_owned(), *new))
             .collect();
         let environments = core.feed.environments.clone();
+        let swaps = core.feed.swaps.clone();
+        let delivered_twice = core.faults.delivered_twice;
         let swap_failed = core.faults.swap_failed.as_ref().map(|e| format!("{e:?}"));
         // Core goes before its disk is read back: what reads it then is a process of its own, as after a crash.
         let disk = core.disk.clone();
@@ -602,6 +622,8 @@ impl Run {
             deliveries,
             environments,
             swap_failed,
+            delivered_twice,
+            swaps,
             stopped: Vec::new(),
         }
     }
@@ -674,24 +696,74 @@ impl Run {
         missing
     }
 
-    /// Each order's state, folded from the log's inputs through `Stm` alone, with no host: what replaying the
-    /// recorded inputs reaches (`NFR-4`).
-    pub fn replayed(&self) -> BTreeMap<String, Option<String>> {
-        let mut orders: BTreeMap<String, rutent_contracts::state_machine::Order> = BTreeMap::new();
+    /// Each order's state after each of its inputs, folded from the log's inputs through `Stm` alone, with no host:
+    /// what replaying the recorded inputs reaches, step by step (`NFR-4`).
+    pub fn replayed(&self) -> BTreeMap<String, Vec<Order>> {
+        let mut orders: BTreeMap<String, Vec<Order>> = BTreeMap::new();
         for input in &self.inputs {
-            let key = input.subject.order.as_str().to_owned();
-            let next = match orders.get(&key) {
+            let steps = orders
+                .entry(input.subject.order.as_str().to_owned())
+                .or_default();
+            let next = match steps.last() {
                 None => Stm::open(input),
                 Some(order) => Some(Stm::transition(order, input)),
             };
             if let Some(next) = next {
-                orders.insert(key, next);
+                steps.push(next);
             }
         }
         orders
+    }
+
+    /// Each order's state once every one of its inputs is replayed.
+    pub fn replayed_states(&self) -> BTreeMap<String, Option<Order>> {
+        self.replayed()
             .into_iter()
-            .map(|(k, o)| (k, Some(state_name(&o))))
+            .map(|(k, steps)| (k, steps.last().cloned()))
             .collect()
+    }
+
+    /// Each order's state on the host, by its name, as Core's state read names it.
+    pub fn state_names(&self) -> BTreeMap<String, Option<String>> {
+        self.states
+            .iter()
+            .map(|(k, o)| (k.clone(), o.as_ref().map(state_name)))
+            .collect()
+    }
+
+    /// Each order's states on the host, step by step: its journal's state after each record.
+    pub fn hosted_steps(&self) -> BTreeMap<String, Vec<Option<Order>>> {
+        self.journals
+            .iter()
+            .map(|(k, j)| (k.clone(), j.iter().map(|(_, _, o)| o.clone()).collect()))
+            .collect()
+    }
+
+    /// How many times each transaction moved value in a provider's book: the book's entries of an operation that
+    /// moves value for real, by transaction.
+    pub fn movements(&self) -> BTreeMap<String, usize> {
+        let mut moved = BTreeMap::new();
+        for book in self.books.values() {
+            for entry in book {
+                let operation = &entry["operation"]["statement"];
+                let real = matches!(
+                    operation["kind"].as_str(),
+                    Some("withdrawal" | "deposit" | "transfer" | "conversion")
+                ) && operation["dry_run"].as_bool() != Some(true)
+                    || operation["kind"] == "reversal";
+                if real {
+                    *moved
+                        .entry(
+                            operation["transaction"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        )
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+        moved
     }
 
     /// How many inputs the log took for `order`, and how many records the host holds for it.

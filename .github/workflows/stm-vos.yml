@@ -36,6 +36,8 @@ on:
       - "components/evidence/**"
       - "contracts/**"
       - "conformance/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/stm-vos.yml"
   workflow_dispatch:
 
@@ -163,7 +165,7 @@ jobs:
 
       # Each from its own directory, so rustup picks its toolchain: the host server the client's, the scenarios VOS's
       # guest one.
-      - name: The scenarios' and their host server's format and lint (T-024-02)
+      - name: The scenarios', their host server's and its wire's format and lint (T-024-02)
         run: |
           SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources" . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
           sources_git_config "$VOS_DIR"
@@ -171,6 +173,8 @@ jobs:
             CARGO_TARGET_DIR="$BUILD/client-target" cargo clippy --locked --all-targets --features vos -- -D warnings)
           (cd "$PROGRAM/scenarios" && cargo fmt --check &&
             CARGO_TARGET_DIR="$BUILD/scenarios-target" cargo clippy --locked --all-targets --features vos -- -D warnings)
+          (cd "$PROGRAM/scenarios/wire" && cargo fmt --check &&
+            CARGO_TARGET_DIR="$BUILD/scenarios-target" cargo clippy --locked --all-targets -- -D warnings)
 
       - name: The assembled Core's scenarios on three VOS replicas (T-024-02)
         run: |

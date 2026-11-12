@@ -1,5 +1,5 @@
 //! The VOS host server (`T-024-02`): one host of the host contract, `Stm` on a cluster of VOS nodes, served over
-//! the package's wire on standard input and output, for a caller that can't link VOS.
+//! the wire (`rutent-stm-vos-wire`) on standard input and output, for a caller that can't link VOS.
 //!
 //! Usage: `rutent-stm-vos-serve DIR REPLICAS`, with `../test.sh`'s variables naming the node, the agent and the
 //! program (`VOS_BIN`, `VOS_AGENT_ELF`, `STM_PROGRAM_ELF`). The cluster lives under `DIR`, and its nodes stop when the
@@ -16,7 +16,7 @@ use rutent_stm::Stm;
 use rutent_stm_vos::cluster::{ClusterConfig, NodeBuild};
 use rutent_stm_vos::host::{VosHarness, VosHost};
 use rutent_stm_vos::platform::{Backend, Facts};
-use rutent_stm_vos_serve::{Answer, Request};
+use rutent_stm_vos_wire::{Answer, Request};
 
 fn var(name: &str) -> PathBuf {
     PathBuf::from(

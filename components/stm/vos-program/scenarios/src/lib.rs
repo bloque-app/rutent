@@ -10,15 +10,22 @@
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use rutent_contracts::state_machine::host::{Delivery, HostError, SnapshotEntry, TransitionRecord};
 use rutent_contracts::state_machine::{Id, Order, RecordedInput};
 use rutent_scenarios::assembly::machine::{Environment, Machine};
-use rutent_stm_vos_serve::{Answer, Request};
+use rutent_stm_vos_wire::{Answer, Request};
 
 /// The environment variable naming the host server.
 pub const SERVE: &str = "STM_VOS_SERVE";
+
+/// How long a call waits for the server's answer before it counts the host unavailable: a cluster starting, or an
+/// import of a whole stream, takes minutes at most.
+pub const ANSWER_WITHIN: Duration = Duration::from_secs(600);
 
 fn unavailable(reason: impl Into<String>) -> HostError {
     HostError::Unavailable {
@@ -26,10 +33,11 @@ fn unavailable(reason: impl Into<String>) -> HostError {
     }
 }
 
-/// The two ends of a host server's pipe.
+/// The two ends of a host server's pipe: its input, and its answers, each line read by a thread of its own so a
+/// call waits for one no longer than [`ANSWER_WITHIN`].
 struct Pipe {
     to: ChildStdin,
-    from: BufReader<ChildStdout>,
+    from: Receiver<std::io::Result<String>>,
 }
 
 /// One host server, and its cluster. A read of the host takes `&self` and writes its call all the same, so the pipe
@@ -54,12 +62,18 @@ impl Remote {
             .stdin
             .take()
             .ok_or_else(|| unavailable("the server's input"))?;
-        let from = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| unavailable("the server's output"))?,
-        );
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| unavailable("the server's output"))?;
+        let (send, from) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let remote = Remote {
             child,
             pipe: RefCell::new(Pipe { to, from }),
@@ -75,13 +89,16 @@ impl Remote {
         let mut pipe = self.pipe.borrow_mut();
         writeln!(pipe.to, "{line}").map_err(|e| unavailable(e.to_string()))?;
         pipe.to.flush().map_err(|e| unavailable(e.to_string()))?;
-        let mut answer = String::new();
-        pipe.from
-            .read_line(&mut answer)
-            .map_err(|e| unavailable(e.to_string()))?;
-        if answer.is_empty() {
-            return Err(unavailable("the host server stopped"));
-        }
+        let answer = match pipe.from.recv_timeout(ANSWER_WITHIN) {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(e)) => return Err(unavailable(e.to_string())),
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(unavailable("the host server didn't answer in time"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(unavailable("the host server stopped"));
+            }
+        };
         let answer: Answer =
             serde_json::from_str(&answer).map_err(|e| unavailable(e.to_string()))?;
         match answer {
@@ -100,7 +117,10 @@ fn failure(answer: Answer) -> HostError {
 
 impl Drop for Remote {
     fn drop(&mut self) {
-        let _ = self.call(&Request::Stop);
+        // Stopped, its nodes with it; one that doesn't stop is killed, its own child alone.
+        if self.call(&Request::Stop).is_err() {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
     }
 }
@@ -191,12 +211,15 @@ impl Remote {
     }
 }
 
-/// VOS on three replicas, as an environment: each host a fresh server and cluster under `base`.
+/// VOS on three replicas, as an environment: each host a fresh server and cluster under `base`, in a directory of
+/// its own, numbered across every `Vos` of the process.
 pub struct Vos {
     base: PathBuf,
     prefix: String,
-    next: usize,
 }
+
+/// The clusters made so far, so no two share a directory.
+static CLUSTERS: AtomicUsize = AtomicUsize::new(0);
 
 impl Vos {
     /// Three replicas, their clusters under `base`, each named from `prefix`.
@@ -204,15 +227,14 @@ impl Vos {
         Self {
             base: base.0.clone(),
             prefix: prefix.to_owned(),
-            next: 0,
         }
     }
 
-    fn dir(&mut self) -> PathBuf {
-        self.next += 1;
-        let dir = self.base.join(format!("{}{}", self.prefix, self.next));
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+    fn dir(&mut self) -> Result<PathBuf, HostError> {
+        let n = CLUSTERS.fetch_add(1, Ordering::Relaxed);
+        let dir = self.base.join(format!("{}{n}", self.prefix));
+        std::fs::create_dir_all(&dir).map_err(|e| unavailable(e.to_string()))?;
+        Ok(dir)
     }
 }
 
@@ -222,12 +244,12 @@ impl Environment for Vos {
     }
 
     fn open(&mut self) -> Result<Box<dyn Machine>, HostError> {
-        let dir = self.dir();
+        let dir = self.dir()?;
         Ok(Box::new(Remote::start(&dir, 3, &Request::Open)?))
     }
 
     fn import(&mut self, entries: Vec<SnapshotEntry>) -> Result<Box<dyn Machine>, HostError> {
-        let dir = self.dir();
+        let dir = self.dir()?;
         Ok(Box::new(Remote::start(
             &dir,
             3,

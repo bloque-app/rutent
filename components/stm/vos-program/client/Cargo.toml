@@ -45,7 +45,7 @@ rutent-conformance = { path = "../../../../conformance" }
 resolver = "3"
 # The assembled Core's scenarios on three VOS replicas and their host server (T-024-02), in this workspace so that its
 # lock, not rutent's, holds them.
-members = [".", "../scenarios", "../scenarios/serve"]
+members = [".", "../scenarios", "../scenarios/serve", "../scenarios/wire"]
 # A command run here without a package builds the client alone: the scenarios build with their own toolchain, from
 # their directory (../scenarios.sh).
 default-members = ["."]

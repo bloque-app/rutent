@@ -2336,9 +2336,11 @@ dependencies = [
 name = "rutent-scenarios-vos"
 version = "0.0.0"
 dependencies = [
+ "rutent-conformance",
  "rutent-contracts",
  "rutent-scenarios",
- "rutent-stm-vos-serve",
+ "rutent-stm",
+ "rutent-stm-vos-wire",
  "serde_json",
 ]
 
@@ -2385,8 +2387,16 @@ dependencies = [
  "rutent-contracts",
  "rutent-stm",
  "rutent-stm-vos",
- "serde",
+ "rutent-stm-vos-wire",
  "serde_json",
+]
+
+[[package]]
+name = "rutent-stm-vos-wire"
+version = "0.0.0"
+dependencies = [
+ "rutent-contracts",
+ "serde",
 ]
 
 [[package]]

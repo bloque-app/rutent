@@ -44,7 +44,7 @@ pub fn paths() -> Paths {
             // In rutent's own workspace, whichever workspace runs the test: `rutent-scenarios-vos` runs these in the
             // VOS client's (`T-024-02`).
             build
-                .args(["build", "--quiet", "--manifest-path"])
+                .args(["build", "--quiet", "--locked", "--manifest-path"])
                 .arg(root().join("Cargo.toml"))
                 .args(["-p", "rutent-prov", "--bins", "--target-dir"])
                 .arg(&target);

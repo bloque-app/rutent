@@ -128,6 +128,21 @@ pub struct Feed {
     pub deliveries: Vec<(RecordedInput, bool)>,
     /// Every environment the machine ran in, in order.
     pub environments: Vec<String>,
+    /// Each swap: every order's journal on the host it left, once halted, and on the host it moved to, right after
+    /// the import.
+    pub swaps: Vec<(Journals, Journals)>,
+}
+
+/// Every order's journal on a host.
+pub type Journals = std::collections::BTreeMap<String, Vec<TransitionRecord>>;
+
+/// Every order's journal on `machine`.
+pub fn journals(machine: &dyn Machine) -> Result<Journals, HostError> {
+    machine
+        .orders()?
+        .into_iter()
+        .map(|o| Ok((o.as_str().to_owned(), machine.journal(&o)?)))
+        .collect()
 }
 
 impl Feed {
@@ -145,6 +160,7 @@ impl Feed {
             shuffle: Seeded::new(seed ^ 0x005e_ed0f_de11_7e57),
             deliveries: Vec::new(),
             environments: vec![environment.name()],
+            swaps: Vec::new(),
         })
     }
 
@@ -222,8 +238,11 @@ impl Feed {
     /// is lost, or the swap fails.
     pub fn swap(&mut self, to: &mut dyn Environment) -> Result<(), HostError> {
         self.machine.halt()?;
+        let before = journals(&*self.machine)?;
         let entries = self.machine.export()?;
         let mut next = to.import(entries)?;
+        let after = journals(&*next)?;
+        self.swaps.push((before, after));
         next.resume()?;
         self.machine = next;
         self.environment = to.name();

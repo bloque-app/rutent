@@ -119,12 +119,9 @@ impl Records {
             _ => None,
         });
         match parties {
-            Some(p) => said(
-                &p.requester == party
-                    || &p.beneficiary == party
-                    || &p.payer == party
-                    || p.settlement_account_at.as_ref() == Some(party),
-            ),
+            // Its requester, beneficiary or payer, as the log's `customer-read-is-of-its-own-order` holds it: the
+            // reserve a settlement account is at is none of them.
+            Some(p) => said(&p.requester == party || &p.beneficiary == party || &p.payer == party),
             None => Reply::Missing,
         }
     }

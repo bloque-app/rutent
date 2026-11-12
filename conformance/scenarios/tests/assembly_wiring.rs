@@ -48,7 +48,7 @@ fn commitment_at(core: &Core, index: usize) -> Digest {
     }
 }
 
-// verifies: DEC-2, DEC-18
+// verifies: DEC-18
 #[test]
 fn policy_the_log_core_and_the_world_read_one_clock() {
     let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
@@ -114,7 +114,7 @@ fn policy_the_log_core_and_the_world_read_one_clock() {
     );
 }
 
-// verifies: DEC-2, DEC-18
+// verifies: DEC-18
 #[test]
 fn policys_sources_answer_from_the_records() {
     let (core, order) = one_order(Given::one_reserve(Staged::AtOnce));
@@ -247,7 +247,7 @@ fn policys_sources_answer_from_the_records() {
     );
 }
 
-// verifies: DEC-2, INV-7
+// verifies: DEC-18
 #[test]
 fn evidence_store_is_bound_to_cores_own_log() {
     let (core, order) = one_order(Given::one_reserve(Staged::AtOnce));
@@ -298,7 +298,7 @@ fn staging_is_the_one_the_scenario_sets() {
     }
 }
 
-// verifies: DEC-2, DEC-18
+// verifies: DEC-18
 #[test]
 fn rounds_transactions_are_kept_across_routings_and_no_segment_runs_under_one() {
     let (core, _) = Scenario::new(
@@ -421,4 +421,82 @@ fn catalogues_grant_is_the_one_the_log_records() {
     assert!(deciders.iter().all(|d| d.as_str() == terms.granted_by));
     assert_eq!(Some(&terms.granted_at), times.iter().min());
     assert_eq!(grants[0].advertising_keys(), keys.as_slice());
+}
+
+// verifies: DEC-18
+#[test]
+fn reserve_a_settlement_account_is_at_is_not_one_of_the_orders_parties() {
+    use rutent_core_orch::intake::{Status, Told};
+    let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let customer = kit::customer();
+    let session = core.open_session(&customer).unwrap();
+    let mut request = rutent_scenarios::harness::base_request("req-settled", AMOUNT, &session);
+    request.parties.settlement_account_at = Some(id(RESERVE));
+    let order = Core::order_of(&core.request(request).unwrap()).unwrap();
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = core.quote(&customer, &order).unwrap()
+    else {
+        panic!("no quote")
+    };
+    core.accept(&customer, &order, &digest).unwrap();
+    let mut sources = core.sources();
+    assert_eq!(
+        sources.supply(&need(
+            customer.party.as_str(),
+            Source::OrderParties(order.clone())
+        )),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need(RESERVE, Source::OrderParties(order))),
+        no()
+    );
+}
+
+// verifies: DEC-18
+#[test]
+fn silent_provider_leaves_its_deposit_unanswered_and_moves_nothing_for_it() {
+    use rutent_contracts::core_internal::{Action, Outcome};
+    use rutent_scenarios::harness::Fault;
+    let run = Scenario::new(
+        "a silent deposit",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    })
+    .when(Step::Plant(Fault::Silence {
+        provider: RESERVE.to_owned(),
+        kind: "deposit".to_owned(),
+    }))
+    .when(Step::Run)
+    .play(1, &mut Reference, rutent_scenarios::harness::reference());
+    // Two effects, the withdrawal's and the deposit's, and one movement: the withdrawal's.
+    let effects: Vec<usize> = run
+        .log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { action: Action::MoveValue { .. }, .. }))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(effects.len(), 2);
+    assert_eq!(run.movements().values().sum::<usize>(), 1);
+    // The deposit's effect ends unanswered, and the order stays past its first segment, not complete.
+    let deposit = effects[1];
+    let unanswered = run.log.iter().any(|e| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect } if u64::from(effect.index) == deposit as u64)
+            && v.outcome == Outcome::Unanswered {})
+    });
+    assert!(unanswered, "the deposit's result is unanswered");
+    assert_eq!(
+        run.state_names().values().cloned().collect::<Vec<_>>(),
+        vec![Some("first_segment_settled".to_owned())]
+    );
 }
