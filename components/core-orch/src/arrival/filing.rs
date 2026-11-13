@@ -736,6 +736,12 @@ impl Run {
             Ok(price) => price,
             Err(not_shown) => return self.end(desk, not_shown.class()),
         };
+        // A route with no firm rate starts only on its customer's acceptance (`REQ-QTE-10`), which an automatic
+        // deposit isn't: the order ends, as any end at routing does (`T-020-07`'s review; ending or waiting for the
+        // customer is the owner's, on the form).
+        if !price.no_firm_rate.is_empty() {
+            return self.end(desk, OrderRefusalClass::NoRouteRightNow);
+        }
         let shown_as = price.shown_as;
         let quote = Quote {
             order: self.order.clone(),

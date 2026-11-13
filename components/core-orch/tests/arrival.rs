@@ -2879,3 +2879,71 @@ fn an_arrival_held_against_a_part_names_the_part() {
     assert_eq!(part, Some(id("part-2")));
     assert_admitted(&env);
 }
+
+// REQ-QTE-10, AC-13 (T-020-07's review) -------------------------------------------------------------------------------
+
+/// A deposit filed automatically whose route has a segment over three days has no firm rate, which only the
+/// customer's acceptance may start (`REQ-QTE-10`), and an automatic deposit isn't the customer's: the filing ends its
+/// order, `no_route_right_now`, accepting and starting nothing, as any end at routing does.
+// verifies: AC-13, REQ-QTE-10
+#[test]
+fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
+    let mut env = crate::env();
+    let slow = |env: &mut Env, seconds: u64| {
+        for price in env.prices.iter_mut() {
+            if price.tuple == snapshot_support::deposit_tuple(RESERVE) {
+                price.settlement_seconds = seconds.try_into().unwrap();
+            }
+        }
+    };
+    slow(&mut env, 4 * 86_400);
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &report(1000, 0),
+    )
+    .unwrap()
+    {
+        Arrived::NoOrder { arrival } => arrival,
+        other => panic!("{other:?}"),
+    };
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                order: Some(_),
+                class: OrderRefusalClass::NoRouteRightNow
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.acceptances().is_empty(), "no acceptance on the deposit");
+    assert!(env.started().is_empty(), "nothing started");
+    assert_admitted(&env);
+
+    // The deposit was held against the order before it was routed, and one deposit opens one order
+    // (`one-order-per-deposit`), so, as with every end at routing, it is filed on no more: filed anew, even with its
+    // route firm again, it opens nothing. Only a new notice is a new arrival.
+    slow(&mut env, 60);
+    let before = env.len();
+    let mut again = filing(reserve_filer(), &deposited);
+    again.request = id("deposit-2");
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &again),
+        Err(ArrivalError::NotFileable)
+    );
+    assert_eq!(env.len(), before, "nothing recorded");
+    assert!(env.started().is_empty());
+    assert_admitted(&env);
+}
