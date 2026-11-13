@@ -347,13 +347,20 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   `shell: bash` so that the pipe keeps `-o pipefail` and a red test still fails the step (the default shell has no
   pipefail). `--no-fail-fast` makes every crate's tests run, so a verifier in a later crate is not left unrun by an
   earlier failure.
-- **Results are read from libtest's lines** (`test <path> ... ok|FAILED|ignored`; stable has no JSON output). A test
-  is matched **by the last `::` segment of its name**, and passes only if every run of that name passed and the run
-  read at least as many lines for it as the sources hold tests of that name. A name that failed once, was ignored
-  once, never ran, or has a namesake that never ran (42 names occur in more than one file today, most of them the
-  module-format experiment's copies of `components/prov`'s tests) does not pass, so the join fails closed. Doc tests and tests in
-  the separate workspaces (the module guests, the VOS twin) print no line the root run reads, so a verifier there is
-  not counted until a later row adds its own results.
+- **Results are read from libtest's lines** (`test <path> ... ok|FAILED|ignored`, with the reason after `ignored,`
+  allowed; stable has no JSON output), each kept with the `Running <target> (...)` header above it, and the file is
+  read lossily, since a jailed test can print bytes that are not UTF-8. A scanned test is joined to its **target and
+  full path**: an integration test to its `tests/x.rs` and the path ending in its name; a unit test to a
+  `unittests` target and a path that starts with its file's module (`src/shape.rs` is `shape::`). It passes only if
+  the run read at least as many lines for that place and name as the sources hold tests of it, and every one passed.
+  So a test that failed, was ignored, never ran, or has a namesake in its own target that never ran does not pass,
+  and a namesake in another target (a crate's test of the same name and path) vouches for nothing. Two crates that
+  both have a `tests/boundary.rs` with a test of one name still share a place; they must both pass. The header
+  doesn't name the package, so that is as fine as the join gets. Doc tests and tests in the separate workspaces print
+  no line the root run joins, so a verifier there is not counted until a later row adds its own results.
+- **The scan covers the root workspace's tests only**: it skips `experiments/` and every directory whose
+  `Cargo.toml` has `[workspace]` (the module guests, the VOS twin, the wallet guest). The tag check still walks
+  everything, since every test must be tagged.
 - The two new steps are in the `ci` job after Test: report mode (`--results ... --base .evidence-base`, appended to
   the step summary) and the `--ci` run. Both read `develop`, checked out into `.evidence-base`, a hidden directory so
   that the walk over the tests skips it (its tests must never count as the head's verifiers).
@@ -405,10 +412,16 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 - **A deferral excused by §7.1 alone** (`REQ-EXT-1`'s shape) isn't an excuse for a move: the ratchet takes only a
   `DEC-n` for a deferral, so moving an `m3` row to `deferred` by a §7.1 or `ASM-n` change fails until a decision
   carries it. Fail-closed; the owner of the plan can add the decision.
-- **Weakening inside `M3`'s classes is not compared.** An `m3` row may become `partly` (with any `form:` item) or
-  `inspect` (with any named check) and the ratchet does not report it; `PLAN.md` §4.4 asks for the other moves
-  only. **Owner: `T-025-05`**, whose review of the file covers it, or the owner on the form item if the default
-  changes.
+- **Moves into `partly` and `inspect` are compared too** (review of `cfce706`). An `m3` row that `develop` has and
+  the head has as `inspect` or `partly` is `reclassified` unless a cited row (`DEC-`, `F-` or `T-`) newly places the
+  id in a clause saying `inspect` or `partly`. Besides, **`PLAN.md`'s `T-024-09` row decides which ids may be in those
+  classes**: inspection for the ids in the parentheses after "verified by inspection", partly met for those after
+  "partly met with the form item it waits on". They are read from the row (a row reworded out of recognition allows
+  nothing), and a test ties the real row to `REQ-MOD-2`, `REQ-MOD-3`, `REQ-MOD-5`, `NFR-7`, `REQ-EXT-2` and
+  `REQ-CAT-5`. A `form:` item must be one of the ids in `decisions/questions.json` when the repository holds it; it
+  doesn't (the form is untracked and lives outside this repository), so the check is skipped and the report says
+  "form items not checked". A `review:` notes file must not be empty. A deferral is excused only by a clause that
+  says "defer".
 - **The comparison starts once the scope file is on `develop`**, as the row says: until then `T-024-10`'s
   restriction to the `strict:` line and `T-025-05`'s review cover it.
 
@@ -416,8 +429,9 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 `evidence-table --ci --results <the chain's cargo test output>` reads 1509 passing test lines and prints 232 rows:
 184 verified, 5 inspected, 1 partly met, 27 unverified (no test is tagged with them yet; the scenario rows
-`T-024-03` to `T-024-08` tag most of them), 3 M4's and 12 deferred. It exits 0 with the switch off and 0 findings
-against the base. The binary's test of the switch runs on directories of its own, so it reads the same whether the
+`T-024-03` to `T-024-08` tag most of them), 3 M4's and 12 deferred. The figures are the same after the join by target
+and path (review of `cfce706`); the `N of M tests passed` details moved, since `M` no longer counts the
+`experiments/` twins. It exits 0 with the switch off and 0 findings against the base. The binary's test of the switch runs on directories of its own, so it reads the same whether the
 real file says `off` or `on` when `T-024-10` flips it.
 
 ### Rule-off table (each rule switched off once; the test that went red)
@@ -435,6 +449,16 @@ real file says `off` or `on` when `T-024-10` flips it.
 | the excuse needs a placement `develop`'s row lacked | `unrelated edit to a row naming the id does not excuse a reclassification` |
 | an `M4` move needs both cited rows | `reclassification is excused only by a changed placement that it cites` |
 | a tagged test's namesake that never ran | `tagged test with a namesake that never ran is not a verifier` |
-| results fail closed on a name seen twice | `results are joined by the last segment of a test name and fail closed` |
+| a namesake in another target vouches for nothing | `two tests of one name in different targets cannot vouch for each other`; `results are joined by target and full path and fail closed` |
+| the scan skips `experiments/` and other workspaces | `only the tests the root workspace runs are scanned` |
+| inspection and partly met only for the ids the plan names | `inspection and partly met are allowed only for the ids the plan names` |
+| a move into inspect or partly met is a reclassification | `m3 row moved to inspected or partly met is reported unless a changed row places it` |
+| a form item the decisions file lacks | `a form item the decisions file lacks is reported`; the binary's test of the decisions file |
+| a review's notes must not be empty | the same binary test |
+| a deferral needs a clause that defers | `a mention that does not defer the id does not excuse a deferral` |
+| `--ci` with the switch on is strict | `the ci run is strict where the scope file reads on` |
+| `ignored, <reason>` is ignored | `an ignored test with a reason is read as ignored` |
+| a results file is read lossily | `results with bytes that are not utf8 are read lossily` |
+| results fail closed on a count short of the sources' | `tagged test with a namesake that never ran is not a verifier`; `results are joined by target and full path and fail closed` |
 | only `M3`'s classes are held to the ratchet | `m3 row reclassified against develop is reported` |
 | `--ci` with the switch off fails on the table's findings | `the strict flag always runs strictly and the ci run follows the switch` |
