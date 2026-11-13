@@ -4,6 +4,7 @@
 #[path = "module_support/mod.rs"]
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Probe, answers_as, binding, declaration, install, languages, spec, withdrawal};
@@ -14,7 +15,7 @@ use rutent_contracts::module_interface::{
     CallRefusalReason, CrossModuleOutcome, Declaration, OperationKind, validate_call,
     validate_call_against,
 };
-use rutent_prov::module::platform::OPERATION_DEADLINE;
+use rutent_prov::module::platform::{OPERATION_DEADLINE, SteppedClock};
 use serde_json::json;
 
 /// `provider`'s declaration, handling withdrawals, that may call `callee` for `kinds`.
@@ -165,6 +166,9 @@ fn call_with_too_little_deadline_left_is_refused() {
         install(&mut binding, &module, &language, "reserve", &[]);
         // The caller's whole deadline, 1.5 seconds, is less than the 3 seconds a callee needs: whatever has
         // passed since the operation began, less than that is left.
+        // On a clock that stands still (`T-013-08`), so that what the control below is given is what it has left,
+        // however long the caller takes to come up.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         binding.set_deadline(Duration::from_millis(1500));
         binding.set_call_budget(Duration::from_secs(3));
         binding.take_events();
@@ -449,6 +453,7 @@ fn call_needs_the_callees_budget_and_the_callers_reserve_left() {
         );
         // A budget of one second leaves a reserve of half a second: the call needs one and a half left. A
         // deadline of 1.4 seconds leaves the budget but not the reserve.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         binding.set_call_budget(Duration::from_secs(1));
         binding.set_deadline(Duration::from_millis(1400));
         binding.take_events();

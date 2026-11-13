@@ -127,6 +127,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "a platform setting",
     ),
     (
+        "set_operation_clock",
+        "prov/src/module/platform.rs",
+        "a platform setting: the clock its deadlines run on, a test's to step",
+    ),
+    (
         "set_output_limit",
         "prov/src/module/platform.rs",
         "a platform setting",
