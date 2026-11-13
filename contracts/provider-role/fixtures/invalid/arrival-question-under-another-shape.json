@@ -20,6 +20,9 @@
     "node": {
       "network": "co-ach"
     },
-    "asset": "COP"
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
   }
 }

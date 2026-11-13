@@ -802,6 +802,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             answer(AnswerMismatch::InAnotherAsset { notice: 0 }),
         ),
         (
+            "answered-arrival-question-in-another-unit",
+            answer(AnswerMismatch::InAnotherAsset { notice: 0 }),
+        ),
+        (
             "answered-arrival-question-about-another-account",
             answer(AnswerMismatch::ToAnotherAccount { notice: 0 }),
         ),
@@ -2019,6 +2023,15 @@ fn what_arrived_is_answered_by_the_notice_under_the_questions_transaction() {
         stray.check_context(&stray.deployment, &stray.protocol_version),
         Err(ContextMismatch::NestedMaker { .. })
     ));
+    // The same asset counted in another unit is another asset: an amount is read in its unit.
+    let mut other_unit = answered.answer.clone();
+    if let ArrivalOutcome::Arrived(arrived) = &mut other_unit.statement.outcome {
+        arrived.notices[0].statement.asset.decimals = 0;
+    }
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &other_unit),
+        Err(vec![AnswerMismatch::InAnotherAsset { notice: 0 }])
+    );
     let nothing: AnsweredArrivalQuestion = serde_json::from_value(fixture(
         "valid",
         "answered-arrival-question-that-nothing-arrived",

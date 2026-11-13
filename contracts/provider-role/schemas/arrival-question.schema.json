@@ -47,8 +47,8 @@
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
         },
         "asset": {
-          "description": "The asset.",
-          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          "description": "The asset, and the unit it is counted in at the outer node: an answer's notice is of this asset in this unit (REQ-CAT-11).",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
         }
       }
     }

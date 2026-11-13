@@ -18,6 +18,9 @@
     "session": "sess-ana-1",
     "account": "acct-77",
     "node": "bank-ledger",
-    "asset": "COP"
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    }
   }
 }

@@ -332,7 +332,7 @@ keeps and appends as a stated entry.
   operator's statement, signed with the deployment's `operator_key` (`check_signed_by_operator`), as an operation
   is. It names its own `transaction`, fresh for the order it is asked for, so its answer counts only as that
   transaction's (`REQ-ORD-1`); the reserve asked (`provider`); the holder's `session`; the `account`, the outer
-  `node` and the `asset`. It names no order, as no operation does: Core's log binds it to the order it is asked for.
+  `node`, and the `asset` with the unit it is counted in there. It names no order, as no operation does: Core's log binds it to the order it is asked for.
   What arrived at an account tells whether its funds suffice for that much, so the question counts as a balance check
   (`REQ-CAT-4`) and is asked in the holder's session (`REQ-CAT-3`), outside the bound for the holder's own order.
 - **The answer** (`ArrivalAnswer`, shape `urn:rutent:provider-role:arrival-answer`). The reserve's statement. It
@@ -343,7 +343,8 @@ keeps and appends as a stated entry.
   `check_shape` and `check_context` reach each notice it carries, which must be the answering reserve's own
   (`NestedMaker`). `check_answer(question, answer)` holds it to the question: the question's transaction
   (`AnswersAnotherQuestion`), made by the reserve asked (`OfAnotherReserve`), each notice of the outer node, asset
-  and account asked about (`AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
+  and account asked about, the asset by its unit too, since an amount is read in its unit (`AtAnotherNode`,
+  `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
 - **Kept one notice at a time.** A reader keeps each notice an answer carries as its own stated entry, about its
   credit's transaction, and it is that entry an arrival cites. A deposit is keyed on a notice, never on the answer
   that carried it: core-internal's `arrival-names-its-notice` takes only this contract's arrival notice as a
@@ -359,7 +360,7 @@ keeps and appends as a stated entry.
 | A question is signed with its deployment's operator key | Rust, `check_signed_by_operator` | `arrival-question-signed-with-another-key` |
 | An answer names its shape and the question's transaction; what arrived carries at least one notice, nothing arrived carries none, and a refusal never says when it lifts | schema | `arrival-answer-under-another-shape`, `arrival-answer-without-its-transaction`, `arrival-answer-arrived-with-no-notices`, `arrival-answer-that-nothing-arrived-carrying-a-notice`, `arrival-answer-refusal-saying-when-it-lifts` |
 | Each notice an answer carries is an arrival notice, made by the answering reserve | schema (`const`), and Rust `check_shape`; Rust, `check_context`: `NestedMaker` | `arrival-answer-carrying-another-shape-as-its-notice`, `arrival-answer-carrying-another-reserves-notice` |
-| An answer names the question's transaction, is made by the reserve asked, and each notice is of its node, asset and account | Rust, `check_answer`: `AnswersAnotherQuestion`, `OfAnotherReserve`, `AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount` | `answered-arrival-question-under-another-transaction`, `answered-arrival-question-by-another-reserve`, `answered-arrival-question-at-another-node`, `answered-arrival-question-in-another-asset`, `answered-arrival-question-about-another-account` |
+| An answer names the question's transaction, is made by the reserve asked, and each notice is of its node, asset and unit, and account | Rust, `check_answer`: `AnswersAnotherQuestion`, `OfAnotherReserve`, `AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount` | `answered-arrival-question-under-another-transaction`, `answered-arrival-question-by-another-reserve`, `answered-arrival-question-at-another-node`, `answered-arrival-question-in-another-asset`, `answered-arrival-question-in-another-unit`, `answered-arrival-question-about-another-account` |
 
 What the contract leaves to its reader: that the notice's maker is a reserve whose advertisement lists that outer
 node and asset (the catalogue's, `F-012`); that a credit taken once is taken once (Core's, `T-020-19`, holding each

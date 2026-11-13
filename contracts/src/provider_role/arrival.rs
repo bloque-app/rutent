@@ -130,8 +130,8 @@ pub struct ArrivalQuestion {
     pub account: String,
     /// The reserve's outer node.
     pub node: OuterNode,
-    /// The asset.
-    pub asset: String,
+    /// The asset, and the unit it is counted in there: an answer's notice is of this asset in this unit.
+    pub asset: Denomination,
 }
 
 impl StatementShape for ArrivalQuestion {
@@ -227,7 +227,7 @@ pub enum AnswerMismatch {
         /// The notice's position in the answer.
         notice: usize,
     },
-    /// A notice it carries is of another asset.
+    /// A notice it carries is of another asset, or of the asset counted in another unit.
     InAnotherAsset {
         /// The notice's position in the answer.
         notice: usize,
@@ -240,7 +240,8 @@ pub enum AnswerMismatch {
 }
 
 /// Checks that `answer` answers `question` (`REQ-ORD-1`, `REQ-ORD-23`): it names the question's transaction, is made
-/// by the reserve asked, and each notice it carries is of the outer node, asset and account asked about. Every rule
+/// by the reserve asked, and each notice it carries is of the outer node, asset and unit, and account asked about. An
+/// amount is read in its unit, so the same asset counted in another unit is another asset here. Every rule
 /// broken is returned. That each notice it carries is its own maker's and of the reader's deployment and protocol
 /// version is the answer's `check_context`; that the question was signed by the operator is its
 /// [`check_signed_by_operator`](Statement::check_signed_by_operator).
@@ -262,7 +263,7 @@ pub fn check_answer(
             if notice.node != asked.node {
                 broken.push(AnswerMismatch::AtAnotherNode { notice: at });
             }
-            if notice.asset.id != asked.asset {
+            if notice.asset != asked.asset {
                 broken.push(AnswerMismatch::InAnotherAsset { notice: at });
             }
             if notice.account != asked.account {

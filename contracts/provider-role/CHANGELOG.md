@@ -1,6 +1,12 @@
 # provider-role changelog
 
 ## 3.1.0
+- An arrival question names its asset with its unit, and an answer is held to both (`T-020-18`'s review, item 3).
+  `check_answer` compared a notice's asset by its id alone, so a notice of the asset counted in another unit, whose
+  amount means another quantity, answered the question. `ArrivalQuestion.asset` is now a `Denomination` (the schema's
+  `asset` the advertisement's `denomination`), and `check_answer` compares the whole denomination (`InAnotherAsset`).
+  One invalid fixture, `answered-arrival-question-in-another-unit`; the question fixtures name `COP` at 2 decimals.
+  (DEC-4, DEC-20, REQ-ORD-1, REQ-ORD-23, REQ-CAT-11, T-020-18)
 - A record of inner segments is made by a provider stating for its publisher (`T-020-18`'s review, item 2). A
   publisher holds no key, so `check_inner_segments` requiring its maker to be the publisher refused every record a
   real publisher could sign. `check_inner_segments(record, advertisement) -> Result<(), Vec<InnerSegmentsViolation
@@ -27,7 +33,7 @@
   of their own (`T-020-04`'s gap). Core bound an arrival to its order on a balance verification, which says only that
   funds suffice. Two schemas:
   - `arrival-question` (`urn:rutent:provider-role:arrival-question`, `ARRIVAL_QUESTION_SHAPE`, `ArrivalQuestion
-    {transaction, provider, session, account, node: OuterNode, asset}`), signed with the deployment's operator key
+    {transaction, provider, session, account, node: OuterNode, asset: Denomination}`), signed with the deployment's operator key
     (`Statement<ArrivalQuestion>::check_signed_by_operator`, the operation's `NotSignedByOperator`). It names its own
     transaction, fresh for the order it is asked for, and no order, as no operation does; and the holder's session,
     since what arrived at an account tells whether its funds suffice for that much (`REQ-CAT-3`, `REQ-CAT-4`).
