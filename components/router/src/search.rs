@@ -4,7 +4,10 @@
 //! followed with the actual amount: each segment is evaluated on what the one before delivered, after its fees and
 //! in its own unit, so its band and its price's levels are judged on that amount (`REQ-QTE-12`). Each operation's
 //! terms come from a usable accepted answer of its provider at that amount where the snapshot holds one, and else
-//! from its advertised price, so the route's price is its segments' prices composed (`REQ-QTE-8`).
+//! from its advertised price, so the route's price is its segments' prices composed (`REQ-QTE-8`). Either way an
+//! operation states what arrives: an answer under a tuple that reports `gross` includes its charge in what a
+//! withdrawal, deposit or transfer gives out, so the operation states that less the charge (`REQ-CAT-11`,
+//! `T-011-07`), and an advertised price takes its fee out before anything is given out.
 
 use std::collections::BTreeMap;
 
@@ -282,7 +285,11 @@ impl<'a> Search<'a> {
         let asked = amount_in.amount().as_str();
         let statements = self.statements_at(segment, asked);
         // A usable answer at this amount binds: the provider's own terms, in the segment's input asset and at
-        // most what enters. A figure past its validity binds nothing (`REQ-QTE-4`).
+        // most what enters. A figure past its validity binds nothing (`REQ-QTE-4`). The operation states what
+        // arrives, as router-api's `Operation::stated_out` reads the answer: under a tuple that reports `gross`, a
+        // withdrawal's, deposit's or transfer's `amount_out` less the charge it includes, in its out unit; else the
+        // answer's `amount_out` as it stands (`REQ-CAT-11`). So the next segment, the ranking, the floor, the
+        // ceilings and the rate-cycle check all read what arrives.
         let confirmed = statements
             .iter()
             .filter(|f| self.is_usable(f))
@@ -290,7 +297,8 @@ impl<'a> Search<'a> {
                 let answer = answer_of(f)?;
                 let fee = whole(&answer.fee.amount)?;
                 (answer.fee.asset == segment.from.asset.id && &fee <= amount).then_some(())?;
-                Some((answer.fee.clone(), Amount::new(answer.amount_out)?))
+                let out = Self::stated_out(segment, &amount_in, &answer)?;
+                Some((answer.fee.clone(), Amount::new(out)?))
             });
         let fee_of = |amount: String| Fee {
             asset: segment.from.asset.id.clone(),
@@ -354,6 +362,28 @@ impl<'a> Search<'a> {
             confirmed: is_confirmed,
             unstatable,
         })
+    }
+
+    /// What an operation through `segment` on `amount_in` states as its `amount_out` for `answer`: router-api's
+    /// [`Operation::stated_out`], so the router states exactly what the contract confirms. `None` where the answer's
+    /// charge is above the amount it gives out under `gross`, which then confirms nothing.
+    fn stated_out(
+        segment: &Segment<'_>,
+        amount_in: &PositiveAmount,
+        answer: &Answer<'_>,
+    ) -> Option<String> {
+        let operation = Operation {
+            kind: segment.kind,
+            provider: segment.provider.clone(),
+            from: segment.from.clone(),
+            to: segment.to.clone(),
+            amount_in: amount_in.clone(),
+            fee: answer.fee.clone(),
+            amount_out: Amount::zero(),
+            figures: NonEmpty::new(vec![segment.tuple.figure_id.clone()])?,
+            calls: Vec::new(),
+        };
+        operation.stated_out(segment.tuple, answer.amount_out, answer.fee)
     }
 
     /// Whether an unconfirmed step's net is above its price's last level, so its price serves it nothing.
