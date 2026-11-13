@@ -19,7 +19,8 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
     Destination, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
-    ReadOutcome, Receipt, Role, RouteEnd, SignedWith, Through, What, admit_entry, attribute,
+    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, SignedWith, Through, What, admit_entry,
+    attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -36,7 +37,7 @@ use rutent_core_orch::reversal::{
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Providers};
 use rutent_core_orch::segments::{
     Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, SegmentOutcome,
-    Segments, SegmentsError, ToGrade,
+    Segments, SegmentsError, StatusError, ToGrade,
 };
 use rutent_core_orch::snapshot::{Clock, Exposures, Reading};
 use rutent_core_orch::stuck::{Stuck, StuckError};
@@ -267,6 +268,28 @@ impl Reads for Allowing {
             request: check.request.clone(),
             outcome: ReadOutcome::Allowed {},
             receipt: receipt_of(200_000 + self.0.len(), &input_entry()),
+        })
+    }
+
+    fn grant_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+
+    fn revoke_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+}
+
+/// Policy's reads: every read refused, for the class it is set to, and each check kept.
+struct Refusing(RefusalClass, Vec<ReadCheck>);
+
+impl Reads for Refusing {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        self.1.push(check.clone());
+        Ok(ReadAnswer {
+            request: check.request.clone(),
+            outcome: ReadOutcome::Refused { class: self.0 },
+            receipt: receipt_of(300_000 + self.1.len(), &input_entry()),
         })
     }
 
@@ -2297,6 +2320,86 @@ fn late_origin_approval_starts_nothing_and_is_visible() {
     assert_eq!(seen, vec![after]);
     assert_eq!(reads.0.len(), 1, "the read was checked");
     assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// What came after an order, read by a stranger: policy refuses the read, whatever the reason, and the stranger is told
+/// one bare refusal, the same for an order that ended and for one that doesn't exist; the reason stays in the log.
+// verifies: REQ-ORD-25, REQ-AUZ-7
+#[test]
+fn a_refused_reader_of_what_came_after_is_told_the_same_whether_the_order_exists() {
+    let mut world = World::over(Platform::settling());
+    world.with(|r, p, _| r.end(p, &id(ORDER))).unwrap();
+    let stranger = Actor {
+        party: id("stranger"),
+        ..customer()
+    };
+    for class in [RefusalClass::NotPermitted, RefusalClass::MissingInput] {
+        let mut told = Vec::new();
+        for order in [id(ORDER), id("ord-nobody")] {
+            let mut reads = Refusing(class, Vec::new());
+            told.push(world.reversals.seen(
+                &mut reads,
+                &world.clock,
+                &mut world.ids,
+                &stranger,
+                None,
+                &order,
+            ));
+            assert_eq!(reads.1.len(), 1, "the read was checked and recorded");
+        }
+        assert_eq!(told[0], told[1], "{class:?}");
+        assert!(matches!(told[0], Err(StatusError::NotReadable)), "{told:?}");
+    }
+}
+
+/// A stranger accepting a fault is told it is not the party, before anything of the order, its showing or its state:
+/// the same for a real segment with a showing, with none, and for an order and a segment that don't exist.
+// verifies: REQ-ORD-11, REQ-AUZ-7
+#[test]
+fn a_stranger_accepting_fault_learns_nothing_of_the_order() {
+    let mut world = exchange_failed();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world
+        .segments
+        .sent(&order, &s2)
+        .unwrap()
+        .0
+        .as_str()
+        .to_owned();
+    let showing = result(
+        EXCHANGE,
+        "conversion",
+        &tx,
+        json!({ "status": "failed", "fault": "operator", "evidence": piece(EXCHANGE) }),
+    );
+    let stranger = Actor {
+        party: id("stranger"),
+        ..operator()
+    };
+    let ask = |world: &mut World, order: &Id, part: &Id, segment: &Id| {
+        world.with(|r, p, _| {
+            r.accept_fault(
+                p,
+                at(order, part, segment),
+                Accepting::Operator { by: &stranger },
+            )
+        })
+    };
+    let answers = |world: &mut World| {
+        vec![
+            ask(world, &order, &part, &s2),
+            ask(world, &order, &part, &id("p9-s9")),
+            ask(world, &id("ord-nobody"), &part, &s2),
+        ]
+    };
+    let before_a_showing = answers(&mut world);
+    world
+        .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &showing))
+        .unwrap();
+    let with_a_showing = answers(&mut world);
+    for told in before_a_showing.iter().chain(&with_a_showing) {
+        assert_eq!(told, &Err(ReversalError::NotTheParty), "{told:?}");
+    }
 }
 
 /// The exchange's provider reports late that its failed conversion delivered after all: kept as its statement about

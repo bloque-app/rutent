@@ -1051,6 +1051,15 @@ impl Reversals {
         accepting: Accepting<'_>,
     ) -> Result<Carrier, ReversalError> {
         let requester = self.requesters.get(at.order.as_str()).cloned();
+        // The caller is the party first: only the order's customer or the deployment's operator may accept a fault,
+        // and anyone else is told so before anything of the order, its showing or its state, which tells a stranger
+        // nothing of whether the order exists (`REQ-AUZ-7`).
+        let by = match accepting {
+            Accepting::Customer { by, .. } | Accepting::Operator { by } => by,
+        };
+        if requester.as_ref() != Some(&by.party) && by.party != parts.operator.party {
+            return Err(ReversalError::NotTheParty);
+        }
         let owed = parts
             .segments
             .order(at.order)
@@ -1072,9 +1081,6 @@ impl Reversals {
         if !owed {
             return Err(ReversalError::NotOwed);
         }
-        let by = match accepting {
-            Accepting::Customer { by, .. } | Accepting::Operator { by } => by,
-        };
         let carries = party_of(showing.fault, by)?;
         let party_ok = match carries {
             Carrier::Customer => requester.as_ref() == Some(&by.party),
@@ -1319,7 +1325,7 @@ impl Reversals {
     }
 
     /// What came after `order` ended, for `reader`, once policy allows its read of the order; the check is recorded
-    /// either way (`REQ-ORD-25`, `REQ-AUZ-7`).
+    /// either way (`REQ-ORD-25`, `REQ-AUZ-7`). A refused reader is told [`StatusError::NotReadable`] alone.
     pub fn seen(
         &self,
         reads: &mut dyn Reads,
@@ -1341,8 +1347,10 @@ impl Reversals {
                 at,
             })
             .map_err(StatusError::Append)?;
+        // A refused reader is told one bare refusal, whatever policy's reason, which stays in the log: no answer
+        // tells it whether the order exists (`REQ-AUZ-7`, as `Segments::status`).
         if !matches!(answer.outcome, ReadOutcome::Allowed {}) {
-            return Err(StatusError::Refused(answer));
+            return Err(StatusError::NotReadable);
         }
         Ok(self
             .afterwards
