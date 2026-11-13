@@ -100,7 +100,7 @@ pub enum Issued {
 }
 
 /// `nanos` after the epoch as an RFC 3339 UTC time, to the second.
-fn timestamp(nanos: i128) -> Option<Timestamp> {
+pub(crate) fn timestamp(nanos: i128) -> Option<Timestamp> {
     let secs = i64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
     let (days, secs) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Days since 1970-01-01 to a civil date (proleptic Gregorian).

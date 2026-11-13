@@ -8,6 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "audit-check"
+path = "src/bin/audit-check.rs"
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-router = { path = "../router" }
