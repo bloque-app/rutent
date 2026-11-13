@@ -165,6 +165,13 @@ pub enum NotShown {
     BelowFloor,
     /// A sum is past an amount's 78 digits.
     PastAnAmount,
+    /// One result is cited for two segments, so the second hasn't executed on its own result (`REQ-QTE-7`).
+    ResultCitedTwice {
+        /// The part, by index.
+        part: u32,
+        /// The segment within the part, by index, whose result an earlier one cites.
+        operation: u32,
+    },
     /// A segment hasn't executed, so what is shown stays the quote (`REQ-QTE-7`).
     NotExecuted {
         /// The part, by index.
@@ -227,26 +234,41 @@ pub fn show(
     Ok(shown)
 }
 
-/// The price executed: the same lines from what each segment did, in order, part after part, labelled the price.
-/// Until every segment has executed it is refused, and what was shown stays the quote (`REQ-QTE-7`).
+/// One segment as executed: its amounts as the result that counted for it states them, and the receipt of that
+/// result's stated entry, which the price cites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutedSegment {
+    /// What it took in, charged and gave out.
+    pub executed: Executed,
+    /// The receipt of its result's stated entry.
+    pub result: Receipt,
+}
+
+/// The price executed: the same lines from what each segment did, in order, part after part, labelled the price,
+/// each segment's result cited once. Until every segment has executed it is refused, and what was shown stays the
+/// quote (`REQ-QTE-7`).
 pub fn executed(
     record: &DecisionRecord,
     candidate: &Candidate,
-    executed: &[Executed],
+    segments: &[ExecutedSegment],
 ) -> Result<Shown, NotShown> {
     let mut legs = Vec::new();
     for (i, (part, operation, evaluated)) in indexed(candidate).enumerate() {
-        let amounts = executed
+        let segment = segments
             .get(i)
             .ok_or(NotShown::NotExecuted { part, operation })?;
+        // Each segment rests on its own result: one result cited for two is no execution of the second.
+        if segments[..i].iter().any(|s| s.result == segment.result) {
+            return Err(NotShown::ResultCitedTwice { part, operation });
+        }
         legs.push(Leg {
             part,
             operation,
             evaluated,
-            amounts: amounts.clone(),
+            amounts: segment.executed.clone(),
         });
     }
-    if executed.len() != legs.len() {
+    if segments.len() != legs.len() {
         return Err(NotShown::Unexplained);
     }
     compose(record, candidate, &legs, true, None)
@@ -532,18 +554,51 @@ pub fn digest<T: Serialize>(shown: &T) -> Option<Digest> {
     serde_json::from_value(serde_json::json!({ "algorithm": "sha-256", "value": value })).ok()
 }
 
-/// An order's executed price, as reported to its customer: the order, the record and candidate it ran, and the
-/// price.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// An order's executed price, as reported to its customer: the order, the record and candidate it ran, the receipt
+/// of each segment's result that counted, and the price from them. It is made only by [`Priced::new`], from
+/// [`executed`], so nothing labelled the price stands on anything but every segment's result (`REQ-QTE-7`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Priced {
+    order: Id,
+    decision_record: Id,
+    candidate: Id,
+    results: Vec<Receipt>,
+    price: Shown,
+}
+
+impl Priced {
+    /// `order`'s price, from each segment of `candidate`, chosen by `record`, as executed: refused until every
+    /// segment has executed, each on its own result.
+    pub fn new(
+        order: &Id,
+        record: &DecisionRecord,
+        candidate: &Candidate,
+        segments: &[ExecutedSegment],
+    ) -> Result<Self, NotShown> {
+        let price = executed(record, candidate, segments)?;
+        Ok(Priced {
+            order: order.clone(),
+            decision_record: record.record_id().clone(),
+            candidate: candidate.candidate_id.clone(),
+            results: segments.iter().map(|s| s.result.clone()).collect(),
+            price,
+        })
+    }
+
     /// The order.
-    pub order: Id,
-    /// The choice round's decision record, by id, that chose the route.
-    pub decision_record: Id,
-    /// The candidate it ran.
-    pub candidate: Id,
-    /// The price, labelled so.
-    pub price: Shown,
+    pub fn order(&self) -> &Id {
+        &self.order
+    }
+
+    /// The receipts of the results it rests on, one per segment, in order.
+    pub fn results(&self) -> &[Receipt] {
+        &self.results
+    }
+
+    /// The price.
+    pub fn price(&self) -> &Shown {
+        &self.price
+    }
 }
 
 /// Why a price couldn't be reported.
@@ -586,7 +641,10 @@ impl Prices {
         core: &Actor,
         priced: &Priced,
     ) -> Result<(Digest, Receipt), PriceError> {
-        if priced.price.shown_as != ShownAs::Price {
+        // Made only from every segment's result; checked again, so nothing else is reported as the price.
+        if priced.price.shown_as != ShownAs::Price
+            || priced.results.len() != priced.price.segments.len()
+        {
             return Err(PriceError::NotThePrice);
         }
         let digest = digest(priced).ok_or(PriceError::Undigestable)?;

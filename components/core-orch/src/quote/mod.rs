@@ -36,7 +36,7 @@ pub use charge::{ChargeDesk, ChargeError, Charged, Charges, Checked, Flagged};
 pub use held::{Held, HoldError, Holds};
 pub use journal::APPEND_TRIES;
 pub use shown::{
-    HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin, SegmentShown, Shown,
-    SlowSegment, digest, executed, show,
+    ExecutedSegment, HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin,
+    SegmentShown, Shown, SlowSegment, digest, executed, show,
 };
 pub use terms::Terms;

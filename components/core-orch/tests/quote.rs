@@ -26,8 +26,8 @@ use rutent_contracts::provider_role::{Fee, RESULT_SHAPE, SignatureScheme};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, StatedTerms, Timestamp, TupleKey};
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
-    ChargeDesk, Charged, Charges, Checked, HeldTo, HoldError, Holds, NotShown, PriceError, Priced,
-    Prices, SlowSegment, Terms, digest, executed, show,
+    ChargeDesk, Charged, Charges, Checked, ExecutedSegment, HeldTo, HoldError, Holds, NotShown,
+    PriceError, Priced, Prices, SlowSegment, Terms, digest, executed, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};
@@ -520,21 +520,29 @@ fn price_before_execution_is_labelled_a_quote_and_the_executed_one_the_price() {
     let candidate = chosen(&record);
     let quote = show(&record, candidate, None).expect("the route is shown");
     assert_eq!(quote.shown_as, ShownAs::Quote);
+    let mut env = Env::new();
     let usdc = |n: &str| Fee {
         asset: "USDC".into(),
         amount: n.into(),
         billed_separately: None,
     };
-    let withdrew = Executed {
-        amount_in: amount("1000"),
-        fee: usdc("4"),
-        amount_out: amount("996"),
+    let withdrew = ExecutedSegment {
+        executed: Executed {
+            amount_in: amount("1000"),
+            fee: usdc("4"),
+            amount_out: amount("996"),
+        },
+        result: stated_result(&mut env, "seg-w", 4),
     };
-    let deposited = Executed {
-        amount_in: amount("996"),
-        fee: usdc("2"),
-        amount_out: amount("994"),
+    let deposited = ExecutedSegment {
+        executed: Executed {
+            amount_in: amount("996"),
+            fee: usdc("2"),
+            amount_out: amount("994"),
+        },
+        result: stated_result(&mut env, "seg-d", 2),
     };
+    let order = id("order-priced");
     assert_eq!(
         executed(&record, candidate, std::slice::from_ref(&withdrew)),
         Err(NotShown::NotExecuted {
@@ -543,7 +551,8 @@ fn price_before_execution_is_labelled_a_quote_and_the_executed_one_the_price() {
         }),
         "until the deposit executes, there is no price"
     );
-    let price = executed(&record, candidate, &[withdrew, deposited]).expect("both executed");
+    let both = [withdrew.clone(), deposited.clone()];
+    let price = executed(&record, candidate, &both).expect("both executed");
     assert_eq!(price.shown_as, ShownAs::Price);
     assert_eq!(
         price.providers_out,
@@ -554,37 +563,93 @@ fn price_before_execution_is_labelled_a_quote_and_the_executed_one_the_price() {
     assert_eq!(price.operator_fee.amount, amount("15"));
     assert_eq!(price.shown_out, amount("979"));
 
-    let mut env = Env::new();
+    let priced = Priced::new(&order, &record, candidate, &both).expect("priced");
+    assert_eq!(
+        priced.results(),
+        &[withdrew.result.clone(), deposited.result.clone()]
+    );
     let mut prices = Prices::new();
-    let priced = Priced {
-        order: id("order-priced"),
-        decision_record: record.record_id().clone(),
-        candidate: candidate.candidate_id.clone(),
-        price,
-    };
     let (named, _) = prices
         .report(&mut env.log, &*env.clock, &core_actor(), &priced)
         .expect("the price is reported");
     assert_eq!(digest(&priced), Some(named.clone()));
     assert_eq!(
         shown_entries(&env),
-        vec![(id("order-priced"), named.clone(), ShownAs::Price)]
+        vec![(order.clone(), named.clone(), ShownAs::Price)]
     );
     prices
         .report(&mut env.log, &*env.clock, &core_actor(), &priced)
         .expect("reported again");
     assert_eq!(shown_entries(&env).len(), 1, "reported once");
-    // A quote is never reported as the price.
-    let as_quote = Priced {
-        order: id("order-quoted"),
-        price: quote,
-        ..priced
+    // Another price for the order is refused: an order has one.
+    let other = ExecutedSegment {
+        executed: Executed {
+            amount_out: amount("993"),
+            ..deposited.executed.clone()
+        },
+        result: stated_result(&mut env, "seg-d2", 3),
+    };
+    let another =
+        Priced::new(&order, &record, candidate, &[withdrew.clone(), other]).expect("priced");
+    assert_eq!(
+        prices.report(&mut env.log, &*env.clock, &core_actor(), &another),
+        Err(PriceError::AnotherPrice)
+    );
+    assert_eq!(shown_entries(&env).len(), 1);
+    assert_admitted(&env);
+}
+
+/// A price is made only from every segment's result that counted: with nothing executed there is no price, and one
+/// result cited for two segments is no execution of the second. `Priced` has no public field, so a quote can't be
+/// relabelled the price and reported.
+// verifies: REQ-QTE-7
+#[test]
+fn price_rests_on_each_segments_own_result() {
+    let record = reserve_route(
+        1_000,
+        &Leg::free("USDC"),
+        &Leg::free("USDC"),
+        fee("0", "0", "1"),
+        None,
+    );
+    let candidate = chosen(&record);
+    let order = id("order-priced");
+    assert_eq!(
+        Priced::new(&order, &record, candidate, &[]).map(|p| p.order().clone()),
+        Err(NotShown::NotExecuted {
+            part: 0,
+            operation: 0
+        }),
+        "nothing executed, no price"
+    );
+    let mut env = Env::new();
+    let usdc = Fee {
+        asset: "USDC".into(),
+        amount: "0".into(),
+        billed_separately: None,
+    };
+    let result = stated_result(&mut env, "seg-once", 0);
+    let segment = |amount_in: &str| ExecutedSegment {
+        executed: Executed {
+            amount_in: amount(amount_in),
+            fee: usdc.clone(),
+            amount_out: amount(amount_in),
+        },
+        result: result.clone(),
     };
     assert_eq!(
-        prices.report(&mut env.log, &*env.clock, &core_actor(), &as_quote),
-        Err(PriceError::NotThePrice)
+        Priced::new(
+            &order,
+            &record,
+            candidate,
+            &[segment("1000"), segment("1000")]
+        )
+        .map(|p| p.order().clone()),
+        Err(NotShown::ResultCitedTwice {
+            part: 0,
+            operation: 1
+        })
     );
-    assert_admitted(&env);
 }
 
 // REQ-QTE-6 ---------------------------------------------------------------------------------------------------------
