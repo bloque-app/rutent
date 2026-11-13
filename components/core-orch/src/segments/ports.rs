@@ -284,6 +284,8 @@ impl Grading for ProvidersWord {
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
                 movement: None,
+                // Placeholder for the segments owner (T-020-08), until it names the private node's publisher.
+                publisher: None,
             },
             when: When {
                 at: settled.at.clone(),
