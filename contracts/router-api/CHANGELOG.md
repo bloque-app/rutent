@@ -1,6 +1,13 @@
 # router-api changelog
 
 ## 4.0.0
+- No change to this contract's shapes, types or rules: the six decision-record fixtures that name the router's
+  version (`decision-record-naming-the-calls-each-segment-makes`, which `rutent-router`'s own test compares with,
+  and the five invalid ones made from it) name `rutent-router-0.6.0` as their `router_version`, following the
+  router, whose search now states what arrives for a confirmed operation at a tuple that reports `gross`
+  (`T-011-07`, reading `Operation::stated_out`). The fixtures' envelope signatures are left as they were: no test
+  verifies a fixture's signature. Folded into this unreleased major. (DEC-4, DEC-20, REQ-CAT-11, REQ-QTE-11,
+  T-011-07)
 - A hold is bound to its decision record (the review of round 3, item 1). `HeldQuote::check_hold` compared only
   the candidate's id, and ids such as `c1` recur across records, so a hold of one record's `c1` passed for another's
   at the same reserve within its validity. It now takes the record's id and digest, as core-internal's

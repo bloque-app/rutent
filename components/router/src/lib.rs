@@ -89,8 +89,10 @@ use search::{Path, Search, answer_of};
 /// `0.4.0` since `T-020-02`: the floor is judged after the operator's fee, so the same inputs may drop a
 /// candidate as below the floor that `0.3.0` kept. `0.5.0` since `T-020-06`: a choice-round candidate whose
 /// operation's quote, at another amount, lists `amount_changes` is dropped as `quote_voided`, citing that quote, where
-/// `0.4.0` dropped it as `unconfirmed`.
-pub const VERSION: &str = "rutent-router-0.5.0";
+/// `0.4.0` dropped it as `unconfirmed`. `0.6.0` since `T-011-07`: an operation a provider's answer confirms at a tuple
+/// that reports `gross` states what arrives, the answer's `amount_out` less the charge it includes, so the same
+/// inputs may rank, drop below the floor or chain on a smaller amount than `0.5.0` stated.
+pub const VERSION: &str = "rutent-router-0.6.0";
 
 /// The route finder: the router API's [`Router`], as ADR-0006 and `DEC-8` decide it.
 #[derive(Debug, Clone, Copy, Default)]
