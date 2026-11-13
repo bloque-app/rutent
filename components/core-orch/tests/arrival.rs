@@ -2948,8 +2948,9 @@ fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
     assert_admitted(&env);
 }
 
-/// A deposit filed automatically whose route can't be delivered as composed is never shown: the reserve reports
-/// gross and charges 4 on each segment, so its withdrawal hands on less than its deposit was quoted to take in. The
+/// A deposit filed automatically whose route can't be delivered as composed is never shown: the reserve reports net,
+/// and its deposit says it gives out 50 000 more than it takes in, which `show` refuses as `segments::judge` would
+/// count it. The
 /// filing ends its order with the class the quote module gives it, `no_route_right_now`, records no `shown`, and
 /// accepts and starts nothing.
 // verifies: REQ-QTE-2, REQ-ORD-18
@@ -2957,7 +2958,7 @@ fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
 fn automatic_deposit_whose_route_cant_be_delivered_ends_unshown() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    providers.sim.fees.insert(RESERVE.into(), 4);
+    providers.sim.overclaim.insert(RESERVE.into(), 50_000);
     let mut arrivals = Arrivals::new();
     let deposited = match arrive(
         &mut env,

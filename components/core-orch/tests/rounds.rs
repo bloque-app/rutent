@@ -149,7 +149,7 @@ fn yes_carried_by_the_user_is_refused() {
         "dry_run": true, "inputs": {},
     });
     let yes = sign(
-        answer(RESERVE, &carried, START, 0, false),
+        answer(RESERVE, &carried, START, 0, false, false),
         &statements_key(RESERVE, 1),
     );
     sim.relay.insert(RESERVE.into(), yes.clone());

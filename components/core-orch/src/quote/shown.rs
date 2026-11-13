@@ -212,7 +212,7 @@ pub fn show(
             amounts: Executed {
                 amount_in: evaluated.amount_in.amount().clone(),
                 fee: evaluated.fee.clone(),
-                amount_out: evaluated.amount_out.clone(),
+                amount_out: gives_out(record, evaluated),
             },
         })
         .collect();
@@ -276,6 +276,33 @@ pub fn executed(
         return Err(NotShown::Unexplained);
     }
     compose(record, candidate, &legs, true, None)
+}
+
+/// What a quoted segment gives out, as its provider's answer states it. A record's operation states what arrives by it
+/// (router-api 4.0.0): under a tuple that reports `gross`, a segment that keeps its asset gives out its stated amount
+/// and the charge within it, restated in the out unit, so the lines shown and the hand-on rule (`handed_on`) read what
+/// a result would state, as they do once the segment has run. Any other operation gives out what it states.
+fn gives_out(record: &DecisionRecord, operation: &Operation) -> Amount {
+    let stated = operation.amount_out.clone();
+    let gross = reporting_of(record, operation) == Some(Reporting::Gross)
+        && operation.kind != OperationKind::Exchange;
+    if !gross {
+        return stated;
+    }
+    rutent_contracts::provider_role::charge_in_out_unit(
+        &operation.fee.amount,
+        operation.from.asset.decimals,
+        operation.to.asset.decimals,
+    )
+    .and_then(|charge| {
+        let sum = stated
+            .as_str()
+            .parse::<u128>()
+            .ok()?
+            .checked_add(charge.parse().ok()?)?;
+        Amount::new(sum.to_string())
+    })
+    .unwrap_or(stated)
 }
 
 /// One segment, where it sits, as the router evaluated it, and its amounts: quoted or executed.

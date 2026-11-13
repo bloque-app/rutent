@@ -216,6 +216,10 @@ pub struct Sim {
     pub received: Vec<(String, Value)>,
     /// Each provider's fee, flat, in the asset it takes in; none is 0.
     pub fees: BTreeMap<String, u64>,
+    /// Providers whose deposits claim to give out this much more than they take in (an answer that breaks `INV-1`).
+    pub overclaim: BTreeMap<String, u64>,
+    /// Providers whose tuple reports gross: their answers give out all they took in, the fee within it.
+    pub gross: BTreeSet<String>,
     /// Providers that refuse, finally.
     pub refuse: BTreeSet<String>,
     /// Providers that answer nothing.
@@ -234,6 +238,8 @@ impl Sim {
             clock,
             received: Vec::new(),
             fees: BTreeMap::new(),
+            overclaim: BTreeMap::new(),
+            gross: BTreeSet::new(),
             refuse: BTreeSet::new(),
             silent: BTreeSet::new(),
             wrong_key: BTreeSet::new(),
@@ -252,8 +258,16 @@ impl Sim {
     }
 }
 
-/// A provider's signed answer to `operation`, made at `made_at`: accepted with a flat `fee`, or refused.
-pub fn answer(provider: &str, operation: &Value, made_at: u64, fee: u64, refuse: bool) -> Value {
+/// A provider's signed answer to `operation`, made at `made_at`: accepted with a flat `fee`, reporting `gross` (its
+/// amount out holds the fee) or net, or refused.
+pub fn answer(
+    provider: &str,
+    operation: &Value,
+    made_at: u64,
+    fee: u64,
+    gross: bool,
+    refuse: bool,
+) -> Value {
     let kind = operation["kind"].as_str().unwrap();
     let amount: u64 = operation["amount"].as_str().unwrap().parse().unwrap();
     let asset = operation
@@ -264,7 +278,8 @@ pub fn answer(provider: &str, operation: &Value, made_at: u64, fee: u64, refuse:
     let mut outcome = json!({
         "status": "dry_run_accepted",
         "amount_in": amount.to_string(),
-        "amount_out": (amount - fee).to_string(),
+        // Under gross, what it gives out holds the charge; under net, the charge is on top of it.
+        "amount_out": if gross { amount } else { amount - fee }.to_string(),
         "fee": { "asset": asset, "amount": fee.to_string() },
         "valid_until": Instant(made_at + 3_600).rfc3339().unwrap(),
         "voided_by": ["validity_passes", "amount_changes"],
@@ -315,8 +330,17 @@ impl Providers for Sim {
             &operation,
             now,
             fee,
+            self.gross.contains(&provider),
             self.refuse.contains(&provider),
         );
+        let mut value = value;
+        if let Some(more) = self.overclaim.get(&provider)
+            && operation["kind"] == "deposit"
+            && let Some(out) = value["statement"]["outcome"]["amount_out"].as_str()
+        {
+            let out: u64 = out.parse().unwrap();
+            value["statement"]["outcome"]["amount_out"] = (out + more).to_string().into();
+        }
         let n = if self.wrong_key.contains(&provider) {
             2
         } else {
@@ -864,6 +888,8 @@ pub fn ramp_sim(env: &Env) -> Sim {
     let mut sim = env.sim();
     sim.refuse.insert(RAMP_A.into());
     sim.fees.insert(RAMP_B.into(), 10);
+    // The ramps' advertisements report gross (`ramp_ad`): their answers hold the fee within what they give out.
+    sim.gross.extend([RAMP_A, RAMP_B, RAMP_C].map(String::from));
     sim
 }
 

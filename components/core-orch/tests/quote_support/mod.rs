@@ -162,8 +162,8 @@ impl Net {
         );
     }
 
-    /// `provider`'s accepted dry run of `kind` through tuple `id`, handed `amount_in`, answered as `leg`: what it
-    /// says it gives out. Its figure is `{id}-dry-{amount_in}`.
+    /// `provider`'s accepted dry run of `kind` through tuple `id`, handed `amount_in`, answered as `leg`: what arrives
+    /// by it. Its figure is `{id}-dry-{amount_in}`.
     pub fn dry_run(
         &mut self,
         id: &str,
@@ -203,10 +203,16 @@ impl Net {
                 "result": envelope(provider, body),
             },
         }));
-        amount_out
+        // What the next segment is quoted at is what arrives by this one: under gross, what it gives out less its
+        // charge (a record's operation states what arrives, router-api 4.0.0).
+        if leg.gross && leg.claims_out.is_none() {
+            amount_out - leg.answer_fee
+        } else {
+            amount_out
+        }
     }
 
-    /// The reserve's withdrawal from `polygon` into `hub`, as `leg`: what it gives out.
+    /// The reserve's withdrawal from `polygon` into `hub`, as `leg`: what arrives by it.
     pub fn withdrawal(&mut self, leg: &Leg) -> u64 {
         let amount = self.amount;
         self.reserve_tuple("w0", RESERVE, withdrawal_ends(), leg);

@@ -216,8 +216,11 @@ fn charge_reported_within_what_a_segment_gives_out_is_a_line_of_its_own() {
     );
 }
 
-/// A segment that reports gross, before another, hands on less than its quote gives out, and the next segment was
-/// quoted at what it gives out: the route can't deliver as composed, so it is never shown (`T-020-08`'s hand-off).
+/// A segment that reports gross, before another, hands on less than it gives out, and the next segment was quoted at
+/// what the first hands on: the router quotes it so (a record's operation states what arrives), and the route is
+/// shown as composed. One that ran and handed on less than the next segment was quoted at can't deliver as composed,
+/// so it is never shown (`T-020-08`'s hand-off), and the floor the router judged is the floor the price is shown
+/// against.
 // verifies: REQ-QTE-2
 #[test]
 fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
@@ -232,30 +235,70 @@ fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
         fee("0", "0", "1"),
         None,
     );
+    let candidate = chosen(&record);
+    let quote =
+        show(&record, candidate, None).expect("quoted at what the first hands on, it is shown");
     assert_eq!(
-        show(&record, chosen(&record), None),
+        quote.segments[1].amount_in,
+        amount("996"),
+        "the deposit was quoted at what the withdrawal hands on"
+    );
+    assert_eq!(quote.arrives, amount("996"));
+
+    // The withdrawal ran and charged 10, not the 4 it was quoted at: it hands on 990, and the deposit was quoted at
+    // 996.
+    let mut env = Env::new();
+    let usdc = |n: &str| Fee {
+        asset: "USDC".into(),
+        amount: n.into(),
+        billed_separately: None,
+    };
+    let ran = [
+        ExecutedSegment {
+            executed: Executed {
+                amount_in: amount("1000"),
+                fee: usdc("10"),
+                amount_out: amount("1000"),
+            },
+            result: stated_result(&mut env, "seg-w", 10),
+        },
+        ExecutedSegment {
+            executed: Executed {
+                amount_in: amount("996"),
+                fee: usdc("0"),
+                amount_out: amount("996"),
+            },
+            result: stated_result(&mut env, "seg-d", 0),
+        },
+    ];
+    assert_eq!(
+        executed(&record, candidate, &ran),
         Err(NotShown::Undeliverable {
             part: 0,
             operation: 0
         })
     );
-    // And one the router kept at the floor on what the deposit says it gives out, 1 000 less the operator's 10, is
-    // below it once the deposit's charge within is taken off: never shown either.
-    let record = reserve_route(
-        1_000,
-        &Leg::free("USDC"),
-        &Leg {
-            answer_fee: 4,
-            gross: true,
-            ..Leg::free("USDC")
-        },
-        fee("0", "1", "100"),
-        Some(990),
-    );
-    assert_eq!(
-        show(&record, chosen(&record), Some(&amount("990"))),
-        Err(NotShown::BelowFloor)
-    );
+
+    // The router keeps a route to the floor on what arrives, and the price shown agrees with it: a deposit that gives
+    // out 1 000 with 4 within it arrives 996, 986 after the operator's 10; a floor of 986 is met exactly, and one of
+    // 987 leaves the router no route.
+    let route = |floor| {
+        reserve_route(
+            1_000,
+            &Leg::free("USDC"),
+            &Leg {
+                answer_fee: 4,
+                gross: true,
+                ..Leg::free("USDC")
+            },
+            fee("0", "1", "100"),
+            Some(floor),
+        )
+    };
+    let at_floor = route(986);
+    let met = show(&at_floor, chosen(&at_floor), Some(&amount("986"))).expect("the floor is met");
+    assert_eq!(met.shown_out, amount("986"));
+    assert!(route(987).chosen().is_none(), "a floor above what arrives");
 }
 
 /// A segment that keeps its asset gives out no more than it takes in less its charge, as `segments::judge` counts it.
@@ -290,15 +333,16 @@ fn segment_claiming_more_out_than_it_takes_in_is_never_shown() {
     );
 }
 
-/// Through intake: a route the router chose but can't deliver as composed (the reserve reports gross and charges 4
-/// on each segment, so its withdrawal hands on less than its deposit was quoted to take in) is never shown. The
+/// Through intake: a route the router chose but can't deliver as composed (the reserve reports net, and its deposit
+/// says it gives out 50 000 more than it takes in, which the router confirms as stated and `show` refuses, as
+/// `segments::judge` would count it) is never shown. The
 /// customer is told the order can't proceed now, one `order_refusal` of that class is recorded, and no `shown`.
 // verifies: REQ-QTE-2, REQ-ORD-18
 #[test]
 fn route_intake_cant_deliver_is_refused_and_never_shown() {
     let mut env = Env::new();
     let mut sim = env.sim();
-    sim.fees.insert(RESERVE.into(), 4);
+    sim.overclaim.insert(RESERVE.into(), 50_000);
     let request = order_request("client-req-undeliverable", customer());
     let order = order_of(&env.open(&mut sim, &request).expect("the request opens"));
     let told = env.quote(&mut sim, &order).expect("the routing runs");
