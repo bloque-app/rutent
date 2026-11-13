@@ -209,7 +209,7 @@ fn deployment_refusing_reaches_the_calls_answered_beside_the_engine() {
 // verifies: DEC-18, REQ-CPL-2, REQ-CPL-6
 #[test]
 fn question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_log() {
-    use rutent_contracts::core_internal::calls::{AppendFailure, PersonQuestions};
+    use rutent_contracts::core_internal::calls::PersonQuestions;
     use rutent_contracts::core_internal::{
         Authority, Count, PersonOutcome, PersonQuestion, RoutingRound, Work,
     };
@@ -282,14 +282,19 @@ fn question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_lo
     assert_eq!(answer.outcome, PersonOutcome::Allowed {});
     assert_eq!(last(&core).outcome, Outcome::Permitted {});
 
-    // A provider off the shortlist: the log refuses the question outright, so nothing is answered or recorded.
+    // A provider off the shortlist: the question is refused, and the refusal is recorded (round 3, item t): the log's
+    // rows hold only a permitted question to its shortlist.
     let before = core.log().entries().len();
     let mut off = shortlisted.clone();
     off.push(id("off-the-shortlist"));
-    assert!(matches!(
-        core.policy()
-            .ask_about_person(&question("pq-off", "off-the-shortlist", off)),
-        Err(AppendFailure::Refused(_))
-    ));
-    assert_eq!(core.log().entries().len(), before, "nothing recorded");
+    let refused = core
+        .policy()
+        .ask_about_person(&question("pq-off", "off-the-shortlist", off))
+        .unwrap();
+    assert!(matches!(refused.outcome, PersonOutcome::Refused { .. }));
+    assert_eq!(
+        core.log().entries().len(),
+        before + 1,
+        "the refusal is recorded"
+    );
 }
