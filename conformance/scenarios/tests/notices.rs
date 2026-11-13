@@ -144,7 +144,8 @@ fn stranger_is_told_one_refusal_whether_the_order_exists_or_not() {
     assert_eq!(theirs, Err(CurrentError::Refused));
     assert_eq!(theirs, none, "one refusal, whatever the order");
 
-    // The engine's own answers stay in the log, and they differ: what the stranger is told can't.
+    // The engine's own answers stay in the log, and since the order's status tells a refused reader nothing of
+    // whether the order exists (`T-020-08`) they are alike too.
     let refused: Vec<RefusalClass> = core.log().entries()[before..]
         .iter()
         .filter_map(|(_, e)| match e {
@@ -160,9 +161,9 @@ fn stranger_is_told_one_refusal_whether_the_order_exists_or_not() {
         })
         .collect();
     assert_eq!(refused.len(), 2, "both reads recorded, refused");
-    assert_ne!(
+    assert_eq!(
         refused[0], refused[1],
-        "the engine refuses each for its own reason"
+        "the engine refuses each alike: a missing order is not told from another's"
     );
 
     let own = ask(&core, &kit::customer(), &order);

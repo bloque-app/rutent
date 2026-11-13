@@ -886,7 +886,7 @@ fn shortlist_record_not_observed_is_no_shortlist() {
 
 /// A question on the person's own consent is the order's own too: its asker acts for the order's requester, or is
 /// Core's listed actor, and the person is one of its parties. An order Core doesn't know, however the asker charged
-/// itself for it, is a missing input, so naming a fabricated order to escape the order's shortlist fails closed. A
+/// itself for it, is refused as an order that isn't its own is, so naming a fabricated order to escape the order's shortlist fails closed. A
 /// real order with no shortlist yet is still asked on its requester's consent (round 2 of the review).
 // verifies: REQ-CPL-2, REQ-CPL-6, THR-45
 #[test]
@@ -907,7 +907,8 @@ fn question_on_a_consent_names_an_order_its_asker_acts_for() {
         ask(&mut e, "req-1", ORDER, "person-ref-8", "not-on-shortlist"),
         Ok(refused(RefusalClass::NotPermitted))
     );
-    // A fabricated order, charged for by the asker itself: refused, not allowed past the shortlist.
+    // A fabricated order, charged for by the asker itself: refused as an order that isn't its own is, so the
+    // refusal tells nothing of whether the order exists (`T-020-08`), and not allowed past the shortlist.
     assert_eq!(
         ask(
             &mut e,
@@ -916,7 +917,7 @@ fn question_on_a_consent_names_an_order_its_asker_acts_for() {
             "person-ref-8",
             "not-on-shortlist"
         ),
-        Ok(refused(RefusalClass::MissingInput))
+        Ok(refused(RefusalClass::NotPermitted))
     );
     // An order the asker doesn't act for, and a person outside the order: refused.
     e.sources
