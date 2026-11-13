@@ -1074,8 +1074,8 @@ fn step_with_nothing_permitted_behind_it_is_refused() {
 }
 
 /// What policy can't read or reach moves nothing: a log it can't read refuses a decision, a move and a confirmation as
-/// missing the input they need, and so does an order the log has no acceptance of; a register of chains out of reach
-/// leaves a confirmation not known.
+/// missing the input they need; an order the log has no acceptance of is refused as one of another's order is; a
+/// register of chains out of reach leaves a confirmation not known.
 // verifies: REQ-AUZ-5, REQ-AUZ-4
 #[test]
 fn unread_log_or_unreached_register_moves_nothing() {
@@ -1089,9 +1089,10 @@ fn unread_log_or_unreached_register_moves_nothing() {
         evidence: vec![digest("dc")],
         ..decision_by(&request, &alice(), "req-never-accepted")
     };
+    // An order the log never accepted is refused as one of another's is (`T-023-01`'s question).
     assert_eq!(
         policy.decide_stuck(&never_accepted).unwrap().outcome,
-        missing
+        refuse(RefusalClass::NotPermitted)
     );
     policy.log.unreadable = true;
     assert_eq!(

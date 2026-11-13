@@ -73,7 +73,12 @@ fn rfc3339(nanos: i128) -> String {
 
 /// The coherent world: every entry of `world--in_dest`'s history, then its own entry.
 fn world() -> Vec<(Value, Value)> {
-    let case = fixture("admission", "world--in_dest");
+    case_entries("world--in_dest")
+}
+
+/// The admission case `name` as one log: its history, each entry with its placeholder receipt, then its entry.
+fn case_entries(name: &str) -> Vec<(Value, Value)> {
+    let case = fixture("admission", name);
     let mut entries: Vec<(Value, Value)> = case["history"]
         .as_array()
         .unwrap()
@@ -488,9 +493,19 @@ impl<S: Store> Run<S> {
     /// keys. `forge` names the world's places whose statement is signed with a key no one publishes instead. Each
     /// receipt is answered or the failure is, by the world's place.
     fn world(&mut self, forge: &[usize]) -> Vec<(usize, Result<Receipt, AppendFailure>)> {
+        self.entries(world(), forge)
+    }
+
+    /// Runs `entries` as the world is run: the providers admitted, then each entry, the statements signed by their
+    /// makers' own keys but at the places `forge` names.
+    fn entries(
+        &mut self,
+        entries: Vec<(Value, Value)>,
+        forge: &[usize],
+    ) -> Vec<(usize, Result<Receipt, AppendFailure>)> {
         self.admit_providers();
         let mut answers = Vec::new();
-        for (place, (placeholder, entry)) in world().into_iter().enumerate() {
+        for (place, (placeholder, entry)) in entries.into_iter().enumerate() {
             let entry = if entry["kind"] == "stated" {
                 let maker = entry["attribution"]["who"]["acts"]
                     .as_str()
@@ -788,7 +803,22 @@ fn every_record_kind_core_writes_is_in_the_log() {
     let replay = replay_on(&run);
     run.append(replay)
         .expect("the replay, on its exit's result");
-    let found: BTreeSet<&str> = run.log.entries().iter().map(|(_, e)| kind(e)).collect();
+    // The contract's coherent world holds no reversal carrier (the contract's round 2 added the kind); the row's own
+    // admitted case does, run on a log of its own (an item for the contract author: a carrier in the world).
+    let mut carried = Run::new(MemoryStore::new());
+    for (place, answer) in carried.entries(
+        case_entries("reversal-carrier-rests-on-its-acceptance--the-operators-command"),
+        &[],
+    ) {
+        answer.unwrap_or_else(|e| panic!("the carrier's case {place}: {e:?}"));
+    }
+    let found: BTreeSet<&str> = run
+        .log
+        .entries()
+        .iter()
+        .chain(carried.log.entries())
+        .map(|(_, e)| kind(e))
+        .collect();
     let all: BTreeSet<&str> = KINDS.into_iter().collect();
     assert_eq!(found, all);
 }
@@ -2959,4 +2989,46 @@ fn a_granted_providers_early_release_doesnt_make_it_the_operators() {
     assert!(!answered_for(
         &mut run, "us-bank", OPERATOR, &release, "tx-e-4"
     ));
+}
+
+/// The operator's acceptance of a provider's showing of fault (`accept_fault`, the contract's round 2) is an operator
+/// command, which no policy call decides: the log holds it to the deployment operator, an operator acting for its
+/// party (`operator-command-is-the-deployment-operators`). Policy places it there. The operator's login's command is
+/// recorded; the same command by the failed provider, or by a login stating the operator's role for another party, is
+/// refused and nothing is recorded.
+// verifies: REQ-ORD-11, REQ-AUD-1
+#[test]
+fn only_the_deployment_operator_accepts_a_fault() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    let command = |who: Value| {
+        json!({
+            "kind": "verified",
+            "who": who,
+            "what": {"call": "command", "command": "accept_fault", "order": "ord-1", "subject": "p1-s1"},
+            "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+            "outcome": {"status": "done"},
+        })
+    };
+    let before = run.log.entries().len();
+    for impostor in [
+        json!({"party": "bridge-pay", "acts": "bridge-pay", "role": "provider", "kind": "component"}),
+        json!({"party": "bridge-pay", "acts": "bridge-pay-ops", "role": "operator", "kind": "person"}),
+    ] {
+        assert!(
+            matches!(
+                run.append(command(impostor.clone())),
+                Err(AppendFailure::Refused(_))
+            ),
+            "{impostor}"
+        );
+    }
+    assert_eq!(run.log.entries().len(), before, "nothing recorded");
+    let operator =
+        json!({"party": "operator", "acts": "op-login-2", "role": "operator", "kind": "person"});
+    run.append(command(operator))
+        .expect("the deployment operator's acceptance of the fault");
+    assert_eq!(run.log.entries().len(), before + 1);
 }
