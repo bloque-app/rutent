@@ -1362,3 +1362,23 @@ this round.
   | again: a consent held to the asker's party | `question about a person ...`; `question on a consent asks no provider ...`; `unread log asks no one ...`; the built and unbuilt table |
   | again: bounded at the party (the charge rule) | `question about a person ...`; `the unbuilt engine permits nothing on any call and records first` |
 
+### T-021-07, round 2 of the review
+
+Findings 1, 2 and 6 closed; one new medium finding, fixed in one commit with a test seen red first on the reviewer's
+probe.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 7 | Medium: on the consent path nothing tied the order a question names to its asker or person, so naming an order with no shortlist (`ord-fake`, charged for by the asker itself) escaped round 1's shortlist hold: the same off-shortlist question refused on `ord-17` was allowed on `ord-fake` | The coordinator's ruling: the consent path is held to the same needs as the route, one list serving both, so they can't drift apart. Its asker acts for the order's requester (`Source::Requester`), or, stating Core's role, is listed with `CarryOnward`; the person is one of the order's parties (`Source::OrderParties`). An order the records don't know answers nothing, a missing input, so a fabricated id is refused. A real order with no shortlist yet is still asked on its requester's consent | `question on a consent names an order its asker acts for` |
+
+- **Other rows' tests.** `T-021-05`'s register (`parties/tests.rs`) now answers the consent fixture's person,
+  `person-ref-8`, as one of its order's parties, an input no caller there is, so its scope tests still drive
+  `ask_about_person` through the consultation; the engine's table gives the same word for the fixture.
+- **Rule-offs of this round** (core-authz's lib tests; each switched off once by `t-021-07-ruleoffs-r2.py`, the file
+  restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a consent question is the order's own (the shared needs on the consent path) | `question on a consent names an order its asker acts for` |
+  | the route keeps the shared needs (the moved code) | `question on a shortlisted route is the orders own about one of its parties` |
+

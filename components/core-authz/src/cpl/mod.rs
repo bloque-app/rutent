@@ -18,7 +18,7 @@
 //!   the order has a shortlist, everyone asked must be on it too, as on the route (`REQ-CPL-6`'s letter: a provider
 //!   not shortlisted is not asked; the coordinator's ruling on round 1 of the review). Before any shortlist, the
 //!   consent and the set asked bound it.
-//! - **The order's own question, about one of its parties.** On a shortlisted route the same fixed rule holds the
+//! - **The order's own question, about one of its parties.** On either authority the same fixed rule holds the
 //!   asker to the order's requester (`Source::Requester`, the input the asker's party), or, stating Core's role, to an
 //!   actor the register lists as carrying the order's authority onward (`Permission::CarryOnward`), and the person
 //!   asked about to the order's parties (`Source::OrderParties`, the input the person): a no refuses `not_permitted`
@@ -89,11 +89,13 @@ struct Held {
 ///
 /// - On the person's own authority: the record of consents' word that the consent it names is that person's and lets
 ///   the asker's party ask.
-/// - On a shortlisted route: the question is the order's own (`REQ-CPL-2`, `THR-45`). Its asker acts for the order's
+/// - On either authority: the question is the order's own (`REQ-CPL-2`, `THR-45`). Its asker acts for the order's
 ///   requester (`Source::Requester`, the input the asker's party), or, stating Core's role, is an actor the register
 ///   lists as carrying the order's authority onward (`Permission::CarryOnward`, by its login, as Core's moves are);
 ///   and the person asked about is one of the order's parties (`Source::OrderParties`, the input the person), the
-///   parties a provider's rules name (`REQ-ORD-17`).
+///   parties a provider's rules name (`REQ-ORD-17`). One list of needs serves both authorities, so they can't drift
+///   apart; on the consent path it ties the order a question names to its asker, so naming an order with no shortlist
+///   can't escape the order's shortlist (round 2 of the review).
 fn held(asked: Asked<'_>) -> Vec<Held> {
     let Asked::AskAboutPerson(question) = asked else {
         return Vec::new();
@@ -107,31 +109,37 @@ fn held(asked: Asked<'_>) -> Vec<Held> {
         or: RefusalClass::NotPermitted,
     };
     let asker = &question.asker;
+    // The question is the order's own, on either authority: its asker acts for the order's requester, or, stating
+    // Core's role, is listed as carrying the order's authority onward; and the person is one of the order's parties.
+    // An order the records don't know answers nothing, a missing input, so a fabricated order fails closed.
+    let the_orders_own = [
+        if asker.role == Role::Core {
+            yes(
+                &asker.acts,
+                Source::Permissions {
+                    party: asker.party.clone(),
+                    permission: Permission::CarryOnward,
+                },
+            )
+        } else {
+            yes(&asker.party, Source::Requester(question.order.clone()))
+        },
+        yes(
+            &question.person,
+            Source::OrderParties(question.order.clone()),
+        ),
+    ];
     match &question.authority {
-        Authority::Person { consent } => vec![yes(
+        Authority::Person { consent } => std::iter::once(yes(
             &asker.party,
             Source::Consent {
                 person: question.person.clone(),
                 consent: consent.clone(),
             },
-        )],
-        Authority::ShortlistedRoute { .. } => vec![
-            if asker.role == Role::Core {
-                yes(
-                    &asker.acts,
-                    Source::Permissions {
-                        party: asker.party.clone(),
-                        permission: Permission::CarryOnward,
-                    },
-                )
-            } else {
-                yes(&asker.party, Source::Requester(question.order.clone()))
-            },
-            yes(
-                &question.person,
-                Source::OrderParties(question.order.clone()),
-            ),
-        ],
+        ))
+        .chain(the_orders_own)
+        .collect(),
+        Authority::ShortlistedRoute { .. } => the_orders_own.into(),
     }
 }
 

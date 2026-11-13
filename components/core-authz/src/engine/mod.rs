@@ -393,8 +393,9 @@ pub(crate) const FIXED: &[Rule] = &[
         rule: crate::stuck::rule,
     },
     Rule {
-        name: "T-021-07: a question about a person rests on a consent that person gave the asker's party, or, on a \
-               shortlisted route, is the order's own requester's or Core's, about one of the order's parties",
+        name: "T-021-07: a question about a person is the order's own requester's or Core's, about one of the \
+               order's parties, and, on the person's own authority, rests on a consent that person gave the asker's \
+               party",
         needs: crate::cpl::needs,
         rule: crate::cpl::rule,
     },
@@ -2287,6 +2288,13 @@ mod tests {
                         },
                     };
                     e.sources.says.push((consented, Reply::Given(Said::Yes)));
+                    // The person is one of the order's parties; Core's `core-orch` carries the order's authority
+                    // onward, which these sources answer themselves.
+                    let a_party = Need {
+                        input: question.person.clone(),
+                        from: Source::OrderParties(question.order.clone()),
+                    };
+                    e.sources.says.push((a_party, Reply::Given(Said::Yes)));
                     let mut charged: VerifiedEntry =
                         fixture!("verified-entry-of-a-charge-counted-within-its-bound");
                     charged.who = question.asker.clone();

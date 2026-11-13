@@ -317,10 +317,17 @@ impl Sources for Register {
                     )))
                 }
             }
+            // An order the records don't know answers nothing: a missing input.
+            Source::Requester(order) if !self.requesters.iter().any(|(o, _)| o == order) => {
+                Reply::Missing
+            }
             Source::Requester(order) => said(
                 self.requesters
                     .contains(&(order.clone(), need.input.clone())),
             ),
+            Source::OrderParties(order) if !self.order_parties.iter().any(|(o, _)| o == order) => {
+                Reply::Missing
+            }
             Source::OrderParties(order) => said(
                 self.order_parties
                     .contains(&(order.clone(), need.input.clone())),
@@ -874,5 +881,66 @@ fn shortlist_record_not_observed_is_no_shortlist() {
             "aml-screen"
         ),
         Ok(refused(RefusalClass::NotPermitted))
+    );
+}
+
+/// A question on the person's own consent is the order's own too: its asker acts for the order's requester, or is
+/// Core's listed actor, and the person is one of its parties. An order Core doesn't know, however the asker charged
+/// itself for it, is a missing input, so naming a fabricated order to escape the order's shortlist fails closed. A
+/// real order with no shortlist yet is still asked on its requester's consent (round 2 of the review).
+// verifies: REQ-CPL-2, REQ-CPL-6, THR-45
+#[test]
+fn question_on_a_consent_names_an_order_its_asker_acts_for() {
+    let ask = |e: &mut Tested, request: &str, order: &str, person: &str, asks: &str| {
+        let mut q = question(request, &agent(), consent("51"), &[asks], &[]);
+        q.order = id(order);
+        q.person = id(person);
+        e.ask_about_person(&q).map(|a| a.outcome)
+    };
+    let mut e = engine(Log::taking(vec![
+        charged_to_the_agent(3),
+        charged("chg-fake", &agent(), "ord-fake", Work::PersonQuestion, 3),
+        shortlist(ORDER, "53", &["bank-co"], &[]),
+    ]));
+    // The order's shortlist holds the question to it.
+    assert_eq!(
+        ask(&mut e, "req-1", ORDER, "person-ref-8", "not-on-shortlist"),
+        Ok(refused(RefusalClass::NotPermitted))
+    );
+    // A fabricated order, charged for by the asker itself: refused, not allowed past the shortlist.
+    assert_eq!(
+        ask(
+            &mut e,
+            "req-2",
+            "ord-fake",
+            "person-ref-8",
+            "not-on-shortlist"
+        ),
+        Ok(refused(RefusalClass::MissingInput))
+    );
+    // An order the asker doesn't act for, and a person outside the order: refused.
+    e.sources
+        .requesters
+        .push((id("ord-other"), id("someone-else")));
+    e.sources
+        .order_parties
+        .push((id("ord-other"), id("person-ref-8")));
+    assert_eq!(
+        ask(&mut e, "req-3", "ord-other", "person-ref-8", "kyc-check"),
+        Ok(refused(RefusalClass::NotPermitted))
+    );
+    e.sources
+        .consents
+        .push((id("person-ref-77"), digest("51"), agent().party));
+    assert_eq!(
+        ask(&mut e, "req-4", ORDER, "person-ref-77", "bank-co"),
+        Ok(refused(RefusalClass::NotPermitted))
+    );
+
+    // A real order with no shortlist yet, on its requester's consent: asked.
+    let mut e = engine(Log::taking(vec![charged_to_the_agent(1)]));
+    assert_eq!(
+        ask(&mut e, "req-5", ORDER, "person-ref-8", "kyc-check"),
+        Ok(PersonOutcome::Allowed {})
     );
 }
