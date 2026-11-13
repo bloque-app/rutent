@@ -2849,3 +2849,177 @@ masked are shown by the rule-off below. Then each new rule was switched off once
   | only a failed result shows a fault | the dispute test |
 
   A new showing refused while a dispute is kept is defence beside the refused acceptance; no test reaches it alone.
+
+## T-020-07
+
+Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
+
+- **One module, `quote`, and two call sites.** The rules are the router's pure functions (`rutent_router::quote`,
+  `T-011-03`), over router-api's types (`T-020-02`). This row is Core's use of them, in
+  `components/core-orch/src/quote/`: `show` and `executed` (the price shown), `Prices` (the price reported), `Terms`
+  (stated terms with their times), `Holds` (a reserve's held quote) and `Charges` (a charge above its formula,
+  raised). Intake's `Quote` gains `price: quote::Shown`, as `T-020-03`'s notes left for this row ("changes the digest
+  and nothing else here"). Its `shown_as` comes from the price, and so does the `shown` entry's. Arrival's filing
+  (`T-020-04`) builds the same `Quote` for an automatic deposit, so the new field made it take the price too. That
+  is the only edit there: the price and its label. What arrival does with a route without a firm rate is a gap
+  (below).
+- **The quote shown (`REQ-QTE-2`).** Read as composition, on the owner's ruling `spec-route-price-composition`.
+  `Shown` names:
+  - each segment's provider fee and amounts;
+  - `providers_out`, what the providers' terms deliver as they state it: the sum of the quotes, each part's last
+    `amount_out`, summed;
+  - `within`, each charge a part's last segment reports within what it gives out (below);
+  - `arrives`;
+  - the operator's fee, its formula from the bounds the chosen record ran under (`record.bounds.operator_fee`,
+    never the caller's), and its amount on what arrives;
+  - `shown_out` and `difference`.
+
+  `difference` must equal the named lines, the operator's fee plus each charge within, or nothing is shown
+  (`Unexplained`). The router's own `quoted_price` (or `executed_price`) is run over the candidate with each part's
+  last `amount_out` set to what arrives, and its `check_shown` must accept `shown_out`. So the router's floor, its
+  price and Core's lines are one rule. Ranking stays before the operator's fee (`m3-rank-before-fee`): this module
+  ranks nothing.
+- **A gross charge is taken off (`T-020-08`'s hand-off).** The router takes a confirming answer's `amount_out` as it
+  stands. Under `gross` reporting that amount holds the charge, so the next segment is priced on more than arrives.
+  `segments::judge` hands on `amount_out` less the charge, and `show` reads each tuple's `reporting` from the
+  record's snapshot and does the same:
+  - a conversion hands on its output as it is;
+  - a part's last segment that reports gross has its charge named in `within` and taken off before the operator's
+    fee;
+  - a segment before another that hands on less than the next was quoted to take in can't deliver as composed, so
+    nothing is shown (`Undeliverable`).
+
+  Seen empirically: a gross withdrawal answering 1 000 out with a charge of 4 is refused, and a gross deposit shows
+  1 000, less 4 within, less the operator's 10. The router pricing and ranking on what arrives is `F-011`'s (a gap).
+- **Never a price the route can't deliver.** `NotShown`, and intake's class for it (reversible):
+  - `no_route_for_amount` for the operator's fee above what arrives, `shown_out` below the request's floor once a
+    charge within is taken off, and a sum past an amount;
+  - `no_route_right_now` for undeliverable, no terms for a segment, no slippage limit, and unexplained.
+
+  An `order_refusal` of that class is recorded, and nothing is shown.
+- **Slippage (`REQ-QTE-9`).** Each segment carries `held_to`, from the router's `commitments` over the record's own
+  limits:
+  - `committed`, with `rate_bps` (the tighter of the quote's regime and the operator's limit) and
+    `operator_limit_bps` (the bounds' limit for the tuple, matched on provider and ends);
+  - `free` past three days.
+
+  A segment that sets no rate is committed with neither. "Recorded": the decision record's bounds name the limit
+  (`REQ-AUD-4`), and the `shown` entry names the digest of the quote that shows it. A segment the bounds give no
+  limit for (`NoSlippageLimit`) is never shown. `check_against` makes it unreachable for a record read from the wire,
+  so the test builds one field by field.
+- **No firm rate (`REQ-QTE-10`, `AC-13`).** Where `firmness` names segments over three days, the quote is
+  `quote_without_firm_rate`. `no_firm_rate` names each segment: part, operation, provider, tuple figure and declared
+  seconds. The `shown` entry carries the label too, and core-internal's `acceptance-is-of-the-quote-shown` admits an
+  acceptance of it. Intake starts an order only on its customer's acceptance of the quote shown, so a slow route
+  starts only then.
+- **Quote, then price (`REQ-QTE-7`).** `executed` composes the same lines from what each segment did (router-api's
+  `Executed`, as the results that counted state it), labelled `price`. It refuses (`NotExecuted`) until every segment
+  has executed, so until then what is shown stays the quote. `Prices::report` records an order's price once, as a
+  `shown` entry of `price` naming the digest of a `Priced` (order, record, candidate, price). The entry is built
+  once and appended until the log takes it; anything not labelled the price is refused (`NotThePrice`), and a second,
+  different price for the order too (`AnotherPrice`).
+- **Stated terms (`REQ-QTE-6`).** `Terms` keeps each tuple's history of router-api `StatedTerms`, keyed by provider
+  and ends; the same terms twice are kept once. `binding` is the router's: the last stated at or before the segment's
+  start, whatever order they were kept in, and a quote before it. It is in memory, as `Issued` is; keeping it is
+  `F-030`'s. The history rests on no stated entry: provider-role has no statement of a provider's terms (a gap).
+- **Held quotes (`REQ-QTE-15`).** `Holds::hold` runs the router's `hold`: a choice record that chose, and a validity
+  at or after its snapshot. Only the reserve every part of the route starts at may hold it (reading, reversible). The
+  quote is shown as `show` shows it, and the hold is refused if anything would label it the price. `redeem` is the
+  router's: usable at its validity, refused past it, changing nothing. `drop_hold` has no effect beyond the hold. No
+  stated entry: provider-role has no statement by which a reserve asks for a hold (a gap). Whoever starts a route on
+  a held quote redeems it first; that caller is a gap.
+- **Charges (`REQ-QTE-5`, `AC-14`).** `Charges::check` takes a segment's charge as its result that counted states
+  it, with the receipt of the result's stated entry. The formula is the terms that bound the segment at its start
+  (`Terms::binding`, so `REQ-QTE-6` binds the check), or else the formula the route was priced on. With neither it is
+  `NoFormula`, never passed. `check_charge` is the router's: against the maximum where the formula gives one, and
+  else against the fee it gives. A charge above is a `Raise` of `difference: charge` (`maximum` is the bound,
+  reading: for a formula with no maximum, the fee it gives), citing the result's stated entry. It is raised once,
+  and its `raise` entry is recorded `done` where it reached the operator and `failed` where it didn't, as
+  `stuck::learn` records its raises. Each segment is checked once. A raise made but not yet recorded is appended as
+  built on the next check, never raised again.
+- **Tests, and the order.** The seven tests of the row are in `components/core-orch/tests/quote.rs`, with a kit,
+  `tests/quote_support/`, that routes `RouteFinder` over choice-round snapshots written as router-api's JSON: a
+  reserve's withdrawal and deposit, an exchange between them where asked, and answers that are gross or net. Two
+  tests beyond the row's list pin the gross reading:
+  - `charge_reported_within_what_a_segment_gives_out_is_a_line_of_its_own`;
+  - `route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown`, with the floor case.
+
+  `operators_fee_is_shown_apart_from_the_quotes_sum` and
+  `route_with_a_segment_over_three_days_starts_only_after_acceptance` also run through intake, on `T-020-03`'s kit
+  unchanged, and replay its log as the log would admit it. The tests were written first, over a stubbed API (`show`
+  answering zeros labelled a quote, `executed` and the rest refusing or doing nothing), and each was seen red on its
+  assertions (the nine of `quote.rs`) before the bodies were written.
+- **Rule-off, each red** (`t-020-07-ruleoff.py`, outside the tree: each rule switched off once, its test run, the
+  file restored and touched):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the operator's fee shown apart, its amount on the line | `operators_fee_is_shown_apart_from_the_quotes_sum` |
+  | a gross charge taken off what is handed on | `route_that_cant_hand_on_…` |
+  | the next segment's amount held to what the one before hands on | `route_that_cant_hand_on_…` |
+  | a charge within named as its own line | `charge_reported_within_…` |
+  | never below the floor | `route_that_cant_hand_on_…` |
+  | the tighter of the quote's slippage and the operator's limit shown | `segments_slippage_limit_is_recorded_and_shown` |
+  | no slippage limit, not shown | `segments_slippage_limit_is_recorded_and_shown` |
+  | a segment over three days leaves no firm rate | `route_with_a_segment_over_three_days_…` |
+  | intake records the label the price has | `route_with_a_segment_over_three_days_…` |
+  | no price until every segment has executed | `price_before_execution_is_labelled_…` |
+  | the executed price labelled the price | `price_before_execution_is_labelled_…` |
+  | only the price reported as the price | `price_before_execution_is_labelled_…` |
+  | an order's price reported once | `price_before_execution_is_labelled_…` |
+  | terms bind from the segment's start | `terms_stated_after_a_segment_started_do_not_apply_to_it` |
+  | a charge checked against the terms that bound it | `terms_stated_after_a_segment_started_do_not_apply_to_it` |
+  | a held quote past its validity refused | `held_quote_past_its_validity_starts_nothing` |
+  | only the reserve the route starts at holds its quote | `held_quote_past_its_validity_starts_nothing` |
+  | the charge compared with its formula | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
+  | a segment's charge raised once | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
+  | an undelivered raise recorded `failed` | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
+
+  Two checks are defence in depth, and no test reaches either alone. The check that the lines add up stayed green
+  when switched off: `shown_out`, `arrives` and `difference` are computed from the lines, so they can't disagree. The
+  cross-check against the router's own price is the same identity. Arrival's label isn't switched off: no arrival
+  test routes a slow route.
+- **Gaps, with their owners.**
+  1. **No statement of terms or of a hold** (a contract change, for the coordinator's `F-020` contract row).
+     core-internal's README homes `T-020-07`'s "stated terms with their times; a held quote" in stated entries, and
+     provider-role 3.x has no shape that carries either: an advertisement's terms hold bands, reporting and inputs,
+     and a quote holds an amount, not a formula. The change is provider-role (a minor), with two statement shapes:
+     - `urn:rutent:provider-role:terms`, made by a tuple's provider, its `made_at` the time stated: the tuple by
+       its two ends, its fee formula (flat, proportion, optional maximum) and, for an exchange, its slippage regime;
+     - `urn:rutent:provider-role:hold`, made by the reserve: the choice record's digest and the hold's validity.
+
+     Then `Terms::state` and `Holds::hold` would take the signed bytes, keep them and append their stated entries,
+     and a raise would cite the terms' entry beside the result's. Until then both registers rest on Core's inputs. No
+     `contracts/` file was edited.
+  2. **The router prices and ranks on gross amounts** (`F-011`). `search::step` takes a confirming answer's
+     `amount_out` as it stands, so under `gross` reporting the next segment is priced, and candidates are ranked, on
+     more than arrives. Core refuses a route it can't deliver as composed, and names a last segment's charge within.
+     The router taking the charge off would make such routes deliverable and rank them on what arrives.
+  3. **A route without a firm rate on an automatic deposit** (`T-020-04`'s module, for the coordinator). Arrival's
+     filing now labels such a quote `quote_without_firm_rate`. It still starts the route on the automatic deposit,
+     which counts as acceptance (`REQ-ORD-15`), where `REQ-QTE-10` wants the customer's. The reading proposed is to
+     fail closed: the filing ends the order, or waits for the customer, when `price.no_firm_rate` isn't empty.
+  4. **The callers** (`T-024-02` for the scenarios' assembly, `F-030` for production):
+     - `Charges::check`, fed from each settled segment. `Segments` exposes no settled result's charge, amount in,
+       start time or result receipt (`settlements` carries times only), so it needs an accessor on `T-020-08`'s
+       module or the assembly's reading of the log.
+     - `Prices::report` once every segment has executed (closing, `T-020-09`, or the assembly).
+     - `Holds::redeem` before any route starts on a held quote (arrival or the assembly).
+     - `Terms`, fed from wherever Core's prices come from (`snapshot::Price`, still an input).
+- **Defaults taken, reversible:**
+  - the refusal classes above;
+  - a charge within read as `segments::judge` reads it, with no regard to `billed_separately`;
+  - a next segment quoted at less than the one before hands on is still shown (it moves more, never less);
+  - only the reserve each part starts at holds its quote;
+  - `difference: charge`'s `maximum` is the formula's fee where the formula gives no maximum;
+  - an executed price is reported once per order;
+  - the price of a held quote is shown under the hold's own record's bounds and floor.
+- **Touches**:
+  - `components/core-orch/src/quote/` (the module, five files);
+  - intake's `Quote` and its build site (`intake/mod.rs`);
+  - arrival's filing (`arrival/filing.rs`), the one call the new field forced;
+  - the tests `tests/quote.rs` and `tests/quote_support/`, which reuse `intake_support`, `rounds_support` and
+    `snapshot_support` unchanged;
+  - these notes.
+
+  No `DEC-20` path, no shared manifest, no dependency.

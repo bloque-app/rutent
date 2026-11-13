@@ -143,8 +143,8 @@ pub struct OrderRequest {
 }
 
 /// The quote shown to the customer: the route Core offers, built from the router's record, and nothing a provider
-/// wrote (`REQ-ORD-10`, `REQ-ORD-18`). Its digest is what the `shown` entry and the acceptance name. `T-020-07`
-/// adds the operator's fee shown apart, the slippage limits and a quote without a firm rate.
+/// wrote (`REQ-ORD-10`, `REQ-ORD-18`). Its digest is what the `shown` entry and the acceptance name. Its `price` is
+/// `T-020-07`'s: the operator's fee shown apart, each segment's slippage limit, and a quote without a firm rate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quote {
     /// The order.
@@ -161,8 +161,11 @@ pub struct Quote {
     pub amount: PositiveAmount,
     /// What the route delivers at `to`, in its unit, before the operator's fee: the sum of its parts'.
     pub delivers: Amount,
-    /// How it is shown: always a quote before execution (`REQ-QTE-7`).
+    /// How it is shown: always a quote before execution, without a firm rate where a segment is over three days
+    /// (`REQ-QTE-7`, `REQ-QTE-10`).
     pub shown_as: ShownAs,
+    /// What is shown of its price, line by line ([`crate::quote::show`], `REQ-QTE-2`, `REQ-QTE-9`).
+    pub price: crate::quote::Shown,
 }
 
 /// Why an order waits.
@@ -572,6 +575,19 @@ impl Intake {
         }
         let reserve_yes = reserve_yes.clone();
         let session = session.clone().ok_or(IntakeError::Unofferable)?;
+        // Its price, by the bounds its record ran under; a price the route can't deliver is never shown
+        // (`T-020-07`).
+        let floor = kept.request.route.floor.clone();
+        let price = match crate::quote::show(&chosen.record, &candidate, floor.as_ref()) {
+            Ok(price) => price,
+            Err(not_shown) => {
+                let class = not_shown.class();
+                refuse(desk, &kept.request.request, Some(order), class)?;
+                kept.status = Status::CantProceed { class };
+                return Ok(kept.told());
+            }
+        };
+        let shown_as = price.shown_as;
         let quote = Quote {
             order: order.clone(),
             decision_record: chosen.record.record_id().clone(),
@@ -580,7 +596,8 @@ impl Intake {
             to: kept.request.route.to.clone(),
             amount: kept.request.route.amount.clone(),
             delivers: delivered(&candidate).ok_or(IntakeError::Unofferable)?,
-            shown_as: ShownAs::Quote,
+            shown_as,
+            price,
         };
         let digest = digest_of(&quote).ok_or(IntakeError::Unofferable)?;
         record::append(
@@ -590,7 +607,7 @@ impl Intake {
             What::Shown {
                 order: order.clone(),
                 shown: digest.clone(),
-                shown_as: ShownAs::Quote,
+                shown_as,
             },
         )?;
         kept.status = Status::Quoted {
