@@ -646,6 +646,8 @@ impl Evidenced<'_> {
                     whose,
                     rests_on: vec![rests_on],
                     movement,
+                    // Placeholder for the closing owner (T-020-09), until it names the private node's publisher.
+                    publisher: None,
                 },
                 settled,
             )

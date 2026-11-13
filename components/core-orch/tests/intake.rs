@@ -384,7 +384,8 @@ fn order_is_not_started_without_acceptance() {
     assert!(env.acceptances().is_empty());
     assert!(env.started().is_empty());
 
-    // Policy not knowing moves nothing; policy refusing ends it, of its class.
+    // Policy not knowing moves nothing: the acceptance is recorded before policy is asked, so policy reads the order's
+    // payer from it (the coordinator's ruling on the payer gap), but nothing starts.
     env.policy.answer = Answer::NotKnown {
         cause: NotKnownCause::PolicyUnreachable,
     };
@@ -395,13 +396,22 @@ fn order_is_not_started_without_acceptance() {
             wait: Wait::PolicyNotKnown
         }
     );
-    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    assert_eq!(
+        env.acceptances().len(),
+        1,
+        "recorded before policy is asked"
+    );
+    assert!(env.started().is_empty());
 
-    // Accepted on policy's permit: recorded, and only then started, once.
+    // Accepted on policy's permit: the acceptance recorded once, and only then started, once.
     env.policy.answer = Answer::Permit {};
     let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
     assert!(matches!(status_of(&told), Status::Accepted { .. }));
-    assert_eq!(env.acceptances().len(), 1);
+    assert_eq!(
+        env.acceptances().len(),
+        1,
+        "the same acceptance, not another"
+    );
     assert_eq!(env.started(), vec![order.as_str().to_owned()]);
     let calls: Vec<&str> = env
         .book
@@ -424,36 +434,30 @@ fn order_is_not_started_without_acceptance() {
     let (_, why) = env2.admitted().expect_err("a start without its acceptance");
     assert!(why.contains("accept"), "{why}");
 
-    // A refusal about the caller leaves the order as it was, to accept by one policy permits; a refusal about the
-    // order itself, outside what the authorisation may name, is the order's end, told as a class.
-    let mut env = Env::new();
-    let mut sim = env.sim();
-    let (order, digest) = env.quoted(&mut sim, &request);
-    env.policy.answer = refusal(RefusalClass::NotPermitted);
-    assert_eq!(
-        env.accept(&mut sim, &order, &customer(), &digest),
-        Err(IntakeError::Refused {
-            class: OrderRefusalClass::RefusedByPolicy
-        })
-    );
-    assert!(matches!(
-        env.told_customer("client-req-1"),
-        Some(Told::Exists {
-            status: Status::Quoted { .. },
-            ..
-        })
-    ));
-    assert!(env.refusals().is_empty());
-    env.policy.answer = refusal(RefusalClass::OutsideAuthorisation);
-    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
-    assert_eq!(
-        status_of(&told),
-        &Status::CantProceed {
-            class: OrderRefusalClass::RefusedByPolicy
-        }
-    );
-    assert!(env.acceptances().is_empty() && env.started().is_empty());
-    assert_admitted(&env);
+    // Refused once its acceptance is in the log, of whatever class, the order ends with its refusal recorded: no part
+    // started and nothing moved, and the log admits that history. Accepting again changes nothing.
+    for class in [
+        RefusalClass::NotPermitted,
+        RefusalClass::OutsideAuthorisation,
+    ] {
+        let mut env = Env::new();
+        let mut sim = env.sim();
+        let (order, digest) = env.quoted(&mut sim, &request);
+        env.policy.answer = refusal(class);
+        let ended = Status::CantProceed {
+            class: OrderRefusalClass::RefusedByPolicy,
+        };
+        let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+        assert_eq!(status_of(&told), &ended, "{class:?}");
+        assert_eq!(env.acceptances().len(), 1, "{class:?}");
+        assert!(env.started().is_empty(), "{class:?}");
+        assert_eq!(env.refusals().len(), 1, "{class:?}");
+        assert_admitted(&env);
+        env.policy.answer = Answer::Permit {};
+        let again = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+        assert_eq!(status_of(&again), &ended, "{class:?}");
+        assert!(env.started().is_empty(), "{class:?}");
+    }
 }
 
 // verifies: REQ-ORD-19, INV-8
@@ -651,11 +655,6 @@ fn destinations_change_of_owner_makes_the_order_wait() {
         env.confirm(&mut sim, &order, &customer(), &digest, &id("owner-3")),
         Err(IntakeError::NotNow)
     );
-    env.policy.answer = refusal(RefusalClass::NotPermitted);
-    assert!(matches!(
-        env.confirm(&mut sim, &order, &customer(), &digest, &id("owner-2")),
-        Err(IntakeError::Refused { .. })
-    ));
     assert!(matches!(
         env.told_customer("client-req-1"),
         Some(Told::Exists {

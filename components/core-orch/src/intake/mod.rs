@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, Log};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
-    Entry, OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
+    Entry, OrderRefusalClass, PartYes, Parties, Receipt, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -328,7 +328,7 @@ struct Offered {
 /// each appended as built, so a retry after an append that failed, or whose answer was lost, makes nothing twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Accepting {
-    /// The actor whose authorisation policy permitted: the only one who carries it on.
+    /// The actor who accepted, whose authorisation policy is asked: the only one who carries it on.
     by: Actor,
     /// The acceptance's id.
     acceptance: Id,
@@ -336,6 +336,9 @@ struct Accepting {
     input: RecordedInput,
     /// The `acceptance` entry and then the `route_chosen` one, those not yet appended.
     pending: Vec<Entry>,
+    /// The authorisation the acceptance gives, until policy permits it: asked once the acceptance is in the log, so
+    /// policy reads the order's parties from it (the payer among them), and before the start is appended.
+    authorisation: Option<Authorisation>,
 }
 
 /// One request identifier's record, under its requester.
@@ -686,9 +689,10 @@ impl Intake {
             }
         }
 
-        // The acceptance, then the order's start, each built once, here, and appended as built, after policy's
-        // permit. Both are built and checked before policy is asked, so an acceptance that fails its own shape costs
-        // no permit. The acceptance names each part of the start's plan with its yes and its origin reserve, the
+        // The acceptance, then the order's start, each built once, here, and appended as built: the acceptance first,
+        // then the authorisation it gives is asked of policy, which reads the order's parties from it, the payer among
+        // them (the coordinator's ruling on the payer gap), and only on policy's permit the start. Both are built and
+        // checked before anything is appended, so an acceptance that fails its own shape records nothing. The acceptance names each part of the start's plan with its yes and its origin reserve, the
         // provider of its first move, and the authorisation it gives.
         let authorisation_id = desk.parts.fresh.id();
         let input = route_chosen(desk, order, by, &offered)?;
@@ -757,34 +761,6 @@ impl Intake {
             given_by: by.clone(),
             at: record::now(desk.parts.clock)?,
         };
-        let decision = desk.authorisations.authorise(&authorisation)?;
-        if decision.permit().is_none() {
-            return match decision.outcome {
-                // Only a refusal about the order itself ends it.
-                Answer::Refuse {
-                    class: RefusalClass::OutsideAuthorisation,
-                } => {
-                    let class = OrderRefusalClass::RefusedByPolicy;
-                    refuse(desk, &request.request, Some(order), class)?;
-                    kept.status = Status::CantProceed { class };
-                    kept.offered = None;
-                    kept.ended = true;
-                    Ok(kept.told())
-                }
-                // A refusal about the caller leaves the order as it stood.
-                Answer::Refuse { class } => Err(IntakeError::Refused {
-                    class: class::refused(class),
-                }),
-                _ => {
-                    if kept.changed_owner.is_none() {
-                        kept.status = Status::Waiting {
-                            wait: Wait::PolicyNotKnown,
-                        };
-                    }
-                    Ok(kept.told())
-                }
-            };
-        }
         kept.owner = resolved;
         kept.changed_owner = None;
         kept.accepting = Some(Accepting {
@@ -792,6 +768,7 @@ impl Intake {
             acceptance,
             input,
             pending: vec![accepted, start],
+            authorisation: Some(authorisation),
         });
         carry_on(desk, kept)
     }
@@ -802,6 +779,41 @@ impl Intake {
 /// an entry, no retry can succeed, so the order ends, of the class `no_route_right_now`.
 fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeError> {
     let accepting = kept.accepting.as_mut().ok_or(IntakeError::NotNow)?;
+    if let Some(authorisation) = accepting.authorisation.clone() {
+        // The acceptance first, alone, where it isn't in the log yet: policy reads the order's parties from it. The
+        // start stays pending behind it until policy permits.
+        if accepting.pending.len() > 1 {
+            let mut acceptance: Vec<Entry> = accepting.pending.drain(..1).collect();
+            let appended = flush(&mut *desk.parts.log, &mut acceptance);
+            accepting.pending.splice(0..0, acceptance);
+            match appended {
+                Ok(()) => {}
+                Err(AppendFailure::Refused(_)) => {
+                    return ended(desk, kept, OrderRefusalClass::NoRouteRightNow);
+                }
+                Err(failure) => return Err(IntakeError::Log(failure)),
+            }
+        }
+        let decision = desk.authorisations.authorise(&authorisation)?;
+        if decision.permit().is_some() {
+            accepting.authorisation = None;
+        } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
+            // Not known: the order waits, and accepting again asks the same authorisation of policy again.
+            kept.status = Status::Waiting {
+                wait: Wait::PolicyNotKnown,
+            };
+            return Ok(kept.told());
+        } else {
+            // Refused once the acceptance is in the log, the order ends with its refusal recorded, of the class
+            // policy's refusal gives its caller: no part starts and nothing moves.
+            let class = match decision.outcome {
+                Answer::Refuse { class } => class::refused(class),
+                _ => OrderRefusalClass::RefusedByPolicy,
+            };
+            return ended(desk, kept, class);
+        }
+    }
+    let accepting = kept.accepting.as_mut().ok_or(IntakeError::NotNow)?;
     match flush(&mut *desk.parts.log, &mut accepting.pending) {
         Ok(()) => {
             kept.status = Status::Accepted {
@@ -810,18 +822,24 @@ fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeErro
             kept.started = Some(accepting.input.clone());
             Ok(kept.told())
         }
-        Err(AppendFailure::Refused(_)) => {
-            let class = OrderRefusalClass::NoRouteRightNow;
-            let order = kept.order.clone().ok_or(IntakeError::NotNow)?;
-            refuse(desk, &kept.request.request, Some(&order), class)?;
-            kept.status = Status::CantProceed { class };
-            kept.ended = true;
-            kept.offered = None;
-            kept.accepting = None;
-            Ok(kept.told())
-        }
+        Err(AppendFailure::Refused(_)) => ended(desk, kept, OrderRefusalClass::NoRouteRightNow),
         Err(failure) => Err(IntakeError::Log(failure)),
     }
+}
+
+/// Ends `kept`'s order, accepted or not, with its refusal of `class` recorded: nothing started, nothing moved.
+fn ended(
+    desk: &mut Desk<'_, '_>,
+    kept: &mut Kept,
+    class: OrderRefusalClass,
+) -> Result<Told, IntakeError> {
+    let order = kept.order.clone().ok_or(IntakeError::NotNow)?;
+    refuse(desk, &kept.request.request, Some(&order), class)?;
+    kept.status = Status::CantProceed { class };
+    kept.ended = true;
+    kept.offered = None;
+    kept.accepting = None;
+    Ok(kept.told())
 }
 
 /// Appends `pending`, in order, each as built, taking each off once the log took it.

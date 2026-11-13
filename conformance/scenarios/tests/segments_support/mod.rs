@@ -465,6 +465,11 @@ impl authz::Sources for Register {
                     None => Reply::Missing,
                 }
             }
+            // The payer's account at the reserve, the customer's, which every order the kit seeds names as its origin
+            // account: policy holds it to the payer's (`T-021-04`).
+            authz::Source::Account(account) => {
+                yes(account.as_str() == "acct-1" && need.input == customer().party)
+            }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
                 Permission::Change(CatalogueChange::Promote) | Permission::ReadOrderState => {
@@ -1228,12 +1233,8 @@ fn seed_chosen(
             outcome,
         })
     };
-    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the customer authorises its order through policy"
-    );
-    let mut log = log.borrow_mut();
+    let shared = log;
+    let mut log = shared.borrow_mut();
     seed_arrival(&mut log, store, record, named, operator, &chosen, &entry);
     log.take(
         &entry(
@@ -1259,6 +1260,14 @@ fn seed_chosen(
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    drop(log);
+    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the customer authorises its order through policy"
+    );
+    let mut log = shared.borrow_mut();
     log.take(
         &entry(
             What::DecisionRecord {
@@ -1302,14 +1311,6 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
             outcome,
         })
     };
-    let authorised = core
-        .policy
-        .authorise(&authorisation_of(named, None))
-        .unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the linked order is authorised"
-    );
     let session = id(&format!("sess-{}", named.order));
     let quote = digest(&"ac".repeat(32));
     let transaction = format!("tx-yes-{}", named.order);
@@ -1379,6 +1380,20 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    // An order another party requested and pays names no origin account of the customer's: policy holds an origin
+    // account to the payer's own (`T-021-04`).
+    drop(log);
+    let mut authorisation = authorisation_of(named, None);
+    if requester.party != customer().party {
+        authorisation.origin_account = None;
+    }
+    let authorised = core.policy.authorise(&authorisation).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let mut log = core.log.borrow_mut();
     log.take(
         &verified(
             self::core(),
@@ -1420,14 +1435,6 @@ pub fn seed_linked_on_a_deposit(
             outcome,
         })
     };
-    let authorised = core
-        .policy
-        .authorise(&authorisation_of(named, None))
-        .unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the linked order is authorised"
-    );
     let operator = core.operator.clone();
     let chosen = route_chosen_of(&core.record, named);
     let mut log = core.log.borrow_mut();
@@ -1464,6 +1471,17 @@ pub fn seed_linked_on_a_deposit(
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    drop(log);
+    let authorised = core
+        .policy
+        .authorise(&authorisation_of(named, None))
+        .unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let mut log = core.log.borrow_mut();
     log.take(
         &entry(
             What::DecisionRecord {
@@ -2051,6 +2069,8 @@ impl Grading for Recorded {
                     whose,
                     rests_on: vec![settled.result.clone()],
                     movement,
+                    // Placeholder for the segments kit's owner (F-024), until it names the private node's publisher.
+                    publisher: None,
                 },
                 when: When {
                     at: settled.at.clone(),

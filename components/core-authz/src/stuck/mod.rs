@@ -63,7 +63,7 @@
 //!
 //! - **The order's customer, along its chain** (`THR-70`). A decider or a confirmer whose chain reaches any party the
 //!   log's acceptance of the order names, or whose party one of them reaches, is refused; an order the log has no
-//!   acceptance of is a missing input.
+//!   acceptance of is refused the same way, so a caller can't tell it from one that isn't its own.
 //! - **The move.** It carries out a decision the log holds as permitted, of its order, with the request and decision
 //!   it names, or it is refused. Its mover and that decision's decider are one actor, refused as the same actor
 //!   (`REQ-AUZ-4`, `REQ-AUZ-8`), or its mover is the desk of the provider the decision names, refused.
@@ -437,8 +437,9 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         order: &Id,
     ) -> Check {
         let parties = parties_of(entries, order);
+        // An order the log has no acceptance of is refused as one of another's is (`T-023-01`'s question).
         if parties.is_empty() {
-            return Check::Refuse(RefusalClass::MissingInput);
+            return Check::Refuse(RefusalClass::NotPermitted);
         }
         for party in &parties {
             let check = self.of_party_either_way(actor, party, RefusalClass::NotPermitted);

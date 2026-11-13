@@ -88,6 +88,15 @@ impl crate::funds::Recorded for Kept {
     }
 }
 
+/// What the log holds, with the fixtures' orders' acceptances before it.
+impl crate::stuck::Receipted for Kept {
+    fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, crate::funds::ReadFailure> {
+        let mut entries = crate::funds::acceptances_of_the_fixtures();
+        entries.extend(self.0.iter().cloned());
+        Ok(entries)
+    }
+}
+
 impl Log for Kept {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         self.admit(entry.entry().clone(), Through::General)
@@ -1174,5 +1183,81 @@ fn read_by_an_actor_stating_another_party_is_refused() {
     assert_eq!(
         policy.check_read(&own).unwrap().outcome,
         ReadOutcome::Allowed {}
+    );
+}
+
+/// A failed segment's provider is asked to reverse only by an operator's login holding the permission to ask it, or
+/// by one of Core's own actors carrying the order on (`CarryOnward`, the coordinator's default for the contract's
+/// round 2). The operator holding every other permission, Core without its listing, the customer, the provider itself,
+/// a verifier, a regulator and a checker are refused before the deployment's policy is asked.
+// verifies: REQ-ORD-3, REQ-AUZ-1
+#[test]
+fn reversal_is_asked_only_by_the_operator_or_cores_carrier() {
+    let ask = |caller: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
+        request.request = id(&format!("req-reverse-{}", caller.acts.as_str()));
+        request.caller = caller.clone();
+        request.action = Action::AskReversal {
+            order: id("ord-17"),
+            segment: id("seg-2"),
+            provider: id("bridge-pay"),
+        };
+        request
+    };
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every_other.push(Permission::ActForUser);
+    every_other.push(Permission::CarryOnward);
+
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::AskReversal])
+            .and_holding(&core(), &[Permission::CarryOnward]),
+    );
+    for caller in [operator(), core()] {
+        let decision = policy.decide(&ask(&caller)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+        assert_eq!(
+            policy.log().entry_of(&decision).who,
+            caller,
+            "recorded with its actor"
+        );
+    }
+
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every_other),
+    );
+    let refused = [
+        operator(),
+        core(),
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+        actor(
+            "bridge-pay",
+            "bridge-pay",
+            Role::Provider,
+            ActorKind::Component,
+        ),
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+    ];
+    for caller in &refused {
+        assert_eq!(
+            policy.decide(&ask(caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
     );
 }

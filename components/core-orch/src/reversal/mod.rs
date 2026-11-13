@@ -1036,6 +1036,8 @@ impl Reversals {
                 whose: whose.maker.clone(),
                 rests_on: vec![statement.clone()],
                 movement: None,
+                // Placeholder for the reversal owner (T-020-12), until it names the private node's publisher.
+                publisher: None,
             },
         )?;
         let observed = Observed::ReversalCompleted {
