@@ -2089,12 +2089,8 @@
           "$ref": "urn:rutent:core-internal:common#/$defs/actor"
         },
         "accepted_with": {
-          "description": "The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and segment, or the operator's accept_fault command.",
+          "description": "The act the acceptance rests on, by receipt: for the customer, policy's permitted decide of its accept_fault, asked in its open session and naming the showing; for the operator, its accept_fault command.",
           "$ref": "urn:rutent:core-internal:receipt"
-        },
-        "session": {
-          "description": "The customer's session its yes was given in.",
-          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       },
       "allOf": [
@@ -2126,11 +2122,6 @@
                   "required": [
                     "accepted_with"
                   ]
-                },
-                {
-                  "required": [
-                    "session"
-                  ]
                 }
               ]
             }
@@ -2151,8 +2142,7 @@
             "required": [
               "showing",
               "accepted_by",
-              "accepted_with",
-              "session"
+              "accepted_with"
             ]
           }
         },
@@ -2172,12 +2162,7 @@
               "showing",
               "accepted_by",
               "accepted_with"
-            ],
-            "not": {
-              "required": [
-                "session"
-              ]
-            }
+            ]
           }
         }
       ]

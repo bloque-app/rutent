@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 126 invalid ones, each
-  breaking one rule, and 578 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-six schemas, 133 valid fixtures and 126 invalid ones, each
+  breaking one rule, and 580 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 103 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -694,3 +694,20 @@
   again under a new commitment and redeemed by ord-2 after ord-9 (`--the-same-hold-kept-again`), a hold appended
   about nothing (`--transaction`). Admitted: the hold kept again, redeemed again by its own order. 578 admission
   cases. (DEC-4, DEC-20, REQ-QTE-15, REQ-AUD-9, T-020-01)
+- Folded into 1.0.0 before its release: a customer's acceptance of fault is a policy decision (the review of round 3,
+  item 3, the coordinator's ruling). No customer signs a statement the log can attribute (`StatementKeys::publisher`
+  answers nothing for a customer), so the stated `FaultAcceptance` could never verify, and its admitted case passed
+  only by making `cust-1` a provider component. Type changes: `Action` gains `AcceptFault {order, segment, showing:
+  ShowingNamed, session}`, with a new struct `ShowingNamed {transaction: Id, commitment: Digest}` (schemas
+  `common#/$defs/action_accept_fault` and `#/$defs/showing_named`), decided through `Decisions::decide` on the policy
+  handle and never an effect (`Effect::check`, `What::check`); `What::ReversalCarrier` loses `session`;
+  `FaultAcceptance`, `AcceptedFault`, `FAULT_ACCEPTANCE_SHAPE` and the `fault-acceptance` schema are gone.
+  `reversal-carrier-rests-on-its-acceptance` reads the customer's act as a permitted `decide` of `accept_fault` by the
+  order's requester in the customer's role, its own caller, about the order and segment, naming the showing's
+  transaction and commitment, decided no earlier than the showing was received and appended after it, in a session
+  still open when it was decided (fields `party`, `action`, `yes`, `session`, `showing`; `shape` is now `action`).
+  The operator's path is unchanged. Admitted: cust-1, a person in the customer's role, in `sess-1`. Refused, new: a
+  refused decision, another action, another showing's commitment, one decided before the showing was received. One
+  valid fixture (`decision-request-to-accept-a-fault-in-the-customers-session`), one invalid
+  (`verified-entry-of-an-effect-accepting-a-fault`); the fault-acceptance fixtures are gone. 580 admission cases.
+  (DEC-4, DEC-20, REQ-ORD-11, REQ-ORD-32, REQ-AUZ-1, T-020-01, T-020-12)

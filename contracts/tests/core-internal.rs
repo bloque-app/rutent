@@ -34,7 +34,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:core-internal:<shape>`.
-const SHAPES: [&str; 27] = [
+const SHAPES: [&str; 26] = [
     "common",
     "receipt",
     "decision-request",
@@ -61,7 +61,6 @@ const SHAPES: [&str; 27] = [
     "entry",
     "kept-statement",
     "permission-change",
-    "fault-acceptance",
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
@@ -74,7 +73,11 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 38] = [
+const RUST_RULES: [(&str, &str); 39] = [
+    (
+        "verified-entry-of-an-effect-accepting-a-fault",
+        "a customer's acceptance of fault is a decision, and takes no effect",
+    ),
     (
         "verified-entry-of-a-replay-of-a-silent-node-not-replayed",
         "a replay's node that recorded nothing is one it replayed",
@@ -238,16 +241,11 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 88] = [
+const SCHEMA_RULES: [SchemaRule; 87] = [
     (
         "raise-of-a-charge-without-its-result",
         &[("/difference", "required")],
         "missing field `result`",
-    ),
-    (
-        "fault-acceptance-of-the-operators-fault",
-        &[("/fault", "enum")],
-        "unknown variant `operator`",
     ),
     (
         "verified-entry-of-a-replay-resting-on-nothing",
@@ -814,7 +812,6 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "entry" => round_trip::<Entry>(value),
         "kept-statement" => round_trip::<KeptStatement>(value),
         "permission-change" => round_trip::<PermissionChange>(value),
-        "fault-acceptance" => round_trip::<rutent_contracts::core_internal::FaultAcceptance>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }

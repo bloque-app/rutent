@@ -300,6 +300,28 @@ fn hold_transaction<'a>(held: &Receipt, history: &'a History) -> Option<&'a Id> 
     })
 }
 
+/// The session a customer's acceptance of fault at `act` was asked in, and when it was decided: where the entry at
+/// that receipt is a `decide` of `accept_fault`.
+fn fault_session<'a>(
+    act: &Receipt,
+    history: &'a History,
+) -> Option<(&'a Id, &'a crate::router_api::Timestamp)> {
+    history.iter().find_map(|(r, e)| {
+        let v = verified(e).filter(|_| r == act)?;
+        match &v.what {
+            What::Decide {
+                request:
+                    DecisionRequest {
+                        action: Action::AcceptFault { session, .. },
+                        ..
+                    },
+                ..
+            } => Some((session, &v.when.at)),
+            _ => None,
+        }
+    })
+}
+
 /// When `segment` of `order` started, by this log: the time of the first `move_value` effect on it (`REQ-QTE-6`).
 fn segment_started<'a>(
     order: &Id,
@@ -2228,39 +2250,37 @@ pub static RELATIONS: [Relation; 97] = [
                 "an acceptance of fault is the party at fault's own: the requester's party in the customer's role, or the deployment operator's",
             ),
             (
+                "action",
+                "a customer's acceptance of fault is policy's decision of its accept_fault, not another action",
+            ),
+            (
                 "yes",
-                "a customer's acceptance of fault is its verified yes about the order and segment",
+                "a customer's acceptance of fault is permitted, about the order and segment",
             ),
             (
                 "session",
-                "a customer's acceptance of fault is given in its session, still open",
-            ),
-            (
-                "shape",
-                "a customer's acceptance of fault is its fault-acceptance statement, not a dispute or another shape",
+                "a customer's acceptance of fault is decided in its session, still open",
             ),
             (
                 "showing",
-                "an acceptance of fault names the showing it accepts, by its transaction, and comes after it",
+                "an acceptance of fault names the showing it accepts, by its transaction and commitment, and comes after it",
             ),
         ],
-        // The act, not a writer's label: the customer's own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in
-        // its session, as an acceptance rests on its yes and session; the operator's `accept_fault` command, by the
-        // deployment operator's party. Either comes after the showing it accepts: the customer's statement is about
-        // the showing's transaction and received after it, the command appended after it. The log holds only salted
-        // commitments, so the body of a customer's acceptance is checked against the showing by whoever holds the
-        // kept bytes: Core on intake, before it appends the carrier, and a checker that fetches both through
-        // `Evidence::fetch`. Each checks that the body's `fault` is `customer` (`AcceptedFault`, the one value),
-        // that its `showing` equals the commitment of the carrier's showing, and that its `order`, `segment` and
-        // `transaction` equal the showing's `about`.
-        cites: |e, _| match &e.what {
+        // The act, not a writer's label. The customer's is a decision of policy's on the policy handle, as an order's
+        // authorisation is: a `decide` of `accept_fault` (`Action::AcceptFault`), permitted, asked by the order's
+        // requester in its open session, about the order and segment, naming the showing by the transaction its
+        // result is about and the commitment its stated entry names, decided no earlier than the showing was
+        // received and appended after it. No customer signs a statement Core can attribute: the log knows no
+        // customer's key (`StatementKeys`), so the decision, which the log holds whole, is what it reads. The
+        // operator's is its `accept_fault` command, by the deployment operator's party, appended after the showing.
+        cites: |e, h| match &e.what {
             What::ReversalCarrier {
                 accepted_with: Some(act),
-                session,
+                carrier,
                 ..
             } => {
                 let mut cites = alloc::vec![by_receipt(act, 0)];
-                if session.is_some() {
+                if *carrier == Carrier::Customer && fault_session(act, h).is_some() {
                     cites.extend(by_fields(1));
                 }
                 cites
@@ -2274,8 +2294,7 @@ pub static RELATIONS: [Relation; 97] = [
                 carrier,
                 showing,
                 accepted_by: Some(by),
-                session,
-                ..
+                accepted_with: Some(act),
             } = &e.what
             else {
                 return Match::NotTarget;
@@ -2290,33 +2309,44 @@ pub static RELATIONS: [Relation; 97] = [
                 _ => false,
             };
             match (c.index, carrier, t) {
-                (0, Carrier::Customer, Entry::Stated(s)) => judge(
-                    true,
-                    &[
-                        by.role == Role::Customer
-                            && requester == Some(&by.party)
-                            && requester == Some(&s.attribution.maker().party),
-                        matches!(s.attribution, Attribution::Verified { .. })
-                            && s.about.as_ref().is_some_and(|a| {
-                                a.order.as_ref() == Some(order)
-                                    && a.segment.as_ref() == Some(segment)
-                            }),
+                (0, Carrier::Customer, Entry::Verified(v)) => {
+                    let What::Decide { request, .. } = &v.what else {
+                        return Match::NotTarget;
+                    };
+                    let accepted = match &request.action {
+                        Action::AcceptFault {
+                            order: o,
+                            segment: s,
+                            showing: named,
+                            ..
+                        } => Some((o, s, named)),
+                        _ => None,
+                    };
+                    judge(
                         true,
-                        s.what.statement.as_str() == super::types::FAULT_ACCEPTANCE_SHAPE,
-                        after_showing(t)
-                            && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
-                                s.received_at.unix_nanos() > showing.received_at.unix_nanos()
-                                    && showing
-                                        .about
-                                        .as_ref()
-                                        .and_then(|a| a.transaction.as_ref())
-                                        .is_some_and(|tx| {
-                                            s.about.as_ref().and_then(|a| a.transaction.as_ref())
-                                                == Some(tx)
+                        &[
+                            by.role == Role::Customer
+                                && requester == Some(&by.party)
+                                && &request.caller == by,
+                            accepted.is_some(),
+                            v.outcome == (Outcome::Permitted {})
+                                && accepted.is_some_and(|(o, s, _)| o == order && s == segment),
+                            true,
+                            after_showing(t)
+                                && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
+                                    v.when.at.unix_nanos() >= showing.received_at.unix_nanos()
+                                        && accepted.is_some_and(|(_, _, named)| {
+                                            named.commitment == showing.commitment
+                                                && showing
+                                                    .about
+                                                    .as_ref()
+                                                    .and_then(|a| a.transaction.as_ref())
+                                                    == Some(&named.transaction)
                                         })
-                            }),
-                    ],
-                ),
+                                }),
+                        ],
+                    )
+                }
                 (0, Carrier::Operator, Entry::Verified(v)) => match &v.what {
                     What::Command {
                         command: OperatorCommand::AcceptFault,
@@ -2336,22 +2366,27 @@ pub static RELATIONS: [Relation; 97] = [
                     ),
                     _ => Match::NotTarget,
                 },
-                (1, Carrier::Customer, _) => match permitted(t).map(|v| &v.what) {
-                    Some(What::OpenSession {
-                        request,
-                        opened: Some(opened),
-                    }) => judge(
-                        Some(&opened.session) == session.as_ref(),
-                        &[
-                            requester == Some(&request.holder),
-                            true,
-                            opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
-                            true,
-                            true,
-                        ],
-                    ),
-                    _ => Match::NotTarget,
-                },
+                (1, Carrier::Customer, _) => {
+                    let Some((session, decided_at)) = fault_session(act, h) else {
+                        return Match::NotTarget;
+                    };
+                    match permitted(t).map(|v| &v.what) {
+                        Some(What::OpenSession {
+                            request,
+                            opened: Some(opened),
+                        }) => judge(
+                            &opened.session == session,
+                            &[
+                                requester == Some(&request.holder),
+                                true,
+                                true,
+                                opened.expires_at.unix_nanos() >= decided_at.unix_nanos(),
+                                true,
+                            ],
+                        ),
+                        _ => Match::NotTarget,
+                    }
+                }
                 _ => Match::NotTarget,
             }
         },
