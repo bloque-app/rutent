@@ -11,12 +11,15 @@
 //! A provider's signed terms ([`TupleTerms`], [`check_terms`]) and a reserve's signed hold ([`Hold`],
 //! [`check_redemption`]) are statements of their own (3.1.0), and so is a reserve's notice of value arriving
 //! ([`ArrivalNotice`], [`check_one_credit`]), and the operator's question of what arrived and the reserve's answer
-//! ([`ArrivalQuestion`], [`ArrivalAnswer`], [`check_answer`]).
+//! ([`ArrivalQuestion`], [`ArrivalAnswer`], [`check_answer`]). A publisher's record of the segments inside its
+//! private node ([`InnerSegments`], [`check_inner_segments`]) is labelled its publisher's word
+//! ([`Standing::PublishersWord`]).
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
 mod arrival;
 pub mod canonical;
 mod envelope;
+mod inner;
 mod operation;
 mod outcome;
 mod settlement;
@@ -34,6 +37,10 @@ pub use envelope::{
     ADVERTISEMENT_SHAPE, ContextMismatch, Deployment, JUDGEMENT_SHAPE, NotSignedByOperator,
     OPERATION_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature,
     SignatureScheme, Statement, StatementShape,
+};
+pub use inner::{
+    INNER_SEGMENTS_SHAPE, InnerSegment, InnerSegments, InnerSegmentsViolation, Standing,
+    check_inner_segments,
 };
 pub use operation::*;
 pub use outcome::*;

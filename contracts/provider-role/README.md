@@ -1,6 +1,6 @@
 # provider-role contract
 
-This contract holds six things:
+This contract holds seven things:
 
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
@@ -8,6 +8,7 @@ This contract holds six things:
 - a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0);
 - a reserve's signed notice of value arriving, the operator's question of what arrived and the reserve's answer
   (3.1.0);
+- a publisher's signed record of the segments inside its private node, labelled its word (3.1.0);
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -29,11 +30,12 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:arrival-notice` | `schemas/arrival-notice.schema.json` | A reserve's notice of value arriving, in the envelope: the transaction it gives the credit, its per-credit reference, the outer node, the asset with its unit, the amount, the account and its holder (3.1.0, `REQ-ORD-14`, `REQ-ORD-23`) |
 | `urn:rutent:provider-role:arrival-question` | `schemas/arrival-question.schema.json` | The operator's question to a reserve of what arrived at an account, in the envelope: its own transaction, the reserve asked, the holder's session, the account, the outer node and the asset (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
 | `urn:rutent:provider-role:arrival-answer` | `schemas/arrival-answer.schema.json` | A reserve's answer to that question, in the envelope: the question's transaction, and the reserve's arrival notice of each credit whole, or that nothing arrived, or a refusal that never says when it lifts (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:inner-segments` | `schemas/inner-segments.schema.json` | A publisher's record of the segments inside one of its private nodes, in the envelope: the node, the publisher, the label `publishers_word`, and each segment's transaction, asset and amount in and out, and fee (3.1.0, `REQ-ORD-41`, `REQ-ORD-3`) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all fourteen and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all fifteen and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
-`terms-`, `hold-`, `arrival-notice-`, `arrival-question-`, `arrival-answer-`, `successive-advertisements-`,
+`terms-`, `hold-`, `arrival-notice-`, `arrival-question-`, `arrival-answer-`, `inner-segments-`, `successive-advertisements-`,
 `answered-operation-`, `arrival-notices-` or `answered-arrival-question-`. The last four are bundles, not schemas:
 `arrival-notices` is an `earlier` and a `later` enveloped arrival notice, for the rule that relates them
 (`check_one_credit`), and `answered-arrival-question` an enveloped `question` and the enveloped `answer` to it
@@ -361,6 +363,37 @@ notice it took against the next by `check_one_credit`, a notice carried in an an
 session is the account holder's, open, and counted against the bound unless for the holder's own order (`F-021`'s
 session register); and that a question is asked for the order its log names, under a transaction fresh for it, and
 its answer follows it (`T-020-19`, and core-internal's next round, `T-020-21`, for the log's row).
+
+## Inner segments (3.1.0)
+
+`CMP-EVIDENCE`'s replay (`REQ-ORD-41`) reads what a publisher recorded of the segments inside its private node, and
+before 3.1.0 no contract shaped that record: the assembly's `Books` was filled by hand (`F-015`, `T-020-09`). The
+record is now the publisher's own statement (`InnerSegments`, shape `urn:rutent:provider-role:inner-segments`),
+which Core keeps and appends as a stated entry about nothing, since its body names no transaction of its own.
+
+- **What it names.** The private `node`; the `publisher` whose word it is, the statement's maker
+  (`check_inner_segments`: `OfAnotherMaker`); and the `segments`, at least one, in the order they ran, each with the
+  `transaction` it ran under (`Books::recorded` asks by node and transactions), the `asset_in` and `amount_in`, the
+  `asset_out` and `amount_out`, and the `fee`, in the asset that went in.
+- **Labelled the publisher's word** (`REQ-ORD-3`, `AC-35`). `standing` is required and has one value,
+  `publishers_word` (`Standing::PublishersWord`), so the label travels with the record wherever it goes. Inside a
+  private node there is no other witness: a replay of the record against the public movement out shows consistency
+  with the exit, never that the segments happened (`THR-131`), and a route ending inside the node stays its
+  publisher's word.
+- **No figure refused.** The contract holds the record's fields, not its arithmetic: segments that don't add up or
+  don't chain are still the publisher's record, so the replay sees them and records the mismatch
+  (`inner-segments-that-do-not-add-up` is a valid fixture).
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A record names its shape, its node, its publisher, its label and at least one segment | schema | `inner-segments-under-another-shape`, `inner-segments-without-its-publisher`, `inner-segments-without-its-label`, `inner-segments-without-segments` |
+| Its label is the publisher's word, and nothing else | schema (`const`), and Rust (`Standing`) | `inner-segments-labelled-as-proof` |
+| Each segment names its transaction, its asset and amount in and out, and its fee, in whole numbers | schema | `inner-segments-segment-without-its-transaction`, `inner-segments-segment-without-its-asset-in`, `inner-segments-segment-without-its-amount-in`, `inner-segments-segment-without-its-amount-out`, `inner-segments-segment-without-its-fee`, `inner-segments-fee-with-a-fraction` |
+| A record is made by the publisher it names | Rust, `check_inner_segments`: `OfAnotherMaker` | `inner-segments-made-by-another-party` |
+
+What the contract leaves to its reader: that the publisher declares the node as its private node (the catalogue's,
+`REQ-CAT-20`, `REQ-CAT-22`); that each transaction is one of the order's segments at that node, run by one of the
+publisher's providers (Core's); and that the segments add up and hand on to the public exit (the replay's).
 
 ## Which rule lives where
 

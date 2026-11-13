@@ -1,6 +1,19 @@
 # provider-role changelog
 
 ## 3.1.0
+- A publisher's record of the segments inside its private node is a signed statement of its own (`F-015`'s and
+  `T-020-09`'s gap: `CMP-EVIDENCE`'s replay read a record no contract shaped, which the assembly's `Books` filled by
+  hand). One schema, `inner-segments` (`urn:rutent:provider-role:inner-segments`, `INNER_SEGMENTS_SHAPE`,
+  `InnerSegments {node, publisher, standing: Standing {PublishersWord}, segments: Vec<InnerSegment {transaction,
+  asset_in, amount_in, asset_out, amount_out, fee}>}`), made by the publisher (`check_inner_segments`,
+  `InnerSegmentsViolation {OfAnotherMaker}`). `standing` is a label that travels with the record, always
+  `publishers_word`: inside a private node there is no other witness, so a replay shows consistency with the public
+  exit and never that the segments happened (`REQ-ORD-3`, `AC-35`, `THR-131`). Each segment names the transaction it
+  ran under, as `Books::recorded` asks by node and transactions; the record names none of its own, so its stated
+  entry is about nothing. The contract refuses no figure: a record whose segments don't add up or don't chain is
+  still the publisher's record, and the replay records the mismatch (`REQ-ORD-41`). Minor, folded into 3.1.0 before
+  its release: a shape and a check added, nothing changed. Two valid fixtures, twelve invalid. (DEC-4, DEC-20,
+  REQ-ORD-41, REQ-ORD-3, T-020-18)
 - The operator's question to a reserve of what arrived for an order, and the reserve's answer, are signed statements
   of their own (`T-020-04`'s gap). Core bound an arrival to its order on a balance verification, which says only that
   funds suffice. Two schemas:

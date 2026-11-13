@@ -11,12 +11,13 @@ use rutent_contracts::provider_role::{
     Deployment, Hold, NodeRef, Operation, OuterNode, RedemptionRefused, Remainder, ResultBody,
     RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
 };
+use rutent_contracts::provider_role::{InnerSegments, InnerSegmentsViolation, Standing};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 14] = [
+const SCHEMAS: [&str; 15] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -31,13 +32,14 @@ const SCHEMAS: [&str; 14] = [
     "arrival-notice",
     "arrival-question",
     "arrival-answer",
+    "inner-segments",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
 /// followed by `-`. `successive-advertisements`, `answered-operation`, `arrival-notices` and
 /// `answered-arrival-question` are bundles of values, not schemas of their own: see [`SuccessiveAdvertisements`],
 /// [`AnsweredOperation`], [`ArrivalNotices`] and [`AnsweredArrivalQuestion`].
-const SHAPES: [&str; 13] = [
+const SHAPES: [&str; 14] = [
     "advertisement",
     "statement-envelope",
     "operation",
@@ -47,6 +49,7 @@ const SHAPES: [&str; 13] = [
     "arrival-notice",
     "arrival-question",
     "arrival-answer",
+    "inner-segments",
     "successive-advertisements",
     "answered-operation",
     "arrival-notices",
@@ -210,6 +213,50 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
         ),
         (
             "arrival-answer-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "inner-segments-segment-without-its-amount-in",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-amount-out",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-fee",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-asset-in",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-transaction",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-fee-with-a-fraction",
+            vec![("/statement/segments/0/fee", "pattern")],
+        ),
+        (
+            "inner-segments-without-segments",
+            vec![("/statement/segments", "minItems")],
+        ),
+        (
+            "inner-segments-without-its-label",
+            vec![("/statement", "required")],
+        ),
+        (
+            "inner-segments-labelled-as-proof",
+            vec![("/statement/standing", "const")],
+        ),
+        (
+            "inner-segments-without-its-publisher",
+            vec![("/statement", "required")],
+        ),
+        (
+            "inner-segments-under-another-shape",
             vec![("/shape", "const")],
         ),
         (
@@ -702,6 +749,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             format!("{:?}", CreditRestated::OtherFigures),
         ),
         (
+            "inner-segments-made-by-another-party",
+            format!("{:?}", InnerSegmentsViolation::OfAnotherMaker),
+        ),
+        (
             "arrival-question-signed-with-another-key",
             "NotSignedByOperator".to_owned(),
         ),
@@ -942,6 +993,11 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 .check_signed_by_operator()
                 .map_err(|_| "NotSignedByOperator".to_owned())
         }
+        "inner-segments" => {
+            let statement: Statement<InnerSegments> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::check_inner_segments(&statement).map_err(|v| format!("{v:?}"))
+        }
         "arrival-answer" => {
             let statement: Statement<ArrivalAnswer> =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -982,6 +1038,14 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
         (
             "arrival-answer-arrived-with-no-notices",
             "minItems: notices are a Vec",
+        ),
+        (
+            "inner-segments-fee-with-a-fraction",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "inner-segments-without-segments",
+            "minItems: segments are a Vec",
         ),
         (
             "terms-with-a-zero-denominator",
@@ -1218,6 +1282,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "arrival-notice" => checked_round_trip::<ArrivalNotice>(value),
         "arrival-question" => checked_round_trip::<ArrivalQuestion>(value),
         "arrival-answer" => checked_round_trip::<ArrivalAnswer>(value),
+        "inner-segments" => checked_round_trip::<InnerSegments>(value),
         "answered-arrival-question" => {
             let bundle: AnsweredArrivalQuestion =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1923,6 +1988,69 @@ fn what_arrived_is_answered_by_the_notice_under_the_questions_transaction() {
     assert_eq!(
         provider_role::check_answer(&nothing.question, &nothing.answer),
         Ok(())
+    );
+}
+
+/// A publisher's record of the segments inside its private node gives, for each, the asset and amount in and out
+/// and the fee, which the replay compares with the public movement out (`T-020-18`).
+// verifies: REQ-ORD-41
+#[test]
+fn inner_segment_record_without_its_amounts_in_and_out_or_its_fee_is_invalid() {
+    for name in [
+        "inner-segments-segment-without-its-amount-in",
+        "inner-segments-segment-without-its-amount-out",
+        "inner-segments-segment-without-its-fee",
+        "inner-segments-segment-without-its-asset-in",
+        "inner-segments-fee-with-a-fraction",
+    ] {
+        assert_schema_rejects(name);
+    }
+    let record: Statement<InnerSegments> = serde_json::from_value(fixture(
+        "valid",
+        "inner-segments-of-a-conversion-and-a-transfer",
+    ))
+    .unwrap();
+    let first = &record.statement.segments[0];
+    assert_eq!(
+        (
+            first.asset_in.as_str(),
+            first.amount_in.as_str(),
+            first.asset_out.as_str(),
+            first.amount_out.as_str(),
+            first.fee.as_str()
+        ),
+        ("COP", "150000", "USD", "3600", "1500")
+    );
+    // A record that doesn't add up is still the publisher's record: the contract refuses no figure, so the replay
+    // sees it and records the mismatch.
+    let off: Statement<InnerSegments> =
+        serde_json::from_value(fixture("valid", "inner-segments-that-do-not-add-up")).unwrap();
+    assert_eq!(provider_role::check_inner_segments(&off), Ok(()));
+}
+
+/// A publisher's record of inner segments carries its label, the publisher's word, and is made by the publisher it
+/// names: inside a private node there is no other witness (`T-020-18`, `AC-35`).
+// verifies: REQ-ORD-3
+#[test]
+fn publishers_record_of_inner_segments_is_labelled_the_publishers_word() {
+    let record: Statement<InnerSegments> = serde_json::from_value(fixture(
+        "valid",
+        "inner-segments-of-a-conversion-and-a-transfer",
+    ))
+    .unwrap();
+    assert_eq!(record.statement.standing, Standing::PublishersWord);
+    assert_eq!(record.check_shape(), Ok(()));
+    assert_eq!(provider_role::check_inner_segments(&record), Ok(()));
+    assert_eq!(
+        serde_json::to_value(&record).unwrap()["statement"]["standing"],
+        "publishers_word"
+    );
+    assert_schema_rejects("inner-segments-without-its-label");
+    assert_schema_rejects("inner-segments-labelled-as-proof");
+    assert_schema_rejects("inner-segments-without-its-publisher");
+    assert_rule_rejects(
+        "inner-segments-made-by-another-party",
+        &format!("{:?}", InnerSegmentsViolation::OfAnotherMaker),
     );
 }
 
