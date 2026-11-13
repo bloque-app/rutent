@@ -60,6 +60,13 @@ fn main() -> ExitCode {
     }
 }
 
+/// A results file holds whatever the tests printed, so bytes that are not UTF-8 are replaced, not refused.
+fn read_lossy(path: &Path) -> Result<String, String> {
+    std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
 fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
@@ -90,7 +97,7 @@ fn run(
         tests.extend(tags::scan_tests(&shown, &text));
     }
     let results = match results {
-        Some(path) => Results::parse(&read(path)?),
+        Some(path) => Results::parse(&read_lossy(path)?),
         None => Results::default(),
     };
     let features = root.join("features");

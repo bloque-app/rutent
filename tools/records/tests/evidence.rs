@@ -615,3 +615,16 @@ fn an_ignored_test_with_a_reason_is_read_as_ignored() {
     assert_eq!(results.state("plain"), "ignored");
     assert!(!results.passed("skipped", 1));
 }
+
+// verifies: DEC-21
+#[test]
+fn results_with_bytes_that_are_not_utf8_are_read_lossily() {
+    // A jailed test can print anything; the lines around it still count.
+    let path = std::env::temp_dir().join(format!("rutent-evidence-results-{}", std::process::id()));
+    let mut bytes = b"test a::one ... ok\nprinted: ".to_vec();
+    bytes.extend([0xff, 0xfe, 0x80, b'\n']);
+    std::fs::write(&path, bytes).unwrap();
+    let out = binary().arg("--results").arg(&path).output().expect("the binary runs");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+}
