@@ -71,10 +71,18 @@ impl Segments {
         taken: (&str, &rutent_contracts::provider_role::Fee),
     ) -> Result<(), SegmentsError> {
         let (amount_in, fee) = taken;
-        // A charge in another asset than the one the segment takes in is bounded by no formula of its tuple.
-        if fee.asset != operation.from.asset.id.as_str() {
-            return Ok(());
-        }
+        // A charge in another asset than the one the segment takes in is held to no formula of its tuple: it is noted
+        // with the asset it is stated in, and the check raises it. One in an asset the operation names at neither
+        // end can't be stated in the contract's raise: the part stops rather than let it pass (`REQ-QTE-5`).
+        let charged_in = if fee.asset == operation.from.asset.id {
+            None
+        } else if fee.asset == operation.to.asset.id {
+            Some(operation.to.asset.clone())
+        } else {
+            return Err(SegmentsError::Plan(
+                "a counted result states its charge in an asset of its segment",
+            ));
+        };
         let advertised = price
             .ok_or(SegmentsError::Plan("an operation cites a price"))?
             .clone();
@@ -102,6 +110,7 @@ impl Segments {
             started_at,
             amount_in,
             charged,
+            charged_in,
             advertised,
             result: stated.clone(),
         };

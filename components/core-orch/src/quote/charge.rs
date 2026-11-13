@@ -7,6 +7,7 @@ use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Log, Opera
 use rutent_contracts::core_internal::{
     Actor, Difference, Entry, Outcome, Raise, Receipt, VerifiedEntry, What,
 };
+use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_router::quote::check_charge;
 
@@ -32,6 +33,9 @@ pub struct Charged {
     pub amount_in: Amount,
     /// What its provider charged.
     pub charged: Amount,
+    /// The asset the charge is stated in, where it isn't the one its tuple's formula counts in (its `from` asset):
+    /// `None` for the usual case. Such a charge is held to no formula and raised if it is anything (`REQ-QTE-5`).
+    pub charged_in: Option<Denomination>,
     /// The formula its route was priced on, the price figure its operation cites: what binds a tuple whose provider
     /// stated no terms before the segment started. Every operation of a route cites a price, so there is always one,
     /// and no charge goes unchecked for want of a formula.
@@ -227,23 +231,44 @@ impl Charges {
                 InForce::Binds { terms, receipt } => (&terms.fee, Some(receipt)),
                 InForce::Unstated | InForce::Quote => (&charged.advertised, None),
             };
-            let kept = match check_charge(formula, &charged.amount_in, &charged.charged) {
+            // A charge in another asset than the tuple's formula counts in is bounded by no formula, so any of it is
+            // above what nothing allows: it is raised against a maximum of nothing, in the asset it is stated in,
+            // and never passed for want of a formula to hold it to (`REQ-QTE-5`).
+            let verdict = match &charged.charged_in {
+                Some(other) if other != &charged.tuple.from.asset => {
+                    if charged.charged.is_zero() {
+                        Ok(())
+                    } else {
+                        let nothing = Amount::new("0").ok_or(ChargeError::NotTheTuplesProvider)?;
+                        Err((charged.charged.clone(), nothing, other.clone(), None))
+                    }
+                }
+                _ => check_charge(formula, &charged.amount_in, &charged.charged).map_err(|flag| {
+                    (
+                        flag.charged,
+                        flag.bound,
+                        charged.tuple.from.asset.clone(),
+                        terms.cloned(),
+                    )
+                }),
+            };
+            let kept = match verdict {
                 Ok(()) => Kept::Within,
-                Err(flag) => {
+                Err((amount, maximum, asset, terms)) => {
                     let raise = Raise {
                         raise: desk.fresh.id(),
                         difference: Difference::Charge {
                             order: charged.order.clone(),
                             segment: charged.segment.clone(),
                             provider: charged.provider.clone(),
-                            charged: flag.charged,
-                            maximum: flag.bound,
-                            asset: charged.tuple.from.asset.clone(),
+                            charged: amount,
+                            maximum,
+                            asset,
                             result: charged.result.clone(),
-                            terms: terms.cloned(),
+                            terms: terms.clone(),
                         },
                         cites: std::iter::once(charged.result.clone())
-                            .chain(terms.cloned())
+                            .chain(terms)
                             .collect(),
                         at: journal::now(desk.clock)?,
                     };
