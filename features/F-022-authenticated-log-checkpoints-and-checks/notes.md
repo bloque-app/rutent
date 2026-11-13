@@ -518,22 +518,29 @@ signature is verified under that same key).
 - **`unproven(entries, kept)`**, holds each entry marked `verified` against the kept statement: commitment, maker,
   shape, time, key and strict signature. It cannot check that the key is the maker's (the log's register).
 - **Reading, reversible:** "names its operator" is the actor reference (`acts`) of the entry's `who`, not a signing key.
-- **Findings (not fixed; outside this row's files).**
+- **Findings and the coordinator's rulings (not fixed here; outside this row's files).**
   1. `AuditLog::open` re-attributes nothing: a store holding entries marked `verified` that no kept statement
      bears out opens fine (tested), so on the reopen path `G-09` rests on `unproven` being run by a checker with
-     evidence access; `T-022-04`'s checker holds no kept bytes. Owner: `T-022-04` / `T-024-02` to run it, or
-     `T-022-01` to re-attribute on opening.
-  2. `core-orch` always writes `relayed_by: None` (`snapshot/statements.rs`), whatever `Kept::restates` says; the
-     assembly should use `Statements`, or orch set it. Owner: `F-020` / `T-024-02`.
-  3. A `decide` entry whose `who` is not the request's `caller` is admitted (probed); nothing holds them equal.
-     Owner: `F-021`.
-  4. A stated entry's `role` is the writer's label and no relation reads it: a verified provider statement claimed
-     in the customer's role is recorded verified with that role (probed). Owner: `F-020` (`REQ-AUD-8`).
-  5. A maker's resend of its own statement and a relay's copy passed off as the maker's with the same presenter
-     identity read alike; only the presenter's authenticated identity (`Presented::presented_by`) tells them apart.
+     evidence access. Ruling: re-attribution on opening goes to a new row, `T-022-08`; until it lands the residual
+     goes to `T-025-05`.
+  2. `core-orch` writes `relayed_by: None` at five sites (`snapshot/statements.rs:320`, `reversal/journal.rs:142`,
+     `segments/journal.rs:109`, `arrival/journal.rs:93`, `rounds/journal.rs:76`), whatever `Kept::restates` says.
+     Ruling: `F-020`'s, with `T-024-02` (the assembly may route statements through `Statements`).
+  3. A `decide` entry whose `who` is not the request's `caller` is admitted (probed), and a stated entry's `role` is
+     the writer's label that no relation reads (probed: a verified provider statement claimed in the customer's role
+     is recorded so). Ruling: both go to `T-020-21` as contract relations.
+  4. A maker's resend of its own statement and a relay's copy passed off as the maker's with the same presenter
+     identity read alike; only `Presented::presented_by` tells them apart. Ruling: a residual for `T-025-05`.
+- **`unproven` holds what the append does** (after approval): the envelope's `deployment` is the one given (the
+  deployment's own, a new argument) and the entry's `about.transaction` is the body's transaction (none where the
+  body names none, and a statement about an order or segment names one), beside commitment, maker, shape, time, key
+  and signature. The misdated case of the unverified-signature test appends genuine bytes under an entry dated
+  otherwise; it passed at once (the contract's `attribute` already held it) and went red with that check off.
 - **Rule-off table** (each switched off once, tests run, tree restored): intake's `relayed_by` -> `restated_quote_is_detected`;
   intake keeping stripped bytes -> all four others that attribute, incl. `signature_is_kept_with_the_bytes_it_signed`;
   scan filing by raw bytes -> `restated_quote_is_detected`; scan dropping the relay -> same; `unproven` without
   the signature check, and without the maker check -> `statement_whose_signature_doesnt_verify...`; log's strict
   verifier always true -> signature, restated, kept tests; log's `admit_entry` off ->
   `operator_commands_entry_names_its_operator` and `one_party_with_several_roles_is_recorded_per_role`. None hung.
+  Added: `attribute`'s `made_at` check off -> `statement_whose_signature_doesnt_verify...`; `unproven`'s deployment
+  check off, and its transaction check off -> `unproven_holds_the_deployment_and_the_transaction_the_append_does`.

@@ -524,7 +524,7 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
 
     // `unproven` holds nothing against a log whose attributions all stand.
     let mut kept = run.kept();
-    let clean = unproven(&run.entries(), &mut kept).unwrap();
+    let clean = unproven(&run.entries(), &mut kept, &deployment()).unwrap();
     assert!(clean.found.is_empty() && clean.unread.is_empty());
 
     // The reopen path: the log opens on a store holding entries marked `verified` that no kept statement bears out,
@@ -591,7 +591,7 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
     let entries = reopened.entries();
     assert_eq!(entries.len(), before + 4);
     let mut kept = run.kept();
-    let found = unproven(entries, &mut kept).unwrap();
+    let found = unproven(entries, &mut kept, &deployment()).unwrap();
     let places: Vec<u64> = found.found.iter().map(|(r, _)| r.index.get()).collect();
     assert_eq!(
         places,
@@ -761,4 +761,79 @@ fn one_party_with_several_roles_is_recorded_per_role() {
         !roles.contains(&("provider".into(), OPERATOR.into())),
         "the operator never records as a provider"
     );
+}
+
+/// `unproven` holds a `verified` entry to what the append does: the envelope names this deployment, and the entry
+/// is about the transaction the body names. Bytes of another deployment, or of another transaction than the entry
+/// says, signed with the provider's own key, are found; a genuine entry beside them is not.
+// verifies: REQ-AUD-2
+#[test]
+fn unproven_holds_the_deployment_and_the_transaction_the_append_does() {
+    let mut run = Run::new();
+    run.admit("us-bank");
+    let bank = provider("us-bank");
+    let genuine = quote("us-bank", "tx-3", "10.00");
+    let ok = run.present(&genuine, &bank, &bank).unwrap();
+    assert!(verified(&run.stated_at(&ok.receipt)));
+
+    let key = statements_key("us-bank");
+    let signed = |deployment: Value, transaction: Option<&str>| -> Vec<u8> {
+        let mut statement = json!({"kind": "quote", "price": "10.00"});
+        if let Some(t) = transaction {
+            statement["transaction"] = t.into();
+        }
+        let mut envelope = json!({
+            "deployment": deployment,
+            "protocol_version": VERSION,
+            "shape": TERMS_SHAPE,
+            "maker": "us-bank",
+            "made_at": MADE_AT,
+            "signature": {"scheme": "ed25519", "key": "", "value": ""},
+            "statement": statement,
+        });
+        sign_value(&mut envelope, &key);
+        serde_json::to_vec(&envelope).unwrap()
+    };
+    let other_deployment =
+        json!({"name": "another-deployment", "operator_key": public_key(&operator_key()).as_str()});
+    let cases = [
+        ("another deployment", signed(other_deployment, Some("tx-3"))),
+        (
+            "another transaction",
+            signed(json!(deployment()), Some("tx-other")),
+        ),
+        ("a body naming none", signed(json!(deployment()), None)),
+    ];
+    let marked = |commitment: &rutent_contracts::module_interface::Digest| -> Entry {
+        serde_json::from_value(json!({
+            "kind": "stated",
+            "attribution": {"signature": "verified", "who": bank},
+            "what": {"statement": TERMS_SHAPE},
+            "when": {"at": MADE_AT, "source": "party_stated"},
+            "received_at": RECEIVED_AT,
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": public_key(&key).as_str()},
+            "commitment": commitment,
+            "about": {"transaction": "tx-3"},
+        }))
+        .unwrap()
+    };
+    let mut store = MemoryStore::new();
+    for (_, entry) in run.entries() {
+        store.append(&record(&entry).unwrap()).unwrap();
+    }
+    for (_, bytes) in &cases {
+        let kept = run.keeper.keep(bytes).unwrap();
+        store
+            .append(&record(&marked(&kept.commitment)).unwrap())
+            .unwrap();
+    }
+    let settings = Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR));
+    let reopened = AuditLog::open(settings, store, run.kept()).unwrap();
+    let before = run.entries().len() as u64;
+    let mut kept = run.kept();
+    let found = unproven(reopened.entries(), &mut kept, &deployment()).unwrap();
+    let places: Vec<u64> = found.found.iter().map(|(r, _)| r.index.get()).collect();
+    assert_eq!(places, vec![before, before + 1, before + 2], "{found:?}");
+    assert!(found.unread.is_empty());
 }

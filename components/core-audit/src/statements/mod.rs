@@ -28,7 +28,7 @@ use rutent_contracts::core_internal::{
     Actor, Attribution, Entry, KeptStatement, Receipt, StatedEntry, Violation,
 };
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::signing_input;
+use rutent_contracts::provider_role::{Deployment, signing_input};
 use rutent_contracts::router_api::{Id, Timestamp};
 use serde_json::{Value, json};
 
@@ -246,13 +246,15 @@ pub const NOT_BORNE_OUT: &str = "a stated entry attributed verified is borne out
 
 /// Every stated entry of `entries` the log marks `verified` that the statement `kept` answers for it doesn't bear out:
 /// the bytes don't hash, after their salt, to the commitment; the envelope names another maker, shape, time or key
-/// than the entry's; or its signature doesn't verify, strictly, over its signing input (`EXP-1`'s `G-09`). What this
+/// than the entry's, or another deployment's, or none of the transaction the entry is about; or its signature doesn't verify, strictly, over its signing input (`EXP-1`'s `G-09`). What this
 /// can't check is that the key is the maker's: that is the log's register, which a reader outside the log doesn't
 /// hold.
 pub fn unproven(
     entries: &[(Receipt, Entry)],
     kept: &mut dyn KeptStatements,
+    deployment: &Deployment,
 ) -> Result<Found<(Receipt, Violation)>, AppendFailure> {
+    let deployment = serde_json::to_value(deployment).unwrap_or(Value::Null);
     let mut out = Found {
         found: Vec::new(),
         unread: Vec::new(),
@@ -271,7 +273,7 @@ pub fn unproven(
             out.unread.push(receipt.clone());
             continue;
         };
-        if !borne_out(stated, who, &statement) {
+        if !borne_out(stated, who, &statement, &deployment) {
             out.found.push((receipt.clone(), Violation(NOT_BORNE_OUT)));
         }
     }
@@ -279,7 +281,12 @@ pub fn unproven(
 }
 
 /// Whether `statement` bears out `entry`'s attribution to `who`.
-fn borne_out(entry: &StatedEntry, who: &Actor, statement: &KeptStatement) -> bool {
+fn borne_out(
+    entry: &StatedEntry,
+    who: &Actor,
+    statement: &KeptStatement,
+    deployment: &Value,
+) -> bool {
     let Some(bytes) = kept_bytes(statement) else {
         return false;
     };
@@ -289,7 +296,17 @@ fn borne_out(entry: &StatedEntry, who: &Actor, statement: &KeptStatement) -> boo
     let Ok(signed_with) = serde_json::to_value(&entry.signed_with) else {
         return false;
     };
-    envelope["maker"] == who.acts.as_str()
+    // As the append holds them: the transaction the entry is about is the one the body names, and a statement about an
+    // order or a segment names one.
+    let body = envelope["statement"]["transaction"].as_str();
+    let about = entry.about.as_ref();
+    let transaction = match about.and_then(|a| a.transaction.as_ref()) {
+        Some(t) => body == Some(t.as_str()),
+        None => body.is_none() && !about.is_some_and(|a| a.order.is_some() || a.segment.is_some()),
+    };
+    envelope["deployment"] == *deployment
+        && transaction
+        && envelope["maker"] == who.acts.as_str()
         && envelope["shape"] == entry.what.statement.as_str()
         && envelope["made_at"] == entry.when.at.as_str()
         && envelope["signature"]["scheme"] == signed_with["scheme"]
