@@ -2079,6 +2079,51 @@
           "status": "observed"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 96,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "replay",
+          "order": "ord-1",
+          "segment": "p1-s2",
+          "nodes": [
+            "ledger-in"
+          ],
+          "found": {
+            "status": "consistent_with_the_exit"
+          },
+          "rests_on": {
+            "log": "log-main",
+            "index": 135,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "2424242424242424242424242424242424242424242424242424242424242424"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
     }
   ],
   "entry": {

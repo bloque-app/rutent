@@ -1889,7 +1889,8 @@
         "command": {
           "description": "The command: one of the few that need no decision, a closed list; an action policy decides, a catalogue change or a hand-on travels only through its own call (REQ-AUZ-1, REQ-AUZ-6).",
           "enum": [
-            "appoint_checker"
+            "appoint_checker",
+            "accept_fault"
           ]
         },
         "order": {
@@ -2082,6 +2083,14 @@
         "accepted_by": {
           "description": "Who accepted the showing for the party at fault.",
           "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        },
+        "accepted_with": {
+          "description": "The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and segment, or the operator's accept_fault command.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "session": {
+          "description": "The customer's session its yes was given in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       },
       "allOf": [
@@ -2108,15 +2117,63 @@
                   "required": [
                     "accepted_by"
                   ]
+                },
+                {
+                  "required": [
+                    "accepted_with"
+                  ]
+                },
+                {
+                  "required": [
+                    "session"
+                  ]
                 }
               ]
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "customer"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
           },
-          "else": {
+          "then": {
             "required": [
               "showing",
-              "accepted_by"
+              "accepted_by",
+              "accepted_with",
+              "session"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "operator"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
+          },
+          "then": {
+            "required": [
+              "showing",
+              "accepted_by",
+              "accepted_with"
+            ],
+            "not": {
+              "required": [
+                "session"
+              ]
+            }
           }
         }
       ]
