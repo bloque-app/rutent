@@ -449,6 +449,21 @@ pub enum Action {
         /// The provider that failed it, asked to reverse.
         provider: Id,
     },
+    /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
+    /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
+    /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:
+    /// the `reversal_carrier` that rests on it records who carries the reversal. The operator accepts a showing by its
+    /// `accept_fault` command instead.
+    AcceptFault {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// The showing accepted.
+        showing: ShowingNamed,
+        /// The customer's session it is asked in (`REQ-ORD-32`).
+        session: Id,
+    },
     /// Erasing a kept statement's bytes from the evidence store, a decided action like any other (`REQ-AUD-13`): the
     /// operator asks it of policy, the log admits its effect on the permit, and the store erases only on the effect's
     /// `done` result, which the `erasure` entry then records. The commitment stays in the log.
@@ -1569,6 +1584,19 @@ pub enum Difference {
         maximum: Amount,
         /// The asset.
         asset: Denomination,
+        /// The receipt of the stated entry of the result whose charge this is: its provider's verified result about
+        /// the order and segment.
+        result: Receipt,
+        /// The receipt of the stated entry of the provider's signed terms (provider-role's
+        /// `urn:rutent:provider-role:terms`) whose formula the charge is above: in force at the segment's start, by
+        /// [`StatedEntry::binds_from`]. Absent where the provider stated none by then, so the price its route was
+        /// priced on bound it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        terms: Option<Receipt>,
     },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
@@ -2007,6 +2035,15 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         session: Option<Id>,
+        /// The hold it redeems, where its route is a quote a reserve held (`REQ-QTE-15`): the receipt of the
+        /// reserve's verified stated hold (provider-role's `urn:rutent:provider-role:hold`). Absent where it redeems
+        /// none.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        held: Option<Receipt>,
     },
     /// A request or an order that can't proceed, with the class its caller is told (`REQ-ORD-18`, `REQ-ORD-19`).
     OrderRefusal {
@@ -2290,22 +2327,15 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         accepted_by: Option<Actor>,
-        /// The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and
-        /// segment, or the operator's `accept_fault` command. Present exactly where the carrier isn't the provider.
+        /// The act the acceptance rests on, by receipt: for the customer, policy's permitted `decide` of its
+        /// `accept_fault` (`Action::AcceptFault`), asked in its open session and naming the showing; for the operator,
+        /// its `accept_fault` command. Present exactly where the carrier isn't the provider.
         #[serde(
             default,
             deserialize_with = "some",
             skip_serializing_if = "Option::is_none"
         )]
         accepted_with: Option<Receipt>,
-        /// The customer's session its yes was given in, as an acceptance is (`REQ-ORD-32`): present exactly where the
-        /// customer carries it.
-        #[serde(
-            default,
-            deserialize_with = "some",
-            skip_serializing_if = "Option::is_none"
-        )]
-        session: Option<Id>,
     },
     /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
     /// start proof, which settles the linked order's first segment. The linked order's first move rests on it
@@ -2408,28 +2438,16 @@ pub struct OutcomeConfirmation {
     pub at: Timestamp,
 }
 
-/// The shape of a customer's acceptance of a provider's showing of fault: its own signed statement, kept and logged as
-/// a stated entry like any other, naming the showing it accepts (`REQ-ORD-11`).
-pub const FAULT_ACCEPTANCE_SHAPE: &str = "urn:rutent:core-internal:fault-acceptance";
-
-/// A customer's acceptance of a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): the
-/// body of its own signed statement, of shape [`FAULT_ACCEPTANCE_SHAPE`], as an acceptance's yes is its reserve's.
-/// It names the showing it accepts, by the showing's transaction and commitment, so it can't be read as accepting
-/// another, and it says the fault it accepts, so a dispute can't be read as an acceptance. Its stated entry is about
-/// the order, the segment and the showing's transaction. Schema: `urn:rutent:core-internal:fault-acceptance`.
+/// A provider's showing of fault as an acceptance names it: the transaction its result is about, and the commitment
+/// its stated entry names its bytes by, so the acceptance is of that showing alone. Schema:
+/// `urn:rutent:core-internal:common#/$defs/showing_named`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FaultAcceptance {
-    /// The order.
-    pub order: Id,
-    /// The failed segment.
-    pub segment: Id,
-    /// The transaction the provider's showing, its failed result, is about.
+pub struct ShowingNamed {
+    /// The transaction the showing, its provider's failed result, is about.
     pub transaction: Id,
-    /// The commitment the showing's stated entry names it by.
-    pub showing: Digest,
-    /// The fault accepted, as the showing names it: the customer's own where the customer accepts it.
-    pub fault: crate::provider_role::Fault,
+    /// The commitment of the showing's stated entry.
+    pub commitment: Digest,
 }
 
 /// Who carries a failed segment's reversal (`REQ-ORD-11`).

@@ -1,10 +1,11 @@
 # provider-role contract
 
-This contract holds four things:
+This contract holds five things:
 
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
 - the verifier's standalone judgement, and the reserve's reversal confirmation;
+- a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0);
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -21,11 +22,13 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:result` | `schemas/result.schema.json` | A provider's result for one operation, in the envelope |
 | `urn:rutent:provider-role:judgement` | `schemas/judgement.schema.json` | A verifier's judgement, in its own envelope |
 | `urn:rutent:provider-role:reversal-confirmation` | `schemas/reversal-confirmation.schema.json` | A reserve's confirmation that one reversed credit arrived, in its own envelope (ADR-0008) |
+| `urn:rutent:provider-role:terms` | `schemas/terms.schema.json` | A provider's terms for one of its tuples, in the envelope: the tuple by provider and both ends, its fee formula, and its slippage regime where the tuple sets a rate (3.1.0, `REQ-QTE-5`, `REQ-QTE-6`) |
+| `urn:rutent:provider-role:hold` | `schemas/hold.schema.json` | A reserve's hold of a quote, in the envelope: the choice record by id and digest, the candidate, the order or session it is for, its validity (3.1.0, `REQ-QTE-15`) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all nine and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all eleven and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
-`successive-advertisements-` or `answered-operation-`. The last two are bundles, not schemas:
+`terms-`, `hold-`, `successive-advertisements-` or `answered-operation-`. The last two are bundles, not schemas:
 `successive-advertisements` is a `previous` and a `next` enveloped advertisement, each checked against the
 advertisement schema, for the rules that relate them (`validate_successor`); `answered-operation` is an enveloped
 `operation`, the enveloped `result` that answers it, and the `terms` of the tuple it runs through (the
@@ -238,6 +241,14 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Amounts** (2.1.0; see "Amounts against the operation"). `amount_in` is what left the segment's origin, the
   provider's charge included, whether the tuple reports gross or net: `reporting` says only whether `amount_out`
   includes the charge. The fee is in the asset the segment takes in, in the origin unit.
+- **Less the charge** (3.1.0). Under `gross`, a segment that keeps its asset (a withdrawal, a deposit or a transfer)
+  delivers its `amount_out` less its charge. `amount_out` is in the out unit, the operation's out asset at its
+  destination decimals, and the fee in the origin unit, which differ where a reserve's two ends count in different
+  decimals. So the charge subtracted is the fee restated in the out unit: multiplied out exactly where that unit is
+  finer, divided and rounded up where it is coarser, so the charge is never counted below what was charged and
+  what arrives is never overstated (`charge_in_out_unit`, `less_the_charge`). A charge above `amount_out` delivers
+  nothing that can be stated (`None`). Under `net`, what it delivers is its `amount_out`. A conversion's output is as
+  its answer states it: its fee is in its `from` asset, which it doesn't give out.
 - **No `null`.** An optional field is present with a value or absent. Rust refuses `null` as the schemas do.
 - **Evidence** is a non-empty list of `{grade, reference, by}`, where `by` says whose evidence each piece is. A
   public record and a reserve's statement can then both close an order (`REQ-ORD-33`, `REQ-ORD-39`, ADR-0007).
@@ -254,6 +265,38 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   origin amount and sets no rate.
 - **Refusals.** A refusal's `class` is `lifts_at_known_time` (with `lifts_at`), `waits_on_person` or `final`
   (`REQ-CAT-18`).
+
+## Terms and holds (3.1.0)
+
+Before 3.1.0 Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them,
+though core-internal places "stated terms with their times; a held quote" among stated entries. Each is now its
+maker's own statement, which Core keeps (`Evidence::keep`) and appends as a stated entry: terms about nothing, since
+their body names no transaction, and a hold about its own transaction, its id.
+
+- **Terms** (`TupleTerms`, shape `urn:rutent:provider-role:terms`). The maker is the tuple's provider. The body
+  names the tuple, by its provider and both ends (an inner node by identifier or an outer node by its network, and
+  the asset with its unit), the fee formula (`flat`, `proportional`, optional `maximum`, in the tuple's input
+  unit), and the slippage regime, present exactly where the tuple sets a rate: an exchange's, whose ends hold
+  different assets. Terms bind from the later of their `made_at` and Core's `received_at`, never `made_at` alone,
+  so terms added after a segment started but dated before it never bind it (router-api's
+  `StatedTerms::from_statement` builds the router's history entry so). A charge raised against a formula cites both
+  the result's entry and the terms' entry (core-internal).
+- **A hold** (`Hold`, shape `urn:rutent:provider-role:hold`). Made by the reserve that starts each part of the
+  route. The body names its own `transaction`, its id, which its stated entry is about, so the log keys the hold
+  on it; the choice round's decision record by id and digest (`record`), the candidate held, what it
+  is `for`, an order or a session before its order exists, and its `valid_until`, at most the earliest validity
+  among the figures the candidate cites (router-api's `HeldQuote::check_hold`, which has the record). Redeeming is
+  refused for any order but the one it names, or one accepted in the session it names (`check_redemption`). The
+  acceptance that redeems it names its entry (core-internal).
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A terms statement names its shape, its tuple, its fee formula; a proportion's denominator is above zero | schema | `terms-under-another-shape`, `terms-with-a-zero-denominator` |
+| Terms are made by their tuple's provider | Rust, `check_terms`: `OfAnotherMaker` | `terms-made-by-another-party` |
+| Terms state a slippage regime exactly where their tuple sets a rate | Rust, `check_terms`: `NoSlippageWhereARate`, `SlippageWhereNoRate` | `terms-of-an-exchange-without-a-slippage-regime`, `terms-of-a-reserve-with-a-slippage-regime` |
+| A hold names its transaction, its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-without-its-transaction`, `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
+| A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
+| A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
 
 ## Which rule lives where
 

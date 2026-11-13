@@ -1,6 +1,43 @@
 # router-api changelog
 
 ## 4.0.0
+- A hold is bound to its decision record (the review of round 3, item 1). `HeldQuote::check_hold` compared only
+  the candidate's id, and ids such as `c1` recur across records, so a hold of one record's `c1` passed for another's
+  at the same reserve within its validity. It now takes the record's id and digest, as core-internal's
+  `decision_record` entry names them (`check_hold(hold, record_id: &Id, record_digest: &module_interface::Digest)`),
+  and refuses a hold whose `record` names another. Folded into this unreleased major. A provider-role fixture,
+  `hold-of-another-records-candidate-of-the-same-id`, refused against the choice round's held quote; `hold-for-an-order`
+  admitted. (DEC-4, DEC-20, REQ-QTE-15, THR-127, T-020-01)
+- Stated terms and held quotes from signed statements (round 3 of the contract, item q, with provider-role 3.1.0's
+  `terms` and `hold`). `StatedTerms::from_statement(statement, received_at)` builds a history entry from a
+  provider's signed terms, taking only its tuple's provider's, with a slippage regime exactly where the tuple sets a
+  rate, and states it at the later of `made_at` and Core's `received_at`; `StatedTerms::stated_at` is now that time,
+  when the terms bind from, so the router's `binding`, which filters on it, no longer binds a segment on terms dated
+  before it started but received after. `HeldQuote::check_hold(hold)` holds a reserve's signed hold to the chosen
+  candidate, its maker to the reserve each part starts at, its validity to the earliest expiry of the candidate's
+  figures, and the quote to no longer than the hold. Both new and public. Folded into this unreleased major; the
+  `stated-terms` schema's `stated_at` says the same. Tests read provider-role's fixtures. (DEC-4, DEC-20, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
+- Breaking: an operation's `amount_out` is what arrives by it, and confirmation reads its tuple's terms (round 3 of
+  the contract, item r). The confirmation rule required an operation's `amount_out` to equal its provider's answer
+  exactly, while the floor, each part's chain (the next `amount_in` is the previous `amount_out`) and the
+  `lowest_total_cost` objective read it as what arrives; under a tuple whose terms report `gross` the two differ by
+  the charge, so no valid record could rank, or judge the floor, on what arrives. Confirmation now reads the tuple
+  figure's `terms.reporting`: under `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the
+  answer's `amount_out` less its charge, the fee restated in its out unit (provider-role 3.1.0's
+  `less_the_charge`); an exchange's output stays as its answer states it; under `net` nothing changes. A new public
+  method, `Operation::stated_out(tuple, answer_out, answer_fee)`, which the router suite's
+  `amounts_follow_their_figures` reads too. The router's search is unchanged here (`T-011-07`). Folded into this
+  unreleased major. A valid fixture, `decision-record-choosing-a-gross-deposit-stated-as-what-arrives`, and an
+  invalid one made from a patch, `decision-record-choosing-a-gross-deposit-stated-as-its-answer`. (DEC-4, DEC-5,
+  DEC-20, REQ-CAT-11, REQ-QTE-11, REQ-ORD-27, T-020-01)
+- A held quote never outlives what its quote rests on: `HeldQuote::check` refuses a `valid_until` later than the
+  earliest expiry of the figures the chosen candidate cites, each at the snapshot's `taken_at` plus its validity
+  less its age (`Figure::expires_at`, `DecisionRecord::earliest_expiry`, both new and public; a figure that states no
+  validity caps nothing). Before it, a hold could run past the quotes it was priced on (round 3 of the contract,
+  item v). Folded into this unreleased major. The valid fixture's hold now ends at its quotes' earliest expiry,
+  15:01:55; a new invalid fixture, `held-quote-valid-until-past-its-quotes-figures`, a second later. (DEC-4, DEC-20,
+  REQ-QTE-15, REQ-QTE-4, T-020-01)
 - An operation's `fee` is provider-role's fee by reference, so with provider-role 3.1.0 it may carry the optional
   `billed_separately`, what the provider stated of billing it separately. The router never sets it. Folded into this
   unreleased major. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)

@@ -124,7 +124,8 @@
         "provider",
         "charged",
         "maximum",
-        "asset"
+        "asset",
+        "result"
       ],
       "properties": {
         "kind": {
@@ -149,6 +150,14 @@
         },
         "asset": {
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "result": {
+          "description": "The receipt of the stated entry of the result whose charge this is: its provider's verified result about the order and segment.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "terms": {
+          "description": "The receipt of the stated entry of the provider's signed terms (urn:rutent:provider-role:terms) whose formula the charge is above, in force at the segment's start: binding from the later of its made_at and its received_at, no later than the segment's move took effect. Absent where the provider stated none by then, so the price its route was priced on bound it.",
+          "$ref": "urn:rutent:core-internal:receipt"
         }
       }
     },

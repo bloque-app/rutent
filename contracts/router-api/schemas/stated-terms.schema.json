@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:stated-terms",
   "title": "Stated terms",
-  "description": "A provider's terms for one tuple as stated at one time (REQ-QTE-6): its fee formula and, where its tuple sets a rate, its slippage regime, with when it stated them. Core keeps each tuple's history of these, keyed by its tuple; the terms that bind a segment are the last stated at or before it started, and before that the route's total is a quote.",
+  "description": "A provider's terms for one tuple as stated at one time (REQ-QTE-6): its fee formula and, where its tuple sets a rate, its slippage regime, with when it stated them. Core keeps each tuple's history of these, keyed by its tuple; the terms that bind a segment are the last stated at or before it started, and before that the route's total is a quote. Each comes from the provider's signed terms, urn:rutent:provider-role:terms.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,7 @@
       "$ref": "urn:rutent:router-api:policy-bounds#/$defs/tuple_key"
     },
     "stated_at": {
-      "description": "When the provider stated them.",
+      "description": "When they bind from: the later of the provider's made_at and Core's received_at of its signed terms (urn:rutent:provider-role:terms), never made_at alone, so terms dated before a segment started but received after it never bind it.",
       "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
     },
     "fee": {

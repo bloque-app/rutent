@@ -1,6 +1,35 @@
 # provider-role changelog
 
 ## 3.1.0
+- A hold names its own `transaction`, its id (the review of round 3, item 2), required in the schema and `Hold`, so
+  Core appends its stated entry about it and the log keys the hold on it: a hold kept again under a new commitment is
+  the same hold. One invalid fixture, `hold-without-its-transaction`. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
+- A valid fixture, `hold-of-another-records-candidate-of-the-same-id`: a hold of `c1` of record `dr-0099`, which
+  router-api's `HeldQuote::check_hold` refuses for the choice round's `c1` of `dr-0004` (the review of round 3,
+  item 1). No shape or rule changed here. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
+- A provider's terms and a reserve's hold are signed statements of their own (round 3 of the contract, item q).
+  Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them. Two schemas:
+  `terms` (`urn:rutent:provider-role:terms`, `TupleTerms {tuple: TermsTuple {provider, from, to: TupleEnd {node,
+  asset}}, fee: FeeFormula {flat, proportional: Proportion {numerator, denominator}, maximum}, slippage}`), made by
+  the tuple's provider, its slippage regime present exactly where the tuple sets a rate (`check_terms`,
+  `TermsViolation`); and `hold` (`urn:rutent:provider-role:hold`, `Hold {record: HeldRecord {id, digest:
+  RecordDigest}, candidate, for: HeldFor, valid_until}`), made by the reserve that starts each part, redeemed only
+  for its order or an order accepted in its session (`check_redemption`, `RedemptionRefused`). Shapes
+  `TERMS_SHAPE` and `HOLD_SHAPE`. Terms bind from the later of `made_at` and Core's `received_at`. The fee formula
+  and the tuple's ends restate router-api's in this contract's own atoms, since this contract refers to no other;
+  router-api's `fee_formula` and `endpoint` keep their own definitions. Minor, folded into 3.1.0 before its release:
+  two shapes added, nothing changed. Four valid fixtures, seven invalid. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
+- "Less the charge" has a stated unit (round 3 of the contract, item s). Under a tuple that reports `gross`, a
+  segment that keeps its asset delivers its `amount_out` less its charge; `amount_out` is in the out unit and the fee
+  in the origin unit, which differ where a reserve's two ends count in different decimals, so Core's reading
+  (`segments::judge::handed_on`) subtracted unlike units. The charge subtracted is the fee restated in the
+  operation's out asset's unit: multiplied out exactly where it is finer, divided and rounded up where it is
+  coarser, so what arrives is never overstated. Two functions, `charge_in_out_unit(fee, origin_decimals,
+  out_decimals)` and `less_the_charge(amount_out, fee, origin_decimals, out_decimals)`, which router-api's
+  confirmation rule reads, with unit tests across 2, 6 and equal decimals. The fee's own unit, the origin unit, and
+  `check_amounts` are unchanged. Minor, folded into 3.1.0 before its release: two functions added. (DEC-4, DEC-20,
+  REQ-CAT-11, INV-1, T-020-01)
 - A failed result may show whose fault the failure was, the customer's or the operator's: an optional `fault` on
   the `failed` outcome (`REQ-ORD-11`). Until the party it names accepts it, the provider carries the reversal.
   Before it, no shape carried it, so `T-020-12`'s Core read a stopgap prefix (`fault:`) in an evidence piece's
