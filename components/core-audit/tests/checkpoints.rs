@@ -19,8 +19,8 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::checkpoint::{
     CHECKPOINT_SHAPE, Checker, Checkpoint, Checkpointer, Finding, HISTORY_FAILS_ITS_CHECKPOINTS,
-    KEY_OF_THE_OPERATOR, Kept, NOT_ITS_CHECKPOINTS, OPENING_SHAPE, Opening, Ran, Schedule,
-    commitment, read_lines, split_kept, tick_text,
+    KEY_OF_THE_OPERATOR, Kept, MOST_PER_RUN, NOT_ITS_CHECKPOINTS, OPENING_SHAPE, Opening, Ran,
+    Schedule, commitment, read_lines, split_kept, tick_text,
 };
 use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::log::merkle::{self, Hash};
@@ -964,6 +964,40 @@ fn a_stored_checkpoint_is_published_at_least_once_across_a_restart() {
         through: Some(9),
     };
     assert!(cp.acknowledge(&bogus).is_err());
+}
+
+/// A long outage is issued a batch at a time: no run issues more than the most per run, the next continues in
+/// order, and nothing is skipped.
+// verifies: REQ-AUD-14
+#[test]
+fn a_long_outage_is_caught_up_a_batch_at_a_time() {
+    let mut rig = Rig::new("outage");
+    let ticks = 2 * MOST_PER_RUN + 7;
+    rig.set(ticks, 5);
+    let mut seen = Vec::new();
+    for round in 0..4 {
+        let ran = rig.checkpointer.run_due();
+        assert!(ran.published.len() as u64 <= MOST_PER_RUN, "round {round}");
+        assert_eq!(ran.stopped, None);
+        // Nor does a run store more than the most.
+        assert!(rig.checkpointer.kept().len() as u64 <= (round + 1) * MOST_PER_RUN);
+        rig.checkpointer.acknowledge(&ran).unwrap();
+        seen.extend(ran.published);
+    }
+    assert_eq!(seen.len() as u64, ticks + 1);
+    for (tick, bytes) in seen.iter().enumerate() {
+        let v: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(v["tick"], tick_text(tick as u64));
+    }
+    assert!(rig.checkpointer.run_due().published.is_empty());
+
+    // A caller that never acknowledges is handed the same first batch again, never a backlog of all.
+    let mut rig = Rig::new("outage-unacknowledged");
+    rig.set(ticks, 5);
+    let first = rig.checkpointer.run_due();
+    let second = rig.checkpointer.run_due();
+    assert_eq!(first.published.len() as u64, MOST_PER_RUN);
+    assert_eq!(second.published, first.published);
 }
 
 /// The checkpointer takes the log's key and never the deployment's `operator_key`.

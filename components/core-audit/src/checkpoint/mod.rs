@@ -190,6 +190,9 @@ pub fn commitment(log: &Id, tick: u64, salt: &[u8], size: u64, root: &Hash) -> D
     digest(&hasher.finalize().into())
 }
 
+/// The most ticks one run issues, and the most checkpoints it hands out; the next run continues.
+pub const MOST_PER_RUN: u64 = 64;
+
 /// What a run of [`Checkpointer::run_due`] did: the checkpoints it published, in tick order, and why it stopped
 /// short of the schedule, if it did. A tick it didn't reach is tried again on the next run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,7 +348,7 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         };
         self.issue_due(&mut ran);
         let from = self.acked.map_or(0, |a| a as usize + 1);
-        for kept in self.kept.iter().skip(from) {
+        for kept in self.kept.iter().skip(from).take(MOST_PER_RUN as usize) {
             ran.published
                 .push(serde_json::to_vec(&kept.checkpoint).expect("a checkpoint is JSON"));
             ran.through = tick_of(&kept.opening.tick);
@@ -378,7 +381,8 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
             .kept
             .last()
             .map_or(0, |k| tick_of(&k.opening.tick).map_or(0, |t| t + 1));
-        for tick in next..=due {
+        let last = due.min(next.saturating_add(MOST_PER_RUN - 1));
+        for tick in next..=last {
             if let Err(failure) = self.issue(tick) {
                 ran.stopped = Some(failure);
                 break;
