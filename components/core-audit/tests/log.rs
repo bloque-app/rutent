@@ -613,11 +613,13 @@ fn kind(entry: &Entry) -> &'static str {
         What::ReportOutcome { .. } => "report_outcome",
         What::ConfirmOutcome { .. } => "confirm_outcome",
         What::InputNotTaken { .. } => "input_not_taken",
+        What::HoldingWithdrawal { .. } => "holding_withdrawal",
+        What::ReversalCarrier { .. } => "reversal_carrier",
     }
 }
 
 /// Every kind [`kind`] names.
-const KINDS: [&str; 38] = [
+const KINDS: [&str; 40] = [
     "decide",
     "authorise",
     "effect",
@@ -655,6 +657,8 @@ const KINDS: [&str; 38] = [
     "report_outcome",
     "confirm_outcome",
     "input_not_taken",
+    "holding_withdrawal",
+    "reversal_carrier",
     "stated",
 ];
 

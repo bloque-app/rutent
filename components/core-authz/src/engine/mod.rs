@@ -1117,6 +1117,8 @@ mod tests {
                 // A decided action too (`REQ-AUD-13`), which policy's role table answers no rule for yet: it joins
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
+                // Asked of a failed segment's provider (`REQ-ORD-3`): it joins this list once policy rules it.
+                Action::AskReversal { .. } => unreachable!("not yet in policy's tables"),
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }
