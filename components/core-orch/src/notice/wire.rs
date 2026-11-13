@@ -41,9 +41,10 @@ pub struct PartState {
     pub state: OrderState,
 }
 
-/// An order's state, as its customer and the operator read it without a permission (`Reads::OrderState`,
-/// `REQ-ORD-5`): the order's state, each part's, and when it reached them. Nothing else: no provider, segment,
-/// amount, account or provider's text (`REQ-AUZ-7`, `REQ-ORD-18`).
+/// An order's state, as `Reads::OrderState` reads it (`REQ-ORD-5`): the order's state, each part's, and when it
+/// reached them. A notice adds what changed ([`Change`]): the change's kind, the part, a stuck part's reason, the
+/// linked order of a hand-on, a refusal's class, an `afterwards` event; all of the customer's own order. Nothing
+/// else: no provider, segment, amount, account or provider's text (`REQ-AUZ-7`, `REQ-ORD-18`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
@@ -55,12 +56,56 @@ pub struct View {
     pub since: stm::Timestamp,
 }
 
+/// When a change was recorded, as its record holds it, unconverted: an input's `recorded_at`, in the
+/// state-machine contract's grammar (an offset from UTC allowed, any fraction of a second), or an entry's `when.at`,
+/// in core-internal's (UTC, at most nine digits of a second). Nothing is converted, so no change is ever dropped
+/// for a time that wouldn't convert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct At(String);
+
+impl At {
+    /// The time as its record holds it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&stm::Timestamp> for At {
+    fn from(at: &stm::Timestamp) -> Self {
+        At(at.as_str().to_owned())
+    }
+}
+
+impl From<&Timestamp> for At {
+    fn from(at: &Timestamp) -> Self {
+        At(at.as_str().to_owned())
+    }
+}
+
+impl TryFrom<String> for At {
+    type Error = &'static str;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        if stm::Timestamp::new(text.as_str()).is_some() || Timestamp::new(text.as_str()).is_some() {
+            Ok(At(text))
+        } else {
+            Err("a notice's time is a recorded input's or a log entry's")
+        }
+    }
+}
+
+impl From<At> for String {
+    fn from(at: At) -> Self {
+        at.0
+    }
+}
+
 /// What changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// An input the state machine applied: its kind, as the state-machine contract names it, the part it is about
-    /// where it is about one, and a stuck part's reason.
+    /// where it is about one, a stuck part's reason, and the order a part was handed on to.
     Input {
         /// The input's kind (`route_chosen`, `segment_failed`, `stuck_declared`, ...).
         input: String,
@@ -70,6 +115,10 @@ pub enum Change {
         /// Why a part was declared stuck.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<StuckReason>,
+        /// The linked order a part was handed on to (`handed_on`, `REQ-ORD-43`): the customer's own, which it
+        /// follows from there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        linked_order: Option<stm::Id>,
     },
     /// Something that came after the order ended, which leaves its state as it was (`REQ-ORD-31`, `REQ-ORD-25`).
     Afterwards {
@@ -113,7 +162,7 @@ pub enum About {
         /// The change's place among the order's changes.
         sequence: u64,
         /// When it was recorded.
-        at: stm::Timestamp,
+        at: At,
         /// What changed.
         change: Change,
         /// The order's state after it.
@@ -151,6 +200,14 @@ pub struct Notice {
     pub to: Receiver,
     /// What it is about.
     pub about: About,
+    /// Whether it answers a request for the order's current state: then every change of the order up to its
+    /// sequence is in it, and a receiver missing one below it misses nothing ([`super::Inbox::missing`]).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub current: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// A notice and its signature, as sent.

@@ -54,7 +54,10 @@ pub enum Taken {
 struct Held {
     latest: u64,
     view: View,
+    /// The sequences taken above `covered`.
     sequences: BTreeSet<u64>,
+    /// The latest sequence an answer of the current state covered: every change up to it is held.
+    covered: u64,
 }
 
 /// A receiver's notices: the latest state of each order, and the operator's events.
@@ -99,7 +102,7 @@ impl Inbox {
                 sequence,
                 view,
                 ..
-            } => self.order(order.as_str(), sequence, view),
+            } => self.order(order.as_str(), sequence, view, sealed.notice.current),
             about @ (About::Raise { .. } | About::Ahead { .. }) => {
                 match self.events.entry(event_key(&about)) {
                     Entry::Occupied(_) => Taken::Repeat,
@@ -112,29 +115,25 @@ impl Inbox {
         })
     }
 
-    fn order(&mut self, order: &str, sequence: u64, view: View) -> Taken {
-        match self.orders.get_mut(order) {
-            Some(held) => {
-                held.sequences.insert(sequence);
-                if sequence > held.latest {
-                    held.latest = sequence;
-                    held.view = view;
-                    Taken::Later
-                } else {
-                    Taken::Earlier
-                }
-            }
-            None => {
-                self.orders.insert(
-                    order.to_owned(),
-                    Held {
-                        latest: sequence,
-                        view,
-                        sequences: BTreeSet::from([sequence]),
-                    },
-                );
-                Taken::Later
-            }
+    fn order(&mut self, order: &str, sequence: u64, view: View, current: bool) -> Taken {
+        let held = self.orders.entry(order.to_owned()).or_insert_with(|| Held {
+            latest: 0,
+            view: view.clone(),
+            sequences: BTreeSet::new(),
+            covered: 0,
+        });
+        if current {
+            held.covered = held.covered.max(sequence);
+        }
+        let covered = held.covered;
+        held.sequences.insert(sequence);
+        held.sequences.retain(|s| *s > covered);
+        if sequence > held.latest {
+            held.latest = sequence;
+            held.view = view;
+            Taken::Later
+        } else {
+            Taken::Earlier
         }
     }
 
@@ -145,13 +144,14 @@ impl Inbox {
             .map(|held| (held.latest, &held.view))
     }
 
-    /// Whether a change of `order` below the latest held never arrived. It changes nothing: the latest notice
-    /// already holds the order's whole state. A lost latest notice shows in no sequence, so a receiver that must be
-    /// sure before acting asks for the current state (`THR-103`), whatever this says.
+    /// Whether a change of `order` below the latest held never arrived, and no answer of the current state since
+    /// covers it. It changes nothing: the latest notice already holds the order's whole state. A lost latest notice
+    /// shows in no sequence, so a receiver that must be sure before acting asks for the current state (`THR-103`),
+    /// whatever this says.
     pub fn missing(&self, order: &Id) -> bool {
-        self.orders
-            .get(order.as_str())
-            .is_some_and(|held| (held.sequences.len() as u64) < held.latest)
+        self.orders.get(order.as_str()).is_some_and(|held| {
+            (held.sequences.len() as u64) < held.latest.saturating_sub(held.covered)
+        })
     }
 
     /// The operator's events held, each once, in the order of what they are.

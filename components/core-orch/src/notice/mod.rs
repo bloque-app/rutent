@@ -3,22 +3,29 @@
 //!
 //! Declared by `T-020-01`; only `F-023`'s rows edit it (`PLAN.md` §4.4).
 //!
-//! **From the log, never from the caller** (`REQ-ORD-20`, `AC-41`). [`Notices::notify`] reads the log's entries as
-//! the log holds them, in its order, from where it last stopped, as `Stuck::follow` and policy's charges read them.
-//! Every input the state machine applies to an order (`Stm::open`, `Stm::transition`), a failure included (a segment
-//! failed, a withdrawal cancelled, a part stuck, an order failed), is one change; so is something recorded after an
-//! order ended (`afterwards`, `REQ-ORD-31`, `REQ-ORD-25`) and a refusal naming an order Core follows. An input the
-//! machine doesn't apply (a repeat, a late report, one not applicable) and an input the log recorded as not taken
-//! change nothing and are notified to no one. Each change is the order's next sequence, counted from 1 in the log's
-//! order, so the same log gives the same notices, byte for byte, after a restart: what is signed holds the
-//! change's recorded time, never the clock's.
+//! **From the log, never from the caller** (`REQ-ORD-20`, `AC-41`). [`Notices::notify`] reads the log's entries,
+//! each with its receipt, as the log holds them, in its order, from where it last stopped, as `Stuck::follow` and
+//! policy's charges read them. Every input the state machine applies to an order (`Stm::open`, `Stm::transition`), a
+//! failure included (a segment failed, a withdrawal cancelled, a part stuck, an order failed), is one change; so is
+//! something recorded after an order ended (`afterwards`, `REQ-ORD-31`, `REQ-ORD-25`) and a refusal naming an order
+//! Core follows. An input the log takes and the machine doesn't apply (a repeat, a late report) and an input the log
+//! recorded as not taken change nothing and are notified to no one. Each change is the order's next sequence,
+//! counted from 1 in the log's order, so the same log gives the same notices, byte for byte, after a restart: what is
+//! signed holds the change's recorded time, unconverted, never the clock's. A read must extend the one before: the
+//! receipt of the last entry read must be where it was ([`NoticeError::NotThisLog`]).
+//!
+//! **At least once.** Built afresh, as after a restart, the notices read the log from its first entry and send every
+//! change again; a receiver drops each copy by its sequence. Keeping what was delivered durably, so a rebuild
+//! catches up without sending, is `T-023-02`'s.
 //!
 //! **Its receivers come from Core's records.** The user is the requester the order's `acceptance` names, receiving
 //! as `customer`; the operator is the deployment's operator party, set when the notices are built, receiving as
-//! `operator`. An order the log holds no acceptance for is notified to the operator alone. A notice carries what
-//! both may read of an order without a permission (`Reads::OrderState`, `REQ-ORD-5`): its state, each part's state,
-//! when it reached them, and what changed, by kind; never a provider, segment, amount, account or a provider's text
-//! (`REQ-AUZ-7`, `REQ-ORD-18`). A raise and a charge counted far ahead are the operator's alone.
+//! `operator`. An order the log holds no acceptance for is notified to the operator alone. A notice carries the
+//! order's state as `Reads::OrderState` reads it (`REQ-ORD-5`): its state, each part's state and when it reached
+//! them; and what changed: the change's kind, the part, a stuck part's reason, the linked order of a hand-on, a
+//! refusal's class, an `afterwards` event; all of the customer's own order. Never a provider, segment, amount,
+//! account or a provider's text (`REQ-AUZ-7`, `REQ-ORD-18`). A raise and a charge counted far ahead are the
+//! operator's alone. A push asks policy nothing; asking for the current state does.
 //!
 //! **Authenticated for its receiver.** Each notice is sealed for one receiver: the deployment, the receiver's party
 //! and role, and what it is about, signed with the deployment's notice key ([`NoticeKey`], over
@@ -29,14 +36,15 @@
 //! sequence; the receiver keeps the latest sequence and takes only a later one ([`Inbox`]).
 //!
 //! **The current state on request** ([`Notices::current`]). A reader asks for an order's state; policy checks the
-//! read (`Reads::OrderState`) and records it either way, and only an allowed read is answered: the order's latest
-//! notice, sealed for the reader. The check comes first, so a reader policy refuses learns nothing, not even whether
-//! the order exists.
+//! read (`Reads::OrderState`) and records it either way. A reader policy refuses is told [`CurrentError::Refused`]
+//! and nothing else, whatever policy's reason, so it can't tell an order that exists from one that doesn't; the
+//! reason stays in the log. An allowed reader is answered with the order's latest change as the log holds it to its
+//! end, sealed for it and marked as the current state; asking sends nothing to anyone.
 //!
 //! **The operator's channel** ([`Channel`]). `Operator::raise` (the checks' differences, a change in a provider's
 //! p99 from `Stuck::learn`) is sealed for the operator alone and sent; it answers delivered only when the transport
 //! took it. [`Notices::ahead`] does the same for each charge policy set apart as counted more than a window ahead of
-//! Core's clock (`Charged::ahead()`, `T-021-05`), each once by its party and request.
+//! Core's clock (`Charged::ahead()`, `T-021-05`), each once by its party and request while policy sets it apart.
 //!
 //! **Delivery.** Each notice goes through the [`Transport`] the assembly gives. One the transport didn't take is kept
 //! ([`Notices::undelivered`]); retrying it within a bound and recording it are `T-023-02`'s.
@@ -48,7 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
 use rutent_contracts::core_internal::{
-    Actor, Charge, Entry, Raise, ReadAnswer, ReadCheck, ReadOutcome, Role, What,
+    Actor, Charge, Entry, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, Observed, RecordedInput, StateMachine};
@@ -59,7 +67,8 @@ use crate::snapshot::Clock;
 
 pub use inbox::{Inbox, NotTaken, Taken, Verifier};
 pub use wire::{
-    About, AheadSeen, Change, DOMAIN, Notice, NoticeKey, PartState, Receiver, View, signing_input,
+    About, AheadSeen, At, Change, DOMAIN, Notice, NoticeKey, PartState, Receiver, View,
+    signing_input,
 };
 
 /// The operator's channel before `F-023` builds it: it delivers nothing, and says so, so every raise stays
@@ -96,19 +105,26 @@ pub enum NoticeError {
     NotThisLog,
     /// The notice key couldn't sign now: nothing of the entry was sent.
     Unsigned,
+    /// Core's clock gave no time a notice can carry.
+    NoTime,
 }
 
 /// Why the current state wasn't answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CurrentError {
-    /// Policy refused the read, and recorded it.
-    Refused(ReadAnswer),
+    /// Policy refused the read, and recorded it. Nothing more is said, whatever its reason: an order that doesn't
+    /// exist and another party's are refused alike.
+    Refused,
     /// Policy couldn't record the check, so it answered nothing.
     Append(AppendFailure),
-    /// The read was allowed, but the notices follow no such order.
+    /// The read was allowed, but the log holds no change of such an order.
     Unknown,
+    /// The entries don't extend those read before: no state is answered from them.
+    NotThisLog,
     /// The notice key couldn't sign now.
     Unsigned,
+    /// Core's clock gave no time to check the read at.
+    NoTime,
 }
 
 /// A charge policy set apart as counted more than a window ahead of Core's now (`Charged::ahead()`): the charge and
@@ -130,13 +146,15 @@ struct Followed {
     latest: About,
 }
 
-/// Core's notices: the entries read, the orders followed from them, and what wasn't delivered. A later read must
-/// extend the entries read, so another log, or a shorter one, is never read as this one.
+/// Core's notices: where the reading of the log stopped, the orders followed from it, and what wasn't delivered.
 #[derive(Debug, Clone)]
 pub struct Notices {
     deployment: Id,
     operator: Receiver,
-    read: Vec<Entry>,
+    /// How many entries were read.
+    read: usize,
+    /// The receipt of the last entry read: a later read must hold it where it was.
+    last: Option<Receipt>,
     requesters: BTreeMap<String, Id>,
     orders: BTreeMap<String, Followed>,
     ahead: BTreeSet<(String, String)>,
@@ -152,7 +170,8 @@ impl Notices {
                 party: operator,
                 role: Role::Operator,
             },
-            read: Vec::new(),
+            read: 0,
+            last: None,
             requesters: BTreeMap::new(),
             orders: BTreeMap::new(),
             ahead: BTreeSet::new(),
@@ -187,30 +206,50 @@ impl Notices {
         to
     }
 
+    /// Where `recorded`, the log from its first entry, takes up the reading: past the entries read, once the last of
+    /// them is where it was, by its receipt.
+    fn unread<'r>(
+        &self,
+        recorded: &'r [(Receipt, Entry)],
+    ) -> Result<&'r [(Receipt, Entry)], NoticeError> {
+        let holds = match (self.read, &self.last) {
+            (0, _) => true,
+            (n, Some(last)) => recorded.get(n - 1).is_some_and(|(r, _)| r == last),
+            (_, None) => false,
+        };
+        if holds {
+            Ok(&recorded[self.read..])
+        } else {
+            Err(NoticeError::NotThisLog)
+        }
+    }
+
     /// Notifies every change the log's `recorded` entries hold past those read before, to each of its order's
-    /// receivers, and answers how many notices were sent. `recorded` is the log as it holds it, from its first entry.
+    /// receivers, and answers how many notices were sent. `recorded` is the log as it holds it, from its first entry,
+    /// each entry with its receipt.
     pub fn notify(
         &mut self,
-        recorded: &[Entry],
+        recorded: &[(Receipt, Entry)],
         key: &mut dyn NoticeKey,
         transport: &mut dyn Transport,
     ) -> Result<usize, NoticeError> {
-        if !recorded.starts_with(&self.read) {
-            return Err(NoticeError::NotThisLog);
-        }
+        let unread = self.unread(recorded)?;
         let mut sent = 0;
-        while let Some(entry) = recorded.get(self.read.len()) {
-            if let Some((order, followed)) = self.change(entry) {
+        for (receipt, entry) in unread {
+            if let Some(order) = about(entry)
+                && let Some(followed) = change(self.orders.get(order), entry)
+            {
                 let mut sealed = Vec::new();
-                for to in self.receivers_of(&order) {
+                for to in self.receivers_of(order) {
                     let notice = Notice {
                         deployment: self.deployment.clone(),
                         to: to.clone(),
                         about: followed.latest.clone(),
+                        current: false,
                     };
                     sealed.push((to, wire::seal(key, notice).ok_or(NoticeError::Unsigned)?));
                 }
-                self.orders.insert(order, followed);
+                self.orders.insert(order.to_owned(), followed);
                 for (to, notice) in sealed {
                     sent += 1;
                     self.send(transport, to, notice);
@@ -223,95 +262,10 @@ impl Notices {
                     .entry(order.as_str().to_owned())
                     .or_insert_with(|| parties.requester.clone());
             }
-            self.read.push(entry.clone());
+            self.read += 1;
+            self.last = Some(receipt.clone());
         }
         Ok(sent)
-    }
-
-    /// The order `entry` changes, by its id, and how the notices follow it after, without changing anything held:
-    /// `None` where it changes no order the notices follow. An input the machine applies is always a change: nothing
-    /// in it is converted, so no applied input can be dropped and leave the order followed behind the log.
-    fn change(&self, entry: &Entry) -> Option<(String, Followed)> {
-        let Entry::Verified(v) = entry else {
-            return None;
-        };
-        match &v.what {
-            What::Input { input } => self.applied(input),
-            What::Afterwards { order, event, .. } => {
-                self.noted(order, &v.when.at, Change::Afterwards { event: *event })
-            }
-            What::OrderRefusal {
-                order: Some(order),
-                class,
-                ..
-            } => self.noted(order, &v.when.at, Change::Refused { class: *class }),
-            _ => None,
-        }
-    }
-
-    /// An input the state machine applies, and the order after it.
-    fn applied(&self, input: &RecordedInput) -> Option<(String, Followed)> {
-        let key = input.subject.order.as_str().to_owned();
-        let (next, sequence) = match (self.orders.get(&key), &input.observed) {
-            (None, Observed::RouteChosen { .. }) => (Stm::open(input)?, 1),
-            (None, _) => return None,
-            (Some(f), _) => {
-                let next = Stm::transition(&f.order, input);
-                if next.last_input.outcome != (stm::Outcome::Applied {}) {
-                    return None;
-                }
-                (next, f.sequence + 1)
-            }
-        };
-        let reason = match &input.observed {
-            Observed::StuckDeclared { reason } => Some(*reason),
-            _ => None,
-        };
-        let change = Change::Input {
-            input: kind(&input.observed).to_owned(),
-            part: input.subject.part.clone(),
-            reason,
-        };
-        let at = input.recorded_at.clone();
-        Some((
-            key,
-            Followed {
-                latest: About::Order {
-                    order: next.order_id.clone(),
-                    sequence,
-                    at: at.clone(),
-                    change,
-                    view: view(&next, &at),
-                },
-                order: next,
-                since: at,
-                sequence,
-            },
-        ))
-    }
-
-    /// A change recorded about an order the notices follow that leaves its state as it was.
-    fn noted(&self, order: &Id, at: &Timestamp, change: Change) -> Option<(String, Followed)> {
-        let f = self.orders.get(order.as_str())?;
-        // A log entry's time (`Z`, at most nine digits of a second) is always a state-machine timestamp, whose
-        // grammar is the wider; and a change that leaves the state as it was leaves the order followed as it was.
-        let at = stm::Timestamp::new(at.as_str())?;
-        let sequence = f.sequence + 1;
-        Some((
-            order.as_str().to_owned(),
-            Followed {
-                latest: About::Order {
-                    order: f.order.order_id.clone(),
-                    sequence,
-                    at,
-                    change,
-                    view: view(&f.order, &f.since),
-                },
-                order: f.order.clone(),
-                since: f.since.clone(),
-                sequence,
-            },
-        ))
     }
 
     fn send(&mut self, transport: &mut dyn Transport, to: Receiver, notice: Vec<u8>) -> bool {
@@ -323,23 +277,24 @@ impl Notices {
     }
 
     /// The current state of `order`, for `reader`, once policy allows the read (`Reads::OrderState`), which it
-    /// records either way: the order's latest notice, sealed for the reader in the role it reads in. `recorded`
-    /// is read first, as [`Notices::notify`] reads it, so the answer is the log's latest; a reader that missed a
-    /// notice takes this one in its place.
+    /// records either way. A refused read is told [`CurrentError::Refused`] alone. An allowed one is answered with
+    /// the order's latest change as `recorded`, the log from its first entry, holds it to its end, sealed for the
+    /// reader (the deployment's operator for an operator's login, else the reader's party in its role) and marked
+    /// as the current state. Nothing is sent and nothing of the reading moves: the changes not notified yet go out
+    /// on the next [`Notices::notify`], to each of their receivers.
     #[allow(clippy::too_many_arguments)]
     pub fn current(
-        &mut self,
-        recorded: &[Entry],
+        &self,
+        recorded: &[(Receipt, Entry)],
         reads: &mut dyn Reads,
         clock: &dyn Clock,
         fresh: &mut dyn Fresh,
         key: &mut dyn NoticeKey,
-        transport: &mut dyn Transport,
         reader: &Actor,
         permission: Option<&Id>,
         order: &Id,
     ) -> Result<Vec<u8>, CurrentError> {
-        let at = clock.now().timestamp().ok_or(CurrentError::Unsigned)?;
+        let at = clock.now().timestamp().ok_or(CurrentError::NoTime)?;
         let answer = reads
             .check_read(&ReadCheck {
                 request: fresh.id(),
@@ -352,26 +307,35 @@ impl Notices {
             })
             .map_err(CurrentError::Append)?;
         if !matches!(answer.outcome, ReadOutcome::Allowed {}) {
-            return Err(CurrentError::Refused(answer));
+            return Err(CurrentError::Refused);
         }
-        // What the log holds is notified first; a log that doesn't extend what was read answers what was read.
-        match self.notify(recorded, key, transport) {
-            Ok(_) | Err(NoticeError::NotThisLog) => {}
-            Err(NoticeError::Unsigned) => return Err(CurrentError::Unsigned),
+        let unread = self
+            .unread(recorded)
+            .map_err(|_| CurrentError::NotThisLog)?;
+        let mut followed = self.orders.get(order.as_str()).cloned();
+        for (_, entry) in unread {
+            if about(entry) == Some(order.as_str())
+                && let Some(next) = change(followed.as_ref(), entry)
+            {
+                followed = Some(next);
+            }
         }
-        let followed = self
-            .orders
-            .get(order.as_str())
-            .ok_or(CurrentError::Unknown)?;
+        let followed = followed.ok_or(CurrentError::Unknown)?;
+        let to = if reader.role == Role::Operator {
+            self.operator.clone()
+        } else {
+            Receiver {
+                party: reader.party.clone(),
+                role: reader.role,
+            }
+        };
         wire::seal(
             key,
             Notice {
                 deployment: self.deployment.clone(),
-                to: Receiver {
-                    party: reader.party.clone(),
-                    role: reader.role,
-                },
-                about: followed.latest.clone(),
+                to,
+                about: followed.latest,
+                current: true,
             },
         )
         .ok_or(CurrentError::Unsigned)
@@ -379,7 +343,10 @@ impl Notices {
 
     /// Notifies the operator, alone, of each charge in `charges` not notified before, by its party and request, and
     /// answers how many were sent: the party, the request id, the kind of work and its count, the moment it was
-    /// counted at and Core's now, so the operator sees a clock that jumped and what it cost the party.
+    /// counted at and Core's now, so the operator sees a clock that jumped and what it cost the party. `charges` is
+    /// all policy sets apart now: what is kept of those notified is only what it still sets apart, so the record
+    /// stays as small as policy's, and a charge set apart again later is sent again, which the operator's inbox holds
+    /// once.
     pub fn ahead(
         &mut self,
         charges: &[AheadCharge],
@@ -387,13 +354,18 @@ impl Notices {
         key: &mut dyn NoticeKey,
         transport: &mut dyn Transport,
     ) -> Result<usize, NoticeError> {
-        let now = clock.now().timestamp().ok_or(NoticeError::Unsigned)?;
+        let now = clock.now().timestamp().ok_or(NoticeError::NoTime)?;
+        let key_of = |a: &AheadCharge| {
+            (
+                a.charge.party.as_str().to_owned(),
+                a.charge.request.as_str().to_owned(),
+            )
+        };
+        let still: BTreeSet<_> = charges.iter().map(key_of).collect();
+        self.ahead.retain(|seen| still.contains(seen));
         let mut sent = 0;
         for ahead in charges {
-            let seen = (
-                ahead.charge.party.as_str().to_owned(),
-                ahead.charge.request.as_str().to_owned(),
-            );
+            let seen = key_of(ahead);
             if self.ahead.contains(&seen) {
                 continue;
             }
@@ -410,6 +382,7 @@ impl Notices {
                         now: now.clone(),
                     },
                 },
+                current: false,
             };
             let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
             self.ahead.insert(seen);
@@ -419,6 +392,101 @@ impl Notices {
         }
         Ok(sent)
     }
+}
+
+/// The order `entry` is about, where it is one the notices read: an input's, an `afterwards`', a refusal naming
+/// one.
+fn about(entry: &Entry) -> Option<&str> {
+    let Entry::Verified(v) = entry else {
+        return None;
+    };
+    match &v.what {
+        What::Input { input } => Some(input.subject.order.as_str()),
+        What::Afterwards { order, .. }
+        | What::OrderRefusal {
+            order: Some(order), ..
+        } => Some(order.as_str()),
+        _ => None,
+    }
+}
+
+/// How the order `entry` is about is followed after it, from `held`, how it was followed before: `None` where the
+/// entry changes nothing. An input the machine applies is always a change, and nothing in it or in an entry's time
+/// is converted, so no change can be dropped and leave the order followed behind the log.
+fn change(held: Option<&Followed>, entry: &Entry) -> Option<Followed> {
+    let Entry::Verified(v) = entry else {
+        return None;
+    };
+    match &v.what {
+        What::Input { input } => applied(held, input),
+        What::Afterwards { event, .. } => noted(
+            held?,
+            At::from(&v.when.at),
+            Change::Afterwards { event: *event },
+        ),
+        What::OrderRefusal { class, .. } => noted(
+            held?,
+            At::from(&v.when.at),
+            Change::Refused { class: *class },
+        ),
+        _ => None,
+    }
+}
+
+/// An input the state machine applies, and the order after it.
+fn applied(held: Option<&Followed>, input: &RecordedInput) -> Option<Followed> {
+    let (next, sequence) = match (held, &input.observed) {
+        (None, Observed::RouteChosen { .. }) => (Stm::open(input)?, 1),
+        (None, _) => return None,
+        (Some(f), _) => {
+            let next = Stm::transition(&f.order, input);
+            if next.last_input.outcome != (stm::Outcome::Applied {}) {
+                return None;
+            }
+            (next, f.sequence + 1)
+        }
+    };
+    let (reason, linked_order) = match &input.observed {
+        Observed::StuckDeclared { reason } => (Some(*reason), None),
+        Observed::HandedOn { linked_order, .. } => (None, Some(linked_order.clone())),
+        _ => (None, None),
+    };
+    let change = Change::Input {
+        input: kind(&input.observed).to_owned(),
+        part: input.subject.part.clone(),
+        reason,
+        linked_order,
+    };
+    let since = input.recorded_at.clone();
+    Some(Followed {
+        latest: About::Order {
+            order: next.order_id.clone(),
+            sequence,
+            at: At::from(&since),
+            change,
+            view: view(&next, &since),
+        },
+        order: next,
+        since,
+        sequence,
+    })
+}
+
+/// A change recorded about an order the notices follow that leaves its state as it was.
+fn noted(f: &Followed, at: At, change: Change) -> Option<Followed> {
+    let sequence = f.sequence + 1;
+    Some(Followed {
+        latest: About::Order {
+            order: f.order.order_id.clone(),
+            sequence,
+            at,
+            change,
+            view: view(&f.order, &f.since),
+        },
+        order: f.order.clone(),
+        since: f.since.clone(),
+        sequence,
+    })
 }
 
 /// The operator's channel: each raise sealed for the operator alone and sent (ADR-0009). The assembly hands it
@@ -446,6 +514,7 @@ impl Operator for Channel<'_> {
             about: About::Raise {
                 raise: raise.clone(),
             },
+            current: false,
         };
         let Some(sealed) = wire::seal(self.key, notice) else {
             return Delivery::Undelivered;
