@@ -262,8 +262,10 @@ fn routers_quote_checks_take_their_argument_types_from_router_api() {
         })
     );
     let held: HeldQuote = serde_json::from_value(fixture("held-quote-of-a-choice-round")).unwrap();
-    assert!(redeem(&held, &at("2026-11-06T15:30:00Z")).is_ok());
-    assert!(redeem(&held, &at("2026-11-06T15:30:01Z")).is_err());
+    // The fixture's hold ends at its quotes' earliest expiry, and is usable at it and not a second after.
+    assert_eq!(held.valid_until, at("2026-11-06T15:01:55Z"));
+    assert!(redeem(&held, &at("2026-11-06T15:01:55Z")).is_ok());
+    assert!(redeem(&held, &at("2026-11-06T15:01:56Z")).is_err());
     let limit: SlippageLimit = SlippageLimit {
         tuple: held.record.bounds.slippage_limits[0].tuple.clone(),
         max_bps: BasisPoints::try_from(10).unwrap(),
