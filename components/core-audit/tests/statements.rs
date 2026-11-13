@@ -487,7 +487,6 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
     let mut garbled: Value = serde_json::from_slice(&genuine).unwrap();
     garbled["signature"]["value"] = "AAAA".into();
     let garbled = serde_json::to_vec(&garbled).unwrap();
-    // Made at another time than the entry says, which the entry claims.
     for (name, bytes) in [
         ("signed by another key", by_another),
         ("altered after signing", altered),
@@ -496,6 +495,23 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
         let got = run.present(&bytes, &bank, &bank).unwrap();
         assert!(!verified(&run.stated_at(&got.receipt)), "{name}");
     }
+    // A genuine statement the entry dates other than its envelope does: the entry's `when.at` is the claim, appended
+    // as a writer that dated it wrongly would, so the log doesn't attribute it.
+    let kept = run.keeper.keep(&genuine).unwrap();
+    let misdated = run
+        .append_json(json!({
+            "kind": "stated",
+            "attribution": {"signature": "unverified", "claimed_by": bank},
+            "what": {"statement": TERMS_SHAPE},
+            "when": {"at": "2026-11-06T15:04:06Z", "source": "party_stated"},
+            "received_at": RECEIVED_AT,
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": public_key(&statements_key("us-bank")).as_str()},
+            "commitment": kept.commitment,
+            "about": {"transaction": "tx-3"},
+        }))
+        .unwrap();
+    assert!(!verified(&run.stated_at(&misdated)), "made at another time");
     // A genuine statement the claim attributes to another maker.
     let got = run.present(&genuine, &relay, &relay).unwrap();
     assert!(
