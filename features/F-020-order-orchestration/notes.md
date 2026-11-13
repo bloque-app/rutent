@@ -2893,6 +2893,7 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
 
   Seen empirically: a gross withdrawal answering 1 000 out with a charge of 4 is refused, and a gross deposit shows
   1 000, less 4 within, less the operator's 10. The router pricing and ranking on what arrives is `F-011`'s (a gap).
+  Since the review, a segment that keeps its asset hands on exactly what `segments::judge::handed_on` gives (below).
 - **Never a price the route can't deliver.** `NotShown`, and intake's class for it (reversible):
   - `no_route_for_amount` for the operator's fee above what arrives, `shown_out` below the request's floor once a
     charge within is taken off, and a sum past an amount;
@@ -3033,3 +3034,101 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
   - these notes.
 
   No `DEC-20` path, no shared manifest, no dependency.
+
+### T-020-07, review answers (round 1)
+
+One commit per finding; the map is at the end. Each new test was written first and seen red on its assertion, on
+the code under review or on the rule stubbed off, before the fix.
+
+- **1 (high), `show` handed on more than the judge allows.** For a segment that keeps its asset, `show` now reads
+  what it hands on through `segments::judge::handed_on`, re-exported `pub(crate)` from `segments` (one line in
+  `T-020-08`'s module, on the coordinator's word). `None` is `Undeliverable`. Under `net`, what it gives out plus its
+  charge must be at most what it takes in; under `gross`, what it gives out must be at most that. The judge reads
+  amounts as `u128`, so a larger amount isn't shown either. A conversion still hands on its output as it is: its
+  quote and slippage bound it. Test `segment_claiming_more_out_than_it_takes_in_is_never_shown`, the reviewer's
+  sequence: USDC to EURC through an exchange at a floor of 950 000, and an EURC deposit taking in 900 000, net, free,
+  whose dry run claims 950 000. It was shown before the fix.
+- **2 (high), an automatic deposit started a route with no firm rate.** Arrival's filing ends the order
+  `no_route_right_now` when the price names a segment over three days. The edit is in `T-020-04`'s module, on the
+  coordinator's word; ending or waiting for the customer is on the owner's form. One correction to the brief: the
+  deposit isn't left free to be filed again. The filing holds the deposit against its order before it routes, and
+  `one-order-per-deposit` lets a deposit open one order, so every end at routing, this one included, leaves it
+  `NotFileable`, and only a new notice is a new arrival. Waiting for the customer would keep the order open instead;
+  that is the form's choice. Test `automatic_deposit_never_starts_a_route_with_no_firm_rate`: the arrival kit with
+  the deposit priced at four days. Before the fix it started; now it ends, and filing again is `NotFileable`.
+- **3 (medium), a stale or foreign held quote.** `Holds::hold` takes the order, and caps the stated validity at the
+  earliest expiry of any figure the chosen candidate cites. A figure's expiry is the snapshot's time plus what is
+  left of its validity, rounded down. `redeem` takes the reserve and the order and refuses anyone else
+  (`NotTheHolder`). It isn't single use, as the brief allows. `HeldQuote::check`, router-api's, is not edited: the
+  brief keeps `contracts/` for the contract round. The change there is: "`HeldQuote::check` refuses a `valid_until`
+  later than the earliest expiry of the figures the chosen candidate cites", with an invalid fixture, folded into the
+  unreleased router-api 4.0.0, for the contract round. Tests:
+  - `held_quote_past_its_validity_starts_nothing`, which now holds within the dry runs' validity (it held past it);
+  - `long_hold_is_capped_at_its_figures_validity`, a hold asked for 15:30 and held to 15:03:40;
+  - `held_quote_is_redeemed_only_by_its_reserve_for_its_order`.
+- **6 (medium-low), a price with nothing executed.** `executed` takes each segment's counted amounts with its
+  result's receipt (`ExecutedSegment`), and refuses one result cited for two segments (`ResultCitedTwice`).
+  `Priced` has no public field and no `Deserialize`. `Priced::new` makes it from `executed`, citing the results.
+  `Prices::report` checks again that it is labelled the price and cites one result per segment. Tests: the price
+  test, rebuilt on cited results, and `price_rests_on_each_segments_own_result` (nothing executed; a result cited
+  twice).
+- **7 (low), the charge cache.** `Charges` keeps the result's receipt, the amount in and the charge each segment was
+  checked on. The same segment on another result or charge is refused (`AnotherCharge`) and raises nothing. Test
+  `segment_checked_on_one_result_refuses_another`, the 10-then-9 000 probe.
+- **8 (low), `Quote.delivers`.** In intake and in arrival, it is now `price.arrives`: before the operator's fee, net
+  of any charge reported within. Its readers, the scenarios' assembly and recalc's `RouteEnd`, read it as before the
+  operator's fee. `Quote` is intake's, not a contract shape. The intake kit can't make `arrives` differ from the
+  quotes' sum (its reserve reports gross, and any charge on it is undeliverable), so the test asserts the equality.
+- **9 (low), arrival's untested end.** The branch is kept, with
+  `automatic_deposit_whose_route_cant_be_delivered_ends_unshown`: the reserve charges 4, gross. The order ends
+  `no_route_right_now`, with its refusal and no `shown`.
+- **10, tests.** `route_that_cant_hand_on_…` drops its `REQ-ORD-21` tag. `split_route_is_shown_and_held_whole`
+  covers a split: the kit's `split_route` gives 600 and 400 under bounds of two parts, made as intake's `Splitter`
+  makes one. It checks `amount_in` over both parts, each part's segments, and a hold refused where a part starts at
+  another reserve. `AnotherPrice` is exercised in the price test.
+- **Nits.**
+  - `Charged.advertised` is required, since every operation cites a price, and `NoFormula` is gone.
+  - A raise's `done` and `failed` entries are built before it is raised.
+  - `Charged.provider` must be its tuple's (`NotTheTuplesProvider`).
+  - `provider_at` refuses (`NotTheRecords`) where no segment sits.
+  - The AC-14 test's formula gives 1 000 before use, with a maximum of 2 000.
+- **Out of this round** (coordinator): signing `Terms` and `Holds` (finding 4, contract round 3) and the router's
+  gross ranking (finding 5, its own task). No caller is wired to the in-memory registers.
+- **Rule-off after the round, each red** (`t-020-07-ruleoff2.py`, outside the tree, over every rule the row now
+  has, old and new: each switched off once, its test run, the file restored and touched):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the operator's fee shown apart | `operators_fee_is_shown_apart_from_the_quotes_sum` |
+  | a kept-asset segment hands on what the judge allows (1) | `segment_claiming_more_out_…`, `route_intake_cant_deliver_…`, `route_that_cant_hand_on_…` |
+  | the next segment's amount held to what is handed on | `route_that_cant_hand_on_…`, `route_intake_cant_deliver_…` |
+  | a charge within named as its own line | `charge_reported_within_…` |
+  | never below the floor | `route_that_cant_hand_on_…` |
+  | amount in summed over every part (10) | `split_route_is_shown_and_held_whole` |
+  | the tighter slippage shown; no slippage limit, not shown | `segments_slippage_limit_is_recorded_and_shown` |
+  | a segment over three days leaves no firm rate; intake records the price's label | `route_with_a_segment_over_three_days_…` |
+  | an automatic deposit never starts a route with no firm rate (2) | `automatic_deposit_never_starts_a_route_with_no_firm_rate` |
+  | arrival ends a route not shown with its class (9) | `automatic_deposit_whose_route_cant_be_delivered_ends_unshown` |
+  | no price until every segment executed; labelled the price; reported once; another refused | `price_before_execution_…` |
+  | one result per segment (6) | `price_rests_on_each_segments_own_result` |
+  | terms bind from the segment's start; a charge checked against them | `terms_stated_after_a_segment_started_…` |
+  | a held quote past its validity refused | `held_quote_past_its_validity_starts_nothing` |
+  | a hold capped at its figures' validity (3) | `long_hold_is_capped_at_its_figures_validity` |
+  | redeemed only by its reserve for its order (3) | `held_quote_is_redeemed_only_by_its_reserve_for_its_order` |
+  | only the reserve every part starts at holds (10) | `split_route_is_shown_and_held_whole` |
+  | the charge compared; raised once; an undelivered raise `failed`; the tuple's provider (nit) | `charge_above_the_formulas_maximum_…` |
+  | a segment checked on one result (7) | `segment_checked_on_one_result_refuses_another` |
+
+  The lines-add-up identity stays defence in depth, as before. So does building both raise entries before the
+  raise: no test can make a checked entry fail to build.
+- **Commits, by finding:**
+  - `596249f`: 1;
+  - `3ab29cb`: 2;
+  - `7fa54d0`: 3;
+  - `cb8cbf0`: 6, and 10's `AnotherPrice`;
+  - `c9379c8`: 7;
+  - `71f89ef`: 8;
+  - `10b4a8c`: 9;
+  - `3f528a4`: 10;
+  - `c94bb09`: the nits;
+  - the commit that adds these notes.
