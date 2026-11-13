@@ -659,3 +659,12 @@
   `customer`, its `showing` to the commitment of the carrier's showing, and its `order`, `segment` and `transaction`
   to the showing's `about`. One invalid fixture, `fault-acceptance-of-the-operators-fault`: 125 invalid. (DEC-4,
   DEC-20, REQ-ORD-11, REQ-AUD-2, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: the world holds a reversal carrier (round 3 of the contract, item w).
+  `core-audit`'s `every_record_kind_core_writes_is_in_the_log` replays the world through `world--in_dest` and found
+  no `reversal_carrier` in it. Between p1-s2's `segment_failed` and its `reversal_completed`, while its reversal is
+  owed, the world now holds fx-desk's showing of fault for p1-s2 under `tx-f2`, the operator's `accept_fault`
+  command after it, and the `reversal_carrier` naming the operator, resting on both (`world--showing12`,
+  `world--accept_fault12`, `world--carrier12`); every later world case holds the three. The operator's path, not
+  the customer's: the log `core-audit` builds knows the keys of the operator and of the providers it admitted, and
+  no customer's, so a customer's fault acceptance there would be recorded unverified and its carrier refused. 555
+  admission cases. (DEC-4, DEC-20, REQ-ORD-11, REQ-AUD-1, T-020-01, T-022-01)
