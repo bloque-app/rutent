@@ -51,7 +51,32 @@ jobs:
         # `CMP-STM` runs as a VOS program, which has no `std`; the contracts must build for such a target.
         run: cargo build -p rutent-contracts --no-default-features --target riscv32imac-unknown-none-elf
       - name: Test (includes the boundary check)
-        run: cargo test --workspace
+        # T-024-09: every test runs whatever fails (`--no-fail-fast`), and what `cargo test` prints is kept in
+        # `$RUNNER_TEMP/test-results.txt` for the requirement-to-evidence table below. `shell: bash` makes the step
+        # fail on a red test through the pipe (`-o pipefail`); the default shell would not.
+        shell: bash
+        run: cargo test --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test-results.txt"
+      # T-024-09: the requirement-to-evidence table (`conformance/evidence/v0-scope`), from the tags on the tests and
+      # the results the Test step kept. `develop`, checked out beside the head, is what the scope file is compared
+      # with: its strict switch, and the rows it classes as M3's. The checkout is a hidden directory, which the walk over
+      # the tests skips, so the base's tests never count as the head's verifiers.
+      - name: Base for the evidence table's ratchet (T-024-09)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: develop
+          path: .evidence-base
+          persist-credentials: false
+      - name: Evidence table, report mode (T-024-09)
+        shell: bash
+        run: |
+          cargo run --locked --quiet -p rutent-records --bin evidence-table -- \
+            --results "$RUNNER_TEMP/test-results.txt" --base .evidence-base | tee -a "$GITHUB_STEP_SUMMARY"
+      # The only step that reads the scope file's `strict:` line. `T-024-10` sets it to `on`; until then the table's own
+      # findings are reported and do not fail, but a change that loosens the scope against `develop` does.
+      - name: Evidence table, strict where the scope file says so (T-024-09)
+        run: |
+          cargo run --locked --quiet -p rutent-records --bin evidence-table -- --ci \
+            --results "$RUNNER_TEMP/test-results.txt" --base .evidence-base
       # T-024-02: the assembled Core's scenarios again, under seeds of their own. `cargo test` above runs them under
       # their default seeds (1, 2 and 3); a failing run names its seed, and `RUTENT_SCENARIO_SEEDS=<seed>` replays it.
       - name: Scenarios, seeded (T-024-02)

@@ -1,0 +1,287 @@
+# The requirement-to-evidence table's scope for v0 (T-024-09; read by `evidence-table`).
+#
+# One row for every requirement, invariant, acceptance criterion, non-functional requirement and guarantee that
+# SPEC.md defines and has not withdrawn:
+#
+#   ID | class | citations | note
+#
+# Classes. `m3`: needs a passing test whose `// verifies:` comment names it. `partly`: M3's, not met yet; cites the
+# form item it waits on (`form:<item>`). `inspect`: M3's, verified by inspection; cites a check (`check:documentation`,
+# `check:boundary`, `check:licence`) or a recorded review (`review:F-0NN`, whose notes must exist). `m4`: cites its
+# feature and PLAN.md's 7.1 row for the family (`F-030 7.1:REQ-OPS`). `deferred`: cites the decision (`DEC-n`), or the
+# assumption and risk (`ASM-1 6.2:risk-9`), or the feature and 7.1 row (`F-052 7.1:REQ-EXT`) that defers it.
+# An `m3` row may cite `later-part:F-0NN`, the owner of a half that comes later.
+#
+# The switch below: only the CI step that passes `--ci` reads it; `--strict` on the command line always runs
+# strictly. It only ever turns on: a head that reads `off` against a develop that reads `on` fails. T-024-10 sets
+# it to `on` and changes no other line of this file.
+#
+# Moving an m3 row to m4 or deferred needs the PLAN.md rows it cites to have changed to place it there, as the
+# ratchet in `evidence-table` checks against develop.
+
+strict: off
+
+
+# REQ-AUD
+REQ-AUD-1 | m3
+REQ-AUD-2 | m3
+REQ-AUD-3 | m3
+REQ-AUD-4 | m3
+REQ-AUD-5 | m3
+REQ-AUD-6 | m3
+REQ-AUD-7 | m3
+REQ-AUD-8 | m3
+REQ-AUD-9 | m3
+REQ-AUD-10 | m3 | later-part:F-033 | the means are M3's; appointing the checker is M4's, a note for F-032
+REQ-AUD-11 | m3
+REQ-AUD-12 | m3 | later-part:F-033 | the regulator's read is M3's; naming the regulator is M4's, a note for F-032
+REQ-AUD-13 | m3
+REQ-AUD-14 | m3
+REQ-AUD-15 | m3
+
+# REQ-AUZ
+REQ-AUZ-1 | m3
+REQ-AUZ-2 | m3
+REQ-AUZ-3 | m3
+REQ-AUZ-4 | m3
+REQ-AUZ-5 | m3
+REQ-AUZ-6 | m3
+REQ-AUZ-7 | m3
+REQ-AUZ-8 | m3
+REQ-AUZ-9 | m3
+
+# REQ-CAT
+REQ-CAT-1 | m3
+REQ-CAT-2 | m3
+REQ-CAT-3 | m3
+REQ-CAT-4 | m3
+REQ-CAT-5 | partly | form:cat5-timing-residual | timing correlation of questions is a residual only the owner can accept
+REQ-CAT-6 | m3
+REQ-CAT-7 | m3
+REQ-CAT-8 | m3
+REQ-CAT-9 | m3
+REQ-CAT-10 | m3
+REQ-CAT-11 | m3
+REQ-CAT-12 | m3
+REQ-CAT-13 | m3
+REQ-CAT-14 | m3
+REQ-CAT-15 | m3
+REQ-CAT-16 | m3
+REQ-CAT-17 | m3
+REQ-CAT-18 | m3
+REQ-CAT-19 | m3
+REQ-CAT-20 | m3
+REQ-CAT-21 | m3
+REQ-CAT-22 | m3
+REQ-CAT-23 | m3
+
+# REQ-CPL
+REQ-CPL-1 | deferred | DEC-16 | verifiers wait for v1 (F-053)
+REQ-CPL-2 | m3
+REQ-CPL-3 | m3
+REQ-CPL-4 | deferred | DEC-16 | verifiers wait for v1 (F-053)
+REQ-CPL-5 | m3
+REQ-CPL-6 | m3
+REQ-CPL-7 | deferred | DEC-16 | verifiers wait for v1 (F-053)
+REQ-CPL-8 | m3
+REQ-CPL-9 | m3
+REQ-CPL-10 | deferred | DEC-16 | verifiers wait for v1 (F-053)
+REQ-CPL-11 | m3
+REQ-CPL-12 | m3 | later-part:F-053 | the reserve half is M3's; the verifier half is M5's
+
+# REQ-EXT
+REQ-EXT-1 | deferred | F-052 7.1:REQ-EXT | against the protocol, in M5
+REQ-EXT-2 | inspect | review:F-011 | the review against the router is recorded in F-011's notes
+
+# REQ-MDL
+REQ-MDL-1 | m3
+REQ-MDL-2 | m3
+REQ-MDL-3 | m3
+REQ-MDL-4 | m3
+REQ-MDL-5 | m3
+REQ-MDL-6 | m3
+REQ-MDL-7 | m3
+REQ-MDL-8 | m3
+REQ-MDL-9 | m3
+REQ-MDL-10 | m3
+REQ-MDL-11 | m3
+REQ-MDL-12 | m3
+REQ-MDL-13 | m3
+REQ-MDL-14 | m3
+REQ-MDL-15 | m3
+REQ-MDL-16 | m3
+REQ-MDL-17 | m3
+REQ-MDL-18 | m3
+REQ-MDL-19 | m3
+REQ-MDL-20 | m3
+REQ-MDL-21 | m3
+
+# REQ-MOD
+REQ-MOD-1 | m3
+REQ-MOD-2 | inspect | check:documentation | the documentation check fails on an undocumented public element
+REQ-MOD-3 | inspect | check:boundary | the boundary check over the crate graph
+REQ-MOD-4 | m3
+REQ-MOD-5 | inspect | check:licence | the licence check and the dependency record
+
+# REQ-OPS
+REQ-OPS-1 | m3
+REQ-OPS-2 | m3
+REQ-OPS-3 | m3
+REQ-OPS-4 | m4 | F-030 7.1:REQ-OPS | no deployment before M4
+REQ-OPS-5 | m3
+
+# REQ-ORD
+REQ-ORD-1 | m3
+REQ-ORD-2 | m3
+REQ-ORD-3 | m3
+REQ-ORD-4 | m3
+REQ-ORD-5 | m3
+REQ-ORD-6 | m3
+REQ-ORD-7 | m3
+REQ-ORD-8 | m3
+REQ-ORD-9 | m3
+REQ-ORD-10 | m3
+REQ-ORD-11 | m3
+REQ-ORD-12 | m3
+REQ-ORD-13 | m3
+REQ-ORD-14 | m3
+REQ-ORD-15 | m3
+REQ-ORD-16 | m3
+REQ-ORD-17 | m3
+REQ-ORD-18 | m3
+REQ-ORD-19 | m3
+REQ-ORD-20 | m3
+REQ-ORD-21 | m3
+REQ-ORD-22 | m3
+REQ-ORD-23 | m3
+REQ-ORD-24 | m3
+REQ-ORD-25 | m3
+REQ-ORD-26 | m3
+REQ-ORD-27 | m3
+REQ-ORD-28 | m3
+REQ-ORD-29 | m3
+REQ-ORD-30 | m3
+REQ-ORD-31 | m3
+REQ-ORD-32 | m3
+REQ-ORD-33 | m3
+REQ-ORD-34 | m3
+REQ-ORD-35 | m3
+REQ-ORD-36 | m3
+REQ-ORD-37 | m3
+REQ-ORD-38 | m3
+REQ-ORD-39 | m3
+REQ-ORD-40 | m3
+REQ-ORD-41 | m3
+REQ-ORD-42 | deferred | DEC-8 | the rule is v1's; v0 carries the shape
+REQ-ORD-43 | m3
+
+# REQ-PRT
+REQ-PRT-1 | m3
+REQ-PRT-2 | m4 | F-030 7.1:REQ-PRT | production cutovers
+REQ-PRT-3 | deferred | DEC-17 | the protocol's specification is published in v1 (F-052)
+REQ-PRT-4 | m4 | F-030 7.1:REQ-PRT | production cutovers
+REQ-PRT-5 | m3
+
+# REQ-QTE
+REQ-QTE-1 | m3
+REQ-QTE-2 | m3
+REQ-QTE-3 | m3
+REQ-QTE-4 | m3
+REQ-QTE-5 | m3
+REQ-QTE-6 | m3
+REQ-QTE-7 | m3
+REQ-QTE-8 | m3
+REQ-QTE-9 | m3
+REQ-QTE-10 | m3
+REQ-QTE-11 | m3
+REQ-QTE-12 | m3
+REQ-QTE-13 | m3
+REQ-QTE-14 | m3
+REQ-QTE-15 | m3
+REQ-QTE-16 | deferred | DEC-8 | the rule is v1's; v0 carries the shape
+
+# REQ-STM
+REQ-STM-1 | m3
+REQ-STM-2 | m3
+REQ-STM-3 | m3
+REQ-STM-4 | m3
+REQ-STM-5 | m3
+REQ-STM-6 | m3
+REQ-STM-7 | m3
+REQ-STM-8 | m3
+
+# NFR
+NFR-1 | deferred | ASM-1 6.2:risk-9 | no load figure is set
+NFR-2 | m3
+NFR-3 | m3
+NFR-4 | m3
+NFR-5 | m3
+NFR-6 | m3
+NFR-7 | inspect | check:documentation | the documentation check
+NFR-8 | m3
+
+# INV
+INV-1 | m3
+INV-2 | m3
+INV-3 | m3
+INV-4 | m3
+INV-5 | m3
+INV-6 | m3
+INV-7 | m3
+INV-8 | m3
+INV-9 | m3
+INV-10 | m3
+
+# GUA
+GUA-1 | m3
+GUA-2 | m3
+GUA-3 | m3
+GUA-4 | m3
+GUA-5 | m3
+GUA-6 | deferred | DEC-17 | the protocol's specification is published in v1 (F-052)
+GUA-7 | m3
+
+# AC
+AC-1 | m3
+AC-2 | m3
+AC-3 | m3
+AC-4 | m3
+AC-5 | m3
+AC-6 | m3
+AC-7 | m3
+AC-8 | m3
+AC-9 | m3
+AC-10 | m3
+AC-11 | m3
+AC-12 | m3
+AC-13 | m3
+AC-14 | m3
+AC-15 | m3
+AC-16 | deferred | DEC-16 | verifiers wait for v1 (F-053)
+AC-17 | m3
+AC-18 | m3
+AC-19 | m3
+AC-20 | m3
+AC-21 | m3
+AC-22 | m3
+AC-23 | m3
+AC-24 | m3
+AC-25 | m3 | later-part:F-030 | in simulation behind a stand-in; against the deployment is M4's, a note for F-032
+AC-26 | m3
+AC-27 | m3
+AC-28 | m3
+AC-29 | m3
+AC-30 | m3
+AC-31 | m3
+AC-32 | m3
+AC-33 | m3
+AC-34 | m3
+AC-35 | m3
+AC-36 | m3
+AC-37 | m3
+AC-38 | deferred | DEC-8 | the rule is v1's; v0 carries the shape
+AC-39 | m3
+AC-40 | m3
+AC-41 | m3
+AC-42 | m3
+AC-43 | m3
