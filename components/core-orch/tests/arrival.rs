@@ -2947,3 +2947,57 @@ fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
     assert!(env.started().is_empty());
     assert_admitted(&env);
 }
+
+/// A deposit filed automatically whose route can't be delivered as composed is never shown: the reserve reports
+/// gross and charges 4 on each segment, so its withdrawal hands on less than its deposit was quoted to take in. The
+/// filing ends its order with the class the quote module gives it, `no_route_right_now`, records no `shown`, and
+/// accepts and starts nothing.
+// verifies: REQ-QTE-2, REQ-ORD-18
+#[test]
+fn automatic_deposit_whose_route_cant_be_delivered_ends_unshown() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    providers.sim.fees.insert(RESERVE.into(), 4);
+    let mut arrivals = Arrivals::new();
+    let deposited = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &report(1000, 0),
+    )
+    .unwrap()
+    {
+        Arrived::NoOrder { arrival } => arrival,
+        other => panic!("{other:?}"),
+    };
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    let Filed::CantProceed {
+        order: Some(order),
+        class: OrderRefusalClass::NoRouteRightNow,
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let shown = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter(|w| matches!(w, What::Shown { .. }))
+        .count();
+    assert_eq!(shown, 0, "nothing shown");
+    assert!(order_records(&env).iter().any(|w| matches!(
+        w,
+        What::OrderRefusal { order: Some(o), class: OrderRefusalClass::NoRouteRightNow, .. } if o == &order
+    )));
+    assert!(env.acceptances().is_empty());
+    assert!(env.started().is_empty());
+    assert_admitted(&env);
+}
