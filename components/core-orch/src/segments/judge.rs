@@ -20,7 +20,7 @@
 //! A result that doesn't count is no result: the segment waits for one that does, and no outcome is recorded on it.
 
 use rutent_contracts::provider_role::{
-    AmountMismatch, ConversionOutcome, Operation, RESULT_SHAPE, Refusal, Remainder, Reporting,
+    AmountMismatch, ConversionOutcome, Fee, Operation, RESULT_SHAPE, Refusal, Remainder, Reporting,
     ReserveMovementOutcome, ResultBody, Statement, Terms, TransferOutcome, less_the_charge,
 };
 use rutent_contracts::router_api::Id;
@@ -90,6 +90,9 @@ pub enum Counted {
         amount_in: String,
         /// What it says it gave out at its destination, as its tuple's terms report it.
         amount_out: String,
+        /// What its provider charged, as its result states it (`REQ-QTE-5`): what Core's charge check holds to the
+        /// formula that bound the segment, whatever it states of billing it separately.
+        fee: Fee,
         /// What arrived net of its charge: the amount the next segment is handed (`REQ-ORD-21`). Under `net`
         /// reporting, `amount_out`; under `gross`, `amount_out` less the charge.
         handed_on: String,
@@ -140,53 +143,53 @@ pub fn judge(
                     NotCounted::Amounts(broken)
                 }
             })?;
-    let settled = |amount_in: &str, amount_out: &str, handed_on: String| Counted::Succeeded {
-        amount_in: amount_in.to_owned(),
-        amount_out: amount_out.to_owned(),
-        handed_on,
-        remainder: remainder.clone(),
-    };
+    let settled =
+        |amount_in: &str, amount_out: &str, fee: &Fee, handed_on: String| Counted::Succeeded {
+            amount_in: amount_in.to_owned(),
+            amount_out: amount_out.to_owned(),
+            fee: fee.clone(),
+            handed_on,
+            remainder: remainder.clone(),
+        };
     // Same asset: no more out than in, the charge counted as the tuple's terms report it.
-    let kept = |amount_in: &str, amount_out: &str, fee: &str| match handed_on(
+    let kept = |amount_in: &str, amount_out: &str, fee: &Fee| match handed_on(
         terms.reporting,
         amount_in,
         amount_out,
-        fee,
+        &fee.amount,
         units,
     ) {
-        Some(handed) => Ok(settled(amount_in, amount_out, handed)),
+        Some(handed) => Ok(settled(amount_in, amount_out, fee, handed)),
         None => Err(NotCounted::GivesOutMore),
     };
     // A conversion: no more out than its quote gives for what it took in, moved by its slippage at most. Its charge
     // is in the asset it takes in, never the one it gives out, so under `gross` and `net` alike what it gives out is
     // handed on as it is: the charge can't be taken off an amount in another asset, and the quote and the slippage
     // bound already limit what it gives out for what it took in, the charge included.
-    let converted = |amount_in: &str, amount_out: &str| {
+    let converted = |amount_in: &str, amount_out: &str, fee: &Fee| {
         if converts_within(amount_in, amount_out, quoted) {
-            Ok(settled(amount_in, amount_out, amount_out.to_owned()))
+            Ok(settled(amount_in, amount_out, fee, amount_out.to_owned()))
         } else {
             Err(NotCounted::GivesOutMore)
         }
     };
     match &result.statement {
         ResultBody::Withdrawal(r) | ResultBody::Deposit(r) => match &r.outcome {
-            ReserveMovementOutcome::Succeeded(s) => {
-                kept(&s.amount_in, &s.amount_out, &s.fee.amount)
-            }
+            ReserveMovementOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out, &s.fee),
             ReserveMovementOutcome::Failed(_) => Ok(Counted::Failed),
             ReserveMovementOutcome::Unknown(_) => Ok(Counted::Unknown),
             ReserveMovementOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
             ReserveMovementOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         ResultBody::Transfer(r) => match &r.outcome {
-            TransferOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out, &s.fee.amount),
+            TransferOutcome::Succeeded(s) => kept(&s.amount_in, &s.amount_out, &s.fee),
             TransferOutcome::Failed(_) => Ok(Counted::Failed),
             TransferOutcome::Unknown(_) => Ok(Counted::Unknown),
             TransferOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),
             TransferOutcome::DryRunAccepted(_) => Err(NotCounted::DryRunAnswer),
         },
         ResultBody::Conversion(r) => match &r.outcome {
-            ConversionOutcome::Succeeded(s) => converted(&s.amount_in, &s.amount_out),
+            ConversionOutcome::Succeeded(s) => converted(&s.amount_in, &s.amount_out, &s.fee),
             ConversionOutcome::Failed(_) => Ok(Counted::Failed),
             ConversionOutcome::Unknown(_) => Ok(Counted::Unknown),
             ConversionOutcome::Refused(r) => Ok(Counted::Refused(r.refusal.clone())),

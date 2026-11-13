@@ -81,8 +81,9 @@
 //! reversal returns in full; [`Segments::answered`] whether its answer was taken, after which a report is late; and a part that has ended hands no segment over for the first time
 //! ([`SegmentsError::Ended`]).
 
+mod charges;
 mod drain;
-mod journal;
+pub(crate) mod journal;
 mod judge;
 mod ports;
 mod sign;
@@ -90,7 +91,7 @@ mod sign;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, GeneralEntry, Log, Reads,
+    AppendFailure, Decisions, Evidence, GeneralEntry, Log, Operator, Reads,
 };
 use rutent_contracts::core_internal::{
     About, Action, Actor, ActorKind, Answer, CatalogueChange, DecisionRequest, Effect, Entry,
@@ -111,6 +112,7 @@ use rutent_prov::module::lifecycle::LifecycleRefusal;
 use rutent_prov::module::types::UnknownOutcome;
 use rutent_stm::Stm;
 
+use crate::quote::{ChargeError, Charged, Charges, Terms};
 use crate::recalc::{holds_floor, left_after};
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
@@ -156,6 +158,10 @@ pub struct Parts<'a> {
     pub issued: &'a Issued,
     /// Core's record of value in flight.
     pub exposures: &'a mut Exposures,
+    /// The operator's channel, which a charge above its formula is raised to (`REQ-QTE-5`, `AC-14`): the notices'
+    /// own ([`crate::notice::Channel`]) where Core is assembled. A channel that delivers nothing
+    /// ([`crate::notice::Unbuilt`]) leaves each raise recorded as undelivered, never unmade.
+    pub channel: &'a mut dyn Operator,
 }
 
 /// One part of an order's chosen route, as Core runs it.
@@ -329,6 +335,9 @@ pub enum SegmentsError {
     StartUnproven(Id),
     /// A drain names something the contract can't carry; it is kept whole, not dropped.
     Uncarried(Uncarried),
+    /// A settled segment's charge couldn't be checked: why. The segment is accounted for; running the part again
+    /// checks it again (`REQ-QTE-5`, `T-020-14`).
+    Charge(ChargeError),
 }
 
 impl From<Uncarried> for SegmentsError {
@@ -488,6 +497,9 @@ struct InFlight {
     fees: Option<Vec<Step>>,
     ended: bool,
     outcome: Option<SegmentOutcome>,
+    /// What its provider charged, as its result that counted states it, with what the check needs of it: kept once
+    /// it settled (`T-020-14`).
+    charged: Option<Charged>,
     /// The platform's refusal to begin it, kept before its result is appended.
     begin_refused: Option<PlatformRefusal>,
     /// The first verdict on what it gave back, kept: a later try reads the same, whatever changed since.
@@ -536,6 +548,10 @@ pub struct Segments {
     refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
     /// The routes handed on whose start the holding account's own record proved, by order (`T-020-13`).
     proven: BTreeSet<String>,
+    /// The charges checked against the formulas that bound them, each segment's once (`REQ-QTE-5`, `T-020-14`).
+    charges: Charges,
+    /// The terms the providers stated, with their times (`REQ-QTE-6`, `T-020-14`).
+    terms: Terms,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -1129,6 +1145,22 @@ impl Segments {
         parts: &mut Parts<'_>,
         live: &Live<'_>,
     ) -> Result<Ran, SegmentsError> {
+        let ran = self.run_segments(parts, live);
+        // Every settled segment's charge is held to its formula on every run, also where nothing was handed over
+        // this time: a check or raise that couldn't be recorded before is done now, and one done already is not
+        // done again (`REQ-QTE-5`, `T-020-14`).
+        let checked = self.check_charges(parts, live);
+        match (ran, checked) {
+            (Err(failure), _) | (Ok(_), Err(failure)) => Err(failure),
+            (Ok(ran), Ok(())) => Ok(ran),
+        }
+    }
+
+    fn run_segments(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+    ) -> Result<Ran, SegmentsError> {
         let chosen = live
             .record
             .chosen()
@@ -1502,7 +1534,7 @@ impl Segments {
             &now(parts.clock)?,
             &signed,
             live.operator.clone(),
-            about,
+            Some(about),
         )
         .map_err(|why| match why {
             Unappended::Append(failure) => SegmentsError::Append(failure),
@@ -1549,6 +1581,7 @@ impl Segments {
                 fees: None,
                 ended: false,
                 outcome: None,
+                charged: None,
                 begin_refused: None,
                 verdict: None,
                 drains: Vec::new(),
@@ -1801,7 +1834,9 @@ impl Segments {
         match counted {
             Counted::Succeeded {
                 handed_on,
+                amount_in: stated_in,
                 amount_out: stated_out,
+                fee: stated_fee,
                 ..
             } => {
                 let arrives = handed_on.clone();
@@ -1882,6 +1917,17 @@ impl Segments {
                 }
                 self.append_fees(parts.log, at)?;
                 parts.exposures.release(live.order, &segment);
+                // Its charge, held to the formula that bound it as soon as it settled, before the next segment is
+                // handed over (`REQ-QTE-5`, `AC-14`), whatever it states of billing it separately.
+                self.note_charge(
+                    live,
+                    at,
+                    operation,
+                    cited.price,
+                    &stated,
+                    (stated_in.as_str(), &stated_fee),
+                )?;
+                self.check_charge(parts, live, at)?;
                 Ok(SegmentOutcome::Settled {
                     amount_out,
                     evidence,
@@ -2157,7 +2203,7 @@ impl Segments {
                 &received_at,
                 bytes,
                 maker(parts.catalogue, bytes),
-                about,
+                Some(about),
             )?;
             entry
                 .check()
@@ -2516,7 +2562,7 @@ fn held_at(
 }
 
 /// The maker a result's bytes claim, as its stated entry names it: its provider, for its publisher.
-fn maker(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
+pub(crate) fn maker(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
     let acts = serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .and_then(|v| v["maker"].as_str().and_then(Id::new))

@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Log, Operator};
-use rutent_contracts::core_internal::{Actor, Difference, Outcome, Raise, Receipt, What};
+use rutent_contracts::core_internal::{
+    Actor, Difference, Entry, Outcome, Raise, Receipt, VerifiedEntry, What,
+};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_router::quote::check_charge;
 
@@ -45,6 +47,9 @@ pub enum Checked {
     Within,
     /// Above it, raised to the operator.
     Flagged(Box<Flagged>),
+    /// Above it, and raised already: the log holds the raise, from before this register was rebuilt
+    /// ([`Charges::recorded`]). It isn't raised again, and its entry is the log's.
+    AlreadyRaised,
 }
 
 /// A charge above its formula, raised to the operator and recorded.
@@ -98,6 +103,9 @@ pub struct ChargeDesk<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct Charges {
     checked: BTreeMap<(String, String), (Seen, Kept)>,
+    /// The charges the log holds a raise of, by order and segment: the result the raise rests on and the charge it
+    /// names. A segment in it is raised already, whatever this register has seen.
+    recorded: BTreeMap<(String, String), (Receipt, Amount)>,
 }
 
 /// What a segment's check was made on: its result, what it took in and what it was charged.
@@ -123,6 +131,58 @@ impl Charges {
         Self::default()
     }
 
+    /// The register of a Core that stopped, rebuilt from the log's `entries`: each charge the log holds a raise of is
+    /// raised already and is raised again by no check, so a restart that lost the register doesn't warn the operator
+    /// twice of one charge (`REQ-QTE-5`). A raise whose entry the log never took isn't in it: it is raised afresh,
+    /// and a raise delivered but not recorded before the stop is raised again (the gap this leaves, in the notes).
+    pub fn recorded(entries: &[(Receipt, Entry)]) -> Self {
+        let recorded: BTreeMap<(String, String), (Receipt, Amount)> = entries
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Raise { raise },
+                    ..
+                }) => match &raise.difference {
+                    Difference::Charge {
+                        order,
+                        segment,
+                        charged,
+                        result,
+                        ..
+                    } => Some((
+                        (order.as_str().to_owned(), segment.as_str().to_owned()),
+                        (result.clone(), charged.clone()),
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        Self {
+            checked: BTreeMap::new(),
+            recorded,
+        }
+    }
+
+    /// What the check of `segment` of `order` came to, once it was recorded.
+    pub fn result(&self, order: &Id, segment: &Id) -> Option<Checked> {
+        let key = (order.as_str().to_owned(), segment.as_str().to_owned());
+        match self.checked.get(&key) {
+            Some((_, Kept::Within)) => Some(Checked::Within),
+            Some((_, Kept::Raised(raised))) => raised.step.receipt.clone().map(|receipt| {
+                Checked::Flagged(Box::new(Flagged {
+                    raise: raised.raise.clone(),
+                    delivered: raised.delivered,
+                    receipt,
+                }))
+            }),
+            None => self
+                .recorded
+                .contains_key(&key)
+                .then_some(Checked::AlreadyRaised),
+        }
+    }
+
     /// Checks `charged` against the formula that bound its segment at its start: the terms its provider stated last
     /// at or before then, or else the formula advertised (`REQ-QTE-5`, `REQ-QTE-6`). Above it, the charge is raised
     /// to the operator as a `charge` difference resting on the result's stated entry and, where the provider's terms
@@ -145,6 +205,13 @@ impl Charges {
             charged.amount_in.clone(),
             charged.charged.clone(),
         );
+        if let Some((result, amount)) = self.recorded.get(&key) {
+            return if result == &charged.result && amount == &charged.charged {
+                Ok(Checked::AlreadyRaised)
+            } else {
+                Err(ChargeError::AnotherCharge)
+            };
+        }
         if let Some((first, _)) = self.checked.get(&key)
             && first != &seen
         {

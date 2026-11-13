@@ -77,12 +77,12 @@ pub enum Unappended {
 /// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
 /// unverified, received at `received_at`, about `about`: built once, and appended unchanged however often it is
 /// tried, so its bytes are kept once.
-pub(super) fn stated_entry(
+pub(crate) fn stated_entry(
     evidence: &mut dyn Evidence,
     received_at: &Timestamp,
     bytes: &[u8],
     maker: Actor,
-    about: About,
+    about: Option<About>,
 ) -> Result<Entry, Unappended> {
     let claimed: Claimed = serde_json::from_slice(bytes).map_err(|_| Unappended::Unrecordable)?;
     let shape = ShapeId::new(claimed.shape).ok_or(Unappended::Unrecordable)?;
@@ -105,7 +105,7 @@ pub(super) fn stated_entry(
             key: claimed.signature.key,
         },
         commitment: kept.commitment,
-        about: Some(about),
+        about,
         relayed_by: None,
     }))
 }

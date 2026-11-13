@@ -454,11 +454,13 @@ pub struct Core {
     /// Each filing on an automatic deposit Core was handed, by the order it opened: what its start takes.
     filings: BTreeMap<String, rutent_core_orch::arrival::Filing>,
     segments: Segments,
-    /// The charges checked against the formulas that bound them, and the terms stated (`T-024-03`).
-    charges: rutent_core_orch::quote::Charges,
-    terms: rutent_core_orch::quote::Terms,
-    /// The operator's channel, which a charge above its formula is raised to.
-    pub channel: charges::Channel,
+    /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
+    /// the key they are signed with and the transport that takes them.
+    notices: rutent_core_orch::notice::Notices,
+    notice_signer: charges::NoticeSigner,
+    wire: charges::Wire,
+    /// The log's own read of the evidence store: what the terms a provider stated are compared with.
+    kept: LogsRead,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
     readings: grading::Readings,
@@ -683,6 +685,9 @@ impl Core {
         // Orchestration's handle on the evidence store, its reads checked by policy, and then the store bound to the
         // one log it serves.
         let keeper = store.keeper(Box::new(policy.clone()));
+        // The log's own read of the store, a second handle on the same shelf, for comparing the terms a provider
+        // stated with the bytes kept behind their commitment.
+        let kept = store.for_the_log();
         let bound = store.bind(Rc::clone(&log)).map_err(AssemblyError::Log)?;
 
         let mut catalogue = Catalogue::new();
@@ -717,9 +722,13 @@ impl Core {
             arrivals: rutent_core_orch::arrival::Arrivals::new(),
             filings: BTreeMap::new(),
             segments: Segments::new(),
-            charges: rutent_core_orch::quote::Charges::new(),
-            terms: rutent_core_orch::quote::Terms::new(),
-            channel: charges::Channel::default(),
+            notices: rutent_core_orch::notice::Notices::new(
+                kit::id("rutent-scenarios"),
+                kit::operator().party,
+            ),
+            notice_signer: charges::NoticeSigner::assembly(),
+            wire: charges::Wire::default(),
+            kept,
             closing: rutent_core_orch::closing::Closing::new(),
             readings: grading::Readings::default(),
             issued: Issued::new(),
@@ -1483,6 +1492,11 @@ impl Core {
                 closing: &mut self.closing,
             };
             let mut decisions = self.policy.clone();
+            let mut channel = rutent_core_orch::notice::Channel {
+                notices: &mut self.notices,
+                key: &mut self.notice_signer,
+                transport: &mut self.wire,
+            };
             let mut parts = SegmentParts {
                 clock: &self.clock,
                 catalogue: &self.catalogue,
@@ -1496,6 +1510,7 @@ impl Core {
                 fresh: &mut self.fresh,
                 issued: &self.issued,
                 exposures: &mut self.exposures,
+                channel: &mut channel,
             };
             let result = self.segments.run_part(&mut parts, &live);
             self.feed()?;

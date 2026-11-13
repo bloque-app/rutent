@@ -79,3 +79,19 @@ impl Step {
         Err(last)
     }
 }
+
+/// A stated entry, unverified, appended as it is built, tried again while the log can't take it now: the log
+/// attributes it, and the receipt is of the entry it recorded.
+pub(super) fn built_stated(log: &mut dyn Log, entry: Entry) -> Result<Receipt, AppendFailure> {
+    entry.check().map_err(AppendFailure::Refused)?;
+    let general = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+    let mut last = AppendFailure::Unavailable;
+    for _ in 0..APPEND_TRIES {
+        match log.append(&general) {
+            Ok(receipt) => return Ok(receipt),
+            Err(AppendFailure::Unavailable) => last = AppendFailure::Unavailable,
+            Err(refused) => return Err(refused),
+        }
+    }
+    Err(last)
+}

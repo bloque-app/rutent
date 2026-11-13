@@ -136,14 +136,15 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order runs");
+    // Core's own segments check what they settle (`T-020-14`): nothing here calls a check.
+    core.run(&order).expect("the order runs");
 
     // The provider quoted no charge and charged 7 on each movement, which only the movement tells.
-    let checked = core.check_charges(&order, &ran);
-    assert_eq!(checked.len(), 2, "both segments settled and were checked");
-    for (segment, checked) in &checked {
-        let Ok(Checked::Flagged(flagged)) = checked else {
-            panic!("{segment:?} isn't flagged: {checked:?}");
+    let segments = core.charged_segments(&order);
+    assert_eq!(segments.len(), 2, "both segments settled and were checked");
+    for segment in &segments {
+        let Some(Checked::Flagged(flagged)) = core.charge_checked(&order, segment) else {
+            panic!("{segment:?} isn't flagged");
         };
         assert!(flagged.delivered, "it reached the operator");
         let Difference::Charge {
@@ -159,8 +160,8 @@ fn charge_above_the_formulas_maximum_is_flagged() {
         assert_eq!(maximum.as_str(), "0");
         assert_eq!(provider.as_str(), CHARGING);
     }
-    assert_eq!(core.channel.raised.len(), 2);
-    // Recorded as raised and done, once each; checked again, nothing more is raised.
+    assert_eq!(core.raised().len(), 2);
+    // Recorded as raised and done, once each; run again, nothing more is raised.
     let raises = |core: &Core| {
         core.log()
             .entries()
@@ -172,8 +173,8 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .count()
     };
     assert_eq!(raises(&core), 2);
-    core.check_charges(&order, &ran);
-    assert_eq!(core.channel.raised.len(), 2);
+    core.run(&order).expect("runs again");
+    assert_eq!(core.raised().len(), 2);
     assert_eq!(raises(&core), 2);
 
     // A reserve that charges what it quoted raises nothing.
@@ -198,13 +199,13 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     honest
         .accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = honest.run(&order).expect("runs");
-    let checked = honest.check_charges(&order, &ran);
-    assert_eq!(checked.len(), 2);
+    honest.run(&order).expect("runs");
+    let segments = honest.charged_segments(&order);
+    assert_eq!(segments.len(), 2);
     assert!(
-        checked
+        segments
             .iter()
-            .all(|(_, c)| matches!(c, Ok(Checked::Within)))
+            .all(|s| matches!(honest.charge_checked(&order, s), Some(Checked::Within)))
     );
-    assert!(honest.channel.raised.is_empty());
+    assert!(honest.raised().is_empty());
 }

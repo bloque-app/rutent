@@ -1708,6 +1708,7 @@ impl Core {
             fresh: &mut self.ids,
             issued: &self.issued,
             exposures: &mut self.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         self.segments.run_part(&mut parts, &live)
     }
