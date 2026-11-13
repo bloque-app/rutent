@@ -77,7 +77,8 @@ fn envelope(maker: &str, body: Value) -> Value {
 }
 
 /// How a reserve's tuple is priced and answered: its price's flat fee and settlement seconds, the fee its answer
-/// states, whether its answer reports gross (what it gives out holds the charge) or net, and the asset.
+/// states, whether its answer reports gross (what it gives out holds the charge) or net, the asset, and, where set,
+/// the amount its answer claims to give out whatever it took in.
 #[derive(Debug, Clone)]
 pub struct Leg {
     pub asset: &'static str,
@@ -85,6 +86,7 @@ pub struct Leg {
     pub seconds: u64,
     pub answer_fee: u64,
     pub gross: bool,
+    pub claims_out: Option<u64>,
 }
 
 impl Leg {
@@ -96,6 +98,7 @@ impl Leg {
             seconds: 60,
             answer_fee: 0,
             gross: false,
+            claims_out: None,
         }
     }
 }
@@ -132,19 +135,17 @@ impl Net {
         })
     }
 
-    /// A reserve tuple `id` of [`RESERVE`] from `from` to `to`, priced and answered as `leg`; what it is handed
-    /// is `amount_in`, and what its answer gives out is returned.
-    fn reserve_leg(
+    /// `provider`'s reserve tuple `id` from `from` to `to`, priced as `leg`.
+    pub fn reserve_tuple(
         &mut self,
         id: &str,
-        kind: &str,
+        provider: &str,
         (from, to): (Value, Value),
         leg: &Leg,
-        amount_in: u64,
-    ) -> u64 {
+    ) {
         self.advertised(
             id,
-            RESERVE,
+            provider,
             json!({ "kind": "reserve_tuple", "tuple": {
                 "origin": from, "destination": to, "asset": leg.asset,
                 "decimals": { "origin": 6, "destination": 6 },
@@ -153,21 +154,33 @@ impl Net {
         );
         self.advertised(
             &format!("{id}-price"),
-            RESERVE,
+            provider,
             json!({
                 "kind": "price", "tuple": id, "fee": fee(&leg.price_fee.to_string(), "0", "1"),
                 "settlement_seconds": leg.seconds,
             }),
         );
+    }
+
+    /// `provider`'s accepted dry run of `kind` through tuple `id`, handed `amount_in`, answered as `leg`: what it
+    /// says it gives out. Its figure is `{id}-dry-{amount_in}`.
+    pub fn dry_run(
+        &mut self,
+        id: &str,
+        provider: &str,
+        kind: &str,
+        leg: &Leg,
+        amount_in: u64,
+    ) -> u64 {
         // Gross: what it gives out holds the charge; net: the charge is on top of it.
-        let amount_out = if leg.gross {
+        let amount_out = leg.claims_out.unwrap_or(if leg.gross {
             amount_in
         } else {
             amount_in - leg.answer_fee
-        };
+        });
         let body = json!({
             "kind": kind,
-            "transaction": format!("tx-{id}"),
+            "transaction": format!("tx-{id}-{amount_in}"),
             "outcome": {
                 "status": "dry_run_accepted",
                 "amount_in": amount_in.to_string(),
@@ -179,15 +192,15 @@ impl Net {
             },
         });
         self.figures.push(json!({
-            "figure_id": format!("{id}-dry"),
-            "origin": origin(RESERVE),
+            "figure_id": format!("{id}-dry-{amount_in}"),
+            "origin": origin(provider),
             "age_seconds": 20,
             "valid_for_seconds": 120,
             "value": {
                 "kind": "dry_run",
                 "tuple": id,
                 "amount_in": amount_in.to_string(),
-                "result": envelope(RESERVE, body),
+                "result": envelope(provider, body),
             },
         }));
         amount_out
@@ -196,24 +209,14 @@ impl Net {
     /// The reserve's withdrawal from `polygon` into `hub`, as `leg`: what it gives out.
     pub fn withdrawal(&mut self, leg: &Leg) -> u64 {
         let amount = self.amount;
-        self.reserve_leg(
-            "w0",
-            "withdrawal",
-            (json!({ "network": "polygon" }), json!("hub")),
-            leg,
-            amount,
-        )
+        self.reserve_tuple("w0", RESERVE, withdrawal_ends(), leg);
+        self.dry_run("w0", RESERVE, "withdrawal", leg, amount)
     }
 
     /// The reserve's deposit from `hub` out to `polygon`, as `leg`, handed `amount_in`: what it gives out.
     pub fn deposit(&mut self, leg: &Leg, amount_in: u64) -> u64 {
-        self.reserve_leg(
-            "d0",
-            "deposit",
-            (json!("hub"), json!({ "network": "polygon" })),
-            leg,
-            amount_in,
-        )
+        self.reserve_tuple("d0", RESERVE, deposit_ends(), leg);
+        self.dry_run("d0", RESERVE, "deposit", leg, amount_in)
     }
 
     /// [`EXCHANGE`]'s tuple at `hub`, from USDC to EURC at a fixed 0.9 with no fee, declaring `seconds`, confirmed
@@ -372,4 +375,62 @@ pub fn exchange_route(
         &net.build(),
         &bounds(fee("0", "0", "1"), limits),
     )
+}
+
+/// A withdrawal's ends: from `polygon` into `hub`.
+pub fn withdrawal_ends() -> (Value, Value) {
+    (json!({ "network": "polygon" }), json!("hub"))
+}
+
+/// A deposit's ends: from `hub` out to `polygon`.
+pub fn deposit_ends() -> (Value, Value) {
+    (json!("hub"), json!({ "network": "polygon" }))
+}
+
+/// A route of 1 000 USDC split in two parts under bounds allowing two: 600 through [`RESERVE`], and 400 through
+/// `second`, each a withdrawal and a deposit confirmed by its reserve's dry runs at its part's amount, free, under
+/// the operator's `operator_fee`. The router doesn't split (`DEC-8`), so the record is the router's for the whole
+/// amount with its candidates replaced by the split, chosen, and read back through the contract's check, as
+/// intake's `Splitter` makes one.
+pub fn split_route(second: &str, operator_fee: Value) -> DecisionRecord {
+    let leg = Leg::free("USDC");
+    let mut net = Net::new(1_000);
+    let mut parts = Vec::new();
+    for (provider, amount) in [(RESERVE, 600u64), (second, 400u64)] {
+        let (w, d) = if provider == RESERVE {
+            ("w0".to_owned(), "d0".to_owned())
+        } else {
+            (format!("w-{provider}"), format!("d-{provider}"))
+        };
+        if !net.figures.iter().any(|f| f["figure_id"] == w.as_str()) {
+            net.reserve_tuple(&w, provider, withdrawal_ends(), &leg);
+            net.reserve_tuple(&d, provider, deposit_ends(), &leg);
+        }
+        net.dry_run(&w, provider, "withdrawal", &leg, amount);
+        net.dry_run(&d, provider, "deposit", &leg, amount);
+        let operation = |kind: &str, tuple: &str, (from, to): (Value, Value)| {
+            json!({
+                "kind": kind,
+                "provider": provider,
+                "from": { "node": from, "asset": unit("USDC") },
+                "to": { "node": to, "asset": unit("USDC") },
+                "amount_in": amount.to_string(),
+                "fee": { "asset": "USDC", "amount": "0" },
+                "amount_out": amount.to_string(),
+                "figures": [tuple, format!("{tuple}-price"), format!("{tuple}-dry-{amount}")],
+            })
+        };
+        parts.push(json!({ "operations": [
+            operation("withdrawal", &w, withdrawal_ends()),
+            operation("deposit", &d, deposit_ends()),
+        ]}));
+    }
+    let mut bounds = serde_json::to_value(bounds(operator_fee, &[])).unwrap();
+    bounds["max_parts"] = 2.into();
+    let bounds: PolicyBounds = parse("split bounds", bounds);
+    let record = RouteFinder::route(&request("USDC", "USDC", 1_000, None), &net.build(), &bounds);
+    let mut value = serde_json::to_value(&record).expect("a record serialises");
+    value["candidates"] = json!([{ "candidate_id": "c-split", "parts": parts }]);
+    value["chosen"] = "c-split".into();
+    serde_json::from_value(value).unwrap_or_else(|e| panic!("the contract refuses the split: {e}"))
 }

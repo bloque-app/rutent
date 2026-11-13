@@ -307,17 +307,23 @@ fn reporting_of(record: &DecisionRecord, operation: &Operation) -> Option<Report
     })
 }
 
-/// What a segment hands on, as `segments::judge` hands it on: a conversion's output as it is, since its charge is in
-/// the asset it takes in; a segment that keeps its asset, under `net` what it gives out, and under `gross` what it
-/// gives out less its charge, which that holds (`REQ-CAT-11`, `T-020-08`). `None` where the charge is more than it
-/// gives out.
+/// What a segment hands on, exactly as `segments::judge` hands it on, so nothing is shown arriving that the judge
+/// wouldn't hand on: a conversion's output as it is, since its charge is in the asset it takes in, and its quote and
+/// slippage bound it; a segment that keeps its asset by the judge's own rule (`REQ-CAT-11`, `T-020-08`). Under `net`
+/// what it gives out, which with its charge is at most what it takes in; under `gross` what it gives out, at most
+/// what it takes in, less its charge. `None` where the amounts break that: a segment claiming more out than it takes
+/// in can't deliver it.
 fn handed_on(kind: OperationKind, reporting: Reporting, amounts: &Executed) -> Option<Amount> {
-    if kind == OperationKind::Exchange || reporting == Reporting::Net {
+    if kind == OperationKind::Exchange {
         return Some(amounts.amount_out.clone());
     }
-    amounts
-        .amount_out
-        .checked_sub(&Amount::new(amounts.fee.amount.as_str())?)
+    let handed = crate::segments::handed_on(
+        reporting,
+        amounts.amount_in.as_str(),
+        amounts.amount_out.as_str(),
+        &amounts.fee.amount,
+    )?;
+    Amount::new(handed)
 }
 
 /// The lines shown, from each segment's amounts, labelled the price where `executed`, and otherwise a quote.

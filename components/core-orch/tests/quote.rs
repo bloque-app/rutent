@@ -11,7 +11,8 @@ mod snapshot_support;
 
 use intake_support::*;
 use quote_support::{
-    EXCHANGE, Leg, THREE_DAYS, chosen, exchange_limit, exchange_route, fee, reserve_route,
+    EXCHANGE, Leg, Net, THREE_DAYS, bounds, chosen, exchange_limit, exchange_route, fee, request,
+    reserve_route, routed,
 };
 use rounds_support::customer;
 use rutent_contracts::core_internal::calls::GeneralEntry;
@@ -250,6 +251,38 @@ fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
     assert_eq!(
         show(&record, chosen(&record), Some(&amount("990"))),
         Err(NotShown::BelowFloor)
+    );
+}
+
+/// A segment that keeps its asset gives out no more than it takes in less its charge, as `segments::judge` counts it.
+/// The reviewer's sequence: USDC to EURC through an exchange, the customer's floor 950 000; the EURC deposit takes in
+/// 900 000, net, with no fee, and its dry run claims 950 000 out. The router keeps it at the floor on that claim, and
+/// Core never shows it.
+// verifies: REQ-QTE-2, INV-1
+#[test]
+fn segment_claiming_more_out_than_it_takes_in_is_never_shown() {
+    let mut net = Net::new(1_000_000);
+    let out = net.withdrawal(&Leg::free("USDC"));
+    let converted = net.exchange(out, 3_600, json!({ "regime": "bounded", "max_bps": 20 }));
+    assert_eq!(converted, 900_000);
+    net.deposit(
+        &Leg {
+            claims_out: Some(950_000),
+            ..Leg::free("EURC")
+        },
+        converted,
+    );
+    let record = routed(
+        &request("USDC", "EURC", 1_000_000, Some(950_000)),
+        &net.build(),
+        &bounds(fee("0", "0", "1"), &[exchange_limit(50)]),
+    );
+    assert_eq!(
+        show(&record, chosen(&record), Some(&amount("950000"))),
+        Err(NotShown::Undeliverable {
+            part: 0,
+            operation: 2
+        })
     );
 }
 
