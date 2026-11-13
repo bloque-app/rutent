@@ -283,6 +283,7 @@ impl Grading for ProvidersWord {
                 grade: EvidenceGrade::Statement,
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
+                publisher: None,
                 movement: None,
                 // Placeholder for the segments owner (T-020-08), until it names the private node's publisher.
                 publisher: None,
