@@ -925,6 +925,7 @@ impl World {
             fresh: &mut self.ids,
             issued: &self.issued,
             exposures: &mut self.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         self.segments.run_part(&mut parts, &live)
     }
@@ -2741,6 +2742,7 @@ fn charged_on(world: &World, charge: &str, advertised: &str) -> Charged {
         started_at: world.started_at("p1-s3"),
         amount_in: rutent_contracts::router_api::Amount::new("1000000").unwrap(),
         charged: rutent_contracts::router_api::Amount::new(charge).unwrap(),
+        charged_in: None,
         advertised: formula(advertised),
         result: world.result_of("p1-s3"),
     }
@@ -2901,4 +2903,62 @@ fn a_charge_is_raised_on_its_result_and_the_terms_that_bound_its_segment() {
     };
     assert!(!undelivered.delivered);
     assert_eq!(world.admitted_from(base), Ok(world.log.len() - base));
+}
+
+/// A charge stated in another asset than the one its tuple's formula counts in is held to no formula, and is never
+/// passed for it: any of it is raised, against a maximum of nothing and in the asset it is stated in, as the log
+/// admits it. A charge of nothing in that asset charges nothing and raises nothing.
+// verifies: REQ-QTE-5, AC-14
+#[test]
+fn a_charge_in_another_asset_is_raised_and_never_passed() {
+    let mut world = World::over(Platform::settling());
+    world.ran();
+    let mut charges = Charges::new();
+    let mut channel = Channel {
+        raised: Vec::new(),
+        deliver: true,
+    };
+    let terms = Terms::new();
+    let other = rutent_contracts::provider_role::Denomination {
+        id: "EURC".to_owned(),
+        decimals: 6,
+    };
+    // Within what the price allows, were it in the tuple's own asset: 100 against a maximum of 5 000.
+    let mut foreign = charged_on(&world, "100", "5000");
+    foreign.charged_in = Some(other.clone());
+    let mark = world.log.len();
+    let Ok(Checked::Flagged(flagged)) = world.charge(&mut charges, &terms, &mut channel, &foreign)
+    else {
+        panic!("a charge in another asset is passed for want of a formula to hold it to");
+    };
+    let Difference::Charge {
+        charged,
+        maximum,
+        asset,
+        terms: named,
+        ..
+    } = &flagged.raise.difference
+    else {
+        panic!("a charge difference");
+    };
+    assert_eq!(charged.as_str(), "100");
+    assert_eq!(maximum.as_str(), "0", "no formula bounds it");
+    assert_eq!(asset, &other, "in the asset it is stated in");
+    assert!(named.is_none());
+    assert_eq!(flagged.raise.cites, vec![foreign.result.clone()]);
+    assert!(flagged.delivered);
+    assert_eq!(channel.raised.len(), 1);
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    // Nothing charged, in whatever asset: nothing to raise.
+    let mut nothing = charged_on(&world, "0", "5000");
+    nothing.segment = id("p1-s2");
+    nothing.result = world.result_of("p1-s2");
+    nothing.started_at = world.started_at("p1-s2");
+    nothing.charged_in = Some(other);
+    assert_eq!(
+        world.charge(&mut charges, &terms, &mut channel, &nothing),
+        Ok(Checked::Within)
+    );
+    assert_eq!(channel.raised.len(), 1);
 }

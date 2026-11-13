@@ -3286,3 +3286,125 @@ module, the row is that feature's.
 The evidence floor as a logged catalogue change has no row: it stays on the owner's form. The stuck rows (`T-020-16`,
 `T-020-17`, `T-020-20`) edit `stuck/` in turn across waves; `T-020-20`, `T-020-25` and `T-020-27` share wave 26 and
 edit `stuck/`, `segments/` and `reversal/`, so the lead runs them in that order.
+
+## T-020-14
+
+Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
+
+- **Core's segments make the charge check.** `Segments::run_part` holds each settled segment's charge to the formula
+  that bound it, in `segments/charges.rs`, and raises one above it to the operator.
+  - *When a segment settles*, `account` keeps what the check needs (`Segments::note_charge`) and checks at once
+    (`check_charge`), before the next segment of the part is handed over, so the operator is warned while the part
+    is still running. The log shows it: the first segment's `raise` precedes the second segment's `move_value`.
+  - *On every run*, `run_part` checks the part's settled segments again (`check_charges`, also after an error in the
+    run). A check or a raise the log couldn't take is made when it can, and one made is not made twice
+    (`Charges::check` keeps each segment's result, amount and charge, and its built entries until the log takes them).
+  - The check is made *whatever `billed_separately` says*: the field is never read. It is the charge the formula
+    bounds, not how it is billed (`F-020`'s reading, kept).
+- **What the check is given** (`Segments::charged`, the accessor `T-020-07`'s notes asked for):
+  - the **charge**: the result's `fee.amount`, which `judge` now carries in `Counted::Succeeded.fee`. A fee stated in
+    another asset than the one the segment takes in is held to no formula of its tuple and is not noted (gap below);
+  - **`amount_in`**: the result's own `amount_in`, charge included. The assembly's stand-in summed `amount_out` and
+    the charge, which holds under `net` reporting only;
+  - **`started_at`**: the `effect` step's entry time, the segment's first `move_value` effect, which is where
+    `charge-raise-rests-on-terms-in-force` counts a segment's start (not the carry-out time `flight.started` keeps);
+  - **`result`**: the receipt of the result's stated entry;
+  - **`advertised`**: the fee formula of the price the operation cites (`sign::Cited.price`), never the assembly's
+    own price list. An operation that cites no price is a `Plan` error: a chosen candidate always cites one.
+- **The operator's channel.** `segments::Parts` gains `channel: &mut dyn Operator`. The assembly hands it the notices'
+  own `notice::Channel` (`T-023-02`): the raise is sealed for the operator, signed with a notice key of the
+  assembly's own, and sent on a transport that takes everything. The tests take the sealed notices through the
+  reference receiver (`Inbox::take`, a real Ed25519 verification) and read the raises from its events, so "the
+  channel carries the raise" is checked from the receiver's side. A channel that delivers nothing (`notice::Unbuilt`)
+  leaves each raise recorded `failed`, never unmade. The `Charged`/`Charges`/`Terms` registers are `Segments`' own,
+  kept as long as it is (`F-030` keeps them with it).
+- **Terms from a provider's signed bytes** (`Terms::take`, `Segments::take_terms`). The call keeps the bytes in the
+  evidence store, appends them as a stated entry about no order (the log attributes it), reads the entry back as the
+  log recorded it (`quote::Recorded`), fetches the statement kept behind its commitment (`KeptStatements`, the log's
+  own read, no policy read) and compares it with the statement the bytes read as, and only then calls
+  `Terms::state`, which checks the entry's shape, attribution, maker and times. A mismatch, or nothing kept, is
+  `NotTerms::NotWhatIsKept`. `Terms::state` stays public for callers that hold the kept bytes themselves; Core's own
+  path goes through `take`. **Nothing delivers a provider's terms to `take` yet**: no module hands them to Core, so
+  the API stops there. In the assembly, `Core::state_terms` is how a scenario hands them over, signed with the
+  provider's statements key (`Core::statements_signing_key`).
+- **A charge is held to the terms stated before its segment started** (`REQ-QTE-6`): `Terms::in_force` over the
+  segment's `started_at`, the router's `binding`. Terms stated later bind the segments after them.
+- **Restart** (`Charges::recorded`, `Segments::recorded_charges`). A register rebuilt from the log's entries knows the
+  charges the log holds a raise of, by order and segment with the result and charge they name; such a segment is
+  `Checked::AlreadyRaised`, never raised again, and a different result or charge for it is refused
+  (`AnotherCharge`). The assembly's `Core::charges_rebuilt_from_log` loses the register and rebuilds it, with the
+  segments kept as a durable `Segments` would be, and a rerun re-checks every settled segment. A reopened assembly
+  starts `Segments` empty (`F-030`), so nothing there runs an order again.
+- **The assembly's stand-in is deleted** (`Core::check_charges`, `charges::Channel`, the `charges` and `terms`
+  fields). This is the row's `F-024` exception: `conformance/scenarios/src/assembly/{charges,mod}.rs` and
+  `conformance/scenarios/tests/quoting.rs` (`T-024-03`'s `charge_above_the_formulas_maximum_is_flagged`, which now
+  calls `run` and reads Core's own checks). The assembly gains `Notices`, a notice key, a transport, the log's
+  `KeptStatements` read and the readers a scenario needs (`raised`, `operator_notices`, `charge_checked`,
+  `charged_segments`, `state_terms`, `route_operations`).
+- **Files outside the row's directories, for the same reason**: `Parts` gains a field, so every literal that builds a
+  `segments::Parts` gains `channel: &mut notice::Unbuilt`, in `core-orch/tests/{segments,reversal}.rs` and
+  `scenarios/tests/{hand_on,recalc}.rs` and `segments_support/{mod,rerouting}.rs`. A compile-only line each.
+  `quote/journal.rs` gains `built_stated`; `segments/journal.rs`'s `stated_entry` takes an optional `About`, and
+  `segments::maker` and `segments::journal` are `pub(crate)`, so `Terms::take` builds the stated entry as the
+  segments do.
+- **Defaults taken, reversible, failing closed:**
+  - a segment that settles is checked even when the operator's channel delivers nothing (the raise is then recorded
+    `failed`);
+  - a charge the log can't record stops the part with `SegmentsError::Append`, to be checked on the next run;
+  - an unreadable or unattributed terms statement is not kept, and a charge is then held to the price;
+  - `Terms::take` reads the kept bytes through `KeptStatements`, not `Evidence::fetch`, so it writes no read entry and
+    asks no policy: the bytes never leave Core's audit part. The commitment itself is compared as the store
+    answers it; Core doesn't recompute the salted hash (no hash in `core-orch`), which is the log's job when it
+    attributes the entry.
+- **Gaps, with owners:**
+  1. **No module delivers a provider's terms** (`F-013`/`F-030`, whoever wires a module's statements to Core): `take`
+     has no production caller.
+  2. **A raise delivered but not recorded before a stop is raised again** (`F-030`): `Charges::recorded` reads the
+     log, and a raise the transport took but whose entry the log never took is not in it. The operator's inbox holds
+     a raise once by its id, so it shows once; the log may then hold a second `raise` for the segment's charge.
+  3. ~~A fee in another asset is skipped.~~ Closed after review: a charge in another asset is noted with the asset it
+     is stated in (`Charged::charged_in`) and raised by `Charges::check` as a `charge` difference with a maximum of
+     nothing, in that asset, resting on the result alone; nothing charged raises nothing; an asset the operation names
+     at neither end stops the part (`Plan`). The existing raise and difference shapes carry it, so no contract change.
+     `check_amounts` already refuses such a result before it counts, so only the tests reach it
+     (`a_charge_in_another_asset_is_raised_and_never_passed`).
+  4. **`billed_separately`** has no scenario: no simulated provider states it. The rule is that nothing reads it, and
+     nothing does.
+  5. **`amount_in` for a gross charge** is the result's, not summed (`T-024-13`): the row has no gross scenario until
+     the stand-in reserve gains one.
+- **Tests** (`conformance/scenarios/tests/charge_check.rs`, over the assembled Core and the simulated providers; each
+  was seen red on its assertions with the check stubbed off, before the rule-offs below):
+  `charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segments` (`AC-14`, `REQ-QTE-5`),
+  `charge_within_the_formulas_maximum_raises_nothing` (`REQ-QTE-5`),
+  `terms_stated_after_a_segment_started_do_not_bind_it` (`REQ-QTE-6`),
+  `terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept` (`REQ-QTE-6`, `REQ-AUD-2`),
+  `each_segments_charge_is_checked_once_also_after_a_restart` (`REQ-QTE-5`),
+  `the_assembly_no_longer_checks_charges_itself` (`AC-14`). The last reads the assembly's source for the stand-in's
+  names. `T-024-03`'s `charge_above_the_formulas_maximum_is_flagged` runs on Core's own call.
+- **Rule-off, each red** (each rule switched off alone, `charge_check` and `quoting` run, the file restored and
+  touched; the baseline is green, and no run hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the charge is checked as soon as its segment settles | `charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segments` (the raise comes after the next segment's effect) |
+  | a charge is held to the terms in force at its segment's first effect | `terms_stated_after_a_segment_started_do_not_bind_it` |
+  | a register rebuilt from the log knows what was raised | `each_segments_charge_is_checked_once_also_after_a_restart` |
+  | the statement kept behind the commitment is compared with the one handed in | `terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept` |
+  | the raise goes through the notices' own channel (`Unbuilt` instead) | all five behavioural tests of `charge_check`: nothing reaches the operator's inbox |
+  | the assembly holds no check of its own (a stand-in name put back) | `the_assembly_no_longer_checks_charges_itself` |
+
+  After review, three more tests (`charge_check.rs`) hold what was defence in depth, each red with its rule off:
+
+  | Rule switched off | Red |
+  |---|---|
+  | every run re-checks the settled segments | `a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_segment`, `a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment` |
+  | the settling's own check, before the next segment | the same two, and `charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segments` |
+  | the commitment equality in `Terms::take` | `terms_whose_kept_statement_names_another_commitment_are_not_kept` |
+  | a charge in another asset held to no formula | `a_charge_in_another_asset_is_raised_and_never_passed` (`reversal.rs`) |
+
+  The retry order was right already: the settling's check comes before `account` returns the segment as settled, so
+  a retried run records a refused raise before it hands the next segment over, and `Charges` keeps the raise made so
+  the operator is warned once. The log's refusals are planted on the assembly's store (`Disk::refuse`), since
+  `segments_support`'s test log routes one reserve that can't charge above its price. Still without a test of its own:
+  the refusal of a store that keeps nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off
+  isolates from the compare).

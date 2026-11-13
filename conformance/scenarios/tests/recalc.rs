@@ -261,6 +261,7 @@ impl Recalc {
             fresh: &mut core.ids,
             issued: &core.issued,
             exposures: &mut core.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         core.segments.run_part(&mut parts, &live)
     }
@@ -803,6 +804,7 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             fresh: &mut core.ids,
             issued: &core.issued,
             exposures: &mut core.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         let ran = core
             .segments

@@ -132,6 +132,9 @@ pub(super) struct Cited<'a> {
     pub declared_seconds: Option<u64>,
     /// The conversion quote the operation cites, which bounds what a conversion gives out.
     pub quoted: Option<super::judge::Quoted>,
+    /// The fee formula of the price the operation cites: what binds its provider's charge where the provider stated
+    /// no terms before the segment started (`REQ-QTE-5`).
+    pub price: Option<&'a router_api::FeeFormula>,
 }
 
 /// The tighter of two slippage bounds, either of which may be absent.
@@ -163,6 +166,7 @@ pub(super) fn cited<'a>(
     let mut terms = None;
     let mut declared_seconds = None;
     let mut quoted = None;
+    let mut price = None;
     for id in operation.figures.iter() {
         let Some(f) = figure(id) else { continue };
         if f.origin.provider() != Some(&operation.provider) {
@@ -173,8 +177,13 @@ pub(super) fn cited<'a>(
             FigureValue::RampTuple { tuple } => terms = terms.or(Some(&tuple.terms)),
             FigureValue::ExchangeTuple { tuple } => terms = terms.or(Some(&tuple.terms)),
             FigureValue::Price {
-                settlement_seconds, ..
-            } => declared_seconds = declared_seconds.or(Some(u64::from(*settlement_seconds))),
+                settlement_seconds,
+                fee,
+                ..
+            } => {
+                declared_seconds = declared_seconds.or(Some(u64::from(*settlement_seconds)));
+                price = price.or(Some(fee));
+            }
             FigureValue::FreshQuote { quote, .. } => {
                 if let ResultBody::Conversion(ConversionResult {
                     outcome: ConversionOutcome::DryRunAccepted(q),
@@ -200,6 +209,7 @@ pub(super) fn cited<'a>(
         terms: terms?,
         declared_seconds,
         quoted,
+        price,
     })
 }
 

@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Log, Operator};
-use rutent_contracts::core_internal::{Actor, Difference, Outcome, Raise, Receipt, What};
+use rutent_contracts::core_internal::{
+    Actor, Difference, Entry, Outcome, Raise, Receipt, VerifiedEntry, What,
+};
+use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_router::quote::check_charge;
 
@@ -30,6 +33,9 @@ pub struct Charged {
     pub amount_in: Amount,
     /// What its provider charged.
     pub charged: Amount,
+    /// The asset the charge is stated in, where it isn't the one its tuple's formula counts in (its `from` asset):
+    /// `None` for the usual case. Such a charge is held to no formula and raised if it is anything (`REQ-QTE-5`).
+    pub charged_in: Option<Denomination>,
     /// The formula its route was priced on, the price figure its operation cites: what binds a tuple whose provider
     /// stated no terms before the segment started. Every operation of a route cites a price, so there is always one,
     /// and no charge goes unchecked for want of a formula.
@@ -45,6 +51,9 @@ pub enum Checked {
     Within,
     /// Above it, raised to the operator.
     Flagged(Box<Flagged>),
+    /// Above it, and raised already: the log holds the raise, from before this register was rebuilt
+    /// ([`Charges::recorded`]). It isn't raised again, and its entry is the log's.
+    AlreadyRaised,
 }
 
 /// A charge above its formula, raised to the operator and recorded.
@@ -98,6 +107,9 @@ pub struct ChargeDesk<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct Charges {
     checked: BTreeMap<(String, String), (Seen, Kept)>,
+    /// The charges the log holds a raise of, by order and segment: the result the raise rests on and the charge it
+    /// names. A segment in it is raised already, whatever this register has seen.
+    recorded: BTreeMap<(String, String), (Receipt, Amount)>,
 }
 
 /// What a segment's check was made on: its result, what it took in and what it was charged.
@@ -123,6 +135,58 @@ impl Charges {
         Self::default()
     }
 
+    /// The register of a Core that stopped, rebuilt from the log's `entries`: each charge the log holds a raise of is
+    /// raised already and is raised again by no check, so a restart that lost the register doesn't warn the operator
+    /// twice of one charge (`REQ-QTE-5`). A raise whose entry the log never took isn't in it: it is raised afresh,
+    /// and a raise delivered but not recorded before the stop is raised again (the gap this leaves, in the notes).
+    pub fn recorded(entries: &[(Receipt, Entry)]) -> Self {
+        let recorded: BTreeMap<(String, String), (Receipt, Amount)> = entries
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Raise { raise },
+                    ..
+                }) => match &raise.difference {
+                    Difference::Charge {
+                        order,
+                        segment,
+                        charged,
+                        result,
+                        ..
+                    } => Some((
+                        (order.as_str().to_owned(), segment.as_str().to_owned()),
+                        (result.clone(), charged.clone()),
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        Self {
+            checked: BTreeMap::new(),
+            recorded,
+        }
+    }
+
+    /// What the check of `segment` of `order` came to, once it was recorded.
+    pub fn result(&self, order: &Id, segment: &Id) -> Option<Checked> {
+        let key = (order.as_str().to_owned(), segment.as_str().to_owned());
+        match self.checked.get(&key) {
+            Some((_, Kept::Within)) => Some(Checked::Within),
+            Some((_, Kept::Raised(raised))) => raised.step.receipt.clone().map(|receipt| {
+                Checked::Flagged(Box::new(Flagged {
+                    raise: raised.raise.clone(),
+                    delivered: raised.delivered,
+                    receipt,
+                }))
+            }),
+            None => self
+                .recorded
+                .contains_key(&key)
+                .then_some(Checked::AlreadyRaised),
+        }
+    }
+
     /// Checks `charged` against the formula that bound its segment at its start: the terms its provider stated last
     /// at or before then, or else the formula advertised (`REQ-QTE-5`, `REQ-QTE-6`). Above it, the charge is raised
     /// to the operator as a `charge` difference resting on the result's stated entry and, where the provider's terms
@@ -145,6 +209,13 @@ impl Charges {
             charged.amount_in.clone(),
             charged.charged.clone(),
         );
+        if let Some((result, amount)) = self.recorded.get(&key) {
+            return if result == &charged.result && amount == &charged.charged {
+                Ok(Checked::AlreadyRaised)
+            } else {
+                Err(ChargeError::AnotherCharge)
+            };
+        }
         if let Some((first, _)) = self.checked.get(&key)
             && first != &seen
         {
@@ -160,23 +231,44 @@ impl Charges {
                 InForce::Binds { terms, receipt } => (&terms.fee, Some(receipt)),
                 InForce::Unstated | InForce::Quote => (&charged.advertised, None),
             };
-            let kept = match check_charge(formula, &charged.amount_in, &charged.charged) {
+            // A charge in another asset than the tuple's formula counts in is bounded by no formula, so any of it is
+            // above what nothing allows: it is raised against a maximum of nothing, in the asset it is stated in,
+            // and never passed for want of a formula to hold it to (`REQ-QTE-5`).
+            let verdict = match &charged.charged_in {
+                Some(other) if other != &charged.tuple.from.asset => {
+                    if charged.charged.is_zero() {
+                        Ok(())
+                    } else {
+                        let nothing = Amount::new("0").ok_or(ChargeError::NotTheTuplesProvider)?;
+                        Err((charged.charged.clone(), nothing, other.clone(), None))
+                    }
+                }
+                _ => check_charge(formula, &charged.amount_in, &charged.charged).map_err(|flag| {
+                    (
+                        flag.charged,
+                        flag.bound,
+                        charged.tuple.from.asset.clone(),
+                        terms.cloned(),
+                    )
+                }),
+            };
+            let kept = match verdict {
                 Ok(()) => Kept::Within,
-                Err(flag) => {
+                Err((amount, maximum, asset, terms)) => {
                     let raise = Raise {
                         raise: desk.fresh.id(),
                         difference: Difference::Charge {
                             order: charged.order.clone(),
                             segment: charged.segment.clone(),
                             provider: charged.provider.clone(),
-                            charged: flag.charged,
-                            maximum: flag.bound,
-                            asset: charged.tuple.from.asset.clone(),
+                            charged: amount,
+                            maximum,
+                            asset,
                             result: charged.result.clone(),
-                            terms: terms.cloned(),
+                            terms: terms.clone(),
                         },
                         cites: std::iter::once(charged.result.clone())
-                            .chain(terms.cloned())
+                            .chain(terms)
                             .collect(),
                         at: journal::now(desk.clock)?,
                     };

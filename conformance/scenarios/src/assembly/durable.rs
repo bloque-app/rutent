@@ -40,6 +40,8 @@ pub struct Disk {
     shelf: Rc<RefCell<MemoryShelf>>,
     crash: Rc<Cell<Option<Crash>>>,
     seen: Rc<RefCell<Vec<(String, usize)>>>,
+    /// Records of a call the store can't take now: its name and how many more appends it turns away.
+    refusing: Rc<Cell<Option<(&'static str, usize)>>>,
 }
 
 impl std::fmt::Debug for Disk {
@@ -59,6 +61,29 @@ impl Disk {
     /// Plants `crash`: the process stops there, once.
     pub fn plant(&self, crash: Crash) {
         self.crash.set(Some(crash));
+    }
+
+    /// Makes the log's store turn away the next `times` appends of a record whose `call` is `call`, as a store that
+    /// can't take them now does: nothing is written, and the log may try again (`AppendFailure::Unavailable`).
+    pub fn refuse(&self, call: &'static str, times: usize) {
+        self.refusing.set(Some((call, times)));
+    }
+
+    fn refused(&self, record: &[u8]) -> bool {
+        let Some((call, left)) = self.refusing.get() else {
+            return false;
+        };
+        if left == 0 {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return false;
+        };
+        if value["what"]["call"].as_str() != Some(call) {
+            return false;
+        }
+        self.refusing.set(Some((call, left - 1)));
+        true
     }
 
     /// Every record the log's store holds, oldest first.
@@ -103,6 +128,11 @@ pub struct LogDisk(Disk);
 
 impl Store for LogDisk {
     fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
+        if self.0.refused(record) {
+            return Err(StoreError::Unavailable(
+                "the store can't take it now (a planted fault)".to_owned(),
+            ));
+        }
         self.0.records.borrow_mut().push(record.to_vec());
         self.0.took(record);
         Ok(())

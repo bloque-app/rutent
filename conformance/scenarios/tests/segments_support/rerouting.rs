@@ -214,6 +214,7 @@ impl Rerouting {
             fresh: &mut core.ids,
             issued: &core.issued,
             exposures: &mut core.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         core.segments.run_part(&mut parts, &live)
     }

@@ -420,6 +420,7 @@ fn run(modules: &mut Fake) -> (Ran, KeptLog) {
         fresh: &mut ids,
         issued: &issued,
         exposures: &mut exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
     };
     let ran = segments.run_part(&mut parts, &live).unwrap();
     (ran, log)

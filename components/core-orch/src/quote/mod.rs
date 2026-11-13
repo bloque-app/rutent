@@ -43,4 +43,4 @@ pub use shown::{
     ExecutedSegment, HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin,
     SegmentShown, Shown, SlowSegment, digest, executed, show,
 };
-pub use terms::{InForce, NotTerms, Terms};
+pub use terms::{InForce, NotTerms, Recorded, TakeError, Taken, Terms, TermsDesk};

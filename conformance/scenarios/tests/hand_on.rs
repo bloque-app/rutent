@@ -562,6 +562,7 @@ fn run_linked(
         fresh: &mut core.ids,
         issued: &core.issued,
         exposures: &mut core.exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
     };
     core.segments.run_part(&mut parts, &live)
 }
@@ -1049,6 +1050,7 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
         fresh: &mut core.ids,
         issued: &core.issued,
         exposures: &mut core.exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
     };
     let ran = core
         .segments
