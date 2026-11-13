@@ -306,6 +306,24 @@ impl KeptStatements for Altered {
     }
 }
 
+/// A read of the evidence store that answers the statement it was handed, byte for byte, under another commitment
+/// than the one asked for.
+struct Recommitted(Vec<u8>);
+
+impl KeptStatements for Recommitted {
+    fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        let mut other = serde_json::to_value(commitment).expect("a digest is JSON");
+        let value = other["value"].as_str().expect("a digest value").to_owned();
+        let first = if value.starts_with('a') { 'b' } else { 'a' };
+        other["value"] = format!("{first}{}", &value[1..]).into();
+        Ok(Some(KeptStatement {
+            commitment: serde_json::from_value(other).expect("another digest"),
+            salt: Salt::new("A".repeat(43)).expect("a salt"),
+            bytes: Encoded::new(rutent_conformance::signing::base64url(&self.0)).expect("bytes"),
+        }))
+    }
+}
+
 /// A read of the evidence store that keeps nothing.
 struct Nothing;
 
@@ -485,4 +503,23 @@ fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
         "recorded before the next segment moved"
     );
     assert_eq!(core.raised().len(), 2, "one warning for each segment");
+}
+
+// verifies: REQ-QTE-6, REQ-AUD-2
+#[test]
+fn terms_whose_kept_statement_names_another_commitment_are_not_kept() {
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    let first = ran(&mut core, &session, CHARGING, "req-first");
+    let allowing = terms_for(&core, &first, "100");
+
+    // The store answers the very statement handed in, under a commitment the entry doesn't name: it is not what
+    // the entry rests on, so the terms are not kept.
+    let held = core.terms_held();
+    let refused = core.state_terms_read_by(&mut Recommitted(allowing[0].clone()), &allowing[0]);
+    assert_eq!(refused, Err(TakeError::NotKept(NotTerms::NotWhatIsKept)));
+    assert_eq!(core.terms_held(), held, "nothing was kept");
+
+    // The store's own answer, under the commitment asked for, is kept.
+    assert!(core.state_terms(&allowing[0]).expect("kept").new);
+    assert_eq!(core.terms_held(), held + 1);
 }
