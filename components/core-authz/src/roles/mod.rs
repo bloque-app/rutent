@@ -159,6 +159,8 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
                 // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
                 Action::EraseStatement { .. } => None,
+                // Compile-only for the contract round: no rule lets anyone ask a reversal yet, so policy refuses it.
+                Action::AskReversal { .. } => None,
             }
         }
         Asked::Authorise(a) => {
