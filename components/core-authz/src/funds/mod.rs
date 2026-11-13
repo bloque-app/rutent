@@ -70,10 +70,12 @@
 //! origin account once it is set. The contract lets that payer move it; letting it through needs a word on the payer
 //! that a fixed rule can read, a source or a change to that rule, which is the coordinator's to place.
 //!
-//! An order the log holds no acceptance of has no requester and no payer, so no one gives it new terms. Gap, raised
-//! with the coordinator: Core's intake authorises an order before it appends the order's acceptance, so at the first
-//! authorisation the log names no payer, and the origin account it sets isn't held to the payer's accounts here; every
-//! later one is. An account the register knows nothing of is refused as one of another's is, `not_permitted`.
+//! Intake records an order's acceptance before it asks policy for the authorisation it gives (the coordinator's
+//! ruling on the payer gap), so the first authorisation has its payer too. An order the log holds no acceptance of has
+//! no requester and no payer, so no one gives it new terms or sets its origin account; such an authorisation is
+//! refused `not_permitted`, as one of another's order is, so a caller can't tell an order that doesn't exist from one
+//! that isn't its own (the coordinator's ruling on `T-023-01`'s question). An account the register knows nothing of
+//! is refused the same way.
 //!
 //! # Where the register's rule stands
 //!
@@ -557,11 +559,11 @@ impl<L: PolicyLog + Recorded + Receipted, P, S: Sources> Engine<L, P, S> {
         let Some(account) = self.authorised.sets_account(a, payer) else {
             return consulted;
         };
-        // Gap, raised with the coordinator: Core's intake authorises an order before its acceptance reaches the log, so
-        // at its first authorisation the log names no payer yet, and the account it sets isn't held to the payer's
-        // here. Every later one, once the acceptance is in the log, is.
+        // An order with no acceptance names no payer: refused as one not the caller's is. Intake records the
+        // acceptance before it asks policy (the coordinator's ruling on the payer gap), so even the first
+        // authorisation has its payer here.
         let Some(payer) = payer else {
-            return consulted;
+            return held(consulted, Some(RefusalClass::NotPermitted));
         };
         let need = Need {
             input: payer.clone(),

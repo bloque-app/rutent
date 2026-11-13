@@ -1729,23 +1729,31 @@ fn origin_account_is_one_the_payer_holds() {
     assert!(policy.authorise(&a).unwrap().permit().is_some());
 }
 
-/// Core authorises an order before its acceptance reaches the log (intake), so an order the log holds no acceptance of
-/// yet has its first origin account set unchecked: a gap raised with the coordinator, pinned here so its closing shows.
-// verifies: REQ-AUZ-3
+/// The first authorisation of an order is held to its payer's accounts as every later one is: intake records the
+/// acceptance before it asks policy (the coordinator's ruling on the payer gap). One whose order the log holds no
+/// acceptance of names no payer, and is refused as one of another's order is.
+// verifies: REQ-AUZ-3, REQ-ORD-17
 #[test]
-fn first_account_before_the_acceptance_is_not_yet_held_to_the_payer() {
+fn first_authorisation_is_held_to_the_payers_accounts() {
     let mut policy = engine();
     policy
         .sources
         .0
         .push((holds("cust-1", "acct-1"), Reply::Given(Said::No)));
+    let first = naming_account("auth-17-first", "ord-17", "acct-1", giver(0));
+    assert_eq!(
+        policy.authorise(&first).unwrap().outcome,
+        Answer::Refuse {
+            class: RefusalClass::NotPermitted
+        },
+        "the payer doesn't hold it"
+    );
     let before_its_acceptance = naming_account("auth-77", "ord-77", "acct-1", giver(0));
-    assert!(
-        policy
-            .authorise(&before_its_acceptance)
-            .unwrap()
-            .permit()
-            .is_some(),
-        "no payer in the log yet: unchecked (the gap)"
+    assert_eq!(
+        policy.authorise(&before_its_acceptance).unwrap().outcome,
+        Answer::Refuse {
+            class: RefusalClass::NotPermitted
+        },
+        "no acceptance in the log, no payer"
     );
 }
