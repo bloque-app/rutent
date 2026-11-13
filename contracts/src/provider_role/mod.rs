@@ -26,7 +26,9 @@ pub use envelope::{
 };
 pub use operation::*;
 pub use outcome::*;
-pub use settlement::{AmountMismatch, Remainder, check_amounts};
+pub use settlement::{
+    AmountMismatch, Remainder, charge_in_out_unit, check_amounts, less_the_charge,
+};
 pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 

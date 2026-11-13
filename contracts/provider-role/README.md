@@ -238,6 +238,14 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Amounts** (2.1.0; see "Amounts against the operation"). `amount_in` is what left the segment's origin, the
   provider's charge included, whether the tuple reports gross or net: `reporting` says only whether `amount_out`
   includes the charge. The fee is in the asset the segment takes in, in the origin unit.
+- **Less the charge** (3.1.0). Under `gross`, a segment that keeps its asset (a withdrawal, a deposit or a transfer)
+  delivers its `amount_out` less its charge. `amount_out` is in the out unit, the operation's out asset at its
+  destination decimals, and the fee in the origin unit, which differ where a reserve's two ends count in different
+  decimals. So the charge subtracted is the fee restated in the out unit: multiplied out exactly where that unit is
+  finer, divided and rounded up where it is coarser, so the charge is never counted below what was charged and
+  what arrives is never overstated (`charge_in_out_unit`, `less_the_charge`). A charge above `amount_out` delivers
+  nothing that can be stated (`None`). Under `net`, what it delivers is its `amount_out`. A conversion's output is as
+  its answer states it: its fee is in its `from` asset, which it doesn't give out.
 - **No `null`.** An optional field is present with a value or absent. Rust refuses `null` as the schemas do.
 - **Evidence** is a non-empty list of `{grade, reference, by}`, where `by` says whose evidence each piece is. A
   public record and a reserve's statement can then both close an order (`REQ-ORD-33`, `REQ-ORD-39`, ADR-0007).

@@ -1,6 +1,16 @@
 # provider-role changelog
 
 ## 3.1.0
+- "Less the charge" has a stated unit (round 3 of the contract, item s). Under a tuple that reports `gross`, a
+  segment that keeps its asset delivers its `amount_out` less its charge; `amount_out` is in the out unit and the fee
+  in the origin unit, which differ where a reserve's two ends count in different decimals, so Core's reading
+  (`segments::judge::handed_on`) subtracted unlike units. The charge subtracted is the fee restated in the
+  operation's out asset's unit: multiplied out exactly where it is finer, divided and rounded up where it is
+  coarser, so what arrives is never overstated. Two functions, `charge_in_out_unit(fee, origin_decimals,
+  out_decimals)` and `less_the_charge(amount_out, fee, origin_decimals, out_decimals)`, which router-api's
+  confirmation rule reads, with unit tests across 2, 6 and equal decimals. The fee's own unit, the origin unit, and
+  `check_amounts` are unchanged. Minor, folded into 3.1.0 before its release: two functions added. (DEC-4, DEC-20,
+  REQ-CAT-11, INV-1, T-020-01)
 - A failed result may show whose fault the failure was, the customer's or the operator's: an optional `fault` on
   the `failed` outcome (`REQ-ORD-11`). Until the party it names accepts it, the provider carries the reversal.
   Before it, no shape carried it, so `T-020-12`'s Core read a stopgap prefix (`fault:`) in an evidence piece's
