@@ -4,6 +4,7 @@ use rutent_records::Finding;
 use rutent_records::evidence::{Inputs, Report, Results, build, compare, parse_scope, universe};
 use rutent_records::ids::Defined;
 use rutent_records::tags::scan_tests;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -59,6 +60,7 @@ fn plan_dec8(dec8: &str, dec16: &str, placement: &str, feature: &str) -> String 
         &format!("| `DEC-8` | {dec8} |"),
         &format!("| `DEC-16` | {dec16} |"),
         "| `DEC-17` | Always in v0. |",
+        "| `T-024-09` | The table. An identifier verified by inspection (`REQ-MOD-2`, `REQ-MOD-3`) names its check; a row may be marked partly met with the form item it waits on (`REQ-MOD-1`); done. |",
         "",
         "### 4.2 `M2` to `M5` features",
         "",
@@ -123,6 +125,16 @@ fn all_pass() -> String {
 }
 
 fn report(scope: &str, source: &str, results: &str, review_notes: bool) -> (Report, Vec<Finding>) {
+    report_full(scope, source, results, review_notes, None)
+}
+
+fn report_full(
+    scope: &str,
+    source: &str,
+    results: &str,
+    review_notes: bool,
+    form_items: Option<&BTreeSet<String>>,
+) -> (Report, Vec<Finding>) {
     let (parsed, problems) = parse_scope(scope);
     let spec = spec();
     let defined = Defined::collect(&spec, &[], &plain_plan(), "");
@@ -136,6 +148,8 @@ fn report(scope: &str, source: &str, results: &str, review_notes: bool) -> (Repo
         tests: &tests,
         results: &results,
         review_exists: &exists,
+        plan: &plain_plan(),
+        form_items,
     };
     (build(&parsed, &inputs), problems)
 }
@@ -345,9 +359,7 @@ fn m3_row_reclassified_against_develop_is_reported() {
         assert_eq!(found.len(), 1, "{line}: {found:?}");
         assert!(some_with(&found, "reclassified", id), "{found:?}");
     }
-    // A partly met or inspected row is still M3's, and a row that was never M3's moves freely.
-    let head = scope_text("off", &["REQ-MOD-3 | partly | form:cat5-timing-residual"]);
-    assert!(ratchet(&head, &base, &plan, &plan).is_empty());
+    // A row that was never M3's moves freely. (A move to partly met or inspected is the next test's.)
     let was_m4 = scope_text("off", &["REQ-MOD-3 | deferred | DEC-16"]);
     let now_deferred = scope_text("off", &["REQ-MOD-3 | deferred | DEC-8"]);
     assert!(ratchet(&now_deferred, &was_m4, &plan, &plan).is_empty());
@@ -481,6 +493,7 @@ fn the_real_scope_file_is_well_formed_and_places_every_spec_identifier() {
     let spec = std::fs::read_to_string(root.join("SPEC.md")).expect("SPEC.md is readable");
     let (scope, problems) = parse_scope(&scope_text);
     let defined = rutent_records::ids::load_defined(&root).expect("documents are readable");
+    let plan_text = std::fs::read_to_string(root.join("PLAN.md")).expect("PLAN.md is readable");
     let universe = universe(&spec);
     assert!(
         universe.len() > 100,
@@ -495,7 +508,7 @@ fn the_real_scope_file_is_well_formed_and_places_every_spec_identifier() {
                     e.file_name()
                         .to_string_lossy()
                         .starts_with(&format!("{feature}-"))
-                        && e.path().join("notes.md").is_file()
+                        && std::fs::metadata(e.path().join("notes.md")).is_ok_and(|m| m.len() > 0)
                 })
             })
             .unwrap_or(false)
@@ -506,6 +519,8 @@ fn the_real_scope_file_is_well_formed_and_places_every_spec_identifier() {
         tests: &none,
         results: &results,
         review_exists: &exists,
+        plan: &plan_text,
+        form_items: None,
     };
     let report = build(&scope, &inputs);
     // What `M3`'s exit adds is a passing verifier for each `M3` row; here the rows must only be well formed.
@@ -681,4 +696,153 @@ fn a_mention_that_does_not_defer_the_id_does_not_excuse_a_deferral() {
     );
     let found = ratchet(&head, &base, &deferring, &plain_plan());
     assert!(found.is_empty(), "{found:?}");
+}
+
+// verifies: DEC-17
+#[test]
+fn m3_row_moved_to_inspected_or_partly_met_is_reported_unless_a_changed_row_places_it() {
+    let base = scope_text("off", &[]);
+    let plan = plain_plan();
+    let moves = [
+        (
+            "REQ-MOD-2 | inspect | check:documentation T-024-09",
+            "REQ-MOD-2",
+            "`REQ-MOD-2`, `REQ-MOD-3`",
+            "`REQ-MOD-3`",
+        ),
+        (
+            "REQ-MOD-1 | partly | form:item T-024-09",
+            "REQ-MOD-1",
+            "`REQ-MOD-1`",
+            "`REQ-MOD-9`",
+        ),
+    ];
+    for (line, id, here, before) in moves {
+        let head = scope_text("off", &[line]);
+        // Cited, but the row is the same on develop: nothing placed it.
+        let found = ratchet(&head, &base, &plan, &plan);
+        assert!(some_with(&found, "reclassified", id), "{line}: {found:?}");
+        // Not cited at all.
+        let bare = scope_text("off", &[&line.replace(" T-024-09", "")]);
+        let found = ratchet(&bare, &base, &plan, &plan.replace(here, before));
+        assert!(some_with(&found, "reclassified", id), "{line}: {found:?}");
+        // Cited, and develop's row did not place it.
+        let found = ratchet(&head, &base, &plan, &plan.replace(here, before));
+        assert!(found.is_empty(), "{line}: {found:?}");
+    }
+}
+
+// verifies: DEC-17
+#[test]
+fn inspection_and_partly_met_are_allowed_only_for_the_ids_the_plan_names() {
+    let allowed = rutent_records::evidence::allowed_sets(&plain_plan());
+    assert_eq!(
+        allowed.0.iter().cloned().collect::<Vec<_>>(),
+        ["REQ-MOD-2", "REQ-MOD-3"]
+    );
+    assert_eq!(allowed.1.iter().cloned().collect::<Vec<_>>(), ["REQ-MOD-1"]);
+    let outside = scope_text(
+        "off",
+        &[
+            "REQ-OPS-5 | inspect | check:documentation",
+            "REQ-OPS-4 | partly | form:cat5-timing-residual",
+        ],
+    );
+    let found = table_findings(&outside, &sources(&["REQ-OPS-4", "REQ-OPS-5"]), &all_pass());
+    assert!(
+        some_with(&found, "inspection-not-allowed", "REQ-OPS-5"),
+        "{found:?}"
+    );
+    assert!(
+        some_with(&found, "partly-not-allowed", "REQ-OPS-4"),
+        "{found:?}"
+    );
+    // A plan that says nothing allows nothing.
+    let empty = rutent_records::evidence::allowed_sets("| A | B |\n|---|---|\n| `X-1` | y |");
+    assert!(empty.0.is_empty() && empty.1.is_empty());
+}
+
+// verifies: DEC-17
+#[test]
+fn the_real_plan_allows_inspection_and_partly_met_for_the_ids_it_names() {
+    let plan = std::fs::read_to_string(root().join("PLAN.md")).unwrap();
+    let (inspect, partly) = rutent_records::evidence::allowed_sets(&plan);
+    let inspect: Vec<_> = inspect.into_iter().collect();
+    assert_eq!(
+        inspect,
+        ["NFR-7", "REQ-EXT-2", "REQ-MOD-2", "REQ-MOD-3", "REQ-MOD-5"]
+    );
+    assert_eq!(partly.into_iter().collect::<Vec<_>>(), ["REQ-CAT-5"]);
+}
+
+// verifies: DEC-17
+#[test]
+fn a_form_item_the_decisions_file_lacks_is_reported() {
+    let scope = scope_text("off", &["REQ-MOD-1 | partly | form:cat5-timing-residual"]);
+    let src = sources(&["REQ-MOD-1"]);
+    let held: BTreeSet<String> = ["cat5-timing-residual".to_string()].into();
+    let (report, _) = report_full(&scope, &src, &all_pass(), true, Some(&held));
+    assert!(report.table.is_empty(), "{report:?}");
+    let other: BTreeSet<String> = ["something-else".to_string()].into();
+    let (report, _) = report_full(&scope, &src, &all_pass(), true, Some(&other));
+    assert!(
+        report.table.iter().any(|f| f.rule == "form-item-unknown"),
+        "{report:?}"
+    );
+    // With no decisions file the check is skipped, and the row stands.
+    let (report, _) = report_full(&scope, &src, &all_pass(), true, None);
+    assert!(report.table.is_empty(), "{report:?}");
+}
+
+// verifies: DEC-17
+#[test]
+fn the_binary_reads_the_decisions_file_and_a_review_needs_notes_that_are_not_empty() {
+    let real = std::fs::read_to_string(root().join("conformance/evidence/v0-scope")).unwrap();
+    let head = records_dir("forms", &real);
+    let run = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_evidence-table"))
+            .arg("--root")
+            .arg(&head)
+            .output()
+            .expect("the binary runs");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let stdout = run();
+    assert!(stdout.contains("form items not checked"), "{stdout}");
+    assert!(
+        stdout.contains("inspection-unnamed: scope:") && stdout.contains("REQ-EXT-2"),
+        "{stdout}"
+    );
+    std::fs::create_dir_all(head.join("features/F-011-router-library")).unwrap();
+    let notes = head.join("features/F-011-router-library/notes.md");
+    std::fs::write(&notes, "").unwrap();
+    assert!(
+        run().contains("inspection-unnamed"),
+        "an empty notes file reviews nothing"
+    );
+    std::fs::write(&notes, "# F-011 notes\nThe review.\n").unwrap();
+    let stdout = run();
+    assert!(
+        !stdout.lines().any(|l| l.starts_with("inspection-unnamed")),
+        "{stdout}"
+    );
+    std::fs::create_dir_all(head.join("decisions")).unwrap();
+    std::fs::write(
+        head.join("decisions/questions.json"),
+        r#"[{"id": "another-item"}]"#,
+    )
+    .unwrap();
+    let stdout = run();
+    assert!(
+        stdout.contains("form-item-unknown") && !stdout.contains("form items not checked"),
+        "{stdout}"
+    );
+    std::fs::write(
+        head.join("decisions/questions.json"),
+        r#"[{"id": "cat5-timing-residual"}]"#,
+    )
+    .unwrap();
+    let stdout = run();
+    assert!(!stdout.contains("form-item-unknown"), "{stdout}");
+    std::fs::remove_dir_all(&head).unwrap();
 }

@@ -15,6 +15,7 @@ use rutent_records::evidence::{
     Inputs, Report, Results, Scope, build, compare, parse_scope, universe,
 };
 use rutent_records::{ids::load_defined, tags};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -60,6 +61,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// The ids of the decisions form's items, from `decisions/questions.json` under the root when the repository holds
+/// it (the form may be untracked): every string after an `"id"` key.
+fn form_items(root: &Path) -> Option<BTreeSet<String>> {
+    let text = std::fs::read_to_string(root.join("decisions/questions.json")).ok()?;
+    let mut out = BTreeSet::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("\"id\"") {
+        rest = &rest[at + 4..];
+        let value = rest.trim_start().strip_prefix(':').map(str::trim_start);
+        if let Some(value) = value.and_then(|v| v.strip_prefix('"'))
+            && let Some(end) = value.find('"')
+        {
+            out.insert(value[..end].to_string());
+        }
+    }
+    Some(out)
+}
+
 /// A results file holds whatever the tests printed, so bytes that are not UTF-8 are replaced, not refused.
 fn read_lossy(path: &Path) -> Result<String, String> {
     std::fs::read(path)
@@ -100,6 +119,7 @@ fn run(
         Some(path) => Results::parse(&read_lossy(path)?),
         None => Results::default(),
     };
+    let form_items = form_items(root);
     let features = root.join("features");
     let review_exists = |feature: &str| {
         std::fs::read_dir(&features)
@@ -108,7 +128,8 @@ fn run(
                     e.file_name()
                         .to_string_lossy()
                         .starts_with(&format!("{feature}-"))
-                        && e.path().join("notes.md").is_file()
+                        && std::fs::metadata(e.path().join("notes.md"))
+                            .is_ok_and(|m| m.is_file() && m.len() > 0)
                 })
             })
             .unwrap_or(false)
@@ -121,6 +142,8 @@ fn run(
             tests: &tests,
             results: &results,
             review_exists: &review_exists,
+            plan: &plan,
+            form_items: form_items.as_ref(),
         },
     );
     report.table.splice(0..0, problems);
@@ -135,6 +158,12 @@ fn run(
         );
     }
     let mut notes = Vec::new();
+    if form_items.is_none() {
+        notes.push(
+            "evidence-table: form items not checked (no decisions/questions.json under the root)"
+                .to_string(),
+        );
+    }
     if let Some(base) = base {
         notes.push(compare_with_base(&mut report, &scope, &plan, base)?);
     }

@@ -299,8 +299,34 @@ pub struct Inputs<'a> {
     pub tests: &'a [TestCase],
     /// What the test run said.
     pub results: &'a Results,
-    /// True when a feature's notes exist, so that a recorded review can be cited.
+    /// True when a feature's notes exist and are not empty, so that a recorded review can be cited.
     pub review_exists: &'a dyn Fn(&str) -> bool,
+    /// `PLAN.md`, whose `T-024-09` row says which identifiers may be inspected or partly met ([`allowed_sets`]).
+    pub plan: &'a str,
+    /// The ids of the decisions form's items, when the repository holds the form; `None` skips the check.
+    pub form_items: Option<&'a BTreeSet<String>>,
+}
+
+/// The identifiers `PLAN.md`'s `T-024-09` row allows to be verified by inspection, and those it allows to be
+/// partly met: the ids in the parentheses after "verified by inspection" and after "partly met with the form item
+/// it waits on". A row reworded out of recognition yields empty sets, and every such row is then refused.
+pub fn allowed_sets(plan: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+    let Some(row) = plan_row(plan, "T-024-09") else {
+        return (BTreeSet::new(), BTreeSet::new());
+    };
+    (
+        ids_after(&row, "verified by inspection ("),
+        ids_after(&row, "partly met with the form item it waits on ("),
+    )
+}
+
+fn ids_after(text: &str, marker: &str) -> BTreeSet<String> {
+    let Some(at) = text.find(marker) else {
+        return BTreeSet::new();
+    };
+    let rest = &text[at + marker.len()..];
+    let end = rest.find(')').unwrap_or(0);
+    ids_in(&rest[..end]).into_iter().map(|(id, _)| id).collect()
 }
 
 fn cited_ids(cites: &[String]) -> impl Iterator<Item = &String> {
@@ -326,6 +352,7 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
         }
     }
 
+    let (allowed_inspect, allowed_partly) = allowed_sets(inputs.plan);
     for row in &scope.rows {
         let id = &row.id;
         let location = at(row);
@@ -349,12 +376,31 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
                         ),
                     ));
                 }
+                if !allowed_partly.contains(id) {
+                    report.table.push(finding(
+                        "partly-not-allowed",
+                        location.clone(),
+                        format!("{id} is marked partly met, which PLAN.md's T-024-09 row allows only for {}", join(&allowed_partly)),
+                    ));
+                }
+                if let (Some(items), Some(item)) = (inputs.form_items, item)
+                    && !item.is_empty()
+                    && !items.contains(item)
+                {
+                    report.table.push(finding(
+                        "form-item-unknown",
+                        location.clone(),
+                        format!("{id} waits on form item `{item}`, which the decisions form does not hold"),
+                    ));
+                }
                 (
                     "partly met".to_string(),
                     format!("waits on form item {}", item.unwrap_or("(none)")),
                 )
             }
-            Class::Inspect => inspect_line(row, inputs, &mut report.table, &location),
+            Class::Inspect => {
+                inspect_line(row, inputs, &allowed_inspect, &mut report.table, &location)
+            }
             Class::M4 => {
                 let feature = cited_ids(&row.cites).find(|c| c.starts_with("F-"));
                 if feature.is_none_or(|f| !inputs.defined.is_defined(f)) {
@@ -461,12 +507,36 @@ fn m3_line(
     )
 }
 
+fn join(set: &BTreeSet<String>) -> String {
+    if set.is_empty() {
+        "nothing (the row names none)".into()
+    } else {
+        set.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
 fn inspect_line(
     row: &Row,
     inputs: &Inputs<'_>,
+    allowed: &BTreeSet<String>,
     out: &mut Vec<Finding>,
     location: &str,
 ) -> (String, String) {
+    if !allowed.contains(&row.id) {
+        out.push(finding(
+            "inspection-not-allowed",
+            location.to_string(),
+            format!(
+                "{} is marked as verified by inspection, which PLAN.md's T-024-09 row allows only for {}",
+                row.id,
+                join(allowed)
+            ),
+        ));
+        return (
+            "unverified".into(),
+            "inspection is not allowed for it".into(),
+        );
+    }
     let check = row.cites.iter().find_map(|c| c.strip_prefix("check:"));
     let review = row.cites.iter().find_map(|c| c.strip_prefix("review:"));
     let named = check.is_some_and(|c| CHECKS.contains(&c))
@@ -561,7 +631,10 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
         let Some(before) = base.row(&row.id) else {
             continue;
         };
-        if !before.class.is_m3() || row.class.is_m3() {
+        let moved_out = before.class.is_m3() && !row.class.is_m3();
+        let moved_in =
+            before.class == Class::M3 && matches!(row.class, Class::Partly | Class::Inspect);
+        if !moved_out && !moved_in {
             continue;
         }
         let excused = match row.class {
@@ -599,7 +672,25 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
                 });
                 placed && feature
             }
-            Class::M3 | Class::Partly | Class::Inspect => true,
+            Class::Partly | Class::Inspect => {
+                let needle = if row.class == Class::Partly {
+                    "partly"
+                } else {
+                    "inspect"
+                };
+                row.cites
+                    .iter()
+                    .filter(|c| ["DEC-", "F-", "T-"].iter().any(|p| c.starts_with(p)))
+                    .any(|cited| {
+                        newly_places(
+                            plan_row(base_plan, cited).as_deref(),
+                            plan_row(head_plan, cited).as_deref(),
+                            &row.id,
+                            Some(needle),
+                        )
+                    })
+            }
+            Class::M3 => true,
         };
         if !excused {
             out.push(finding(
@@ -608,7 +699,12 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
                 format!(
                     "{} is M3's on develop and {} here, and the entry cites no row of the plan that this change made to place it there",
                     row.id,
-                    if row.class == Class::M4 { "M4's" } else { "deferred" }
+                    match row.class {
+                        Class::M4 => "M4's",
+                        Class::Partly => "only partly met",
+                        Class::Inspect => "verified by inspection",
+                        _ => "deferred",
+                    }
                 ),
             ));
         }
