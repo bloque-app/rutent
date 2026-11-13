@@ -12,7 +12,7 @@ mod snapshot_support;
 use intake_support::*;
 use quote_support::{
     EXCHANGE, Leg, Net, THREE_DAYS, bounds, chosen, exchange_limit, exchange_route, fee, request,
-    reserve_route, routed,
+    reserve_route, routed, split_route,
 };
 use rounds_support::customer;
 use rutent_contracts::core_internal::calls::GeneralEntry;
@@ -214,7 +214,7 @@ fn charge_reported_within_what_a_segment_gives_out_is_a_line_of_its_own() {
 
 /// A segment that reports gross, before another, hands on less than its quote gives out, and the next segment was
 /// quoted at what it gives out: the route can't deliver as composed, so it is never shown (`T-020-08`'s hand-off).
-// verifies: REQ-QTE-2, REQ-ORD-21
+// verifies: REQ-QTE-2
 #[test]
 fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
     let record = reserve_route(
@@ -326,6 +326,66 @@ fn route_intake_cant_deliver_is_refused_and_never_shown() {
     assert!(shown_entries(&env).is_empty(), "nothing is shown");
     assert!(env.started().is_empty());
     assert_admitted(&env);
+}
+
+/// A route split in two parts is shown and held whole: what leaves the origin is both parts' (600 and 400), and so
+/// is what arrives; each part's segments are shown under its own index; and only the reserve every part starts at
+/// holds its quote, so a split whose second part starts at another reserve is held by neither alone.
+// verifies: REQ-QTE-2, REQ-QTE-15, REQ-QTE-16
+#[test]
+fn split_route_is_shown_and_held_whole() {
+    let record = split_route(quote_support::RESERVE, fee("0", "1", "100"));
+    let price = show(&record, chosen(&record), None).expect("the split is shown");
+    assert_eq!(
+        price.amount_in,
+        amount("1000"),
+        "both parts leave the origin"
+    );
+    assert_eq!(price.providers_out, amount("1000"));
+    // ceil(1 000 / 100) = 10, on what both parts deliver.
+    assert_eq!(price.operator_fee.amount, amount("10"));
+    let parts: Vec<(u32, u32)> = price
+        .segments
+        .iter()
+        .map(|s| (s.part, s.operation))
+        .collect();
+    assert_eq!(parts, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+    let (reserve, order) = (id(quote_support::RESERVE), id("order-split"));
+    let mut holds = Holds::new();
+    assert!(
+        holds
+            .hold(
+                &id("hold-split"),
+                &reserve,
+                &order,
+                record,
+                at("2026-11-06T15:03:00Z")
+            )
+            .is_ok()
+    );
+
+    let record = split_route("p-res2", fee("0", "0", "1"));
+    assert!(show(&record, chosen(&record), None).is_ok());
+    assert!(matches!(
+        holds.hold(
+            &id("hold-across"),
+            &reserve,
+            &order,
+            record.clone(),
+            at("2026-11-06T15:03:00Z")
+        ),
+        Err(HoldError::NotTheReserve)
+    ));
+    assert!(matches!(
+        holds.hold(
+            &id("hold-across-2"),
+            &id("p-res2"),
+            &order,
+            record,
+            at("2026-11-06T15:03:00Z")
+        ),
+        Err(HoldError::NotTheReserve)
+    ));
 }
 
 // REQ-QTE-9 ---------------------------------------------------------------------------------------------------------
