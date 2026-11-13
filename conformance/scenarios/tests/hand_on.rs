@@ -22,7 +22,7 @@ use rutent_core_orch::stuck::{NoRouteLeft, Stuck};
 use rutent_prov::holding::wallet::WithdrawalRecord;
 use rutent_stm::HandOnRefusal;
 use segments_support::handing::{
-    from_the_ledger, hand_parts, linked_plan, linked_record, linked_route, log_entries,
+    from_the_ledger, hand_parts, linked_plan, linked_record, linked_route, log_entries, prove,
     recorded_with_receipts,
 };
 use segments_support::rerouting::Rerouting;
@@ -475,7 +475,7 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         let mut proof = withdrawal_record();
         change(&mut proof);
         assert_eq!(
-            hand_on.prove_start(&mut core.segments, &linked, &proof),
+            prove(&mut core, &mut hand_on, &linked, &proof),
             Err(HandOnError::Unproven(why))
         );
         assert_eq!(
@@ -483,9 +483,17 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
             Err(SegmentsError::StartUnproven(id("ord-2")))
         );
     }
-    hand_on
-        .prove_start(&mut core.segments, &linked, &withdrawal_record())
+    prove(&mut core, &mut hand_on, &linked, &withdrawal_record())
         .expect("the holding account's own record proves the start");
+    let is_holding_withdrawal = |w: &What| {
+        matches!(w, What::HoldingWithdrawal { order, handed_on_from, holder, .. }
+            if order.as_str() == "ord-2" && handed_on_from.as_str() == ORDER && holder.as_str() == RESERVE)
+    };
+    assert_eq!(
+        count(&core, is_holding_withdrawal),
+        1,
+        "the start proof is the log's record, the reserve's as holder"
+    );
     // Proven, the linked order's route runs from the ledger: its deposit settles at the destination, under its own
     // authorisation, and the log admits it.
     let ran = run_linked(&mut core, &mut world, &record).expect("the linked route runs");
@@ -1151,8 +1159,9 @@ fn hand_on_is_checked_whole_before_its_first_record() {
 }
 
 /// Where the log refuses the linked order's `route_chosen` outright after the first order's `handed_on` went in, the
-/// refusal is recorded as the linked order's, once, so the part isn't left handed on to an order that silently never
-/// opened; asked again, the same refusal is the answer and nothing more is recorded.
+/// refusal is recorded as the linked order's, and the hand-on taken back (`hand_on_taken_back`): the part waits for
+/// the customer again where its final deposit failed, in Core as in the log, never left handed on to an order that
+/// never opened. Asked again for the same linked order, nothing more is recorded.
 // verifies: REQ-ORD-43
 #[test]
 fn linked_route_the_log_refuses_is_recorded_as_refused() {
@@ -1176,21 +1185,25 @@ fn linked_route_the_log_refuses_is_recorded_as_refused() {
     let is_linked_refusal =
         |w: &What| matches!(w, What::OrderRefusal { order: Some(o), .. } if o.as_str() == "ord-2");
     assert_eq!(count(&core, is_linked_refusal), 1);
+    let is_taken_back = |w: &What| {
+        matches!(w, What::Input { input } if matches!(&input.observed,
+            Observed::HandOnTakenBack { linked_order } if linked_order.as_str() == "ord-2"))
+    };
+    assert_eq!(count(&core, is_taken_back), 1, "the hand-on taken back");
     assert_eq!(
         part_of(&core, ORDER).state,
-        OrderState::HandedOn,
-        "as the log holds it"
+        OrderState::WaitingForCustomer,
+        "waiting again, as the log holds it"
     );
     assert!(core.segments.order(&id("ord-2")).is_none(), "never opened");
+    let _ = refusal;
     let after = entries(&core);
     assert_eq!(
         hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
-        Err(HandOnError::LinkedRefused {
-            linked: id("ord-2"),
-            refusal
-        })
+        Err(HandOnError::AlreadyOpened),
+        "a linked order refused takes no hand-on again"
     );
-    assert_eq!(entries(&core), after, "recorded once");
+    assert_eq!(entries(&core), after, "nothing more recorded");
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
@@ -1324,18 +1337,17 @@ fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
     let mut unreferenced = withdrawal_record();
     unreferenced.reference = String::new();
     assert_eq!(
-        hand_on.prove_start(&mut core.segments, &linked, &unreferenced),
+        prove(&mut core, &mut hand_on, &linked, &unreferenced),
         Err(HandOnError::Unproven(Unproven::NoReference))
     );
     let mut theirs = withdrawal_record();
     theirs.by = OTHER_RESERVE.into();
     assert_eq!(
-        hand_on.prove_start(&mut core.segments, &linked, &theirs),
+        prove(&mut core, &mut hand_on, &linked, &theirs),
         Err(HandOnError::Unproven(Unproven::NotTheStartingReserves)),
         "the caller's reserve isn't the start's"
     );
-    hand_on
-        .prove_start(&mut core.segments, &linked, &withdrawal_record())
+    prove(&mut core, &mut hand_on, &linked, &withdrawal_record())
         .expect("the reserve's own record proves it, the caller's earlier word kept for nothing");
 
     // Another world, another linked order, the same record: spent.
@@ -1349,7 +1361,7 @@ fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
     let plan = from_the_ledger(&other, "p1-s1-of-3");
     hand_on_to(&mut other, &mut hand_on, "ord-3", &plan, "acc-ord-3").expect("handed on");
     assert_eq!(
-        hand_on.prove_start(&mut other.segments, &id("ord-3"), &withdrawal_record()),
+        prove(&mut other, &mut hand_on, &id("ord-3"), &withdrawal_record()),
         Err(HandOnError::Unproven(Unproven::ReferenceSpent))
     );
 }
@@ -1850,10 +1862,10 @@ fn hand_on_to_a_linked_order_the_log_opened_is_refused_after_a_restart() {
     assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
 }
 
-/// The log took the hand-on's `handed_on` and its answer was lost, so Core keeps it pending; meanwhile another opener
-/// takes the linked order. Retried, the hand-on's own record is in the log already, so it isn't checked as a newcomer:
-/// it goes on to the linked order's `route_chosen`, which the log refuses, and the refusal is recorded. The part is
-/// handed on in Core as in the log, never left waiting in one and handed on in the other.
+/// The log took the hand-on's `handed_on` and its answer was lost, so Core keeps it pending. Retried, the
+/// hand-on's own record is in the log already, so it isn't checked as a newcomer: it goes on to the linked order's
+/// `route_chosen`, and the part is handed on in Core as in the log, the record once. (Under one hand-on per linked
+/// order, `hand-on-links-an-unopened-order`, no other hand-on can name the linked order once this one is in.)
 // verifies: REQ-ORD-43, INV-4
 #[test]
 fn hand_on_whose_record_the_log_took_goes_on_whatever_opened_its_linked_order() {
@@ -1876,48 +1888,27 @@ fn hand_on_whose_record_the_log_took_goes_on_whatever_opened_its_linked_order() 
         hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
         Err(HandOnError::Append(_))
     ));
-    assert_eq!(count(&core, is_handed_on), 1, "the log took it");
+    let ours = |w: &What| {
+        matches!(w, What::Input { input } if input.subject.order.as_str() == ORDER
+            && matches!(input.observed, Observed::HandedOn { .. }))
+    };
+    assert_eq!(count(&core, ours), 1, "the log took it");
     assert_eq!(
         part_of(&core, ORDER).state,
         OrderState::WaitingForCustomer,
         "Core doesn't know"
     );
-
-    // Another opener takes the linked order: its route is in the log now, and the log refuses a second.
-    let mut opened = route_chosen_of(&core.record, &Named::another(2));
-    opened.record_id = rutent_contracts::state_machine::RecordId::new("rec-outside").unwrap();
-    append_entry(
-        &core,
-        &rutent_contracts::core_internal::Entry::Verified(
-            rutent_contracts::core_internal::VerifiedEntry {
-                kind: rutent_contracts::core_internal::VerifiedKind::Verified,
-                who: segments_support::core(),
-                what: What::Input { input: opened },
-                when: rutent_contracts::core_internal::When {
-                    at: rutent_core_orch::snapshot::Clock::now(&*core.clock)
-                        .timestamp()
-                        .unwrap(),
-                    source: rutent_contracts::core_internal::TimeSource::CoreClock,
-                },
-                outcome: rutent_contracts::core_internal::Outcome::Observed {},
-            },
-        ),
-        rutent_contracts::core_internal::Through::General,
-    );
-    core.log
-        .borrow_mut()
-        .faults
-        .push_back((On::Chosen, Fault::Refuse));
-    let retried = hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2");
-    assert!(
-        matches!(retried, Err(HandOnError::LinkedRefused { .. })),
-        "{retried:?}"
-    );
-    assert_eq!(count(&core, is_handed_on), 1, "the same record, once");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on, retried");
+    assert_eq!(count(&core, ours), 1, "the same record, once");
     assert_eq!(
         part_of(&core, ORDER).state,
         OrderState::HandedOn,
         "handed on in Core, as in the log"
     );
-    let _ = world;
+    assert!(
+        core.segments.order(&id("ord-2")).is_some(),
+        "the linked order opened"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
 }
