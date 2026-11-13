@@ -335,6 +335,8 @@ impl What {
             | What::Afterwards { .. }
             | What::Reliance { .. }
             | What::Refiling { .. }
+            | What::HoldingWithdrawal { .. }
+            | What::ReversalCarrier { .. }
             | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
@@ -478,7 +480,35 @@ impl What {
             | What::Erasure { .. }
             | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
+            | What::HoldingWithdrawal { .. }
             | What::InputNotTaken { .. } => Ok(()),
+            What::ReversalCarrier {
+                carrier,
+                showing,
+                accepted_by,
+                accepted_with,
+                session,
+                ..
+            } => {
+                let accepted =
+                    showing.is_some() && accepted_by.is_some() && accepted_with.is_some();
+                let shaped = match carrier {
+                    Carrier::Provider => {
+                        showing.is_none()
+                            && accepted_by.is_none()
+                            && accepted_with.is_none()
+                            && session.is_none()
+                    }
+                    Carrier::Customer => accepted && session.is_some(),
+                    Carrier::Operator => accepted && session.is_none(),
+                };
+                if !shaped {
+                    return Err(Violation(
+                        "a reversal's carrier other than its provider rests on a showing and an act of acceptance, the customer's in its session, and the provider on neither",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }

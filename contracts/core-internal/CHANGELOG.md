@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 130 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 463 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 85 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 124 invalid ones, each
+  breaking one rule, and 549 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -461,6 +461,160 @@
   probe, a question and its answer under `tx-z` before `p3`'s hand-on decision under `tx-z`. Admitted: the hand-on's
   own question and answer under `tx-h3`, after its decision. 463 admission cases. (DEC-4, DEC-20, REQ-AUZ-4,
   REQ-ORD-38, T-020-01)
+- Folded into 1.0.0 before its release: the customer is in the customer's role, and the origin account is the
+  payer's to move (the reviews since `T-020-01` landed). `by_the_customer` read only the actor's party, so one of the
+  requester's party in another role set new terms; it now also requires the customer's role, as the engine and Core
+  read it. A part's origin account was moved by any authorisation the customer gave, so a requester could redirect
+  a payer's refund; `only-the-payer-moves-the-origin-account` holds each later authorisation to the account in force
+  unless the order's payer gave it, and a delivery back to the origin goes to that account. Which accounts the payer
+  holds is policy's register, handed to `T-021-04` and `T-021-06`. Refused: the requester's party in the operator's
+  role setting a new destination; the requester, and the operator, redirecting the payer's refund. Admitted: the
+  payer moving it, and a restatement before and after. 469 admission cases, 86 relations. (DEC-4, DEC-20,
+  REQ-AUZ-3, REQ-AUZ-4, REQ-ORD-17, T-020-01)
+- Folded into 1.0.0 before its release: a stuck resolution's question, decider and mover (the reviews since
+  `T-020-01` landed). `one-question-per-resolution-transaction`, a stated-entry row, refuses a second question of
+  Core's under a stuck resolution's transaction, an identical retry aside, so one set of answers settles it.
+  `stuck-move-carries-out-its-decide-step` holds the mover to another login than the decider's too (field `login`),
+  not its party alone. The world's stuck decisions are a desk's, `operator-desk-a`, a sibling of the mover's
+  `operator-desk-b`, not the operator's own: under `T-021-06`'s rule, chains meeting below the operator are one
+  actor. Refused: a second question under `tx-d3`; a mover of another party under the decider's login. 472 admission
+  cases, 87 relations. (DEC-4, DEC-20, REQ-AUZ-4, ADR-0011, T-020-01, T-021-06)
+- Folded into 1.0.0 before its release: a hand-on links an order its own route opens, and a hand-on of a part not
+  stuck is the customer's choice (the reviews since `T-020-01` landed). `hand-on-links-an-unopened-order` refuses a
+  `handed_on` whose linked order already has a route, and `linked-order-opens-on-its-hand-on` refuses a route
+  opening a linked order that doesn't name the order it was handed on from. `hand-on-input-rests-on-the-linked-
+  orders-acceptance` holds the hand-on of a part that isn't stuck to an acceptance with basis `given`, recorded by
+  the customer (field `given`). Refused: p3's hand-on to ord-2 once ord-2 was opened on its own, ord-2 opened on its
+  own route after the hand-on, a waiting part handed on on an automatic deposit's acceptance or on one the operator
+  recorded. Admitted: a waiting part handed on on the customer's own. 477 admission cases, 89 relations. (DEC-4,
+  DEC-20, REQ-ORD-43, REQ-ORD-13, T-020-01)
+- Folded into 1.0.0 before its release: an end requested waits for value in motion, and a disputed exchange holds
+  its part (the reviews since `T-020-01` landed). `part-waits-for-value-in-motion` now cites `end_requested` too,
+  for every part of its order. A `failed` result released a `move_value` from motion even where its segment owed a
+  reversal, so a failed exchange's disputed value let its part restart; it now releases only where the segment owes
+  none. `--failed-exchange` carries the `failed` result Core writes and is still refused. Refused: an end requested
+  with p1-s6's exchange moving. Admitted: one with nothing moving. 479 admission cases. (DEC-4, DEC-20, REQ-ORD-2,
+  INV-3, INV-4, T-020-01)
+- Folded into 1.0.0 before its release: a reversal's evidence is the from-node reserve's own word (the reviews since
+  `T-020-01` landed). `reversal-rests-on-its-evidence` read `whose` as the evidence named it, so it could rest on the
+  failed provider's statement under another's name. `whose` must now be the maker of a verified statement in
+  `rests_on` (field `maker`), and the reserve at the segment's from-node (field `reserve`): the provider of the
+  segment that delivered value there, or the withdrawal's own. The world's reversal of p1-s2 now rests on us-bank's
+  statement, whose withdrawal put the value at ledger-in. Refused: us-bank named over fx-desk's statement; eu-bank's
+  word. 482 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01)
+- Folded into 1.0.0 before its release: the log takes a new destination, or a waiting part's hand-on, only after a
+  failed final deposit (`INV-10`, the reviews since `T-020-01` landed), as the state machine's rules now do. The
+  world's p1 runs its recalculated route to its final deposit, which fails: p1-s6's exchange settles at ledger-in on
+  fx-desk's signed result, p1-s7's deposit fails, and with no route left p1 waits, so the customer's new destination
+  now starts from USDC at ledger-in. Refused: p1 waiting at its floor, p1-s6 settled and its final deposit not tried,
+  sent to a new destination or handed on to ord-41. 491 admission cases. (DEC-4, DEC-20, INV-10, REQ-ORD-43,
+  T-020-01)
+- Folded into 1.0.0 before its release: a hand-on whose linked order was refused is taken back (the reviews since
+  `T-020-01` landed), on the state machine's new `hand_on_taken_back`. `hand-on-taken-back-rests-on-the-linked-
+  orders-refusal` holds it to an `order_refusal` of the linked order, which never opened (field `unopened`).
+  Admitted: p3 taking back its hand-on to ord-2 on ord-2's refusal; refused: without the refusal, and once ord-2
+  opened. 494 admission cases, 90 relations. (DEC-4, DEC-20, REQ-ORD-43, REQ-ORD-18, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a route handed on starts on its holding account's record (`REQ-ORD-40`, the
+  reviews since `T-020-01` landed). A new entry kind, `holding_withdrawal {order, handed_on_from, holder, record}`,
+  records the holding account's own record of the withdrawal, the start proof that settles a linked order's first
+  segment. `holding-withdrawal-rests-on-its-record` holds the record to its holder's verified statement about the
+  order whose value it held, `holding-withdrawal-starts-a-handed-on-route` to a route of the linked order handed on
+  from that order, and `one-start-per-holding-record` to one start per record; the linked order's first move rests
+  on it, by its holder (`handed-on-route-starts-on-its-holding-record`, ahead of the authorisation rows). The world
+  records us-bank's withdrawal record starting ord-2. One valid fixture, 506 admission cases, 94 relations. (DEC-4,
+  DEC-20, REQ-ORD-40, REQ-ORD-43, INV-5, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a publisher's word, labelled (`REQ-ORD-3`'s third sentence, the reviews since
+  `T-020-01` landed). Inside a private node, its publisher's word counts for a reversal, labelled as such, and no
+  field carried the label. `evidence` gains `publisher`, optional: the party the statement it rests on states for.
+  `reversal-rests-on-its-evidence` admits the failed provider's own statement where it is so labelled and graded a
+  statement, and refuses a label naming another publisher (field `publisher`). Admitted: p1-s2's reversal on
+  fx-desk's word, fx-group's module, labelled fx-group; refused: labelled another group. 508 admission cases. (DEC-4,
+  DEC-20, REQ-ORD-3, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: who carries a reversal, and asking for one (`REQ-ORD-11`, `REQ-ORD-3`, the
+  reviews since `T-020-01` landed). Nothing recorded who carries a failed segment's reversal, nor a provider's
+  showing of fault and its acceptance, and Core couldn't ask a failed provider to reverse. A new entry kind,
+  `reversal_carrier {order, segment, carrier, showing, accepted_by}`, records the carrier: the provider, or the
+  customer or the operator at fault by the provider's showing, accepted (a carrier other than the provider names
+  both, the provider neither). `reversal-carrier-rests-on-its-showing` holds the showing to the failed provider's
+  verified statement about the segment, and `reversal-carrier-is-accepted-by-the-party-at-fault` the acceptance to
+  that party. A new decided action, `ask_reversal {order, segment, provider}`, and
+  `reversal-is-asked-of-its-failed-provider` hold it to a segment owing its reversal and the provider that failed
+  it. Two valid fixtures, 519 admission cases, 97 relations. (DEC-4, DEC-20, REQ-ORD-3, REQ-ORD-11, T-020-01,
+  T-020-12)
+- Folded into 1.0.0 before its release: a publisher's label counts only on a private node the log binds (round 2 of
+  the contract review). The label let any failed provider complete its own reversal: a verified statement by it,
+  stating for the labelled party, sufficed, and it then skipped the from-node reserve. It now counts only where the
+  log binds the segment's from-node as that publisher's private node: a `replay` of the order naming the node, or
+  evidence of the order whose `movement.node` names it, resting on a verified statement stating for the publisher
+  (field `private`). Refused: the review's reproduction, fx-desk's own word on p1-s2 at ledger-in labelled
+  fx-group, with no node bound; admitted: the same with a replay of ord-1 naming ledger-in on fx-group's statement.
+  520 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a hand-on taken back closes its linked order for good (round 2 of the
+  contract review). After `handed_on`, the linked order's refusal and `hand_on_taken_back`, a `route_chosen` of the
+  linked order handed on from the first was still admitted. `linked-order-opens-on-its-hand-on` now refuses any
+  route opening an order a `hand_on_taken_back` names, and `hand-on-links-an-unopened-order` any new hand-on to it.
+  Refused: the review's reproduction, and a new hand-on to ord-2 after the take-back. 522 admission cases. (DEC-4,
+  DEC-20, REQ-ORD-43, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a holding record proves one start, keyed by its transaction (round 2 of the
+  contract review). `one-start-per-holding-record` was keyed by the record's receipt, so the same record kept again
+  under a new commitment was cited again; it is now keyed by the transaction the record names, as
+  `one-order-per-deposit` is. `holding-withdrawal-rests-on-its-record` holds the record to a provider's result
+  (field `result`), about the linked order whose route it starts (field `order`, not `handed_on_from`), naming its
+  transaction (field `transaction`). The world's record is us-bank's result about ord-2 under tx-hold2. Refused: the
+  review's dodge, an operation, a record about ord-1, one naming no transaction. 524 admission cases. (DEC-4, DEC-20,
+  REQ-ORD-40, INV-5, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a reversal carrier's acceptance rests on an act (round 2 of the contract
+  review). `accepted_by` was only a writer's label. `reversal_carrier` gains `accepted_with`, the act by receipt, and
+  `session`; `OperatorCommand` gains `accept_fault`. The customer's acceptance rests on its own verified yes about
+  the order and segment, given in its open session, as an acceptance rests on its yes and session; the operator's on
+  its `accept_fault` command, by the deployment operator's party (`reversal-carrier-rests-on-its-acceptance`, in
+  place of `reversal-carrier-is-accepted-by-the-party-at-fault`). Admitted: the customer's yes in sess-1, the
+  operator's command. Refused: no act, the provider's showing as the act, a label naming the operator, a yes about
+  another segment, a session never opened, one expired, an impostor's command. 531 admission cases. (DEC-4, DEC-20,
+  REQ-ORD-11, REQ-ORD-32, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a showing of fault is its provider's result (round 2 of the contract
+  review). `reversal-carrier-rests-on-its-showing` took any statement; it now requires a `result` (field `result`),
+  as the outcome-evidence rows do. That the result's `fault` names the carrier stays with whoever holds the kept
+  bytes, the log holding only their salted commitment. Refused: an operation as the showing. 532 admission cases.
+  (DEC-4, DEC-20, REQ-ORD-11, REQ-AUD-2, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a reversal's carrier is of a reversal owed, and stands once the party at fault
+  carries it (round 2 of the contract review). `reversal-carrier-is-of-a-reversal-owed` refuses a carrier for a
+  segment not owing its reversal; `reversal-carrier-stands-once-the-party-at-fault-carries-it` refuses another
+  carrier once the customer or the operator carries it, the provider then the party at fault staying the rule
+  (`REQ-ORD-11`). Refused: a carrier for a settled segment, one after the reversal completed, the operator after the
+  customer, the provider after the customer. Admitted: the provider then the customer, and the same carrier again.
+  538 admission cases, 99 relations. (DEC-4, DEC-20, REQ-ORD-11, REQ-ORD-3, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: an end requested waits only for the parts it ends (round 2 of the contract
+  review). `part-waits-for-value-in-motion` held `end_requested` to every part of its order, so an end requested
+  while a part past its start moved, which the state machine leaves going on, was refused. It now waits for value in
+  motion only in the parts the state machine ends, those not past their first segment. Refused: an end requested
+  while p2's withdrawal moves; admitted: one while p1, past its start, moves p1-s6. 539 admission cases. (DEC-4,
+  DEC-20, REQ-ORD-12, REQ-ORD-2, T-020-01)
+- Folded into 1.0.0 before its release: an open part's start undone waits for value in motion (the ruling on round 2
+  of the contract review). A `reversal_completed` that undoes the start of a part still open fails it, so
+  `part-waits-for-value-in-motion` now cites it, as it does a restart. Refused: p1's withdrawal undone while p1-s6's
+  move is in motion; admitted: with nothing moving. 541 admission cases. (DEC-4, DEC-20, REQ-ORD-3, REQ-ORD-40,
+  INV-4, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a customer's acceptance of fault is a statement of its own shape, after the
+  showing (round 2's re-review of the contract). Any verified statement of the requester's about the segment
+  counted as accepting the fault, a dispute or one made before the showing included. A new schema and type,
+  `fault-acceptance` (`FaultAcceptance {order, segment, transaction, showing, fault}`, shape
+  `urn:rutent:core-internal:fault-acceptance`), is the customer's own signed acceptance naming the showing it
+  accepts, as an acceptance's yes is its reserve's. `reversal-carrier-rests-on-its-acceptance` holds the customer's
+  act to that shape (field `shape`), about the showing's transaction, received and appended after it, and the
+  operator's `accept_fault` to after it (field `showing`). Refused: another shape, one made before the showing, one
+  received before it, one appended before it, one naming another showing, an `accept_fault` before the showing.
+  One schema, one valid fixture, 547 admission cases. (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: one hand-on per linked order (round 2's re-review of the contract, the
+  reviewer's ruling). With a take-back closing the linked order, a sibling's hand-on to the same order would wait on
+  it. `hand-on-links-an-unopened-order` now also refuses a `handed_on` naming a linked order another part or order
+  already handed on to. Refused: p2 handed on to ord-2 after p3. Admitted: p1 handed on to a fresh ord-41. 548
+  admission cases. (DEC-4, DEC-20, REQ-ORD-43, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a private node's binding is the order's own (round 2's re-review of the
+  contract). The replay path of a publisher's label took a replay resting on any statement stating for the
+  publisher; the statement it rests on, as the evidence path's, must now be about this order. Refused: a replay of
+  ord-1 naming ledger-in resting on fx-group's statement about ord-2. Admitted: one resting on its statement about
+  ord-1 (`--a-publishers-word-labelled`). 549 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

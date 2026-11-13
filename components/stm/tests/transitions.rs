@@ -756,6 +756,49 @@ fn a_part_that_has_not_completed_is_not_failed_by_its_starting_segment_being_und
     assert_eq!(stuck.part_state("p1"), OrderState::Stuck);
 }
 
+// verifies: REQ-ORD-43
+#[test]
+fn a_hand_on_whose_linked_order_was_refused_is_taken_back() {
+    // Handed on after a failed final deposit, its linked order refused: the part waits for the customer again.
+    let mut run = waiting("ord-taken-back");
+    let hand = Observed::HandedOn {
+        linked_order: id("ord-refused"),
+        acceptance: id("acc"),
+    };
+    assert_eq!(run.about_part("p1", hand), Outcome::Applied {});
+    assert_eq!(run.order().state, OrderState::HandedOn);
+    let another = Observed::HandOnTakenBack {
+        linked_order: id("ord-other"),
+    };
+    assert_eq!(run.about_part("p1", another), na(Why::NotFromThisState));
+    let back = Observed::HandOnTakenBack {
+        linked_order: id("ord-refused"),
+    };
+    assert_eq!(run.about_part("p1", back.clone()), Outcome::Applied {});
+    assert_eq!(run.part_state("p1"), OrderState::WaitingForCustomer);
+    assert_eq!(run.part("p1").linked_order, None);
+    run.order().check().expect("the order stays valid");
+    // A part not handed on takes nothing back.
+    assert_eq!(run.about_part("p1", back), na(Why::NotFromThisState));
+}
+
+// verifies: REQ-ORD-3, REQ-ORD-40
+#[test]
+fn an_open_part_whose_start_is_undone_with_nothing_moved_on_fails() {
+    // The withdrawal settled and nothing after it moved the value on: the start proven undone puts the value back
+    // at the origin, and the part fails, as a complete part's does.
+    let mut run = Run::opened("ord-open-undone");
+    run.run_segments("p1", 1, 1);
+    assert_eq!(run.undo("p1", "p1-s1"), Outcome::Applied {});
+    assert_eq!(
+        run.segment_state("p1", "p1-s1"),
+        SegmentState::ReversalComplete
+    );
+    assert_eq!(run.part_state("p1"), OrderState::Failed);
+    assert_eq!(run.order().state, OrderState::Failed);
+    run.order().check().expect("the order stays valid");
+}
+
 // verifies: REQ-STM-6
 #[test]
 fn a_handed_on_order_does_not_change_when_a_complete_sibling_part_is_undone() {
@@ -854,29 +897,31 @@ fn a_part_waits_at_its_floor_only_while_its_value_sits_at_a_node() {
     );
 }
 
-// verifies: REQ-ORD-27, REQ-ORD-43
+// verifies: REQ-ORD-27, REQ-ORD-43, INV-10
 #[test]
-fn a_part_waiting_at_its_floor_is_handed_on_or_sent_to_another_destination_by_the_customer() {
+fn a_part_waiting_at_its_floor_is_neither_handed_on_nor_sent_to_another_destination_by_the_customer()
+ {
+    // Only the customer's own choice after a failed final deposit hands a waiting part on or changes its
+    // destination (`INV-10`): one waiting at its floor, its final deposit not yet tried, takes neither.
     let mut hand = at_its_floor("ord-floor-hand");
     let handed = Observed::HandedOn {
         linked_order: id("ord-floor-next"),
         acceptance: id("acc-floor"),
     };
-    assert_eq!(hand.about_part("p1", handed), Outcome::Applied {});
-    assert_eq!(hand.order().state, OrderState::HandedOn);
-    assert_eq!(hand.part("p1").waiting_since, None);
-    hand.order().check().expect("the order stays valid");
+    let before = hand.order().clone();
+    assert_eq!(hand.about_part("p1", handed), na(Why::NotFromThisState));
+    assert!(same_but_last_input(&before, hand.order()));
 
     let mut other = at_its_floor("ord-floor-other");
+    let before = other.order().clone();
     assert_eq!(
         other.about_part(
             "p1",
             destination_changed(route_to_another_destination("d1"))
         ),
-        Outcome::Applied {}
+        na(Why::NotFromThisState)
     );
-    assert_eq!(other.part("p1").waiting_since, None);
-    other.order().check().expect("the order stays valid");
+    assert!(same_but_last_input(&before, other.order()));
 }
 
 /// An order whose exchange is in flight when its part is declared stuck over time.

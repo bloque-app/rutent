@@ -185,7 +185,8 @@ impl From<AppendFailure> for HandOnError {
 /// waiting part (the gate `T-021-04` leaves to orchestration). The terms in force and the order's customer are read
 /// from `recorded`, the log's entries as the log holds them, never from the caller ([`in_force`],
 /// [`requester_of`]): every part `new` speaks for must have the same terms in force. Refused, with nothing asked,
-/// otherwise.
+/// otherwise. A caller that isn't the order's customer is told [`Refused::NotTheCustomer`] before anything of the
+/// order, whether it exists or not.
 ///
 /// Once policy permits terms that keep the destination (a new floor), `stuck` follows the order's ends again over
 /// the log's entries read then, so its ends check is never stale (`T-020-11b`). Terms that move the destination are
@@ -198,11 +199,18 @@ pub fn authorise(
     new: &Authorisation,
     recorded: &mut dyn FnMut() -> Vec<Entry>,
 ) -> Result<Decision, HandOnError> {
+    // The caller is the order's customer first, as the log's acceptance names it: policy can't be asked before the
+    // gate holds the terms to a waiting part, so a caller that isn't the customer, of an order that exists or not, is
+    // told one refusal, and only the customer is told more (`REQ-AUZ-7`).
+    let entries = recorded();
+    let requester = requester_of(&entries, &new.order)
+        .filter(|requester| {
+            new.given_by.role == Role::Customer && **requester == new.given_by.party
+        })
+        .ok_or(HandOnError::Refused(Refused::NotTheCustomer))?;
     let order = segments
         .order(&new.order)
         .ok_or(HandOnError::Refused(Refused::Unknown))?;
-    let entries = recorded();
-    let requester = requester_of(&entries, &new.order).ok_or(HandOnError::Unknown)?;
     let mut current: Option<&Authorisation> = None;
     for part in &order.parts {
         let speaks = new
@@ -269,6 +277,29 @@ pub struct Changed {
     pub from: Endpoint,
     /// What sat there, all of which the new route moves.
     pub amount: PositiveAmount,
+}
+
+/// A part handed on whose linked order the log refused: the refusal's receipt, and the part's `hand_on_taken_back`,
+/// appended as built until the log takes it.
+#[derive(Debug, Clone)]
+struct Stranded {
+    linked: Id,
+    refusal: Receipt,
+    taken_back: (Step, RecordedInput),
+}
+
+/// A route handed on's start, as the holding account recorded it.
+#[derive(Debug, Clone, Copy)]
+pub struct Start<'a> {
+    /// The linked order whose route it starts.
+    pub linked: &'a Id,
+    /// The holding account's own record of its withdrawal, as its module answered it.
+    pub record: &'a WithdrawalRecord,
+    /// The receipt of the holding account's stated entry of that withdrawal, which the log holds verified: the
+    /// record the `holding_withdrawal` cites (`holding-withdrawal-rests-on-its-record`).
+    pub statement: &'a Receipt,
+    /// Core, acting on its own account: who writes the `holding_withdrawal`.
+    pub core: &'a Actor,
 }
 
 /// A part waiting for the customer, resumed on a route to its own destination under the customer's new terms.
@@ -349,6 +380,15 @@ pub struct HandedOn {
     pub at: Endpoint,
 }
 
+/// A start built and not yet taken, with what it was built from: a retry passes the same record and statement, or is
+/// refused.
+#[derive(Debug, Clone)]
+struct KeptStart {
+    step: Step,
+    record: WithdrawalRecord,
+    statement: Receipt,
+}
+
 /// An entry built once, and its receipt once the log took it.
 #[derive(Debug, Clone)]
 struct Step {
@@ -424,7 +464,9 @@ pub struct HandOn {
     hand_ons: BTreeMap<(String, String), PendingHandOn>,
     resumes: BTreeMap<(String, String), PendingResume>,
     /// The parts handed on whose linked order the log refused, with that refusal's receipt.
-    stranded: BTreeMap<(String, String), (Id, Receipt)>,
+    stranded: BTreeMap<(String, String), Stranded>,
+    /// The starts of routes handed on built and not yet taken by the log, by linked order.
+    starts: BTreeMap<String, KeptStart>,
     /// The holding accounts' records spent, by provider and reference, with the linked order each proved.
     spent: BTreeMap<(String, String), String>,
     linked: BTreeMap<String, Linked>,
@@ -676,11 +718,8 @@ impl HandOn {
         handing: Handing<'_>,
     ) -> Result<HandedOn, HandOnError> {
         let at = key(handing.order, handing.part);
-        if let Some((linked, refusal)) = self.stranded.get(&at) {
-            return Err(HandOnError::LinkedRefused {
-                linked: linked.clone(),
-                refusal: refusal.clone(),
-            });
+        if self.stranded.contains_key(&at) {
+            return self.take_back(parts, &at);
         }
         if !self.hand_ons.contains_key(&at) {
             let built = Self::build_hand_on(parts, &handing)?;
@@ -718,12 +757,28 @@ impl HandOn {
                 let refusal = pending.refusal.append(parts.log)?;
                 let pending = self.hand_ons.remove(&at).ok_or(HandOnError::Unknown)?;
                 let _ = parts.segments.observe(parts.clock, &pending.handed_on.1);
-                self.stranded
-                    .insert(at, (handing.linked.clone(), refusal.clone()));
-                return Err(HandOnError::LinkedRefused {
-                    linked: handing.linked.clone(),
-                    refusal,
-                });
+                // The hand-on is taken back on the linked order's refusal: the part waits again where its final
+                // deposit failed, or else is stuck (`hand-on-taken-back-rests-on-the-linked-orders-refusal`).
+                let input = Self::part_input(
+                    parts,
+                    handing.order,
+                    handing.part,
+                    handing.core,
+                    SourceKind::Orchestrator,
+                    Observed::HandOnTakenBack {
+                        linked_order: stm_id(handing.linked.as_str())?,
+                    },
+                )?;
+                let step = built(parts, handing.core, &input)?;
+                self.stranded.insert(
+                    at.clone(),
+                    Stranded {
+                        linked: handing.linked.clone(),
+                        refusal,
+                        taken_back: (step, input),
+                    },
+                );
+                return self.take_back(parts, &at);
             }
         };
         let pending = self.hand_ons.remove(&at).ok_or(HandOnError::Unknown)?;
@@ -743,6 +798,31 @@ impl HandOn {
             route_chosen_receipt,
             at: pending.at,
         })
+    }
+
+    /// Appends the `hand_on_taken_back` of the part at `at`, whose linked order the log refused, as built, and once
+    /// the log takes it has the order Core follows take it; answers the refusal ([`HandOnError::LinkedRefused`]).
+    fn take_back(
+        &mut self,
+        parts: &mut Parts<'_>,
+        at: &(String, String),
+    ) -> Result<HandedOn, HandOnError> {
+        let stranded = self.stranded.get_mut(at).ok_or(HandOnError::Unknown)?;
+        match stranded.taken_back.0.append(parts.log) {
+            Ok(_) => {
+                let stranded = self.stranded.remove(at).ok_or(HandOnError::Unknown)?;
+                let _ = parts.segments.observe(parts.clock, &stranded.taken_back.1);
+                Err(HandOnError::LinkedRefused {
+                    linked: stranded.linked,
+                    refusal: stranded.refusal,
+                })
+            }
+            Err(AppendFailure::Unavailable) => Err(AppendFailure::Unavailable.into()),
+            Err(refused) => {
+                self.stranded.remove(at);
+                Err(refused.into())
+            }
+        }
     }
 
     /// Whether `handing`'s linked order is free for the hand-on at `at`: Core doesn't follow it, the log holds no
@@ -966,10 +1046,17 @@ impl HandOn {
     /// Core's didn't hand on (after a restart, say) is [`HandOnError::Unknown`]: `F-030`'s.
     pub fn prove_start(
         &mut self,
-        segments: &mut Segments,
-        linked: &Id,
-        record: &WithdrawalRecord,
-    ) -> Result<(), HandOnError> {
+        parts: &mut Parts<'_>,
+        start: Start<'_>,
+    ) -> Result<Receipt, HandOnError> {
+        let (linked, record) = (start.linked, start.record);
+        // A start built and not yet taken is appended as built.
+        if let Some(kept) = self.starts.get_mut(linked.as_str()) {
+            if &kept.record != record || &kept.statement != start.statement {
+                return Err(HandOnError::Unproven(Unproven::AnotherStart));
+            }
+            return Self::record_start(parts, &mut kept.step, linked);
+        }
         let held = self
             .linked
             .get(linked.as_str())
@@ -983,9 +1070,50 @@ impl HandOn {
             }
             _ => {}
         }
-        self.spent.insert(spent, linked.as_str().to_owned());
-        segments.prove_start(linked);
-        Ok(())
+        // The log's record of the start, on the holding account's own statement of it: the linked order's first move
+        // rests on it (`handed-on-route-starts-on-its-holding-record`), and one statement starts one route
+        // (`one-start-per-holding-record`).
+        let mut step = built_what(
+            parts,
+            start.core,
+            What::HoldingWithdrawal {
+                order: linked.clone(),
+                handed_on_from: held.from.clone(),
+                holder: held.reserve.clone(),
+                record: start.statement.clone(),
+            },
+        )?;
+        let taken = Self::record_start(parts, &mut step, linked);
+        match &taken {
+            Ok(_) => {
+                self.spent.insert(spent, linked.as_str().to_owned());
+            }
+            Err(HandOnError::Append(AppendFailure::Unavailable)) => {
+                self.spent.insert(spent, linked.as_str().to_owned());
+                self.starts.insert(
+                    linked.as_str().to_owned(),
+                    KeptStart {
+                        step,
+                        record: record.clone(),
+                        statement: start.statement.clone(),
+                    },
+                );
+            }
+            Err(_) => {}
+        }
+        taken
+    }
+
+    /// Appends a start's `holding_withdrawal`, built once, and once the log takes it has the segments hand the
+    /// linked order's segments over. One the log refuses opens nothing.
+    fn record_start(
+        parts: &mut Parts<'_>,
+        step: &mut Step,
+        linked: &Id,
+    ) -> Result<Receipt, HandOnError> {
+        let receipt = step.append(parts.log)?;
+        parts.segments.prove_start(linked);
+        Ok(receipt)
     }
 
     /// Builds a part's input from `by`, as `kind`.

@@ -68,6 +68,27 @@ struct Kept {
     read_instead: Option<Vec<Entry>>,
 }
 
+/// What the log holds, with the fixtures' orders' acceptances before it, each with a receipt of its own.
+impl crate::stuck::Receipted for Kept {
+    fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, crate::funds::ReadFailure> {
+        if self.unreadable {
+            return Err(crate::funds::ReadFailure::Unavailable);
+        }
+        let mut entries = crate::funds::acceptances_of_the_fixtures();
+        entries.extend(self.entries.iter().enumerate().map(|(i, e)| {
+            let index = 2_000 + i;
+            let receipt = serde_json::from_value(json!({
+                "log": "log-main",
+                "index": index,
+                "entry": {"algorithm": "sha-256", "value": format!("{index:064x}")},
+            }))
+            .unwrap();
+            (receipt, e.clone())
+        }));
+        Ok(entries)
+    }
+}
+
 /// The log's read, on policy's handle: what it holds as permitted (`T-021-04`) and as counted.
 impl crate::funds::Recorded for Kept {
     fn permitted(&mut self) -> Result<Vec<Authorisation>, crate::funds::ReadFailure> {

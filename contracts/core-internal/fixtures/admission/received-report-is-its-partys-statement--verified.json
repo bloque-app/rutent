@@ -1905,6 +1905,52 @@
         }
       },
       "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-f2",
+          "segment": "p1-s2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 136,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "2525252525252525252525252525252525252525252525252525252525252525"
+        }
+      },
+      "entry": {
         "kind": "verified",
         "who": {
           "party": "rutent",
@@ -1918,14 +1964,14 @@
           "order": "ord-1",
           "segment": "p1-s2",
           "grade": 2,
-          "whose": "bank-co",
+          "whose": "us-bank",
           "rests_on": [
             {
               "log": "log-main",
-              "index": 134,
+              "index": 135,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "2323232323232323232323232323232323232323232323232323232323232323"
+                "value": "2424242424242424242424242424242424242424242424242424242424242424"
               }
             }
           ]
@@ -1942,10 +1988,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 136,
+        "index": 137,
         "entry": {
           "algorithm": "sha-256",
-          "value": "2525252525252525252525252525252525252525252525252525252525252525"
+          "value": "2626262626262626262626262626262626262626262626262626262626262626"
         }
       },
       "entry": {
@@ -1989,10 +2035,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 137,
+        "index": 138,
         "entry": {
           "algorithm": "sha-256",
-          "value": "2626262626262626262626262626262626262626262626262626262626262626"
+          "value": "2727272727272727272727272727272727272727272727272727272727272727"
         }
       },
       "entry": {
@@ -2036,10 +2082,10 @@
     {
       "receipt": {
         "log": "log-main",
-        "index": 138,
+        "index": 139,
         "entry": {
           "algorithm": "sha-256",
-          "value": "2727272727272727272727272727272727272727272727272727272727272727"
+          "value": "2828282828282828282828282828282828282828282828282828282828282828"
         }
       },
       "entry": {

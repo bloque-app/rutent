@@ -136,6 +136,9 @@
         },
         {
           "$ref": "#/$defs/handed_on"
+        },
+        {
+          "$ref": "#/$defs/hand_on_taken_back"
         }
       ]
     }
@@ -245,7 +248,8 @@
                 "waiting_at_floor",
                 "stuck_declared",
                 "stuck_resolved",
-                "handed_on"
+                "handed_on",
+                "hand_on_taken_back"
               ]
             }
           }
@@ -629,6 +633,24 @@
         "acceptance": {
           "$ref": "#/$defs/id",
           "description": "The record of the customer's acceptance of the new order, by id."
+        }
+      },
+      "additionalProperties": false
+    },
+    "hand_on_taken_back": {
+      "description": "A hand-on taken back (REQ-ORD-43): the linked order the part was handed on to was refused and never opened, so the value never left. The part waits for the customer again where its final deposit failed, or else it is stuck.",
+      "type": "object",
+      "required": [
+        "kind",
+        "linked_order"
+      ],
+      "properties": {
+        "kind": {
+          "const": "hand_on_taken_back"
+        },
+        "linked_order": {
+          "$ref": "#/$defs/id",
+          "description": "The linked order the hand-on named, which was refused."
         }
       },
       "additionalProperties": false

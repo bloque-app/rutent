@@ -46,6 +46,15 @@ impl Standing {
         )
     }
 
+    /// Whether `segment` failed with its reversal owed: a withdrawal, a route or an exchange whose value may sit
+    /// with its provider until the reversal completes, a dispute (`INV-3`, `REQ-ORD-3`).
+    pub fn reversal_owed(&self, segment: &str) -> bool {
+        matches!(
+            self.segments.get(segment),
+            Some((kind, SegmentState::FailedReversalOwed)) if *kind != OperationKind::Deposit
+        )
+    }
+
     /// Whether the part's value has left `segment`: it settled, was reversed, or is a deposit that failed, which
     /// leaves the value where it was (`INV-2`, `REQ-ORD-43`).
     pub fn released(&self, segment: &str) -> bool {

@@ -205,8 +205,12 @@ pub fn guard(order: &Order, input: &RecordedInput) -> Result<Target, Outcome> {
         .part
         .as_ref()
         .and_then(|id| order.parts.iter().position(|p| &p.part_id == id));
-    let exception = order.state == OrderState::Complete
-        && part_index.is_some_and(|i| undoes_a_complete_part(&order.parts[i], input));
+    // The two changes an ended part takes: a complete part's start proven undone, in a complete order, and a
+    // hand-on taken back, its linked order refused.
+    let exception = (order.state == OrderState::Complete
+        && part_index.is_some_and(|i| undoes_a_complete_part(&order.parts[i], input)))
+        || (matches!(input.observed, Observed::HandOnTakenBack { .. })
+            && part_index.is_some_and(|i| order.parts[i].state == OrderState::HandedOn));
     match input.observed.scope() {
         Scope::Order => {
             if order_ended {
@@ -245,6 +249,20 @@ pub fn guard(order: &Order, input: &RecordedInput) -> Result<Target, Outcome> {
 /// change. The caller checks the order.
 pub fn undoes_a_complete_part(part: &Part, input: &RecordedInput) -> bool {
     part.state == OrderState::Complete && undoes_starting_segment(part, input)
+}
+
+/// Whether the input is the starting segment proven undone on a part still open (`REQ-ORD-3`, `REQ-ORD-40`): its
+/// withdrawal settled and nothing after it holds the value elsewhere, every later segment pending, reversed, or a
+/// deposit that failed. The value is back at the origin, so the part fails.
+pub fn undoes_an_open_part(part: &Part, input: &RecordedInput) -> bool {
+    !is_ended(part.state)
+        && undoes_starting_segment(part, input)
+        && part.segments.iter().skip(1).all(|s| {
+            matches!(
+                s.state,
+                SegmentState::Pending | SegmentState::ReversalComplete
+            ) || (s.kind == OperationKind::Deposit && s.state == SegmentState::FailedReversalOwed)
+        })
 }
 
 fn undoes_starting_segment(part: &Part, input: &RecordedInput) -> bool {
@@ -326,10 +344,10 @@ pub fn after_withdrawal_cancelled(part: &mut Part) -> Outcome {
 /// `handed_on`: a part waiting or stuck, whose value sits at a node, is handed on to another order
 /// (`REQ-ORD-43`).
 pub fn after_handed_on(part: &mut Part, order_id: &Id, linked_order: &Id) -> Outcome {
-    let held = matches!(
-        part.state,
-        OrderState::WaitingForCustomer | OrderState::Stuck
-    );
+    // A stuck part is handed on on the operator's resolution; a waiting one only by the customer's own choice after a
+    // failed final deposit (`INV-10`, `REQ-ORD-43`).
+    let held = part.state == OrderState::Stuck
+        || (part.state == OrderState::WaitingForCustomer && part.deposit_failed_at.is_some());
     if held && linked_order != order_id && value_at(part).is_some() {
         part.state = OrderState::HandedOn;
         part.linked_order = Some(linked_order.clone());
@@ -337,6 +355,22 @@ pub fn after_handed_on(part: &mut Part, order_id: &Id, linked_order: &Id) -> Out
     } else {
         not_from_this_state()
     }
+}
+
+/// `hand_on_taken_back`: a part handed on to `linked_order`, which was refused and never opened, takes its hand-on
+/// back (`REQ-ORD-43`): it waits for the customer again where its final deposit failed, or else it is stuck. Any
+/// other part, or another linked order, doesn't change.
+pub fn after_hand_on_taken_back(part: &mut Part, linked_order: &Id) -> Outcome {
+    if part.state != OrderState::HandedOn || part.linked_order.as_ref() != Some(linked_order) {
+        return not_from_this_state();
+    }
+    part.linked_order = None;
+    part.state = if part.deposit_failed_at.is_some() {
+        OrderState::WaitingForCustomer
+    } else {
+        OrderState::Stuck
+    };
+    Outcome::Applied {}
 }
 
 /// A segment's input on its part (`REQ-STM-1`), along the published edges and no others (the table in the module's
@@ -387,7 +421,7 @@ pub fn after_segment_input(part: &mut Part, input: &RecordedInput) -> Outcome {
             SegmentState::FailedReversalOwed | SegmentState::OutcomeUnknown,
         ) if kind != OperationKind::Deposit => SegmentState::ReversalComplete,
         (Observed::ReversalCompleted { .. }, SegmentState::Settled)
-            if undoes_a_complete_part(part, input) =>
+            if undoes_a_complete_part(part, input) || undoes_an_open_part(part, input) =>
         {
             // The starting segment is proven undone: the part fails, and so the order.
             part.segments[index].state = SegmentState::ReversalComplete;
@@ -412,13 +446,13 @@ pub fn after_restart(
     changes_destination: bool,
 ) -> Outcome {
     if changes_destination
-        && !matches!(
+        && !(matches!(
             part.state,
             OrderState::WaitingForCustomer | OrderState::Stuck
-        )
+        ) && part.deposit_failed_at.is_some())
     {
-        // The customer's choice follows a failed final deposit with no route left; the operator may process a
-        // stuck part the same way.
+        // Only the customer's own choice after a failed final deposit changes a destination (`INV-10`): the part
+        // waits, or the operator holds it stuck, with its value where the deposit failed.
         return not_from_this_state();
     }
     if changes_destination {
@@ -522,6 +556,7 @@ fn apply(order: &mut Order, input: &RecordedInput) -> Outcome {
         Observed::StuckDeclared { .. } => after_stuck_declared(part),
         Observed::WithdrawalCancelled {} => after_withdrawal_cancelled(part),
         Observed::HandedOn { linked_order, .. } => after_handed_on(part, &order_id, linked_order),
+        Observed::HandOnTakenBack { linked_order } => after_hand_on_taken_back(part, linked_order),
         // Order-scope kinds never reach a part.
         Observed::RouteChosen { .. } | Observed::EndRequested {} => not_from_this_state(),
     };

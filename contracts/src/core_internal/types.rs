@@ -439,6 +439,16 @@ pub enum Action {
         )]
         statement_key: Option<PublicKey>,
     },
+    /// Asking the provider of a failed segment to reverse it, a decided action like any other (`REQ-ORD-3`,
+    /// `REQ-ORD-11`): the segment owes its reversal, and the provider is the one that failed it.
+    AskReversal {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// The provider that failed it, asked to reverse.
+        provider: Id,
+    },
     /// Erasing a kept statement's bytes from the evidence store, a decided action like any other (`REQ-AUD-13`): the
     /// operator asks it of policy, the log admits its effect on the permit, and the store erases only on the effect's
     /// `done` result, which the `erasure` entry then records. The commitment stays in the log.
@@ -1802,6 +1812,9 @@ pub enum MismatchKind {
 pub enum OperatorCommand {
     /// Appoint the checker outside the operator (`REQ-AUD-10`).
     AppointChecker,
+    /// Accept a provider's showing that a failed segment's failure was the operator's, so the operator carries its
+    /// reversal (`REQ-ORD-11`): about the order, its subject the segment.
+    AcceptFault,
 }
 
 /// Something that came after an order ended (`REQ-ORD-25`, `REQ-ORD-31`).
@@ -2137,6 +2150,14 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         movement: Option<PublicMovement>,
+        /// Inside a private node, the node's publisher whose word it is, labelled as such (`REQ-ORD-3`'s third
+        /// sentence): the party its maker states for. Absent where it isn't a publisher's word.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        publisher: Option<Id>,
     },
     /// The fee captured on a settled segment, attributed to a provider or the operator, with no balance kept
     /// (`REQ-AUD-11`).
@@ -2245,6 +2266,60 @@ pub enum What {
         /// The commitment the erased bytes were kept under.
         evidence: Digest,
     },
+    /// Who carries a failed segment's reversal (`REQ-ORD-11`): its provider, or the party at fault its provider
+    /// showed, once that party accepted the showing.
+    ReversalCarrier {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// Who carries the reversal.
+        carrier: Carrier,
+        /// The receipt of the provider's showing of fault, its verified stated entry: present exactly where the
+        /// carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        showing: Option<Receipt>,
+        /// Who accepted the showing for the party at fault: present exactly where the carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        accepted_by: Option<Actor>,
+        /// The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and
+        /// segment, or the operator's `accept_fault` command. Present exactly where the carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        accepted_with: Option<Receipt>,
+        /// The customer's session its yes was given in, as an acceptance is (`REQ-ORD-32`): present exactly where the
+        /// customer carries it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        session: Option<Id>,
+    },
+    /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
+    /// start proof, which settles the linked order's first segment. The linked order's first move rests on it
+    /// (`handed-on-route-starts-on-its-holding-record`).
+    HoldingWithdrawal {
+        /// The linked order whose route it starts.
+        order: Id,
+        /// The order whose value the holding account held, the one the route was handed on from.
+        handed_on_from: Id,
+        /// The holding account's provider: the route's starting reserve, which made the record.
+        holder: Id,
+        /// The receipt of the record: the holder's verified stated entry of the withdrawal.
+        record: Receipt,
+    },
     /// An input recorded, but not taken: the state machine or the host refused it, so it moves no order, and the
     /// log keeps its trace (`REQ-AUD-1`) beside the inputs it took, which `standing` reads alone.
     InputNotTaken {
@@ -2331,6 +2406,42 @@ pub struct OutcomeConfirmation {
     pub confirmed_with: Receipt,
     /// When, by Core's clock.
     pub at: Timestamp,
+}
+
+/// The shape of a customer's acceptance of a provider's showing of fault: its own signed statement, kept and logged as
+/// a stated entry like any other, naming the showing it accepts (`REQ-ORD-11`).
+pub const FAULT_ACCEPTANCE_SHAPE: &str = "urn:rutent:core-internal:fault-acceptance";
+
+/// A customer's acceptance of a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): the
+/// body of its own signed statement, of shape [`FAULT_ACCEPTANCE_SHAPE`], as an acceptance's yes is its reserve's.
+/// It names the showing it accepts, by the showing's transaction and commitment, so it can't be read as accepting
+/// another, and it says the fault it accepts, so a dispute can't be read as an acceptance. Its stated entry is about
+/// the order, the segment and the showing's transaction. Schema: `urn:rutent:core-internal:fault-acceptance`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaultAcceptance {
+    /// The order.
+    pub order: Id,
+    /// The failed segment.
+    pub segment: Id,
+    /// The transaction the provider's showing, its failed result, is about.
+    pub transaction: Id,
+    /// The commitment the showing's stated entry names it by.
+    pub showing: Digest,
+    /// The fault accepted, as the showing names it: the customer's own where the customer accepts it.
+    pub fault: crate::provider_role::Fault,
+}
+
+/// Who carries a failed segment's reversal (`REQ-ORD-11`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Carrier {
+    /// The provider that failed it: until a showing of another's fault is accepted.
+    Provider,
+    /// The customer, at fault by the provider's showing, accepted.
+    Customer,
+    /// The operator, at fault by the provider's showing, accepted.
+    Operator,
 }
 
 /// What a move whose outcome was unknown came to.

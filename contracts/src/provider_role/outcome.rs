@@ -342,6 +342,24 @@ pub struct ConversionSettlement {
 pub struct Failure {
     /// The evidence for the failure: at least one piece.
     pub evidence: Vec<EvidencePiece>,
+    /// Whose fault the provider shows the failure was, where it shows one: the customer's or the operator's. Until
+    /// the party it names accepts it, the provider carries the reversal (`REQ-ORD-11`). Absent where it shows none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fault: Option<Fault>,
+}
+
+/// Whose fault a provider shows a failure was (`REQ-ORD-11`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// The customer's.
+    Customer,
+    /// The operator's.
+    Operator,
 }
 
 /// Outcome unknown. It carries nothing, and is left only on a later result with stated evidence.

@@ -96,7 +96,7 @@ input that made it wait, kept while it goes on waiting, dropped when it stops (`
 a clock shows the age as its now less `waiting_since`; the state machine reads no clock (`REQ-STM-5`).
 
 No provider starts on a waiting part. The customer's choice resolves it: a `route_recalculated` within a new
-authorisation (a lower floor, say), a `destination_changed`, or a `handed_on`, each as for any waiting part.
+authorisation (a lower floor, say). A `destination_changed` or a `handed_on` of a waiting part comes only after a failed final deposit (`INV-10`): a part waiting at its floor with its final deposit not tried takes neither.
 
 ## A stuck part's resolution
 
@@ -113,7 +113,7 @@ A published rule, `after_stuck_resolved`, ends the part:
 The value may have been in flight when the part was declared stuck, so the rule doesn't ask where it sits, and the
 part's segments may not show it delivered: the part keeps `resolved_to`, which says so. Having ended, the part takes
 no later report (`REQ-STM-6`): a late delivery on its segment moves nothing twice (`AC-5`). A resolution handing the
-value on to a linked order is `handed_on`, as for a waiting part.
+value on to a linked order is `handed_on`, as for a waiting part. A hand-on whose linked order was refused and never opened is taken back by `hand_on_taken_back`: the part waits again where its final deposit failed, or else is stuck.
 
 ## The destination
 

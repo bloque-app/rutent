@@ -42,6 +42,10 @@
 //!   beats not known from the other.
 //! - **An unreachable provider** gives `verifier_unreachable`: core-internal has no cause of its own for it.
 //! - **`AC-17`'s reading is pending** on the owner's form as `spec-ac17-not-known`, with "not known" the default.
+//! - **An unknown order is refused as another's is.** A source of an order's or a segment's record that knows nothing
+//!   of it gives `not_permitted`, the refusal of an order that isn't the caller's, never `missing_input`, so a refused
+//!   caller can't tell an order that doesn't exist from one it may not see (`T-023-01`'s question, the coordinator's
+//!   ruling). The answer and its record are one, so the log keeps the same class.
 
 #[cfg(test)]
 mod entry_points;
@@ -296,6 +300,15 @@ pub trait Policy {
 pub trait Sources {
     /// What `need`'s source says, if it can be asked and has it.
     fn supply(&mut self, need: &Need) -> Reply<Said>;
+
+    /// The parties of `order` as its record holds them, where the log holds no acceptance of it yet: an order filed on
+    /// an automatic deposit is authorised before its acceptance is built, and its record, which the filing hands over
+    /// as the order opens, is the only word on who it is for. An order no record knows is `Missing`, as is every
+    /// order a source keeps no record of, which is the default.
+    fn order_record(&mut self, order: &Id) -> Reply<rutent_contracts::core_internal::Parties> {
+        let _ = order;
+        Reply::Missing
+    }
 }
 
 /// The needs of two policies, asked in order: both lists where both name theirs. A missing answer from either is the
@@ -570,6 +583,21 @@ enum Verdict {
     NotKnown(NotKnownCause),
 }
 
+/// The refusal a source answering without its input gives: a missing input, but for a record of an order or of a
+/// segment, where it is the refusal one of another's gives (`not_permitted`). Toward the caller, an order that doesn't
+/// exist and one that isn't its own look the same, so a refused caller can't probe which orders exist (`T-023-01`'s
+/// question, the coordinator's ruling); the log records the same answer.
+fn missing(from: &Source) -> RefusalClass {
+    match from {
+        Source::Requester(_)
+        | Source::OrderOrigin(_)
+        | Source::OrderParties(_)
+        | Source::SegmentOrder(_)
+        | Source::SegmentProvider { .. } => RefusalClass::NotPermitted,
+        _ => RefusalClass::MissingInput,
+    }
+}
+
 /// Asks `policy` what `asked` needs, asks each input of its source, and has `policy` rule over them.
 ///
 /// A provider that can't be reached gives `verifier_unreachable`: core-internal's `NotKnownCause` has no cause of
@@ -584,7 +612,7 @@ fn verdict(policy: &mut impl Policy, sources: &mut impl Sources, asked: Asked<'_
     for need in needs {
         match sources.supply(&need) {
             Reply::Given(said) => inputs.push(Input { need, said }),
-            Reply::Missing => return Verdict::Refuse(RefusalClass::MissingInput),
+            Reply::Missing => return Verdict::Refuse(missing(&need.from)),
             Reply::Unreachable => return Verdict::NotKnown(NotKnownCause::VerifierUnreachable),
         }
     }
@@ -686,7 +714,9 @@ pub(crate) fn person_outcome(
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
-impl<L: PolicyLog + crate::funds::Recorded, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
+impl<L: PolicyLog + crate::funds::Recorded + crate::stuck::Receipted, P: Policy, S: Sources>
+    Decisions for Engine<L, P, S>
+{
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         // A move acts only inside the authorisation in force for its order, as the log policy appends to holds it
@@ -775,12 +805,14 @@ mod tests {
 
     impl crate::stuck::Receipted for Taking {
         fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
-            Ok(self
-                .0
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (nth_receipt(i), e.clone()))
-                .collect())
+            let mut entries = crate::funds::acceptances_of_the_fixtures();
+            entries.extend(
+                self.0
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (nth_receipt(i), e.clone())),
+            );
+            Ok(entries)
         }
     }
 
@@ -790,6 +822,12 @@ mod tests {
     impl PolicyLog for Refusing {
         fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl crate::stuck::Receipted for Refusing {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
         }
     }
 
@@ -840,7 +878,11 @@ mod tests {
 
     impl crate::stuck::Receipted for Guarded {
         fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
-            Ok(self.0.clone())
+            // The fixtures' orders' acceptances, read before what the log took, as `held_and` reads their
+            // authorisation: the register's customer and payer for them (`T-021-04`).
+            let mut entries = crate::funds::acceptances_of_the_fixtures();
+            entries.extend(self.0.iter().cloned());
+            Ok(entries)
         }
     }
 
@@ -1140,6 +1182,12 @@ mod tests {
                     .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
             });
         }
+        // Asking the fixtures' order's segment's provider to reverse it (`REQ-ORD-3`).
+        actions.push(Action::AskReversal {
+            order: id("ord-17"),
+            segment: id("seg-2"),
+            provider: id("bridge-pay"),
+        });
         for action in &actions {
             match action {
                 Action::MoveValue { .. }
@@ -1148,6 +1196,7 @@ mod tests {
                 // A decided action too (`REQ-AUD-13`), which policy's role table answers no rule for yet: it joins
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
+                Action::AskReversal { .. } => {}
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }
@@ -1162,6 +1211,73 @@ mod tests {
         };
         assert_eq!(entry.check(), Ok(()));
         entry.outcome
+    }
+
+    /// Toward the caller, an order that doesn't exist and one that isn't the caller's look the same (`T-023-01`'s
+    /// question, the coordinator's ruling): a customer's agent reading an order, authorising it, and asking to move
+    /// value on it is refused `not_permitted` alike, whether the order's record names another party or knows nothing
+    /// of the order. Otherwise a refused caller could probe which orders exist.
+    // verifies: REQ-AUZ-7, REQ-AUZ-1
+    #[test]
+    fn unknown_order_and_anothers_order_answer_alike() {
+        let asked = |order: &str, known: bool| {
+            let mut policy = Engine::with_policy(
+                Taking::default(),
+                Service::ruling(Reply::Given(Ruling::Permit)),
+                Given::default(),
+            );
+            let mut read: Value = fixture!("read-check-by-an-agent-in-its-partys-role");
+            read["reads"]["order"] = order.into();
+            let read: ReadCheck = serde_json::from_value(read).unwrap();
+            let mut authorisation: Authorisation =
+                fixture!("authorisation-of-one-order-given-by-an-agent");
+            authorisation.order = id(order);
+            let mut moved: DecisionRequest = fixture!("decision-request-to-move-value");
+            moved.caller = authorisation.given_by.clone();
+            if let Action::MoveValue { order: o, .. } = &mut moved.action {
+                *o = id(order);
+            }
+            if known {
+                // The order's record names another party: its parties and its requester are someone else.
+                let party = read.reader.party.clone();
+                for from in [
+                    Source::OrderParties(id(order)),
+                    Source::Requester(id(order)),
+                ] {
+                    let need = Need {
+                        input: party.clone(),
+                        from,
+                    };
+                    policy.sources.says.push((need, Reply::Given(Said::No)));
+                }
+            }
+            (
+                policy.check_read(&read).unwrap().outcome,
+                policy.authorise(&authorisation).unwrap().outcome,
+                policy.decide(&moved).unwrap().outcome,
+            )
+        };
+        let not_permitted = RefusalClass::NotPermitted;
+        let anothers = asked("ord-19", true);
+        assert_eq!(
+            anothers,
+            (
+                ReadOutcome::Refused {
+                    class: not_permitted
+                },
+                Answer::Refuse {
+                    class: not_permitted
+                },
+                Answer::Refuse {
+                    class: not_permitted
+                },
+            )
+        );
+        assert_eq!(
+            asked("ord-404", false),
+            anothers,
+            "an unknown order answers as another's"
+        );
     }
 
     /// The unbuilt engine permits nothing on any call, records each answer first, and answers nothing when the log
@@ -1190,14 +1306,14 @@ mod tests {
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), unreachable);
         // A move's outcome reported waits on the register's word that its reporter acts for the party it states; a
-        // stuck order's decision is of an order this log has no acceptance of, and a move and a confirmation carry out
-        // nothing it holds as permitted, a decision or a report: each is refused (`T-021-06`), since a refusal beats
-        // not known.
+        // stuck order's decision is of an order this log has no acceptance of, refused as one of another's order is
+        // (`T-023-01`'s question), and a move and a confirmation carry out nothing it holds as permitted, a decision
+        // or a report: each is refused (`T-021-06`), since a refusal beats not known.
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let decision = policy
             .move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
             .unwrap();
@@ -1290,7 +1406,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 13);
+        assert_eq!(actions.len(), 14);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1332,8 +1448,9 @@ mod tests {
             let permit = decision.permit().expect("a permit");
             let effect = policy.log.effect(action, permit);
             match action {
-                // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on.
-                Action::MoveValue { .. } => assert!(
+                // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on, or, for
+                // a reversal asked, a segment of this log that owes it.
+                Action::MoveValue { .. } | Action::AskReversal { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1393,12 +1510,14 @@ mod tests {
             let caller = &asked.caller;
             let decision = policy.decide(asked).unwrap();
             assert!(decision.permit().is_none(), "{caller:?}");
-            // `T-021-03`'s fixed rule lets only the operator post a route or change the catalogue, and only the user,
-            // Core or the operator ask to move value; it refuses the rest before the deployment's policy is asked.
+            // `T-021-03`'s fixed rule lets only the operator post a route or change the catalogue, only the user,
+            // Core or the operator ask to move value, and only Core or the operator ask a reversal; it refuses the
+            // rest before the deployment's policy is asked.
             let reaches = match asked.action {
                 Action::MoveValue { .. } => {
                     matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
                 }
+                Action::AskReversal { .. } => matches!(caller.role, Role::Core | Role::Operator),
                 _ => caller.role == Role::Operator,
             };
             if reaches {
@@ -1415,8 +1534,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 13 + 2 * 3,
-            "the operator on every action, the user and Core on a move"
+            3 * 14 + 2 * 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal asked"
         );
         let seen: Vec<Actor> = policy
             .policy
@@ -2150,18 +2269,35 @@ mod tests {
                 }),
             ),
             (
-                // The world's move of that decision, by another desk's login holding the permission to move, the
-                // operator's, neither reaching the decider's party nor reached by it, nor reaching the holder.
+                // The world's move of that decision, by a sibling desk's login holding the permission to move, the
+                // operator's, neither reaching the decider's party nor reached by it, nor meeting it below the
+                // operator, nor reaching the holder. The decider is the one the log's decision names.
                 "move_stuck",
                 Call::Built(|e| {
                     let request: StuckMove = serde_json::from_value(world_before(e, "sm")).unwrap();
                     let mover = &request.mover;
-                    let decider =
-                        actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+                    let decider = e
+                        .log
+                        .log
+                        .0
+                        .iter()
+                        .find_map(|(_, entry)| match entry {
+                            Entry::Verified(VerifiedEntry {
+                                what:
+                                    What::StuckDecide {
+                                        request: decide, ..
+                                    },
+                                ..
+                            }) if decide.request == request.carries_out.request => {
+                                Some(decide.decider.clone())
+                            }
+                            _ => None,
+                        })
+                        .expect("the world's decision the move carries out");
                     let yes = vec![holds(mover, Permission::MoveStuck), of_operator(mover)];
                     let no = [
-                        reaching(mover, "operator"),
-                        reaching(&decider, "operator-desk-b"),
+                        reaching(mover, decider.party.as_str()),
+                        reaching(&decider, mover.party.as_str()),
                         meeting(&decider, mover),
                         reaching(mover, "bank-co"),
                     ];

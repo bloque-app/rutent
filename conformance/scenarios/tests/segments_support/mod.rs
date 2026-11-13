@@ -161,6 +161,8 @@ pub enum On {
     Chosen,
     /// A part's `handed_on` (`T-020-13`).
     Handed,
+    /// A route handed on's `holding_withdrawal`, its start (`T-020-13`).
+    Start,
 }
 
 impl On {
@@ -203,6 +205,7 @@ impl On {
             (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             (On::Handed, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
+            (On::Start, Entry::Verified(v)) => matches!(v.what, What::HoldingWithdrawal { .. }),
             (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })),
             _ => false,
@@ -464,6 +467,11 @@ impl authz::Sources for Register {
                     Some(actor) => yes(&actor.party == party && &actor.kind == kind),
                     None => Reply::Missing,
                 }
+            }
+            // The payer's account at the reserve, the customer's, which every order the kit seeds names as its origin
+            // account: policy holds it to the payer's (`T-021-04`).
+            authz::Source::Account(account) => {
+                yes(account.as_str() == "acct-1" && need.input == customer().party)
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
@@ -1049,6 +1057,11 @@ pub fn append_entry(core: &Core, entry: &Entry, through: Through) -> Receipt {
     core.log.borrow_mut().take(entry, through).unwrap()
 }
 
+/// Appends `entry`, a decision on policy's handle, to `log`: for a stand-in of policy that records its own answers.
+pub fn append_entry_to(log: &Rc<RefCell<TestLog>>, entry: &Entry) -> Receipt {
+    log.borrow_mut().take(entry, Through::Policy).unwrap()
+}
+
 /// The deposit's arrival at the origin reserve, on the reserve's report to the operator's question: one deposit, and
 /// one arrival, for each part of `chosen`'s route, each naming its part where the route has more than one
 /// (`split-deposit-arrival-names-its-part`).
@@ -1228,12 +1241,8 @@ fn seed_chosen(
             outcome,
         })
     };
-    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the customer authorises its order through policy"
-    );
-    let mut log = log.borrow_mut();
+    let shared = log;
+    let mut log = shared.borrow_mut();
     seed_arrival(&mut log, store, record, named, operator, &chosen, &entry);
     log.take(
         &entry(
@@ -1259,6 +1268,14 @@ fn seed_chosen(
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    drop(log);
+    let authorised = policy.authorise(&authorisation_of(named, floor)).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the customer authorises its order through policy"
+    );
+    let mut log = shared.borrow_mut();
     log.take(
         &entry(
             What::DecisionRecord {
@@ -1302,14 +1319,6 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
             outcome,
         })
     };
-    let authorised = core
-        .policy
-        .authorise(&authorisation_of(named, None))
-        .unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the linked order is authorised"
-    );
     let session = id(&format!("sess-{}", named.order));
     let quote = digest(&"ac".repeat(32));
     let transaction = format!("tx-yes-{}", named.order);
@@ -1379,6 +1388,20 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    // An order another party requested and pays names no origin account of the customer's: policy holds an origin
+    // account to the payer's own (`T-021-04`).
+    drop(log);
+    let mut authorisation = authorisation_of(named, None);
+    if requester.party != customer().party {
+        authorisation.origin_account = None;
+    }
+    let authorised = core.policy.authorise(&authorisation).unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let mut log = core.log.borrow_mut();
     log.take(
         &verified(
             self::core(),
@@ -1420,14 +1443,6 @@ pub fn seed_linked_on_a_deposit(
             outcome,
         })
     };
-    let authorised = core
-        .policy
-        .authorise(&authorisation_of(named, None))
-        .unwrap();
-    assert!(
-        authorised.permit().is_some(),
-        "the linked order is authorised"
-    );
     let operator = core.operator.clone();
     let chosen = route_chosen_of(&core.record, named);
     let mut log = core.log.borrow_mut();
@@ -1464,6 +1479,17 @@ pub fn seed_linked_on_a_deposit(
         Through::General,
     )
     .unwrap();
+    // The acceptance before the authorisation it gives, as intake records them, so policy reads the order's payer.
+    drop(log);
+    let authorised = core
+        .policy
+        .authorise(&authorisation_of(named, None))
+        .unwrap();
+    assert!(
+        authorised.permit().is_some(),
+        "the linked order is authorised"
+    );
+    let mut log = core.log.borrow_mut();
     log.take(
         &entry(
             What::DecisionRecord {
@@ -2051,6 +2077,9 @@ impl Grading for Recorded {
                     whose,
                     rests_on: vec![settled.result.clone()],
                     movement,
+                    // A segment's settlement on its provider's word: the label of a private node's publisher counts only for a
+                    // reversal's evidence (`reversal-rests-on-its-evidence`), so a settlement carries none.
+                    publisher: None,
                 },
                 when: When {
                     at: settled.at.clone(),

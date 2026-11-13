@@ -1,6 +1,11 @@
 # provider-role changelog
 
 ## 3.1.0
+- A failed result may show whose fault the failure was, the customer's or the operator's: an optional `fault` on
+  the `failed` outcome (`REQ-ORD-11`). Until the party it names accepts it, the provider carries the reversal.
+  Before it, no shape carried it, so `T-020-12`'s Core read a stopgap prefix (`fault:`) in an evidence piece's
+  reference. Minor, folded into 3.1.0 before its release: an optional field, absent on the wire where not shown. A
+  valid and an invalid fixture. (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12)
 - A fee may say whether its provider bills it separately, outside the amounts it reports: an optional
   `billed_separately` on the result's `fee`. Absent means the provider doesn't say. Before it, no shape carried it, so
   a fee record (`REQ-AUD-11`) had to state what no provider said. Minor: an optional field, absent on the wire where

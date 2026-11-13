@@ -93,6 +93,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement/outcome/fee/billed_separately", "type")],
         ),
         (
+            "result-transfer-failed-showing-the-providers-own-fault",
+            vec![("/statement/outcome/fault", "enum")],
+        ),
+        (
             "advertisement-key-without-a-purpose",
             vec![("/statement/keys/0", "required")],
         ),

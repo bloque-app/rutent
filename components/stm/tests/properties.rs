@@ -429,7 +429,7 @@ fn no_route_restarts_before_the_value_is_evidenced_at_a_node() {
 
 // verifies: REQ-STM-6, DEC-18
 #[test]
-fn an_ended_order_changes_only_by_a_complete_part_failing_when_its_starting_segment_is_undone() {
+fn an_ended_order_changes_only_by_an_undone_start_or_a_hand_on_taken_back() {
     let mut late_reports = 0;
     for trace in traces(SEEDS) {
         for step in &trace.steps {
@@ -454,14 +454,31 @@ fn an_ended_order_changes_only_by_a_complete_part_failing_when_its_starting_segm
                     && matches!(step.input.observed, Observed::ReversalCompleted { .. })
                     && step.input.subject.part.as_ref() == Some(&before.part_id)
                     && step.input.subject.segment.as_ref() == Some(&before.segments[0].segment_id);
+                // A hand-on taken back, its linked order refused: the part waits or is stuck again.
+                let taken_back = applied(step)
+                    && before.state == OrderState::HandedOn
+                    && matches!(step.input.observed, Observed::HandOnTakenBack { .. })
+                    && step.input.subject.part.as_ref() == Some(&before.part_id);
                 if undone {
                     assert_eq!(after.state, OrderState::Failed, "{at}");
+                } else if taken_back {
+                    assert!(
+                        matches!(
+                            after.state,
+                            OrderState::WaitingForCustomer | OrderState::Stuck
+                        ),
+                        "{at}"
+                    );
+                    assert_eq!(after.linked_order, None, "{at}");
                 } else {
                     assert_eq!(after, before, "{at}: an ended part changed");
                 }
             }
             if is_ended(prev.state) {
-                if applied(step) {
+                if applied(step) && matches!(step.input.observed, Observed::HandOnTakenBack { .. })
+                {
+                    assert_eq!(prev.state, OrderState::HandedOn, "{at}");
+                } else if applied(step) {
                     assert!(
                         matches!(step.input.observed, Observed::ReversalCompleted { .. }),
                         "{at}"

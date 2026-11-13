@@ -282,3 +282,46 @@ pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation
         )
         .unwrap();
 }
+
+/// The holding account's own statement of its withdrawal for `linked`, a route handed on: the reserve's verified
+/// result about the linked order, naming the withdrawal's transaction, on the operator's question under it
+/// (`T-020-13`, `REQ-ORD-40`). Its receipt is what a `holding_withdrawal` cites (`holding-withdrawal-rests-on-its-record`),
+/// and its transaction is the one the log holds one start to (`one-start-per-holding-record`).
+pub fn holding_statement(core: &mut Core, linked: &str) -> Receipt {
+    let transaction = format!("tx-holding-{linked}-{}", core.log.borrow().entries.len());
+    super::stated_results(core, &id(linked), None, &transaction, &[RESERVE]).remove(0)
+}
+
+/// Proves `linked`'s start on `record`, the holding account's record of its withdrawal, citing a statement of it
+/// the holding account made now ([`holding_statement`]): Core records the `holding_withdrawal`.
+pub fn prove(
+    core: &mut Core,
+    hand_on: &mut rutent_core_orch::hand_on::HandOn,
+    linked: &Id,
+    record: &rutent_prov::holding::wallet::WithdrawalRecord,
+) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
+    let statement = holding_statement(core, linked.as_str());
+    prove_citing(core, hand_on, linked, record, &statement)
+}
+
+/// [`prove`], citing `statement`, the holding account's statement already made: a retry cites the same one.
+pub fn prove_citing(
+    core: &mut Core,
+    hand_on: &mut rutent_core_orch::hand_on::HandOn,
+    linked: &Id,
+    record: &rutent_prov::holding::wallet::WithdrawalRecord,
+    statement: &Receipt,
+) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
+    let actor = super::core();
+    hand_parts(core, &mut rutent_core_orch::stuck::Stuck::new(), |parts| {
+        hand_on.prove_start(
+            parts,
+            rutent_core_orch::hand_on::Start {
+                linked,
+                record,
+                statement,
+                core: &actor,
+            },
+        )
+    })
+}

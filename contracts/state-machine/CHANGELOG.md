@@ -1,6 +1,21 @@
 # state-machine changelog
 
 ## 3.0.0
+- Folded into 3.0.0 before its release: a hand-on taken back, and an open part's start undone (`T-020-01`'s
+  reviews since landing). A new observed kind, `hand_on_taken_back {linked_order}`, about one part, takes back a
+  hand-on whose linked order was refused and never opened (`after_hand_on_taken_back`): the part waits for the
+  customer again where its final deposit failed, or else is stuck; it is the one input besides an undone start that
+  an ended part takes. And `undoes_an_open_part`: a part still open whose withdrawal settled, with nothing after it
+  holding the value elsewhere, takes its start proven undone and fails, as a complete part's does; one with a later
+  segment in flight still doesn't. Fixture `recorded-input-hand-on-taken-back`; `CMP-STM`'s tests, properties and
+  generator cover both. (DEC-4, DEC-20, REQ-ORD-43, REQ-ORD-3, REQ-ORD-40, T-020-01)
+- Folded into 3.0.0 before its release: only the customer's own choice after a failed final deposit changes a
+  destination or hands a waiting part on (`INV-10`, `T-020-01`'s reviews since landing). `after_restart` took a
+  `destination_changed` for any part waiting or stuck, and `after_handed_on` a `handed_on` for any waiting part, so a
+  part waiting at its floor could be sent elsewhere before its final deposit was tried. A destination change now
+  needs the part held with `deposit_failed_at` set, and a waiting part's hand-on the same; a stuck part's hand-on,
+  the operator's resolution, is unchanged. `CMP-STM`'s floor test now refuses both, and its generator steers a part
+  waiting after a failed deposit toward the customer's choice. (DEC-4, DEC-20, INV-10, REQ-ORD-43, T-020-01)
 - Breaking: a part waiting past its floor is a recorded state (`REQ-ORD-27`, `AC-12`, `AC-42`). A new observed kind,
   `waiting_at_floor {}`, about one part, records Core's judgement that the part is past the customer's floor; it
   carries no amount, since no transition reads one. The state is the existing `waiting_for_customer`, which fits:

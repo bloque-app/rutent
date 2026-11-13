@@ -2850,6 +2850,57 @@ masked are shown by the rule-off below. Then each new rule was switched off once
 
   A new showing refused while a dispute is kept is defence beside the refused acceptance; no test reaches it alone.
 
+### T-020-13, integration round 2 (the contract round at `0f93569`, with `int2-policy` at `7caf118`)
+
+- **The start proof is the log's record** (`holding_withdrawal`, `handed-on-route-starts-on-its-holding-record`).
+  `HandOn::prove_start` takes `Parts` and a `Start`: the linked order, the holding account's `WithdrawalRecord`, the
+  receipt of the holder's stated entry of the withdrawal, and Core. Core holds the record to the start as before
+  (`proves_start`), then records `holding_withdrawal { order, handed_on_from, holder, record }`, built once and
+  appended as built while the log can't take it; the segments hand the linked order's segments over only once the
+  log takes it. This is the fix for the history the policy and closing owners found the log refusing (entry 50 of
+  `handed on route's withdrawal is proven ...`, `handed-on-route-starts-on-its-holding-record`): a real Core bug, since
+  nothing wrote the start proof to the log. The holder's statement is a result about the linked order naming its
+  transaction (`holding-withdrawal-rests-on-its-record`); the kit's `holding_statement` makes one under a transaction
+  of its own each time, so the log's one start per record, keyed by that transaction
+  (`one-start-per-holding-record`), holds. Core's own spent check stays keyed by the record's reference, which names
+  the same transaction.
+- **A refused linked route takes the hand-on back** (`hand_on_taken_back`,
+  `hand-on-taken-back-rests-on-the-linked-orders-refusal`). Where the log refuses the linked order's `route_chosen`
+  after the `handed_on` went in, Core records the linked order's refusal, then the part's `hand_on_taken_back`
+  (source `orchestrator`), appended as built while the log can't take it; the order Core follows takes it and the
+  part waits again where its final deposit failed (or is stuck). The answer is `LinkedRefused`, once; the part is no
+  longer stranded. A take-back closes the linked order for good (`linked-order-opens-on-its-hand-on`): Core never
+  appends its `route_chosen` afterwards, and a later hand-on to it is refused `AlreadyOpened`, since the log holds the
+  earlier `handed_on` naming it.
+- **One hand-on per linked order** (`hand-on-links-an-unopened-order`). Core's free-order check already refused a
+  second hand-on to a linked order named in the log or pending. The lost-reply test's other opener, another order's
+  `handed_on` naming the same linked order, is a history the log now refuses, classified as such and removed: the
+  test keeps the lost answer and the retry, and the log admits every entry. The skip of the free-order check for a
+  hand-on whose own record the log holds stays, as defence in depth: no other hand-on can name the linked order once
+  this one is in.
+- **A given acceptance** for a part that isn't stuck, and **`INV-10`** in the log: Core already required both
+  (a given acceptance for every hand-on, a failed final deposit for the customer's).
+- **The `publisher` label** at `segments/ports.rs` (`ProvidersWord`) and the kit's `Recorded`: `None`, with the reason:
+  the label of a private node's publisher counts only for a reversal's evidence (`reversal-rests-on-its-evidence`),
+  so a settlement carries none.
+- **Seam** in `segments/mod.rs`: `observe` takes `hand_on_taken_back` (one arm).
+- **Red first:** the start-proof and refusal tests were changed first and seen red on the inert `prove_start`
+  (no `holding_withdrawal`; no take-back). **Rule-off, each red:** the `holding_withdrawal` recorded (the start-proof
+  test); the take-back recorded (the refusal test); `observe` taking `hand_on_taken_back` (the refusal test).
+- **`Segments::status` no longer tells a refused reader whether an order exists** (the coordinator's item, on
+  `T-020-08`'s read, as `T-023-01` did for notices). It answered `Unknown` before asking policy, and passed policy's
+  whole answer, its reason included, inside `Refused`. Now policy is asked first, whether or not Core follows the
+  order, and a refused reader is told `StatusError::NotReadable` alone, whatever the reason, which stays in the log;
+  only an allowed reader is told `Unknown`. `StatusError::Refused(ReadAnswer)` stays for `stuck::seen_by_provider`
+  (`T-020-11`) and the reversal's afterward read (`T-020-12`), which have the same leak (each answers `Unknown`
+  before asking policy, and passes policy's answer): a hand-off to their owners. Test
+  `stranger_is_refused_alike_for_a_real_order_and_a_missing_one` (`conformance/scenarios/tests/segments.rs`), written
+  first and seen red (the real order refused with policy's answer, the missing one `Unknown` before policy was
+  asked): a stand-in for policy refuses the two for different reasons and records each, since the engine now refuses
+  both `not_permitted` (`4415700`); the stranger gets one bare answer for both, and the log keeps both reasons.
+  Rule-off, each red: policy asked first (the new test); the refusal opaque (the new test and the state-and-age
+  test). The kit gained `append_entry_to`.
+
 ## T-020-07
 
 Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.

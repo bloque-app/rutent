@@ -283,6 +283,9 @@ impl Grading for ProvidersWord {
                 grade: EvidenceGrade::Statement,
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
+                // A segment's settlement on its provider's word: the label of a private node's publisher counts only for a
+                // reversal's evidence (`reversal-rests-on-its-evidence`), so a settlement carries none.
+                publisher: None,
                 movement: None,
             },
             when: When {

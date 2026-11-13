@@ -646,6 +646,12 @@ impl Core {
                 DESTINATION_ACCOUNT.to_owned(),
                 kit::customer().party.as_str().to_owned(),
             );
+            // The payer's account at the origin reserve, which every order's inputs name (`payer.bank_account`):
+            // policy holds an authorisation's origin account to the payer's own (`T-021-04`, the payer gap's ruling).
+            r.accounts.insert(
+                ORIGIN_ACCOUNT.to_owned(),
+                kit::customer().party.as_str().to_owned(),
+            );
         }
         let records = Records {
             log: Rc::clone(&log),
@@ -1487,8 +1493,10 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
 /// whole, before any part's own authorisation, so it is read for the order as a whole. The engine holds each of the
 /// order's moves to the same view, for the move's own part.
 fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
+    // The order's customer, as its acceptance names it, is the one whose new terms replace those in force.
+    let requester = rutent_core_authz::funds::parties_in(entries, order).map(|p| p.requester);
     rutent_core_authz::funds::Authorised::of(rutent_core_authz::funds::permitted_in(entries))
-        .in_force_as(order, None, authorisation)
+        .in_force_as(order, None, requester.as_ref(), authorisation)
         .cloned()
 }
 
@@ -1508,6 +1516,10 @@ pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
 
 /// The account the base order delivers to, held by the customer at the destination reserve.
 pub const DESTINATION_ACCOUNT: &str = "acct-2";
+
+/// The payer's account at the origin reserve, held by the customer, the base order's payer: the one its inputs name
+/// (`payer.bank_account`) and its authorisation names as its origin account.
+pub const ORIGIN_ACCOUNT: &str = "acct-1";
 
 /// An actor that is not a person: a component of `party`'s, acting as `acts`, in `role`.
 pub fn component(party: &str, acts: &str, role: Role) -> Actor {

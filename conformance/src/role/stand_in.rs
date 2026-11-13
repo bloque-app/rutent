@@ -412,6 +412,18 @@ impl Reserve {
     /// A reserve that keeps its role under `identity`, between the bank network `bank` and its own private node
     /// `ledger`, which its publisher declares (`DEC-24`).
     pub fn named(context: &SuiteContext, identity: &Identity, bank: &str, ledger: &str) -> Self {
+        Self::declaring(context, identity, bank, ledger, false)
+    }
+
+    /// A reserve that keeps its role under `identity`, as [`Reserve::named`] does, declaring that it starts routes on
+    /// automatic deposits where `automatic_deposits` says so (`REQ-ORD-13`).
+    pub fn declaring(
+        context: &SuiteContext,
+        identity: &Identity,
+        bank: &str,
+        ledger: &str,
+        automatic_deposits: bool,
+    ) -> Self {
         let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
             provider: identity.provider.clone(),
@@ -458,7 +470,7 @@ impl Reserve {
                     ],
                     declaration: ReserveDeclaration {
                         can_require_user_initiated_withdrawal: true,
-                        starts_routes_on_automatic_deposits: false,
+                        starts_routes_on_automatic_deposits: automatic_deposits,
                         maker: identity.provider.clone(),
                         declared_in_version: "0.1.0".to_owned(),
                     },
@@ -1040,6 +1052,7 @@ impl Exchange {
         if failing {
             return ConversionOutcome::Failed(Failure {
                 evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+                fault: None,
             });
         }
         if std::mem::take(&mut self.unknown_next) {
@@ -1413,6 +1426,7 @@ impl Ramp {
             );
             return TransferOutcome::Failed(Failure {
                 evidence: evidence(self.grade(), &t.destination, &t.transaction),
+                fault: None,
             });
         }
         if self.converts_internally {

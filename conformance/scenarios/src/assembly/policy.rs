@@ -345,6 +345,14 @@ impl authz::Sources for Records {
             Source::Verifier(_) | Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
         }
     }
+
+    /// The parties of an order its filing handed over (`FiledOrders::opened`), before its acceptance is in the log.
+    fn order_record(&mut self, order: &Id) -> Reply<rutent_contracts::core_internal::Parties> {
+        match self.orders.borrow().get(order.as_str()) {
+            Some(record) => Reply::Given(record.parties.clone()),
+            None => Reply::Missing,
+        }
+    }
 }
 
 /// The deployment's own policy: it needs nothing beyond the fixed rules, and permits what they let through, unless

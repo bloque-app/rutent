@@ -265,9 +265,18 @@ impl Gen {
                 self.opening()
             };
         };
-        let roll = self.rng.below(100);
         let part = order.parts[self.rng.below(order.parts.len())].clone();
         let part_id = part.part_id.as_str().to_string();
+        // A part waiting after its final deposit failed is where the customer's own choice comes (`INV-10`): a new
+        // destination, or a hand-on, is likelier there than anywhere else.
+        let after_a_failed_deposit = part.state
+            == rutent_contracts::state_machine::OrderState::WaitingForCustomer
+            && part.deposit_failed_at.is_some();
+        let roll = if after_a_failed_deposit && self.rng.pct(60) {
+            if self.rng.pct(65) { 63 } else { 80 }
+        } else {
+            self.rng.below(100)
+        };
         let (segment, observed): (Option<String>, Observed) = match roll {
             0..=54 => match self.progress(&part) {
                 Some(step) => step,
@@ -324,7 +333,13 @@ impl Gen {
                     },
                 )
             }
-            85..=87 => (None, Observed::WithdrawalCancelled {}),
+            85..=86 => (None, Observed::WithdrawalCancelled {}),
+            87 => (
+                None,
+                Observed::HandOnTakenBack {
+                    linked_order: part.linked_order.clone().unwrap_or_else(|| id("ord-next")),
+                },
+            ),
             88..=90 => return self.run.input(None, None, Observed::EndRequested {}),
             91..=95 => {
                 // Noise: a random kind about a random segment of the part.

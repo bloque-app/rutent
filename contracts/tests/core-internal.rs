@@ -34,7 +34,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:core-internal:<shape>`.
-const SHAPES: [&str; 26] = [
+const SHAPES: [&str; 27] = [
     "common",
     "receipt",
     "decision-request",
@@ -61,6 +61,7 @@ const SHAPES: [&str; 26] = [
     "entry",
     "kept-statement",
     "permission-change",
+    "fault-acceptance",
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
@@ -803,6 +804,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "entry" => round_trip::<Entry>(value),
         "kept-statement" => round_trip::<KeptStatement>(value),
         "permission-change" => round_trip::<PermissionChange>(value),
+        "fault-acceptance" => round_trip::<rutent_contracts::core_internal::FaultAcceptance>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }

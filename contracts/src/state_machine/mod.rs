@@ -673,6 +673,12 @@ pub enum Observed {
         /// The record of the customer's acceptance of the new order, by id.
         acceptance: Id,
     },
+    /// A hand-on taken back: the linked order it named was refused and never opened, so the part's value never left
+    /// (`REQ-ORD-43`). The part goes back to waiting for the customer after a failed final deposit, or else to stuck.
+    HandOnTakenBack {
+        /// The linked order the hand-on named, which was refused.
+        linked_order: Id,
+    },
 }
 
 impl Observed {
@@ -687,7 +693,8 @@ impl Observed {
             | Observed::WaitingAtFloor {}
             | Observed::StuckDeclared { .. }
             | Observed::StuckResolved { .. }
-            | Observed::HandedOn { .. } => Scope::Part,
+            | Observed::HandedOn { .. }
+            | Observed::HandOnTakenBack { .. } => Scope::Part,
             Observed::ProviderBound {}
             | Observed::SegmentSettled { .. }
             | Observed::SegmentFailed {}

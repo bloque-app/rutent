@@ -13,19 +13,19 @@
       "order": "ord-1",
       "effect": {
         "log": "log-main",
-        "index": 169,
+        "index": 170,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4646464646464646464646464646464646464646464646464646464646464646"
+          "value": "4747474747474747474747474747474747474747474747474747474747474747"
         }
       },
       "outcome": "failed",
       "report": {
         "log": "log-main",
-        "index": 176,
+        "index": 177,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+          "value": "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e"
         }
       },
       "confirmer": {
@@ -36,10 +36,10 @@
       },
       "confirmed_with": {
         "log": "log-main",
-        "index": 175,
+        "index": 176,
         "entry": {
           "algorithm": "sha-256",
-          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
+          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
         }
       },
       "at": "2026-11-10T09:00:00Z"

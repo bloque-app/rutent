@@ -105,7 +105,7 @@ impl From<At> for String {
 #[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// An input the state machine applied: its kind, as the state-machine contract names it, the part it is about
-    /// where it is about one, a stuck part's reason, and the order a part was handed on to.
+    /// where it is about one, a stuck part's reason, and the order a part was handed on to, or taken back from.
     Input {
         /// The input's kind (`route_chosen`, `segment_failed`, `stuck_declared`, ...).
         input: String,
@@ -116,7 +116,8 @@ pub enum Change {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<StuckReason>,
         /// The linked order a part was handed on to (`handed_on`, `REQ-ORD-43`): the customer's own, which it
-        /// follows from there.
+        /// follows from there. A `hand_on_taken_back` names the one refused before it opened, which is closed for
+        /// good and followed no further: the part waits again, or is stuck.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         linked_order: Option<stm::Id>,
     },

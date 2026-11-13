@@ -139,6 +139,8 @@
             "erasure",
             "report_outcome",
             "confirm_outcome",
+            "reversal_carrier",
+            "holding_withdrawal",
             "input_not_taken"
           ]
         }
@@ -682,6 +684,36 @@
           },
           "then": {
             "$ref": "#/$defs/what_confirm_outcome"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "reversal_carrier"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_reversal_carrier"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "holding_withdrawal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_holding_withdrawal"
           }
         },
         {
@@ -1529,6 +1561,10 @@
         "movement": {
           "description": "The public movement Core checked for it, at whatever grade it earned: one movement evidences one segment of one order (REQ-ORD-38).",
           "$ref": "#/$defs/public_movement"
+        },
+        "publisher": {
+          "description": "Inside a private node, the node's publisher whose word it is, labelled as such (REQ-ORD-3): the party its maker states for. Absent where it isn't a publisher's word.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },
@@ -1853,7 +1889,8 @@
         "command": {
           "description": "The command: one of the few that need no decision, a closed list; an action policy decides, a catalogue change or a hand-on travels only through its own call (REQ-AUZ-1, REQ-AUZ-6).",
           "enum": [
-            "appoint_checker"
+            "appoint_checker",
+            "accept_fault"
           ]
         },
         "order": {
@@ -2008,6 +2045,169 @@
         },
         "decision": {
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_reversal_carrier": {
+      "description": "Who carries a failed segment's reversal (REQ-ORD-11): its provider, or the party at fault its provider showed, once that party accepted the showing. A carrier other than the provider names the showing and who accepted it; the provider names neither.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "carrier"
+      ],
+      "properties": {
+        "call": {
+          "const": "reversal_carrier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "carrier": {
+          "description": "Who carries the reversal.",
+          "enum": [
+            "provider",
+            "customer",
+            "operator"
+          ]
+        },
+        "showing": {
+          "description": "The receipt of the provider's showing of fault, its verified stated entry.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "accepted_by": {
+          "description": "Who accepted the showing for the party at fault.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        },
+        "accepted_with": {
+          "description": "The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and segment, or the operator's accept_fault command.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "session": {
+          "description": "The customer's session its yes was given in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "provider"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "showing"
+                  ]
+                },
+                {
+                  "required": [
+                    "accepted_by"
+                  ]
+                },
+                {
+                  "required": [
+                    "accepted_with"
+                  ]
+                },
+                {
+                  "required": [
+                    "session"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "customer"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
+          },
+          "then": {
+            "required": [
+              "showing",
+              "accepted_by",
+              "accepted_with",
+              "session"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "carrier": {
+                "const": "operator"
+              }
+            },
+            "required": [
+              "carrier"
+            ]
+          },
+          "then": {
+            "required": [
+              "showing",
+              "accepted_by",
+              "accepted_with"
+            ],
+            "not": {
+              "required": [
+                "session"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "what_holding_withdrawal": {
+      "description": "A holding account's own record of the withdrawal that starts a route handed on (REQ-ORD-40, INV-5): the start proof, which settles the linked order's first segment. The linked order's first move rests on it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "handed_on_from",
+        "holder",
+        "record"
+      ],
+      "properties": {
+        "call": {
+          "const": "holding_withdrawal"
+        },
+        "order": {
+          "description": "The linked order whose route it starts.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "handed_on_from": {
+          "description": "The order whose value the holding account held, the one the route was handed on from.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "holder": {
+          "description": "The holding account's provider: the route's starting reserve, which made the record.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "record": {
+          "description": "The receipt of the record: the holder's verified stated entry of the withdrawal.",
+          "$ref": "urn:rutent:core-internal:receipt"
         }
       }
     },

@@ -847,10 +847,27 @@ fn stuck_state_is_visible_to_the_customer_and_the_provider() {
         &id(DEPOSIT),
     );
     assert!(
-        matches!(refused, Err(StatusError::Refused(_))),
+        matches!(refused, Err(StatusError::NotReadable)),
         "{refused:?}"
     );
-    assert_eq!(reads(&core), before + 3, "each read recorded");
+    // A stranger is told the same of a segment that exists and of one that doesn't, and of an order Core doesn't
+    // follow: policy is asked first, whatever the order, and only an allowed reader learns it is unknown.
+    for (order, segment) in [(ORDER, "no-such-segment"), ("ord-nobody", DEPOSIT)] {
+        let unknown = seen_by_provider(
+            &core.segments,
+            &mut core.policy,
+            &*core.clock,
+            &mut core.ids,
+            &other_provider_desk(),
+            &id(order),
+            &id(segment),
+        );
+        assert!(
+            matches!(unknown, Err(StatusError::NotReadable)),
+            "{order} {segment}: {unknown:?}"
+        );
+    }
+    assert_eq!(reads(&core), before + 5, "each read recorded");
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }

@@ -2041,7 +2041,9 @@ impl Stuck {
 
 /// What `reader`, a provider, reads of `segment` of `order`: its state and its part's, on a read of that segment
 /// policy allows, recorded either way (`REQ-ORD-6`, `REQ-AUZ-7`). The read names the segment's provider as the
-/// order Core follows has it, never the reader's word, and policy holds the reader to it.
+/// order Core follows has it, never the reader's word, and policy holds the reader to it. Policy is asked first,
+/// and a refused reader is told [`StatusError::NotReadable`] alone, whether or not the segment exists; only an allowed
+/// reader is told [`StatusError::Unknown`] (as `Segments::status`).
 pub fn seen_by_provider(
     segments: &Segments,
     reads: &mut dyn Reads,
@@ -2051,18 +2053,22 @@ pub fn seen_by_provider(
     order: &Id,
     segment: &Id,
 ) -> Result<ProviderView, StatusError> {
-    let followed = segments.order(order).ok_or(StatusError::Unknown)?;
-    let (part, seg) = followed
-        .parts
-        .iter()
-        .find_map(|p| {
+    // What Core follows of the segment, if anything; policy is asked either way, before the reader is told anything.
+    let followed = segments.order(order).and_then(|followed| {
+        followed.parts.iter().find_map(|p| {
             p.segments
                 .iter()
                 .find(|s| s.segment_id.as_str() == segment.as_str())
                 .map(|s| (p, s))
         })
-        .ok_or(StatusError::Unknown)?;
-    let provider = Id::new(seg.provider.as_str()).ok_or(StatusError::Unknown)?;
+    });
+    // A segment Core doesn't follow has no provider of its own to name: the read names the reader's party, which
+    // policy holds to the log's record of who moved value on the segment, so a reader that isn't its provider is
+    // refused as it is for one that exists.
+    let provider = match &followed {
+        Some((_, seg)) => Id::new(seg.provider.as_str()).ok_or(StatusError::Unknown)?,
+        None => reader.party.clone(),
+    };
     let at = clock
         .now()
         .timestamp()
@@ -2080,9 +2086,12 @@ pub fn seen_by_provider(
             at,
         })
         .map_err(StatusError::Append)?;
+    // A refused reader is told nothing of why: the reason stays in the log, so no answer tells it whether the
+    // segment exists (`REQ-AUZ-7`, as `Segments::status`). Only an allowed reader is told it is unknown.
     if !matches!(answer.outcome, ReadOutcome::Allowed {}) {
-        return Err(StatusError::Refused(answer));
+        return Err(StatusError::NotReadable);
     }
+    let (part, seg) = followed.ok_or(StatusError::Unknown)?;
     Ok(ProviderView {
         order: order.clone(),
         part: Id::new(part.part_id.as_str()).ok_or(StatusError::Unknown)?,

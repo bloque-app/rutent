@@ -219,3 +219,12 @@ Built in `components/core-orch/src/notice/` (`mod.rs`, `wire.rs`, `inbox.rs`); t
   | a hand-on carries its linked order | `every_kind_of_input_is_notified` |
 
   All sixteen of `core-orch`'s notice tests and the assembly's pass after.
+
+## T-023-01, round 2 integration: a hand-on taken back
+
+`hand_on_taken_back` (state-machine input; the linked order was refused before it opened) is a change like any other
+the machine applies: the part waits for the customer again or is stuck, and the order's customer and the operator are
+notified, with the kind, the part and the linked order refused (`Change::Input { input: "hand_on_taken_back", part,
+linked_order }`). The refused linked order never opened, so it has no notices of its own. Held by
+`every_kind_of_input_is_notified`. The test's p1 now runs its recalculated route to a failed final deposit before it
+waits and has its destination changed, as the contract round requires (`INV-10`).

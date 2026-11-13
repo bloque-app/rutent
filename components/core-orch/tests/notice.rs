@@ -717,7 +717,7 @@ fn each_state_change_is_notified_to_the_user_and_the_operator() {
 // verifies: AC-41, REQ-ORD-20, REQ-ORD-43
 #[test]
 fn every_kind_of_input_is_notified() {
-    let (order, linked) = ("ord-k", "ord-k2");
+    let (order, linked, refused) = ("ord-k", "ord-k2", "ord-k3");
     let mut n = 0;
     let mut next = |part: Option<&str>, segment: Option<&str>, observed: Value| {
         n += 1;
@@ -725,13 +725,24 @@ fn every_kind_of_input_is_notified() {
     };
     let bound = || json!({"kind": "provider_bound"});
     let settled = |ev: &str| json!({"kind": "segment_settled", "evidence": ev});
-    let new_destination = vec![segment(
-        "p1-s6",
-        "reserve-bank-co",
-        "deposit",
-        end("ledger-in", false, "COP"),
-        end("bank-co", true, "COP"),
-    )];
+    // After the recalculated route's exchange settled and its final deposit failed, the value sits as USDC at
+    // `ledger-in`: the new destination starts from there (`INV-10`).
+    let new_destination = vec![
+        segment(
+            "p1-s6",
+            "exchange-b",
+            "exchange",
+            end("ledger-in", false, "USDC"),
+            end("ledger-in", false, "COP"),
+        ),
+        segment(
+            "p1-s7",
+            "reserve-bank-co",
+            "deposit",
+            end("ledger-in", false, "COP"),
+            end("bank-co", true, "COP"),
+        ),
+    ];
     let inputs = vec![
         route_chosen(order, "k-rec-00"),
         next(Some("p1"), Some("p1-s1"), bound()),
@@ -744,6 +755,10 @@ fn every_kind_of_input_is_notified() {
             None,
             json!({"kind": "route_recalculated", "decision_record": "dr-k2", "segments": recalculated("p1")}),
         ),
+        next(Some("p1"), Some("p1-s4"), bound()),
+        next(Some("p1"), Some("p1-s4"), settled("ev-k5")),
+        next(Some("p1"), Some("p1-s5"), bound()),
+        next(Some("p1"), Some("p1-s5"), json!({"kind": "segment_failed"})),
         next(Some("p1"), None, json!({"kind": "waiting_at_floor"})),
         next(
             Some("p1"),
@@ -771,6 +786,23 @@ fn every_kind_of_input_is_notified() {
             None,
             json!({"kind": "handed_on", "linked_order": linked, "acceptance": "acc-ord-k2"}),
         ),
+        // The first part again, stuck and handed on to an order that is then refused before it opens: the hand-on is taken
+        // back and the part is stuck again.
+        next(
+            Some("p1"),
+            None,
+            json!({"kind": "stuck_declared", "reason": "over_time"}),
+        ),
+        next(
+            Some("p1"),
+            None,
+            json!({"kind": "handed_on", "linked_order": refused, "acceptance": "acc-ord-k3"}),
+        ),
+        next(
+            Some("p1"),
+            None,
+            json!({"kind": "hand_on_taken_back", "linked_order": refused}),
+        ),
     ];
     let linked_route: RecordedInput = serde_json::from_value(json!({
         "record_id": "k2-rec-00",
@@ -795,7 +827,20 @@ fn every_kind_of_input_is_notified() {
         acceptance_of("acc-ord-k-dest", order, ALICE, &["p1"]),
         acceptance_of("acc-ord-k2", linked, ALICE, &["p1"]),
     ];
-    entries.extend(inputs.iter().map(entry_of));
+    for input in &inputs {
+        if matches!(&input.observed, stm::Observed::HandedOn { linked_order, .. } if linked_order.as_str() == refused)
+        {
+            entries.push(acceptance_of("acc-ord-k3", refused, ALICE, &["p1"]));
+        }
+        if matches!(input.observed, stm::Observed::HandOnTakenBack { .. }) {
+            // The linked order's refusal, which a take-back rests on.
+            entries.push(verified(
+                json!({"call": "order_refusal", "request": "req-ord-k3", "order": refused, "class": "refused_by_policy"}),
+                &time(39),
+            ));
+        }
+        entries.push(entry_of(input));
+    }
     entries.push(entry_of(&linked_route));
     let log = receipted(entries);
     held_to_the_log(&log, &unbuilt_refusals());
@@ -817,6 +862,8 @@ fn every_kind_of_input_is_notified() {
         "route_recalculated",
         "destination_changed",
         "handed_on",
+        "hand_on_taken_back",
+        "stuck_declared",
         "end_requested",
         "waiting_at_floor",
         "no_route",
@@ -843,6 +890,23 @@ fn every_kind_of_input_is_notified() {
         .iter()
         .find(|n| n["about"]["change"]["input"] == json!("handed_on"))
         .expect("the hand-on");
+    let taken_back = to_alice
+        .iter()
+        .find(|n| n["about"]["change"]["input"] == json!("hand_on_taken_back"))
+        .expect("the take-back");
+    assert_eq!(
+        taken_back["about"]["change"],
+        json!({"change": "input", "input": "hand_on_taken_back", "part": "p1", "linked_order": refused})
+    );
+    assert_eq!(taken_back["about"]["order"], json!(order));
+    assert_eq!(
+        to_alice
+            .iter()
+            .filter(|n| n["about"]["order"] == json!(refused))
+            .count(),
+        0,
+        "the refused linked order never opened and is notified of nothing"
+    );
     assert_eq!(
         handed["about"]["change"],
         json!({"change": "input", "input": "handed_on", "part": "p2", "linked_order": linked})

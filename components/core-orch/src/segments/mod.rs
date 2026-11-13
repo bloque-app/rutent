@@ -400,6 +400,9 @@ pub enum StatusError {
     Append(AppendFailure),
     /// Core tracks no such order.
     Unknown,
+    /// The read isn't answered: policy refused it, whatever its reason, which stays in the log alone, so a refused
+    /// reader can't tell an order that exists from one that doesn't (`REQ-AUZ-7`, as `T-023-01`'s notices).
+    NotReadable,
 }
 
 /// A promotion to carry out: the release staged at `provider` that `version` names, asked by `caller`.
@@ -844,6 +847,7 @@ impl Segments {
                 | Observed::EndRequested {}
                 | Observed::DestinationChanged { .. }
                 | Observed::HandedOn { .. }
+                | Observed::HandOnTakenBack { .. }
         ) {
             return false;
         }
@@ -1061,6 +1065,11 @@ impl Segments {
     /// (`REQ-ORD-5`, `REQ-AUZ-7`). The read is of the order's state and age alone (`Reads::OrderState`), which the
     /// order's customer and the operator's listed login read without a permission (`T-021-02`); a reader that reads
     /// by an identified permission names it.
+    ///
+    /// Policy is asked first, whether or not Core follows the order, and a refused reader is told
+    /// [`StatusError::NotReadable`] alone, whatever policy's reason: the reason stays in the log, so no answer tells
+    /// a refused reader whether the order exists (as `T-023-01`'s notices). Only an allowed reader is told
+    /// [`StatusError::Unknown`].
     pub fn status(
         &self,
         reads: &mut dyn Reads,
@@ -1070,10 +1079,6 @@ impl Segments {
         permission: Option<&Id>,
         order: &Id,
     ) -> Result<Status, StatusError> {
-        let tracked = self
-            .orders
-            .get(order.as_str())
-            .ok_or(StatusError::Unknown)?;
         let now = clock.now();
         let no_time = || StatusError::Append(AppendFailure::Refused(journal::NO_TIME));
         let at = now.timestamp().ok_or_else(no_time)?;
@@ -1089,8 +1094,12 @@ impl Segments {
             })
             .map_err(StatusError::Append)?;
         if !matches!(answer.outcome, ReadOutcome::Allowed {}) {
-            return Err(StatusError::Refused(answer));
+            return Err(StatusError::NotReadable);
         }
+        let tracked = self
+            .orders
+            .get(order.as_str())
+            .ok_or(StatusError::Unknown)?;
         let since = tracked.since.timestamp().ok_or_else(no_time)?;
         Ok(Status {
             order: order.clone(),

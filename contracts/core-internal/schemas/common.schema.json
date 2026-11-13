@@ -215,6 +215,7 @@
             "move_value",
             "post_route",
             "change_catalogue",
+            "ask_reversal",
             "erase_statement",
             "resolve_stuck"
           ]
@@ -264,6 +265,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_change_catalogue"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "ask_reversal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_ask_reversal"
           }
         },
         {
@@ -404,6 +420,32 @@
         "statement_key": {
           "description": "The key the release's module signs its statements with: named exactly by accept_module, which the Rust types check.",
           "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        }
+      }
+    },
+    "action_ask_reversal": {
+      "description": "Asking the provider of a failed segment to reverse it (REQ-ORD-3, REQ-ORD-11): the segment owes its reversal, and the provider is the one that failed it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider"
+      ],
+      "properties": {
+        "kind": {
+          "const": "ask_reversal"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider that failed it, asked to reverse.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },
