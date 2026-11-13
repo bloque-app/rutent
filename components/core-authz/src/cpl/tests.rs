@@ -627,6 +627,17 @@ fn provider_off_the_shortlist_is_never_asked_about_eligibility() {
         ),
         not_permitted
     );
+    // The replaced shortlist, cited for a provider still on the route: refused all the same, since the authority is
+    // the latest shortlist's alone.
+    assert_eq!(
+        ask(
+            &mut e,
+            "req-3b",
+            route("52", &["bank-co"], &[]),
+            &["bank-co"]
+        ),
+        not_permitted
+    );
     // The latest shortlist's own provider is asked.
     assert_eq!(
         ask(
@@ -640,12 +651,21 @@ fn provider_off_the_shortlist_is_never_asked_about_eligibility() {
 
     // A provider, or a verifier, the latest shortlist doesn't name, and another order's shortlist: the log refuses
     // the question outright, and a log that takes what policy answers records it refused.
+    // An authority naming a provider or a verifier off the shortlist is none, even where it asks only one on it.
     let off = [
+        route("53", &["bank-co", "aml-screen"], &[]),
+        route("53", &["bank-co"], &["kyc-verify"]),
         route("53", &["bank-co", "aml-screen"], &[]),
         route("53", &["bank-co"], &["kyc-verify"]),
         route("54", &["aml-screen"], &[]),
     ];
-    let asks = [&["aml-screen"][..], &["kyc-verify"], &["aml-screen"]];
+    let asks = [
+        &["aml-screen"][..],
+        &["kyc-verify"],
+        &["bank-co"],
+        &["bank-co"],
+        &["aml-screen"],
+    ];
     for (authority, asks) in off.iter().zip(asks) {
         let mut e = engine(Log::admitting(history()));
         assert!(
