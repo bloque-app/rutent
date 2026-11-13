@@ -73,8 +73,8 @@ Built in `components/core-orch/src/notice/` (`mod.rs`, `wire.rs`, `inbox.rs`); t
   refuses a stranger's read of an order that doesn't exist and of another party's order for different reasons, and
   passing the reason on told the stranger which orders exist (on review: high). The reason stays in the log. An
   allowed read is answered with the order's latest change as the log holds it to its end, sealed for the reader and
-  marked `current`: for an operator's login, the deployment's configured operator, whatever party the login states;
-  for anyone else, its party in its role. Asking sends nothing and moves nothing of the reading: the changes not
+  marked `current`: for an operator's login that states the operator's own party, the deployment's configured operator (corrected in
+  `T-023-02`: it was whatever party the login stated); for anyone else, its party in its role. Asking sends nothing and moves nothing of the reading: the changes not
   notified yet go out on the next `notify`, each to its own receivers (on review it pushed every order's pending
   notices through the asker's transport). A log that doesn't extend the one read answers `NotThisLog`, never a stale
   state; a clock with no time answers `NoTime`, apart from a key that can't sign (`Unsigned`). An allowed read of
@@ -116,7 +116,7 @@ Built in `components/core-orch/src/notice/` (`mod.rs`, `wire.rs`, `inbox.rs`); t
 - **The assembly's wiring** (`F-024`): a `Notices` beside the log, read after each append (or on a schedule), a
   `Channel` where `Operator` is asked for (the checks, `Stuck::learn`), and `engine.charged().ahead()` handed to
   `Notices::ahead` after each charge.
-- **Every rebuild sends the whole history again** (owner: `T-023-02`). The coordinator's ruling: keep the
+- **Every rebuild sends the whole history again** (closed by `T-023-02`, below). The coordinator's ruling: keep the
   at-least-once re-send, since receivers drop each copy by its sequence and `REQ-ORD-20` holds. Built afresh, as
   after a restart, the notices read the log from its first entry and send every change of every order again. What
   `T-023-02` owns: a durable mark of what was delivered, and a rebuild that catches up to it without sending. Until
@@ -228,3 +228,108 @@ notified, with the kind, the part and the linked order refused (`Change::Input {
 linked_order }`). The refused linked order never opened, so it has no notices of its own. Held by
 `every_kind_of_input_is_notified`. The test's p1 now runs its recalculated route to a failed final deposit before it
 waits and has its destination changed, as the contract round requires (`INV-10`).
+
+## T-023-02
+
+Built in `components/core-orch/src/notice/` (`delivery.rs`, `watch.rs`, and `mod.rs`, `wire.rs`, `inbox.rs`); tests
+in `components/core-orch/tests/notice.rs`. No contract change was made.
+
+- **A delivery record that is the module's own, not the log's.** `core-internal` holds no "notice delivered" entry, and
+  `contracts/` is not this row's to edit. The durable mark is a trait, `Ledger` (`delivered`, `attempts`, `record`),
+  which the assembly backs with a store that outlives the process; `Notices::new` holds an in-memory `Volatile` one,
+  `Notices::resuming(.., ledger)` resumes from a durable one. Should the owners want the record in the log, the shape
+  needed is an entry naming the notice (receiver party and role, order, sequence) and the try (number, taken or not).
+  Gap, owner `F-024` (the assembly): a real store behind `Ledger`.
+- **Retry** (`Notices::retry`, one pass; the assembly schedules it). A notice is tried at most `BOUND` = 5 times in
+  all, the first send included, counted from the ledger so a restart gives no fresh bound. Every try is recorded
+  (`Attempt`: key, number, taken). A notice that used them is `Notices::abandoned` and sent no more; its receiver
+  recovers by asking for the current state (`THR-103`). Retries keep the order sent. A mark that couldn't be kept
+  (`record` false) leaves the notice sendable after a restart: at least once, never lost. Reversible default.
+- **A restart catches up.** The notices still rebuild from the log's first entry, so the same log gives the same
+  notices; a notice whose `Key` (receiver, order, sequence) the ledger holds as delivered is neither sealed nor sent,
+  and one that used the bound before the restart is set apart again, not tried. Raises and charges counted far ahead
+  have no place in the log to be rebuilt from. A raise's tries are recorded under its id (`Key::Raise`), counted from
+  none each time it is raised, and a raise undelivered at a restart is not retried (its entry recorded it so). A charge
+  counted far ahead is retried and bounded from memory, unmarked: one policy still sets apart is sent again after a
+  restart, and the operator's inbox holds it once. Reading, reversible.
+- **Departure from the brief, as a decision.** Delivery needed a notice-delivered record and none exists. Instead of
+  stopping, the record is the module's own `Ledger` trait. Were it to live in the log, the shape needed is an entry
+  naming the notice (receiver party and role, order, sequence, or a raise's id) and the try (number, taken or not).
+  Until `F-024` builds `Notices::resuming` over a durable store, `Notices::new` holds `Volatile`, which keeps nothing
+  across a restart: the re-send on restart is closed in the API, not yet in a deployment.
+
+### T-023-02, round 2 (the review of `02bd7f7`)
+
+- **A raise lost to a restart** (medium, closed). The log's `raise` entry is written once, `failed`, and never
+  updated. `Notices::notify` now resends each such entry it reads, keyed `Key::Raise`, unless the ledger holds it
+  delivered or this run keeps it already (undelivered or abandoned); tries count from the ledger, so a raise that used
+  its bound shows in `abandoned()` after a restart and is not tried again. A raise delivered is not sent again, so
+  `Channel::raise` answers delivered for one the ledger holds, and the existing raise test no longer expects a second
+  send of the same raise (the inbox still holds each once). Held by `raise_lost_to_a_restart_is_resent_once`.
+- **Watch guards.** `Watch::with` is `None` for a silence no longer than the interval. An answer counts only for the
+  newest beat sent, so a late answer can't hide a cut. Each heartbeat carries a `run`, an id the assembly makes fresh
+  at each start (`Watch::new(.., run, ..)`; `Inbox::beat()` gives the run and number to hand to `Watch::answered`), so
+  a beat replayed from before a restart is no answer. Held by `watch_refuses_a_silence_no_longer_than_its_interval`,
+  `late_or_replayed_answer_does_not_hide_a_cut`.
+- **The wall clock.** Core has no monotonic source: `Clock` reads the host's wall time. A clock stepped back hides a
+  cut for the length of the step. Documented in `watch.rs`; owner `F-024`: hand the watch a monotonic `Clock` where
+  the host has one.
+- **For `F-024` (the assembly)**
+  - **Abandoned order notices.** `Notices::abandoned()` holds them; the assembly must escalate each to the operator,
+    since nothing else says an order's notice never arrived (the receiver can ask for the current state).
+  - **The second path.** `REQ-ORD-7` holds only if the second path is independent of the first and reliable. It has
+    no heartbeat of its own, and a lasting cut is told once (retried only until the second path takes it). The
+    assembly chooses that transport.
+- **Proposal for the next contract round.** One summary log entry per notice: receiver party and role, order and
+  sequence (or raise id), the last try, and the outcome (delivered or abandoned). It would replace the module's
+  `Ledger` for what a restart needs, and close the never-updated `failed` outcome of a raise's entry.
+
+Rule-offs of this round, each alone:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a rebuild resends a raise the log records as failed | `raise_lost_to_a_restart_is_resent_once` |
+| a raise kept by this run is not resent on reading its entry | `raise_lost_to_a_restart_is_resent_once` |
+| a raise's tries count from the ledger | `raise_lost_to_a_restart_is_resent_once` |
+| a delivered raise is not sent again | `raise_reaches_the_operator_alone_and_answers_its_delivery`, `raise_lost_to_a_restart_is_resent_once` |
+| a silence no longer than the interval is refused | `watch_refuses_a_silence_no_longer_than_its_interval` |
+| only the newest beat is an answer | `late_or_replayed_answer_does_not_hide_a_cut` |
+| only this run's beat is an answer | `late_or_replayed_answer_does_not_hide_a_cut` |
+- **The warning path's heartbeat** (`Watch`, `REQ-ORD-7`, `THR-59`). `Watch::tick` sends a sealed `heartbeat` notice
+  to the operator on the path watched every `INTERVAL` = 30 s; the operator's side answers each one it takes
+  (`Inbox::take` gives `Taken::Beat(n)`; the assembly passes it to `Watch::answered`). A path with no answer for
+  `SILENCE` = 120 s (four beats, counted from the last answer or the watch's start) is cut, and a sealed `path_cut`
+  notice goes to the operator alone on a second transport, once, retried each tick until that path takes it; an answer
+  ends the cut, and a later one is told again. A refused send is not read as a cut and an accepted one is not read as
+  alive: only an answer counts, so a path that takes notices and loses them is found as well as one that refuses them.
+  Both numbers are reversible defaults and `Watch::with` sets others. The second path has no heartbeat of its own: the
+  row watches the warning path only. Gap, owner `F-024`: the assembly runs `tick` on a timer, wires the operator's
+  answers, and chooses a second transport that shares nothing with the first.
+- **Sealing for the operator** (the T-023-01 nit). `Notices::current` seals an operator-role login's answer for the
+  configured operator only when the reader's stated party is the operator's party; any other party in that role is
+  answered like anyone else, sealed for itself, so the operator's inbox does not take it.
+- **What a read compares** (the T-023-01 nit). Kept: the receipt of the last entry read alone. The assumption, an
+  append-only log, is now stated in the module's docs and on the field.
+
+### T-023-02, rule-offs
+
+Each rule switched off alone, `core-orch`'s notice tests run, the rule restored:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a notice that used the bound is not sent again (the check before a send) | `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| a failed last try abandons the notice | `undelivered_notice_is_retried_and_recorded`, `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| every try is recorded | `undelivered_notice_is_retried_and_recorded`, `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| tries are counted from the ledger | `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| a delivered notice is not sent again on a rebuild | `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| each try of a raise is recorded under the raise's id | `undelivered_raise_is_retried_and_recorded` |
+| an accepted send counts as an answer (the THR-59 case, a path that takes and loses) | `cut_warning_path_is_noticed`, `cut_is_told_again_until_the_second_path_takes_it` |
+| an operator login is sealed for the operator only for the operator's party | `operator_login_of_another_party_is_not_answered_as_the_operator` |
+| a heartbeat is sent | `cut_warning_path_is_noticed` |
+| a path silent for `SILENCE` is cut | `cut_warning_path_is_noticed`, `cut_is_told_again_until_the_second_path_takes_it` |
+| the cut is told once | `cut_warning_path_is_noticed`, `cut_is_told_again_until_the_second_path_takes_it` |
+| the cut is told again until the second path takes it | `cut_is_told_again_until_the_second_path_takes_it` |
+| an answer ends the silence | `cut_warning_path_is_noticed` |
+
+- **Red first.** The types and stubs (retry did nothing, the watch found nothing, the operator's pull as it was) were
+  written first and the tests after, so each test failed on an assertion before the rules were built.

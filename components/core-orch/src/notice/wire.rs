@@ -179,6 +179,26 @@ pub enum About {
         /// The charge.
         charge: AheadSeen,
     },
+    /// The heartbeat of the path that warns the operator (`REQ-ORD-7`). The operator's alone.
+    Heartbeat {
+        /// The run of the watch that sent it: fresh at each start, so a beat replayed from before a restart is no
+        /// answer to this run's.
+        run: Id,
+        /// Its number, counted from 1.
+        beat: u64,
+        /// When it was sent, by Core's clock.
+        at: Timestamp,
+    },
+    /// The path that warns the operator is cut: it answered no heartbeat for `silent_for` seconds. Sent on a second
+    /// path. The operator's alone.
+    PathCut {
+        /// When the path last answered, or the watch began.
+        since: Timestamp,
+        /// For how many seconds it had been silent when this was found.
+        silent_for: u64,
+        /// The last heartbeat sent.
+        last_beat: u64,
+    },
 }
 
 impl About {
@@ -186,7 +206,10 @@ impl About {
     pub fn order(&self) -> Option<&str> {
         match self {
             About::Order { order, .. } => Some(order.as_str()),
-            About::Raise { .. } | About::Ahead { .. } => None,
+            About::Raise { .. }
+            | About::Ahead { .. }
+            | About::Heartbeat { .. }
+            | About::PathCut { .. } => None,
         }
     }
 }

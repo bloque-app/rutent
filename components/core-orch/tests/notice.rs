@@ -6,7 +6,9 @@
 //! and every log is put to core-internal's `admit_entry` ([`held_to_the_log`]). The policy here is a stand-in; the
 //! engine's own answers are held in `conformance/scenarios/tests/notices.rs`.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use ed25519_dalek::{Signer, SigningKey, Verifier as _, VerifyingKey};
 use proptest::prelude::*;
@@ -20,8 +22,9 @@ use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, OrderState, RecordedInput, StateMachine};
 use rutent_core_orch::notice::{
-    About, AheadCharge, Channel, CurrentError, Inbox, NotTaken, NoticeError, NoticeKey, Notices,
-    Receiver, Taken, Transport, Verifier, signing_input,
+    About, AheadCharge, Attempt, BOUND, Channel, CurrentError, Inbox, Key, Ledger, NotTaken,
+    NoticeError, NoticeKey, Notices, Path, Receiver, Retried, SILENCE, Taken, Transport, Verifier,
+    Watch, signing_input,
 };
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::snapshot::{Clock, Reading};
@@ -116,11 +119,14 @@ impl Verifier for Ed25519 {
     }
 }
 
-/// Every notice sent, in order; it takes none while `down`.
+/// Every notice sent, in order; it takes none while `down`, and takes but loses every one while `silent`. `tried`
+/// counts every send handed to it.
 #[derive(Default)]
 struct Wire {
     sent: Vec<(Receiver, Vec<u8>)>,
     down: bool,
+    silent: bool,
+    tried: usize,
 }
 
 impl Wire {
@@ -135,8 +141,12 @@ impl Wire {
 
 impl Transport for Wire {
     fn send(&mut self, to: &Receiver, notice: &[u8]) -> bool {
+        self.tried += 1;
         if self.down {
             return false;
+        }
+        if self.silent {
+            return true;
         }
         self.sent.push((to.clone(), notice.to_vec()));
         true
@@ -1069,7 +1079,7 @@ proptest! {
 /// state, which its inbox takes in place of those lost, closing the gap. Asking sends nothing to anyone: the
 /// changes not yet notified go out on the next read of the log, to each of their receivers. The operator asks
 /// through a login policy lists, and the answer is addressed to the deployment's operator, whatever party the login
-/// states. A log that doesn't extend the one read gives no answer.
+/// states only when it is the operator's own party. A log that doesn't extend the one read gives no answer.
 // verifies: REQ-ORD-20
 #[test]
 fn receiver_can_ask_for_the_current_state() {
@@ -1115,7 +1125,7 @@ fn receiver_can_ask_for_the_current_state() {
     assert_eq!(wire.sent.len(), sent, "asking sent nothing");
 
     let desk = Actor {
-        party: id("operator-desk"),
+        party: id(OPERATOR),
         acts: id("desk-login"),
         role: Role::Operator,
         kind: ActorKind::Person,
@@ -1433,7 +1443,7 @@ fn another_log_or_a_locked_key_sends_nothing_amiss() {
 
 /// A raise, a change in a provider's p99 among them, is sealed for the operator alone and answers delivered when
 /// the transport took it, undelivered otherwise, kept; a raise that fails its check isn't sent. The operator's
-/// inbox holds each raise once however often it comes.
+/// inbox holds each raise once however often it comes, and Core doesn't send a delivered raise again.
 // verifies: REQ-ORD-6, REQ-ORD-9
 #[test]
 fn raise_reaches_the_operator_alone_and_answers_its_delivery() {
@@ -1453,6 +1463,8 @@ fn raise_reaches_the_operator_alone_and_answers_its_delivery() {
     let mut broken = raise.clone();
     broken.cites.clear();
     assert_eq!(channel.raise(&broken), Delivery::Undelivered);
+    let mut other = raise.clone();
+    other.raise = id("raise-2");
     let mut down = Wire {
         down: true,
         ..Wire::default()
@@ -1463,17 +1475,17 @@ fn raise_reaches_the_operator_alone_and_answers_its_delivery() {
             key: &mut key,
             transport: &mut down
         }
-        .raise(&raise),
+        .raise(&other),
         Delivery::Undelivered
     );
     assert_eq!(n.undelivered().len(), 1);
     assert_eq!(n.undelivered()[0].to, operator());
 
-    assert_eq!(wire.sent.len(), 2);
+    assert_eq!(wire.sent.len(), 1, "a raise delivered is not sent again");
     assert!(wire.sent.iter().all(|(to, _)| to == &operator()));
     let mut op = inbox(operator(), &key);
     assert_eq!(op.take(&Ed25519, &wire.sent[0].1), Ok(Taken::Event));
-    assert_eq!(op.take(&Ed25519, &wire.sent[1].1), Ok(Taken::Repeat));
+    assert_eq!(op.take(&Ed25519, &wire.sent[0].1), Ok(Taken::Repeat));
     assert!(matches!(op.events().next(), Some(About::Raise { raise: r }) if r == &raise));
 }
 
@@ -1597,4 +1609,699 @@ fn notice_signing_input_is_apart_from_every_statements() {
     let input = signing_input(&notice).expect("an input");
     assert!(input.starts_with(rutent_core_orch::notice::DOMAIN));
     assert_ne!(input[0], b'{');
+}
+
+// --- Delivery and its watch (T-023-02) ---------------------------------------------------------------------------
+
+/// A durable ledger a test keeps beside the notices: it outlives them, as a store outlives a restart.
+#[derive(Debug, Clone, Default)]
+struct Kept(Rc<RefCell<Vec<Attempt>>>);
+
+impl Kept {
+    fn history(&self) -> Vec<Attempt> {
+        self.0.borrow().clone()
+    }
+}
+
+impl Ledger for Kept {
+    fn delivered(&self, key: &Key) -> bool {
+        self.0.borrow().iter().any(|a| &a.key == key && a.taken)
+    }
+
+    fn attempts(&self, key: &Key) -> u32 {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|a| &a.key == key)
+            .map(|a| a.number)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn record(&mut self, attempt: &Attempt) -> bool {
+        self.0.borrow_mut().push(attempt.clone());
+        true
+    }
+}
+
+fn resuming(ledger: &Kept) -> Notices {
+    Notices::resuming(id(DEPLOYMENT), id(OPERATOR), Box::new(ledger.clone()))
+}
+
+/// How many attempts the ledger holds with this number, and this outcome.
+fn attempts_numbered(ledger: &Kept, number: u32, taken: bool) -> usize {
+    ledger
+        .history()
+        .iter()
+        .filter(|a| a.number == number && a.taken == taken)
+        .count()
+}
+
+/// A notice the transport doesn't take is kept in order and retried, each try recorded in the ledger; a pass of
+/// retrying that the transport takes delivers them, in the order they were sent, and the receivers' inboxes end at
+/// the order's state. The bound is the ledger's [`BOUND`] tries in all, the first send included: a notice that used
+/// them is abandoned, no longer sent, whatever the transport does after, and the record says how many tries it had.
+// verifies: REQ-ORD-20
+#[test]
+fn undelivered_notice_is_retried_and_recorded() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    held_to_the_log(&log, &unbuilt_refusals());
+    let applied = truth(&history("ord-1"));
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let ledger = Kept::default();
+    let mut n = resuming(&ledger);
+
+    // The first send is refused: every notice is kept, in order, and its try recorded.
+    wire.down = true;
+    let first = n.notify(&log[..4], &mut key, &mut wire).expect("notified");
+    assert_eq!(first, 6, "three changes, two receivers each");
+    assert_eq!(n.undelivered().len(), 6);
+    assert_eq!(wire.tried, 6);
+    assert_eq!(attempts_numbered(&ledger, 1, false), 6);
+    assert!(n.abandoned().is_empty());
+
+    // A retry the transport still refuses is a second try, recorded; nothing is lost or reordered.
+    let again = n.retry(&mut wire);
+    assert_eq!(
+        again,
+        Retried {
+            delivered: 0,
+            failed: 6,
+            abandoned: 0
+        }
+    );
+    assert_eq!(wire.tried, 12);
+    assert_eq!(attempts_numbered(&ledger, 2, false), 6);
+
+    // Taken at last: delivered in the order they were sent, recorded as taken, and the inboxes agree.
+    wire.down = false;
+    let done = n.retry(&mut wire);
+    assert_eq!(
+        done,
+        Retried {
+            delivered: 6,
+            failed: 0,
+            abandoned: 0
+        }
+    );
+    assert!(n.undelivered().is_empty());
+    assert_eq!(attempts_numbered(&ledger, 3, true), 6);
+    let mut alice = inbox(customer(ALICE), &key);
+    for bytes in wire.to(&customer(ALICE)) {
+        alice.take(&Ed25519, &bytes).expect("taken");
+    }
+    let sequences: Vec<_> = wire
+        .to(&customer(ALICE))
+        .iter()
+        .map(|b| said(b)["about"]["sequence"].as_u64().expect("sequence"))
+        .collect();
+    assert_eq!(sequences, vec![1, 2, 3], "retried in the order sent");
+    assert_eq!(alice.view(&id("ord-1")).map(|(s, _)| s), Some(3));
+    assert_eq!(
+        alice.view(&id("ord-1")).map(|(_, v)| v.state),
+        Some(applied[2].1.state)
+    );
+    assert_eq!(
+        n.retry(&mut wire),
+        Retried::default(),
+        "nothing is left to retry"
+    );
+
+    // The bound: the rest of the log, sent to a path that stays down, is tried BOUND times and then given up.
+    wire.down = true;
+    let rest = n.notify(&log, &mut key, &mut wire).expect("notified");
+    assert!(rest > 0);
+    for _ in 1..BOUND - 1 {
+        let pass = n.retry(&mut wire);
+        assert_eq!((pass.delivered, pass.failed, pass.abandoned), (0, rest, 0));
+    }
+    let last = n.retry(&mut wire);
+    assert_eq!((last.delivered, last.failed, last.abandoned), (0, 0, rest));
+    assert!(n.undelivered().is_empty());
+    assert_eq!(n.abandoned().len(), rest);
+    assert!(n.abandoned().iter().all(|u| u.attempts == BOUND));
+    assert_eq!(attempts_numbered(&ledger, BOUND, false), rest);
+    let tried = wire.tried;
+    wire.down = false;
+    assert_eq!(n.retry(&mut wire), Retried::default());
+    assert_eq!(wire.tried, tried, "an abandoned notice is sent no more");
+    assert!(
+        ledger.history().iter().all(|a| a.number <= BOUND),
+        "no try beyond the bound is recorded"
+    );
+}
+
+/// After a restart the notices are built afresh from the log, with the ledger they left: what the ledger holds as
+/// delivered is not sent again, what it doesn't is sent, its tries counted on from the record, and a notice that
+/// used the bound before the restart is not given a fresh one.
+// verifies: REQ-ORD-20
+#[test]
+fn rebuild_after_restart_sends_only_what_was_not_delivered() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    held_to_the_log(&log, &unbuilt_refusals());
+    let applied = truth(&history("ord-1"));
+    let mut key = TestKey::new();
+    let ledger = Kept::default();
+
+    // Before the restart: the first three changes go through, the rest meet a path that is down.
+    let mut before = Wire::default();
+    let mut n = resuming(&ledger);
+    n.notify(&log[..4], &mut key, &mut before)
+        .expect("notified");
+    assert_eq!(before.sent.len(), 6);
+    before.down = true;
+    let rest = n.notify(&log, &mut key, &mut before).expect("notified");
+    assert_eq!(rest, 2 * applied.len() - 6);
+    drop(n);
+
+    // The restart: the same log, the same ledger, a path that is up.
+    let mut after = Wire::default();
+    let mut n = resuming(&ledger);
+    let sent = n.notify(&log, &mut key, &mut after).expect("caught up");
+    assert_eq!(sent, rest, "only what was not delivered is sent");
+    assert_eq!(after.sent.len(), rest);
+    for (_, bytes) in &after.sent {
+        let sequence = said(bytes)["about"]["sequence"].as_u64().expect("sequence");
+        assert!(sequence > 3, "sequence {sequence} was delivered before");
+    }
+    assert_eq!(
+        attempts_numbered(&ledger, 2, true),
+        rest,
+        "the tries go on from the record"
+    );
+    let mut alice = inbox(customer(ALICE), &key);
+    for bytes in before
+        .to(&customer(ALICE))
+        .iter()
+        .chain(&after.to(&customer(ALICE)))
+    {
+        alice.take(&Ed25519, bytes).expect("taken");
+    }
+    assert_eq!(
+        alice.view(&id("ord-1")).map(|(s, _)| s),
+        Some(applied.len() as u64)
+    );
+    assert!(!alice.missing(&id("ord-1")));
+
+    // A restart again changes nothing: all is delivered.
+    let mut third = Wire::default();
+    let mut n = resuming(&ledger);
+    assert_eq!(n.notify(&log, &mut key, &mut third), Ok(0));
+    assert!(third.sent.is_empty());
+
+    // A notice that used the bound before a restart is not tried again after it.
+    let spent = Kept::default();
+    let mut down = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    let mut n = resuming(&spent);
+    let all = n.notify(&log[..2], &mut key, &mut down).expect("notified");
+    assert_eq!(all, 2);
+    for _ in 1..BOUND {
+        n.retry(&mut down);
+    }
+    assert_eq!(n.abandoned().len(), 2);
+    let mut up = Wire::default();
+    let mut n = resuming(&spent);
+    assert_eq!(n.notify(&log[..2], &mut key, &mut up), Ok(0));
+    assert!(up.sent.is_empty(), "no fresh bound after a restart");
+    assert_eq!(
+        n.abandoned().len(),
+        2,
+        "and it is still said to be given up"
+    );
+}
+
+/// A login in the operator's role whose stated party is not the deployment's operator is answered like anyone
+/// else: sealed for the party it states, in its role, which the operator's inbox does not take. Only the operator's
+/// own party is answered as the operator.
+// verifies: REQ-ORD-20
+#[test]
+fn operator_login_of_another_party_is_not_answered_as_the_operator() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    held_to_the_log(&log, &unbuilt_refusals());
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    n.notify(&log, &mut key, &mut wire).expect("notified");
+    let mut policy = Policy::of(&[("ord-1", ALICE)]);
+    let (clock, mut ids) = (At(NOW), Ids::default());
+    let public = TestKey::new();
+    let mut ask = |party: &str| {
+        let reader = Actor {
+            party: id(party),
+            acts: id("desk-login"),
+            role: Role::Operator,
+            kind: ActorKind::Person,
+        };
+        n.current(
+            &log,
+            &mut policy,
+            &clock,
+            &mut ids,
+            &mut key,
+            &reader,
+            None,
+            &id("ord-1"),
+        )
+        .expect("policy lists the login")
+    };
+
+    let own = ask(OPERATOR);
+    assert_eq!(inbox_take(&own, operator(), &public), Ok(Taken::Later));
+    let other = ask("operator-desk");
+    let desk = Receiver {
+        party: id("operator-desk"),
+        role: Role::Operator,
+    };
+    assert_eq!(
+        said(&other)["to"],
+        serde_json::to_value(&desk).expect("a receiver")
+    );
+    assert_eq!(
+        inbox_take(&other, operator(), &public),
+        Err(NotTaken::ForAnother),
+        "the operator does not receive what was sealed for another party"
+    );
+    assert_eq!(inbox_take(&other, desk, &public), Ok(Taken::Later));
+}
+
+fn inbox_take(bytes: &[u8], me: Receiver, key: &TestKey) -> Result<Taken, NotTaken> {
+    inbox(me, key).take(&Ed25519, bytes)
+}
+
+/// A clock a test moves.
+struct Moving(Cell<u64>);
+
+impl Clock for Moving {
+    fn now(&self) -> Reading {
+        Reading::at(self.0.get())
+    }
+}
+
+/// The operator's warning path with its watch: the path watched (`warn`), a second path (`second`), the operator's
+/// inbox on each, and the operator's side answering each heartbeat it takes.
+struct Rig {
+    clock: Moving,
+    watch: Watch,
+    key: TestKey,
+    warn: Wire,
+    second: Wire,
+    on_warn: Inbox,
+    on_second: Inbox,
+    seen: usize,
+}
+
+impl Rig {
+    fn new() -> Self {
+        let key = TestKey::new();
+        let clock = Moving(Cell::new(NOW));
+        Rig {
+            watch: Watch::new(id(DEPLOYMENT), id(OPERATOR), id("run-1"), &clock),
+            on_warn: inbox(operator(), &key),
+            on_second: inbox(operator(), &key),
+            clock,
+            key,
+            warn: Wire::default(),
+            second: Wire::default(),
+            seen: 0,
+        }
+    }
+
+    /// The watch ticks `seconds` after the start, then the operator's side answers what reached it.
+    fn tick(&mut self, seconds: u64) -> rutent_core_orch::notice::Tick {
+        self.clock.0.set(NOW + seconds);
+        let tick = self
+            .watch
+            .tick(&self.clock, &mut self.key, &mut self.warn, &mut self.second)
+            .expect("ticks");
+        while self.seen < self.warn.sent.len() {
+            let bytes = self.warn.sent[self.seen].1.clone();
+            if self.on_warn.take(&Ed25519, &bytes) == Ok(Taken::Beat)
+                && let Some((run, beat)) = self.on_warn.beat()
+            {
+                self.watch.answered(run, beat, &self.clock);
+            }
+            self.seen += 1;
+        }
+        tick
+    }
+
+    /// What the second path carried, as the operator's inbox there takes it.
+    fn told(&mut self) -> usize {
+        let sent: Vec<_> = self.second.sent.iter().map(|(_, b)| b.clone()).collect();
+        sent.iter()
+            .filter(|b| self.on_second.take(&Ed25519, b) == Ok(Taken::Event))
+            .count()
+    }
+}
+
+/// The path that warns the operator has a heartbeat of its own: sent every interval on that path, answered by the
+/// operator's side. While it answers, nothing is said on the second path and a beat is not early. Cut it, whether
+/// it refuses what it is given or takes it and loses it, and once it has been silent for [`SILENCE`] seconds the
+/// cut is noticed on the second path, sealed for the operator alone, and once; a path that answers again is alive,
+/// and a later cut is noticed again.
+// verifies: REQ-ORD-7
+#[test]
+fn cut_warning_path_is_noticed() {
+    for silent in [true, false] {
+        let mut rig = Rig::new();
+
+        // Alive: a beat each interval, none early, every one answered, and the second path says nothing.
+        for seconds in (0..=300).step_by(30) {
+            let tick = rig.tick(seconds);
+            assert!(tick.beat.is_some(), "a beat is due at {seconds}");
+            assert_eq!(tick.path, Path::Alive);
+            assert!(!tick.told);
+            assert_eq!(rig.tick(seconds + 10).beat, None, "not early");
+        }
+        assert_eq!(rig.on_warn.beat().map(|(_, b)| b), Some(11));
+        assert!(rig.second.sent.is_empty());
+
+        // Cut at 300 s, the last answer: no alarm before the silence has lasted.
+        rig.warn.silent = silent;
+        rig.warn.down = !silent;
+        for seconds in (330..=419).step_by(30) {
+            assert_eq!(rig.tick(seconds).path, Path::Alive, "{seconds} s");
+        }
+        assert_eq!(rig.tick(419).path, Path::Alive);
+        assert!(rig.second.sent.is_empty(), "no false alarm");
+
+        // The silence has lasted: noticed, on the second path, once.
+        let found = rig.tick(300 + SILENCE);
+        assert_eq!(found.path, Path::Cut { since: NOW + 300 });
+        assert!(found.told);
+        assert_eq!(rig.second.sent.len(), 1);
+        assert_eq!(rig.second.sent[0].0, operator());
+        assert_eq!(rig.told(), 1, "the operator takes it, checked");
+        let cut = said(&rig.second.sent[0].1);
+        assert_eq!(cut["about"]["about"], "path_cut");
+        assert_eq!(cut["about"]["silent_for"], SILENCE);
+        assert_eq!(
+            inbox_take(&rig.second.sent[0].1, customer(ALICE), &rig.key),
+            Err(NotTaken::ForAnother),
+            "the operator's alone"
+        );
+        for seconds in [450, 480, 510] {
+            let tick = rig.tick(seconds);
+            assert_eq!(tick.path, Path::Cut { since: NOW + 300 });
+            assert!(!tick.told);
+        }
+        assert_eq!(rig.second.sent.len(), 1, "told once");
+
+        // Answering again ends the cut; a later cut is noticed again.
+        rig.warn.silent = false;
+        rig.warn.down = false;
+        rig.tick(540);
+        assert_eq!(rig.tick(570).path, Path::Alive);
+        rig.warn.silent = silent;
+        rig.warn.down = !silent;
+        let mut told_at = None;
+        for seconds in (600..=800).step_by(30) {
+            if rig.tick(seconds).told {
+                told_at = Some(seconds);
+                break;
+            }
+        }
+        assert_eq!(told_at, Some(570 + SILENCE));
+        assert_eq!(rig.second.sent.len(), 2);
+    }
+}
+
+/// The second path may be down when the cut is found: the operator is told once it takes the notice, not before
+/// and not twice.
+// verifies: REQ-ORD-7
+#[test]
+fn cut_is_told_again_until_the_second_path_takes_it() {
+    let mut rig = Rig::new();
+    rig.warn.silent = true;
+    rig.second.down = true;
+    let mut found = None;
+    for seconds in (0..=400).step_by(30) {
+        let tick = rig.tick(seconds);
+        if matches!(tick.path, Path::Cut { .. }) && found.is_none() {
+            found = Some(seconds);
+            assert!(!tick.told, "the second path refused");
+        }
+    }
+    assert!(found.is_some());
+    assert!(rig.second.sent.is_empty());
+    rig.second.down = false;
+    assert!(rig.tick(420).told);
+    assert!(!rig.tick(450).told);
+    assert_eq!(rig.second.sent.len(), 1);
+}
+
+/// A raise the path refused is kept and retried like a notice: each try recorded in the ledger under the raise's
+/// id, the operator's inbox taking it once it is delivered, and a raise that used the bound is abandoned.
+// verifies: REQ-ORD-20
+#[test]
+fn undelivered_raise_is_retried_and_recorded() {
+    let raise: Raise = serde_json::from_str(include_str!(
+        "../../../contracts/core-internal/fixtures/valid/raise-of-a-change-in-a-providers-p99.json"
+    ))
+    .expect("a raise");
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let ledger = Kept::default();
+    let mut n = resuming(&ledger);
+    wire.down = true;
+    assert_eq!(
+        Channel {
+            notices: &mut n,
+            key: &mut key,
+            transport: &mut wire
+        }
+        .raise(&raise),
+        Delivery::Undelivered
+    );
+    let named = Key::Raise {
+        raise: raise.raise.as_str().to_owned(),
+    };
+    assert_eq!(ledger.attempts(&named), 1);
+    assert!(!ledger.delivered(&named));
+    assert_eq!(n.retry(&mut wire).failed, 1);
+    assert_eq!(ledger.attempts(&named), 2);
+
+    wire.down = false;
+    assert_eq!(n.retry(&mut wire).delivered, 1);
+    assert!(ledger.delivered(&named));
+    assert_eq!(ledger.attempts(&named), 3);
+    let mut op = inbox(operator(), &key);
+    assert_eq!(op.take(&Ed25519, &wire.sent[0].1), Ok(Taken::Event));
+
+    // Raised afresh and refused for good: the bound ends it.
+    wire.down = true;
+    let mut other = raise.clone();
+    other.raise = id("raise-2");
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut wire,
+    }
+    .raise(&other);
+    for _ in 1..BOUND {
+        n.retry(&mut wire);
+    }
+    assert!(n.undelivered().is_empty());
+    assert_eq!(n.abandoned().len(), 1);
+    assert_eq!(
+        ledger.attempts(&Key::Raise {
+            raise: "raise-2".to_owned()
+        }),
+        BOUND
+    );
+}
+
+/// The log's entry of a raise that did not reach the operator (outcome `failed`), citing the first two entries of
+/// `log`: written once, never updated.
+fn failed_raise_entry(raise: &Raise, log: &[(Receipt, Entry)]) -> Entry {
+    let mut raise = raise.clone();
+    raise.cites = vec![log[0].0.clone(), log[1].0.clone()];
+    serde_json::from_value(json!({
+        "kind": "verified",
+        "who": core(),
+        "what": {"call": "raise", "raise": raise},
+        "when": {"at": time(40), "source": "core_clock"},
+        "outcome": {"status": "failed"}
+    }))
+    .expect("a verified entry")
+}
+
+fn raise_notices(wire: &Wire) -> usize {
+    wire.sent
+        .iter()
+        .filter(|(_, b)| said(b)["about"]["about"] == "raise")
+        .count()
+}
+
+/// A raise refused by the path is recorded in the log once, as failed, and never updated. After a restart over the
+/// same ledger, the rebuild resends it exactly once, its tries counted on from the ledger, and once delivered it is
+/// not sent again; one that used its bound before the restart is not tried again and is said to be abandoned.
+// verifies: REQ-ORD-20
+#[test]
+fn raise_lost_to_a_restart_is_resent_once() {
+    let raise: Raise = serde_json::from_str(include_str!(
+        "../../../contracts/core-internal/fixtures/valid/raise-of-a-change-in-a-providers-p99.json"
+    ))
+    .expect("a raise");
+    let mut entries = log_of(&[("ord-1", ALICE)]);
+    let base = receipted(entries.clone());
+    entries.push(failed_raise_entry(&raise, &base));
+    let log = receipted(entries);
+    held_to_the_log(&log, &unbuilt_refusals());
+    let named = Key::Raise {
+        raise: raise.raise.as_str().to_owned(),
+    };
+    let mut key = TestKey::new();
+
+    // Before the restart: the path refuses the raise, which the log records as failed.
+    let ledger = Kept::default();
+    let mut before = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    let mut n = resuming(&ledger);
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut before,
+    }
+    .raise(&raise);
+    assert_eq!(ledger.attempts(&named), 1);
+    drop(n);
+
+    // After it: the rebuild resends it once, the tries counted on.
+    let mut after = Wire::default();
+    let mut n = resuming(&ledger);
+    n.notify(&log, &mut key, &mut after).expect("caught up");
+    assert_eq!(raise_notices(&after), 1, "resent exactly once");
+    assert_eq!(ledger.attempts(&named), 2);
+    assert!(ledger.delivered(&named));
+    let mut op = inbox(operator(), &key);
+    let raised = after
+        .sent
+        .iter()
+        .find(|(_, b)| said(b)["about"]["about"] == "raise")
+        .expect("a raise");
+    assert_eq!(op.take(&Ed25519, &raised.1), Ok(Taken::Event));
+
+    // Another restart: delivered, so not sent again.
+    let mut third = Wire::default();
+    let mut n = resuming(&ledger);
+    n.notify(&log, &mut key, &mut third).expect("caught up");
+    assert_eq!(raise_notices(&third), 0);
+
+    // In the same run the raise is already kept for the retry: reading its entry sends no second try.
+    let same = Kept::default();
+    let mut down = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    let mut n = resuming(&same);
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut down,
+    }
+    .raise(&raise);
+    let mut up = Wire::default();
+    n.notify(&log, &mut key, &mut up).expect("read");
+    assert_eq!(raise_notices(&up), 0);
+    assert_eq!(same.attempts(&named), 1);
+
+    // A raise that used its bound before a restart is not given a fresh one, and is said to be abandoned.
+    let spent = Kept::default();
+    let mut down = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    let mut n = resuming(&spent);
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut down,
+    }
+    .raise(&raise);
+    for _ in 1..BOUND {
+        n.retry(&mut down);
+    }
+    assert_eq!(n.abandoned().len(), 1);
+    drop(n);
+    let mut up = Wire::default();
+    let mut n = resuming(&spent);
+    n.notify(&log, &mut key, &mut up).expect("caught up");
+    assert_eq!(raise_notices(&up), 0, "no fresh bound");
+    assert_eq!(n.abandoned().len(), 1);
+    assert_eq!(n.abandoned()[0].key.as_ref(), Some(&named));
+}
+
+/// A silence no longer than the interval would call a healthy path cut between two beats: such a watch isn't built.
+// verifies: REQ-ORD-7
+#[test]
+fn watch_refuses_a_silence_no_longer_than_its_interval() {
+    let clock = Moving(Cell::new(NOW));
+    let with = |interval, silence| {
+        Watch::with(
+            id(DEPLOYMENT),
+            id(OPERATOR),
+            id("run-1"),
+            &clock,
+            interval,
+            silence,
+        )
+    };
+    assert!(with(30, 30).is_none());
+    assert!(with(30, 10).is_none());
+    assert!(with(30, 31).is_some());
+}
+
+/// An answer to a beat older than the newest sent doesn't show the path alive now, so a late answer can't hide a
+/// cut; and a beat of another run (one replayed from before a restart) is no answer at all.
+// verifies: REQ-ORD-7
+#[test]
+fn late_or_replayed_answer_does_not_hide_a_cut() {
+    let clock = Moving(Cell::new(NOW));
+    let (mut key, mut warn, mut second) = (TestKey::new(), Wire::default(), Wire::default());
+    let mut watch = Watch::new(id(DEPLOYMENT), id(OPERATOR), id("run-1"), &clock);
+    clock.0.set(NOW);
+    watch
+        .tick(&clock, &mut key, &mut warn, &mut second)
+        .expect("beat 1");
+    clock.0.set(NOW + 30);
+    watch
+        .tick(&clock, &mut key, &mut warn, &mut second)
+        .expect("beat 2");
+
+    // A late answer to beat 1, after beat 2 went out: nothing.
+    clock.0.set(NOW + 100);
+    watch.answered(&id("run-1"), 1, &clock);
+    clock.0.set(NOW + SILENCE);
+    let tick = watch
+        .tick(&clock, &mut key, &mut warn, &mut second)
+        .expect("a tick");
+    assert_eq!(tick.path, Path::Cut { since: NOW });
+
+    // The same beat number from another run: nothing.
+    let mut other = Watch::new(id(DEPLOYMENT), id(OPERATOR), id("run-0"), &clock);
+    let mut sent = Wire::default();
+    other
+        .tick(&clock, &mut key, &mut sent, &mut Wire::default())
+        .expect("a beat of another run");
+    let mut op = inbox(operator(), &key);
+    assert_eq!(op.take(&Ed25519, &sent.sent[0].1), Ok(Taken::Beat));
+    let (run, beat) = op.beat().expect("a beat");
+    let mut fresh = Watch::new(id(DEPLOYMENT), id(OPERATOR), id("run-1"), &clock);
+    fresh
+        .tick(&clock, &mut key, &mut Wire::default(), &mut Wire::default())
+        .expect("beat 1");
+    clock.0.set(NOW + SILENCE + 60);
+    fresh.answered(run, beat, &clock);
+    clock.0.set(NOW + SILENCE + 130);
+    assert!(matches!(
+        fresh
+            .tick(&clock, &mut key, &mut Wire::default(), &mut Wire::default())
+            .expect("a tick")
+            .path,
+        Path::Cut { .. }
+    ));
 }
